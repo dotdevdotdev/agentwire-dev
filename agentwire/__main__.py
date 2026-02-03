@@ -5074,7 +5074,7 @@ def cmd_init(args) -> int:
         # Quick mode: run wizard but skip agentwire step
         # We do this by running onboarding and returning before agentwire prompt
         # The onboarding module handles this internally
-        return run_onboarding(skip_agentwire=True)
+        return run_onboarding(skip_session=True)
 
     # Default: run full wizard (ends with optional agentwire setup)
     return run_onboarding()
