@@ -98,6 +98,56 @@ def load_config() -> dict:
     return load_yaml(config_path(), default={})
 
 
+def transcribe_via_server(audio_path: Path, stt_url: str, timeout: int = 30) -> str | None:
+    """Try to transcribe via STT server.
+
+    Returns transcribed text on success, None if server unavailable.
+    """
+    import urllib.request
+    import urllib.error
+    import json
+
+    try:
+        # Check if server is healthy first (fast fail)
+        health_req = urllib.request.Request(f"{stt_url}/health")
+        with urllib.request.urlopen(health_req, timeout=2) as resp:
+            health = json.loads(resp.read().decode())
+            if health.get("status") != "ok":
+                return None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+    # Server is up, send audio for transcription
+    try:
+        with open(audio_path, "rb") as f:
+            audio_data = f.read()
+
+        # Build multipart form data
+        boundary = "----AgentWireBoundary"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+            f"Content-Type: audio/wav\r\n\r\n"
+        ).encode() + audio_data + f"\r\n--{boundary}--\r\n".encode()
+
+        req = urllib.request.Request(
+            f"{stt_url}/transcribe",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode())
+            text = result.get("text", "").strip()
+            log(f"STT server transcribed in {result.get('transcribe_time', '?')}s")
+            return text if text else None
+
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
+        log(f"STT server error: {e}")
+        return None
+
+
 def get_audio_device() -> str:
     """Get audio input device from config. Returns device index for ffmpeg."""
     config = load_config()
@@ -219,46 +269,56 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
     log("Transcribing...")
     notify("Transcribing...")
 
-    # Get optional model path from config
+    # Get config
     config = load_config()
     stt_config = config.get("stt", {})
-    model_path = stt_config.get("model_path") or os.path.expanduser(
-        "~/Library/Application Support/MacWhisper/models/whisperkit/models/"
-        "argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930"
-    )
+    stt_url = stt_config.get("url", "http://localhost:8101")
 
     text = ""
 
-    try:
-        result = subprocess.run(
-            [
-                WHISPERKIT_PATH, "transcribe",
-                "--audio-path", str(AUDIO_FILE),
-                "--model-path", model_path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
+    # Try STT server first (instant if running)
+    text = transcribe_via_server(AUDIO_FILE, stt_url)
+
+    if text:
+        log(f"Used STT server at {stt_url}")
+    else:
+        # Fall back to whisperkit-cli (slower cold start)
+        log("STT server unavailable, using whisperkit-cli...")
+        model_path = stt_config.get("model_path") or os.path.expanduser(
+            "~/Library/Application Support/MacWhisper/models/whisperkit/models/"
+            "argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930"
         )
 
-        if result.returncode != 0:
-            log(f"ERROR: whisperkit-cli failed: {result.stderr}")
-            notify("Transcription failed")
+        try:
+            result = subprocess.run(
+                [
+                    WHISPERKIT_PATH, "transcribe",
+                    "--audio-path", str(AUDIO_FILE),
+                    "--model-path", model_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            if result.returncode != 0:
+                log(f"ERROR: whisperkit-cli failed: {result.stderr}")
+                notify("Transcription failed")
+                beep("error")
+                return 1
+
+            text = result.stdout.strip()
+
+        except subprocess.TimeoutExpired:
+            log("ERROR: whisperkit-cli timed out")
+            notify("Transcription timed out")
             beep("error")
             return 1
-
-        text = result.stdout.strip()
-
-    except subprocess.TimeoutExpired:
-        log("ERROR: whisperkit-cli timed out")
-        notify("Transcription timed out")
-        beep("error")
-        return 1
-    except Exception as e:
-        log(f"ERROR: STT failed: {e}")
-        notify(f"Transcription failed: {e}")
-        beep("error")
-        return 1
+        except Exception as e:
+            log(f"ERROR: STT failed: {e}")
+            notify(f"Transcription failed: {e}")
+            beep("error")
+            return 1
 
     if not text:
         log("ERROR: No speech detected")

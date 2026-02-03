@@ -1391,7 +1391,7 @@ def cmd_stt_start(args) -> int:
         print(f"  Attach: tmux attach -t {session_name}")
         return 0
 
-    port = args.port or 8100
+    port = args.port or 8101
     host = args.host or "0.0.0.0"
     model = args.model or os.environ.get("WHISPER_MODEL", "base")
 
@@ -1427,7 +1427,7 @@ def cmd_stt_serve(args) -> int:
     """Run the STT server directly (foreground)."""
     import uvicorn
 
-    port = args.port or 8100
+    port = args.port or 8101
     host = args.host or "0.0.0.0"
     model = args.model or "base"
 
@@ -1462,7 +1462,7 @@ def cmd_stt_status(args) -> int:
     json_mode = getattr(args, 'json', False)
     session_name = get_stt_session_name()
     config = load_config()
-    stt_url = config.get("stt", {}).get("url", "http://localhost:8100")
+    stt_url = config.get("stt", {}).get("url", "http://localhost:8101")
 
     # Check health endpoint
     try:
@@ -7500,14 +7500,14 @@ def main() -> int:
 
     # stt start
     stt_start = stt_subparsers.add_parser("start", help="Start STT server in tmux")
-    stt_start.add_argument("--port", type=int, help="Server port (default: 8100)")
+    stt_start.add_argument("--port", type=int, help="Server port (default: 8101)")
     stt_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
     stt_start.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
     stt_start.set_defaults(func=cmd_stt_start)
 
     # stt serve
     stt_serve = stt_subparsers.add_parser("serve", help="Run STT server in foreground")
-    stt_serve.add_argument("--port", type=int, help="Server port (default: 8100)")
+    stt_serve.add_argument("--port", type=int, help="Server port (default: 8101)")
     stt_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
     stt_serve.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
     stt_serve.set_defaults(func=cmd_stt_serve)
