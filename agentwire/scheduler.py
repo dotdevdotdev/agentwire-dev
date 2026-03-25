@@ -85,6 +85,8 @@ class SchedulerTask:
     roles: list[str] | None = None  # role override (e.g., ["task-runner"])
     model: str | None = None  # model override (e.g., "haiku")
     gate: dict | None = None  # precondition gate (git_commit, git_diff, command)
+    max_runs: int | None = None  # auto-disable after N successful dispatches
+    once: bool = False           # shorthand for max_runs: 1
 
 
 @dataclass
@@ -227,7 +229,13 @@ def load_board() -> Board:
             roles=roles,
             model=t.get("model"),
             gate=t.get("gate"),
+            max_runs=int(t["max_runs"]) if t.get("max_runs") is not None else None,
+            once=bool(t.get("once", False)),
         )
+        # Normalize: once: true is shorthand for max_runs: 1
+        st = board.tasks[name]
+        if st.once and st.max_runs is None:
+            st.max_runs = 1
 
     raw_state = raw.get("state", {})
     if raw_state and isinstance(raw_state, dict):
@@ -568,7 +576,9 @@ def pick_next_task(board: Board) -> tuple[str | None, float]:
     for name, task in board.tasks.items():
         if not task.enabled or task.filler:
             continue
-        state = board.state.get(name)
+        state = board.state.get(name, TaskState())
+        if task.max_runs is not None and state.run_count >= task.max_runs:
+            continue  # Hit run limit
         if _is_in_flight(state):
             continue
         if not _in_time_window(task.schedule):
@@ -1081,14 +1091,25 @@ def dispatch_task(board: Board, task_name: str) -> TaskState:
     except Exception:
         pass
 
-    return TaskState(
+    new_run_count = existing_state.run_count + 1
+    new_state = TaskState(
         last_run=datetime.now(timezone.utc),
         last_status=status,
         last_duration=duration,
-        run_count=existing_state.run_count + 1,
+        run_count=new_run_count,
         last_summary=summary,
         last_gate_commit=gate_commit,
     )
+
+    # Auto-disable if max_runs reached
+    if task.max_runs is not None and new_run_count >= task.max_runs:
+        task.enabled = False
+        board.state[task_name] = new_state
+        save_board(board)
+        _log_event("task_disabled", task=task_name, reason="max_runs_reached",
+                   run_count=new_run_count, max_runs=task.max_runs)
+
+    return new_state
 
 
 def format_interval(seconds: int) -> str:
@@ -1193,6 +1214,8 @@ def get_board_display(board: Board) -> list[dict]:
             "task": task.task,
             "project": task.project,
             "in_flight": in_flight,
+            "max_runs": task.max_runs,
+            "once": task.once,
         }
         if state.last_summary:
             row["last_summary"] = state.last_summary

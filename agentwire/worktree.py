@@ -63,6 +63,7 @@ def ensure_worktree(
     branch: str,
     worktree_path: Path,
     auto_create_branch: bool = True,
+    commit: str | None = None,
 ) -> bool:
     """Ensure a git worktree exists for the given branch.
 
@@ -71,6 +72,7 @@ def ensure_worktree(
         branch: Branch name for the worktree
         worktree_path: Path where the worktree should be created
         auto_create_branch: If True, create branch if it doesn't exist
+        commit: Optional commit/ref to start the worktree from (default: HEAD)
 
     Returns:
         True if worktree exists or was created successfully, False otherwise
@@ -95,12 +97,28 @@ def ensure_worktree(
     branch_exists = result.returncode == 0
 
     # Build git worktree add command
+    # git worktree add [-b branch] <path> [<commit-ish>]
     cmd = ["git", "worktree", "add", str(worktree_path)]
 
     if branch_exists:
         cmd.append(branch)
+        # Create worktree first, then checkout specific commit if requested
+        result = subprocess.run(cmd, cwd=project_path, capture_output=True)
+        if result.returncode != 0:
+            return False
+        if commit:
+            # Detach HEAD at requested commit inside the worktree
+            checkout = subprocess.run(
+                ["git", "checkout", commit],
+                cwd=worktree_path,
+                capture_output=True,
+            )
+            return checkout.returncode == 0
+        return True
     elif auto_create_branch:
         cmd.extend(["-b", branch])
+        if commit:
+            cmd.append(commit)  # git worktree add -b branch path <commit> is native
     else:
         return False
 

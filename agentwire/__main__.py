@@ -4802,11 +4802,13 @@ def cmd_fork(args) -> int:
         return _output_result(False, json_mode, f"Source path does not exist: {source_path}")
 
     # Create new worktree from source
+    fork_commit = getattr(args, "commit", None) or None
     success = ensure_worktree(
         source_path,  # Use source as base for the worktree
         target_branch,
         target_path,
         auto_create_branch=True,
+        commit=fork_commit,
     )
     if not success:
         # Try from project path instead
@@ -4816,6 +4818,7 @@ def cmd_fork(args) -> int:
                 target_branch,
                 target_path,
                 auto_create_branch=True,
+                commit=fork_commit,
             )
 
     if not success:
@@ -7346,6 +7349,190 @@ def cmd_ensure(args) -> int:
         return _output_result(False, json_mode, str(e), exit_code=ENSURE_EXIT_LOCK_CONFLICT)
 
 
+def _setup_task_branch(project_path, task, json_mode) -> tuple[str, str | None]:
+    """Set up git branch for a task with starting_ref.
+
+    Checks out starting_ref, pulls latest, creates the work branch.
+
+    Returns:
+        (work_branch_name, error_message) — error_message is None on success.
+    """
+    from .tasks import PreCommandError  # noqa: F401 (used for caller)
+
+    starting_ref = task.starting_ref
+
+    # Verify the ref exists
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", starting_ref],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return "", f"starting_ref '{starting_ref}' not found in {project_path}"
+
+    # Checkout the starting ref
+    checkout = subprocess.run(
+        ["git", "checkout", starting_ref],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if checkout.returncode != 0:
+        return "", f"Failed to checkout '{starting_ref}': {checkout.stderr.strip()}"
+
+    # Pull if it's a branch (not detached HEAD)
+    head_check = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "HEAD"],
+        cwd=project_path,
+        capture_output=True,
+    )
+    if head_check.returncode == 0:
+        subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=project_path,
+            capture_output=True,
+        )
+
+    # Determine work branch name
+    work_branch = task.work_branch
+    if not work_branch:
+        today = datetime.date.today().isoformat()
+        work_branch = f"agent/{task.name}-{today}"
+
+    # Handle collision: append -2, -3, ... until name is free
+    check = subprocess.run(
+        ["git", "rev-parse", "--verify", f"refs/heads/{work_branch}"],
+        cwd=project_path,
+        capture_output=True,
+    )
+    if check.returncode == 0:
+        n = 2
+        base = work_branch
+        while True:
+            candidate = f"{base}-{n}"
+            check = subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/heads/{candidate}"],
+                cwd=project_path,
+                capture_output=True,
+            )
+            if check.returncode != 0:
+                work_branch = candidate
+                break
+            n += 1
+
+    # Create and checkout work branch
+    create = subprocess.run(
+        ["git", "checkout", "-b", work_branch],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if create.returncode != 0:
+        return "", f"Failed to create work branch '{work_branch}': {create.stderr.strip()}"
+
+    if not json_mode:
+        print(f"Branch: {work_branch} (from {starting_ref})")
+
+    return work_branch, None
+
+
+def _create_task_pr(project_path, task, work_branch, last_summary, json_mode) -> str | None:
+    """Commit, push, and open a PR for completed task work.
+
+    Returns:
+        PR URL if created, None if skipped or failed.
+    """
+    pr_target = task.pr_target or task.starting_ref
+
+    # Check for uncommitted changes
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    has_changes = bool(status.stdout.strip())
+
+    if not has_changes:
+        if not json_mode:
+            print("No changes to commit — skipping PR creation")
+        # Still reset to starting_ref
+        subprocess.run(["git", "checkout", task.starting_ref], cwd=project_path, capture_output=True)
+        return None
+
+    # Commit all changes
+    today = datetime.date.today().isoformat()
+    commit_msg = f"chore: agent task {task.name} ({today})"
+    subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True)
+    commit_result = subprocess.run(
+        ["git", "commit", "-m", commit_msg],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if commit_result.returncode != 0:
+        if not json_mode:
+            print(f"Warning: commit failed: {commit_result.stderr.strip()}")
+        subprocess.run(["git", "checkout", task.starting_ref], cwd=project_path, capture_output=True)
+        return None
+
+    # Push branch
+    push = subprocess.run(
+        ["git", "push", "-u", "origin", work_branch],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if push.returncode != 0:
+        if not json_mode:
+            print(f"Warning: push failed: {push.stderr.strip()}")
+        subprocess.run(["git", "checkout", task.starting_ref], cwd=project_path, capture_output=True)
+        return None
+
+    # Check gh is available
+    gh_check = subprocess.run(["which", "gh"], capture_output=True)
+    if gh_check.returncode != 0:
+        if not json_mode:
+            print("Warning: 'gh' not found — skipping PR creation (branch pushed)")
+        subprocess.run(["git", "checkout", task.starting_ref], cwd=project_path, capture_output=True)
+        return None
+
+    # Create PR
+    pr_title = f"agent: {task.name} ({today})"
+    pr_body = last_summary if last_summary else f"Automated changes from agent task `{task.name}`."
+    pr_cmd = [
+        "gh", "pr", "create",
+        "--base", pr_target,
+        "--head", work_branch,
+        "--title", pr_title,
+        "--body", pr_body,
+    ]
+    if task.pr_draft:
+        pr_cmd.append("--draft")
+
+    pr_result = subprocess.run(
+        pr_cmd,
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+
+    pr_url = None
+    if pr_result.returncode == 0:
+        pr_url = pr_result.stdout.strip()
+        if not json_mode:
+            print(f"PR created: {pr_url}")
+    else:
+        if not json_mode:
+            print(f"Warning: PR creation failed: {pr_result.stderr.strip()}")
+
+    # Reset to starting_ref
+    subprocess.run(["git", "checkout", task.starting_ref], cwd=project_path, capture_output=True)
+
+    return pr_url
+
+
 def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -> int:
     """Run the task (called within lock context).
 
@@ -7384,19 +7571,34 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
             if not json_mode:
                 print(f"Creating session '{session}'...")
 
-            class NewArgs:
-                def __init__(self):
-                    self.session = session
-                    self.path = str(project_path)
-                    self.force = False
-                    self.type = None
-                    self.roles = None
-                    self.model = None
-                    self.json = json_mode
+            # Fork starting_session if configured (carries over Claude conversation context)
+            if task.starting_session and task.starting_session != session:
+                if tmux_session_exists(task.starting_session):
+                    if not json_mode:
+                        print(f"Forking context from session '{task.starting_session}'...")
+                    fork_result = subprocess.run(
+                        ["agentwire", "fork", "-s", task.starting_session, "-t", session, "--json"],
+                        capture_output=True, text=True,
+                    )
+                    if fork_result.returncode != 0 and not json_mode:
+                        print(f"Warning: context fork failed, starting fresh session")
+                elif not json_mode:
+                    print(f"Warning: starting_session '{task.starting_session}' not found, starting fresh")
 
-            result = cmd_new(NewArgs())
-            if result != 0:
-                return _output_result(False, json_mode, f"Failed to create session '{session}'", exit_code=ENSURE_EXIT_SESSION_ERROR)
+            if not tmux_session_exists(session):
+                class NewArgs:
+                    def __init__(self, task_role):
+                        self.session = session
+                        self.path = str(project_path)
+                        self.force = False
+                        self.type = None
+                        self.roles = [task_role] if task_role else None
+                        self.model = None
+                        self.json = json_mode
+
+                result = cmd_new(NewArgs(task.role))
+                if result != 0:
+                    return _output_result(False, json_mode, f"Failed to create session '{session}'", exit_code=ENSURE_EXIT_SESSION_ERROR)
 
         # Wait for agent to be ready to accept input.
         # Handles both freshly-created sessions (agent still loading) and
@@ -7408,6 +7610,13 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
             if not json_mode:
                 print(f"Agent not ready in session '{session}' after 30s")
             return _output_result(False, json_mode, f"Agent not running in session '{session}'", exit_code=ENSURE_EXIT_SESSION_ERROR)
+
+        # Set up work branch if starting_ref is configured
+        work_branch = None
+        if task.starting_ref:
+            work_branch, branch_error = _setup_task_branch(project_path, task, json_mode)
+            if branch_error:
+                return _output_result(False, json_mode, branch_error, exit_code=ENSURE_EXIT_PRE_FAILURE)
 
         # Run pre-commands
         if task.pre:
@@ -7421,6 +7630,8 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                     if not json_mode:
                         print(f"  {pre.name}: {len(output)} chars")
                 except PreCommandError as e:
+                    if work_branch and task.starting_ref:
+                        subprocess.run(["git", "checkout", task.starting_ref], cwd=project_path, capture_output=True)
                     return _output_result(False, json_mode, str(e), exit_code=ENSURE_EXIT_PRE_FAILURE)
 
         # Expand prompt
@@ -7564,6 +7775,13 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                 if not json_mode:
                     print(f"Warning: Failed to save output: {e}")
 
+        # Create PR if branch management is configured
+        if work_branch and task.starting_ref:
+            pr_url = _create_task_pr(project_path, task, work_branch, last_summary, json_mode)
+            ctx.work_branch = work_branch
+            if pr_url:
+                ctx.pr_url = pr_url
+
         # Check if we should retry
         if last_status == "failed" and attempt < max_attempts:
             if not json_mode:
@@ -7578,13 +7796,18 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
     exit_code = status_to_exit_code(last_status)
 
     if json_mode:
-        _output_json({
+        result_data = {
             "success": last_status == "complete",
             "status": last_status,
             "summary": last_summary,
             "attempt": ctx.attempt,
             "summary_file": ctx.summary_file,
-        })
+        }
+        if ctx.work_branch:
+            result_data["work_branch"] = ctx.work_branch
+        if ctx.pr_url:
+            result_data["pr_url"] = ctx.pr_url
+        _output_json(result_data)
     else:
         print(f"\nTask {task.name}: {last_status}")
 
@@ -8475,6 +8698,179 @@ def cmd_scheduler_history(args) -> int:
     return 0
 
 
+def cmd_scheduler_report(args) -> int:
+    """Generate a morning report HTML artifact of recent task runs."""
+    import re as _re
+    from .scheduler import _parse_duration, format_interval, load_board, read_events
+
+    json_mode = getattr(args, 'json', False)
+    since_str = getattr(args, 'since', '8h') or '8h'
+    open_artifact = getattr(args, 'artifact', False)
+
+    # Parse duration
+    since_seconds = _parse_duration(since_str) or 28800  # default 8h
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=since_seconds)
+
+    # Load board state
+    try:
+        board = load_board()
+    except Exception as e:
+        print(f"Error loading board: {e}", file=sys.stderr)
+        return 1
+
+    # Load events in the window
+    try:
+        events = read_events(limit=500)
+    except Exception:
+        events = []
+
+    # Collect completed task events within window
+    runs: list[dict] = []
+    for ev in events:
+        if ev.get("event") != "task_completed":
+            continue
+        ts_str = ev.get("ts") or ev.get("timestamp", "")
+        try:
+            ts = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        if ts < cutoff:
+            continue
+        task_name = ev.get("task", "")
+        # Collect run data
+        run = {
+            "task": task_name,
+            "status": ev.get("status", "unknown"),
+            "duration": ev.get("duration", 0),
+            "summary": ev.get("summary", ""),
+            "timestamp": ts.strftime("%Y-%m-%d %H:%M"),
+            "work_branch": "",
+            "pr_url": "",
+        }
+        runs.append(run)
+
+    # Count totals
+    total = len(runs)
+    complete = sum(1 for r in runs if r["status"] == "complete")
+    failed = sum(1 for r in runs if r["status"] in ("failed", "timeout"))
+    incomplete = total - complete - failed
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    report_date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    def status_badge(status: str) -> str:
+        colors = {
+            "complete": "#00c853",
+            "failed": "#ff5252",
+            "timeout": "#ff7043",
+            "incomplete": "#ffa726",
+            "unknown": "#78909c",
+        }
+        color = colors.get(status, "#78909c")
+        return f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:12px;font-size:0.85em">{status}</span>'
+
+    rows_html = ""
+    for r in runs:
+        duration_str = format_interval(r["duration"]) if r["duration"] else "-"
+        pr_link = f'<a href="{r["pr_url"]}" target="_blank" style="color:#00d4ff">{r["pr_url"][:40]}...</a>' if r.get("pr_url") else "-"
+        branch_str = r.get("work_branch") or "-"
+        rows_html += f"""
+        <tr>
+          <td style="font-weight:600">{r["task"]}</td>
+          <td>{status_badge(r["status"])}</td>
+          <td>{r["timestamp"]}</td>
+          <td>{duration_str}</td>
+          <td><code style="font-size:0.85em">{branch_str}</code></td>
+          <td>{pr_link}</td>
+          <td style="color:#aaa;font-size:0.85em">{r["summary"][:120] if r["summary"] else "-"}</td>
+        </tr>"""
+
+    if not rows_html:
+        rows_html = f'<tr><td colspan="7" style="color:#556;text-align:center;padding:24px">No tasks ran in the last {since_str}</td></tr>'
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Morning Report — {report_date}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 24px; background: #1a1a2e; color: #e0e0e0; }}
+  h1 {{ color: #00d4ff; margin-bottom: 4px; }}
+  .meta {{ color: #556; font-size: 0.85em; margin-bottom: 20px; }}
+  .summary-bar {{ display: flex; gap: 24px; padding: 14px 20px; background: #16213e; border-radius: 8px; margin-bottom: 24px; }}
+  .summary-bar .item {{ display: flex; flex-direction: column; }}
+  .summary-bar .label {{ color: #556; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.5px; }}
+  .summary-bar .value {{ font-size: 1.4em; font-weight: 700; }}
+  .complete {{ color: #00c853; }}
+  .failed {{ color: #ff5252; }}
+  .incomplete {{ color: #ffa726; }}
+  .total {{ color: #e0e0e0; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid #2a2a4a; font-size: 0.9em; }}
+  th {{ background: #16213e; color: #00d4ff; font-weight: 600; position: sticky; top: 0; }}
+  tr:hover {{ background: #16213e; }}
+  code {{ background: #0d1b2a; padding: 2px 6px; border-radius: 4px; }}
+</style>
+</head>
+<body>
+<h1>Morning Report</h1>
+<p class="meta">Generated {now_str} &nbsp;&middot;&nbsp; Last {since_str}</p>
+
+<div class="summary-bar">
+  <div class="item"><span class="label">Total</span><span class="value total">{total}</span></div>
+  <div class="item"><span class="label">Complete</span><span class="value complete">{complete}</span></div>
+  <div class="item"><span class="label">Failed</span><span class="value failed">{failed}</span></div>
+  <div class="item"><span class="label">Incomplete</span><span class="value incomplete">{incomplete}</span></div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Task</th>
+      <th>Status</th>
+      <th>Time</th>
+      <th>Duration</th>
+      <th>Branch</th>
+      <th>PR</th>
+      <th>Summary</th>
+    </tr>
+  </thead>
+  <tbody>{rows_html}</tbody>
+</table>
+</body>
+</html>"""
+
+    # Write artifact
+    artifacts_dir = Path.home() / ".agentwire" / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"morning-report-{report_date}.html"
+    report_path = artifacts_dir / filename
+    report_path.write_text(html)
+
+    if json_mode:
+        _output_json({
+            "success": True,
+            "path": str(report_path),
+            "filename": filename,
+            "total": total,
+            "complete": complete,
+            "failed": failed,
+            "incomplete": incomplete,
+        })
+    else:
+        print(f"Report: {report_path}")
+        print(f"Tasks: {total} total — {complete} complete, {failed} failed, {incomplete} incomplete")
+
+    if open_artifact:
+        subprocess.run(
+            ["agentwire", "open", filename, "--title", f"Morning Report {report_date}"],
+            capture_output=True,
+        )
+
+    return 0
+
+
 def cmd_scheduler_events(args) -> int:
     """Show recent scheduler events from the JSONL log."""
     from .scheduler import read_events
@@ -9200,6 +9596,7 @@ def main() -> int:
     fork_parser.add_argument("-t", "--target", required=True, help="Target session (must include branch: project/new-branch)")
     # Session type
     fork_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, claudeglm-bypass, claudeglm-prompted, claudeglm-restricted, standard, worker, voice)")
+    fork_parser.add_argument("--commit", metavar="REF", help="Fork from this commit/ref instead of HEAD (e.g. abc123, main~5)")
     fork_parser.add_argument("--json", action="store_true", help="Output as JSON")
     fork_parser.set_defaults(func=cmd_fork)
 
@@ -9638,6 +10035,13 @@ def main() -> int:
     sched_dashboard = scheduler_subparsers.add_parser("dashboard", help="Open scheduler dashboard")
     sched_dashboard.add_argument("--no-open", action="store_true", help="Generate HTML without opening")
     sched_dashboard.set_defaults(func=cmd_scheduler_dashboard)
+
+    # scheduler report
+    sched_report = scheduler_subparsers.add_parser("report", help="Generate morning report of recent task runs")
+    sched_report.add_argument("--since", default="8h", metavar="DURATION", help="Time window (e.g. 8h, 12h, 1d) default: 8h")
+    sched_report.add_argument("--artifact", action="store_true", help="Open report as portal artifact")
+    sched_report.add_argument("--json", action="store_true", help="Output JSON")
+    sched_report.set_defaults(func=cmd_scheduler_report)
 
     args = parser.parse_args()
 

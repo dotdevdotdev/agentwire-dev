@@ -39,6 +39,10 @@ class TemplateContext:
     summary_file: str = ""
     output: str = ""
 
+    # Branch management (populated when starting_ref is configured)
+    work_branch: str = ""
+    pr_url: str = ""
+
     # Pre-command outputs (dynamically populated)
     pre_outputs: dict[str, str] = field(default_factory=dict)
 

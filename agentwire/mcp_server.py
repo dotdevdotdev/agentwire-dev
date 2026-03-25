@@ -1099,7 +1099,7 @@ def session_recreate(session: str) -> str:
 
 
 @mcp.tool()
-def session_fork(session: str, target: str) -> str:
+def session_fork(session: str, target: str, commit: str = "") -> str:
     """Fork a session into a new worktree.
 
     Creates a new session based on an existing one, with its own
@@ -1108,11 +1108,15 @@ def session_fork(session: str, target: str) -> str:
     Args:
         session: Source session name (project or project/branch)
         target: Target session name (must include branch: project/new-branch)
+        commit: Optional commit/ref to fork from instead of HEAD (e.g. abc123, main~5)
 
     Returns:
         Success message or error description.
     """
-    data = run_agentwire_cmd(["fork", "-s", session, "-t", target], timeout=120)
+    cmd = ["fork", "-s", session, "-t", target]
+    if commit:
+        cmd += ["--commit", commit]
+    data = run_agentwire_cmd(cmd, timeout=120)
     if data.get("success"):
         forked = data.get("session", target)
         return f"Session '{session}' forked to '{forked}'."
@@ -1689,6 +1693,38 @@ def scheduler_history(limit: int = 20) -> str:
         lines.append(f"  {task_name}: {last_run} — {status} ({dur_str}, {runs} runs)")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def scheduler_report(since: str = "8h", artifact: bool = False) -> str:
+    """Generate a morning report of recent task runs.
+
+    Produces an HTML artifact summarizing all tasks that ran in the time window,
+    with statuses, durations, branches, and PR links.
+
+    Args:
+        since: Time window to cover (e.g. '8h', '12h', '1d') default: '8h'
+        artifact: If True, open the report as a portal artifact window
+
+    Returns:
+        Path to generated HTML report and summary statistics.
+    """
+    cmd = ["scheduler", "report", "--since", since, "--json"]
+    if artifact:
+        cmd.append("--artifact")
+    data = run_agentwire_cmd(cmd)
+    if not data.get("success"):
+        return f"Failed to generate report: {data.get('error', 'Unknown error')}"
+
+    path = data.get("path", "")
+    total = data.get("total", 0)
+    complete = data.get("complete", 0)
+    failed = data.get("failed", 0)
+    incomplete = data.get("incomplete", 0)
+    return (
+        f"Morning report generated: {path}\n"
+        f"Tasks: {total} total — {complete} complete, {failed} failed, {incomplete} incomplete"
+    )
 
 
 # =============================================================================

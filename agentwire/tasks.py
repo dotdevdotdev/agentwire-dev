@@ -98,6 +98,14 @@ class TaskConfig:
     # Output handling
     output: OutputConfig = field(default_factory=OutputConfig)
 
+    # Context and branch management
+    starting_ref: str | None = None      # Git ref to check out before task runs
+    work_branch: str | None = None       # Branch name for agent's work (default: agent/<task>-<date>)
+    pr_target: str | None = None         # Branch to PR against (default: starting_ref)
+    pr_draft: bool = True                # Create PR as draft
+    starting_session: str | None = None  # Fork Claude context from this session before running
+    role: str | None = None              # Role override for this task
+
 
 def parse_pre_command(name: str, config: str | dict) -> PreCommand:
     """Parse a pre-command from config.
@@ -190,6 +198,12 @@ def parse_task_config(name: str, config: dict, default_shell: str | None = None)
         on_task_end=config.get("on_task_end"),
         post=post_commands,
         output=parse_output_config(config.get("output")),
+        starting_ref=config.get("starting_ref"),
+        work_branch=config.get("work_branch"),
+        pr_target=config.get("pr_target"),
+        pr_draft=config.get("pr_draft", True),
+        starting_session=config.get("starting_session"),
+        role=config.get("role"),
     )
 
 

@@ -47,6 +47,7 @@ agentwire kill -s name          # not: tmux kill-session
 agentwire list                  # not: tmux list-sessions
 agentwire recreate -s name      # destroy and recreate with fresh worktree
 agentwire fork -s name          # fork session into new worktree
+agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
 # Pane commands (for workers within same session)
 agentwire spawn --roles worker  # spawn worker pane
@@ -156,6 +157,7 @@ agentwire scheduler events                  # show recent scheduler events
 agentwire scheduler history                 # show recent run history
 agentwire scheduler run task                # force-run a task now
 agentwire scheduler enable|disable task     # enable/disable a task
+agentwire scheduler report [--since 8h] [--artifact]  # generate morning report HTML
 agentwire scheduler dashboard               # open scheduler dashboard
 
 # Setup & Development
@@ -189,7 +191,8 @@ The agentwire MCP server provides tools that wrap CLI functionality. Use these i
 | `agentwire kill -s name` | `session_kill(session="...")` |
 | `agentwire send-keys -s name key1 key2` | `session_send_keys(session="...", keys=["..."])` |
 | `agentwire recreate -s name` | `session_recreate(session="...")` |
-| `agentwire fork -s name` | `session_fork(session="...")` |
+| `agentwire fork -s name -t project/branch` | `session_fork(session="...", target="...")` |
+| `agentwire fork -s name -t project/branch --commit abc` | `session_fork(session="...", target="...", commit="abc")` |
 
 ### Pane Management (9 tools)
 
@@ -276,6 +279,7 @@ The agentwire MCP server provides tools that wrap CLI functionality. Use these i
 | `agentwire scheduler live --json` | `scheduler_live()` |
 | `agentwire scheduler events --json` | `scheduler_events(tail=20, task="")` |
 | `agentwire scheduler run task` | `scheduler_run(task="...")` |
+| `agentwire scheduler report --since 8h` | `scheduler_report(since="8h", artifact=False)` |
 | `agentwire scheduler enable task` | `scheduler_enable(task="...")` |
 | `agentwire scheduler disable task` | `scheduler_disable(task="...")` |
 | `agentwire scheduler history` | `scheduler_history(limit=20)` |
@@ -501,6 +505,7 @@ tasks:
     retry_delay: 30            # Seconds between retries (default: 30)
     idle_timeout: 30           # Seconds of idle before completion (default: 30)
     exit_on_complete: true     # Exit session after completion (default: true)
+    role: task-runner          # Role override for this task (optional)
     pre:                       # Data gathering (NO {{ }} - these PRODUCE variables)
       weather: "curl -s wttr.in/?format=3"
       calendar:
@@ -521,6 +526,15 @@ tasks:
       capture: 50              # Lines to capture
       save: ~/logs/{{ task }}.log
       notify: voice            # voice, alert, webhook ${URL}, command "..."
+
+    # Branch management (for overnight/async agent workflows)
+    starting_ref: main         # Git ref to checkout before task runs
+    work_branch: agent/task    # Branch for agent's work (default: agent/<task>-<date>)
+    pr_target: main            # PR target branch (default: starting_ref)
+    pr_draft: true             # Create as draft PR (default: true)
+
+    # Context inheritance
+    starting_session: ctx-loaded  # Fork Claude context from this session before running
 ```
 
 **Built-in variables:**
@@ -529,6 +543,7 @@ tasks:
 - `{{ attempt }}` - Current attempt number (1-based)
 - `{{ status }}`, `{{ summary }}`, `{{ summary_file }}` - After completion
 - `{{ output }}` - Captured session output (in post phase)
+- `{{ work_branch }}`, `{{ pr_url }}` - Branch/PR after branch management (in post phase)
 - `{{ var_name }}` - Pre-command outputs
 
 **Exit codes:** 0=complete, 1=failed, 2=incomplete, 3=lock conflict, 4=pre failure, 5=timeout, 6=session error
@@ -765,6 +780,31 @@ schedule:
 Tasks sort by `priority` first (lower = runs first), with overdue score as tiebreaker. This ensures pipeline ordering — upstream stages run before downstream when multiple tasks are overdue.
 
 Tasks with default priority (99) sort after all prioritized tasks. Fillers always run after all regular tasks regardless of priority.
+
+### One-Time and Limited Tasks
+
+Tasks can auto-disable after a set number of runs:
+
+```yaml
+tasks:
+  tonight-scaffold:
+    # ...
+    once: true        # Run once, then auto-disable (shorthand for max_runs: 1)
+    schedule:
+      every: 1m       # Run ASAP
+
+  quarterly-report:
+    # ...
+    max_runs: 4       # Run 4 times then auto-disable
+    schedule:
+      every: day
+      at: "09:00"
+```
+
+- `once: true` — shorthand for `max_runs: 1`
+- `max_runs: N` — auto-disables task after N successful dispatches
+- Scheduler logs a `task_disabled` event with `reason: max_runs_reached`
+- Re-enabling a disabled task via `agentwire scheduler enable <name>` resets it
 
 ## Key Patterns
 
