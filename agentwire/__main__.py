@@ -7592,7 +7592,7 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                         self.path = str(project_path)
                         self.force = False
                         self.type = None
-                        self.roles = [task_role] if task_role else None
+                        self.roles = task_role if task_role else None
                         self.model = None
                         self.json = json_mode
 
