@@ -4704,12 +4704,6 @@ def cmd_fork(args) -> int:
 
     # Handle non-worktree fork (same directory, different Claude session)
     if is_non_worktree_fork:
-        # For non-worktree forks, both use the project directory
-        fork_path = project_path
-
-        if not fork_path.exists():
-            return _output_result(False, json_mode, f"Source path does not exist: {fork_path}")
-
         # Check if source session exists
         check_source = subprocess.run(
             ["tmux", "has-session", "-t", source_session],
@@ -4717,6 +4711,21 @@ def cmd_fork(args) -> int:
         )
         if check_source.returncode != 0:
             return _output_result(False, json_mode, f"Source session '{source_session}' does not exist")
+
+        # For non-worktree forks, use the source session's actual CWD.
+        # The session name may not match the project directory name (e.g., a session
+        # named "aw-context-source" running in ~/projects/aw-feature-test/).
+        cwd_result = subprocess.run(
+            ["tmux", "display-message", "-t", source_session, "-p", "#{pane_current_path}"],
+            capture_output=True, text=True,
+        )
+        if cwd_result.returncode == 0 and cwd_result.stdout.strip():
+            fork_path = Path(cwd_result.stdout.strip())
+        else:
+            fork_path = project_path
+
+        if not fork_path.exists():
+            return _output_result(False, json_mode, f"Source path does not exist: {fork_path}")
 
         # Check if target session already exists
         check_target = subprocess.run(
@@ -4761,11 +4770,72 @@ def cmd_fork(args) -> int:
             session_type_str = f"{agent_type}-bypass"
             roles = None
 
+        # Find the conversation JSONL for the source session to enable context inheritance.
+        # Uses history.jsonl filtered by the source tmux session's creation time to identify
+        # the correct JSONL even when multiple sessions share the same project directory.
+        import json as _json
+        resume_session_id = None
+
+        # Get source session creation timestamp
+        created_result = subprocess.run(
+            ["tmux", "display-message", "-t", source_session, "-p", "#{session_created}"],
+            capture_output=True, text=True,
+        )
+        session_created_unix = int(created_result.stdout.strip() or 0) if created_result.returncode == 0 else 0
+        session_created_ms = session_created_unix * 1000
+
+        history_file = Path.home() / ".claude" / "history.jsonl"
+        if session_created_ms > 0 and history_file.exists():
+            # Find sessions for this project that started AFTER the source tmux session was created.
+            # The session whose first message is closest to (and after) creation time is the source.
+            first_seen: dict[str, int] = {}
+            for line in history_file.read_text().strip().splitlines():
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    if entry.get("project") != str(fork_path):
+                        continue
+                    sid = entry.get("sessionId", "")
+                    ts = entry.get("timestamp", 0)
+                    if sid and (sid not in first_seen or ts < first_seen[sid]):
+                        first_seen[sid] = ts
+                except _json.JSONDecodeError:
+                    continue
+
+            # Pick the session with earliest first_seen >= session_created_ms
+            candidates = [(sid, ts) for sid, ts in first_seen.items() if ts >= session_created_ms]
+            if candidates:
+                candidates.sort(key=lambda x: x[1])
+                resume_session_id = candidates[0][0]
+
+        if not resume_session_id:
+            # Fallback: most recently modified JSONL in the project dir
+            claude_projects_dir = Path.home() / ".claude" / "projects"
+            from .history import encode_project_path as _encode_project_path
+            encoded_path = _encode_project_path(str(fork_path))
+            session_dir = claude_projects_dir / encoded_path
+            if session_dir.exists():
+                jsonl_files = sorted(session_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+                if jsonl_files:
+                    resume_session_id = jsonl_files[0].stem
+
         # Build agent command
         agent = build_agent_command(session_type_str, roles)
 
         agent_cmd = agent.command
         if agent_cmd:
+            # Inject --resume <id> --fork-session right after the 'claude' binary
+            # so the forked session starts with the source conversation in context
+            if resume_session_id:
+                claude_pos = agent_cmd.rfind("claude")
+                if claude_pos >= 0:
+                    insert_pos = claude_pos + len("claude")
+                    agent_cmd = (
+                        agent_cmd[:insert_pos]
+                        + f" --resume {resume_session_id} --fork-session"
+                        + agent_cmd[insert_pos:]
+                    )
             subprocess.run(
                 ["tmux", "send-keys", "-t", target_session, agent_cmd, "Enter"],
                 check=True
@@ -4779,10 +4849,13 @@ def cmd_fork(args) -> int:
                 "branch": None,
                 "machine": None,
                 "forked_from": source_full,
+                "resumed_from": resume_session_id,
             })
         else:
             print(f"Forked '{source_full}' to '{target_session}' (same directory)")
             print(f"  Path: {fork_path}")
+            if resume_session_id:
+                print(f"  Resumed from: {resume_session_id}")
 
         return 0
 

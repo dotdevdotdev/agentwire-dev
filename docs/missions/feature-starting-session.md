@@ -8,7 +8,7 @@ Tasks can declare `starting_session: <name>` to fork that session's Claude conve
 context into the task's session before running, so the agent starts with pre-loaded
 domain knowledge instead of a cold start.
 
-## Status: In Progress
+## Status: Complete
 
 ## Use Case
 
@@ -78,9 +78,21 @@ agentwire ensure -s myproject --task continue-work
 # Verify: Claude in new session has prior conversation available
 ```
 
+## Implementation Notes
+
+The fork uses history.jsonl to find the correct JSONL for the source session. Since
+multiple sessions can share the same project directory, we identify the correct JSONL
+by looking for the session whose first message timestamp is closest to (and after) the
+source tmux session's creation time. Falls back to most-recently-modified JSONL.
+
+The forked session starts with `claude --resume <session_id> --fork-session` so the
+agent loads the prior conversation as context but continues in a new independent session.
+
 ## Done When
 
-- [ ] `starting_session` forks conversation context before task prompt is sent
-- [ ] Source session not found → warning logged, fresh session used (no hard failure)
-- [ ] Works with `starting_ref` (both can be set)
-- [ ] No `starting_session` → existing behavior unchanged
+- [x] `starting_session` forks conversation context before task prompt is sent
+- [x] Fork correctly identifies source JSONL even when multiple sessions share same project dir
+- [x] Source session not found → warning logged, fresh session used (no hard failure)
+- [x] Works with `starting_ref` (both can be set)
+- [x] No `starting_session` → existing behavior unchanged
+- [x] Verified: forked agent can recall phrases shared with source session

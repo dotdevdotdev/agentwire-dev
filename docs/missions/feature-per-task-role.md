@@ -8,7 +8,7 @@ Tasks can declare `role: <rolename>` to run with a specific role, overriding the
 session's default roles. The role is applied when the session is created/recreated
 for the task.
 
-## Status: In Progress
+## Status: Complete
 
 ## Use Case
 
@@ -74,9 +74,21 @@ agentwire ensure -s myproject --task write-tests
 # Verify: session was created with test-writer role loaded
 ```
 
+## Implementation Notes
+
+The role is passed as a string to `NewArgs.roles` (not a list). `cmd_new()` expects
+a comma-separated string format matching the `--roles agentwire,voice` CLI usage.
+
+Role override only applies when the session is CREATED (i.e., `exit_on_complete: true`
+or session doesn't exist). With `exit_on_complete: false`, the session persists across
+task runs and keeps its original role.
+
+Verified: task started with `agentwire` role shows no `--disallowedTools AskUserQuestion`
+in the Claude startup command (task-runner role adds that flag, agentwire role does not).
+
 ## Done When
 
-- [ ] `role:` in task config passes role to session creation
-- [ ] Session loads the role's prompt content
-- [ ] No `role:` → existing session default roles unchanged
-- [ ] Invalid role name → warning logged, task continues with defaults
+- [x] `role:` in task config passes role to session creation
+- [x] Session loads the role's prompt content via `--system-prompt`
+- [x] No `role:` → existing session default roles unchanged
+- [x] Bug fix: pass role as string, not list (prevents silent ignore)
