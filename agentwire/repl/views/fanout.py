@@ -118,7 +118,8 @@ class FanoutREPL(App):
 
     BINDINGS = [
         Binding("ctrl+c", "cancel_all", "Cancel all turns", priority=True),
-        Binding("ctrl+d", "quit", "Exit"),
+        Binding("ctrl+d", "force_exit", "Exit", priority=True),
+        Binding("ctrl+q", "force_exit", "Exit", priority=True, show=False),
     ]
 
     DEFAULT_CSS = """
@@ -329,6 +330,26 @@ class FanoutREPL(App):
         if not text:
             return
         event.input.value = ""
+
+        # Slash commands first — `/exit`, `/quit`, `/clear`. These need to
+        # work from the fan-out view too (chat view dispatches them via
+        # the full command registry; the fan-out view only needs the
+        # lifecycle subset).
+        stripped = text.strip()
+        if stripped in ("/exit", "/quit"):
+            self.action_force_exit()
+            return
+        if stripped == "/clear":
+            for col in self.columns:
+                if col.chat_sink is not None:
+                    col.chat_sink.write("- conversation cleared\n")
+                    col.chat_sink.flush()
+                col.stream_state.reset_for_next_assistant_turn()
+            return
+        if stripped == "/cancel":
+            self.action_cancel_all()
+            return
+
         input_id = getattr(event.input, "id", "") or ""
         if input_id == "master-input":
             target_cols = list(self.columns)
@@ -419,13 +440,46 @@ class FanoutREPL(App):
             col.chat_sink.write(f"[col {col.col + 1} · {event.error}]\n")
             col.chat_sink.flush()
 
-    # ------ cancellation ------
+    # ------ cancellation + exit ------
 
     def action_cancel_all(self) -> None:
-        """Master Ctrl+C — cancel every running column turn."""
-        for w in self.workers:
-            if w.name and w.name.endswith("-turn") and w.is_running:
+        """Master Ctrl+C — cancel every running column turn.
+
+        Iterates a snapshot of `self.workers` because cancel() can mutate
+        the set as workers transition out of RUNNING. Drops the
+        is_running filter — cancel() on already-finished workers is a
+        no-op, so it's cheaper to just call it and skip the race.
+        """
+        cancelled = 0
+        for w in list(self.workers):
+            try:
+                if w.name and w.name.endswith("-turn"):
+                    w.cancel()
+                    cancelled += 1
+            except Exception:
+                pass
+        # Visual feedback in every column so the user sees Ctrl+C landed.
+        for col in self.columns:
+            if col.chat_sink is not None:
+                col.chat_sink.write(
+                    f"- cancelled · {cancelled} turn{'s' if cancelled != 1 else ''}\n"
+                )
+                col.chat_sink.flush()
+
+    def action_force_exit(self) -> None:
+        """Cancel any in-flight turns then exit cleanly.
+
+        `App.action_quit` defers exit until pending workers finish, which
+        is exactly the behaviour the user complained about — Ctrl+D
+        wouldn't kill the app while turns were running. Cancel first,
+        then exit.
+        """
+        for w in list(self.workers):
+            try:
                 w.cancel()
+            except Exception:
+                pass
+        self.exit()
 
     # ------ status line ------
 

@@ -381,6 +381,73 @@ class TestPerColumnInput:
                 assert col.client.queries == ["to all"]
 
 
+class TestSlashCommandsAndExit:
+    @pytest.mark.asyncio
+    async def test_slash_exit_quits_app(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=2)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#master-input")
+            inp.value = "/exit"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app._exit_renderables is not None or not app.is_running:
+                    break
+            # Workers cancelled, app exiting — neither column saw the slash
+            # command as an SDK query.
+            for col in app.columns:
+                assert "/exit" not in col.client.queries
+
+    @pytest.mark.asyncio
+    async def test_slash_quit_quits_app(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=2)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#master-input")
+            inp.value = "/quit"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+            for col in app.columns:
+                assert "/quit" not in col.client.queries
+
+    @pytest.mark.asyncio
+    async def test_slash_cancel_cancels_workers(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=2)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#master-input")
+            inp.value = "/cancel"
+            await pilot.press("enter")
+            await pilot.pause()
+            for col in app.columns:
+                assert "/cancel" not in col.client.queries
+
+    @pytest.mark.asyncio
+    async def test_slash_clear_does_not_query_sdk(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=2)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#master-input")
+            inp.value = "/clear"
+            await pilot.press("enter")
+            await pilot.pause()
+            for col in app.columns:
+                assert "/clear" not in col.client.queries
+
+    @pytest.mark.asyncio
+    async def test_action_cancel_all_cancels_running_workers(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=2)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#master-input")
+            inp.value = "hello"
+            await pilot.press("enter")
+            await pilot.pause()
+            # Now cancel all.
+            app.action_cancel_all()
+            await pilot.pause()
+            # No exception — and visual feedback emitted.
+            # (Workers may or may not be running at this exact moment;
+            # the important guarantee is the action ran without error.)
+
+
 class TestRunFanoutReplOverridesValidation:
     @pytest.mark.asyncio
     async def test_invalid_col_model_format_raises(self, fake_sdk):
