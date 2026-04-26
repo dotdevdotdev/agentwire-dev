@@ -234,7 +234,22 @@ Both files are byte-identical to what the line-mode path produces, so
 Run the same prompt across N independent SDK clients side by side:
 
 ```bash
+# Fan-out 3 ways with the same model
 agentwire repl --view fanout --cols 3
+
+# Compare models side by side
+agentwire repl --view fanout --cols 3 \
+  --col-model 0=claude-opus-4-7 \
+  --col-model 1=claude-sonnet-4-6 \
+  --col-model 2=claude-haiku-4-5
+
+# Compare effort levels
+agentwire repl --view fanout --cols 2 \
+  --col-effort 0=max --col-effort 1=high
+
+# Compare roles (e.g. skeptic vs optimist)
+agentwire repl --view fanout --cols 2 \
+  --col-role 0=skeptic --col-role 1=optimist
 ```
 
 ```
@@ -254,6 +269,10 @@ Type into the master input — the prompt fans out to every column in
 parallel. Each column streams its own response independently with its
 own running totals (turns, tokens, cost). `Ctrl+C` cancels every
 in-flight column at once.
+
+Each column also has its own input field — type into one and the
+prompt only goes to that column. Useful for redirecting a single
+branch ("col 2 — try again with X") without affecting the others.
 
 Use case: when you want multiple Opus 4.7 attempts on the same prompt to
 pick the best one, or to compare model outputs (when per-column overrides

@@ -20,6 +20,7 @@ from agentwire.repl.views.fanout import (
     ColumnTurnFinished,
     FanoutColumn,
     FanoutREPL,
+    parse_col_overrides,
     run_fanout_repl,
 )
 
@@ -261,3 +262,138 @@ class TestCleanup:
         # had __aexit__ called.
         for client in captured:
             assert client.exited is True
+
+
+# ---- Phase 4: per-column overrides + per-column input ---------------------
+
+
+class TestParseColOverrides:
+    def test_simple_string_value(self):
+        out = parse_col_overrides(["0=opus", "2=sonnet"], max_col=3)
+        assert out == {0: "opus", 2: "sonnet"}
+
+    def test_split_value_returns_list(self):
+        out = parse_col_overrides(["0=skeptic,explainer"], max_col=2, value_split=True)
+        assert out == {0: ["skeptic", "explainer"]}
+
+    def test_split_strips_whitespace_and_drops_empty(self):
+        out = parse_col_overrides(["0= a , b , "], max_col=1, value_split=True)
+        assert out == {0: ["a", "b"]}
+
+    def test_missing_equals_raises(self):
+        with pytest.raises(ValueError, match="expected 'INDEX=VALUE'"):
+            parse_col_overrides(["broken"], max_col=2)
+
+    def test_non_integer_index_raises(self):
+        with pytest.raises(ValueError, match="not an integer"):
+            parse_col_overrides(["x=opus"], max_col=2)
+
+    def test_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="out of range"):
+            parse_col_overrides(["5=opus"], max_col=3)
+
+    def test_negative_index_raises(self):
+        with pytest.raises(ValueError, match="out of range"):
+            parse_col_overrides(["-1=opus"], max_col=3)
+
+    def test_none_input_returns_empty(self):
+        assert parse_col_overrides(None, max_col=3) == {}
+
+
+class TestPerColumnOverrides:
+    @pytest.mark.asyncio
+    async def test_col_models_apply_per_column(self, fake_sdk):
+        app = FanoutREPL(
+            mode="bypass", model="claude-opus-4-7", cols=3,
+            col_models={0: "claude-sonnet-4-6"},
+        )
+        async with app.run_test():
+            assert app.columns[0].model == "claude-sonnet-4-6"
+            assert app.columns[1].model == "claude-opus-4-7"
+            assert app.columns[2].model == "claude-opus-4-7"
+
+    @pytest.mark.asyncio
+    async def test_col_efforts_apply_per_column(self, fake_sdk):
+        app = FanoutREPL(
+            mode="bypass", model=None, cols=2,
+            col_efforts={0: "max", 1: "low"},
+        )
+        async with app.run_test():
+            assert app.columns[0].effort == "max"
+            assert app.columns[1].effort == "low"
+
+    @pytest.mark.asyncio
+    async def test_col_roles_apply_per_column(self, fake_sdk):
+        app = FanoutREPL(
+            mode="bypass", model=None, cols=2,
+            col_roles={0: ["skeptic"], 1: ["optimist", "explainer"]},
+        )
+        async with app.run_test():
+            assert app.columns[0].roles_override == ["skeptic"]
+            assert app.columns[1].roles_override == ["optimist", "explainer"]
+
+    @pytest.mark.asyncio
+    async def test_no_override_uses_default(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model="claude-opus-4-7", cols=2)
+        async with app.run_test():
+            for col in app.columns:
+                assert col.effort == "high"  # DEFAULT_EFFORT
+                assert col.roles_override is None
+
+
+class TestPerColumnInput:
+    @pytest.mark.asyncio
+    async def test_per_column_input_widgets_present(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=3)
+        async with app.run_test():
+            for i in range(3):
+                assert app.query_one(f"#col-input-{i}") is not None
+
+    @pytest.mark.asyncio
+    async def test_per_column_input_only_queries_that_column(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=3)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#col-input-1")
+            inp.focus()
+            inp.value = "only col 2"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.columns[1].client.queries:
+                    break
+            assert app.columns[0].client.queries == []
+            assert app.columns[1].client.queries == ["only col 2"]
+            assert app.columns[2].client.queries == []
+
+    @pytest.mark.asyncio
+    async def test_master_input_still_fans_to_all(self, fake_sdk):
+        app = FanoutREPL(mode="bypass", model=None, cols=2)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#master-input")
+            inp.focus()
+            inp.value = "to all"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if all(c.client.queries for c in app.columns):
+                    break
+            for col in app.columns:
+                assert col.client.queries == ["to all"]
+
+
+class TestRunFanoutReplOverridesValidation:
+    @pytest.mark.asyncio
+    async def test_invalid_col_model_format_raises(self, fake_sdk):
+        with pytest.raises(ValueError, match="expected 'INDEX=VALUE'"):
+            await run_fanout_repl(
+                mode="bypass", model=None, cols=2,
+                col_models_raw=["broken"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_col_model_index_out_of_range_raises(self, fake_sdk):
+        with pytest.raises(ValueError, match="out of range"):
+            await run_fanout_repl(
+                mode="bypass", model=None, cols=2,
+                col_models_raw=["5=opus"],
+            )

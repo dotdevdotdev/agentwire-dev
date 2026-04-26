@@ -3446,6 +3446,9 @@ def cmd_repl(args) -> int:
         roles=getattr(args, "roles", None),
         view=getattr(args, "view", "chat"),
         cols=getattr(args, "cols", 3),
+        col_models=getattr(args, "col_models", None),
+        col_efforts=getattr(args, "col_efforts", None),
+        col_roles=getattr(args, "col_roles", None),
     )
 
 
@@ -10201,6 +10204,18 @@ def main() -> int:
     repl_parser.add_argument(
         "--cols", type=int, default=3, metavar="N",
         help="Column count for --view fanout (2-6, default 3).",
+    )
+    repl_parser.add_argument(
+        "--col-model", dest="col_models", action="append", metavar="N=MODEL",
+        help="Per-column model override for --view fanout (e.g. --col-model 0=claude-opus-4-7 --col-model 1=claude-sonnet-4-6). Repeatable.",
+    )
+    repl_parser.add_argument(
+        "--col-effort", dest="col_efforts", action="append", metavar="N=EFFORT",
+        help="Per-column effort override for --view fanout (e.g. --col-effort 0=max --col-effort 1=high). Repeatable.",
+    )
+    repl_parser.add_argument(
+        "--col-role", dest="col_roles", action="append", metavar="N=ROLE[,ROLE...]",
+        help="Per-column role override for --view fanout (e.g. --col-role 0=skeptic --col-role 1=optimist,explainer). Repeatable.",
     )
     repl_parser.set_defaults(func=cmd_repl)
 

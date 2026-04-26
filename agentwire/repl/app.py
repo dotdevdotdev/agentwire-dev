@@ -47,6 +47,9 @@ def run_repl(
     seed_message: str | None = None,
     view: str = "chat",
     cols: int = 3,
+    col_models: list[str] | None = None,
+    col_efforts: list[str] | None = None,
+    col_roles: list[str] | None = None,
 ) -> int:
     """Run the REPL. Returns exit code.
 
@@ -72,6 +75,9 @@ def run_repl(
         return asyncio.run(run_fanout_repl(
             mode=mode, model=model, cols=cols,
             system_prompt=system_prompt, roles=roles,
+            col_models_raw=col_models,
+            col_efforts_raw=col_efforts,
+            col_roles_raw=col_roles,
         ))
     from agentwire.repl.textual_app import run_textual_repl
     return asyncio.run(run_textual_repl(

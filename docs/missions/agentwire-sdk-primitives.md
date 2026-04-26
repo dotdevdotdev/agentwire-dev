@@ -4,7 +4,7 @@
 
 Extract the streaming SDK plumbing already proven in two surfaces (`runners/anthropic.py` headless + `repl/textual_app.py` interactive) into a reusable set of primitives, then compose those primitives into new views (fan-out, watch-mode, diff, conversation-tree). The Textual REPL and SDK workflow runner become the first two consumers of the same engine; everything else after that is `client + sink(s)`.
 
-**Status:** Phases 1-3 shipped (2026-04-26) — `agentwire/sdk/` engine + fan-out N-column view + portal watch-mode (transcript-tail SSE-equivalent over WS). Phase 4 trigger-driven.
+**Status:** Phases 1-4 shipped (2026-04-26) — `agentwire/sdk/` engine + fan-out N-column view (with per-column model/effort/role overrides + per-column input) + portal watch-mode (transcript-tail SSE-equivalent over WS). Further composite views (diff, multi-tool-pane, conv-tree, voice/channel sinks) remain trigger-driven.
 **Depends on:**
 - `agentwire-repl-textual.md` (complete) — Textual REPL ships with all the streaming logic this mission extracts
 - `pi-harness-overview.md` Phase 6 (complete) — `runners/anthropic.py` is the other proof point
@@ -177,13 +177,29 @@ plus Textual widgets. No SDK plumbing duplicated.
 - Tail-and-stream works across pane death (transcript file is the SSOT).
 - Watch window renders text, thinking, tool_use, tool_result, turn_end without crashes on novel block types.
 
-### Phase 4+ — Additional views (trigger-driven)
+### Phase 4 — Fan-out per-column overrides + per-column input (shipped 2026-04-26, PR #147)
 
-Each is its own sub-PR. Ship the highest-value one first based on real usage from Phases 2-3.
+Promoted from Phase 2's deferred polish to Phase 4. Per-column model / effort / role overrides + a per-column input field land here — they're what makes fan-out actually useful for *comparing* (different models / efforts / roles), not just multi-generation with one config.
+
+CLI:
+
+```bash
+agentwire repl --view fanout --cols 3 \
+  --col-model 0=claude-opus-4-7 \
+  --col-model 1=claude-sonnet-4-6 \
+  --col-effort 0=max --col-effort 1=high \
+  --col-role 0=skeptic --col-role 1=optimist
+```
+
+Per-column input: each column has its own Input below the StatusLine; submitting to a column-input fires only that column's worker. Master input (docked at the bottom) still fans out to all columns.
+
+### Phase 5+ — Additional views (trigger-driven)
+
+Each is its own sub-PR. Ship the highest-value one first based on real usage from Phases 2-4.
 
 | View | What it does | Trigger to build |
 |---|---|---|
-| Diff view | Two columns, same prompt, different model/role/effort, side-by-side comparison with shared StatusLine | We notice we use fan-out=2 for this exact pattern repeatedly |
+| Diff view | (subsumed by Phase 4 — `agentwire repl --view fanout --cols 2 --col-model 0=A --col-model 1=B` already does this) | n/a |
 | Multi-tool-pane | Main chat + filtered sinks per tool type ("currently running Bash" pane, "thinking trace" pane) | Long tool-heavy turns where chat scrollback hides what's running |
 | Conversation-tree | Branch a turn N ways, explore alternatives without losing parent (parent-child with promote/discard) | We find ourselves wanting to try-and-revert mid-session |
 | Workflow visualizer | Each workflow node = one column; live node states + outputs as DAG executes | Workflows grow complex enough that JSONL tail isn't enough |
