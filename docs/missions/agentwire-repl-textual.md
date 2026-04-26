@@ -5,7 +5,8 @@
 A from-scratch rendering layer for `agentwire repl` built on [Textual](https://github.com/textualize/textual). The current `prompt_toolkit` line-oriented loop hit its ceiling: there's no way to keep streaming partial output visible without flooding the chat history, no proportional layout, no borders/titles, no docked status line, no scrollable subregion for "what claude is doing right now". Textual gives all of that out of the box.
 
 **Phase of:** own mission (sibling of `agentwire-repl.md`)
-**Status:** **Mission complete (2026-04-26).** Phase 1A → 3E shipped, plus the default-flip cleanup (#140) — `_run_interactive`, `prompt_toolkit`, `AGENTWIRE_REPL_TUI` env flag, and the dispatch fork are all gone. `agentwire repl` is the Textual TUI; print mode (`-p`) keeps the stdout single-shot path. See `docs/repl-tui.md` for the user-facing walkthrough.
+**Status:** **Mission complete (2026-04-26).** Phase 1A → 3E shipped, plus the default-flip cleanup (#140) and brand theming (#141, #142) — `_run_interactive`, `prompt_toolkit`, `AGENTWIRE_REPL_TUI` env flag, and the dispatch fork are all gone. `agentwire repl` is the Textual TUI; print mode (`-p`) keeps the stdout single-shot path. See `docs/repl-tui.md` for the user-facing walkthrough.
+**Follow-on:** the streaming engine that powers this REPL is being extracted into reusable primitives — see `agentwire-sdk-primitives.md` for that scope (fan-out N-column view, portal watch-mode, etc.).
 **Depends on:** `agentwire-repl.md` Phases 1-5 (complete) + streaming-visibility quick fixes (#123-#125 shipped 2026-04-25)
 **Blocks:** future REPL feature work that needs richer layout (mode badges, modal permission prompts, inline waveform for /say, etc.)
 

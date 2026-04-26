@@ -60,6 +60,8 @@ Each phase is its own mission doc. Execute sequentially — each validates the n
 
 **Phase 6 closeout (2026-04-21)**: Shipped in 5 days vs the 4-6 week estimate. Scope expanded during development to include the portal workflow history window and the `agentwire brave` research helper, both of which emerged from real-usage pressure rather than the original plan. Three SDK-runner workflows plus three A/B variants running in production since 2026-04-17. The canary revealed a key finding: **Claude's built-in `WebSearch` tool is the research-quality bottleneck, not the model** — Opus+Brave-via-bash beats Opus+WebSearch by a wide margin. This shaped how research-heavy future workflows get built. See `completed/anthropic-sdk-runner.md` → "Closeout" for the full picture.
 
+**Phase 6 follow-on (2026-04-26)**: `runners/anthropic.py` is one of two consumers (alongside the Textual REPL) feeding the `agentwire-sdk-primitives.md` mission — extracting shared SDK plumbing into a reusable engine, then composing new views on top (fan-out N-column, portal watch-mode, etc.).
+
 **Phase 4 + 5 reassessment (2026-04-21)**: Real-usage data from 6 workflows over 5 days showed the originally-planned advanced patterns (parallelism, loops, HITL, cost caps, cross-workflow calls, event-driven triggers) have **zero active demand**. Workflows are 1-2 nodes, autonomous, subscription-covered. What *did* emerge as friction was tooling (research helpers, multi-recipient email, portal diagnosis surface) — all shipped during Phase 6 closeout. Phases 4 and 5 are on hold with specific triggers documented; revisit if/when real workflow complexity demands them.
 
 ## Dependencies Across Phases
