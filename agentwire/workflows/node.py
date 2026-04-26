@@ -129,7 +129,7 @@ class ActionNode:
                         f"node[{self.id}].{fname} is only valid when runner=anthropic"
                     )
         elif self.runner == "anthropic":
-            from agentwire.workflows.runners.anthropic_capabilities import (
+            from agentwire.sdk.capabilities import (
                 validate_node_settings,
             )
             errors.extend(validate_node_settings(

@@ -1,4 +1,4 @@
-"""Tests for agentwire/workflows/runners/anthropic_capabilities.py.
+"""Tests for agentwire/sdk/capabilities.py.
 
 One test per row of the capability table in docs/missions/anthropic-sdk-runner.md.
 Keep it strict — silent validation failures are worse than loud ones.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentwire.workflows.runners.anthropic_capabilities import (
+from agentwire.sdk.capabilities import (
     TASK_BUDGET_MIN_TOKENS,
     validate_node_settings,
 )

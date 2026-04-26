@@ -4,7 +4,7 @@
 
 Extract the streaming SDK plumbing already proven in two surfaces (`runners/anthropic.py` headless + `repl/textual_app.py` interactive) into a reusable set of primitives, then compose those primitives into new views (fan-out, watch-mode, diff, conversation-tree). The Textual REPL and SDK workflow runner become the first two consumers of the same engine; everything else after that is `client + sink(s)`.
 
-**Status:** draft — scoping (2026-04-26). No code yet.
+**Status:** Phase 1 shipped (2026-04-26) — `agentwire/sdk/` package now hosts the shared streaming engine. Phase 2-4 pending.
 **Depends on:**
 - `agentwire-repl-textual.md` (complete) — Textual REPL ships with all the streaming logic this mission extracts
 - `pi-harness-overview.md` Phase 6 (complete) — `runners/anthropic.py` is the other proof point
@@ -82,9 +82,9 @@ This is the canonical multi-generation A/B that the user described — and the a
 
 ## Phases
 
-### Phase 1 — Primitives extraction (target: 1 week)
+### Phase 1 — Primitives extraction (shipped 2026-04-26, PR #144)
 
-Pure refactor. No new behavior. The Textual REPL and SDK workflow runner both consume the new package; their tests still pass byte-identically.
+Pure refactor. Zero behavior change. The Textual REPL, print mode, and SDK workflow runner all consume the new `agentwire/sdk/` package. All 1128 tests pass; `agentwire/repl/app.py` shrank from 947 → 171 LOC.
 
 **New module: `agentwire/sdk/`**
 

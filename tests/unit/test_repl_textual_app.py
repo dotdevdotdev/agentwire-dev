@@ -26,7 +26,7 @@ import pytest
 
 class TestRichLogSink:
     def test_writes_plain_text(self):
-        from agentwire.repl.textual_app import _RichLogSink
+        from agentwire.sdk.sinks.textual import RichLogSink as _RichLogSink
 
         captured: list[Any] = []
 
@@ -49,7 +49,7 @@ class TestRichLogSink:
         # No in-place line updates in Phase 1B — the sink buffers until \n,
         # then emits one complete line. Phase 2A's CurrentAction widget will
         # handle live in-place streaming.
-        from agentwire.repl.textual_app import _RichLogSink
+        from agentwire.sdk.sinks.textual import RichLogSink as _RichLogSink
 
         captured: list[Any] = []
 
@@ -71,7 +71,7 @@ class TestRichLogSink:
         # progress visible. In Phase 1B that emits the buffered content as
         # a line, leading to choppy multi-line streaming for partials —
         # an intentional trade-off until Phase 2A's CurrentAction widget.
-        from agentwire.repl.textual_app import _RichLogSink
+        from agentwire.sdk.sinks.textual import RichLogSink as _RichLogSink
 
         captured: list[Any] = []
 
@@ -90,7 +90,7 @@ class TestRichLogSink:
         assert len(captured) == 2
 
     def test_parses_ansi_escapes(self):
-        from agentwire.repl.textual_app import _RichLogSink
+        from agentwire.sdk.sinks.textual import RichLogSink as _RichLogSink
 
         captured: list[Any] = []
 
@@ -118,7 +118,7 @@ class TestRichLogSink:
         # is in the buffer, take only the content after the last reset.
         # The byte counter sequence ends with `]\n` which finalizes one
         # clean [wrote X · N KB] line.
-        from agentwire.repl.textual_app import _RichLogSink
+        from agentwire.sdk.sinks.textual import RichLogSink as _RichLogSink
 
         captured: list[Any] = []
 
@@ -140,7 +140,7 @@ class TestRichLogSink:
 
     def test_isatty_returns_true(self):
         # Required so _styled() in app.py emits ANSI codes that the sink parses.
-        from agentwire.repl.textual_app import _RichLogSink
+        from agentwire.sdk.sinks.textual import RichLogSink as _RichLogSink
 
         class _FakeLog:
             lines: list = []
@@ -481,7 +481,7 @@ class TestActionSink:
     """Phase 2A — CurrentAction pane streaming via clear+rewrite."""
 
     def _action(self):
-        from agentwire.repl.textual_app import _ActionSink
+        from agentwire.sdk.sinks.textual import ActionSink as _ActionSink
 
         class _FakeLog:
             def __init__(self):

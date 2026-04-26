@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agentwire.repl.app import (
+from agentwire.sdk import (
     DEFAULT_EFFORT,
     DEFAULT_MODEL,
     FULL_TOOLS,
@@ -22,9 +22,11 @@ from agentwire.repl.app import (
     RESTRICTED_TOOLS,
     build_options,
     render_message,
-    _find_ancestor_file,
-    _format_tool_input,
-    _format_tool_result,
+)
+from agentwire.sdk.client import _find_ancestor_file
+from agentwire.sdk.render import (
+    format_tool_input as _format_tool_input,
+    format_tool_result as _format_tool_result,
 )
 
 
@@ -292,11 +294,11 @@ class TestToolCallCollapse:
     into one `[Tool · args · preview]` line."""
 
     def _state(self):
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
         return _StreamRenderState()
 
     def test_tool_use_buffered_until_result(self):
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
 
@@ -336,7 +338,7 @@ class TestToolCallCollapse:
 
     def test_tool_use_no_id_renders_inline(self):
         # Without an id, tool_use can't be matched to a result — render inline.
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
         msg = FakeAssistantMessage([{
@@ -350,7 +352,7 @@ class TestToolCallCollapse:
     def test_unmatched_tool_use_flushed_on_result(self):
         # Tool_use without matching tool_result should still appear in chat
         # when the turn ends (via flush_pending_tool_uses).
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
         msg = FakeAssistantMessage([{
@@ -368,7 +370,7 @@ class TestToolCallCollapse:
     def test_error_result_emits_separate_lines(self):
         # When the tool_result is an error, fold doesn't lose information —
         # we emit both the call and the error explicitly.
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
         msg = FakeAssistantMessage([{
@@ -561,7 +563,7 @@ class TestStreamRenderState:
     """Partial-message rendering — added 2026-04-25 to fix the silent gap."""
 
     def _state(self):
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
         return _StreamRenderState()
 
     def test_text_delta_streams_inline(self):
@@ -657,7 +659,7 @@ class TestStreamRenderState:
         # `isinstance(message, dict)` and silently dropped every partial event.
         # Verify duck-type detection works for dataclass-shaped objects.
         from dataclasses import dataclass
-        from agentwire.repl.app import render_message, _StreamRenderState
+        from agentwire.sdk import render_message, StreamRenderState as _StreamRenderState
 
         @dataclass
         class FakeStreamEvent:
@@ -711,7 +713,7 @@ class TestStreamRenderState:
         # When out.isatty() is True, dim-style ANSI codes wrap the thinking
         # block. This is the visual hierarchy: thinking is secondary noise,
         # dim makes it recede.
-        from agentwire.repl.app import _StreamRenderState
+        from agentwire.sdk import StreamRenderState as _StreamRenderState
 
         class _TTYBuffer:
             def __init__(self):
@@ -760,7 +762,7 @@ class TestStreamRenderState:
     def test_assistant_skips_streamed_text(self, monkeypatch):
         # When partials already streamed text, the snapshot AssistantMessage
         # text block should NOT re-render.
-        from agentwire.repl.app import render_message, _StreamRenderState
+        from agentwire.sdk import render_message, StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         s.streamed_text = True
         out = io.StringIO()
@@ -780,7 +782,7 @@ class TestStreamRenderState:
         assert s.streamed_text is False
 
     def test_assistant_renders_when_no_partials(self):
-        from agentwire.repl.app import render_message, _StreamRenderState
+        from agentwire.sdk import render_message, StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
         msg = FakeAssistantMessage(content=[{"type": "text", "text": "full reply"}])
@@ -836,7 +838,7 @@ class TestStreamRenderState:
 
 class TestHeartbeatIter:
     def test_emits_heartbeat_on_idle(self):
-        from agentwire.repl.app import _heartbeat_iter, _HEARTBEAT
+        from agentwire.sdk import heartbeat_iter as _heartbeat_iter, HEARTBEAT as _HEARTBEAT
         import asyncio
 
         async def slow_source():
@@ -856,7 +858,7 @@ class TestHeartbeatIter:
         assert "done" in results
 
     def test_no_heartbeat_when_fast(self):
-        from agentwire.repl.app import _heartbeat_iter, _HEARTBEAT
+        from agentwire.sdk import heartbeat_iter as _heartbeat_iter, HEARTBEAT as _HEARTBEAT
         import asyncio
 
         async def fast_source():
@@ -878,25 +880,25 @@ class TestThinkingConfig:
     def test_adaptive_default(self):
         # adaptive now defaults to display:summarized (Opus 4.7 hides
         # thinking by default; we always want it visible in the REPL).
-        from agentwire.repl.app import _thinking_config
+        from agentwire.sdk import thinking_config as _thinking_config
         assert _thinking_config("adaptive") == {"type": "adaptive", "display": "summarized"}
 
     def test_summarized_sets_display(self):
-        from agentwire.repl.app import _thinking_config
+        from agentwire.sdk import thinking_config as _thinking_config
         assert _thinking_config("summarized") == {"type": "adaptive", "display": "summarized"}
 
     def test_off_disabled(self):
-        from agentwire.repl.app import _thinking_config
+        from agentwire.sdk import thinking_config as _thinking_config
         assert _thinking_config("off") == {"type": "disabled"}
 
     def test_unknown_falls_back_adaptive(self):
-        from agentwire.repl.app import _thinking_config
+        from agentwire.sdk import thinking_config as _thinking_config
         assert _thinking_config("nonsense") == {"type": "adaptive", "display": "summarized"}
 
 
 class TestMcpBakedIn:
     def test_mcp_servers_attached_by_default(self, monkeypatch):
-        from agentwire.repl.app import build_options, MCP_SERVER_NAME, MCP_TOOL_PREFIX
+        from agentwire.sdk import build_options; from agentwire.sdk.client import MCP_SERVER_NAME, MCP_TOOL_PREFIX
         monkeypatch.delenv("AGENTWIRE_REPL_MCP", raising=False)
 
         captured = {}
@@ -914,7 +916,7 @@ class TestMcpBakedIn:
         assert MCP_TOOL_PREFIX in captured["allowed_tools"]
 
     def test_mcp_disabled_via_env(self, monkeypatch):
-        from agentwire.repl.app import build_options, MCP_TOOL_PREFIX
+        from agentwire.sdk import build_options; from agentwire.sdk.client import MCP_TOOL_PREFIX
         monkeypatch.setenv("AGENTWIRE_REPL_MCP", "0")
 
         captured = {}
@@ -932,7 +934,7 @@ class TestMcpBakedIn:
         # MCP tools include lots of read-only inspection tools (sessions_list,
         # panes_list); blocking the entire server in restricted mode loses too
         # much. Plan-mode permission_mode still gates execution.
-        from agentwire.repl.app import build_options, MCP_TOOL_PREFIX
+        from agentwire.sdk import build_options; from agentwire.sdk.client import MCP_TOOL_PREFIX
         monkeypatch.delenv("AGENTWIRE_REPL_MCP", raising=False)
 
         captured = {}
@@ -948,7 +950,7 @@ class TestMcpBakedIn:
 
 class TestSessionContextThreading:
     def test_role_instructions_appended_to_system_prompt(self, monkeypatch):
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
         from agentwire.repl.context import SessionContext
         monkeypatch.setenv("AGENTWIRE_REPL_MCP", "0")
         monkeypatch.setenv("AGENTWIRE_REPL_DAMAGE_CONTROL", "0")
@@ -976,7 +978,7 @@ class TestSessionContextThreading:
         assert "Test rigorously" in sp["append"]
 
     def test_no_session_context_no_change(self, monkeypatch):
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
         monkeypatch.setenv("AGENTWIRE_REPL_MCP", "0")
         monkeypatch.setenv("AGENTWIRE_REPL_DAMAGE_CONTROL", "0")
 
@@ -995,7 +997,7 @@ class TestSessionContextThreading:
 class TestDamageControlAttachment:
     def test_hooks_attached_when_patterns_load(self, monkeypatch, tmp_path):
         # Point damage_control at a known patterns file
-        from agentwire.repl import damage_control
+        from agentwire.sdk import damage_control
         patterns_file = tmp_path / "patterns.yaml"
         patterns_file.write_text(
             "bashToolPatterns:\n  - pattern: '\\brm\\s+-rf'\n    reason: rm -rf\n"
@@ -1004,7 +1006,7 @@ class TestDamageControlAttachment:
         monkeypatch.delenv("AGENTWIRE_REPL_DAMAGE_CONTROL", raising=False)
         monkeypatch.setenv("AGENTWIRE_REPL_MCP", "0")
 
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
 
         captured = {}
 
@@ -1021,14 +1023,14 @@ class TestDamageControlAttachment:
         assert "Bash" in matchers[0].matcher
 
     def test_no_hooks_when_disabled(self, monkeypatch, tmp_path):
-        from agentwire.repl import damage_control
+        from agentwire.sdk import damage_control
         patterns_file = tmp_path / "patterns.yaml"
         patterns_file.write_text("bashToolPatterns: []\n")
         monkeypatch.setattr(damage_control, "DEFAULT_PATTERNS_PATH", patterns_file)
         monkeypatch.setenv("AGENTWIRE_REPL_DAMAGE_CONTROL", "0")
         monkeypatch.setenv("AGENTWIRE_REPL_MCP", "0")
 
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
 
         captured = {}
 
@@ -1043,12 +1045,12 @@ class TestDamageControlAttachment:
     def test_no_hooks_when_patterns_missing(self, monkeypatch, tmp_path):
         # Patterns file doesn't exist → make_pre_tool_hook returns None →
         # no hooks attached.
-        from agentwire.repl import damage_control
+        from agentwire.sdk import damage_control
         monkeypatch.setattr(damage_control, "DEFAULT_PATTERNS_PATH", tmp_path / "nope.yaml")
         monkeypatch.delenv("AGENTWIRE_REPL_DAMAGE_CONTROL", raising=False)
         monkeypatch.setenv("AGENTWIRE_REPL_MCP", "0")
 
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
 
         captured = {}
 
@@ -1063,25 +1065,25 @@ class TestDamageControlAttachment:
 
 class TestSdkErrorClassify:
     def test_transient_429(self):
-        from agentwire.workflows.runners.sdk_errors import classify
+        from agentwire.sdk.errors import classify
         assert classify("HTTPError", "got 429 rate_limit") == "transient"
 
     def test_auth_401(self):
-        from agentwire.workflows.runners.sdk_errors import classify
+        from agentwire.sdk.errors import classify
         assert classify("AuthError", "401 unauthorized") == "permanent"
 
     def test_invalid_400(self):
-        from agentwire.workflows.runners.sdk_errors import classify
+        from agentwire.sdk.errors import classify
         assert classify("ValidationError", "invalid_request: bad field") == "invalid"
 
     def test_generic(self):
-        from agentwire.workflows.runners.sdk_errors import classify
+        from agentwire.sdk.errors import classify
         assert classify("RuntimeError", "something broke") == "error"
 
 
 class TestBuildOptionsThreadsKnobs:
     def test_effort_and_thinking_passed_through(self):
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
 
         captured = {}
 
@@ -1098,7 +1100,7 @@ class TestBuildOptionsThreadsKnobs:
         assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
 
     def test_can_use_tool_passed_through(self):
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
 
         captured = {}
 
@@ -1115,7 +1117,7 @@ class TestBuildOptionsThreadsKnobs:
         assert captured["can_use_tool"] is cb
 
     def test_can_use_tool_omitted_when_none(self):
-        from agentwire.repl.app import build_options
+        from agentwire.sdk import build_options
 
         captured = {}
 

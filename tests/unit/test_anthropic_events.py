@@ -1,4 +1,4 @@
-"""Tests for agentwire/workflows/runners/anthropic_events.py — SDK → pi JSONL translation.
+"""Tests for agentwire/sdk/events.py — SDK → pi JSONL translation.
 
 Uses synthetic stand-ins that match claude-agent-sdk's Message shape by duck-type:
 - has `type` attribute on content blocks
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agentwire.workflows.runners import anthropic_events as ev
+from agentwire.sdk import events as ev
 
 
 # ---- Synthetic message builders ---------------------------------------------

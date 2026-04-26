@@ -66,18 +66,21 @@ from textual.widgets.option_list import Option
 from agentwire.repl import persistence
 from agentwire.repl.app import (
     BANNER,
+    _persist_sdk_message,
+)
+from agentwire.sdk import (
     DEFAULT_MODEL,
     FULL_TOOLS,
+    HEARTBEAT,
     RESTRICTED_TOOLS,
-    _HEARTBEAT,
-    _StreamRenderState,
-    _format_tool_input,
-    _heartbeat_iter,
-    _mcp_enabled,
-    _persist_sdk_message,
+    StreamRenderState,
     build_options,
+    heartbeat_iter,
     render_message,
 )
+from agentwire.sdk.client import _mcp_enabled
+from agentwire.sdk.render import format_tool_input
+from agentwire.sdk.sinks.textual import ActionSink, RichLogSink
 from agentwire.repl.commands import (
     COMMANDS,
     CONTINUE,
@@ -177,137 +180,6 @@ def build_agentwire_theme(overrides: dict[str, str] | None = None) -> Theme:
 
 # Stable instance for tests and code that doesn't need overrides.
 AGENTWIRE_THEME = build_agentwire_theme()
-
-
-# ----- adapters -------------------------------------------------------------
-
-
-class _RichLogSink:
-    """Adapter so `render_message(out=...)` can target a `RichLog`.
-
-    The renderer writes ANSI-bearing strings; we buffer until newline, then
-    emit each line as `Text.from_ansi(line)` so Rich parses styles faithfully.
-
-    Phase 1B trade-off — streaming partial messages (thinking, byte counter,
-    heartbeat) reach this sink as a sequence of writes terminated by a flush()
-    rather than a `\\n`. RichLog is append-only — there's no clean way to
-    update an in-flight line in place without bypassing its public API. So
-    each flush emits its current buffer as a discrete line, which means a
-    streaming thinking block shows as multiple lines (one per delta) rather
-    than one line growing in place.
-
-    Phase 2A introduces a dedicated CurrentAction widget that handles live
-    streaming properly. Until then, partial-stream output here is choppy but
-    correct; tool calls, results, agent meta, and finalized messages render
-    cleanly on their own lines.
-
-    `\\r\\033[K` in the input is the byte-counter "discard previous in-flight
-    line" signal — we honor it as "drop everything in the buffer up to and
-    including the last reset", which collapses repeated counter ticks to a
-    single visible line on close.
-    """
-
-    _CR_CLEAR = "\r\x1b[K"
-
-    def __init__(self, log: RichLog) -> None:
-        self._log = log
-        self._buf = ""
-
-    def write(self, s: str) -> None:
-        if not s:
-            return
-        if self._CR_CLEAR in s:
-            # Discard any in-flight buffer content + everything in `s` before
-            # the last reset — the byte counter is announcing a fresh value.
-            self._buf = ""
-            s = s.rsplit(self._CR_CLEAR, 1)[1]
-        self._buf += s
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            self._emit(line)
-
-    def flush(self) -> None:
-        # Emit any pending buffered content as a partial line. The choppy
-        # multi-line streaming this produces is intentional Phase 1B trade-off.
-        if self._buf:
-            self._emit(self._buf)
-            self._buf = ""
-
-    def isatty(self) -> bool:
-        # We want `_styled()` in app.py to emit ANSI; the sink renders it
-        # through Rich. Returning True here is what enables the styling.
-        return True
-
-    def _emit(self, text: str) -> None:
-        if text == "":
-            self._log.write("")
-        else:
-            self._log.write(Text.from_ansi(text))
-
-
-class _ActionSink:
-    """Streaming sink for the CurrentAction subpane.
-
-    Unlike `_RichLogSink` (chat — append-only, buffer-until-newline), the
-    action pane shows live-updating content. We maintain our own list of
-    "finalized" lines plus a buffer for the in-flight current line, and
-    rewrite the entire RichLog on each update via clear()+write loop.
-
-    For an action pane with O(20) lines and a turn with O(1000) deltas,
-    the cost is ~20K writes — well within Textual's render budget.
-
-    `clear()` is called from the app on each ResultMessage (turn complete)
-    so the next turn's partials start with a clean pane.
-    """
-
-    _CR_CLEAR = "\r\x1b[K"
-
-    def __init__(self, log: RichLog) -> None:
-        self._log = log
-        self._finalized: list[str] = []
-        self._current = ""
-
-    def write(self, s: str) -> None:
-        if not s:
-            return
-        if self._CR_CLEAR in s:
-            # \r\033[K resets the in-flight line — used by the byte counter
-            # to refresh `[writing X · N KB` to a new value in place.
-            s = s.rsplit(self._CR_CLEAR, 1)[1]
-            self._current = ""
-        self._current += s
-        while "\n" in self._current:
-            line, self._current = self._current.split("\n", 1)
-            self._finalized.append(line)
-        self._refresh()
-
-    def flush(self) -> None:
-        self._refresh()
-
-    def isatty(self) -> bool:
-        return True
-
-    def clear(self) -> None:
-        """Wipe the pane — called at end of every turn (ResultMessage)."""
-        self._finalized.clear()
-        self._current = ""
-        try:
-            self._log.clear()
-        except AttributeError:
-            pass
-
-    def _refresh(self) -> None:
-        try:
-            self._log.clear()
-        except AttributeError:
-            return
-        for line in self._finalized:
-            if line == "":
-                self._log.write("")
-            else:
-                self._log.write(Text.from_ansi(line))
-        if self._current:
-            self._log.write(Text.from_ansi(self._current))
 
 
 # ----- SDK event message ----------------------------------------------------
@@ -775,9 +647,9 @@ class AgentwireREPL(App):
         self.state: ReplState | None = None
         self._client = None
         self._client_ctx = None
-        self._sink: _RichLogSink | None = None  # chat — finalized snapshot messages
-        self._action_sink: _ActionSink | None = None  # action — live partials
-        self._stream_state = _StreamRenderState()
+        self._sink: RichLogSink | None = None  # chat — finalized snapshot messages
+        self._action_sink: ActionSink | None = None  # action — live partials
+        self._stream_state = StreamRenderState()
         self._sdk_classes: dict[str, Any] | None = None
         self._saved_claudecode: str | None = None
         self._exit_code = 0
@@ -818,8 +690,8 @@ class AgentwireREPL(App):
         chat = self.query_one("#chat", RichLog)
         action = self.query_one("#action", RichLog)
         action.border_title = "Current action"
-        self._sink = _RichLogSink(chat)
-        self._action_sink = _ActionSink(action)
+        self._sink = RichLogSink(chat)
+        self._action_sink = ActionSink(action)
         self.query_one("#input", Input).focus()
 
         # Header content — set after we know the mode/model.
@@ -992,7 +864,7 @@ class AgentwireREPL(App):
             if tool_name in self.state.always_allow_tools:
                 return PermissionResultAllow()
 
-            summary = _format_tool_input(tool_name, tool_input or {})
+            summary = format_tool_input(tool_name, tool_input or {})
             try:
                 decision = await self.push_screen_wait(
                     PermissionPrompt(tool_name=tool_name, summary=summary)
@@ -1155,7 +1027,7 @@ class AgentwireREPL(App):
         assert self._sdk_classes is not None
         try:
             await self._client.query(text)
-            async for message in _heartbeat_iter(
+            async for message in heartbeat_iter(
                 self._client.receive_response(), idle_timeout=5.0
             ):
                 self.post_message(SdkEvent(message))
@@ -1174,7 +1046,7 @@ class AgentwireREPL(App):
         assert self._action_sink is not None
         assert self._sdk_classes is not None
         msg = event.payload
-        if msg is _HEARTBEAT:
+        if msg is HEARTBEAT:
             # Heartbeats live in the action pane (live indicator).
             self._stream_state.heartbeat(self._action_sink)
             self._action_sink.flush()

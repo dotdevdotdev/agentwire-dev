@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.repl.damage_control import (
+from agentwire.sdk.damage_control import (
     check_bash,
     check_path,
     load_patterns,
