@@ -3444,6 +3444,8 @@ def cmd_repl(args) -> int:
         session_name=getattr(args, "session_name", None),
         resume=getattr(args, "resume", None),
         roles=getattr(args, "roles", None),
+        view=getattr(args, "view", "chat"),
+        cols=getattr(args, "cols", 3),
     )
 
 
@@ -10191,6 +10193,14 @@ def main() -> int:
     repl_parser.add_argument(
         "--role", dest="roles", action="append", metavar="NAME",
         help="Role name to compose into the system prompt (repeatable). Overrides .agentwire.yml roles.",
+    )
+    repl_parser.add_argument(
+        "--view", choices=["chat", "fanout"], default="chat",
+        help="UI view: 'chat' (default, single conversation) or 'fanout' (N parallel columns).",
+    )
+    repl_parser.add_argument(
+        "--cols", type=int, default=3, metavar="N",
+        help="Column count for --view fanout (2-6, default 3).",
     )
     repl_parser.set_defaults(func=cmd_repl)
 

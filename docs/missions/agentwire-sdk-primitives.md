@@ -4,7 +4,7 @@
 
 Extract the streaming SDK plumbing already proven in two surfaces (`runners/anthropic.py` headless + `repl/textual_app.py` interactive) into a reusable set of primitives, then compose those primitives into new views (fan-out, watch-mode, diff, conversation-tree). The Textual REPL and SDK workflow runner become the first two consumers of the same engine; everything else after that is `client + sink(s)`.
 
-**Status:** Phase 1 shipped (2026-04-26) — `agentwire/sdk/` package now hosts the shared streaming engine. Phase 2-4 pending.
+**Status:** Phase 1 + 2 shipped (2026-04-26) — `agentwire/sdk/` engine + fan-out N-column view live. Phase 3-4 pending.
 **Depends on:**
 - `agentwire-repl-textual.md` (complete) — Textual REPL ships with all the streaming logic this mission extracts
 - `pi-harness-overview.md` Phase 6 (complete) — `runners/anthropic.py` is the other proof point
@@ -128,9 +128,11 @@ Pure refactor. Zero behavior change. The Textual REPL, print mode, and SDK workf
 - New `agentwire/sdk/` is the only place these concerns live
 - Diffstat shows net code reduction (or close to neutral) once duplication is removed
 
-### Phase 2 — Fan-out N-column view (target: 1-2 weeks)
+### Phase 2 — Fan-out N-column view (shipped 2026-04-26, PR #145)
 
-The motivating composite view. Proves the primitives are actually reusable.
+The motivating composite view. Proved the primitives are actually reusable —
+`agentwire/repl/views/fanout.py` is ~340 LOC and consumes only `agentwire.sdk.*`
+plus Textual widgets. No SDK plumbing duplicated.
 
 - New view module: `agentwire/repl/views/fanout.py`
 - `/view fanout cols=3` slash command (default chat view is `/view chat`)

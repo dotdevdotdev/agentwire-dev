@@ -45,14 +45,18 @@ def run_repl(
     resume: str | None = None,
     roles: list[str] | None = None,
     seed_message: str | None = None,
+    view: str = "chat",
+    cols: int = 3,
 ) -> int:
     """Run the REPL. Returns exit code.
 
     - Print mode (`-p PROMPT`): single-shot stdout pipe — one SDK call,
       stream events, exit. Used by `agentwire workflow run`, scheduler
       tasks, and `human_gate` seeds where a TUI would interfere.
-    - Interactive: Textual TUI under `~/.agentwire/sessions/repl/<name>/`
-      with full transcript persistence.
+    - Interactive (default `--view chat`): Textual TUI under
+      `~/.agentwire/sessions/repl/<name>/` with full transcript persistence.
+    - `--view fanout --cols N`: composite view fanning the master input out
+      to N independent SDK clients side by side. Multi-generation A/B.
 
     `roles` overrides the role list from `.agentwire.yml` for this session;
     when None, project config wins.
@@ -63,6 +67,12 @@ def run_repl(
     """
     if print_prompt is not None:
         return asyncio.run(_run_print_mode(print_prompt, mode, model, system_prompt, roles))
+    if view == "fanout":
+        from agentwire.repl.views.fanout import run_fanout_repl
+        return asyncio.run(run_fanout_repl(
+            mode=mode, model=model, cols=cols,
+            system_prompt=system_prompt, roles=roles,
+        ))
     from agentwire.repl.textual_app import run_textual_repl
     return asyncio.run(run_textual_repl(
         mode=mode, model=model, system_prompt=system_prompt,

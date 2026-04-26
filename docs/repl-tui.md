@@ -229,10 +229,42 @@ contains:
 Both files are byte-identical to what the line-mode path produces, so
 `/resume` works across both implementations.
 
+## Fan-out view (multi-generation A/B)
+
+Run the same prompt across N independent SDK clients side by side:
+
+```bash
+agentwire repl --view fanout --cols 3
+```
+
+```
+┌─ col 1 · claude-opus-4-7 ─┬─ col 2 · claude-opus-4-7 ─┬─ col 3 · claude-opus-4-7 ─┐
+│ [chat history]            │ [chat history]            │ [chat history]            │
+│                           │                           │                           │
+├─ current action ──────────┼─ current action ──────────┼─ current action ──────────┤
+│ [thinking…]               │ [thinking…]               │ [thinking…]               │
+├─ status ──────────────────┼─ status ──────────────────┼─ status ──────────────────┤
+│ col 1 · 1 turn · 47 tok   │ col 2 · 1 turn · 51 tok   │ col 3 · 1 turn · 49 tok   │
+├───────────────────────────┴───────────────────────────┴───────────────────────────┤
+│ > master input — fans out to all columns                                          │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Type into the master input — the prompt fans out to every column in
+parallel. Each column streams its own response independently with its
+own running totals (turns, tokens, cost). `Ctrl+C` cancels every
+in-flight column at once.
+
+Use case: when you want multiple Opus 4.7 attempts on the same prompt to
+pick the best one, or to compare model outputs (when per-column overrides
+ship). `--cols 2-6` is supported; 3 is a good default for most terminal
+widths.
+
 ## What's next
 
 Trigger-driven: snapshot tests for new visual changes (Phase 3A laid the
 infra; run via `pytest -m snapshots`).
 
 See `docs/missions/agentwire-repl-textual.md` for the living checklist
-and shipping log.
+and `docs/missions/agentwire-sdk-primitives.md` for the composite-views
+roadmap.
