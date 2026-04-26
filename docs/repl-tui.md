@@ -17,18 +17,17 @@ TUI is for interactive sessions only.
 ```
 ┌─ Header ──────────────────────────────────────────────────┐
 │  agentwire repl — bypass · opus-4-7                       │
-├─ ChatLog (RichLog, fr=6) ─────────────────────────────────┤
+├─ ChatLog (RichLog, fr=1) ─────────────────────────────────┤
+│  - agent started · claude-opus-4-7 · session 0657172a     │
 │  > previous user turn                                     │
-│  [agent started · claude-opus-4-7 · session 0657172a]     │
-│  assistant text streamed live                             │
-│  [Bash · ls -la · 12 files (collapsed call+result)]       │
-│  [done · 7+9086 tok · $0.4499 · 106.7s]                   │
-├─ CurrentAction (RichLog, fr=2, titled) ───────────────────┤
-│  ╭─ Current action ─────────────────────────────────────╮ │
-│  │ [thinking: planning the file structure...]           │ │
-│  │ [writing Write input · 4.2 KB live tick]             │ │
-│  │ […still working · 5s]                                │ │
-│  ╰──────────────────────────────────────────────────────╯ │
+│  - thinking: planning the file structure                  │
+│    · deciding section ordering                            │
+│  - Write fanfic.html                                      │
+│    · result: file written (4.2 KB)                        │
+│  assistant text streamed live, line by line               │
+│  - Bash ls /tmp                                           │
+│    · result: 12 files in /tmp                             │
+│  - done · 7+9086 tok · $0.4499 · 106.7s                   │
 ├─ Input (dock=bottom) ─────────────────────────────────────┤
 │  > tell me about prompt caching                           │
 ├─ StatusLine ──────────────────────────────────────────────┤
@@ -36,10 +35,18 @@ TUI is for interactive sessions only.
 └─ Footer ──────────────────────────────────────────────────┘
 ```
 
-- **ChatLog** — finalized turns. Tool calls collapse to one-liners
-  (`[Bash · ls /tmp · 12 files]`).
-- **CurrentAction** — live partial-message stream. Cleared on every
-  ResultMessage so the next turn starts fresh.
+Everything streams into one ChatLog as a flat hierarchy of bullets:
+
+- `- top-level` lines mark major events: agent_started, thinking,
+  tool calls, assistant text, done.
+- `  · child` indents are details that hang off the bullet above:
+  thinking continuations, tool results.
+
+The previous CurrentAction subpane was removed in favour of this single
+chat with bullet hierarchy — partial-message streaming and snapshot
+turns share the same surface, and the indent gives visual structure
+even when content streams in fast.
+
 - **StatusLine** — running totals + sparkline of last-20-turn cost.
 - **Footer** — Textual binding hints (Ctrl+P, Ctrl+D, Ctrl+C).
 
@@ -86,14 +93,12 @@ Textual-only additions:
 
 ## `@`-mention autocomplete
 
-As you type `@`, the action pane shows live mention candidates globbed
-from cwd. **Tab** completes the prefix to the top match.
+As you type `@`, **Tab** completes the prefix to the top match. (The
+live candidate preview that lived in the now-removed CurrentAction
+pane went away with it; Tab still does the work.)
 
 ```
 > summarize @REA█
-
-[mentions: README.md · README-tutorial.md]
-[Tab to accept first match]
 ```
 
 After `Tab`:
@@ -205,18 +210,10 @@ textual-light, tokyo-night]
 
 ## Layout customization
 
-Resize the chat / action panes at runtime:
-
-```
-> /layout
-[layout: chat=6fr action=2fr]
-
-> /layout chat=10 action=1
-[layout updated · chat=10 · action=1]
-```
-
-Useful when running long sessions where you mostly want chat history,
-or when watching a tool-heavy turn where you want more action visibility.
+The CurrentAction subpane was removed in the bullet-format redesign, so
+there's only one pane to size now and it fills the body. `/layout`
+remains as a stub command that just announces this — kept for habit
+compatibility, not for tuning.
 
 ## Persistence
 

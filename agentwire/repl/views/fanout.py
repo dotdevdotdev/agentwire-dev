@@ -37,7 +37,7 @@ from agentwire.sdk import (
     heartbeat_iter,
     render_message,
 )
-from agentwire.sdk.sinks.textual import ActionSink, RichLogSink
+from agentwire.sdk.sinks.textual import RichLogSink
 
 
 class ColumnSdkEvent(Message):
@@ -87,7 +87,6 @@ class FanoutColumn:
         self.client: Any = None
         self.sdk_classes: dict[str, Any] | None = None
         self.chat_sink: RichLogSink | None = None
-        self.action_sink: ActionSink | None = None
         self.stream_state = StreamRenderState()
         self.input_tokens = 0
         self.output_tokens = 0
@@ -147,21 +146,12 @@ class FanoutREPL(App):
     }
 
     .col-chat {
-        height: 3fr;
+        height: 1fr;
         border: tall $primary;
         border-title-color: $primary;
         padding: 0 1;
         background: $background;
         scrollbar-color: $primary $background;
-    }
-
-    .col-action {
-        height: 1fr;
-        border: tall $secondary;
-        border-title-color: $secondary;
-        padding: 0 1;
-        background: $background;
-        scrollbar-color: $secondary $background;
     }
 
     .col-status {
@@ -248,9 +238,6 @@ class FanoutREPL(App):
                     chat = RichLog(id=f"chat-{col.col}", classes="col-chat", wrap=True, markup=False)
                     chat.border_title = self._chat_title(col)
                     yield chat
-                    action = RichLog(id=f"action-{col.col}", classes="col-action", wrap=True, markup=False)
-                    action.border_title = "current action"
-                    yield action
                     yield FanoutStatusLine(self._format_status(col), classes="col-status", id=f"status-{col.col}")
                     yield Input(
                         id=f"col-input-{col.col}",
@@ -261,12 +248,11 @@ class FanoutREPL(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        # Bind sinks to the just-mounted RichLogs.
+        # Bind chat sinks to the just-mounted RichLogs (single sink per column;
+        # streaming partials and snapshot turns share the same chat output).
         for col in self.columns:
             chat = self.query_one(f"#chat-{col.col}", RichLog)
-            action = self.query_one(f"#action-{col.col}", RichLog)
             col.chat_sink = RichLogSink(chat)
-            col.action_sink = ActionSink(action)
 
         try:
             from claude_agent_sdk import (
@@ -396,12 +382,12 @@ class FanoutREPL(App):
 
     def on_column_sdk_event(self, event: ColumnSdkEvent) -> None:
         col = self.columns[event.col]
-        if col.chat_sink is None or col.action_sink is None or col.sdk_classes is None:
+        if col.chat_sink is None or col.sdk_classes is None:
             return
         msg = event.payload
         if msg is HEARTBEAT:
-            col.stream_state.heartbeat(col.action_sink)
-            col.action_sink.flush()
+            col.stream_state.heartbeat(col.chat_sink)
+            col.chat_sink.flush()
             return
         try:
             render_message(
@@ -411,14 +397,11 @@ class FanoutREPL(App):
                 SystemMessage=col.sdk_classes["SystemMessage"],
                 ResultMessage=col.sdk_classes["ResultMessage"],
                 out=col.chat_sink,
-                action_out=col.action_sink,
                 stream_state=col.stream_state,
             )
             col.chat_sink.flush()
-            col.action_sink.flush()
             ResultMessage = col.sdk_classes["ResultMessage"]
             if isinstance(msg, ResultMessage):
-                col.action_sink.clear()
                 usage = getattr(msg, "usage", {}) or {}
                 if isinstance(usage, dict):
                     col.input_tokens += usage.get("input_tokens", 0) or 0

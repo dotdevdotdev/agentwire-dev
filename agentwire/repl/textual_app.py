@@ -1,48 +1,34 @@
-"""Textual-based rendering layer for `agentwire repl` (Phase 2A — layout).
+"""Textual-based rendering layer for `agentwire repl` — bullet/indent format.
 
-Layout (Phase 2A: proportional chat=6 / action=2 / input=3):
+Layout: header, single ChatLog filling the body, status line, docked
+Input. The CurrentAction subpane was removed — every event renders into
+chat as either a top-level `- bullet` or a `  · child` indent.
 
     ┌─ Header ──────────────────────────────────┐
-    │                                           │
-    ├─ ChatLog (RichLog, fr=6) ─────────────────┤
-    │  > previous user turn                     │
-    │  assistant text                           │
-    │  [→ tool call]                            │
-    │  [← result]                               │
-    │  [done · ...]                             │
-    ├─ CurrentAction (RichLog, fr=2, title) ────┤
-    │  ╭─ Current action ─────────────────────╮ │
-    │  │ [thinking: ...] live stream          │ │
-    │  │ [writing X input · 4.2 KB live tick] │ │
-    │  │ […still working · 5s]                │ │
-    │  ╰──────────────────────────────────────╯ │
+    ├─ ChatLog (RichLog, fr=1) ─────────────────┤
+    │  - agent started · claude-opus-4-7        │
+    │  > user turn                              │
+    │  - thinking: planning the file structure  │
+    │    · deciding section ordering            │
+    │  - Write fanfic.html                      │
+    │    · result: <preview>                    │
+    │  assistant text continues here            │
+    │  - done · 7+9086 tok · $0.4499 · 106.7s   │
+    ├─ StatusLine ──────────────────────────────┤
     ├─ Input (Input, dock=bottom) ──────────────┤
     │  > tell me about prompt caching           │
     └─ Footer ──────────────────────────────────┘
 
 Event flow:
-    user types → SubmittableTextArea posts Submitted → on_input_submitted
-    → app.run_worker(_run_turn(text), exclusive=True)
-    → worker iterates client.receive_response() wrapped in _heartbeat_iter
-    → each message is post_message(SdkEvent(msg)) (thread-safe)
-    → on_sdk_event renders via render_message(out=_RichLogSink) on UI thread
+    user types → on_input_submitted → run_worker(_run_turn)
+    → worker iterates client.receive_response() wrapped in heartbeat_iter
+    → each message → post_message(SdkEvent(msg)) (thread-safe)
+    → on_sdk_event → render_message(out=RichLogSink) on UI thread
 
 Workers MUST use `self.post_message(...)` — never call RichLog.write directly.
 
-Phase 2A scope: split chat into chat + CurrentAction subpanes with
-proportional weights. Partial-stream events (thinking, byte counter,
-heartbeat) route to the action pane via a dedicated `_ActionSink` that
-supports proper in-place line updates (clear-and-rewrite). The action
-pane is cleared on every ResultMessage (turn complete) so the next
-turn's partials start fresh. Finalized snapshot Messages stay in chat
-via `_RichLogSink` as before.
-
-The 120-second silent gap of the legacy REPL is fully solved here:
-thinking and byte counter tick live in their own docked subpane, with
-clean in-place updates (not the choppy multi-line emission of Phase
-1B's single-sink approach).
-
-See `docs/missions/agentwire-repl-textual.md` for the full plan.
+See `docs/missions/agentwire-repl-textual.md` and
+`docs/missions/agentwire-sdk-primitives.md` (Phase 5: bullet redesign).
 """
 
 from __future__ import annotations
@@ -80,7 +66,7 @@ from agentwire.sdk import (
 )
 from agentwire.sdk.client import _mcp_enabled
 from agentwire.sdk.render import format_tool_input
-from agentwire.sdk.sinks.textual import ActionSink, RichLogSink
+from agentwire.sdk.sinks.textual import RichLogSink
 from agentwire.repl.commands import (
     COMMANDS,
     CONTINUE,
@@ -556,24 +542,15 @@ class AgentwireREPL(App):
         background: $background;
     }
 
-    /* Chat — main conversation area, wrapped in the brand neon green. */
+    /* Chat — main conversation area, wrapped in the brand neon green.
+       Streaming partials, snapshot turns, tool calls, and results all
+       land here as bullet/indent lines (`- top` + `  · child`). */
     #chat {
-        height: 6fr;
+        height: 1fr;
         border: tall $primary;
         padding: 0 1;
         background: $background;
         scrollbar-color: $primary $surface;
-    }
-
-    /* CurrentAction — live partial stream, wrapped in the brand cyan accent.
-       Flat-black background to match chat — no near-black surface. */
-    #action {
-        height: 2fr;
-        border: tall $secondary;
-        border-title-color: $secondary;
-        padding: 0 1;
-        background: $background;
-        scrollbar-color: $secondary $background;
     }
 
     /* Input — neon green border, flat-black inside.
@@ -647,8 +624,7 @@ class AgentwireREPL(App):
         self.state: ReplState | None = None
         self._client = None
         self._client_ctx = None
-        self._sink: RichLogSink | None = None  # chat — finalized snapshot messages
-        self._action_sink: ActionSink | None = None  # action — live partials
+        self._sink: RichLogSink | None = None  # chat — all rendered output
         self._stream_state = StreamRenderState()
         self._sdk_classes: dict[str, Any] | None = None
         self._saved_claudecode: str | None = None
@@ -659,7 +635,6 @@ class AgentwireREPL(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield RichLog(id="chat", markup=False, highlight=False, wrap=True, auto_scroll=True)
-        yield RichLog(id="action", markup=False, highlight=False, wrap=True, auto_scroll=True)
         yield StatusLine(id="status")
         yield Input(id="input", placeholder="> ")
         yield Footer()
@@ -688,10 +663,7 @@ class AgentwireREPL(App):
             pass
 
         chat = self.query_one("#chat", RichLog)
-        action = self.query_one("#action", RichLog)
-        action.border_title = "Current action"
         self._sink = RichLogSink(chat)
-        self._action_sink = ActionSink(action)
         self.query_one("#input", Input).focus()
 
         # Header content — set after we know the mode/model.
@@ -1043,13 +1015,11 @@ class AgentwireREPL(App):
 
     def on_sdk_event(self, event: SdkEvent) -> None:
         assert self._sink is not None
-        assert self._action_sink is not None
         assert self._sdk_classes is not None
         msg = event.payload
         if msg is HEARTBEAT:
-            # Heartbeats live in the action pane (live indicator).
-            self._stream_state.heartbeat(self._action_sink)
-            self._action_sink.flush()
+            self._stream_state.heartbeat(self._sink)
+            self._sink.flush()
             return
         try:
             render_message(
@@ -1059,11 +1029,9 @@ class AgentwireREPL(App):
                 SystemMessage=self._sdk_classes["SystemMessage"],
                 ResultMessage=self._sdk_classes["ResultMessage"],
                 out=self._sink,
-                action_out=self._action_sink,
                 stream_state=self._stream_state,
             )
             self._sink.flush()
-            self._action_sink.flush()
             if self._transcript is not None:
                 _persist_sdk_message(
                     msg,
@@ -1083,9 +1051,6 @@ class AgentwireREPL(App):
                 track_result(self.state, msg)
                 if getattr(msg, "is_error", False):
                     self._exit_code = 1
-                # Turn complete — clear the action pane so the next turn's
-                # partials start fresh.
-                self._action_sink.clear()
             self._refresh_status()
         except Exception as exc:
             self._sink.write(f"[render error: {exc}]\n")
@@ -1115,34 +1080,14 @@ class AgentwireREPL(App):
     _MENTION_PREVIEW_CAP = 8
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Update the action pane with @-mention candidates as the user types."""
-        if self._action_sink is None:
-            return
-        prefix = self._current_at_prefix(event.value, event.input.cursor_position)
-        if prefix is None:
-            # Not in an @-mention context — only clear if we previously
-            # populated candidates (avoid clobbering live SDK output).
-            if getattr(self, "_last_mention_prefix", None) is not None:
-                self._action_sink.clear()
-                self._last_mention_prefix = None
-            return
+        """Track the current @-prefix so Tab-complete works.
 
+        We used to render mention candidates into the CurrentAction pane,
+        but the pane is gone — the visual preview was the trade-off for
+        cleaner, single-stream chat. Tab still completes to the top match.
+        """
+        prefix = self._current_at_prefix(event.value, event.input.cursor_position)
         self._last_mention_prefix = prefix
-        matches = self._glob_mention_matches(prefix)
-        self._action_sink.clear()
-        if not matches:
-            self._action_sink.write(f"[mentions @{prefix}: no matches in {Path.cwd().name}/]\n")
-        else:
-            shown = matches[: self._MENTION_PREVIEW_CAP]
-            self._action_sink.write(
-                "[mentions: " + " · ".join(shown) + "]\n"
-            )
-            if len(matches) > self._MENTION_PREVIEW_CAP:
-                self._action_sink.write(
-                    f"[+{len(matches) - self._MENTION_PREVIEW_CAP} more — keep typing to filter, Tab to accept first]\n"
-                )
-            else:
-                self._action_sink.write("[Tab to accept first match]\n")
 
     @staticmethod
     def _current_at_prefix(text: str, cursor: int) -> str | None:
@@ -1219,10 +1164,7 @@ class AgentwireREPL(App):
         new_head = head[:at_idx + 1] + matches[0]
         inp.value = new_head + tail
         inp.cursor_position = len(new_head)
-        # Clear the action pane preview now that the mention is locked in.
-        if self._action_sink is not None:
-            self._action_sink.clear()
-            self._last_mention_prefix = None
+        self._last_mention_prefix = None
 
     # ------ Textual-only slash commands (Phase 2D + 3D) ------
 
@@ -1237,55 +1179,15 @@ class AgentwireREPL(App):
         self.push_screen(TranscriptScrubber(path))
 
     def _handle_layout(self, args: str) -> None:
-        """`/layout` — adjust the chat / action proportional weights at runtime.
+        """`/layout` — kept as a no-op slash command for now.
 
-        Usage:
-          /layout            # show current weights
-          /layout chat=8 action=1
+        Pre-redesign this resized the chat/action panes. The action pane
+        has been removed; chat fills the full vertical space available
+        between header and input. We keep the command registered so it
+        doesn't 404 in habits and tests, just reports the new layout.
         """
         assert self._sink is not None
-        if not args:
-            chat = self.query_one("#chat", RichLog)
-            action = self.query_one("#action", RichLog)
-            self._sink.write(
-                f"[layout: chat={chat.styles.height} action={action.styles.height}]\n"
-            )
-            self._sink.flush()
-            return
-
-        # Parse chat=N action=M tokens.
-        chat_n: int | None = None
-        action_n: int | None = None
-        for tok in args.split():
-            if "=" not in tok:
-                continue
-            key, _, val = tok.partition("=")
-            try:
-                n = int(val)
-            except ValueError:
-                continue
-            if key.lower() == "chat":
-                chat_n = n
-            elif key.lower() == "action":
-                action_n = n
-
-        if chat_n is None and action_n is None:
-            self._sink.write("[/layout: expected chat=N or action=N — nothing changed]\n")
-            self._sink.flush()
-            return
-
-        try:
-            if chat_n is not None and chat_n > 0:
-                self.query_one("#chat", RichLog).styles.height = f"{chat_n}fr"
-            if action_n is not None and action_n > 0:
-                self.query_one("#action", RichLog).styles.height = f"{action_n}fr"
-            self._sink.write(
-                f"[layout updated · "
-                f"chat={chat_n if chat_n is not None else 'unchanged'} · "
-                f"action={action_n if action_n is not None else 'unchanged'}]\n"
-            )
-        except Exception as exc:
-            self._sink.write(f"[/layout error: {exc}]\n")
+        self._sink.write("[/layout: chat-only layout — action pane removed in bullet redesign]\n")
         self._sink.flush()
 
     def _handle_theme(self, args: str) -> None:

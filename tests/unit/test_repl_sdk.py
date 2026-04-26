@@ -205,7 +205,7 @@ class TestRenderAssistant:
             "type": "tool_use", "name": "Bash", "input": {"command": "ls -la"},
         }])
         out = _render(msg)
-        assert "→ Bash ls -la" in out
+        assert "- Bash ls -la" in out
 
     def test_tool_use_read_shows_file_path(self):
         msg = FakeAssistantMessage([{
@@ -218,7 +218,7 @@ class TestRenderAssistant:
         msg = FakeAssistantMessage([{
             "type": "tool_use", "name": "Grep", "input": {"pattern": "TODO"},
         }])
-        assert "→ Grep TODO" in _render(msg)
+        assert "- Grep TODO" in _render(msg)
 
     def test_tool_use_websearch(self):
         msg = FakeAssistantMessage([{
@@ -249,7 +249,7 @@ class TestRenderUser:
             "type": "tool_result", "tool_use_id": "tu_1", "content": "hello output",
         }])
         out = _render(msg)
-        assert "← result: hello output" in out
+        assert "· result: hello output" in out
 
     def test_tool_result_list_content(self):
         msg = FakeUserMessage([{
@@ -280,64 +280,62 @@ class TestRenderResult:
     def test_error_shows_error(self):
         msg = FakeResultMessage(is_error=True, result="rate limit hit")
         out = _render(msg)
-        assert "[error" in out
+        assert "- error" in out
         assert "rate limit hit" in out
 
     def test_minimal_result(self):
         msg = FakeResultMessage()
         out = _render(msg)
-        assert "[done" in out
+        assert "- done" in out
 
 
-class TestToolCallCollapse:
-    """Phase 2C — when stream_state is provided, tool_use + tool_result fold
-    into one `[Tool · args · preview]` line."""
+class TestToolCallHierarchy:
+    """Bullet-format renderer: tool_use renders as `- Tool args` immediately;
+    matching tool_result emits as `  · result: preview` indented under it."""
 
     def _state(self):
         from agentwire.sdk import StreamRenderState as _StreamRenderState
         return _StreamRenderState()
 
-    def test_tool_use_buffered_until_result(self):
+    def test_tool_use_renders_immediately(self):
         from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
 
-        # AssistantMessage with tool_use(id=tu_1) — should be buffered, NOT
-        # written to out yet.
         msg = FakeAssistantMessage([{
             "type": "tool_use", "id": "tu_1", "name": "Bash",
             "input": {"command": "ls -la"},
         }])
         render_message(msg, out=out, stream_state=s, **RENDER_KWARGS)
-        assert out.getvalue() == ""
+        rendered = out.getvalue()
+        # Top-level bullet is emitted right away.
+        assert "- Bash ls -la" in rendered
+        # And the id is tracked so a future tool_result can indent under it.
         assert "tu_1" in s.pending_tool_uses
 
-        # UserMessage with tool_result(tool_use_id=tu_1) → folds into one line.
+        # UserMessage with tool_result emits an indented child.
         result = FakeUserMessage([{
             "type": "tool_result", "tool_use_id": "tu_1", "content": "12 files",
         }])
         render_message(result, out=out, stream_state=s, **RENDER_KWARGS)
         rendered = out.getvalue()
-        assert "Bash" in rendered
-        assert "ls -la" in rendered
-        assert "12 files" in rendered
-        # Folded format — no separate "→" or "← result:" markers
-        assert "→ Bash" not in rendered
-        assert "← result:" not in rendered
-        # Pending cleared.
+        assert "- Bash ls -la" in rendered
+        assert "  · result: 12 files" in rendered
+        # Pending cleared after the matching result lands.
         assert "tu_1" not in s.pending_tool_uses
 
-    def test_tool_use_no_stream_state_renders_inline(self):
-        # Without stream_state, tool_use renders as before (legacy path).
+    def test_tool_use_without_stream_state(self):
+        # Without stream_state, the bullet still emits — there's just no
+        # pending registry to track for the indent under it.
         msg = FakeAssistantMessage([{
             "type": "tool_use", "id": "tu_1", "name": "Bash",
             "input": {"command": "ls -la"},
         }])
         out = _render(msg)  # no stream_state
-        assert "[→ Bash ls -la]" in out
+        assert "- Bash ls -la" in out
 
-    def test_tool_use_no_id_renders_inline(self):
-        # Without an id, tool_use can't be matched to a result — render inline.
+    def test_tool_use_without_id(self):
+        # Even without an id, the bullet emits — just no pending registration.
         from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
@@ -346,12 +344,12 @@ class TestToolCallCollapse:
             "input": {"command": "ls -la"},
         }])
         render_message(msg, out=out, stream_state=s, **RENDER_KWARGS)
-        assert "[→ Bash ls -la]" in out.getvalue()
+        assert "- Bash ls -la" in out.getvalue()
         assert s.pending_tool_uses == {}
 
-    def test_unmatched_tool_use_flushed_on_result(self):
-        # Tool_use without matching tool_result should still appear in chat
-        # when the turn ends (via flush_pending_tool_uses).
+    def test_unmatched_tool_use_remains_visible(self):
+        # If a tool_use never gets a tool_result, the bullet stays in chat
+        # and the pending registry is just cleared on ResultMessage.
         from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
@@ -360,16 +358,16 @@ class TestToolCallCollapse:
             "input": {"command": "echo x"},
         }])
         render_message(msg, out=out, stream_state=s, **RENDER_KWARGS)
-        # ResultMessage finishes the turn → flush.
         result = FakeResultMessage()
         render_message(result, out=out, stream_state=s, **RENDER_KWARGS)
         rendered = out.getvalue()
-        assert "[→ Bash" in rendered
-        assert "[done" in rendered
+        assert "- Bash echo x" in rendered
+        assert "- done" in rendered
+        # Pending cleared.
+        assert s.pending_tool_uses == {}
 
-    def test_error_result_emits_separate_lines(self):
-        # When the tool_result is an error, fold doesn't lose information —
-        # we emit both the call and the error explicitly.
+    def test_error_result_indents_as_error_child(self):
+        # An error result indents under its tool_use as `  · error: ...`.
         from agentwire.sdk import StreamRenderState as _StreamRenderState
         s = _StreamRenderState()
         out = io.StringIO()
@@ -384,8 +382,8 @@ class TestToolCallCollapse:
         }])
         render_message(result, out=out, stream_state=s, **RENDER_KWARGS)
         rendered = out.getvalue()
-        assert "[→ Bash" in rendered
-        assert "[← error:" in rendered
+        assert "- Bash false" in rendered
+        assert "  · error: exit 1" in rendered
 
 
 # --- format helpers ---
@@ -500,10 +498,10 @@ class TestPrintModeIntegration:
         assert captured_options["prompt"] == "summarize x.py"
         assert "agent started" in out
         assert "claude-opus-4-7" in out
-        assert "→ Read x.py" in out
-        assert "← result: file contents here" in out
+        assert "- Read x.py" in out
+        assert "· result: file contents here" in out
         assert "Here's the summary." in out
-        assert "[done" in out
+        assert "- done" in out
         assert "100+50 tok" in out
 
     def test_error_result_returns_nonzero(self, monkeypatch, capsys):
@@ -534,7 +532,7 @@ class TestPrintModeIntegration:
         rc = run_repl(mode="bypass", print_prompt="x")
         out = capsys.readouterr().out
         assert rc == 1
-        assert "[error" in out
+        assert "- error" in out
 
     def test_missing_sdk_returns_one(self, monkeypatch, capsys):
         """If claude-agent-sdk isn't importable, print mode exits 1 with message."""
@@ -587,7 +585,9 @@ class TestStreamRenderState:
         assert s.streamed_text is True
         assert s.open_block is None
 
-    def test_thinking_delta_streams_inline(self):
+    def test_thinking_delta_streams_as_bullet_with_continuation(self):
+        # Thinking starts a `- thinking: ` bullet; subsequent newline-bounded
+        # chunks become `  · <continuation>` indented children.
         s = self._state()
         out = io.StringIO()
         s.handle_partial(
@@ -601,14 +601,14 @@ class TestStreamRenderState:
         )
         s.handle_partial({"type": "content_block_stop"}, out)
         rendered = out.getvalue()
-        assert "[thinking: let me plan this]" in rendered
+        assert "- thinking: let me" in rendered
+        assert "  · plan this" in rendered
         assert s.streamed_thinking is True
 
-    def test_input_json_delta_shows_byte_counter(self):
-        # Tool input streaming via input_json_delta would dump raw JSON bytes
-        # into the chat. Instead we show a live byte counter — the snapshot
-        # AssistantMessage that follows gives the formatted [→ Write file.html]
-        # summary with parsed args.
+    def test_input_json_delta_skipped(self):
+        # No live byte counter post-redesign — tool input only renders at
+        # snapshot time when full args are known. Partial input_json_delta
+        # events do not emit anything.
         s = self._state()
         out = io.StringIO()
         s.handle_partial(
@@ -621,38 +621,9 @@ class TestStreamRenderState:
              "delta": {"type": "input_json_delta", "partial_json": '{"file_path": "x"}'}},
             out,
         )
-        rendered = out.getvalue()
-        # Counter line is written, raw JSON is not.
-        assert "writing Write input" in rendered
-        assert '"file_path"' not in rendered
-        assert s.open_block == "tool_use"
-        assert s._tool_use_bytes == len('{"file_path": "x"}')
-
-    def test_tool_use_close_finalizes_byte_counter(self):
-        s = self._state()
-        out = io.StringIO()
-        s.handle_partial(
-            {"type": "content_block_start",
-             "content_block": {"type": "tool_use", "name": "Write"}},
-            out,
-        )
-        # 2 KB of fake JSON across two deltas
-        s.handle_partial(
-            {"type": "content_block_delta",
-             "delta": {"type": "input_json_delta", "partial_json": "x" * 1024}},
-            out,
-        )
-        s.handle_partial(
-            {"type": "content_block_delta",
-             "delta": {"type": "input_json_delta", "partial_json": "x" * 1024}},
-            out,
-        )
         s.handle_partial({"type": "content_block_stop"}, out)
-        rendered = out.getvalue()
-        assert "wrote Write input" in rendered
-        assert "2.0 KB" in rendered
-        assert s.open_block is None
-        assert s._tool_use_bytes == 0  # reset after close
+        # No output — snapshot AssistantMessage will render the bullet.
+        assert out.getvalue() == ""
 
     def test_streamevent_dataclass_detected_by_render_message(self, monkeypatch):
         # StreamEvent is a @dataclass, not a dict. Earlier code did
@@ -701,17 +672,17 @@ class TestStreamRenderState:
         )
         s.handle_partial(
             {"type": "content_block_delta",
-             "delta": {"type": "thinking_delta", "thinking": "plan"}},
+             "delta": {"type": "thinking_delta", "thinking": "plan\n"}},
             out,
         )
         s.handle_partial({"type": "content_block_stop"}, out)
         rendered = out.getvalue()
         assert "\x1b[" not in rendered  # no ANSI escapes
-        assert "[thinking: plan]" in rendered
+        assert "- thinking: plan" in rendered
 
     def test_ansi_codes_emitted_for_tty_output(self):
         # When out.isatty() is True, dim-style ANSI codes wrap the thinking
-        # block. This is the visual hierarchy: thinking is secondary noise,
+        # bullet. This is the visual hierarchy: thinking is secondary noise,
         # dim makes it recede.
         from agentwire.sdk import StreamRenderState as _StreamRenderState
 
@@ -737,27 +708,15 @@ class TestStreamRenderState:
             {"type": "content_block_start", "content_block": {"type": "thinking"}},
             out,
         )
+        s.handle_partial(
+            {"type": "content_block_delta",
+             "delta": {"type": "thinking_delta", "thinking": "plan\n"}},
+            out,
+        )
         s.handle_partial({"type": "content_block_stop"}, out)
         rendered = out.getvalue()
         assert "\x1b[" in rendered  # ANSI present
-        assert "[thinking: " in rendered  # raw text still recoverable
-
-    def test_heartbeat_silent_during_tool_use(self):
-        # The byte counter IS the liveness signal during tool_use — adding
-        # `·` dots would corrupt the in-place CR rewrite.
-        s = self._state()
-        out = io.StringIO()
-        s.handle_partial(
-            {"type": "content_block_start",
-             "content_block": {"type": "tool_use", "name": "Write"}},
-            out,
-        )
-        before = out.getvalue()
-        s.heartbeat(out)
-        s.heartbeat(out)
-        after = out.getvalue()
-        # Heartbeat is a no-op during tool_use.
-        assert before == after
+        assert "- thinking: plan" in rendered  # raw text still recoverable
 
     def test_assistant_skips_streamed_text(self, monkeypatch):
         # When partials already streamed text, the snapshot AssistantMessage
@@ -797,43 +756,37 @@ class TestStreamRenderState:
         )
         assert "full reply" in out.getvalue()
 
-    def test_heartbeat_inline_when_open_block(self):
+    def test_heartbeat_emits_bullet_per_tick(self):
+        # Each idle tick emits its own `- still working · Ns` bullet —
+        # slightly noisy on long quiet turns but each line is self-contained
+        # in the bullet format.
         s = self._state()
         out = io.StringIO()
-        s.handle_partial(
-            {"type": "content_block_start", "content_block": {"type": "thinking"}},
-            out,
-        )
         s.heartbeat(out)
         s.heartbeat(out)
-        # Two dots appended to the open thinking line.
         rendered = out.getvalue()
-        assert rendered.count("·") == 2
+        assert "- still working · 5s" in rendered
+        assert "- still working · 10s" in rendered
 
-    def test_heartbeat_standalone_when_idle(self):
+    def test_heartbeat_resets_on_real_event(self):
+        # When a real event arrives, the heartbeat counter resets so the
+        # next gap starts fresh. The previously-emitted bullets stay in the
+        # chat (they're history) — there's no in-place mutation.
         s = self._state()
         out = io.StringIO()
         s.heartbeat(out)
         s.heartbeat(out)
-        # Forms a single status line: "[…still working · 5s · 10s"
-        # (no trailing ] until a real event consumes it)
-        rendered = out.getvalue()
-        assert "still working" in rendered
-        assert "5s" in rendered and "10s" in rendered
-
-    def test_heartbeat_consumed_by_real_event(self):
-        s = self._state()
-        out = io.StringIO()
-        s.heartbeat(out)
-        # Real event arrives → consumes the open heartbeat line
+        assert s._heartbeat_count == 2
         s.handle_partial(
             {"type": "content_block_start", "content_block": {"type": "text"}},
             out,
         )
+        # Counter zeroed.
+        assert s._heartbeat_count == 0
+        # Subsequent heartbeats start at 5s again.
+        s.heartbeat(out)
         rendered = out.getvalue()
-        # Heartbeat line was closed (saw "]\n" before any content).
-        assert "still working" in rendered
-        assert rendered.index("]") < rendered.rindex("\n")
+        assert rendered.count("- still working · 5s") == 2
 
 
 class TestHeartbeatIter:

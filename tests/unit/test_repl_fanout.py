@@ -166,10 +166,10 @@ class TestFanoutREPLBoot:
         async with app.run_test() as pilot:
             assert len(app.columns) == 3
             for i in range(3):
-                # Each column has its own RichLog widgets.
+                # Each column has its own widgets (chat + status + input).
                 assert app.query_one(f"#chat-{i}") is not None
-                assert app.query_one(f"#action-{i}") is not None
                 assert app.query_one(f"#status-{i}") is not None
+                assert app.query_one(f"#col-input-{i}") is not None
             # Master input present.
             assert app.query_one("#master-input") is not None
 

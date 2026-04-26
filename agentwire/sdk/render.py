@@ -225,42 +225,23 @@ def render_message(
     stream_state: Any = None,
     action_out: Any = None,
 ) -> None:
-    """Render one SDK message to the terminal.
+    """Render one SDK message to the terminal in bullet/indent format.
 
-    Compact, human-readable output matching the spirit of pi's JSONL but for
-    a terminal reader. Tools like `Read`/`Bash` show the target; tool results
-    show a one-line preview.
-
-    `stream_state` carries cross-message bookkeeping for the partial-message
-    stream: when partial events have already streamed text/thinking content
-    for an assistant turn, the final AssistantMessage that arrives at
-    message_stop would otherwise re-render everything. We track which
-    content indices were streamed and skip them.
-
-    `action_out`: optional separate sink for partial-stream events. The
-    Textual REPL passes a dedicated CurrentAction RichLog here so live
-    thinking, byte counters, and heartbeats render in their own docked
-    subpane while finalized snapshot messages go to the chat pane via `out`.
-    When `action_out` is None or the same object as `out`, the legacy
-    behavior is preserved: everything goes to one sink.
+    Top-level events render as `- bullet`; tool results indent under their
+    matching tool_use as `  · result: <preview>`. Streamed thinking and
+    text deltas come through `stream_state.handle_partial`. The
+    `action_out` param is accepted for backwards-compat with callers that
+    still pass it but is no longer used — everything goes to a single
+    sink (`out`).
     """
-    if action_out is None:
-        action_out = out
-    dual_panes = action_out is not out
-
-    # StreamEvent is a dataclass with `event`/`uuid`. Render thinking/text/
-    # tool-input deltas inline so users see real-time progress. Detection
-    # by duck-type to keep render_message decoupled from the SDK class.
+    # StreamEvent is a dataclass with `event`/`uuid`. Stream deltas via
+    # the state machine (single sink — action pane is gone).
     if hasattr(message, "event") and hasattr(message, "uuid") and not hasattr(message, "content"):
         if stream_state is not None:
             payload = getattr(message, "event", None)
             if isinstance(payload, dict):
-                stream_state.handle_partial(payload, action_out)
+                stream_state.handle_partial(payload, out)
         return
-
-    # Any non-partial message arriving — close out a pending heartbeat line.
-    if stream_state is not None:
-        stream_state._consume_heartbeat(action_out)
 
     if isinstance(message, SystemMessage):
         if getattr(message, "subtype", None) == "init":
@@ -268,20 +249,16 @@ def render_message(
             model = data.get("model", "") or ""
             sid = (data.get("session_id") or data.get("sessionId") or "")[:8]
             parts = [p for p in [model, f"session {sid}" if sid else ""] if p]
-            out.write(styled(out, f"[agent started · {' · '.join(parts)}]", "dim cyan") + "\n")
+            out.write(styled(out, f"- agent started · {' · '.join(parts)}", "dim cyan") + "\n")
         return
 
     if isinstance(message, AssistantMessage):
         if stream_state is not None and stream_state.partials_active:
-            stream_state.close_open_block(action_out)
+            stream_state.close_open_block(out)
         for block in getattr(message, "content", []) or []:
             btype = block_type(block)
             if btype == "text":
-                if (
-                    not dual_panes
-                    and stream_state is not None
-                    and stream_state.streamed_text
-                ):
+                if stream_state is not None and stream_state.streamed_text:
                     continue
                 text = block_attr(block, "text", "") or ""
                 if text:
@@ -293,26 +270,22 @@ def render_message(
                 tool_id = block_attr(block, "id", "") or ""
                 inp = block_attr(block, "input", {}) or {}
                 summary = format_tool_input(name, inp)
+                line = f"- {name}{' ' + summary if summary else ''}"
+                out.write(styled(out, line, "bold cyan") + "\n")
                 if stream_state is not None and tool_id:
+                    # Track so the matching tool_result indents under it.
                     stream_state.pending_tool_uses[tool_id] = {
                         "name": name,
                         "summary": summary,
                     }
-                else:
-                    line = f"[→ {name}{' ' + summary if summary else ''}]"
-                    out.write(styled(out, line, "bold cyan") + "\n")
             elif btype == "thinking":
-                if (
-                    not dual_panes
-                    and stream_state is not None
-                    and stream_state.streamed_thinking
-                ):
+                if stream_state is not None and stream_state.streamed_thinking:
                     continue
                 thinking = block_attr(block, "thinking", "") or ""
                 first = thinking.split("\n", 1)[0].strip()
                 if first:
                     preview = first if len(first) <= 80 else first[:77] + "..."
-                    out.write(styled(out, f"[thinking: {preview}]", "dim") + "\n")
+                    out.write(styled(out, f"- thinking: {preview}", "dim") + "\n")
         if stream_state is not None:
             stream_state.reset_for_next_assistant_turn()
         return
@@ -328,34 +301,15 @@ def render_message(
                     is_err = bool(block_attr(block, "is_error", False))
                     tool_use_id = block_attr(block, "tool_use_id", "") or ""
 
-                    pending = None
                     if stream_state is not None and tool_use_id:
-                        pending = stream_state.pending_tool_uses.pop(
-                            tool_use_id, None
-                        )
+                        # Pop so we don't double-emit if a future flush runs.
+                        stream_state.pending_tool_uses.pop(tool_use_id, None)
 
-                    if pending is not None and not is_err:
-                        name = pending["name"]
-                        summary = pending["summary"]
-                        parts = [name]
-                        if summary:
-                            parts.append(summary)
-                        if preview:
-                            parts.append(preview)
-                        line = f"[{' · '.join(parts)}]"
-                        out.write(styled(out, line, "cyan") + "\n")
-                    elif pending is not None and is_err:
-                        name = pending["name"]
-                        summary = pending["summary"]
-                        call = f"[→ {name}{' ' + summary if summary else ''}]"
-                        out.write(styled(out, call, "bold cyan") + "\n")
-                        out.write(styled(out, f"[← error: {preview}]", "red") + "\n")
-                    else:
-                        style = "red" if is_err else "green"
-                        label = "error" if is_err else "result"
-                        out.write(
-                            styled(out, f"[← {label}: {preview}]", style) + "\n"
-                        )
+                    label = "error" if is_err else "result"
+                    style = "red" if is_err else "green"
+                    out.write(
+                        styled(out, f"  · {label}: {preview}", style) + "\n"
+                    )
         return
 
     if isinstance(message, ResultMessage):
@@ -378,7 +332,8 @@ def render_message(
         if getattr(message, "is_error", False):
             err = getattr(message, "result", None) or "unknown error"
             category = _classify_sdk_error("ResultMessage", str(err))
-            out.write(styled(out, f"[error · {category}{suffix}] {err}", "bold red") + "\n")
+            out.write(styled(out, f"- error · {category}{suffix}", "bold red") + "\n")
+            out.write(styled(out, f"  · {err}", "red") + "\n")
         else:
-            out.write(styled(out, f"[done{suffix}]", "dim green") + "\n")
+            out.write(styled(out, f"- done{suffix}", "dim green") + "\n")
         return
