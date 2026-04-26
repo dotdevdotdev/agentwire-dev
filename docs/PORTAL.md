@@ -292,6 +292,8 @@ uploads:
 | `/api/projects` | GET | List discovered projects (folders with `.agentwire.yml`) |
 | `/api/projects/delete` | POST | Delete a project |
 | `/api/roles` | GET | List available roles |
+| `/api/sdk-sessions` | GET | List saved `agentwire repl` sessions (transcripts under `~/.agentwire/sessions/repl/`) |
+| `/ws/sdk-watch/{name}` | WS | Read-only stream of an SDK REPL session's transcript JSONL (replay-then-tail) |
 
 ### Session Management
 

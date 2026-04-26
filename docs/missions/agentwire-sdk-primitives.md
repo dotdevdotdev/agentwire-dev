@@ -4,7 +4,7 @@
 
 Extract the streaming SDK plumbing already proven in two surfaces (`runners/anthropic.py` headless + `repl/textual_app.py` interactive) into a reusable set of primitives, then compose those primitives into new views (fan-out, watch-mode, diff, conversation-tree). The Textual REPL and SDK workflow runner become the first two consumers of the same engine; everything else after that is `client + sink(s)`.
 
-**Status:** Phase 1 + 2 shipped (2026-04-26) — `agentwire/sdk/` engine + fan-out N-column view live. Phase 3-4 pending.
+**Status:** Phases 1-3 shipped (2026-04-26) — `agentwire/sdk/` engine + fan-out N-column view + portal watch-mode (transcript-tail SSE-equivalent over WS). Phase 4 trigger-driven.
 **Depends on:**
 - `agentwire-repl-textual.md` (complete) — Textual REPL ships with all the streaming logic this mission extracts
 - `pi-harness-overview.md` Phase 6 (complete) — `runners/anthropic.py` is the other proof point
@@ -156,27 +156,26 @@ plus Textual widgets. No SDK plumbing duplicated.
 - Per-column cancellation works correctly under live streaming
 - `/promote` cleanly migrates the winning column to a primary session
 
-### Phase 3 — WebSocket sink + portal watch mode (target: 1-2 weeks)
+### Phase 3 — Portal watch mode via transcript tail (shipped 2026-04-26, PR #146)
 
-The portal already lists sessions. Now any session's live SDK event stream can be watched in the browser.
+**Revision (2026-04-26):** the original spec proposed an in-process `WebSocketSink` pushing events from the live REPL. The Phase-1 survey revealed a simpler path: **tail the transcript JSONL** that `persistence.py` already writes. This decouples watch from the running process — any saved session can be watched (live or replayed), pane death doesn't kill the watch, and we don't need to inject a sink into the running REPL.
 
-- `agentwire/sdk/sinks/websocket.py` — pushes typed events over WS
-- New portal endpoint: `GET /api/sessions/<id>/events` (SSE or WS) streams the same `AgentwireEvent` shapes
-- Frontend renderer: same TextBlock / ThinkingBlock / ToolUseBlock semantics the Textual REPL renders, but in HTML/CSS
-- Tail-mode: catch up from a transcript file, then stream live (rough analog to `tail -f`)
-- Multi-tab safety: N watchers don't multiply load on the SDK client (one stream → fan-out at the sink)
+**Scope:**
 
-**Open questions**
+- `agentwire/repl/persistence.py` — add `tail_transcript(name, home=None)` async generator (read existing lines, then follow new ones, FIFO-style).
+- `agentwire/server.py` — add `GET /api/sdk-sessions` (list) and `WS /ws/sdk-watch/<name>` (stream).
+- `agentwire/static/js/windows/sdk-watch-window.js` — WinBox-mounted watch panel that renders text / thinking / tool_use / tool_result / turn_end blocks the way the Textual REPL does.
+- Sidebar entry `agentwire/static/js/sidebar/sdk-sessions-section.js` with a watch button.
 
-- Read-only watch vs. interactive control (the latter implies the watcher can submit a turn — a permission boundary). Default read-only for Phase 3.
-- Auth: the portal already has a per-session auth model; reuse it.
-- Backpressure: long thinking blocks shouldn't blow up the WS buffer. Drop to text-only summaries if a watcher is slow.
+**Deferred to a later phase (trigger-driven):**
+
+- In-process `WebSocketSink` for sub-disk-flush latency. Disk tail is fast enough in practice (per-event flush from `persistence.py`); revisit only if a real workload demands sub-100ms event lag.
 
 **Success criteria**
 
-- A user opens portal, picks a running `agentwire repl` session, sees the same events the user-with-the-pane sees, in real time
-- Tail-and-stream works across pane death (transcript file is the SSOT)
-- Workflow runs are watchable too — same plumbing
+- User opens portal sidebar → SDK sessions section → click a session → watch window streams events.
+- Tail-and-stream works across pane death (transcript file is the SSOT).
+- Watch window renders text, thinking, tool_use, tool_result, turn_end without crashes on novel block types.
 
 ### Phase 4+ — Additional views (trigger-driven)
 

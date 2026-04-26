@@ -4120,3 +4120,50 @@ body.sidebar-pinned .sidebar-tab {
     letter-spacing: 0.06em;
     padding: 4px 0;
 }
+
+/* SDK watch window (Phase 3 of agentwire-sdk-primitives mission) */
+.sdk-watch-window .wb-body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+}
+.sdk-watch-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    background: #000;
+    color: var(--foreground, #e2e8f0);
+    font-family: 'SF Mono', ui-monospace, Menlo, monospace;
+    font-size: 12px;
+}
+.sdk-watch-status {
+    padding: 4px 10px;
+    background: #000;
+    color: var(--text-muted, #888);
+    border-bottom: 1px solid #27272a;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.sdk-watch-stream {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    line-height: 1.4;
+}
+.sdk-watch-event {
+    margin-bottom: 4px;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+.sdk-watch-event .ev-meta { color: #00d4ff; }
+.sdk-watch-event .ev-thinking { color: #888; }
+.sdk-watch-event .ev-text { color: #e2e8f0; }
+.sdk-watch-event .ev-user { color: #00ff88; }
+.sdk-watch-event .ev-tool-call { color: #00d4ff; font-weight: bold; }
+.sdk-watch-event .ev-tool-result { color: #00ff88; }
+.sdk-watch-event .ev-done { color: #00ff88; opacity: 0.7; }
+.sdk-watch-event .ev-error { color: #dc2626; font-weight: bold; }

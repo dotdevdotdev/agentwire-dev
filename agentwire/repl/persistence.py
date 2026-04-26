@@ -15,13 +15,14 @@ We add two REPL-specific event types on top of the workflow vocabulary:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, IO
+from typing import Any, AsyncIterator, IO
 
 from agentwire.repl.state import ReplState
 
@@ -190,3 +191,63 @@ def load_session(name: str, home: Path | None = None) -> dict[str, Any] | None:
         return json.loads(meta.read_text())
     except Exception:
         return None
+
+
+async def tail_transcript(
+    name: str,
+    home: Path | None = None,
+    poll_interval: float = 0.25,
+    follow: bool = True,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield transcript events for `name`: existing first, then live appends.
+
+    Reads `transcript.jsonl` line by line as events are appended, the same
+    way `tail -f` works for plain text. Yields one parsed dict per line,
+    skipping malformed lines. When `follow=False`, returns after replaying
+    the current file content (useful for one-shot replay / tests).
+
+    Watch-mode in the portal uses this: a fresh client gets the whole
+    history first, then sees new events as they're written. Pane death
+    doesn't kill the watch — `transcript.jsonl` is the SSOT.
+    """
+    base = home or DEFAULT_REPL_HOME
+    path = base / name / "transcript.jsonl"
+
+    # Wait for the file to appear if we're following an in-flight session
+    # that may still be initializing.
+    if follow:
+        deadline = time.time() + 5.0
+        while not path.is_file() and time.time() < deadline:
+            await asyncio.sleep(poll_interval)
+
+    if not path.is_file():
+        return
+
+    handle = path.open("r")
+    try:
+        buf = ""
+        while True:
+            chunk = handle.read()
+            if chunk:
+                buf += chunk
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                continue
+            if not follow:
+                # Drained — done.
+                if buf.strip():
+                    try:
+                        yield json.loads(buf.strip())
+                    except json.JSONDecodeError:
+                        pass
+                return
+            await asyncio.sleep(poll_interval)
+    finally:
+        handle.close()

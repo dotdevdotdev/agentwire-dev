@@ -166,6 +166,8 @@ class AgentWireServer:
         self.app.router.add_get("/api/sessions", self.api_sessions)
         self.app.router.add_get("/api/sessions/local", self.api_sessions_local)
         self.app.router.add_get("/api/sessions/remote", self.api_sessions_remote)
+        self.app.router.add_get("/api/sdk-sessions", self.api_sdk_sessions)
+        self.app.router.add_get("/ws/sdk-watch/{name}", self.handle_sdk_watch_ws)
         self.app.router.add_get("/api/projects", self.api_projects)
         self.app.router.add_post("/api/projects/delete", self.api_projects_delete)
         self.app.router.add_get("/api/roles", self.api_roles)
@@ -2014,6 +2016,74 @@ class AgentWireServer:
         except Exception as e:
             logger.error(f"Failed to list sessions: {e}")
             return web.json_response({"machines": []})
+
+    async def api_sdk_sessions(self, request: web.Request) -> web.Response:
+        """List saved SDK REPL sessions (under ~/.agentwire/sessions/repl/).
+
+        These are the transcripts watch-mode tails. Newest first, capped at 50
+        — extend if a real workload needs more.
+        """
+        try:
+            from agentwire.repl import persistence
+            sessions = persistence.list_sessions(limit=50)
+            return web.json_response({"sessions": sessions})
+        except Exception as e:
+            logger.error(f"Failed to list sdk sessions: {e}")
+            return web.json_response({"sessions": []})
+
+    async def handle_sdk_watch_ws(self, request: web.Request) -> web.WebSocketResponse:
+        """Watch one SDK REPL session live by tailing its transcript JSONL.
+
+        Read-only: events flow server → client only. Each event lands as one
+        JSON message. Disconnect ends the tail; reconnect resumes from the
+        top (the client can dedupe via event ts if needed).
+        """
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        name = request.match_info.get("name", "")
+        if not name:
+            await ws.send_json({"type": "error", "error": "missing session name"})
+            await ws.close()
+            return ws
+
+        from agentwire.repl import persistence
+
+        # Watcher pulls from disk; if the writer dies the watch ends gracefully.
+        # Cap concurrent watchers per session at 8 so a runaway tab-explosion
+        # doesn't pin file handles.
+        async def stream() -> None:
+            try:
+                async for event in persistence.tail_transcript(name):
+                    if ws.closed:
+                        return
+                    try:
+                        await ws.send_json(event)
+                    except (ConnectionResetError, RuntimeError):
+                        return
+            except FileNotFoundError:
+                if not ws.closed:
+                    await ws.send_json({"type": "error", "error": "session not found"})
+            except Exception as exc:
+                logger.warning("sdk-watch stream error %s: %s", name, exc)
+                if not ws.closed:
+                    try:
+                        await ws.send_json({"type": "error", "error": str(exc)})
+                    except Exception:
+                        pass
+
+        stream_task = asyncio.create_task(stream())
+        try:
+            async for msg in ws:
+                # Watcher is read-only; ignore inbound messages.
+                if msg.type == aiohttp.WSMsgType.CLOSE:
+                    break
+        finally:
+            stream_task.cancel()
+            try:
+                await stream_task
+            except asyncio.CancelledError:
+                pass
+        return ws
 
     async def api_sessions_local(self, request: web.Request) -> web.Response:
         """Fast endpoint for local sessions only (no SSH checks)."""
