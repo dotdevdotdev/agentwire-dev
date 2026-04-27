@@ -246,8 +246,8 @@ These stay open deliberately. Prototype first, decide from real usage.
 ## Code references (study / refactor — not copy blindly)
 
 - `agentwire/workflows/runners/anthropic.py` — current SDK init + streaming pattern
-- `agentwire/workflows/runners/anthropic_events.py` — current event classification
-- `agentwire/workflows/runners/anthropic_capabilities.py` — model/effort/thinking validation (stays as-is)
+- `agentwire/sdk/events.py` — event classification (was `workflows/runners/anthropic_events.py` pre-v1.24.0)
+- `agentwire/sdk/capabilities.py` — model/effort/thinking validation (was `workflows/runners/anthropic_capabilities.py`)
 - `agentwire/repl/textual_app.py` — current `_RichLogSink`, `_ActionSink`, `_StreamRenderState` integration
 - `agentwire/repl/app.py` — print mode + render helpers
 - `agentwire/workflows/storage.py` — transcript JSONL pattern (sink target)

@@ -23,6 +23,21 @@ agentwire worktree name --ref v2.0  # detached at tag/commit
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
+# Textual REPL (claude-agent-sdk surface — see docs/repl-tui.md)
+agentwire repl                          # interactive Textual TUI (default)
+agentwire repl --mode bypass|prompted|restricted   # permission mode
+agentwire repl --model claude-sonnet-4-6           # override model
+agentwire repl --view fanout --cols 3              # multi-generation A/B
+agentwire repl --view fanout --cols 2 \\
+  --col-model 0=claude-opus-4-7 --col-model 1=claude-sonnet-4-6  # compare models
+agentwire repl --view fanout --cols 2 \\
+  --col-effort 0=max --col-effort 1=high           # compare effort
+agentwire repl -p "summarize foo.py"               # one-shot stdout pipe
+# Inside the REPL:  /help /clear /cost /tools /model /save /resume <name>
+#                   /effort <level> /thinking <mode> /say <text> /scrub
+#                   /theme <name> /run-workflow <name> /exit
+# Inside fanout: /exit, /quit, /cancel, /clear (also Ctrl+C, Ctrl+D)
+
 # Pane commands (for workers within same session)
 agentwire spawn --roles worker  # spawn worker pane
 agentwire send --pane 1 "task"  # send to pane

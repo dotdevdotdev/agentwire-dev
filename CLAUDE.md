@@ -125,7 +125,8 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 ## Docs
 
 - CLI: `agentwire --help` or `agentwire <cmd> --help`
-- `docs/repl-tui.md` - Textual REPL walkthrough (slash commands, shortcuts, theming, layout)
+- `docs/repl-tui.md` - Textual REPL walkthrough — single-stream bullet/indent format, slash commands, shortcuts, theming, `--view fanout` multi-generation A/B
+- `docs/missions/agentwire-sdk-primitives.md` - `agentwire/sdk/` package + composite views (fanout, portal watch-mode)
 - `docs/pi-zai.md` - Pi coding agent + Z.AI session types
 - `docs/workflows.md` - Pi workflow engine user guide (incl. scheduler integration)
 - `docs/scheduled-workloads.md` - Ensure vs workflow scheduled tasks, `.agentwire.yml` reference

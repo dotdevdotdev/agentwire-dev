@@ -139,7 +139,7 @@ Same posture as `agentwire-repl.md` Phase 6+. Don't pre-build:
 - `agentwire/repl/commands.py` — slash commands; reused unchanged.
 - `agentwire/repl/persistence.py` — transcript JSONL; reused unchanged.
 - `agentwire/repl/mentions.py` — @-mention expansion; reused unchanged.
-- `agentwire/repl/damage_control.py` — `make_pre_tool_hook`; reused unchanged.
+- `agentwire/sdk/damage_control.py` — `make_pre_tool_hook`; reused unchanged.
 - `agentwire/repl/context.py` — role/voice loading; reused unchanged.
 
 The rewrite is the rendering layer only. Everything below is intact.
@@ -302,7 +302,7 @@ These files are imported and reused as-is — no edits:
 - `agentwire/repl/commands.py` (slash handlers — `out: TextIO` signature already compatible with `_RichLogSink`)
 - `agentwire/repl/persistence.py` (transcript JSONL)
 - `agentwire/repl/mentions.py` (`@path` expansion)
-- `agentwire/repl/damage_control.py` (`make_pre_tool_hook`)
+- `agentwire/sdk/damage_control.py` (`make_pre_tool_hook`)
 - `agentwire/repl/context.py` (role/voice loading)
 - `agentwire/__main__.py::cmd_repl` and `repl_parser` (no CLI changes; flag is purely env)
 - `_run_print_mode`, `_run_interactive`, `build_options`, `render_message`, `_StreamRenderState`, `_heartbeat_iter` — remain in `app.py`, imported by both paths.

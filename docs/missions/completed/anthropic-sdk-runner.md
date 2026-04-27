@@ -254,8 +254,8 @@ Zero changes to `scheduler.py`. Workflow tasks still just call `run_workflow(wf,
 | `agentwire/workflows/runners/__init__.py` | New — runner registry |
 | `agentwire/workflows/runners/pi.py` | New — thin wrapper around existing `pi_runner.py` (pi behaviour unchanged) |
 | `agentwire/workflows/runners/anthropic.py` | New — SDK-backed node executor using `claude-agent-sdk` |
-| `agentwire/workflows/runners/anthropic_events.py` | New — translate SDK `Message` objects → pi-shaped JSONL |
-| `agentwire/workflows/runners/anthropic_capabilities.py` | New — model → supported settings table; used by validator and runtime |
+| `agentwire/workflows/runners/anthropic_events.py` *(now `agentwire/sdk/events.py`, relocated v1.24.0)* | New — translate SDK `Message` objects → pi-shaped JSONL |
+| `agentwire/workflows/runners/anthropic_capabilities.py` *(now `agentwire/sdk/capabilities.py`, relocated v1.24.0)* | New — model → supported settings table; used by validator and runtime |
 | `agentwire/workflows/pi_runner.py` | Leave in place as a shim for one release cycle, then delete |
 | `agentwire/workflows/node.py` | Add `runner`, `effort`, `max_thinking_tokens`, `max_budget_usd`, `task_budget` fields on `ActionNode` |
 | `agentwire/workflows/definitions.py` | Parse top-level `runner:` + per-node `runner:` + new SDK settings; validate against registry |
@@ -334,7 +334,7 @@ Zero changes to `scheduler.py`. Workflow tasks still just call `run_workflow(wf,
       task_budget_tokens: 40000          # Opus 4.7 only, min 20000 (beta — passes through extra_args)
   ```
 
-  **Validation policy — strict, at parse time.** Bad combinations are caught at `agentwire workflow validate` and at `agentwire scheduler board` load, before a single node runs. No silent coercion, no "warn and continue" — errors surface with the exact setting that's wrong and why. A small capability table at `agentwire/workflows/runners/anthropic_capabilities.py` is consulted by both the validator and the runtime:
+  **Validation policy — strict, at parse time.** Bad combinations are caught at `agentwire workflow validate` and at `agentwire scheduler board` load, before a single node runs. No silent coercion, no "warn and continue" — errors surface with the exact setting that's wrong and why. A small capability table at `agentwire/sdk/capabilities.py` (was `agentwire/workflows/runners/anthropic_capabilities.py` pre-v1.24.0) is consulted by both the validator and the runtime:
 
   | Setting | Requires | Error if violated |
   |---|---|---|

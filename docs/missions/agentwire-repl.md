@@ -201,8 +201,8 @@ Old code in git history is **reference only**, not a blueprint.
 ## Code references (study / possibly reuse — not copy blindly)
 
 - `agentwire/workflows/runners/anthropic.py` — SDK init, streaming pattern, options building
-- `agentwire/workflows/runners/anthropic_events.py` — SDK event → JSONL translation (reusable)
-- `agentwire/workflows/runners/anthropic_capabilities.py` — model / effort / thinking validation
+- `agentwire/sdk/events.py` — SDK event → JSONL translation (reusable; relocated from `workflows/runners/anthropic_events.py` in v1.24.0)
+- `agentwire/sdk/capabilities.py` — model / effort / thinking validation (relocated from `workflows/runners/anthropic_capabilities.py` in v1.24.0)
 - `agentwire/workflows/storage.py` — transcript JSONL + metadata pattern
 - `agentwire/workflows/cli.py` `_make_verbose_printer()` — event-to-terminal printer prototype
 - `agentwire/roles/__init__.py` — role parsing + merging (universal, works as-is)

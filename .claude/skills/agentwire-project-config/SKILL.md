@@ -28,7 +28,7 @@ session:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `pi-zai`, `pi-zai-restricted`, `pi-zai-readonly` | Session permission level. **Use `claude-auto` for overnight/unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. |
+| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `pi-zai`, `pi-zai-restricted`, `pi-zai-readonly`, `sdk-bypass`, `sdk-prompted`, `sdk-restricted` | Session permission level. **Use `claude-auto` for overnight/unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. **`sdk-*` types** spawn the Textual `agentwire repl` (claude-agent-sdk via Anthropic subscription) — see `docs/repl-tui.md`. |
 | `roles` | List of role names | Roles to load (from bundled or `~/.agentwire/roles/`) |
 | `voice` | Voice name | TTS voice for this project |
 | `parent` | Session name | Parent session for hierarchical notifications |
@@ -36,7 +36,10 @@ session:
 | `tasks` | Task definitions | Scheduled workload configurations |
 | `safety` | `{allowed_paths: [...]}` | Per-project damage control allowlist |
 
-For Z.AI sessions (`pi-zai*`), see the `agentwire-pi-zai` skill.
+For Z.AI sessions (`pi-zai*`), see the `agentwire-pi-zai` skill. For
+the Textual REPL surface (`sdk-*` types or `agentwire repl` directly),
+see `docs/repl-tui.md` — it covers slash commands, the `--view fanout`
+multi-generation A/B view, theming, and the portal watch-mode.
 
 ## Task Schema
 
