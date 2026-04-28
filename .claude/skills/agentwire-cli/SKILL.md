@@ -23,7 +23,7 @@ agentwire worktree name --ref v2.0  # detached at tag/commit
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
-# Textual REPL (claude-agent-sdk surface — see docs/repl-tui.md)
+# Textual REPL (claude-agent-sdk surface — see docs/wiki/sessions/repl-tui.md)
 agentwire repl                          # interactive Textual TUI (default)
 agentwire repl --mode bypass|prompted|restricted   # permission mode
 agentwire repl --model claude-sonnet-4-6           # override model

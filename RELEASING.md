@@ -1,37 +1,69 @@
-Release guide for agentwire-dev
+# Releasing agentwire-dev
 
 This project publishes the CLI and web app to PyPI as `agentwire-dev`. Packaging uses Hatchling via `pyproject.toml`.
 
-Steps
+Every release does **both** a PyPI publish and a GitHub release.
 
-1) Bump version
-- Edit `agentwire/__init__.py` and update `__version__`.
-- Add an entry to `CHANGELOG.md` for the new version.
+## Steps
 
-2) Sanity check packaging
-- Ensure templates/static are present under `agentwire/templates` and `agentwire/static`.
-- Confirm `pyproject.toml` includes them under `[tool.hatch.build.targets.wheel].include`.
+### 1. Bump version
 
-3) Build artifacts
-- Clean: `rm -rf dist/ build/`.
-- Build: `hatch build`  (or `python -m build`).
+Edit `agentwire/__init__.py` and update `__version__`. Add an entry to `CHANGELOG.md`.
 
-4) Inspect contents
-- sdist: `tar -tvf dist/agentwire-dev-<ver>.tar.gz | less`.
-- wheel: `unzip -l dist/agentwire_dev-<ver>-py3-none-any.whl | less`.
-- Verify `agentwire/templates/` and `agentwire/static/` are included.
+### 2. Commit and push
 
-5) Validate metadata
-- `twine check dist/*`.
+```bash
+git add agentwire/__init__.py CHANGELOG.md
+git commit -m "chore: bump version to {VERSION}"
+git push
+```
 
-6) Publish
-- TestPyPI: `twine upload -r testpypi dist/*`.
-- PyPI: `twine upload dist/*`.
+### 3. Build artifacts
 
-7) Tag release
-- `git tag v<ver> && git push origin v<ver>`.
+```bash
+uv build
+```
 
-Notes
+Produces `dist/agentwire_dev-{VERSION}-py3-none-any.whl` and `dist/agentwire_dev-{VERSION}.tar.gz`.
+
+Optional sanity check — confirm `agentwire/templates/` and `agentwire/static/` are bundled:
+
+```bash
+unzip -l dist/agentwire_dev-{VERSION}-py3-none-any.whl | grep -E "templates/|static/"
+```
+
+### 4. Publish to PyPI
+
+The `PYPI_TOKEN` lives in `~/.agentwire/.env`. Pass it explicitly:
+
+```bash
+source ~/.agentwire/.env && uv publish --token "$PYPI_TOKEN" dist/agentwire_dev-{VERSION}*
+```
+
+### 5. Create GitHub release
+
+`gh release create` auto-creates the git tag — no separate `git tag` call needed. Build the changelog from commits since the last release:
+
+```bash
+git log --oneline v{LAST_VERSION}..HEAD
+```
+
+```bash
+gh release create v{VERSION} --title "v{VERSION}" --notes "## Highlights
+- ...
+
+## New Features
+- ...
+
+## Fixes
+- ...
+
+Built by [dotdev.dev](https://dotdev.dev)"
+```
+
+## Notes
+
 - Package name: `agentwire-dev` (import package is `agentwire`).
 - Python: >=3.10 as declared in `pyproject.toml`.
-- Build backend: Hatchling; no `setup.py` is required.
+- Build backend: Hatchling; no `setup.py` required.
+- TestPyPI is available via `--publish-url https://test.pypi.org/legacy/` if you want to validate before a real publish.

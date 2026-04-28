@@ -43,4 +43,4 @@ AgentWire includes built-in security features:
 - **Path Protection:** Prevent access to sensitive files (.env, SSH keys, credentials)
 - **Audit Logging:** All blocked operations are logged
 
-See `docs/security/damage-control.md` for details.
+See `docs/wiki/internals/damage-control.md` for details.

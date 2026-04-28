@@ -1,6 +1,6 @@
 # Agentwire REPL — Textual TUI walkthrough
 
-> The Textual TUI for `agentwire repl`. See `docs/missions/agentwire-repl-textual.md`
+> The Textual TUI for `agentwire repl`. See `../../missions/completed/agentwire-repl-textual.md`
 > for design and ship history.
 
 ## Quick start
@@ -281,6 +281,6 @@ widths.
 Trigger-driven: snapshot tests for new visual changes (Phase 3A laid the
 infra; run via `pytest -m snapshots`).
 
-See `docs/missions/agentwire-repl-textual.md` for the living checklist
-and `docs/missions/agentwire-sdk-primitives.md` for the composite-views
-roadmap.
+See `../../missions/completed/agentwire-repl-textual.md` for the historical
+checklist and `../../missions/completed/agentwire-sdk-primitives.md` for the
+composite-views roadmap.

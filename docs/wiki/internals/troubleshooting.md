@@ -164,7 +164,7 @@ tts:
   runpod_api_key: "your-api-key"
 ```
 
-See `docs/runpod-tts.md` for RunPod setup or `docs/tts-self-hosted.md` for self-hosting.
+See `../tts/runpod-tts.md` for RunPod setup or `../tts/tts-self-hosted.md` for self-hosting.
 
 ### STT (Speech-to-Text) Not Working
 
@@ -476,7 +476,7 @@ quote> line2"   # Bash waiting for closing quote
 
 1. Make sure you're running the latest version: `agentwire rebuild`
 2. Check role files for unusual characters
-3. See `docs/SHELL_ESCAPING.md` for technical details
+3. See `shell-escaping.md` for technical details
 
 ### Garbled Command Output in tmux
 

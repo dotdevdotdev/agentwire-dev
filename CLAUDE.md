@@ -125,19 +125,10 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 ## Docs
 
 - CLI: `agentwire --help` or `agentwire <cmd> --help`
-- `docs/repl-tui.md` - Textual REPL walkthrough — single-stream bullet/indent format, slash commands, shortcuts, theming, `--view fanout` multi-generation A/B
-- `docs/missions/completed/agentwire-sdk-primitives.md` - `agentwire/sdk/` package + composite views (fanout, portal watch-mode)
-- `docs/pi-zai.md` - Pi coding agent + Z.AI session types
-- `docs/workflows.md` - Pi workflow engine user guide (incl. scheduler integration)
-- `docs/scheduled-workloads.md` - Ensure vs workflow scheduled tasks, `.agentwire.yml` reference
-- `docs/missions/pi-harness-overview.md` - Pi integration roadmap across phases
-- `docs/channels.md` - Channel developer guide
-- `docs/PORTAL.md` - Portal modes and API reference
-- `docs/security/damage-control.md` - Safety hooks documentation
-- `docs/TROUBLESHOOTING.md` - Common issues and solutions
-- `docs/SHELL_ESCAPING.md` - Shell escaping guide
-- `docs/runpod-tts.md` - RunPod TTS setup
-- `docs/tts-self-hosted.md` - Self-hosted TTS
-- `docs/remote-machines.md` - Multi-machine orchestration, WSL2 setup
-- `docs/remote-access.md` - Cloudflare Tunnel setup
-- `docs/hammerspoon.md` - Hammerspoon push-to-talk setup for macOS
+- **[`docs/wiki/INDEX.md`](docs/wiki/INDEX.md)** — feature reference manual (sessions, communication, scheduling, integrations, deployment, TTS, internals)
+- `docs/missions/completed/` — historical design + shipping records (per-mission)
+- `docs/missions/pi-harness-overview.md` — pi integration roadmap (active reference)
+
+## Mission tracking
+
+New missions live in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues). Issue body = plan; comments = progress updates; PR description = canonical end-of-project summary. Don't add new mission docs to this repo — only the wiki receives post-ship reference content.

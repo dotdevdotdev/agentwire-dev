@@ -285,7 +285,7 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
 
             if merged.instructions:
                 # Write to temp file to avoid shell escaping issues
-                # See docs/SHELL_ESCAPING.md for details
+                # See docs/wiki/internals/shell-escaping.md for details
                 # MUST be last flag — multiline content can break subsequent args
                 f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
                 f.write(merged.instructions)
@@ -10772,7 +10772,7 @@ def main() -> int:
             "Centralized daemon that dispatches tasks across projects on a shared cadence. "
             "Tasks in ~/.agentwire/scheduler.yaml are either ensure tasks (task: + session:) "
             "or workflow tasks (workflow: + inputs:) — the scheduler routes each automatically. "
-            "See docs/scheduled-workloads.md."
+            "See docs/wiki/scheduling/scheduled-workloads.md."
         ),
     )
     scheduler_subparsers = scheduler_parser.add_subparsers(dest="scheduler_command")

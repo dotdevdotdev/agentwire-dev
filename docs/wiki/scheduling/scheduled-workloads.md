@@ -33,7 +33,7 @@ All three are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire sc
 
 A task must set exactly one of `task:` or `workflow:`. Everything else (gates, priority, `max_runs`, `once`, `cooldown`, `not_before`/`not_after`) applies to both.
 
-Full workflow task reference: [`docs/workflows.md#scheduler-integration`](workflows.md#scheduler-integration).
+Full workflow task reference: [`workflows.md#scheduler-integration`](workflows.md#scheduler-integration).
 
 ---
 
@@ -329,7 +329,7 @@ type: claude-auto
 
 **Requires:** Team or Enterprise Claude plan. Pro/Max individual plans not supported.
 
-See `docs/claude-code-auto-mode.md` for full setup, allow rule configuration, and constraints.
+See `../sessions/claude-code-auto-mode.md` for full setup, allow rule configuration, and constraints.
 
 ---
 

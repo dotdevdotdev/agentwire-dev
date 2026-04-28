@@ -1,11 +1,11 @@
 ---
 name: agentwire-workflows
-description: Pi workflow engine — YAML-defined DAGs of pi invocations chained by Jinja2 templating + output extraction. Covers YAML anatomy (inputs, nodes, outputs, when, retries, on_error), CLI (`agentwire workflow list/validate/run/history/show`), MCP tools (`workflow_list/validate/run/history/show`), storage layout (metadata.json, context.json, per-node event logs), and debugging. Use when authoring a new workflow YAML, debugging a failed workflow run, explaining workflow concepts, or choosing between a workflow and a scheduler task. Full reference lives in docs/workflows.md.
+description: Pi workflow engine — YAML-defined DAGs of pi invocations chained by Jinja2 templating + output extraction. Covers YAML anatomy (inputs, nodes, outputs, when, retries, on_error), CLI (`agentwire workflow list/validate/run/history/show`), MCP tools (`workflow_list/validate/run/history/show`), storage layout (metadata.json, context.json, per-node event logs), and debugging. Use when authoring a new workflow YAML, debugging a failed workflow run, explaining workflow concepts, or choosing between a workflow and a scheduler task. Full reference lives in docs/wiki/scheduling/workflows.md.
 ---
 
 # Pi workflow engine — quick reference
 
-Workflows live in `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user). Each node runs against one of two backends via `runner:` — `pi` (subprocess per node, default) or `anthropic` (`claude-agent-sdk` in-process, subscription auth). Both return the same `NodeResult` shape. See `docs/workflows.md` → "Runners" for the full per-runner field table; quick reference below is pi-focused.
+Workflows live in `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user). Each node runs against one of two backends via `runner:` — `pi` (subprocess per node, default) or `anthropic` (`claude-agent-sdk` in-process, subscription auth). Both return the same `NodeResult` shape. See `docs/wiki/scheduling/workflows.md` → "Runners" for the full per-runner field table; quick reference below is pi-focused.
 
 ## Minimum viable YAML
 
@@ -30,7 +30,7 @@ nodes:
 - **Skipping** — `when:` false OR upstream skipped/branched → node is `skipped`; dependents propagated unless rescued by a branch `on_error_goto`.
 - **Tools (pi)** — subset of `{read, bash, edit, write, grep, find, ls}`. Default `[read, bash, edit, write]`. Empty list → `--no-tools`.
 - **Thinking (pi)** — `off | minimal | low | medium | high | xhigh`. Default `medium`. Use `off` for flash-tier cheap nodes.
-- **Anthropic runner** — uses `model` (required, e.g. `claude-opus-4-7`), `effort` (low|medium|high|max|xhigh), `thinking_config` (dict), CamelCase tools (`Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `WebFetch`, `WebSearch`). See `docs/workflows.md` → Runners for the full table.
+- **Anthropic runner** — uses `model` (required, e.g. `claude-opus-4-7`), `effort` (low|medium|high|max|xhigh), `thinking_config` (dict), CamelCase tools (`Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `WebFetch`, `WebSearch`). See `docs/wiki/scheduling/workflows.md` → Runners for the full table.
 
 ## CLI
 
@@ -88,7 +88,7 @@ tasks:
 
 Status maps `success→complete`, `partial→incomplete`, `failure→failed`. `agentwire scheduler run <name> --dry-run` works for workflow tasks. The morning report renders per-node status badges.
 
-Full reference in `docs/workflows.md` → "Scheduler integration" section.
+Full reference in `docs/wiki/scheduling/workflows.md` → "Scheduler integration" section.
 
 ## When to pick which tool
 
@@ -101,7 +101,7 @@ Full reference in `docs/workflows.md` → "Scheduler integration" section.
 
 ## Full reference
 
-`docs/workflows.md` — concept intro, full YAML anatomy, per-field semantics, debugging guide, FAQ.
+`docs/wiki/scheduling/workflows.md` — concept intro, full YAML anatomy, per-field semantics, debugging guide, FAQ.
 
 ## Mission
 

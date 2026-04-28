@@ -259,12 +259,14 @@ agentwire network status          # Service health check
 
 ## Documentation
 
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Portal API](docs/PORTAL.md)
-- [Remote Machines](docs/remote-machines.md)
-- [RunPod TTS Setup](docs/runpod-tts.md)
-- [Self-Hosted TTS](docs/tts-self-hosted.md)
-- [Safety Hooks](docs/security/damage-control.md)
+**Full reference:** [`docs/wiki/INDEX.md`](docs/wiki/INDEX.md)
+
+Quick links:
+- [Troubleshooting](docs/wiki/internals/troubleshooting.md)
+- [Portal API](docs/wiki/internals/portal.md)
+- [Remote Machines](docs/wiki/deployment/remote-machines.md)
+- [RunPod TTS](docs/wiki/tts/runpod-tts.md) · [Self-Hosted TTS](docs/wiki/tts/tts-self-hosted.md)
+- [Safety Hooks](docs/wiki/internals/damage-control.md)
 
 ---
 

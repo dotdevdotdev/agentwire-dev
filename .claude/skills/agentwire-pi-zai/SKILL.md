@@ -112,6 +112,6 @@ Each JSONL line records one event: model, user message, assistant message with t
 
 ## See Also
 
-- `docs/pi-zai.md` — full user guide, compatibility matrix, troubleshooting
+- `docs/wiki/sessions/pi-zai.md` — full user guide, compatibility matrix, troubleshooting
 - `docs/missions/pi-harness-overview.md` — 5-phase integration roadmap
 - `agentwire-project-config` skill — `.agentwire.yml` session type field
