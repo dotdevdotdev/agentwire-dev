@@ -335,3 +335,212 @@ class TestCheckCommandSafetyAllowlist:
 
         result = check_command_safety("mv something dist/file")
         assert result["decision"] == "block"
+
+
+# --- check_command_safety: pattern types & decision-order edge cases ---
+
+class TestCheckCommandSafetyDecisionPaths:
+    """Cover branches that drive evaluation order: ask, hard-block, regex error,
+    zero-access bypass, no-delete bypass."""
+
+    def _rules(self, tmp_path, monkeypatch, patterns):
+        import yaml
+        import agentwire.cli_safety as mod
+        rd = tmp_path / "rules"
+        rd.mkdir(exist_ok=True)
+        (rd / "patterns.yaml").write_text(yaml.safe_dump(patterns))
+        monkeypatch.setattr(mod, "RULES_DIR", rd)
+        return rd
+
+    def test_ask_pattern_returns_ask(self, tmp_path, monkeypatch):
+        self._rules(tmp_path, monkeypatch, {
+            "bashToolPatterns": [
+                {"pattern": r"\bgit\s+push\b", "reason": "git push", "ask": True},
+            ],
+        })
+        result = check_command_safety("git push origin main")
+        assert result["decision"] == "ask"
+        assert result["reason"] == "git push"
+
+    def test_invalid_regex_skipped_not_crashed(self, tmp_path, monkeypatch):
+        """A malformed pattern must not crash safety evaluation."""
+        self._rules(tmp_path, monkeypatch, {
+            "bashToolPatterns": [
+                {"pattern": r"[unclosed", "reason": "bad pattern"},
+                {"pattern": r"\bdanger\b", "reason": "real danger"},
+            ],
+        })
+        # Bad regex skipped; real one still works.
+        bad = check_command_safety("danger ahead")
+        assert bad["decision"] == "block"
+        assert bad["reason"] == "real danger"
+        # And a benign command still allowed.
+        good = check_command_safety("echo hi")
+        assert good["decision"] == "allow"
+
+    def test_non_dict_pattern_entry_skipped(self, tmp_path, monkeypatch):
+        """Stray non-dict entries in bashToolPatterns must be tolerated."""
+        self._rules(tmp_path, monkeypatch, {
+            "bashToolPatterns": [
+                "not a dict",  # bogus entry
+                {"pattern": r"\bbadcmd\b", "reason": "bad"},
+            ],
+        })
+        result = check_command_safety("badcmd run")
+        assert result["decision"] == "block"
+
+    def test_zero_access_path_blocks(self, tmp_path, monkeypatch):
+        """A zero-access path (e.g. /etc/secret) blocks even read-only access."""
+        self._rules(tmp_path, monkeypatch, {
+            "zeroAccessPaths": ["/etc/secret"],
+        })
+        result = check_command_safety("cat /etc/secret")
+        assert result["decision"] == "block"
+        assert "Zero-access" in result["reason"]
+
+    def test_zero_access_bypassed_by_allowlist_with_read(self, tmp_path, monkeypatch):
+        """zeroAccessPaths can be bypassed if the path is allowlisted with read."""
+        self._rules(tmp_path, monkeypatch, {
+            "zeroAccessPaths": ["/etc/secret"],
+            "allowedPaths": [{"path": "/etc/secret", "allow": ["read"]}],
+        })
+        result = check_command_safety("cat /etc/secret")
+        assert result["decision"] == "allow"
+
+    def test_no_delete_path_blocks_rm_only(self, tmp_path, monkeypatch):
+        """noDeletePaths only flags rm — cat is fine."""
+        self._rules(tmp_path, monkeypatch, {"noDeletePaths": ["README.md"]})
+        # rm blocks
+        assert check_command_safety("rm README.md")["decision"] == "block"
+        # cat is fine
+        assert check_command_safety("cat README.md")["decision"] == "allow"
+
+    def test_no_delete_bypassed_by_allowlist_with_delete(self, tmp_path, monkeypatch):
+        self._rules(tmp_path, monkeypatch, {
+            "noDeletePaths": ["dist/"],
+            "allowedPaths": [{"path": "*/dist/*", "allow": ["delete"]}],
+        })
+        result = check_command_safety("rm /tmp/proj/dist/old.whl")
+        assert result["decision"] == "allow"
+
+    def test_decision_order_ask_beats_block(self, tmp_path, monkeypatch):
+        """ask wins when both ask and bypassable patterns match a command."""
+        self._rules(tmp_path, monkeypatch, {
+            "bashToolPatterns": [
+                {"pattern": r"\brm\b", "reason": "rm anything", "ask": True},
+                {"pattern": r"\brm\s+[^-]", "reason": "rm bypassable", "bypassable": True},
+            ],
+        })
+        # Both match — ask wins because it's evaluated first.
+        result = check_command_safety("rm foo.txt")
+        assert result["decision"] == "ask"
+
+    def test_no_match_allows(self, tmp_path, monkeypatch):
+        self._rules(tmp_path, monkeypatch, {
+            "bashToolPatterns": [
+                {"pattern": r"\brm\b", "reason": "rm"},
+            ],
+        })
+        result = check_command_safety("ls -la")
+        assert result["decision"] == "allow"
+        assert result["pattern"] is None
+
+
+# --- _infer_operation_from_reason: dispatch by reason text ---
+
+@pytest.mark.parametrize("reason,expected_op", [
+    ("rm file deletion", "delete"),
+    ("trash everything", "delete"),
+    ("rmdir empty", "delete"),
+    ("delete entry", "delete"),
+    # Note: substring matching means "permission" -> contains "rm" -> "delete".
+    # The branch order is delete-first, so chmod-only reasons must avoid "rm".
+    ("chmod -x", "chmod"),
+    ("chown user", "chmod"),
+    ("chgrp group", "chmod"),
+    ("mv operation", "move"),
+    ("apply move", "move"),
+    ("write to file", "write"),  # default fallback
+    ("", "write"),  # empty reason → write
+])
+def test_infer_operation_from_reason(reason, expected_op):
+    from agentwire.cli_safety import _infer_operation_from_reason
+    assert _infer_operation_from_reason(reason) == expected_op
+
+
+# --- _extract_command_paths: path extraction from command strings ---
+
+class TestExtractCommandPaths:
+    def _extract(self, cmd):
+        from agentwire.cli_safety import _extract_command_paths
+        return _extract_command_paths(cmd)
+
+    def test_absolute_path(self):
+        assert "/etc/passwd" in self._extract("cat /etc/passwd")
+
+    def test_home_path_expanded(self):
+        # ~ paths are expanded to absolute
+        paths = self._extract("rm ~/.ssh/id_rsa")
+        assert any(p.endswith("/.ssh/id_rsa") for p in paths)
+
+    def test_quoted_path(self):
+        paths = self._extract('cat "/etc/secret file"')
+        assert "/etc/secret file" in paths
+
+    def test_flag_excluded(self):
+        # -rf is a flag, not a path
+        paths = self._extract("rm -rf /tmp/x")
+        assert not any(p == "-rf" or p.startswith("-") for p in paths)
+
+    def test_relative_path(self):
+        paths = self._extract("rm ./scratch.txt")
+        assert any("scratch.txt" in p for p in paths)
+
+
+# --- Read-only path mutation operators: documents which slip through ---
+#
+# Source line ~429 only catches `rm`, `mv`, `sed -i`, `>` for readOnlyPath
+# detection. Other mutating commands (cp, dd, tee, rsync, cat>, install) are
+# NOT caught — they fall through to "allow" unless covered by another rule.
+# These tests document that gap so we notice if it changes.
+
+class TestReadOnlyPathMutationOperators:
+    def _rules(self, tmp_path, monkeypatch, patterns):
+        import yaml
+        import agentwire.cli_safety as mod
+        rd = tmp_path / "rules"
+        rd.mkdir(exist_ok=True)
+        (rd / "patterns.yaml").write_text(yaml.safe_dump(patterns))
+        monkeypatch.setattr(mod, "RULES_DIR", rd)
+        return rd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm /readonly/file",        # rm — caught
+        "mv src /readonly/file",    # mv — caught
+        "sed -i s/x/y/g /readonly/file",  # sed -i — caught
+        "echo data > /readonly/file",  # > redirect — caught
+    ])
+    def test_caught_mutation_operators(self, cmd, tmp_path, monkeypatch):
+        self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
+        assert check_command_safety(cmd)["decision"] == "block"
+
+    @pytest.mark.parametrize("cmd", [
+        "cp src /readonly/file",
+        "dd if=src of=/readonly/file",
+        "tee /readonly/file",
+        "rsync src /readonly/",
+        "tar -cf /readonly/x.tar src",
+        "install -m 0644 src /readonly/dst",
+    ])
+    def test_uncaught_mutation_operators_currently_allowed(self, cmd, tmp_path, monkeypatch):
+        """Documents the security gap: these operators write to read-only paths
+        but are not detected by the current readOnlyPaths rule.
+
+        If this test starts failing (decision becomes 'block'), the gap was
+        closed in source — flip the assertion and update.
+        """
+        self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
+        result = check_command_safety(cmd)
+        assert result["decision"] == "allow", (
+            f"Gap closed for {cmd!r} — update this test to assert 'block'"
+        )
