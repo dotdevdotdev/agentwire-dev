@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>{{ bundle.title | e }}</title>
+  <style>
+    {% include "handoff/theme.css.j2" %}
+
+    * { box-sizing: border-box; }
+    *:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); transition: color var(--motion-duration), border-color var(--motion-duration); }
+    a:hover { color: var(--accent-2); border-bottom-color: var(--accent-2); }
+
+    code { font-family: var(--font-heading); font-size: 0.875em; padding: 0.1em 0.35em; background: color-mix(in srgb, var(--surface) 60%, transparent); border: 1px solid var(--border); border-radius: 4px; }
+
+    pre {
+      font-family: var(--font-heading);
+      font-size: 0.82rem;
+      line-height: 1.55;
+      background: color-mix(in srgb, var(--surface) 80%, var(--bg));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 1.1rem 1.25rem;
+      overflow-x: auto;
+      max-height: 65vh;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    pre code { background: transparent; border: 0; padding: 0; font-size: inherit; }
+    pre::-webkit-scrollbar { height: 8px; width: 8px; }
+    pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-heading);
+      font-weight: 600;
+      letter-spacing: -0.015em;
+      line-height: 1.15;
+      margin: 0 0 0.5em;
+      color: var(--fg);
+    }
+
+    p { margin: 0 0 1rem; max-width: 72ch; }
+
+    ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--fg); }
+
+    /* ============================================================
+       App shell
+       ============================================================ */
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
+      max-height: 100vh;
+    }
+
+    /* ============================================================
+       Tab bar
+       ============================================================ */
+    .tab-bar {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 0 clamp(1rem, 4vw, 3rem);
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 88%, var(--bg)));
+      overflow-x: auto;
+      scrollbar-width: none;
+      height: 56px;
+      flex-shrink: 0;
+    }
+    .tab-bar::-webkit-scrollbar { display: none; }
+
+    .tab-bar button {
+      position: relative;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: 0 0.95rem;
+      height: 100%;
+      font-family: var(--font-heading);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color var(--motion-duration);
+      white-space: nowrap;
+    }
+
+    .tab-bar button::after {
+      content: "";
+      position: absolute;
+      left: 0.95rem;
+      right: 0.95rem;
+      bottom: -1px;
+      height: 2px;
+      background: var(--accent);
+      transform: scaleX(0);
+      transform-origin: center;
+      transition: transform var(--motion-duration) ease;
+    }
+
+    .tab-bar button:hover { color: var(--fg); }
+    .tab-bar button.active { color: var(--accent); }
+    .tab-bar button.active::after { transform: scaleX(1); }
+
+    .tab-bar .meta {
+      margin-left: auto;
+      font-family: var(--font-heading);
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      padding-left: 1.5rem;
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    .tab-bar .meta .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+    /* ============================================================
+       Panels & slides
+       ============================================================ */
+    .tab-content {
+      position: relative;
+      overflow: hidden;
+      background: var(--bg);
+      background-image: var(--bg-grid);
+    }
+
+    .panel {
+      display: none;
+      height: 100%;
+      overflow-y: auto;
+      scroll-snap-type: y mandatory;
+      scroll-behavior: smooth;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .panel::-webkit-scrollbar { width: 8px; }
+    .panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .panel.active { display: block; }
+
+    .slide {
+      min-height: 100vh;
+      scroll-snap-align: start;
+      padding: clamp(3rem, 8vh, 6rem) clamp(1.25rem, 5vw, 4rem);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      max-width: 1180px;
+      margin: 0 auto;
+      position: relative;
+    }
+
+    .slide.short { min-height: auto; padding-top: 4rem; padding-bottom: 4rem; }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      font-family: var(--font-heading);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      color: var(--accent);
+      margin-bottom: 1.25rem;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 28px;
+      height: 2px;
+      background: var(--accent);
+      opacity: 0.85;
+      flex-shrink: 0;
+    }
+
+    h1.title {
+      font-size: clamp(2.25rem, 6vw, 4.25rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      max-width: 18ch;
+      margin-bottom: 1.5rem;
+    }
+
+    h2 { font-size: clamp(1.6rem, 3.2vw, 2.6rem); margin-bottom: 1rem; }
+    h3 { font-size: 1.15rem; font-weight: 600; }
+
+    .lede {
+      font-size: clamp(1.05rem, 1.5vw, 1.3rem);
+      color: var(--muted);
+      max-width: 65ch;
+      line-height: 1.55;
+    }
+
+    .mood {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-family: var(--font-heading);
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      padding: 0.45rem 0.85rem;
+      background: color-mix(in srgb, var(--surface) 70%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      margin-bottom: 1.25rem;
+    }
+    .mood::before {
+      content: "";
+      display: block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      box-shadow: 0 0 8px var(--accent-2);
+    }
+
+    /* ============================================================
+       Stats strip
+       ============================================================ */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 0;
+      margin-top: 2.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background: color-mix(in srgb, var(--surface) 60%, transparent);
+    }
+
+    .stat-card {
+      padding: 1.5rem 1.5rem;
+      border-right: 1px solid var(--border);
+    }
+    .stat-card:last-child { border-right: 0; }
+
+    .stat-card .label {
+      font-family: var(--font-heading);
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-card .value {
+      font-family: var(--font-heading);
+      font-size: 2.25rem;
+      font-weight: 700;
+      color: var(--fg);
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    .stat-card .value.text { font-size: 1rem; font-weight: 500; word-break: break-all; }
+
+    /* ============================================================
+       Key-value list (Cast & Context, etc.)
+       ============================================================ */
+    .kv {
+      display: grid;
+      grid-template-columns: minmax(120px, max-content) 1fr;
+      gap: 0.75rem 2rem;
+      margin: 2rem 0;
+      padding: 1.5rem 1.75rem;
+      background: color-mix(in srgb, var(--surface) 60%, transparent);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+    .kv dt {
+      font-family: var(--font-heading);
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      align-self: center;
+    }
+    .kv dd {
+      margin: 0;
+      font-family: var(--font-heading);
+      font-size: 0.92rem;
+      color: var(--fg);
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .kv dd code { font-size: inherit; background: transparent; border: 0; padding: 0; color: inherit; }
+
+    /* ============================================================
+       Cards
+       ============================================================ */
+    .card {
+      position: relative;
+      background: color-mix(in srgb, var(--surface) 75%, transparent);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 1.4rem 1.5rem 1.5rem;
+      margin: 1rem 0;
+      box-shadow: var(--shadow-card);
+      transition: transform var(--motion-duration), box-shadow var(--motion-duration), border-color var(--motion-duration);
+    }
+    .card:hover {
+      box-shadow: var(--shadow-hover);
+      border-color: color-mix(in srgb, var(--border) 60%, var(--accent));
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 1.4rem;
+      bottom: 1.5rem;
+      left: 0;
+      width: 3px;
+      background: var(--accent);
+      border-radius: 0 2px 2px 0;
+    }
+    .card.dead-end::before { background: #ef4444; }
+    .card.open::before { background: var(--accent-2); }
+
+    .card .tag {
+      display: inline-block;
+      font-family: var(--font-heading);
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+    }
+    .card.dead-end .tag { color: #ef4444; }
+    .card.open .tag { color: var(--accent-2); }
+
+    .card h3 { margin-bottom: 0.4rem; }
+    .card p:last-child { margin-bottom: 0; }
+
+    /* ============================================================
+       Pull quotes
+       ============================================================ */
+    .pull-quote {
+      position: relative;
+      padding: 1rem 0 1rem 2.5rem;
+      margin: 1.25rem 0;
+      color: color-mix(in srgb, var(--fg) 85%, transparent);
+      font-family: var(--font-body);
+      font-style: italic;
+      font-size: clamp(1.1rem, 1.8vw, 1.4rem);
+      line-height: 1.5;
+      max-width: 60ch;
+    }
+    .pull-quote::before {
+      content: "\201C";
+      position: absolute;
+      left: 0;
+      top: -0.25rem;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 3.5rem;
+      line-height: 1;
+      color: var(--accent);
+      opacity: 0.55;
+    }
+
+    /* ============================================================
+       Journey beats
+       ============================================================ */
+    .beat {
+      display: grid;
+      grid-template-columns: clamp(80px, 12vw, 130px) 1fr;
+      gap: clamp(1.5rem, 4vw, 3rem);
+      align-items: start;
+      max-width: 1000px;
+    }
+    .beat-index {
+      font-family: var(--font-heading);
+      font-size: clamp(2.75rem, 7vw, 4.75rem);
+      font-weight: 700;
+      color: color-mix(in srgb, var(--accent) 55%, var(--bg));
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+      padding-top: 0.5rem;
+    }
+
+    /* ============================================================
+       Details (collapsibles)
+       ============================================================ */
+    details {
+      background: color-mix(in srgb, var(--surface) 65%, transparent);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin: 0.75rem 0;
+      overflow: hidden;
+    }
+
+    details summary {
+      cursor: pointer;
+      font-family: var(--font-heading);
+      font-size: 0.85rem;
+      color: var(--muted);
+      padding: 0.7rem 0.95rem;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      transition: color var(--motion-duration), background var(--motion-duration);
+    }
+    details summary::-webkit-details-marker { display: none; }
+    details summary::before {
+      content: "";
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border: 4px solid transparent;
+      border-left-color: var(--muted);
+      transition: transform var(--motion-duration), border-color var(--motion-duration);
+      flex-shrink: 0;
+    }
+    details summary:hover { color: var(--fg); background: color-mix(in srgb, var(--surface) 90%, transparent); }
+    details summary:hover::before { border-left-color: var(--fg); }
+    details[open] summary { color: var(--accent); border-bottom: 1px solid var(--border); margin-bottom: 0; }
+    details[open] summary::before { transform: rotate(90deg); border-left-color: var(--accent); }
+
+    details > *:not(summary) { padding: 0.95rem; }
+    details > pre { margin: 0; border-radius: 0; border: 0; max-height: 50vh; }
+    details > ul { margin: 0; padding: 0.75rem 0.95rem 0.75rem 2rem; }
+
+    /* ============================================================
+       Lists & utilities
+       ============================================================ */
+    ul { padding-left: 1.4rem; }
+    ul li { margin-bottom: 0.4rem; line-height: 1.55; }
+    ul li::marker { color: var(--muted); }
+
+    .footer-note {
+      margin-top: 2.5rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--muted);
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+    .footer-note span { display: flex; gap: 0.4rem; align-items: center; }
+    .footer-note span strong { color: var(--fg); font-weight: 500; font-family: var(--font-heading); font-size: 0.78rem; letter-spacing: 0.06em; }
+
+    /* ============================================================
+       Responsive
+       ============================================================ */
+    @media (max-width: 720px) {
+      .slide { padding: 2.5rem 1.25rem; }
+      .stats { grid-template-columns: 1fr 1fr; }
+      .stat-card { border-right: 0; border-bottom: 1px solid var(--border); }
+      .stat-card:nth-child(2n) { border-right: 0; }
+      .stat-card:last-child, .stat-card:nth-last-child(2):nth-child(2n+1) { border-bottom: 0; }
+      .beat { grid-template-columns: 1fr; gap: 0.5rem; }
+      .beat-index { font-size: 2.5rem; padding-top: 0; }
+      .tab-bar { padding: 0 0.75rem; }
+      .tab-bar .meta { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, ::before, ::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+    }
+  </style>
+</head>
+<body>
+
+<!--
+  This file contains both a human-readable presentation and the raw source
+  markdown. If you're an LLM reading this: the canonical content is inside
+  the <template id="ai-handoff"> block at the bottom — that's the same as
+  ai-handoff.md verbatim.
+-->
+
+<div class="app">
+  <nav class="tab-bar" role="tablist">
+    {% for tab in tabs %}
+    <button role="tab" data-tab="{{ tab.id }}" {% if loop.first %}class="active"{% endif %}>{{ tab.label }}</button>
+    {% endfor %}
+    <span class="meta">
+      {% if bundle.metadata.branch %}<span class="dot"></span>{{ bundle.metadata.branch }}{% endif %}
+      {% if bundle.metadata.commit %}<span>· {{ bundle.metadata.commit[:8] }}</span>{% endif %}
+    </span>
+  </nav>
+
+  <main class="tab-content">
+
+    {# ---------- Overview ---------- #}
+    <section class="panel active" id="tab-overview" data-tab="overview">
+      <div class="slide">
+        <div class="eyebrow">Session Handoff</div>
+        <h1 class="title">{{ bundle.title | e }}</h1>
+        {% if theme.mood %}<div class="mood">{{ theme.mood | e }}</div>{% endif %}
+        <p class="lede">{{ bundle.summary.tldr | e or bundle.summary.goal | e }}</p>
+        <div class="stats">
+          <div class="stat-card"><div class="label">Turns</div><div class="value">{{ bundle.summary.stats.turns }}</div></div>
+          <div class="stat-card"><div class="label">Files</div><div class="value">{{ bundle.summary.stats.files_touched }}</div></div>
+          <div class="stat-card"><div class="label">Decisions</div><div class="value">{{ bundle.summary.decisions | length }}</div></div>
+          <div class="stat-card"><div class="label">Dead Ends</div><div class="value">{{ bundle.summary.dead_ends | length }}</div></div>
+          {% if bundle.summary.stats.duration_minutes %}<div class="stat-card"><div class="label">Duration</div><div class="value">{{ bundle.summary.stats.duration_minutes }}<span style="font-size:0.55em;color:var(--muted);margin-left:2px">m</span></div></div>{% endif %}
+        </div>
+        <div class="footer-note">
+          <span><strong>cwd</strong> <code>{{ bundle.metadata.cwd | e }}</code></span>
+          {% if bundle.metadata.model %}<span><strong>model</strong> <code>{{ bundle.metadata.model | e }}</code></span>{% endif %}
+        </div>
+      </div>
+    </section>
+
+    {# ---------- Goal ---------- #}
+    <section class="panel" id="tab-goal" data-tab="goal">
+      <div class="slide">
+        <div class="eyebrow">The Goal</div>
+        <h2>{{ bundle.summary.goal | e or 'Continuing this session.' }}</h2>
+        {% if bundle.handoff.one_sentence %}
+          <p class="lede">{{ bundle.handoff.one_sentence | e }}</p>
+        {% endif %}
+        {% if bundle.handoff.resume_at %}
+          <div class="card">
+            <div class="tag">Resume at</div>
+            <p>{{ bundle.handoff.resume_at | e }}</p>
+          </div>
+        {% endif %}
+        {% if bundle.handoff.caveats %}
+          <h3 style="margin-top: 2rem">Caveats</h3>
+          <ul>
+            {% for c in bundle.handoff.caveats %}<li>{{ c | e }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    </section>
+
+    {# ---------- Journey ---------- #}
+    <section class="panel" id="tab-journey" data-tab="journey">
+      {% if bundle.journey %}
+        {% for beat in bundle.journey %}
+        <div class="slide">
+          <div class="eyebrow">Beat {{ "%02d"|format(loop.index) }} / {{ "%02d"|format(bundle.journey | length) }}</div>
+          <div class="beat">
+            <div class="beat-index">{{ "%02d"|format(loop.index) }}</div>
+            <div>
+              <h2>{{ beat.title | e }}</h2>
+              {% if beat.quote %}<div class="pull-quote">{{ beat.quote | e }}</div>{% endif %}
+              <p>{{ beat.what_happened | e }}</p>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="slide">
+          <div class="eyebrow">Journey</div>
+          <h2>No narrative beats captured</h2>
+          <p class="lede">The agent didn't include a journey section. The Decisions tab still has the substantive story.</p>
+        </div>
+      {% endif %}
+    </section>
+
+    {# ---------- Decisions ---------- #}
+    <section class="panel" id="tab-decisions" data-tab="decisions">
+      <div class="slide">
+        <div class="eyebrow">Decisions</div>
+        <h2>{{ bundle.summary.decisions | length }} key decision{{ '' if bundle.summary.decisions | length == 1 else 's' }}</h2>
+        {% for d in bundle.summary.decisions %}
+        <div class="card">
+          <div class="tag">Decision · {{ "%02d"|format(loop.index) }}</div>
+          <h3>{{ d.title | e }}</h3>
+          <p>{{ d.rationale | e }}</p>
+          {% if d.alternatives_considered %}
+            <details>
+              <summary>Alternatives considered ({{ d.alternatives_considered | length }})</summary>
+              <ul>
+                {% for a in d.alternatives_considered %}<li>{{ a | e }}</li>{% endfor %}
+              </ul>
+            </details>
+          {% endif %}
+        </div>
+        {% endfor %}
+        {% if bundle.summary.dead_ends %}
+          <h3 style="margin-top: 3rem">Dead ends</h3>
+          <p style="color: var(--muted); max-width: 60ch">Things tried and rejected — reading these saves the next agent from retracing.</p>
+          {% for d in bundle.summary.dead_ends %}
+          <div class="card dead-end">
+            <div class="tag">Rejected</div>
+            <h3>{{ d.title | e }}</h3>
+            <p>{{ d.why_rejected | e }}</p>
+          </div>
+          {% endfor %}
+        {% endif %}
+      </div>
+    </section>
+
+    {# ---------- Artifacts ---------- #}
+    <section class="panel" id="tab-artifacts" data-tab="artifacts">
+      <div class="slide">
+        <div class="eyebrow">Project State</div>
+        <h2>What changed</h2>
+        {% if bundle.project_state.git_status %}
+          <h3 style="margin-top: 2rem">Working tree</h3>
+          <pre>{{ bundle.project_state.git_status | e }}</pre>
+        {% endif %}
+        {% if bundle.project_state.git_log %}
+          <h3 style="margin-top: 2rem">Recent commits</h3>
+          <pre>{{ bundle.project_state.git_log | e }}</pre>
+        {% endif %}
+        {% if bundle.project_state.git_diff %}
+          <details style="margin-top: 1rem">
+            <summary>Uncommitted diff</summary>
+            <pre>{{ bundle.project_state.git_diff | e }}</pre>
+          </details>
+        {% endif %}
+        {% for path, content in bundle.project_state.key_files.items() %}
+          <details>
+            <summary>{{ path | e }}</summary>
+            <pre>{{ content | e }}</pre>
+          </details>
+        {% endfor %}
+      </div>
+    </section>
+
+    {# ---------- Open Threads ---------- #}
+    <section class="panel" id="tab-open" data-tab="open">
+      <div class="slide">
+        <div class="eyebrow">Open Threads</div>
+        <h2>{{ bundle.summary.open_threads | length }} unresolved</h2>
+        {% for t in bundle.summary.open_threads %}
+        <div class="card open">
+          <div class="tag">Open</div>
+          <h3>{{ t.title | e }}</h3>
+          <p>{{ t.note | e }}</p>
+        </div>
+        {% else %}
+        <p class="lede">Nothing was left dangling.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    {# ---------- Cast & Context ---------- #}
+    <section class="panel" id="tab-cast" data-tab="cast">
+      <div class="slide">
+        <div class="eyebrow">Cast & Context</div>
+        <h2>{{ bundle.metadata.user_identity | e or 'Session participants' }}</h2>
+        <p class="lede">Where this session ran and what shaped it.</p>
+        <dl class="kv">
+          {% if bundle.metadata.repo_url %}<dt>Repo</dt><dd>{{ bundle.metadata.repo_url | e }}</dd>{% endif %}
+          {% if bundle.metadata.branch %}<dt>Branch</dt><dd>{{ bundle.metadata.branch | e }}</dd>{% endif %}
+          {% if bundle.metadata.commit %}<dt>Commit</dt><dd>{{ bundle.metadata.commit | e }}</dd>{% endif %}
+          {% if bundle.metadata.model %}<dt>Model</dt><dd>{{ bundle.metadata.model | e }}</dd>{% endif %}
+          {% if bundle.metadata.session_type %}<dt>Session</dt><dd>{{ bundle.metadata.session_type | e }}</dd>{% endif %}
+          {% if bundle.metadata.cwd %}<dt>Cwd</dt><dd>{{ bundle.metadata.cwd | e }}</dd>{% endif %}
+          {% if bundle.metadata.started_at %}<dt>Started</dt><dd>{{ bundle.metadata.started_at | e }}</dd>{% endif %}
+          {% if bundle.metadata.ended_at %}<dt>Ended</dt><dd>{{ bundle.metadata.ended_at | e }}</dd>{% endif %}
+        </dl>
+        {% if bundle.metadata.mcp_servers %}
+          <h3 style="margin-top: 2.5rem">MCP servers</h3>
+          <ul>
+            {% for s in bundle.metadata.mcp_servers %}<li><code>{{ s | e }}</code></li>{% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    </section>
+
+    {# ---------- Instructions ---------- #}
+    <section class="panel" id="tab-instructions" data-tab="instructions">
+      <div class="slide">
+        <div class="eyebrow">Instructions Chain</div>
+        <h2>{{ bundle.instructions | length }} files inlined</h2>
+        <p class="lede">These shaped the agent's behavior. Inlined verbatim so the bundle is portable across machines.</p>
+        {% for instr in bundle.instructions %}
+        <details>
+          <summary><code style="background:transparent;border:0;padding:0;color:var(--muted)">{{ instr.path | e }}</code> <span style="color:var(--muted);font-size:0.65rem;letter-spacing:0.12em;text-transform:uppercase;margin-left:auto">{{ instr.kind }}</span></summary>
+          <pre>{{ instr.content | e }}</pre>
+        </details>
+        {% endfor %}
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Source markdown for LLM ingestion. Pasting this whole HTML file into a
+     model gives it the human-readable structure AND the canonical handoff. -->
+<template id="ai-handoff">
+{{ bundle.raw_markdown }}
+</template>
+
+<script>
+  (function () {
+    const tabs = document.querySelectorAll('.tab-bar button[data-tab]');
+    const panels = document.querySelectorAll('.panel[data-tab]');
+    const tabIds = Array.from(tabs).map(b => b.dataset.tab);
+
+    function showTab(id) {
+      tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === id));
+      panels.forEach(p => p.classList.toggle('active', p.dataset.tab === id));
+      try { history.replaceState(null, '', '#' + id); } catch (e) {}
+    }
+
+    tabs.forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+    document.addEventListener('keydown', (e) => {
+      if (e.target.matches('input, textarea, [contenteditable]')) return;
+      const active = document.querySelector('.tab-bar button.active');
+      const idx = tabIds.indexOf(active.dataset.tab);
+      if (e.key === 'ArrowRight' && idx < tabIds.length - 1) {
+        showTab(tabIds[idx + 1]); e.preventDefault();
+      } else if (e.key === 'ArrowLeft' && idx > 0) {
+        showTab(tabIds[idx - 1]); e.preventDefault();
+      } else if (e.key >= '1' && e.key <= '9') {
+        const n = parseInt(e.key, 10) - 1;
+        if (n < tabIds.length) { showTab(tabIds[n]); e.preventDefault(); }
+      }
+    });
+
+    if (location.hash) {
+      const id = location.hash.slice(1);
+      if (tabIds.includes(id)) showTab(id);
+    }
+  })();
+</script>
+
+</body>
+</html>

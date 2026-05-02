@@ -1,0 +1,19 @@
+:root {
+  --bg: {{ theme.palette.bg }};
+  --surface: {{ theme.palette.surface }};
+  --fg: {{ theme.palette.fg }};
+  --muted: {{ theme.palette.muted }};
+  --accent: {{ theme.palette.accent }};
+  --accent-2: {{ theme.palette.accent_2 }};
+  --border: {{ theme.palette.border }};
+  --font-heading: {{ theme.fonts.heading }};
+  --font-body: {{ theme.fonts.body }};
+  --motion-duration: {% if theme.motion == "playful" %}320ms{% elif theme.motion == "none" %}0ms{% else %}180ms{% endif %};
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.02) inset, 0 8px 24px -16px rgba(0,0,0,0.5);
+  --shadow-hover: 0 1px 0 rgba(255,255,255,0.04) inset, 0 12px 32px -12px rgba(0,0,0,0.6);
+  --bg-grid: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.06) 100%);
+}

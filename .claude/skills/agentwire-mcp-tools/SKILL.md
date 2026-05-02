@@ -1,6 +1,6 @@
 ---
 name: agentwire-mcp-tools
-description: Reference for the 87 `mcp__agentwire__*` MCP tools — session/pane management, voice/TTS, tasks/locks, channels (email/sms/webhook/discord/slack), machines/tunnels/network, history/roles/projects, scheduler, overnight queue, desktop UI, notifications. Use when agents inside agentwire sessions need to pick the right MCP tool instead of shelling out to the `agentwire` CLI.
+description: Reference for the 90 `mcp__agentwire__*` MCP tools — session/pane management, voice/TTS, tasks/locks, channels (email/sms/webhook/discord/slack), machines/tunnels/network, history/roles/projects, scheduler, overnight queue, desktop UI, notifications. Use when agents inside agentwire sessions need to pick the right MCP tool instead of shelling out to the `agentwire` CLI.
 ---
 
 # AgentWire MCP Tools
@@ -79,6 +79,9 @@ description: Reference for the 87 `mcp__agentwire__*` MCP tools — session/pane
 | `agentwire history list` | `history_list()` |
 | `agentwire history show id` | `history_show(session_id="...")` |
 | `agentwire history resume id -p path` | `history_resume(session_id="...", project="...")` |
+| `agentwire handoff init --title hint` | `handoff_init(title="...")` |
+| `agentwire handoff render <bundle-dir>` | `handoff_render(bundle_dir="...", story=True)` |
+| `agentwire handoff list` | `handoff_list()` |
 | `agentwire email --body "..." --to addr` | `email_send(body="...", to="...", attachments=["..."], plain_text=False)` |
 
 ## Channels (7 tools)
@@ -152,7 +155,7 @@ description: Reference for the 87 `mcp__agentwire__*` MCP tools — session/pane
 | Minimize all | `desktop_minimize_all()` |
 | Multi-window layout | `desktop_layout(windows=[{id: "...", zone: "left"}])` |
 
-**87 tools total.** When to use CLI vs MCP:
+**90 tools total.** When to use CLI vs MCP:
 - **MCP tools** — Agents in sessions (orchestrators, workers)
 - **CLI commands** — Humans, shell scripts, automation outside of agent sessions
 

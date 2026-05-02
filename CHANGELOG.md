@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shareable conversation handoffs** — `agentwire handoff` produces two artifacts from one conversation: `ai-handoff.md` (XML-tagged markdown a teammate can paste into another LLM) and `show-the-story.html` (single-file presentation with tabs and scroll-slides) — issue [#157](https://github.com/dotdevdotdev/agentwire-dev/issues/157)
+  - In-conversation agent does the distillation (free — uses existing context, no fresh LLM call); CLI/MCP just renders deterministically via Jinja2
+  - `/handoff` slash command walks the agent through filling the template, picking a vibe-matched theme (palette, fonts, motion), and rendering
+  - Bundle is portable across machines: full CLAUDE.md / rules / memory chain inlined into `<instructions>` so the receiver doesn't need the original cwd
+  - Subcommands: `agentwire handoff init [--title]`, `agentwire handoff render <bundle-dir> [--story]`, `agentwire handoff list`
+  - MCP wrappers: `mcp__agentwire__handoff_init`, `mcp__agentwire__handoff_render`, `mcp__agentwire__handoff_list`
+  - Outputs land in `~/.agentwire/artifacts/handoff-<timestamp>-<slug>/`
+  - 42 new unit tests cover parser (valid/malformed/diff-pollution regressions), renderer (theme variations, tabs, self-containedness), git-state capture, and CLAUDE.md chain enumeration
 - **Anthropic workflow runner** — `runner: anthropic` alongside the existing pi runner (Phase 6, PRs 1–6)
   - Pluggable runner registry (`agentwire/workflows/runners/`) with a shared `NodeRunner` Protocol; pi kept byte-for-byte identical behind a thin shim
   - `AnthropicRunner` uses `claude-agent-sdk>=0.1.43` with subscription auth — no `ANTHROPIC_API_KEY` required, inherits `~/.claude/.credentials.json` (subscription-covered, no per-run billing)

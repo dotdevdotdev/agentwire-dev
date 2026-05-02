@@ -88,6 +88,8 @@ packages = ["agentwire"]
 include = [
     # Web assets and templates required at runtime
     "agentwire/templates/**/*.html",
+    "agentwire/templates/**/*.html.j2",
+    "agentwire/templates/**/*.css.j2",
     "agentwire/templates/**/*.txt",
     "agentwire/templates/**/*.conf",
     "agentwire/static/**/*",

@@ -27,6 +27,7 @@ How sessions talk to humans and external platforms.
 
 - **[Channels](communication/channels.md)** — email, SMS, Discord, Slack, webhooks → sessions
 - **[Hammerspoon push-to-talk](communication/hammerspoon.md)** — global voice hotkeys on macOS
+- **[Conversation handoffs](communication/handoff.md)** — `/handoff` produces a portable bundle (LLM-targeted .md + human-targeted .html) for async teammate pickup
 
 ## Scheduling & Workflows
 

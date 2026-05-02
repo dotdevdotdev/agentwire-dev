@@ -107,6 +107,10 @@ tail -f /tmp/queue-processor-debug.log  # queue processor
 
 LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wiki pattern. Research and debugging knowledge compounds across sessions. Use `/wiki ingest`, `/wiki query <question>`, `/wiki lint` skills. **Before researching**: agents check the wiki first. After discovering: agents write it down.
 
+## Handoffs
+
+`/handoff` distills the current conversation into a shareable bundle: `ai-handoff.md` for another LLM and `show-the-story.html` for humans. The agent does the distillation in-context (free); the CLI/MCP renders deterministically. Outputs in `~/.agentwire/artifacts/handoff-<slug>/`. Full reference: [`docs/wiki/communication/handoff.md`](docs/wiki/communication/handoff.md).
+
 ## Reference Skills
 
 Reference detail lives in skills under `.claude/skills/` — invoke as needed:

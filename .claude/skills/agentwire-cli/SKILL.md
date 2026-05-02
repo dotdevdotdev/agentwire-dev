@@ -131,6 +131,14 @@ agentwire history list          # list conversation history
 agentwire history show <id>     # show session details
 agentwire history resume <id>   # resume session (always forks)
 
+# Shareable conversation handoffs (issue #157)
+agentwire handoff init [--title hint]      # create bundle dir + pre-filled ai-handoff.md template
+agentwire handoff render <bundle-dir>      # render show-the-story.html from ai-handoff.md
+agentwire handoff list                     # list past bundles
+# Inside a Claude Code session, prefer the /handoff slash command — it walks the
+# agent through filling the template using full conversation context (free, no
+# fresh LLM call). Outputs land in ~/.agentwire/artifacts/handoff-<slug>/.
+
 # Roles management
 agentwire roles list            # list available roles
 agentwire roles show <name>     # show role details
