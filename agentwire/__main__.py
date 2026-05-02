@@ -43,11 +43,7 @@ CONFIG_DIR = Path.home() / ".agentwire"
 
 
 def _check_tmux_installed() -> bool:
-    """Check if tmux is installed and provide helpful error if not.
-
-    Returns:
-        True if tmux is available, False otherwise (with error printed).
-    """
+    """Check tmux is on PATH; print install hint if not. Returns False on miss."""
     if shutil.which("tmux") is None:
         print("Error: tmux is required but not installed.", file=sys.stderr)
         print(file=sys.stderr)
@@ -62,11 +58,7 @@ def _check_tmux_installed() -> bool:
 
 
 def _check_config_exists() -> bool:
-    """Check if config exists and provide helpful error if not.
-
-    Returns:
-        True if config exists, False otherwise (with error printed).
-    """
+    """Check ~/.agentwire/config.yaml exists; print init hint if not."""
     config_path = CONFIG_DIR / "config.yaml"
     if not config_path.exists():
         print("Error: AgentWire is not configured.", file=sys.stderr)
@@ -101,12 +93,7 @@ def _build_tmux_env_flags(env: dict[str, str]) -> list[str]:
 
 
 def _build_tmux_env_flags_shell(env: dict[str, str]) -> str:
-    """Shell-safe `-e 'K=V' -e 'K2=V2' ` fragment for inlining in remote SSH chained commands.
-
-    Returns empty string when env is empty. Trailing space when non-empty so
-    the caller can concatenate directly into a `tmux new-session ... && ...`
-    string without extra glue.
-    """
+    """Shell-quoted `-e 'K=V' …` fragment for inlining via SSH. Trailing space when non-empty."""
     if not env:
         return ""
     parts = [f"-e {shlex.quote(f'{k}={v}')}" for k, v in env.items()]
@@ -158,28 +145,16 @@ def parse_env_args(env_args: list[str] | None) -> dict[str, str]:
 
 
 def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None, model: str | None = None) -> AgentCommand:
-    """Build the agent command for a session.
-
-    Args:
-        session_type: Session type (e.g., "claude-bypass", "claude-auto", "pi-zai", "bare")
-        roles: Optional list of roles to apply
-        model: Optional model override (e.g., "haiku", "sonnet", "opus", "glm-5.1")
-
-    Returns:
-        AgentCommand with the command string and metadata
-    """
-
+    """Build the shell command + injected env for the given session type."""
     if session_type == "bare":
         return AgentCommand(command="")
 
-    # Merge roles if provided
     merged = merge_roles(roles) if roles else None
 
     # === Pi coding agent (any provider) ===
-    # Session type: pi-<provider>[-restricted|-readonly]
-    # e.g. pi-zai, pi-deepseek, pi-openai-restricted
+    # Session type: pi-<provider>[-restricted|-readonly], e.g. pi-zai, pi-deepseek
     if session_type.startswith("pi-"):
-        remainder = session_type[3:]  # strip "pi-"
+        remainder = session_type[3:]
         if remainder.endswith("-restricted"):
             provider = remainder[:-11]
             variant = "restricted"
@@ -335,11 +310,7 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
 
 
 def check_python_version() -> bool:
-    """Check if Python version meets minimum requirements.
-
-    Returns:
-        True if version is acceptable, False otherwise (exits with message).
-    """
+    """Verify Python is >= 3.10. Returns False after printing install hint."""
     min_version = (3, 10)
     current_version = sys.version_info[:2]
 
@@ -367,11 +338,7 @@ def check_python_version() -> bool:
 
 
 def check_pip_environment() -> bool:
-    """Check if we're in an externally-managed environment (Ubuntu 24.04+).
-
-    Returns:
-        True if environment is OK to proceed, False if user should take action.
-    """
+    """Detect Ubuntu 24.04+ EXTERNALLY-MANAGED marker; return False if user must act."""
     if not sys.platform.startswith('linux'):
         return True
 
@@ -480,15 +447,7 @@ def wait_for_shell_prompt(target: str, timeout: float = 2.0) -> None:
 
 
 def _get_session_project_path(session: str) -> Path | None:
-    """Get a session's project path from its tmux working directory.
-
-    Queries tmux for the session's actual working directory. Falls back to
-    deriving it from the session name if the session isn't running.
-
-    Returns:
-        Path to the project directory, or None if not determinable.
-    """
-    # Try to get the actual working directory from tmux
+    """Get a session's project path from tmux cwd, falling back to session name parsing."""
     if tmux_session_exists(session):
         result = subprocess.run(
             ["tmux", "display-message", "-t", session, "-p", "#{pane_current_path}"],

@@ -22,17 +22,13 @@ from pathlib import Path
 from typing import Optional
 
 
-# ---------------------------------------------------------------------------
 # Paths
-# ---------------------------------------------------------------------------
 
 OVERNIGHT_DIR = Path.home() / ".agentwire" / "overnight"
 DONE_DIR = OVERNIGHT_DIR / "done"
 
 
-# ---------------------------------------------------------------------------
 # Data
-# ---------------------------------------------------------------------------
 
 @dataclass
 class OvernightItem:
@@ -68,9 +64,7 @@ class OvernightItem:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
@@ -113,9 +107,7 @@ def _inject_resume_flags(agent_cmd: str, session_type: str, resume_session_id: s
     )
 
 
-# ---------------------------------------------------------------------------
 # Queue CRUD
-# ---------------------------------------------------------------------------
 
 def _ensure_dirs():
     OVERNIGHT_DIR.mkdir(parents=True, exist_ok=True)
@@ -199,9 +191,7 @@ def delete_item(item_id: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
 # Session ID resolution (extracted from cmd_fork logic)
-# ---------------------------------------------------------------------------
 
 def _resolve_claude_session_id(session_name: str, project_path: str) -> Optional[str]:
     """Find the Claude conversation sessionId for a tmux session.
@@ -295,9 +285,7 @@ def _get_git_head(project_path: str) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------
 # Preparation
-# ---------------------------------------------------------------------------
 
 def prepare_item(
     source_session: str,
@@ -360,9 +348,7 @@ def prepare_item(
     return item
 
 
-# ---------------------------------------------------------------------------
 # Event logging & live state
-# ---------------------------------------------------------------------------
 
 def _get_overnight_config():
     from .config import get_config
@@ -431,9 +417,7 @@ def read_events(tail: int = 20) -> list[dict]:
         return []
 
 
-# ---------------------------------------------------------------------------
 # Notify portal
-# ---------------------------------------------------------------------------
 
 def _notify_portal(item_id: str, status: str, summary: str = "") -> None:
     """Notify portal of overnight item state change."""
@@ -460,9 +444,7 @@ def _notify_portal(item_id: str, status: str, summary: str = "") -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
 # Orchestrator: dispatch, completion, finalization
-# ---------------------------------------------------------------------------
 
 def _tmux_session_exists(name: str) -> bool:
     result = subprocess.run(
@@ -799,9 +781,7 @@ def _handle_stuck(item: OvernightItem, config) -> None:
     print(f"[{_ts()}] STUCK: {item.id} — {item.error}")
 
 
-# ---------------------------------------------------------------------------
 # Orchestrator loop
-# ---------------------------------------------------------------------------
 
 def run_overnight_loop() -> None:
     """Main overnight orchestrator loop."""

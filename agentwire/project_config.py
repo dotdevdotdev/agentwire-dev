@@ -68,25 +68,12 @@ class SessionType(str, Enum):
 
 
 def detect_default_agent_type() -> str:
-    """Detect which AI agent is installed.
-
-    Returns:
-        "claude" (only supported agent type)
-    """
+    """The only supported agent backend today is Claude Code."""
     return "claude"
 
 
 def normalize_session_type(session_type: str, agent_type: str) -> str:
-    """Map universal session types to agent-specific types.
-
-    Args:
-        session_type: "standard", "worker", "voice", or agent-specific type
-        agent_type: "claude"
-
-    Returns:
-        Agent-specific session type
-    """
-    # If already agent-specific, return as-is
+    """Map universal types (standard/worker/voice) to agent-specific types."""
     if (
         session_type.startswith("claude-")
         or session_type.startswith("pi-")
@@ -95,7 +82,6 @@ def normalize_session_type(session_type: str, agent_type: str) -> str:
     ):
         return session_type
 
-    # Map universal types to agent-specific
     if session_type == "standard":
         return f"{agent_type}-bypass"
     elif session_type == "worker":
@@ -103,7 +89,6 @@ def normalize_session_type(session_type: str, agent_type: str) -> str:
     elif session_type == "voice":
         return f"{agent_type}-prompted"
 
-    # Unknown type, default to standard
     return f"{agent_type}-bypass"
 
 

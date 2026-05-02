@@ -1,6 +1,6 @@
 ---
 name: agentwire-cli
-description: Full `agentwire` CLI command reference — session/pane management, portal, TTS/STT, voice, channels (email/sms/webhook/telegram/discord/slack), machine/tunnel/lock management, projects/history/roles, scheduler, overnight queue, safety/diagnostics. Use when running or composing `agentwire ...` shell commands, building automation scripts, or answering "how do I X from the CLI".
+description: Full `agentwire` CLI command reference — session/pane management, portal, TTS/STT, voice, channels (email/sms/webhook/telegram/discord/slack), machine/tunnel/lock management, projects/history/roles, scheduler, overnight queue, web helpers (brave, fetch), safety/diagnostics. Use when running or composing `agentwire ...` shell commands, building automation scripts, or answering "how do I X from the CLI".
 ---
 
 # AgentWire CLI Reference
@@ -140,6 +140,13 @@ agentwire ensure -s name --task task  # run named task reliably
 agentwire task list [session]         # list tasks for session/project
 agentwire task show session/task      # show task definition
 agentwire task validate session/task  # validate task syntax
+
+# Web search & URL fetch (helpers usable from any session, including pi)
+agentwire brave "<query>"             # Brave Search (output: title | url | age | desc)
+agentwire brave "X" --count 5 --freshness pw  # 1-20 results; pd|pw|pm|py
+agentwire brave "X" --json            # raw JSON instead of compact text
+agentwire fetch <url>                 # fetch a page via Jina Reader (markdown, JS-rendered)
+agentwire fetch <url> --limit 4000    # cap chars (default 8000, 0 = no limit)
 
 # Safety & diagnostics
 agentwire safety check "cmd"    # test if command would be blocked

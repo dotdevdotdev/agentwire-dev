@@ -80,43 +80,28 @@ def glob_to_regex(pattern: str) -> str:
 
 
 def matches_path_in_command(pattern: str, command: str) -> bool:
-    """
-    Check if a path pattern matches in the command in a file-path context.
-
-    For glob patterns, we ensure we're matching file paths,
-    not method calls like module.method().
-    """
+    """Check if a path pattern occurs in command, restricted to file-path contexts."""
     expanded = os.path.expanduser(pattern)
 
     if not is_glob_pattern(pattern):
-        # Non-glob: simple substring match (existing behavior)
         return expanded in command
 
-    # Glob pattern: convert to regex and match in file-path contexts only
     glob_regex = glob_to_regex(expanded)
-
-    # Only match in file-path contexts:
-    # - Preceded by: space, /, =, ", ', <, >, or start of string
-    # - Followed by: space, ", ', ), <, >, or end of string
+    # Only match if surrounded by path-context chars (not e.g. inside `module.method()`)
     file_path_regex = r'(?:^|[\s/="\'<>])' + glob_regex + r'(?:[\s"\')<>]|$)'
 
     try:
-        match = re.search(file_path_regex, command, re.IGNORECASE)
+        if not re.search(file_path_regex, command, re.IGNORECASE):
+            return False
     except re.error:
         return False
 
-    if not match:
-        return False
-
-    # Extra check: reject if it looks like a method call (preceded by identifier char and dot)
-    # Method calls look like: module.method()
+    # Reject method-call lookalikes: `foo.py(` should not match `*.py`
     extension = pattern.split('*')[-1] if '*' in pattern else pattern
     if extension.startswith('.'):
         extension = extension[1:]
-    if extension:
-        method_call_regex = r'\w\.' + re.escape(extension) + r'\s*\('
-        if re.search(method_call_regex, command):
-            return False
+    if extension and re.search(r'\w\.' + re.escape(extension) + r'\s*\(', command):
+        return False
 
     return True
 
@@ -379,8 +364,6 @@ def check_command_safety(command: str, verbose: bool = False) -> Dict[str, Any]:
     patterns = load_patterns()
     allowed = load_allowed_paths(patterns)
 
-    # Phase 1: Hard-blocked and ask bash patterns
-    # Phase 2: Bypassable bash patterns
     bash_patterns = patterns.get("bashToolPatterns", [])
     bypassable_matches = []
 
@@ -415,7 +398,7 @@ def check_command_safety(command: str, verbose: bool = False) -> Dict[str, Any]:
             if verbose:
                 print(f"Warning: Invalid regex pattern: {pattern}", file=sys.stderr)
 
-    # Phase 2: Check bypassable matches against allowlist
+    # Bypassable matches: block unless every targeted path is in the allowlist
     for pattern, reason in bypassable_matches:
         operation = _infer_operation_from_reason(reason)
         if not is_command_path_allowed(command, allowed, operation):

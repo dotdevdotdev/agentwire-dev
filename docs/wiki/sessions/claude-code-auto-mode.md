@@ -286,21 +286,6 @@ combination is invalid.
 
 ---
 
-## Open Questions (Resolved)
-
-1. **`--allowedTools` format** — comma-separated, passed as a single string argument:
-   `--allowedTools "Bash(git *),Read(*),Edit(*)"`. Verified in implementation.
-
-2. **Allow rule interaction** — `--allowedTools` MERGES with settings files. The full
-   allow list = `--allowedTools` + `~/.claude/settings.json` allows + `<project>/.claude/settings.json` allows.
-   No overriding occurs. Implemented accordingly.
-
-3. **Headless `-p` mode** — confirmed that `idle_timeout` in task config is sufficient
-   fallback. When classifier blocks 3+ times, agent stalls waiting for a prompt that
-   won't come; AgentWire's idle timeout catches it and marks the task as timed out.
-
----
-
 ## References
 
 - [Anthropic Engineering: Claude Code Auto Mode](https://www.anthropic.com/engineering/claude-code-auto-mode)

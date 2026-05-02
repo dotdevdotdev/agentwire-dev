@@ -81,12 +81,12 @@ Phase 1 validated pi works in our stack. Phase 2 built the engine. Phase 3 wired
 
 ## Key Non-Goals
 
-- **Not replacing Claude Code entirely** — Claude Code remains the primary harness for general Anthropic-subscription work. The `agentwire-repl.md` mission proposes a complementary agentwire-native harness (`sdk-*` session types) for specialized cases where deep MCP / damage-control / workflow integration matters; it's not a replacement either.
+- **Not replacing Claude Code entirely** — Claude Code remains the primary harness for general Anthropic-subscription work. The `completed/agentwire-repl.md` mission shipped a complementary agentwire-native harness (`sdk-*` session types) for specialized cases where deep MCP / damage-control / workflow integration matters; it's not a replacement either.
 - **Not adding MCP to pi** — pi intentionally doesn't ship MCP; workflow nodes can call agentwire CLI via bash when needed
 
 ## Related missions
 
-- **`agentwire-repl.md`** — peer mission (draft, 2026-04-22). A clean-room interactive REPL built on `claude-agent-sdk`, living as `sdk-bypass`/`sdk-prompted`/`sdk-restricted` session types. Reuses the Phase 6 anthropic runner's primitives (event translation, capability validation, storage schema). Complementary to pi's interactive mode: pi for Z.AI subscription economics, `sdk-*` for agentwire-native integration on Anthropic subscription.
+- **`completed/agentwire-repl.md`** — completed peer mission. A clean-room interactive REPL built on `claude-agent-sdk`, living as `sdk-bypass`/`sdk-prompted`/`sdk-restricted` session types. Reuses the Phase 6 anthropic runner's primitives (event translation, capability validation, storage schema). Complementary to pi's interactive mode: pi for Z.AI subscription economics, `sdk-*` for agentwire-native integration on Anthropic subscription.
 
 ## Migration Plan (High Level)
 
