@@ -2,10 +2,6 @@
 
 > Living document. Update this, don't create new versions.
 
-**Status**: Active Integration
-**Version**: 1.0
-**Last Updated**: 2026-01-05
-
 ---
 
 ## Overview
@@ -36,7 +32,7 @@ PreToolUse Hook
     ↓
 Damage Control Hook Script (Python/UV)
     ↓
-patterns.yaml → Check command/path
+rules/*.yaml → Check command/path
     ↓
 Decision: Block (exit 2) | Allow (exit 0) | Ask (JSON response)
     ↓
@@ -47,28 +43,39 @@ Decision: Block (exit 2) | Allow (exit 0) | Ask (JSON response)
 
 ### File Structure
 
-Hooks are bundled in the `agentwire` package and installed via `agentwire hooks install`:
+Hooks ship inside the `agentwire` package — Claude Code's `settings.json` invokes them directly via `uv run`:
 
 ```
 agentwire/hooks/damage-control/       # Bundled in package
-├── patterns.yaml                     # Security patterns (300+ rules)
 ├── bash-tool-damage-control.py       # Bash tool hook
 ├── edit-tool-damage-control.py       # Edit tool hook
 ├── write-tool-damage-control.py      # Write tool hook
-└── audit_logger.py                   # Audit logging framework
+├── audit_logger.py                   # Audit logging framework
+└── rules/                            # Pattern files (categorized)
+    ├── core.yaml                     # rm, chmod, system-level dangers
+    ├── git.yaml                      # force push, reset --hard
+    ├── databases.yaml                # DROP, TRUNCATE
+    ├── containers.yaml               # docker prune, etc.
+    ├── cloud-hosting.yaml, aws.yaml, gcp.yaml, firebase.yaml
+    ├── infrastructure.yaml, remote.yaml
+    ├── agentwire.yaml                # tmux/session protections
+    └── gws.yaml                      # Google Workspace CLI
 
 ~/.agentwire/
-├── logs/
-│   └── damage-control/
-│       └── YYYY-MM-DD.jsonl          # Daily audit logs
-└── settings.json                     # Hook registration (created by install)
+├── damage-control/                   # OPTIONAL user override — same shape as rules/
+│   └── *.yaml                        # If present, replaces bundled rules wholesale
+└── logs/
+    └── damage-control/
+        └── YYYY-MM-DD.jsonl          # Daily audit logs (audit_logger.py)
 ```
+
+Hooks load every `*.yaml` file in the rules directory and merge their pattern lists.
 
 ---
 
 ## Security Patterns
 
-Patterns are defined in `~/.agentwire/hooks/damage-control/patterns.yaml`.
+Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (12 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
 
 ### Pattern Types
 
@@ -123,7 +130,7 @@ Paths that can be read but not modified:
 
 ```yaml
 readOnlyPaths:
-  - ~/.agentwire/patterns.yaml
+  - ~/.agentwire/damage-control/
   - ~/.gitconfig
   - /etc/hosts
 ```
@@ -149,7 +156,7 @@ Paths where path-based protections (zeroAccess, readOnly, noDelete) are bypassed
 
 **Operations**: `all`, `read`, `write`, `edit`, `delete`, `move`, `chmod`
 
-**Global** (in `patterns.yaml`):
+**Global** (in any rules YAML — bundled or override):
 ```yaml
 allowedPaths:
   - path: "*/dist/*"
@@ -174,7 +181,7 @@ Plain strings (legacy format) are auto-coerced to `{path: str, allow: all}` for 
 
 Per-project paths are relative to the project root and resolved to absolute paths before matching.
 
-**Bypassable bash patterns**: Some bash patterns (plain `rm`, `rmdir`, `trash`) are marked `bypassable: true` in patterns.yaml. When a command matches a bypassable pattern, the system checks if ALL target paths have the required operation permission (e.g., `delete` for `rm`). If all paths match, the command is allowed. Hard-blocked patterns (like `rm -rf`) are never bypassed regardless of permissions.
+**Bypassable bash patterns**: Some bash patterns (plain `rm`, `rmdir`, `trash`) are marked `bypassable: true` in their rules YAML. When a command matches a bypassable pattern, the system checks if ALL target paths have the required operation permission (e.g., `delete` for `rm`). If all paths match, the command is allowed. Hard-blocked patterns (like `rm -rf`) are never bypassed regardless of permissions.
 
 **Security**: When checking bypassable patterns, ALL paths in the command must have the required permission. A command like `rm /tmp/safe.txt /etc/passwd` is blocked because `/etc/passwd` is not in the allowlist, even though `/tmp/` has delete permission.
 
@@ -289,7 +296,7 @@ agentwire safety logs --pattern "rm -rf"
 **Audit Log Format**:
 ```json
 {
-  "timestamp": "2026-01-05T13:45:22Z",
+  "timestamp": "2026-04-30T13:45:22Z",
   "session_id": "mission/damage-control",
   "agent_id": "wave-2-task-1",
   "tool": "Bash",
@@ -306,9 +313,10 @@ agentwire safety logs --pattern "rm -rf"
 
 ### Adding New Patterns
 
-Edit `~/.agentwire/hooks/damage-control/patterns.yaml`:
+Drop a YAML file into `~/.agentwire/damage-control/` (creates the user-override layer):
 
 ```yaml
+# ~/.agentwire/damage-control/myapp.yaml
 bashToolPatterns:
   - pattern: '\bmyapp\s+destroy\b'
     reason: myapp destroy command is dangerous
@@ -320,6 +328,8 @@ readOnlyPaths:
   - /myapp/config/production.yaml
 ```
 
+**Heads-up:** the user-override directory **replaces** the bundled rules wholesale — copy what you need from `agentwire/hooks/damage-control/rules/` if you want to extend rather than override.
+
 **Pattern Tips**:
 - Use `\b` for word boundaries: `\brm\b` matches `rm` but not `format`
 - Use `\s+` for required whitespace: `git\s+push` matches `git push`
@@ -328,7 +338,7 @@ readOnlyPaths:
 
 ### Temporarily Disabling Protection
 
-**Option 1**: Comment out specific pattern in `patterns.yaml`:
+**Option 1**: Comment out specific patterns in your override `*.yaml`:
 
 ```yaml
 # Temporarily disabled for migration
@@ -336,21 +346,7 @@ readOnlyPaths:
 #   reason: git push --force
 ```
 
-**Option 2**: Remove hook from `~/.agentwire/settings.json`:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      // Comment out bash hook temporarily
-      // {
-      //   "matcher": "Bash",
-      //   "hooks": [...]
-      // }
-    ]
-  }
-}
-```
+**Option 2**: Remove the hook entry from Claude Code's `~/.claude/settings.json` (the file Claude Code reads, not `~/.agentwire/settings.json`).
 
 **Warning**: Disabling protection removes safety nets. Re-enable as soon as the risky operation is complete.
 
@@ -371,7 +367,7 @@ agentwire hooks status
 
 **Verify hook is registered**:
 ```bash
-cat ~/.agentwire/settings.json | grep damage-control
+cat ~/.claude/settings.json | grep damage-control
 ```
 
 ### False Positive (Safe Command Blocked)
@@ -382,7 +378,7 @@ agentwire safety check "your command here"
 # Shows which pattern matched
 ```
 
-**Adjust pattern to be more specific** in the bundled `patterns.yaml`:
+**Adjust the pattern** — copy the relevant rules file from `agentwire/hooks/damage-control/rules/` into `~/.agentwire/damage-control/` and edit there:
 ```yaml
 # Before (too broad)
 - pattern: '\brm\b'
@@ -393,7 +389,7 @@ agentwire safety check "your command here"
 
 ### Hook Timeout
 
-Hooks have 5-second timeout. If patterns.yaml is very large or patterns are complex, you may hit timeout.
+Hooks have a 5-second timeout. If your rule files are very large or patterns are complex, you may hit it.
 
 **Solution**: Optimize regex patterns
 ```yaml
@@ -442,7 +438,7 @@ agentwire safety logs --session test-session
 ### Hook Overhead
 
 Each tool call adds <100ms overhead for pattern checking:
-- Load patterns.yaml: ~10ms (cached after first load)
+- Load `rules/*.yaml`: ~10ms (cached after first load)
 - Pattern matching: ~50ms for 300+ patterns
 - Audit logging: ~10ms
 
@@ -508,14 +504,14 @@ Damage Control is ONE layer:
 
 ### Q: Can I customize patterns per session?
 
-**A**: Not yet. Patterns are global (~/.agentwire/hooks/damage-control/patterns.yaml). Per-session overrides are a future enhancement.
+**A**: Not yet. Patterns are global — bundled `agentwire/hooks/damage-control/rules/*.yaml` plus an optional override at `~/.agentwire/damage-control/`. Per-session overrides are a future enhancement.
 
 ### Q: What if I need to run a blocked command?
 
 **A**: Four options:
-1. Add the path to `allowedPaths` in `patterns.yaml` (global) or `safety.allowed_paths` in `.agentwire.yml` (per-project)
+1. Add the path to `allowedPaths` in a user-override `*.yaml` under `~/.agentwire/damage-control/` (global) or to `safety.allowed_paths` in `.agentwire.yml` (per-project)
 2. Use "ask" patterns (prompts for confirmation)
-3. Temporarily comment out the pattern in patterns.yaml
+3. Temporarily comment out the pattern in your override YAML
 4. Run command outside AgentWire session
 
 ### Q: Do hooks work in remote sessions?
@@ -524,13 +520,16 @@ Damage Control is ONE layer:
 
 ### Q: How do I add patterns for my own tools?
 
-**A**: Edit `~/.agentwire/hooks/damage-control/patterns.yaml` and add patterns:
+**A**: Drop a YAML file into `~/.agentwire/damage-control/` (the user-override layer):
 
 ```yaml
+# ~/.agentwire/damage-control/mytool.yaml
 bashToolPatterns:
   - pattern: '\bmytool\s+dangerous-operation\b'
     reason: mytool dangerous operation blocked
 ```
+
+Remember: when this directory exists, the bundled rules are **replaced**. Copy the bundled `*.yaml` files in if you want to extend rather than override.
 
 ### Q: Can hooks block malicious LLM behavior?
 
@@ -544,15 +543,5 @@ bashToolPatterns:
 
 ## Related Documentation
 
-- [Migration Guide](./damage-control-migration.md) - How to enable damage-control in existing installations
-
----
-
-## Changelog
-
-### 2026-01-05 - v1.0 Initial Integration
-- Ported from claude-code-damage-control
-- Added AgentWire-specific patterns (tmux, sessions, remote)
-- Implemented audit logging framework
-- Created interactive test tool
-- Comprehensive documentation
+- `agentwire safety` — CLI surface for testing commands and viewing audit logs (`agentwire safety check ...`, `agentwire safety logs`).
+- `agentwire/hooks/damage-control/rules/` — bundled pattern source-of-truth.

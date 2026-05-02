@@ -159,12 +159,14 @@ agentwire say "Hello world"
 ```yaml
 # ~/.agentwire/config.yaml
 tts:
-  backend: "runpod"  # runpod | chatterbox | none
-  runpod_endpoint_id: "your-endpoint-id"
-  runpod_api_key: "your-api-key"
+  backend: "kokoro"  # kokoro | chatterbox | chatterbox-streaming
+                     # | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design
+                     # | zonos-transformer | zonos-hybrid | runpod
+  url: "http://localhost:8100"
+  default_voice: "default"
 ```
 
-See `../tts/runpod-tts.md` for RunPod setup or `../tts/tts-self-hosted.md` for self-hosting.
+See `../tts/runpod-tts.md` for RunPod setup or `../tts/tts-self-hosted.md` for the full backend matrix.
 
 ### STT (Speech-to-Text) Not Working
 
@@ -499,23 +501,15 @@ When reporting issues, include:
 - Your OS and Python version
 - Steps to reproduce
 
-## Claude Code 0-Token Action Bug (2026-01-22)
+## Claude Code Sessions Hanging on a 0-Token Action
 
-**Symptom:** Claude Code sessions get stuck with a "0 token" action - the model produces no output and the session hangs. Shows "Perambulating..." or similar thinking state indefinitely.
+**Symptom:** Claude Code sessions occasionally get stuck on a "0 token" action — the model produces no output and the session hangs (e.g., "Perambulating..." indefinitely).
 
-**Frequency:** Happens intermittently, especially:
+**Most common triggers:**
 - Voice-orchestrator sessions delegating to workers
-- During Chrome browser automation (mid-interaction)
-- After receiving notifications/alerts
+- Mid-interaction during Chrome browser automation
+- Right after receiving notifications/alerts
 
-**Observed patterns:**
-- Gets stuck after tool calls complete (especially Chrome automation)
-- May need multiple nudges to complete a task
-- Often happens at end of workflows (after announcing completion)
+**Workaround:** nudge the session with `agentwire send -s name "continue"`. May need 2–3 nudges. Kill the session if its task is otherwise complete.
 
-**Workaround:**
-- Send a follow-up prompt to nudge the session: `agentwire send -s name "continue"`
-- May need to nudge 2-3 times per task
-- Kill session if it's done anyway
-
-**Status:** Suspected Claude Code bug, not an agentwire issue. Monitoring. (2026-01-22)
+This appears to be a Claude Code-side stall, not an agentwire issue.

@@ -62,7 +62,6 @@ Implementation reference for contributors and advanced users.
 - **[Portal](internals/portal.md)** — modes, REST API, WebSocket events
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries
 - **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
-- **[Damage control migration](internals/damage-control-migration.md)** — historical migration notes
 - **[Troubleshooting](internals/troubleshooting.md)** — common issues and fixes
 
 ## Skills

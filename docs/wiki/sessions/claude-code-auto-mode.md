@@ -189,33 +189,11 @@ work, but prevents catastrophic failures at 3am when nobody's watching.
 
 ---
 
-## AgentWire Integration Plan
+## Using `claude-auto` in AgentWire
 
-### Phase 1: Add `claude-auto` session type ✅ Complete
+The session type is wired through every entry point — `.agentwire.yml`, the CLI, and MCP — and `agentwire/__main__.py` injects a core allowlist at launch so the classifier doesn't review routine git/agentwire/tmux ops.
 
-**`agentwire/project_config.py`** — add to `SessionType`:
-```python
-CLAUDE_AUTO = "claude-auto"  # Claude with auto mode (classifier safety net)
-```
-
-**`to_cli_flags()`:**
-```python
-elif self == SessionType.CLAUDE_AUTO:
-    return ["--enable-auto-mode", "--permission-mode", "auto"]
-```
-
-**`build_agent_command()` / session creation in `__main__.py`** — inject core allows:
-```python
-if session_type == "claude-auto":
-    core_allows = [
-        "Bash(agentwire *)", "Bash(tmux *)",
-        "Bash(git *)", "Bash(gh pr create*)", "Bash(gh pr view*)",
-        "Read(*)", "Edit(*)", "Write(*)", "Glob(*)", "Grep(*)",
-    ]
-    cmd_parts += ["--allowedTools", ",".join(core_allows)]
-```
-
-**`.agentwire.yml` usage:**
+**`.agentwire.yml`:**
 ```yaml
 type: claude-auto
 roles:
@@ -232,39 +210,7 @@ agentwire new myproject --type claude-auto
 session_create(name="myproject", session_type="claude-auto")
 ```
 
-### Phase 2: Documentation + examples
-
-- Recommend `claude-auto` over `claude-bypass` for production repos
-- Update task-runner role docs
-- Document three-layer allow model setup
-
-### Phase 3: Default for task-runner sessions (optional, discuss)
-
-Once battle-tested, could become the default when `task-runner` role is used:
-```yaml
-# config.yaml
-session:
-  default_auto_mode: true  # Use claude-auto instead of claude-bypass for task sessions
-```
-
-`claude-bypass` remains available for sandboxed/isolated environments.
-
----
-
-## Future: Per-Task `allowed_tools` Field
-
-Natural extension — some tasks need commands others don't:
-```yaml
-tasks:
-  run-migrations:
-    prompt: "Run database migrations"
-    starting_ref: main
-    allowed_tools:
-      - "Bash(npx prisma migrate*)"
-      - "Bash(psql *)"
-```
-
-These append to the `--allowedTools` flag at session launch. Not Phase 1, but clean extension.
+The injected core allows cover `agentwire *`, `tmux *`, common `git *` / `gh pr *` operations, and the read/edit/write/glob/grep tools. Anything outside that list flows through the classifier (or, if it matches your user/project allowlists from Layer 2/3 above, runs without classifier cost).
 
 ---
 

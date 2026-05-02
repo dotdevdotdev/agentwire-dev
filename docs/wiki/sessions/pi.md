@@ -157,18 +157,7 @@ agentwire new -s fast --type pi-zai --model glm-4.7-flash -p ~/projects/myprojec
 agentwire new -s reason --type pi-deepseek --model deepseek-reasoner -p ~/projects/myproject
 ```
 
-Use `pi --list-models <provider>` to see currently available models. For example, on Z.AI as of 2026-04-13:
-
-| Model | Context | Max Output | Thinking | Vision |
-|-------|---------|-----------|----------|--------|
-| glm-5.1 | 200K | 131K | yes | no |
-| glm-5 | 205K | 131K | yes | no |
-| glm-5-turbo | 200K | 131K | yes | no |
-| glm-5v-turbo | 200K | 131K | yes | yes |
-| glm-4.7 | 205K | 131K | yes | no |
-| glm-4.7-flash | 200K | 131K | yes | no |
-| glm-4.6 | 205K | 131K | yes | no |
-| glm-4.5 | 131K | 98K | yes | no |
+Use `pi --list-models <provider>` to see the currently available models for any configured provider — providers add and rotate models often, so always check live rather than relying on a cached list here.
 
 ## Roles and Tools
 
@@ -185,7 +174,7 @@ Pi supports fewer tools than Claude Code. Role tool lists are **translated** to 
 | LS | ls |
 | Task, WebFetch, WebSearch, MCP tools, etc. | **not supported** |
 
-Unsupported tools in a role's tool list are silently filtered out. If your role depends on a tool pi doesn't have, the session will still start but that tool won't be available.
+Unsupported tools in a role's tool list are silently filtered out. If your role depends on a tool pi doesn't have, the session will still start but that tool won't be available. For web access, lean on the bash-tool helpers `agentwire brave` and `agentwire fetch` documented in [Built-in Helpers](#built-in-helpers) above.
 
 ### Disallowed Tools
 
@@ -290,8 +279,7 @@ Pi's forking is manual (copy JSONL, run with `--session <copy> --continue`). Age
 
 - `agentwire-pi` skill — concise reference for setting up pi sessions
 - `agentwire-config` skill — `pi:` config block field reference
-- Mission plan: `docs/missions/pi-session-type.md`
-- Overall roadmap: `docs/missions/pi-harness-overview.md`
+- Roadmap: `docs/missions/pi-harness-overview.md`
 - Pi upstream: https://github.com/badlogic/pi-mono
 - Z.AI docs: https://docs.z.ai/
 - DeepSeek docs: https://api-docs.deepseek.com/
