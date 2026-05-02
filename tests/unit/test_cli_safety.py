@@ -131,23 +131,19 @@ class TestCheckCommandSafety:
 # --- _match_allowed_path ---
 
 class TestMatchAllowedPath:
-    def test_glob_full_path(self):
-        assert _match_allowed_path("/home/user/project/dist/file.whl", "*/dist/*") is True
-
-    def test_glob_no_match(self):
-        assert _match_allowed_path("/home/user/.ssh/id_rsa", "*/dist/*") is False
-
-    def test_literal_prefix(self):
-        assert _match_allowed_path("/tmp/test.txt", "/tmp/") is True
-
-    def test_literal_no_match(self):
-        assert _match_allowed_path("/home/user/file.txt", "/tmp/") is False
-
-    def test_pycache_glob(self):
-        assert _match_allowed_path("/home/user/project/__pycache__/mod.pyc", "*/__pycache__/*") is True
-
-    def test_egg_info_glob(self):
-        assert _match_allowed_path("/home/user/project/pkg.egg-info/top_level.txt", "*.egg-info/*") is True
+    @pytest.mark.parametrize("path,pattern,expected", [
+        # Glob match — dist anywhere in path
+        ("/home/user/project/dist/file.whl", "*/dist/*", True),
+        ("/home/user/.ssh/id_rsa", "*/dist/*", False),
+        # Literal prefix match
+        ("/tmp/test.txt", "/tmp/", True),
+        ("/home/user/file.txt", "/tmp/", False),
+        # Common build-artifact globs
+        ("/home/user/project/__pycache__/mod.pyc", "*/__pycache__/*", True),
+        ("/home/user/project/pkg.egg-info/top_level.txt", "*.egg-info/*", True),
+    ])
+    def test_match(self, path, pattern, expected):
+        assert _match_allowed_path(path, pattern) is expected
 
 
 # --- is_command_path_allowed ---

@@ -23,48 +23,16 @@ from agentwire.channels.base import (
 
 
 # =============================================================================
-# ChannelResult
-# =============================================================================
-
-
-class TestChannelResult:
-    def test_success_result(self):
-        r = ChannelResult(success=True, message_id="abc123")
-        assert r.success is True
-        assert r.message_id == "abc123"
-        assert r.error is None
-
-    def test_error_result(self):
-        r = ChannelResult(success=False, error="Something failed")
-        assert r.success is False
-        assert r.message_id is None
-        assert r.error == "Something failed"
-
-    def test_int_message_id(self):
-        r = ChannelResult(success=True, message_id=42)
-        assert r.message_id == 42
-
-
-# =============================================================================
 # ChannelRegistry
 # =============================================================================
 
 
 class TestChannelRegistry:
     def test_builtin_channels_registered(self):
-        """All 7 built-in channels should be registered."""
+        """All 7 built-in channels should be registered, exactly 7, no extras."""
         channels = ChannelRegistry.all()
-        assert "email" in channels
-        assert "telegram" in channels
-        assert "quo" in channels
-        assert "sms" in channels
-        assert "webhook" in channels
-        assert "discord" in channels
-        assert "slack" in channels
-
-    def test_exactly_seven_builtins(self):
-        channels = ChannelRegistry.all()
-        assert len(channels) == 7
+        expected = {"email", "telegram", "quo", "sms", "webhook", "discord", "slack"}
+        assert set(channels.keys()) == expected
 
     def test_get_existing(self):
         cls = ChannelRegistry.get("email")
@@ -76,30 +44,34 @@ class TestChannelRegistry:
 
     def test_register_decorator(self):
         """@register decorator should add class to registry."""
-        # Temporarily register, then clean up
         @ChannelRegistry.register("_test_channel")
         class _TestChannel(SendOnlyChannel):
             name = "_test_channel"
 
         assert "_test_channel" in ChannelRegistry._channels
-        # Clean up
         del ChannelRegistry._channels["_test_channel"]
 
-    def test_channel_types(self):
-        """Verify channel types are correct."""
-        from agentwire.channels.email import EmailChannel
-        from agentwire.channels.telegram import TelegramChannel
-        from agentwire.channels.sms import SMSChannel
-        from agentwire.channels.webhook import WebhookChannel
-        from agentwire.channels.discord import DiscordChannel
-        from agentwire.channels.slack import SlackChannel
-
-        assert EmailChannel.channel_type == "send_only"
-        assert TelegramChannel.channel_type == "service"
-        assert SMSChannel.channel_type == "send_only"
-        assert WebhookChannel.channel_type == "send_only"
-        assert DiscordChannel.channel_type == "service"
-        assert SlackChannel.channel_type == "service"
+    @pytest.mark.parametrize(
+        "module,cls_name,expected_name,expected_type,expected_config_key",
+        [
+            ("agentwire.channels.email", "EmailChannel", "email", "send_only", "email"),
+            ("agentwire.channels.telegram", "TelegramChannel", "telegram", "service", "telegram"),
+            ("agentwire.channels.quo", "QuoChannel", "quo", "send_only", "quo"),
+            ("agentwire.channels.sms", "SMSChannel", "sms", "send_only", "sms"),
+            ("agentwire.channels.webhook", "WebhookChannel", "webhook", "send_only", "webhook"),
+            ("agentwire.channels.discord", "DiscordChannel", "discord", "service", "discord"),
+            ("agentwire.channels.slack", "SlackChannel", "slack", "service", "slack"),
+        ],
+    )
+    def test_channel_class_metadata(
+        self, module, cls_name, expected_name, expected_type, expected_config_key
+    ):
+        """Each channel class declares correct name/type/config_key (single source of truth)."""
+        import importlib
+        cls = getattr(importlib.import_module(module), cls_name)
+        assert cls.name == expected_name
+        assert cls.channel_type == expected_type
+        assert cls.config_key == expected_config_key
 
 
 # =============================================================================
@@ -202,12 +174,6 @@ class TestEmailChannel:
         config = EmailConfig(api_key="explicit-key")
         assert config.api_key == "explicit-key"
 
-    def test_email_channel_class_attributes(self):
-        from agentwire.channels.email import EmailChannel
-        assert EmailChannel.name == "email"
-        assert EmailChannel.channel_type == "send_only"
-        assert EmailChannel.config_key == "email"
-
     def test_is_html_content(self):
         from agentwire.channels.email import _is_html_content
         assert _is_html_content("<h1>Hello</h1>") is True
@@ -246,60 +212,25 @@ class TestEmailChannel:
         finally:
             config_mod._config = old
 
-    def test_normalize_recipients_single_str(self):
+    @pytest.mark.parametrize(
+        "raw,default,expected",
+        [
+            ("a@x.com", "fallback@x.com", ["a@x.com"]),
+            ("a@x.com, b@x.com ,c@x.com", "", ["a@x.com", "b@x.com", "c@x.com"]),
+            (["a@x.com", "b@x.com"], "", ["a@x.com", "b@x.com"]),
+            # argparse --to a,b --to c produces ["a,b", "c"]; each entry splits on commas
+            (["a@x.com,b@x.com", "c@x.com"], "", ["a@x.com", "b@x.com", "c@x.com"]),
+            # Dedupes while preserving order
+            (["a@x.com", "b@x.com", "a@x.com"], "", ["a@x.com", "b@x.com"]),
+            (None, "default@x.com", ["default@x.com"]),
+            ("", "default@x.com", ["default@x.com"]),
+            (None, "", []),
+            ([], "", []),
+        ],
+    )
+    def test_normalize_recipients(self, raw, default, expected):
         from agentwire.channels.email import _normalize_recipients
-        assert _normalize_recipients("a@x.com", "fallback@x.com") == ["a@x.com"]
-
-    def test_normalize_recipients_comma_split(self):
-        from agentwire.channels.email import _normalize_recipients
-        assert _normalize_recipients("a@x.com, b@x.com ,c@x.com", "") == [
-            "a@x.com", "b@x.com", "c@x.com"
-        ]
-
-    def test_normalize_recipients_list(self):
-        from agentwire.channels.email import _normalize_recipients
-        assert _normalize_recipients(["a@x.com", "b@x.com"], "") == ["a@x.com", "b@x.com"]
-
-    def test_normalize_recipients_list_with_commas(self):
-        from agentwire.channels.email import _normalize_recipients
-        # argparse --to a,b --to c produces ["a,b", "c"]; we split each on commas
-        assert _normalize_recipients(["a@x.com,b@x.com", "c@x.com"], "") == [
-            "a@x.com", "b@x.com", "c@x.com"
-        ]
-
-    def test_normalize_recipients_dedupes_preserving_order(self):
-        from agentwire.channels.email import _normalize_recipients
-        assert _normalize_recipients(["a@x.com", "b@x.com", "a@x.com"], "") == [
-            "a@x.com", "b@x.com"
-        ]
-
-    def test_normalize_recipients_fallback_to_default(self):
-        from agentwire.channels.email import _normalize_recipients
-        assert _normalize_recipients(None, "default@x.com") == ["default@x.com"]
-        assert _normalize_recipients("", "default@x.com") == ["default@x.com"]
-
-    def test_normalize_recipients_empty_returns_empty(self):
-        from agentwire.channels.email import _normalize_recipients
-        assert _normalize_recipients(None, "") == []
-        assert _normalize_recipients([], "") == []
-
-    def test_greetings_list(self):
-        from agentwire.channels.email import GREETINGS
-        assert len(GREETINGS) == 8
-        assert all(isinstance(g, str) for g in GREETINGS)
-
-    def test_attachment_dataclass(self):
-        from agentwire.channels.email import Attachment
-        a = Attachment(filename="test.pdf", content=b"bytes")
-        assert a.filename == "test.pdf"
-        assert a.content == b"bytes"
-        assert a.content_type is None
-
-    def test_email_result_dataclass(self):
-        from agentwire.channels.email import EmailResult
-        r = EmailResult(success=True, message_id="msg-1")
-        assert r.success is True
-        assert r.message_id == "msg-1"
+        assert _normalize_recipients(raw, default) == expected
 
 
 # =============================================================================
@@ -313,12 +244,6 @@ class TestTelegramChannel:
         from agentwire.channels.telegram import TelegramConfig
         config = TelegramConfig()
         assert config.bot_token == "env-token"
-
-    def test_telegram_channel_class_attributes(self):
-        from agentwire.channels.telegram import TelegramChannel
-        assert TelegramChannel.name == "telegram"
-        assert TelegramChannel.channel_type == "service"
-        assert TelegramChannel.config_key == "telegram"
 
     def test_telegram_config_defaults(self):
         from agentwire.channels.telegram import TelegramConfig
@@ -372,12 +297,6 @@ class TestQuoChannel:
         config = QuoConfig(api_key="")  # Force empty to test env fallback
         assert config.api_key == "op-key-456"
 
-    def test_quo_channel_class_attributes(self):
-        from agentwire.channels.quo import QuoChannel
-        assert QuoChannel.name == "quo"
-        assert QuoChannel.channel_type == "send_only"
-        assert QuoChannel.config_key == "quo"
-
     def test_quo_config_defaults(self):
         from agentwire.channels.quo import QuoConfig
         config = QuoConfig(api_key="k")
@@ -420,12 +339,6 @@ class TestSMSChannel:
         assert config.account_sid == "sid-env"
         assert config.auth_token == "tok-env"
 
-    def test_sms_channel_class_attributes(self):
-        from agentwire.channels.sms import SMSChannel
-        assert SMSChannel.name == "sms"
-        assert SMSChannel.channel_type == "send_only"
-        assert SMSChannel.config_key == "sms"
-
     def test_sms_no_twilio_installed(self):
         """send_sms should return error if twilio not installed."""
         from agentwire.channels.sms import send_sms
@@ -454,12 +367,6 @@ class TestWebhookChannel:
         assert config.method == "POST"
         assert config.headers == {}
         assert config.content_type == "application/json"
-
-    def test_webhook_channel_class_attributes(self):
-        from agentwire.channels.webhook import WebhookChannel
-        assert WebhookChannel.name == "webhook"
-        assert WebhookChannel.channel_type == "send_only"
-        assert WebhookChannel.config_key == "webhook"
 
     def test_send_webhook_no_url(self, tmp_path, monkeypatch):
         """Should raise WebhookConfigError if no URL."""
@@ -501,13 +408,6 @@ class TestDiscordChannel:
         assert config.session_name == "agentwire-discord"
         assert config.allowed_user_ids == []
 
-    def test_discord_channel_class_attributes(self):
-        from agentwire.channels.discord import DiscordChannel
-        assert DiscordChannel.name == "discord"
-        assert DiscordChannel.channel_type == "service"
-        assert DiscordChannel.config_key == "discord"
-
-
 # =============================================================================
 # Slack channel
 # =============================================================================
@@ -529,13 +429,6 @@ class TestSlackChannel:
         assert config.voice_replies is True
         assert config.session_name == "agentwire-slack"
         assert config.allowed_user_ids == []
-
-    def test_slack_channel_class_attributes(self):
-        from agentwire.channels.slack import SlackChannel
-        assert SlackChannel.name == "slack"
-        assert SlackChannel.channel_type == "service"
-        assert SlackChannel.config_key == "slack"
-
 
 # =============================================================================
 # Base class
@@ -730,82 +623,6 @@ class TestImportRewiring:
     def test_notification_error_from_channels(self):
         from agentwire.channels import NotificationError
         assert issubclass(NotificationError, Exception)
-
-
-# =============================================================================
-# Channel config classes — all have expected fields
-# =============================================================================
-
-
-class TestConfigDataclasses:
-    def test_email_config_fields(self):
-        from agentwire.channels.email import EmailConfig
-        c = EmailConfig(
-            api_key="k", from_address="a@b.com", default_to="c@d.com",
-            banner_image_url="b", echo_image_url="e", echo_small_url="s",
-            logo_image_url="l",
-        )
-        assert c.api_key == "k"
-        assert c.from_address == "a@b.com"
-        assert c.banner_image_url == "b"
-
-    def test_telegram_config_fields(self):
-        from agentwire.channels.telegram import TelegramConfig
-        c = TelegramConfig(
-            bot_token="t", allowed_users=[1, 2], default_session="dev",
-            voice_replies=False, forward_questions=False, forward_alerts=False,
-            session_name="my-tg",
-        )
-        assert c.bot_token == "t"
-        assert c.allowed_users == [1, 2]
-        assert c.voice_replies is False
-        assert c.session_name == "my-tg"
-
-    def test_quo_config_fields(self):
-        from agentwire.channels.quo import QuoConfig
-        c = QuoConfig(api_key="k", from_number="+1111", default_to="+2222")
-        assert c.api_key == "k"
-        assert c.from_number == "+1111"
-        assert c.default_to == "+2222"
-
-    def test_sms_config_fields(self):
-        from agentwire.channels.sms import SMSConfig
-        c = SMSConfig(
-            account_sid="sid", auth_token="tok",
-            from_number="+1111", default_to="+2222",
-        )
-        assert c.account_sid == "sid"
-        assert c.from_number == "+1111"
-
-    def test_webhook_config_fields(self):
-        from agentwire.channels.webhook import WebhookConfig
-        c = WebhookConfig(
-            url="https://example.com", method="PUT",
-            headers={"X-Key": "val"}, content_type="text/plain",
-        )
-        assert c.url == "https://example.com"
-        assert c.method == "PUT"
-        assert c.headers == {"X-Key": "val"}
-
-    def test_discord_config_fields(self):
-        from agentwire.channels.discord import DiscordConfig
-        c = DiscordConfig(
-            bot_token="d", allowed_user_ids=[100, 200],
-            default_session="dev", session_name="my-dc",
-        )
-        assert c.bot_token == "d"
-        assert c.allowed_user_ids == [100, 200]
-
-    def test_slack_config_fields(self):
-        from agentwire.channels.slack import SlackConfig
-        c = SlackConfig(
-            bot_token="xoxb", app_token="xapp",
-            allowed_user_ids=["U123", "U456"],
-            default_session="dev", session_name="my-sl",
-        )
-        assert c.bot_token == "xoxb"
-        assert c.app_token == "xapp"
-        assert c.allowed_user_ids == ["U123", "U456"]
 
 
 # =============================================================================

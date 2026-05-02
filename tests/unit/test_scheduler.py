@@ -42,21 +42,14 @@ class TestFormatInterval:
 # --- format_overdue ---
 
 class TestFormatOverdue:
-    def test_positive(self):
-        result = format_overdue(3600.0)
-        assert result == "+1h"
-
-    def test_negative(self):
-        result = format_overdue(-1800.0)
-        assert result == "-30m"
-
-    def test_zero(self):
-        result = format_overdue(0.0)
-        assert result == "+0s"
-
-    def test_small_positive(self):
-        result = format_overdue(45.0)
-        assert result == "+45s"
+    @pytest.mark.parametrize("seconds,expected", [
+        (3600.0, "+1h"),
+        (-1800.0, "-30m"),
+        (0.0, "+0s"),
+        (45.0, "+45s"),
+    ])
+    def test_format_overdue(self, seconds, expected):
+        assert format_overdue(seconds) == expected
 
 
 # --- _EXIT_TO_STATUS mapping ---

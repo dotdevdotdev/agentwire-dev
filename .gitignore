@@ -51,6 +51,9 @@ Thumbs.db
 test_*.wav
 test_output*.wav
 .agentwire/
+.coverage
+.coverage.*
+htmlcov/
 
 # pytest-textual-snapshot diff page (regenerated each run)
 snapshot_report.html

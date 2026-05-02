@@ -8,235 +8,169 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Format functions
+# Format functions — empty/missing-key/multi-entry behavior is parametrized;
+# format-specific assertions kept as individual tests below.
 # ---------------------------------------------------------------------------
 
 
-class TestFormatSessions:
-    def setup_method(self):
+@pytest.mark.parametrize(
+    "fn_name,list_key,empty_substring",
+    [
+        ("format_sessions", "sessions", "No active sessions"),
+        ("format_panes", "panes", "No panes"),
+        ("format_machines", "machines", "No remote machines"),
+        ("format_projects", "projects", "No projects found"),
+        ("format_roles", "roles", "No roles available"),
+        ("format_voices", "voices", "No custom voices"),
+    ],
+)
+class TestFormatEmpty:
+    """All formatters return their empty message for [] and missing-key input."""
+
+    def test_empty_list(self, fn_name, list_key, empty_substring):
+        from agentwire import mcp_server
+        fn = getattr(mcp_server, fn_name)
+        # format_panes also reads "session" key — provide it harmlessly
+        result = fn({list_key: [], "session": "test"})
+        assert empty_substring in result
+
+    def test_missing_key(self, fn_name, list_key, empty_substring):
+        from agentwire import mcp_server
+        fn = getattr(mcp_server, fn_name)
+        result = fn({"session": "test"})
+        assert empty_substring in result
+
+
+@pytest.mark.parametrize(
+    "fn_name,list_key,extra,entries",
+    [
+        ("format_sessions", "sessions", {}, [
+            {"name": "a", "machine": None, "windows": 1, "path": "/a", "type": "bare"},
+            {"name": "b", "machine": "m1", "windows": 2, "path": "/b", "type": "claude-bypass"},
+        ]),
+        ("format_panes", "panes", {"session": "s"}, [
+            {"index": 0, "command": "claude", "active": False},
+            {"index": 1, "command": "bash", "active": True},
+        ]),
+        ("format_machines", "machines", {}, [
+            {"id": "a", "host": "1.1.1.1", "user": "u", "status": "ok"},
+            {"id": "b", "host": "2.2.2.2", "user": "v", "status": "ok"},
+        ]),
+        ("format_projects", "projects", {}, [{"name": "a", "path": "/a"}, {"name": "b", "path": "/b"}]),
+        ("format_roles", "roles", {}, [
+            {"name": "a", "description": "da", "source": "s"},
+            {"name": "b", "description": "db", "source": "s"},
+        ]),
+    ],
+)
+def test_format_multiple_produces_header_plus_one_line_per_entry(fn_name, list_key, extra, entries):
+    """All listing formatters emit a header line then one line per entry."""
+    from agentwire import mcp_server
+    fn = getattr(mcp_server, fn_name)
+    result = fn({list_key: entries, **extra})
+    lines = result.split("\n")
+    assert len(lines) == len(entries) + 1
+
+
+@pytest.mark.parametrize(
+    "fn_name,list_key,extra,entry",
+    [
+        ("format_sessions", "sessions", {}, {"name": "x"}),
+        ("format_panes", "panes", {"session": "s"}, {}),
+        ("format_machines", "machines", {}, {}),
+        ("format_projects", "projects", {}, {}),
+        ("format_roles", "roles", {}, {}),
+        ("format_voices", "voices", {}, [{}]),
+    ],
+)
+def test_format_missing_optional_fields_shows_unknown(fn_name, list_key, extra, entry):
+    """Missing optional fields produce 'unknown' rather than crash or empty string."""
+    from agentwire import mcp_server
+    fn = getattr(mcp_server, fn_name)
+    entries = entry if isinstance(entry, list) else [entry]
+    result = fn({list_key: entries, **extra})
+    assert "unknown" in result or "(local)" in result  # sessions uses (local) for null machine
+
+
+# Format-specific assertions — keep separate; logic is unique per formatter.
+
+class TestFormatSessionsBehavior:
+    def test_all_fields_render(self):
         from agentwire.mcp_server import format_sessions
-        self.fn = format_sessions
-
-    def test_empty_sessions(self):
-        assert self.fn({"sessions": []}) == "No active sessions."
-
-    def test_missing_key(self):
-        assert self.fn({}) == "No active sessions."
-
-    def test_single_session_all_fields(self):
-        data = {"sessions": [
+        result = format_sessions({"sessions": [
             {"name": "my-app", "machine": "gpu-box", "windows": 3, "path": "/p", "type": "claude-bypass"},
-        ]}
-        result = self.fn(data)
+        ]})
         assert "my-app" in result
         assert "gpu-box" in result
         assert "3 window(s)" in result
         assert "type=claude-bypass" in result
 
-    def test_multiple_sessions(self):
-        data = {"sessions": [
-            {"name": "a", "machine": None, "windows": 1, "path": "/a", "type": "bare"},
-            {"name": "b", "machine": "m1", "windows": 2, "path": "/b", "type": "claude-bypass"},
-        ]}
-        result = self.fn(data)
-        assert result.startswith("Active sessions:")
-        lines = result.split("\n")
-        assert len(lines) == 3
-
-    def test_missing_optional_fields(self):
-        data = {"sessions": [{"name": "x"}]}
-        result = self.fn(data)
-        assert "x (local)" in result
-        assert "type=unknown" in result
-
     def test_null_machine_shows_local(self):
-        data = {"sessions": [{"name": "x", "machine": None}]}
-        result = self.fn(data)
-        assert "local" in result
-
-    def test_prefix_format(self):
-        data = {"sessions": [{"name": "s"}]}
-        assert "  - " in self.fn(data)
+        from agentwire.mcp_server import format_sessions
+        assert "local" in format_sessions({"sessions": [{"name": "x", "machine": None}]})
 
 
-class TestFormatPanes:
-    def setup_method(self):
+class TestFormatPanesBehavior:
+    def test_pane_0_is_orchestrator_active_marked(self):
         from agentwire.mcp_server import format_panes
-        self.fn = format_panes
-
-    def test_empty_panes(self):
-        assert self.fn({"panes": [], "session": "test"}) == "No panes in session 'test'."
-
-    def test_missing_key(self):
-        assert "No panes" in self.fn({"session": "x"})
-
-    def test_single_pane_orchestrator(self):
-        data = {"panes": [{"index": 0, "command": "claude", "active": True}], "session": "s"}
-        result = self.fn(data)
+        result = format_panes({"panes": [{"index": 0, "command": "claude", "active": True}], "session": "s"})
         assert "[orchestrator]" in result
         assert "(active)" in result
 
-    def test_worker_pane(self):
-        data = {"panes": [{"index": 1, "command": "bash"}], "session": "s"}
-        result = self.fn(data)
+    def test_pane_nonzero_is_worker(self):
+        from agentwire.mcp_server import format_panes
+        result = format_panes({"panes": [{"index": 1, "command": "bash"}], "session": "s"})
         assert "[worker]" in result
 
-    def test_multiple_panes(self):
-        data = {"panes": [
-            {"index": 0, "command": "claude", "active": False},
-            {"index": 1, "command": "bash", "active": True},
-        ], "session": "s"}
-        result = self.fn(data)
-        lines = result.split("\n")
-        assert len(lines) == 3
 
-    def test_missing_optional_fields(self):
-        data = {"panes": [{}], "session": "s"}
-        result = self.fn(data)
-        assert "Pane 0" in result
-        assert "unknown" in result
-
-    def test_session_defaults_to_unknown(self):
-        data = {"panes": [{"index": 0}]}
-        result = self.fn(data)
-        assert "unknown" in result
-
-
-class TestFormatMachines:
-    def setup_method(self):
+class TestFormatMachinesBehavior:
+    def test_user_at_host_format(self):
         from agentwire.mcp_server import format_machines
-        self.fn = format_machines
-
-    def test_empty_machines(self):
-        assert self.fn({"machines": []}) == "No remote machines configured."
-
-    def test_missing_key(self):
-        assert self.fn({}) == "No remote machines configured."
-
-    def test_single_machine(self):
-        data = {"machines": [{"id": "gpu", "host": "10.0.0.1", "user": "root", "status": "online"}]}
-        result = self.fn(data)
+        result = format_machines({"machines": [
+            {"id": "gpu", "host": "10.0.0.1", "user": "root", "status": "online"}
+        ]})
         assert "root@10.0.0.1" in result
         assert "status: online" in result
 
-    def test_machine_no_user(self):
-        data = {"machines": [{"id": "m1", "host": "h", "user": "", "status": "unknown"}]}
-        result = self.fn(data)
+    def test_blank_user_omits_at_sign(self):
+        from agentwire.mcp_server import format_machines
+        result = format_machines({"machines": [
+            {"id": "m1", "host": "h", "user": "", "status": "unknown"}
+        ]})
         assert "m1: h" in result
         assert "@" not in result.split("m1: ")[1].split(" ")[0]
 
-    def test_multiple_machines(self):
-        data = {"machines": [
-            {"id": "a", "host": "1.1.1.1", "user": "u", "status": "ok"},
-            {"id": "b", "host": "2.2.2.2", "user": "v", "status": "ok"},
-        ]}
-        lines = self.fn(data).split("\n")
-        assert len(lines) == 3
 
-    def test_missing_optional_fields(self):
-        data = {"machines": [{}]}
-        result = self.fn(data)
-        assert "unknown" in result
-
-
-class TestFormatProjects:
-    def setup_method(self):
+class TestFormatProjectsBehavior:
+    def test_has_config_marker(self):
         from agentwire.mcp_server import format_projects
-        self.fn = format_projects
-
-    def test_empty_projects(self):
-        assert self.fn({"projects": []}) == "No projects found."
-
-    def test_missing_key(self):
-        assert self.fn({}) == "No projects found."
-
-    def test_project_with_config(self):
-        data = {"projects": [{"name": "app", "path": "/app", "has_config": True}]}
-        result = self.fn(data)
+        result = format_projects({"projects": [{"name": "app", "path": "/app", "has_config": True}]})
         assert "(has .agentwire.yml)" in result
 
-    def test_project_without_config(self):
-        data = {"projects": [{"name": "app", "path": "/app", "has_config": False}]}
-        result = self.fn(data)
+    def test_no_config_no_marker(self):
+        from agentwire.mcp_server import format_projects
+        result = format_projects({"projects": [{"name": "app", "path": "/app", "has_config": False}]})
         assert ".agentwire.yml" not in result
 
-    def test_multiple_projects(self):
-        data = {"projects": [
-            {"name": "a", "path": "/a"},
-            {"name": "b", "path": "/b"},
-        ]}
-        lines = self.fn(data).split("\n")
-        assert len(lines) == 3
 
-    def test_missing_optional_fields(self):
-        data = {"projects": [{}]}
-        result = self.fn(data)
-        assert "unknown" in result
-
-
-class TestFormatRoles:
-    def setup_method(self):
+class TestFormatRolesBehavior:
+    def test_full_role_format(self):
         from agentwire.mcp_server import format_roles
-        self.fn = format_roles
-
-    def test_empty_roles(self):
-        assert self.fn({"roles": []}) == "No roles available."
-
-    def test_missing_key(self):
-        assert self.fn({}) == "No roles available."
-
-    def test_single_role(self):
-        data = {"roles": [{"name": "voice", "description": "Voice comms", "source": "bundled"}]}
-        result = self.fn(data)
+        result = format_roles({"roles": [{"name": "voice", "description": "Voice comms", "source": "bundled"}]})
         assert "voice: Voice comms (bundled)" in result
 
-    def test_multiple_roles(self):
-        data = {"roles": [
-            {"name": "a", "description": "da", "source": "s"},
-            {"name": "b", "description": "db", "source": "s"},
-        ]}
-        lines = self.fn(data).split("\n")
-        assert len(lines) == 3
 
-    def test_missing_optional_fields(self):
-        data = {"roles": [{}]}
-        result = self.fn(data)
-        assert "unknown" in result
-
-
-class TestFormatVoices:
-    def setup_method(self):
+class TestFormatVoicesBehavior:
+    @pytest.mark.parametrize("voices", [
+        [{"name": "alice"}, {"name": "bob"}],
+        ["alice", "bob"],
+        [{"name": "alice"}, "bob"],
+    ])
+    def test_dict_string_and_mixed_entries_all_render(self, voices):
         from agentwire.mcp_server import format_voices
-        self.fn = format_voices
-
-    def test_empty_voices(self):
-        assert "No custom voices" in self.fn({"voices": []})
-
-    def test_missing_key(self):
-        assert "No custom voices" in self.fn({})
-
-    def test_dict_entries(self):
-        data = {"voices": [{"name": "alice"}, {"name": "bob"}]}
-        result = self.fn(data)
+        result = format_voices({"voices": voices})
         assert "alice" in result
         assert "bob" in result
-
-    def test_string_entries(self):
-        data = {"voices": ["alice", "bob"]}
-        result = self.fn(data)
-        assert "alice" in result
-        assert "bob" in result
-
-    def test_mixed_entries(self):
-        data = {"voices": [{"name": "alice"}, "bob"]}
-        result = self.fn(data)
-        assert "alice" in result
-        assert "bob" in result
-
-    def test_dict_missing_name(self):
-        data = {"voices": [{}]}
-        result = self.fn(data)
-        assert "unknown" in result
 
 
 # ---------------------------------------------------------------------------

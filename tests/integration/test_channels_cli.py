@@ -22,10 +22,12 @@ def run_agentwire(*args, timeout=10):
 
 class TestChannelsListCLI:
     def test_channels_list_text(self):
+        import re
         stdout, stderr, rc = run_agentwire("channels", "list")
         assert rc == 0
-        assert "email" in stdout
-        assert "telegram" in stdout
+        # Channel names anchored to line start so they survive cosmetic format changes
+        assert re.search(r"(?m)^\s*email\b", stdout)
+        assert re.search(r"(?m)^\s*telegram\b", stdout)
         assert "send_only" in stdout
         assert "service" in stdout
 

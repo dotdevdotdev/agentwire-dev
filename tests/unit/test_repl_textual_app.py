@@ -630,42 +630,26 @@ async def test_theme_switch(patched_sdk, tmp_path, monkeypatch):
         assert "theme set" in all_text or "theme error" in all_text
 
 
-class TestMentionPrefixDetect:
-    """Phase 3B — _current_at_prefix detects @-mention typing context."""
-
-    def test_detects_after_space(self):
-        from agentwire.repl.textual_app import AgentwireREPL
-        # Cursor at end of "summarize @notes"
-        text = "summarize @notes"
-        assert AgentwireREPL._current_at_prefix(text, len(text)) == "notes"
-
-    def test_detects_at_start(self):
-        from agentwire.repl.textual_app import AgentwireREPL
-        text = "@README"
-        assert AgentwireREPL._current_at_prefix(text, len(text)) == "README"
-
-    def test_skips_inside_email(self):
-        from agentwire.repl.textual_app import AgentwireREPL
-        # `foo@bar.com` shouldn't trigger — @ not preceded by whitespace.
-        text = "foo@bar.com"
-        assert AgentwireREPL._current_at_prefix(text, len(text)) is None
-
-    def test_returns_none_if_no_at(self):
-        from agentwire.repl.textual_app import AgentwireREPL
-        assert AgentwireREPL._current_at_prefix("just text", 9) is None
-
-    def test_terminates_at_whitespace_after_prefix(self):
-        from agentwire.repl.textual_app import AgentwireREPL
-        # "@notes hello" — cursor at end, the @prefix already terminated.
-        text = "@notes hello"
-        assert AgentwireREPL._current_at_prefix(text, len(text)) is None
-
-    def test_partial_prefix_at_cursor(self):
-        from agentwire.repl.textual_app import AgentwireREPL
-        # Cursor right after "REA" — text up to cursor is "look at @REA",
-        # which is 12 chars.
-        text = "look at @REA and stuff"
-        assert AgentwireREPL._current_at_prefix(text, 12) == "REA"
+@pytest.mark.parametrize(
+    "text,cursor,expected",
+    [
+        # Detects after space
+        ("summarize @notes", len("summarize @notes"), "notes"),
+        # Detects at start of input
+        ("@README", len("@README"), "README"),
+        # `foo@bar.com` — @ not preceded by whitespace, must not trigger
+        ("foo@bar.com", len("foo@bar.com"), None),
+        # No @ at all
+        ("just text", 9, None),
+        # @prefix terminated by whitespace before cursor
+        ("@notes hello", len("@notes hello"), None),
+        # Cursor mid-prefix: "look at @REA" — text up to cursor is 12 chars
+        ("look at @REA and stuff", 12, "REA"),
+    ],
+)
+def test_current_at_prefix(text, cursor, expected):
+    from agentwire.repl.textual_app import AgentwireREPL
+    assert AgentwireREPL._current_at_prefix(text, cursor) == expected
 
 
 # test_at_mention_preview_shows_in_action_pane removed: the live mention
@@ -695,35 +679,26 @@ async def test_tab_completes_mention(patched_sdk, tmp_path, monkeypatch):
         assert "@README.md" in inp.value
 
 
-class TestCommandPaletteFuzzy:
-    """Phase 3C — command palette fuzzy scoring."""
-
-    def test_empty_query_matches_all(self):
-        from agentwire.repl.textual_app import CommandPalette
-        assert CommandPalette._fuzzy_score("/help", "Show help", "") == 0
-
-    def test_prefix_match_best(self):
-        from agentwire.repl.textual_app import CommandPalette
-        assert CommandPalette._fuzzy_score("/cost", "Show cost", "co") == 0
-
-    def test_substring_in_name(self):
-        from agentwire.repl.textual_app import CommandPalette
-        # "lp" is a substring of "help" but not a prefix.
-        assert CommandPalette._fuzzy_score("/help", "Show help", "lp") == 1
-
-    def test_substring_in_summary(self):
-        from agentwire.repl.textual_app import CommandPalette
-        # "trans" doesn't appear in "/save" but does in "transcript".
-        assert CommandPalette._fuzzy_score("/save", "Show transcript path", "trans") == 2
-
-    def test_no_match(self):
-        from agentwire.repl.textual_app import CommandPalette
-        assert CommandPalette._fuzzy_score("/help", "Show help", "xyzzy") == -1
-
-    def test_query_with_slash_normalized(self):
-        from agentwire.repl.textual_app import CommandPalette
-        # User types "/co" — leading slash is normalized away.
-        assert CommandPalette._fuzzy_score("/cost", "Show cost", "/co") == 0
+@pytest.mark.parametrize(
+    "name,summary,query,expected_score",
+    [
+        # Empty query matches everything (score 0 = best)
+        ("/help", "Show help", "", 0),
+        # Prefix match on name
+        ("/cost", "Show cost", "co", 0),
+        # Substring in name (not prefix)
+        ("/help", "Show help", "lp", 1),
+        # Substring in summary only
+        ("/save", "Show transcript path", "trans", 2),
+        # No match
+        ("/help", "Show help", "xyzzy", -1),
+        # Leading slash in query is normalized away
+        ("/cost", "Show cost", "/co", 0),
+    ],
+)
+def test_command_palette_fuzzy_score(name, summary, query, expected_score):
+    from agentwire.repl.textual_app import CommandPalette
+    assert CommandPalette._fuzzy_score(name, summary, query) == expected_score
 
 
 @pytest.mark.asyncio

@@ -91,22 +91,20 @@ class TestBuildAgentCommand:
     # === pi-zai session types ===
 
     def test_pi_zai_basic(self):
-        """pi-zai launches pi binary with Z.AI provider and default model."""
+        """pi-zai launches pi binary with Z.AI provider and default model.
+
+        Security regression: key var name AND value must both stay out of
+        cmd.command (visible in ps auxwww) — they're injected via tmux env.
+        """
         cmd = self._build("pi-zai")
         assert cmd.command.startswith("pi --provider zai")
-        # Key is injected via tmux set-environment, NOT on the command line
         assert "ZAI_API_KEY" not in cmd.command
+        assert "test-key-123" not in cmd.command  # actual key value too
         assert cmd.env == {"ZAI_API_KEY": "test-key-123"}
         assert "--model glm-5.1" in cmd.command
         # Pi has no --dangerously-skip-permissions (no permission system)
         assert "--dangerously-skip-permissions" not in cmd.command
         assert cmd.temp_file is None
-
-    def test_pi_zai_key_not_in_command(self):
-        """Regression: ZAI_API_KEY must live in cmd.env, never in cmd.command."""
-        cmd = self._build("pi-zai")
-        assert "test-key-123" not in cmd.command
-        assert cmd.env.get("ZAI_API_KEY") == "test-key-123"
 
     def test_pi_zai_restricted(self):
         """pi-zai-restricted whitelists read-only tools + bash."""

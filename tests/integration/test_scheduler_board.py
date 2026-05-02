@@ -15,11 +15,8 @@ from agentwire.scheduler import (
     SchedulerTask,
     TaskState,
     _compute_next_eligible,
-    _day_matches,
     _in_time_window,
     _is_in_flight,
-    _parse_duration,
-    _parse_time,
     format_schedule,
     get_board_display,
     load_board,
@@ -120,82 +117,9 @@ class TestSchedulerBoardRoundTrip:
         assert board2.tasks["doc-drift"].filler is True
 
 
-class TestParseDuration:
-    def test_seconds(self):
-        assert _parse_duration("30s") == 30
-
-    def test_minutes(self):
-        assert _parse_duration("30m") == 1800
-
-    def test_hours(self):
-        assert _parse_duration("2h") == 7200
-
-    def test_days(self):
-        assert _parse_duration("1d") == 86400
-
-    def test_bare_integer(self):
-        assert _parse_duration("3600") == 3600
-
-    def test_none(self):
-        assert _parse_duration(None) is None
-
-    def test_empty(self):
-        assert _parse_duration("") is None
-
-    def test_invalid(self):
-        assert _parse_duration("foo") is None
-
-
-class TestParseTime:
-    def test_normal(self):
-        assert _parse_time("08:00") == (8, 0)
-
-    def test_afternoon(self):
-        assert _parse_time("20:30") == (20, 30)
-
-    def test_single_digit_hour(self):
-        assert _parse_time("8:00") == (8, 0)
-
-    def test_none(self):
-        assert _parse_time(None) is None
-
-    def test_invalid(self):
-        assert _parse_time("not-a-time") is None
-
-
-class TestDayMatches:
-    def test_day_matches_any(self):
-        monday = datetime(2026, 2, 16, 10, 0)  # Monday
-        assert _day_matches(monday, "day", None) is True
-
-    def test_weekday_on_monday(self):
-        monday = datetime(2026, 2, 16, 10, 0)
-        assert _day_matches(monday, "weekday", None) is True
-
-    def test_weekday_on_saturday(self):
-        saturday = datetime(2026, 2, 21, 10, 0)
-        assert _day_matches(saturday, "weekday", None) is False
-
-    def test_weekend_on_saturday(self):
-        saturday = datetime(2026, 2, 21, 10, 0)
-        assert _day_matches(saturday, "weekend", None) is True
-
-    def test_specific_day(self):
-        monday = datetime(2026, 2, 16, 10, 0)
-        assert _day_matches(monday, "monday", None) is True
-        assert _day_matches(monday, "tuesday", None) is False
-
-    def test_except_days(self):
-        saturday = datetime(2026, 2, 21, 10, 0)
-        assert _day_matches(saturday, "day", ["saturday"]) is False
-
-    def test_duration_every_respects_except(self):
-        saturday = datetime(2026, 2, 21, 10, 0)
-        assert _day_matches(saturday, "4h", ["saturday"]) is False
-
-    def test_duration_every_allows_weekday(self):
-        monday = datetime(2026, 2, 16, 10, 0)
-        assert _day_matches(monday, "4h", None) is True
+# Pure parser tests for _parse_duration / _parse_time / _day_matches live in
+# tests/unit/test_scheduler_parsing.py — they have no scheduler-board state
+# coupling.
 
 
 class TestInTimeWindow:

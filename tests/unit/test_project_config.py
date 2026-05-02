@@ -124,24 +124,20 @@ class TestProjectConfig:
         config = ProjectConfig.from_dict({"roles": None})
         assert config.roles == []
 
-    def test_to_dict_omits_none(self):
-        config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
-        d = config.to_dict()
-        assert d == {"type": "claude-bypass"}
-        assert "voice" not in d
-        assert "parent" not in d
-        assert "roles" not in d
-
-    def test_to_dict_includes_populated(self):
-        config = ProjectConfig(
+    def test_to_dict_omits_unset_includes_set(self):
+        # Unset optional fields stay out of the dict
+        bare = ProjectConfig(type=SessionType.CLAUDE_BYPASS).to_dict()
+        assert bare == {"type": "claude-bypass"}
+        assert {"voice", "parent", "roles"}.isdisjoint(bare.keys())
+        # Populated fields appear with their value
+        full = ProjectConfig(
             type=SessionType.WORKER,
             roles=["agentwire"],
             voice="dotdev",
-        )
-        d = config.to_dict()
-        assert d["type"] == "worker"
-        assert d["roles"] == ["agentwire"]
-        assert d["voice"] == "dotdev"
+        ).to_dict()
+        assert full["type"] == "worker"
+        assert full["roles"] == ["agentwire"]
+        assert full["voice"] == "dotdev"
 
     def test_round_trip(self):
         original = ProjectConfig(

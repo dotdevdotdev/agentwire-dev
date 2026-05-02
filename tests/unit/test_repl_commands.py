@@ -52,22 +52,15 @@ class TestDispatch:
         assert "unknown command" in out.getvalue()
         assert "/nonexistent" in out.getvalue()
 
-    def test_help_continues(self):
-        state = _state()
+    @pytest.mark.parametrize("cmd,expected_action", [
+        ("/help", CONTINUE),
+        ("/exit", EXIT),
+        ("/quit", EXIT),  # alias of /exit
+        ("/clear", RESTART),
+    ])
+    def test_dispatch_action(self, cmd, expected_action):
         out = io.StringIO()
-        assert dispatch_command("/help", state, out) == CONTINUE
-
-    def test_exit_returns_exit(self):
-        out = io.StringIO()
-        assert dispatch_command("/exit", _state(), out) == EXIT
-
-    def test_quit_alias_returns_exit(self):
-        out = io.StringIO()
-        assert dispatch_command("/quit", _state(), out) == EXIT
-
-    def test_clear_returns_restart(self):
-        out = io.StringIO()
-        assert dispatch_command("/clear", _state(), out) == RESTART
+        assert dispatch_command(cmd, _state(), out) == expected_action
 
     def test_args_passed_through(self):
         # No current commands take args, but the dispatcher must not error when

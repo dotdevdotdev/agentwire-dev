@@ -118,22 +118,19 @@ def fake_sdk(monkeypatch):
 
 
 class TestFanoutColumn:
-    def test_init_defaults(self):
+    def test_init_defaults_and_explicit(self):
+        # Default model None → filled with DEFAULT_MODEL
         col = FanoutColumn(col=0, mode="bypass", model=None)
-        assert col.col == 0
-        assert col.mode == "bypass"
-        assert col.model  # filled with DEFAULT_MODEL when None
+        assert (col.col, col.mode) == (0, "bypass")
+        assert col.model  # DEFAULT_MODEL filled in
         assert col.client is None
         assert col.input_tokens == 0
         assert col.output_tokens == 0
         assert col.cost_usd == 0.0
         assert col.turn_count == 0
-
-    def test_explicit_model(self):
-        col = FanoutColumn(col=2, mode="prompted", model="claude-sonnet-4-6")
-        assert col.col == 2
-        assert col.model == "claude-sonnet-4-6"
-        assert col.mode == "prompted"
+        # Explicit model overrides default
+        col2 = FanoutColumn(col=2, mode="prompted", model="claude-sonnet-4-6")
+        assert (col2.col, col2.mode, col2.model) == (2, "prompted", "claude-sonnet-4-6")
 
 
 # ---- run_fanout_repl arg validation ---------------------------------------
