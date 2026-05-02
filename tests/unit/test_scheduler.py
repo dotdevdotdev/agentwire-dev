@@ -52,6 +52,125 @@ class TestFormatOverdue:
         assert format_overdue(seconds) == expected
 
 
+# --- _check_gate: precondition gates (git_commit, git_diff, command) ---
+
+class TestCheckGate:
+    """End-to-end tests against a real git repo fixture in tmp_path.
+
+    Gates are AND'd: all must pass for _check_gate to return True. Failure
+    in subprocess (git not found, malformed cmd) fails OPEN — gate returns
+    True so the task can run.
+    """
+
+    @pytest.fixture
+    def git_project(self, tmp_path):
+        """Initialize a git repo with one commit; return the path."""
+        import subprocess as sp
+        sp.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        sp.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+        sp.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+        (tmp_path / "README.md").write_text("hello\n")
+        sp.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+        sp.run(["git", "commit", "-qm", "initial"], cwd=tmp_path, check=True)
+        return tmp_path
+
+    @pytest.fixture
+    def board(self, git_project):
+        from agentwire.scheduler import Board, SchedulerTask, TaskState
+        task = SchedulerTask(name="t", project=str(git_project))
+        return Board(tasks={"t": task}, state={"t": TaskState()})
+
+    def _head(self, project):
+        import subprocess as sp
+        return sp.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    def _new_commit(self, project, file="other.txt", content="x"):
+        import subprocess as sp
+        (project / file).write_text(content)
+        sp.run(["git", "-C", str(project), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(project), "commit", "-qm", "next"], check=True)
+
+    def test_no_gate_passes(self, board):
+        from agentwire.scheduler import _check_gate
+        assert _check_gate(board, "t") is True
+
+    def test_git_commit_no_baseline_passes(self, board):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"git_commit": True}
+        assert _check_gate(board, "t") is True
+
+    def test_git_commit_unchanged_blocks(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"git_commit": True}
+        board.state["t"].last_gate_commit = self._head(git_project)
+        assert _check_gate(board, "t") is False
+
+    def test_git_commit_advanced_passes(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"git_commit": True}
+        old_head = self._head(git_project)
+        board.state["t"].last_gate_commit = old_head
+        self._new_commit(git_project)
+        assert _check_gate(board, "t") is True
+
+    def test_git_commit_invalid_project_fails_open(self, board, tmp_path):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"git_commit": True}
+        board.tasks["t"].project = str(tmp_path / "not-a-repo")
+        board.state["t"].last_gate_commit = "deadbeef"
+        assert _check_gate(board, "t") is True  # fail open
+
+    def test_git_diff_no_changes_in_paths_blocks(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        old_head = self._head(git_project)
+        self._new_commit(git_project, file="other.txt")
+        board.tasks["t"].gate = {"git_diff": ["src/"]}
+        board.state["t"].last_gate_commit = old_head
+        assert _check_gate(board, "t") is False
+
+    def test_git_diff_changes_in_paths_passes(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        import subprocess as sp
+        old_head = self._head(git_project)
+        (git_project / "watched.txt").write_text("changed")
+        sp.run(["git", "-C", str(git_project), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(git_project), "commit", "-qm", "watched"], check=True)
+        board.tasks["t"].gate = {"git_diff": ["watched.txt"]}
+        board.state["t"].last_gate_commit = old_head
+        assert _check_gate(board, "t") is True
+
+    def test_git_diff_no_baseline_passes(self, board):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"git_diff": ["src/"]}
+        assert _check_gate(board, "t") is True
+
+    def test_command_zero_exit_passes(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"command": "true"}
+        assert _check_gate(board, "t") is True
+
+    def test_command_nonzero_exit_blocks(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"command": "false"}
+        assert _check_gate(board, "t") is False
+
+    def test_command_with_pipe_runs_via_shell(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"command": "echo ok | grep -q ok"}
+        assert _check_gate(board, "t") is True
+
+    def test_multiple_gates_all_required(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        old = self._head(git_project)
+        board.state["t"].last_gate_commit = old
+        self._new_commit(git_project)
+        board.tasks["t"].gate = {"git_commit": True, "command": "false"}
+        assert _check_gate(board, "t") is False
+
+
 # --- _EXIT_TO_STATUS mapping ---
 
 class TestExitCodeMapping:
