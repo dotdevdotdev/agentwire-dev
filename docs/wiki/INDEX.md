@@ -8,13 +8,14 @@ Reference manual for AgentWire features and internals.
 
 New to AgentWire? Start here:
 
-1. **[README](../../README.md)** — what AgentWire is, install, quick start
+1. **[Quickstart](quickstart.md)** — install → first session → voice → first scheduled task → first channel, in 5 minutes
 2. **[Concepts](concepts.md)** — narrative mental model: why tmux, sessions, orchestrator/worker, channels, scheduled work
 3. **[Architecture](architecture.md)** — single-page diagram of how the pieces fit together
 4. **[Glossary](glossary.md)** — definitions for session, pane, channel, gate, and the rest
-5. **[CLAUDE.md](../../CLAUDE.md)** — agent-facing project guide
-6. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
-7. **[REPL walkthrough](sessions/repl-tui.md)** — the Textual TUI for interactive sessions
+5. **[README](../../README.md)** — what AgentWire is, full install matrix, feature list
+6. **[CLAUDE.md](../../CLAUDE.md)** — agent-facing project guide
+7. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
+8. **[REPL walkthrough](sessions/repl-tui.md)** — the Textual TUI for interactive sessions
 
 ## Sessions
 
