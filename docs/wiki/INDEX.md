@@ -10,8 +10,9 @@ New to AgentWire? Start here:
 
 1. **[README](../../README.md)** — what AgentWire is, install, quick start
 2. **[CLAUDE.md](../../CLAUDE.md)** — agent-facing project guide
-3. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
-4. **[REPL walkthrough](sessions/repl-tui.md)** — the Textual TUI for interactive sessions
+3. **[Glossary](glossary.md)** — definitions for session, pane, channel, gate, and the rest
+4. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
+5. **[REPL walkthrough](sessions/repl-tui.md)** — the Textual TUI for interactive sessions
 
 ## Sessions
 
