@@ -8,16 +8,22 @@ import pytest
 from agentwire.roles import RoleConfig
 
 
-# Mock for load_config() in __main__ used by pi-zai branch.
+# Mock for load_config() in __main__ used by the pi-* branch.
 FAKE_CONFIG = {
-    "zai": {
-        "api_key": "test-key-123",
-        "base_url": "https://api.z.ai/api/anthropic",
-        "timeout_ms": 3000000,
-    },
     "pi": {
-        "default_model": "glm-5.1",
         "binary": "pi",
+        "providers": {
+            "zai": {
+                "env_var": "ZAI_API_KEY",
+                "api_key": "test-key-123",
+                "default_model": "glm-5.1",
+            },
+            "deepseek": {
+                "env_var": "DEEPSEEK_API_KEY",
+                "api_key": "test-deepseek-key",
+                "default_model": "deepseek-chat",
+            },
+        },
     },
 }
 
@@ -170,6 +176,117 @@ class TestBuildAgentCommand:
         """pi-zai-readonly is a curated context, skips role instructions."""
         roles = [RoleConfig(name="test", instructions="Be creative")]
         cmd = self._build("pi-zai-readonly", roles=roles)
+        assert "--append-system-prompt" not in cmd.command
+        assert cmd.temp_file is None
+
+    # === pi-<provider> generalization (multi-provider) ===
+
+    def test_pi_deepseek_basic(self):
+        """pi-deepseek launches pi binary with deepseek provider + key."""
+        cmd = self._build("pi-deepseek")
+        assert cmd.command.startswith("pi --provider deepseek")
+        assert "--model deepseek-chat" in cmd.command
+        # Deepseek key under DEEPSEEK_API_KEY, never on the command line
+        assert "test-deepseek-key" not in cmd.command
+        assert cmd.env == {"DEEPSEEK_API_KEY": "test-deepseek-key"}
+
+    def test_pi_deepseek_restricted(self):
+        """pi-<provider>-restricted parses correctly for any provider."""
+        cmd = self._build("pi-deepseek-restricted")
+        assert "pi --provider deepseek" in cmd.command
+        assert "--tools read,grep,find,bash" in cmd.command
+
+    def test_pi_unknown_provider_raises(self):
+        """Provider not in pi.providers raises a clear error at build time."""
+        with pytest.raises(ValueError, match="pi provider 'bogus'"):
+            self._build("pi-bogus")
+
+    def test_pi_extra_env_merged_with_provider_key(self):
+        """pi.extra_env (e.g. BRAVE_SEARCH_API_KEY) merges with the provider key."""
+        config = {
+            "pi": {
+                "binary": "pi",
+                "extra_env": {"BRAVE_SEARCH_API_KEY": "test-brave"},
+                "providers": {
+                    "zai": {
+                        "env_var": "ZAI_API_KEY",
+                        "api_key": "test-key-123",
+                        "default_model": "glm-5.1",
+                    },
+                },
+            },
+        }
+        with patch("agentwire.__main__.load_config", return_value=config):
+            cmd = self._build("pi-zai")
+        assert cmd.env["ZAI_API_KEY"] == "test-key-123"
+        assert cmd.env["BRAVE_SEARCH_API_KEY"] == "test-brave"
+
+    def test_pi_system_prompt_combined_with_role(self):
+        """pi.system_prompt is prepended to role instructions in the temp file."""
+        config = {
+            "pi": {
+                "binary": "pi",
+                "system_prompt": "GLOBAL_INSTRUCTIONS",
+                "providers": {
+                    "zai": {
+                        "env_var": "ZAI_API_KEY",
+                        "api_key": "test-key-123",
+                        "default_model": "glm-5.1",
+                    },
+                },
+            },
+        }
+        roles = [RoleConfig(name="worker", instructions="ROLE_INSTRUCTIONS")]
+        with patch("agentwire.__main__.load_config", return_value=config):
+            cmd = self._build("pi-zai", roles=roles)
+        assert cmd.temp_file is not None
+        with open(cmd.temp_file) as f:
+            content = f.read()
+        assert "GLOBAL_INSTRUCTIONS" in content
+        assert "ROLE_INSTRUCTIONS" in content
+        # Global must come first so role can override / extend it
+        assert content.index("GLOBAL_INSTRUCTIONS") < content.index("ROLE_INSTRUCTIONS")
+        os.unlink(cmd.temp_file)
+
+    def test_pi_system_prompt_alone_writes_temp_file(self):
+        """Even with no role, pi.system_prompt alone triggers --append-system-prompt."""
+        config = {
+            "pi": {
+                "binary": "pi",
+                "system_prompt": "ONLY_GLOBAL",
+                "providers": {
+                    "zai": {
+                        "env_var": "ZAI_API_KEY",
+                        "api_key": "test-key-123",
+                        "default_model": "glm-5.1",
+                    },
+                },
+            },
+        }
+        with patch("agentwire.__main__.load_config", return_value=config):
+            cmd = self._build("pi-zai")
+        assert cmd.temp_file is not None
+        with open(cmd.temp_file) as f:
+            assert f.read() == "ONLY_GLOBAL"
+        os.unlink(cmd.temp_file)
+
+    def test_pi_restricted_skips_system_prompt(self):
+        """Restricted variants are curated — pi.system_prompt is skipped."""
+        config = {
+            "pi": {
+                "binary": "pi",
+                "system_prompt": "GLOBAL_INSTRUCTIONS",
+                "providers": {
+                    "zai": {
+                        "env_var": "ZAI_API_KEY",
+                        "api_key": "test-key-123",
+                        "default_model": "glm-5.1",
+                    },
+                },
+            },
+        }
+        with patch("agentwire.__main__.load_config", return_value=config):
+            cmd = self._build("pi-zai-restricted")
         assert "--append-system-prompt" not in cmd.command
         assert cmd.temp_file is None
 

@@ -1,7 +1,7 @@
 """Tests for overnight queue resume-flag injection (Phase 5 hardening).
 
 The dispatch path injects `--resume <id> --fork-session` after the agent
-binary token. Phase 5 added a session-type guard so sdk-* and pi-zai-*
+binary token. Phase 5 added a session-type guard so sdk-* and pi-*
 items don't get malformed claude flags shoved at them, and switched the
 locator from rfind("claude") (buggy when `--model claude-opus-4-7` is in
 the args) to a startswith check on the leading binary token.
@@ -50,7 +50,14 @@ class TestSdkTypes:
 
 
 class TestPiTypes:
-    @pytest.mark.parametrize("pi_type", ["pi-zai", "pi-zai-restricted", "pi-zai-readonly"])
+    @pytest.mark.parametrize(
+        "pi_type",
+        [
+            "pi-zai", "pi-zai-restricted", "pi-zai-readonly",
+            "pi-deepseek", "pi-deepseek-restricted",
+            "pi-openrouter",
+        ],
+    )
     def test_pi_passthrough(self, pi_type):
         cmd = "pi --provider zai"
         out = _inject_resume_flags(cmd, pi_type, "abc123")

@@ -59,7 +59,7 @@ The `agentwire-mcp-tools` skill has the full reference (87 tools covering sessio
 | `wiki/` | LLM-maintained knowledge base (Karpathy LLM Wiki pattern) |
 | `logs/` | Audit logs for damage-control |
 
-Per-project config lives in `.agentwire.yml` at the project root — see `agentwire-project-config` skill for fields and task schema. For Z.AI / pi-zai sessions, see the `agentwire-pi-zai` skill.
+Per-project config lives in `.agentwire.yml` at the project root — see `agentwire-project-config` skill for fields and task schema. For pi sessions (zai, deepseek, openai, etc.), see the `agentwire-pi` skill.
 
 ## Key Patterns
 
@@ -119,7 +119,7 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 | `agentwire-project-config` | Editing `.agentwire.yml`, defining tasks, roles, idle notifications |
 | `agentwire-scheduler` | Scheduled task gates/schedule/priority + overnight queue + workflow-backed tasks |
 | `agentwire-desktop-ui` | Editing portal static files (sidebar, windows, artifacts) |
-| `agentwire-pi-zai` | Setting up Z.AI sessions via pi coding agent |
+| `agentwire-pi` | Setting up pi sessions (zai, deepseek, openai, etc.) via pi coding agent |
 | `agentwire-workflows` | Authoring or debugging pi workflow YAMLs (`agentwire workflow ...`) |
 
 ## Docs

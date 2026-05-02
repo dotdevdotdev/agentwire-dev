@@ -19,9 +19,8 @@ class SessionType(str, Enum):
     CLAUDE_AUTO = "claude-auto"      # Claude with auto mode (classifier safety net)
     CLAUDE_PROMPTED = "claude-prompted"  # Claude with permission hooks
     CLAUDE_RESTRICTED = "claude-restricted"  # Claude with only say allowed
-    PI_ZAI = "pi-zai"                      # Pi coding agent via Z.AI GLM (full tools)
-    PI_ZAI_RESTRICTED = "pi-zai-restricted"  # Pi via Z.AI, read+search+bash (no edits)
-    PI_ZAI_READONLY = "pi-zai-readonly"      # Pi via Z.AI, read-only inspection
+    # Pi coding agent session types (`pi-zai`, `pi-deepseek`, `pi-<provider>[-restricted|-readonly]`)
+    # are handled dynamically by `_missing_` below — no explicit members needed.
     SDK_BYPASS = "sdk-bypass"          # Agentwire REPL (claude-agent-sdk), bypass permissions
     SDK_PROMPTED = "sdk-prompted"      # Agentwire REPL, ask before each tool call
     SDK_RESTRICTED = "sdk-restricted"  # Agentwire REPL, plan / read-only
@@ -32,10 +31,12 @@ class SessionType(str, Enum):
 
     @classmethod
     def _missing_(cls, value: object) -> "SessionType | None":
-        """Handle dynamic pi-<provider> types not enumerated at definition time."""
-        if isinstance(value, str) and (
-            value.startswith("pi-") or value.startswith("claude-") or value.startswith("sdk-")
-        ):
+        """Handle dynamic pi-<provider> types not enumerated at definition time.
+
+        Only `pi-*` is dynamic — the claude-* and sdk-* families are closed sets,
+        so unknown variants there should fail loudly rather than silently round-trip.
+        """
+        if isinstance(value, str) and value.startswith("pi-"):
             obj = str.__new__(cls, value)
             obj._name_ = value.upper().replace("-", "_")
             obj._value_ = value

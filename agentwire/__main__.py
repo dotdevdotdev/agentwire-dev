@@ -194,7 +194,13 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
         pi_config = config.get("pi", {})
         pi_binary = pi_config.get("binary", "pi")
 
-        provider_cfg = pi_config.get("providers", {}).get(provider, {})
+        provider_cfg = pi_config.get("providers", {}).get(provider)
+        if not provider_cfg:
+            raise ValueError(
+                f"No config for pi provider '{provider}'. "
+                f"Add pi.providers.{provider} to ~/.agentwire/config.yaml "
+                f"with at least env_var, api_key, and default_model."
+            )
         env_var = provider_cfg.get("env_var", f"{provider.upper().replace('-', '_')}_API_KEY")
         api_key = provider_cfg.get("api_key", "")
         default_model = provider_cfg.get("default_model", "")
@@ -260,7 +266,7 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
         if model:
             parts.extend(["--model", model])
 
-        # Role-based system prompt (same temp-file pattern as claude-* / pi-zai
+        # Role-based system prompt (same temp-file pattern as claude-* / pi-*
         # to avoid shell escaping on multiline content; --append-system-prompt
         # must be last).
         temp_file = None
@@ -6306,7 +6312,7 @@ def cmd_doctor(args) -> int:
         print("  [..] claude: not found (optional, use --bare sessions or other agents)")
         print("     Install: https://github.com/anthropics/claude-code")
 
-    # Check Pi coding agent (optional, for pi-zai session types)
+    # Check Pi coding agent (optional, for pi-* session types)
     pi_path = shutil.which("pi")
     if pi_path:
         try:
@@ -6320,7 +6326,7 @@ def cmd_doctor(args) -> int:
         except Exception:
             print(f"  [ok] pi: {pi_path}")
     else:
-        print("  [..] pi: not found (optional, required for pi-zai session types)")
+        print("  [..] pi: not found (optional, required for pi-* session types)")
         print("     Install: npm install -g @mariozechner/pi-coding-agent")
 
     # 3. Check AgentWire scripts

@@ -18,7 +18,7 @@ New to AgentWire? Start here:
 How AgentWire runs AI agents — session types, REPLs, and permission models.
 
 - **[claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — Auto mode session type with classifier safety net
-- **[pi-zai](sessions/pi-zai.md)** — Pi coding agent + Z.AI session types
+- **[pi](sessions/pi.md)** — Pi coding agent (multi-provider: zai, deepseek, openai, openrouter, …)
 - **[REPL TUI](sessions/repl-tui.md)** — Textual REPL walkthrough — slash commands, shortcuts, theming, `--view fanout`
 
 ## Communication
@@ -77,7 +77,7 @@ Agent-facing reference lives in `.claude/skills/` and loads automatically inside
 | `agentwire-project-config` | Editing `.agentwire.yml`, defining tasks/roles |
 | `agentwire-scheduler` | Scheduled tasks, gates, overnight queue |
 | `agentwire-desktop-ui` | Editing portal static files |
-| `agentwire-pi-zai` | Z.AI sessions via pi |
+| `agentwire-pi` | Pi sessions for any provider (zai, deepseek, openai, …) |
 | `agentwire-workflows` | Authoring/debugging pi workflow YAMLs |
 
 ## Mission Archive

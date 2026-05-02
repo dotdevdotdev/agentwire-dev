@@ -1,6 +1,6 @@
 ---
 name: agentwire-config
-description: Reference for `~/.agentwire/config.yaml` — main config structure including server/portal/SSL, projects, TTS/STT, agent, dev, services, executables, uploads/artifacts/wiki, channels (email/telegram/quo/sms/webhook/discord/slack), scheduler, worktree, overnight, session defaults. Use when editing or debugging agentwire config, setting up TTS/STT backends, wiring up a new channel bridge, or explaining config fields to the user.
+description: Reference for `~/.agentwire/config.yaml` — main config structure including server/portal/SSL, projects, TTS/STT, agent, dev, services, executables, pi (binary/system_prompt/extra_env/providers), uploads/artifacts/wiki, channels (email/telegram/quo/sms/webhook/discord/slack), scheduler, worktree, overnight, session defaults. Use when editing or debugging agentwire config, setting up TTS/STT backends, wiring up a new channel bridge, configuring pi providers, or explaining config fields to the user.
 ---
 
 # AgentWire Config (`~/.agentwire/config.yaml`)
@@ -88,6 +88,36 @@ executables:  # Override executable paths (optional, auto-detected by default)
   whisperkit-cli: "/opt/homebrew/bin/whisperkit-cli"
   hs: "/opt/homebrew/bin/hs"
   agentwire: "~/.local/bin/agentwire"
+
+pi:  # Pi coding agent — drives all `pi-<provider>` session types. See `agentwire-pi` skill.
+  binary: "pi"  # path override if pi isn't on PATH (e.g., nvm-installed)
+
+  # Appended via --append-system-prompt to every non-restricted pi-* session.
+  # Use to teach pi about local helpers — agentwire brave, agentwire fetch, etc.
+  system_prompt: |
+    ## Web Search
+    Use `agentwire brave "<query>"` for web search via the Brave Search API.
+
+    ## Fetching URLs
+    Use `agentwire fetch <url>` to fetch a page as clean markdown (Jina Reader).
+
+  # Env vars injected into every pi-* session, in addition to the provider key.
+  # Useful for cross-cutting tools like the Brave Search helper.
+  extra_env:
+    BRAVE_SEARCH_API_KEY: "BSA..."
+
+  # Per-provider config. Session type `pi-<name>` resolves the provider here.
+  # Adding a new provider is config-only — no code changes needed. For non-built-in
+  # providers (e.g. DeepSeek), also register them in `~/.pi/agent/models.json`.
+  providers:
+    zai:
+      env_var: ZAI_API_KEY
+      api_key: "..."
+      default_model: glm-5.1
+    deepseek:
+      env_var: DEEPSEEK_API_KEY
+      api_key: "..."
+      default_model: deepseek-chat
 
 uploads:
   dir: "~/.agentwire/uploads"
