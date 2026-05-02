@@ -497,12 +497,11 @@ class TestExtractCommandPaths:
         assert any("scratch.txt" in p for p in paths)
 
 
-# --- Read-only path mutation operators: documents which slip through ---
+# --- Read-only path mutation operators ---
 #
-# Source line ~429 only catches `rm`, `mv`, `sed -i`, `>` for readOnlyPath
-# detection. Other mutating commands (cp, dd, tee, rsync, cat>, install) are
-# NOT caught — they fall through to "allow" unless covered by another rule.
-# These tests document that gap so we notice if it changes.
+# Source line ~429 catches rm/mv/sed -i/> plus cp/dd/tee/rsync/tar -c/install
+# for readOnlyPath detection. Each parametrized case writes (or deletes/moves)
+# to a path inside readOnlyPaths and must be blocked.
 
 class TestReadOnlyPathMutationOperators:
     def _rules(self, tmp_path, monkeypatch, patterns):
@@ -515,32 +514,31 @@ class TestReadOnlyPathMutationOperators:
         return rd
 
     @pytest.mark.parametrize("cmd", [
-        "rm /readonly/file",        # rm — caught
-        "mv src /readonly/file",    # mv — caught
-        "sed -i s/x/y/g /readonly/file",  # sed -i — caught
-        "echo data > /readonly/file",  # > redirect — caught
+        # Original four (regression fence)
+        "rm /readonly/file",
+        "mv src /readonly/file",
+        "sed -i s/x/y/g /readonly/file",
+        "echo data > /readonly/file",
+        # Newly closed gap (was test_uncaught_mutation_operators_currently_allowed)
+        "cp src /readonly/file",
+        "dd if=src of=/readonly/file",
+        "tee /readonly/file",
+        "rsync src /readonly/",
+        "tar -cf /readonly/x.tar src",
+        "tar --create -f /readonly/x.tar src",
+        "install -m 0644 src /readonly/dst",
     ])
     def test_caught_mutation_operators(self, cmd, tmp_path, monkeypatch):
         self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
         assert check_command_safety(cmd)["decision"] == "block"
 
     @pytest.mark.parametrize("cmd", [
-        "cp src /readonly/file",
-        "dd if=src of=/readonly/file",
-        "tee /readonly/file",
-        "rsync src /readonly/",
-        "tar -cf /readonly/x.tar src",
-        "install -m 0644 src /readonly/dst",
+        # Pure reads — must NOT trigger the read-only block
+        "cat /readonly/file",
+        "tar -tf /readonly/x.tar",
+        "grep foo /readonly/file",
     ])
-    def test_uncaught_mutation_operators_currently_allowed(self, cmd, tmp_path, monkeypatch):
-        """Documents the security gap: these operators write to read-only paths
-        but are not detected by the current readOnlyPaths rule.
-
-        If this test starts failing (decision becomes 'block'), the gap was
-        closed in source — flip the assertion and update.
-        """
+    def test_read_only_commands_allowed(self, cmd, tmp_path, monkeypatch):
+        """Reading from a read-only path is fine — only mutation operators block."""
         self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
-        result = check_command_safety(cmd)
-        assert result["decision"] == "allow", (
-            f"Gap closed for {cmd!r} — update this test to assert 'block'"
-        )
+        assert check_command_safety(cmd)["decision"] == "allow"

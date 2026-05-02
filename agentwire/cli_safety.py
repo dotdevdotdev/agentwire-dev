@@ -425,13 +425,17 @@ def check_command_safety(command: str, verbose: bool = False) -> Dict[str, Any]:
                 "command": command
             }
 
+    mutation_ops = [
+        "rm ", "mv ", "sed -i", ">",
+        "cp ", "dd ", "tee ", "rsync ", "tar -c", "tar --create", "install ",
+    ]
     for path in read_only:
-        if matches_path_in_command(path, command) and any(op in command for op in ["rm", "mv", "sed -i", ">"]):
-            # Infer operation
+        if matches_path_in_command(path, command) and any(op in command for op in mutation_ops):
+            # Infer operation: rm/mv get specific verbs; everything else is "write"
             op = "write"
-            if "rm" in command:
+            if "rm " in command or command.startswith("rm "):
                 op = "delete"
-            elif "mv" in command:
+            elif "mv " in command or command.startswith("mv "):
                 op = "move"
             if is_command_path_allowed(command, allowed, op):
                 continue
