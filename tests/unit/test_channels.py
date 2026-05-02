@@ -1028,6 +1028,78 @@ class TestInjectInstructions:
         assert not claude.exists()
 
 
+class TestChannelErrorPaths:
+    """Network and HTTP error handling in send_* functions.
+
+    Covers the HTTPError/Exception fall-through branches in webhook and
+    quo. These were 0% covered — only happy-path send tests existed.
+    """
+
+    @pytest.fixture
+    def _set_config(self, tmp_path):
+        """Set agentwire config from a dict; restore on teardown."""
+        import agentwire.config as config_mod
+        from agentwire.config import load_config
+        original = config_mod._config
+
+        def _set(data):
+            (tmp_path / "config.yaml").write_text(yaml.safe_dump(data))
+            config_mod._config = load_config(tmp_path / "config.yaml")
+        yield _set
+        config_mod._config = original
+
+    def test_webhook_http_error(self, _set_config):
+        import urllib.error
+        _set_config({"channels": {"webhook": {"url": "https://h.example.com/x"}}})
+        from agentwire.channels.webhook import send_webhook
+
+        err = urllib.error.HTTPError(
+            url="https://h.example.com/x", code=503,
+            msg="Service Unavailable", hdrs=None, fp=None,
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            result = send_webhook(text="msg")
+        assert result.success is False
+        assert "503" in result.error
+
+    def test_webhook_network_exception(self, _set_config):
+        _set_config({"channels": {"webhook": {"url": "https://h.example.com/x"}}})
+        from agentwire.channels.webhook import send_webhook
+
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("DNS fail")):
+            result = send_webhook(text="msg")
+        assert result.success is False
+        assert "DNS fail" in result.error
+
+    def test_quo_http_error(self, _set_config, monkeypatch, tmp_path):
+        import urllib.error
+        monkeypatch.setenv("HOME", str(tmp_path))  # block dotenv loading real keys
+        _set_config({"channels": {"quo": {
+            "api_key": "k", "from_number": "+15551112222", "default_to": "+15553334444",
+        }}})
+        from agentwire.channels.quo import send_quo_sms
+
+        err = urllib.error.HTTPError(
+            url="https://api.openphone.com/v1/messages", code=401,
+            msg="Unauthorized", hdrs=None, fp=None,
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            result = send_quo_sms(body="hi")
+        assert result.success is False
+
+    def test_quo_generic_exception(self, _set_config, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        _set_config({"channels": {"quo": {
+            "api_key": "k", "from_number": "+15551112222", "default_to": "+15553334444",
+        }}})
+        from agentwire.channels.quo import send_quo_sms
+
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("read timeout")):
+            result = send_quo_sms(body="hi")
+        assert result.success is False
+        assert "timeout" in result.error.lower()
+
+
 class TestSlackComposeHierarchy:
     """Tests for SlackBridge.compose_dm_config and compose_channel_config."""
 
