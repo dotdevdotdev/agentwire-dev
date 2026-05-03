@@ -1,11 +1,12 @@
 """Tests for agentwire/channels/ — registry, base classes, config, and channel modules."""
 
+import asyncio
 import json
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -1224,3 +1225,472 @@ class TestDiscordComposeHierarchy:
         assert ch_t == "claude-bypass"
         assert ch_r == ["agentwire", "discord-dm"]
         assert ch_i == ""
+
+
+# =============================================================================
+# Bridge channels — error paths (Discord, Slack)
+#
+# Phase 3f of #160 deferred discord/slack coverage. These tests target the
+# control flow that doesn't need a live discord.py / slack-bolt event loop:
+# state load/save, auth checks, mapping lookups, and outbound event handling.
+# =============================================================================
+
+
+class TestDiscordBridgeAuth:
+    """_is_allowed gate behaviour (DM whitelist)."""
+
+    def test_empty_whitelist_allows_anyone(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+        assert bridge._is_allowed(12345) is True
+
+    def test_whitelist_with_match(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x", allowed_user_ids=[111, 222]))
+        assert bridge._is_allowed(111) is True
+
+    def test_whitelist_blocks_nonmatch(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x", allowed_user_ids=[111, 222]))
+        assert bridge._is_allowed(999) is False
+
+
+class TestSlackBridgeAuth:
+    def test_empty_whitelist_allows_anyone(self):
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        assert bridge._is_allowed("U_ANY") is True
+
+    def test_whitelist_with_match(self):
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(
+            bot_token="x", app_token="y", allowed_user_ids=["U1", "U2"],
+        ))
+        assert bridge._is_allowed("U1") is True
+
+    def test_whitelist_blocks_nonmatch(self):
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(
+            bot_token="x", app_token="y", allowed_user_ids=["U1"],
+        ))
+        assert bridge._is_allowed("U999") is False
+
+
+class TestBridgeMappingLookups:
+    """_get_channel_mapping / _get_user_mapping return None for unknown ids."""
+
+    def test_discord_channel_mapping_missing(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+        assert bridge._get_channel_mapping(404) is None
+
+    def test_discord_user_mapping_missing(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+        assert bridge._get_user_mapping(404) is None
+
+    def test_slack_channel_mapping_missing(self):
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        assert bridge._get_channel_mapping("C_404") is None
+
+    def test_slack_user_mapping_missing(self):
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        assert bridge._get_user_mapping("U_404") is None
+
+
+class TestBridgeStatePersistence:
+    """State load/save round-trips and resilience to corrupt files."""
+
+    def test_discord_state_corrupt_json_silently_recovered(self, tmp_path, monkeypatch):
+        # Point STATE_FILE at a corrupt file — bridge should not raise.
+        state_file = tmp_path / "discord-state.json"
+        state_file.write_text("{not valid json")
+        monkeypatch.setattr("agentwire.channels.discord.STATE_FILE", state_file)
+
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+        assert bridge.user_sessions == {}
+
+    def test_discord_state_missing_file_starts_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentwire.channels.discord.STATE_FILE", tmp_path / "no-state.json",
+        )
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+        assert bridge.user_sessions == {}
+
+    def test_discord_state_save_then_load(self, tmp_path, monkeypatch):
+        state_file = tmp_path / "discord-state.json"
+        monkeypatch.setattr("agentwire.channels.discord.STATE_FILE", state_file)
+
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+        bridge._set_dm_session(42, "discord-dm-42")
+        assert state_file.exists()
+        # Reload via a fresh bridge.
+        bridge2 = DiscordBridge(DiscordConfig(bot_token="x"))
+        assert bridge2.user_sessions == {42: "discord-dm-42"}
+
+    def test_slack_state_corrupt_json_silently_recovered(self, tmp_path, monkeypatch):
+        state_file = tmp_path / "slack-state.json"
+        state_file.write_text("garbage{")
+        monkeypatch.setattr("agentwire.channels.slack.STATE_FILE", state_file)
+
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        assert bridge.user_sessions == {}
+
+    def test_slack_state_save_then_load(self, tmp_path, monkeypatch):
+        state_file = tmp_path / "slack-state.json"
+        monkeypatch.setattr("agentwire.channels.slack.STATE_FILE", state_file)
+
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        bridge._set_dm_session("U_PERSIST", "slack-dm-persist")
+        bridge2 = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        assert bridge2.user_sessions == {"U_PERSIST": "slack-dm-persist"}
+
+
+class TestDiscordHandleWsEvent:
+    """DiscordBridge._handle_ws_event — outbound event routing.
+
+    Mocks the discord client object directly. No real bot loop needed.
+    """
+
+    @pytest.fixture
+    def bridge(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        return DiscordBridge(DiscordConfig(
+            bot_token="x", forward_questions=True, forward_alerts=True,
+            voice_replies=True,
+        ))
+
+    async def test_channel_target_not_found_returns_silently(self, bridge):
+        client = MagicMock()
+        client.get_channel.return_value = None
+        client.fetch_channel = AsyncMock(return_value=None)
+        # Should not raise, and should not call .send (no channel object).
+        await bridge._handle_ws_event(
+            client,
+            {"type": "alert", "text": "msg"},
+            target_type="channel", target_id=12345,
+        )
+
+    async def test_channel_alert_forwarded(self, bridge):
+        channel = MagicMock()
+        channel.name = "general"
+        channel.send = AsyncMock()
+        client = MagicMock()
+        client.get_channel.return_value = channel
+
+        await bridge._handle_ws_event(
+            client, {"type": "alert", "text": "fire"},
+            target_type="channel", target_id=999,
+        )
+        channel.send.assert_awaited_once_with("fire")
+
+    async def test_channel_question_forwarded(self, bridge):
+        channel = MagicMock()
+        channel.name = "general"
+        channel.send = AsyncMock()
+        client = MagicMock()
+        client.get_channel.return_value = channel
+
+        await bridge._handle_ws_event(
+            client, {"type": "question", "question": "Pick one?"},
+            target_type="channel", target_id=999,
+        )
+        channel.send.assert_awaited_once()
+        sent = channel.send.call_args.args[0]
+        assert "Pick one?" in sent
+
+    async def test_alert_suppressed_when_forward_alerts_disabled(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x", forward_alerts=False))
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        client = MagicMock()
+        client.get_channel.return_value = channel
+
+        await bridge._handle_ws_event(
+            client, {"type": "alert", "text": "fire"},
+            target_type="channel", target_id=999,
+        )
+        channel.send.assert_not_called()
+
+    async def test_question_suppressed_when_forward_questions_disabled(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x", forward_questions=False))
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        client = MagicMock()
+        client.get_channel.return_value = channel
+
+        await bridge._handle_ws_event(
+            client, {"type": "question", "question": "?"},
+            target_type="channel", target_id=999,
+        )
+        channel.send.assert_not_called()
+
+    async def test_dm_alert_forwarded(self, bridge):
+        user = MagicMock()
+        user.send = AsyncMock()
+        client = MagicMock()
+        client.fetch_user = AsyncMock(return_value=user)
+
+        await bridge._handle_ws_event(
+            client, {"type": "alert", "text": "ping"},
+            target_type="dm", target_id=42,
+        )
+        user.send.assert_awaited_once()
+
+    async def test_dm_audio_skipped_when_voice_replies_disabled(self):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x", voice_replies=False))
+        user = MagicMock()
+        user.send = AsyncMock()
+        client = MagicMock()
+        client.fetch_user = AsyncMock(return_value=user)
+
+        await bridge._handle_ws_event(
+            client, {"type": "audio", "audio": "AAAA"},
+            target_type="dm", target_id=42,
+        )
+        user.send.assert_not_called()
+
+    async def test_send_failure_swallowed(self, bridge):
+        """If channel.send() raises (e.g. permissions / rate limit),
+        the handler must not propagate — the bot needs to keep listening."""
+        channel = MagicMock()
+        channel.name = "general"
+        channel.send = AsyncMock(side_effect=RuntimeError("rate limited"))
+        client = MagicMock()
+        client.get_channel.return_value = channel
+
+        # Must not raise.
+        await bridge._handle_ws_event(
+            client, {"type": "alert", "text": "x"},
+            target_type="channel", target_id=999,
+        )
+
+    async def test_unknown_event_type_ignored(self, bridge):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        client = MagicMock()
+        client.get_channel.return_value = channel
+
+        await bridge._handle_ws_event(
+            client, {"type": "weather_report", "data": "sunny"},
+            target_type="channel", target_id=999,
+        )
+        channel.send.assert_not_called()
+
+
+class TestDiscordReactionCallbacks:
+    """The reaction callback set tolerates Discord API errors silently."""
+
+    async def test_clear_and_react_swallows_remove_failure(self):
+        from agentwire.channels.discord import _discord_reaction_callbacks
+        _, _, on_sent, _ = _discord_reaction_callbacks()
+
+        msg = MagicMock()
+        msg.guild = MagicMock()
+        msg.guild.me = MagicMock()
+        msg.remove_reaction = AsyncMock(side_effect=RuntimeError("forbidden"))
+        msg.add_reaction = AsyncMock()
+
+        # Must not raise.
+        await on_sent(msg)
+        msg.add_reaction.assert_awaited()
+
+    async def test_on_starting_swallows_remove_failure(self):
+        from agentwire.channels.discord import _discord_reaction_callbacks
+        _, on_starting, _, _ = _discord_reaction_callbacks()
+
+        msg = MagicMock()
+        msg.guild = MagicMock()
+        msg.guild.me = MagicMock()
+        msg.remove_reaction = AsyncMock(side_effect=RuntimeError("nope"))
+        msg.add_reaction = AsyncMock()
+
+        await on_starting(msg)
+        msg.add_reaction.assert_awaited()
+
+    async def test_on_queued_calls_add_reaction(self):
+        from agentwire.channels.discord import _discord_reaction_callbacks, EMOJI_QUEUED
+        on_queued, _, _, _ = _discord_reaction_callbacks()
+        msg = MagicMock()
+        msg.add_reaction = AsyncMock()
+        await on_queued(msg)
+        msg.add_reaction.assert_awaited_once_with(EMOJI_QUEUED)
+
+    async def test_dm_reaction_skips_remove_when_no_guild(self):
+        """DMs have no guild — the bot_user is None, so remove_reaction
+        should be skipped without erroring."""
+        from agentwire.channels.discord import _discord_reaction_callbacks
+        _, _, on_sent, _ = _discord_reaction_callbacks()
+
+        msg = MagicMock()
+        msg.guild = None
+        msg.add_reaction = AsyncMock()
+        msg.remove_reaction = AsyncMock()
+
+        await on_sent(msg)
+        msg.remove_reaction.assert_not_called()
+        msg.add_reaction.assert_awaited()
+
+
+class TestDiscordRunImportFailure:
+    """DiscordBridge.run() should fail gracefully without discord.py installed."""
+
+    async def test_missing_discord_py_logs_and_returns(self, capsys):
+        from agentwire.channels.discord import DiscordBridge, DiscordConfig
+        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
+
+        # Force ImportError on `import discord` inside .run().
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "discord":
+                raise ImportError("no module named discord")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            await bridge.run()  # Should return cleanly, not raise.
+
+        # The function prints an error to stderr — validate the user-visible cue.
+        captured = capsys.readouterr()
+        assert "discord.py not installed" in captured.err
+
+
+class TestSlackRunImportFailure:
+    """SlackBridge.run() must fail gracefully without slack-bolt installed."""
+
+    def test_missing_slack_bolt_logs_and_returns(self, capsys):
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "slack_bolt" or name.startswith("slack_bolt."):
+                raise ImportError(f"no module named {name}")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            bridge.run()  # Must return cleanly.
+
+        captured = capsys.readouterr()
+        assert "slack-bolt not installed" in captured.err
+
+
+class TestSlackBridgePathHelpers:
+    """SlackBridge path/session helpers — pure string composition."""
+
+    def test_get_dm_session_default_format(self, tmp_path, monkeypatch):
+        # Isolate state file so a previous test's saved session doesn't leak.
+        monkeypatch.setattr(
+            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
+        )
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        assert bridge._get_dm_session("U_ABC") == "slack-dm-U_ABC"
+
+    def test_get_dm_session_returns_persisted_override(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
+        )
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
+        bridge._set_dm_session("U_ABC", "custom-session")
+        assert bridge._get_dm_session("U_ABC") == "custom-session"
+
+    def test_get_dm_project_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
+        )
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(
+            bot_token="x", app_token="y", channels_dir="/tmp/slack",
+        ))
+        assert bridge._get_dm_project("U_ABC") == "/tmp/slack/dm-U_ABC"
+
+    def test_get_channel_project_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
+        )
+        from agentwire.channels.slack import SlackBridge, SlackConfig
+        bridge = SlackBridge(SlackConfig(
+            bot_token="x", app_token="y", channels_dir="/tmp/slack",
+        ))
+        assert bridge._get_channel_project("C_XYZ") == "/tmp/slack/ch-C_XYZ"
+
+
+class TestSlackConfigNormalization:
+    """SlackConfig.__post_init__ normalizes channel_map / user_map shapes."""
+
+    def test_channel_map_string_shorthand(self):
+        from agentwire.channels.slack import SlackConfig, SlackChannelMapping
+        cfg = SlackConfig(
+            bot_token="x", app_token="y",
+            channel_map={"C123": "support"},
+        )
+        assert "C123" in cfg.channel_map
+        assert isinstance(cfg.channel_map["C123"], SlackChannelMapping)
+        assert cfg.channel_map["C123"].session == "slack-ch-support"
+
+    def test_channel_map_dict_with_session(self):
+        from agentwire.channels.slack import SlackConfig
+        cfg = SlackConfig(
+            bot_token="x", app_token="y",
+            channel_map={"C456": {"session": "explicit", "project": "/p"}},
+        )
+        m = cfg.channel_map["C456"]
+        assert m.session == "explicit"
+        assert m.project == "/p"
+
+    def test_user_map_dict_normalized(self):
+        from agentwire.channels.slack import SlackConfig, SlackUserMapping
+        cfg = SlackConfig(
+            bot_token="x", app_token="y",
+            user_map={"U999": {"type": "claude-auto", "roles": ["admin"]}},
+        )
+        m = cfg.user_map["U999"]
+        assert isinstance(m, SlackUserMapping)
+        assert m.type == "claude-auto"
+        assert m.roles == ["admin"]
+
+
+class TestDiscordConfigNormalization:
+    """DiscordConfig.__post_init__ normalizes channel_map / user_map shapes."""
+
+    def test_channel_map_string_shorthand(self):
+        from agentwire.channels.discord import DiscordConfig, ChannelMapping
+        cfg = DiscordConfig(
+            bot_token="x", channel_map={"123456": "general"},
+        )
+        m = cfg.channel_map["123456"]
+        assert isinstance(m, ChannelMapping)
+        assert m.session == "discord-ch-general"
+
+    def test_channel_map_id_coerced_to_string(self):
+        """Discord IDs from YAML may parse as int; channel_map keys must
+        always be strings to match runtime lookups."""
+        from agentwire.channels.discord import DiscordConfig
+        cfg = DiscordConfig(
+            bot_token="x", channel_map={123: {"session": "s"}},
+        )
+        assert "123" in cfg.channel_map
+        assert 123 not in cfg.channel_map
+
+    def test_user_map_id_coerced_to_string(self):
+        from agentwire.channels.discord import DiscordConfig
+        cfg = DiscordConfig(
+            bot_token="x", user_map={42: {"type": "claude-bypass"}},
+        )
+        assert "42" in cfg.user_map
+        assert 42 not in cfg.user_map
