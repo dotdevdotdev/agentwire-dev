@@ -75,32 +75,31 @@ class TestBashHookCheckCommand:
         }
 
     def test_no_patterns_allows(self, bash_hook):
-        blocked, ask, reason = bash_hook.check_command("echo hello", self._config())
-        assert (blocked, ask) == (False, False)
+        result = bash_hook.check_command("echo hello", self._config())
+        assert result["decision"] == "allow"
 
     def test_hard_block_pattern(self, bash_hook):
         cfg = self._config(bashToolPatterns=[
             {"pattern": r"\brm\s+-rf\s+/", "reason": "rm -rf /"},
         ])
-        blocked, ask, reason = bash_hook.check_command("rm -rf /", cfg)
-        assert blocked is True
-        assert ask is False
-        assert "rm -rf /" in reason
+        result = bash_hook.check_command("rm -rf /", cfg)
+        assert result["decision"] == "block"
+        assert "rm -rf /" in result["reason"]
 
     def test_ask_pattern(self, bash_hook):
         cfg = self._config(bashToolPatterns=[
             {"pattern": r"\bgit\s+push\b", "reason": "git push", "ask": True},
         ])
-        blocked, ask, reason = bash_hook.check_command("git push origin main", cfg)
-        assert (blocked, ask) == (False, True)
-        assert reason == "git push"
+        result = bash_hook.check_command("git push origin main", cfg)
+        assert result["decision"] == "ask"
+        assert result["reason"] == "git push"
 
     def test_bypassable_pattern_blocks_without_allowlist(self, bash_hook):
         cfg = self._config(bashToolPatterns=[
             {"pattern": r"\brm\s+", "reason": "rm deletion", "bypassable": True},
         ])
-        blocked, ask, _ = bash_hook.check_command("rm /etc/passwd", cfg)
-        assert (blocked, ask) == (True, False)
+        result = bash_hook.check_command("rm /etc/passwd", cfg)
+        assert result["decision"] == "block"
 
     def test_bypassable_pattern_allowed_via_allowlist(self, bash_hook):
         cfg = self._config(
@@ -109,50 +108,45 @@ class TestBashHookCheckCommand:
             ],
             allowedPaths=[{"path": "*/dist/*", "allow": "all"}],
         )
-        blocked, ask, _ = bash_hook.check_command(
-            "rm /home/user/proj/dist/old.whl", cfg
-        )
-        assert (blocked, ask) == (False, False)
+        result = bash_hook.check_command("rm /home/user/proj/dist/old.whl", cfg)
+        assert result["decision"] == "allow"
 
     def test_zero_access_path_blocks(self, bash_hook):
         cfg = self._config(zeroAccessPaths=["/etc/secret"])
-        blocked, _, reason = bash_hook.check_command("cat /etc/secret", cfg)
-        assert blocked is True
-        assert "zero-access" in reason
+        result = bash_hook.check_command("cat /etc/secret", cfg)
+        assert result["decision"] == "block"
+        assert "Zero-access" in result["reason"]
 
     def test_zero_access_method_call_skipped(self, bash_hook):
         """`module.py(...)` should not match `*.py` zero-access pattern."""
         cfg = self._config(zeroAccessPaths=["*.py"])
-        blocked, _, _ = bash_hook.check_command(
-            "python -c 'import module.py()'", cfg
-        )
-        assert blocked is False
+        result = bash_hook.check_command("python -c 'import module.py()'", cfg)
+        assert result["decision"] == "allow"
 
     def test_invalid_regex_skipped_not_crashed(self, bash_hook):
         cfg = self._config(bashToolPatterns=[
             {"pattern": r"[unclosed", "reason": "bad pattern"},
             {"pattern": r"\bdanger\b", "reason": "real danger"},
         ])
-        # Bad regex skipped; real one fires.
-        blocked, _, reason = bash_hook.check_command("danger ahead", cfg)
-        assert blocked is True
-        assert reason == "Blocked: real danger"
+        result = bash_hook.check_command("danger ahead", cfg)
+        assert result["decision"] == "block"
+        assert result["reason"] == "real danger"
 
     def test_read_only_path_caught_via_redirect(self, bash_hook):
         cfg = self._config(readOnlyPaths=["/etc/"])
-        blocked, _, _ = bash_hook.check_command("echo data > /etc/foo", cfg)
-        assert blocked is True
+        result = bash_hook.check_command("echo data > /etc/foo", cfg)
+        assert result["decision"] == "block"
 
     def test_no_delete_path_blocks_rm(self, bash_hook):
         cfg = self._config(noDeletePaths=[".git/"])
-        blocked, _, _ = bash_hook.check_command("rm .git/HEAD", cfg)
-        assert blocked is True
+        result = bash_hook.check_command("rm .git/HEAD", cfg)
+        assert result["decision"] == "block"
 
     def test_no_delete_path_allows_cat(self, bash_hook):
         """no-delete only blocks deletes, not reads."""
         cfg = self._config(noDeletePaths=[".git/"])
-        blocked, ask, _ = bash_hook.check_command("cat .git/HEAD", cfg)
-        assert (blocked, ask) == (False, False)
+        result = bash_hook.check_command("cat .git/HEAD", cfg)
+        assert result["decision"] == "allow"
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +181,8 @@ class TestBashHookHelpers:
     def test_infer_operation_from_reason(self, bash_hook, reason, expected):
         assert bash_hook._infer_operation_from_reason(reason) == expected
 
-    def test_extract_paths_from_command(self, bash_hook):
-        paths = bash_hook._extract_paths_from_command("cat /etc/passwd /tmp/foo")
+    def test_extract_command_paths(self, bash_hook):
+        paths = bash_hook._extract_command_paths("cat /etc/passwd /tmp/foo")
         assert "/etc/passwd" in paths
         assert "/tmp/foo" in paths
 

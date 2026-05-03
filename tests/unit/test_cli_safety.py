@@ -34,20 +34,28 @@ class TestIsGlobPattern:
 # --- glob_to_regex ---
 
 class TestGlobToRegex:
-    def test_star_to_dotstar(self):
-        assert ".*" in glob_to_regex("*.txt")
+    def test_star_becomes_path_safe_wildcard(self):
+        # `*` in a glob must NOT cross whitespace or directory separators in
+        # command-line contexts — otherwise *.py would match `arg /tmp/file.py`.
+        assert "[^\\s/]*" in glob_to_regex("*.txt")
 
-    def test_question_to_dot(self):
+    def test_question_becomes_path_safe_single(self):
         regex = glob_to_regex("file?.txt")
-        assert "file." in regex
+        assert "[^\\s/]" in regex
 
     def test_dots_escaped(self):
         regex = glob_to_regex("file.txt")
         assert "\\." in regex
 
-    def test_bracket_preserved(self):
+    def test_bracket_escaped(self):
+        # Brackets are literal; escaping them keeps the regex safe inside
+        # path-context wrappers.
         regex = glob_to_regex("[abc].txt")
-        assert "[abc]" in regex
+        assert "\\[abc\\]" in regex
+
+    def test_trailing_word_boundary(self):
+        # *.py should not match foo.python — the trailing negative lookahead enforces this.
+        assert glob_to_regex("*.py").endswith("(?![a-zA-Z0-9_])")
 
 
 # --- matches_path_in_command ---
@@ -542,3 +550,20 @@ class TestReadOnlyPathMutationOperators:
         """Reading from a read-only path is fine — only mutation operators block."""
         self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
         assert check_command_safety(cmd)["decision"] == "allow"
+
+    @pytest.mark.parametrize("cmd", [
+        # Operators newly caught after #164 (cli_safety adopted the hook's regex set)
+        "chmod 777 /readonly/file",
+        "chown root /readonly/file",
+        "chgrp staff /readonly/file",
+        "echo x >> /readonly/file",
+        "tee -a /readonly/file",
+        "perl -pi -e 's/x/y/g' /readonly/file",
+        "awk -i inplace '/x/ {print}' /readonly/file",
+        "truncate -s 0 /readonly/file",
+        "unlink /readonly/file",
+    ])
+    def test_richer_mutation_operators_caught(self, cmd, tmp_path, monkeypatch):
+        """After #164, cli_safety uses the same regex pattern set as the bash hook."""
+        self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
+        assert check_command_safety(cmd)["decision"] == "block"
