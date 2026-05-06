@@ -33,10 +33,15 @@ export const sidebar = {
             this.close();
         });
 
-        // ESC closes (unless pinned)
+        // ESC closes (unless pinned). Cmd/Ctrl + ` toggles.
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && this.isOpen() && !this.isPinned()) {
                 this.close();
+                return;
+            }
+            if ((e.metaKey || e.ctrlKey) && (e.key === '`' || e.code === 'Backquote')) {
+                e.preventDefault();
+                this.toggle();
             }
         });
 

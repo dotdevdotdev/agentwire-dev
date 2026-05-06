@@ -5,7 +5,7 @@
     --menu-height: 0px;  /* Menu bar removed — kept at 0 for WinBox max sizing calc */
     --taskbar-height: 0px;  /* Phase 2 removed the bottom bar; kept at 0 for WinBox max sizing calc */
     --spacing-base: 8px;
-    --sidebar-width: 280px;
+    --sidebar-width: 400px;
     --sidebar-tab-width: 20px;
     --sidebar-tab-height: 40px;
     --sidebar-transition: 180ms ease;
@@ -634,6 +634,14 @@ body {
     gap: 4px;
     margin-top: 4px;
     padding-left: 14px;
+}
+
+.sidebar-session-row3 {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding-left: 14px;
     flex-wrap: wrap;
 }
 
@@ -643,6 +651,8 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+    min-width: 0;
 }
 
 .sidebar-empty {

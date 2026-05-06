@@ -865,33 +865,30 @@ export class SessionWindow {
         this.pttButton.className = 'wb-title-ptt';
         this.pttButton.title = 'Hold to record voice input';
         this.pttButton.innerHTML = '<span class="ptt-icon">🎤</span>';
-        // Stop the click/mousedown from triggering WinBox drag/focus behavior.
-        this.pttButton.addEventListener('mousedown', (e) => e.stopPropagation());
         titleEl.insertBefore(this.pttButton, titleEl.firstChild);
 
-        // Mouse events
-        this.pttButton.addEventListener('mousedown', (e) => {
+        // WinBox attaches capture-phase mousedown on .wb-drag for window dragging,
+        // which swallows our mousedown. Use pointer events with capture phase to beat
+        // WinBox to the punch, and setPointerCapture so tiny cursor movements within
+        // the small 22px button don't fire pointerleave mid-hold.
+        const onDown = (e) => {
             e.preventDefault();
+            e.stopPropagation();
+            this.pttButton.setPointerCapture?.(e.pointerId);
             this._startRecording();
-        });
-        this.pttButton.addEventListener('mouseup', () => this._stopRecording());
-        this.pttButton.addEventListener('mouseleave', () => {
-            if (this.pttState === 'recording') {
-                this._stopRecording();
-            }
-        });
-
-        // Touch events for mobile
-        this.pttButton.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            this._startRecording();
-        });
-        this.pttButton.addEventListener('touchend', () => this._stopRecording());
-        this.pttButton.addEventListener('touchcancel', () => {
-            if (this.pttState === 'recording') {
-                this._cancelRecording();
-            }
-        });
+        };
+        const onUp = (e) => {
+            e.stopPropagation();
+            this.pttButton.releasePointerCapture?.(e.pointerId);
+            if (this.pttState === 'recording') this._stopRecording();
+        };
+        const onCancel = (e) => {
+            this.pttButton.releasePointerCapture?.(e.pointerId);
+            if (this.pttState === 'recording') this._cancelRecording();
+        };
+        this.pttButton.addEventListener('pointerdown', onDown, true);
+        this.pttButton.addEventListener('pointerup', onUp, true);
+        this.pttButton.addEventListener('pointercancel', onCancel);
 
         // Keyboard shortcut: Ctrl+Space to toggle recording (when window focused)
         this._pttKeyHandler = (e) => {

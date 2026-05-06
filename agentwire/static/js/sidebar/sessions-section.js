@@ -39,6 +39,7 @@ export function renderCard(s) {
     if (machine) tags.push(`<span class="sidebar-tag">@${machine}</span>`);
     const roles = (s.roles || []).map(r => `<span class="sidebar-tag sidebar-tag-role">${r}</span>`).join('');
     const path = s.path ? s.path.replace(/^\/Users\/[^/]+\//, '~/') : '';
+    const tagsHtml = `${tags.join('')}${roles}`;
     return `<div class="sidebar-session-card" data-session="${name}" data-machine="${machine || ''}" data-id="${id}">
         <div class="sidebar-session-row1">
             <span class="sidebar-activity-dot ${dotClass}" data-session-dot="${name}"></span>
@@ -46,10 +47,8 @@ export function renderCard(s) {
             <button class="sidebar-list-item-btn" data-action="connect" title="Connect">▸</button>
             <button class="sidebar-list-item-btn" data-action="monitor" title="Monitor">👁</button>
         </div>
-        <div class="sidebar-session-row2">
-            ${tags.join('')}${roles}
-            ${path ? `<span class="sidebar-session-path">${path}</span>` : ''}
-        </div>
+        ${path ? `<div class="sidebar-session-row2"><span class="sidebar-session-path">${path}</span></div>` : ''}
+        ${tagsHtml ? `<div class="sidebar-session-row3">${tagsHtml}</div>` : ''}
     </div>`;
 }
 
