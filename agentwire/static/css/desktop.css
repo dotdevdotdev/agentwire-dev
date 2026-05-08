@@ -47,7 +47,7 @@ body {
     overflow: hidden;
     background: var(--background);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--text);
 }
 
@@ -117,7 +117,7 @@ body {
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     background: var(--chrome);
     border-top: 1px solid var(--chrome-border);
@@ -288,7 +288,7 @@ body {
 
 .desktop-welcome p {
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 16px;
 }
 
 /* Sidebar accordion sections */
@@ -297,7 +297,7 @@ body {
 }
 
 .sidebar-section-title {
-    font-size: 11px;
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
@@ -323,7 +323,7 @@ body {
     border-radius: 4px;
     cursor: grab;
     color: var(--accent);
-    font-size: 13px;
+    font-size: 15px;
     white-space: nowrap;
     overflow: hidden;
 }
@@ -363,7 +363,7 @@ body {
     background: transparent;
     color: inherit;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1;
     padding: 0;
     border-radius: 3px;
@@ -382,7 +382,7 @@ body {
     gap: 6px;
     padding: 5px 8px;
     border-radius: 4px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--text);
     cursor: default;
 }
@@ -399,7 +399,7 @@ body {
 }
 
 .sidebar-list-item-meta {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     flex-shrink: 0;
 }
@@ -411,7 +411,7 @@ body {
     border-radius: 3px;
     color: var(--accent);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
     padding: 2px 6px;
     line-height: 1;
 }
@@ -427,7 +427,7 @@ body {
 }
 
 .sidebar-tag {
-    font-size: 10px;
+    font-size: 12px;
     padding: 1px 5px;
     border-radius: 3px;
     background: var(--chrome-border);
@@ -476,7 +476,7 @@ body {
 }
 
 .sidebar-section-subheader {
-    font-size: 10px;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
@@ -512,7 +512,7 @@ body {
     border-radius: 3px;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
     padding: 1px 6px;
     line-height: 1.2;
 }
@@ -526,7 +526,7 @@ body {
 .sidebar-section-chevron {
     display: inline-block;
     width: 12px;
-    font-size: 10px;
+    font-size: 12px;
 }
 
 /* Inline forms (new session, worktree) */
@@ -547,7 +547,7 @@ body {
     border-radius: 3px;
     color: var(--text);
     padding: 5px 8px;
-    font-size: 12px;
+    font-size: 14px;
     outline: none;
 }
 
@@ -567,7 +567,7 @@ body {
     border-radius: 3px;
     color: var(--accent);
     cursor: pointer;
-    font-size: 11px;
+    font-size: 13px;
     padding: 4px 8px;
 }
 
@@ -620,7 +620,7 @@ body {
 
 .sidebar-session-name {
     flex: 1;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--text);
     overflow: hidden;
@@ -646,7 +646,7 @@ body {
 }
 
 .sidebar-session-path {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -656,7 +656,7 @@ body {
 }
 
 .sidebar-empty {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text-muted);
     padding: 8px 4px;
     font-style: italic;
@@ -666,7 +666,7 @@ body {
     display: flex;
     gap: 8px;
     padding: 3px 4px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sidebar-config-key {
@@ -683,8 +683,52 @@ body {
 }
 
 .sidebar-config-val code {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--accent);
+}
+
+.sidebar-display-prefs {
+    padding: 6px 4px 10px;
+    border-bottom: 1px solid var(--chrome-border);
+    margin-bottom: 6px;
+}
+
+.sidebar-display-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+}
+
+.sidebar-display-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+}
+
+.sidebar-display-value {
+    color: var(--text);
+    font-size: 14px;
+}
+
+.sidebar-display-value em {
+    color: var(--text-muted);
+    font-style: normal;
+    font-size: 12px;
+}
+
+.sidebar-display-reset {
+    background: transparent;
+    border: 1px solid var(--chrome-border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 8px;
+    font-size: 14px;
+}
+
+.sidebar-display-reset:hover {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 /* Voice Indicator States */
@@ -873,7 +917,7 @@ body {
 
 .modal-overlay .modal-body p {
     margin: 0 0 12px;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.5;
 }
 
@@ -881,7 +925,7 @@ body {
     background: var(--background);
     padding: 2px 6px;
     border-radius: 3px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .modal-overlay .delete-path {
@@ -903,7 +947,7 @@ body {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     cursor: pointer;
 }
 
@@ -973,7 +1017,7 @@ body {
 
 .new-session-options-modal .form-group label {
     display: block;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -988,7 +1032,7 @@ body {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
 }
 
@@ -1004,7 +1048,7 @@ body {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     cursor: pointer;
 }
 
@@ -1028,7 +1072,7 @@ body {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
     transition: border-color 0.15s, background 0.15s;
 }
 
@@ -1047,7 +1091,7 @@ body {
 }
 
 .new-session-options-modal .no-roles {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text-muted);
     font-style: italic;
 }
@@ -1059,7 +1103,7 @@ body {
 .form-row label {
     display: block;
     margin-bottom: 4px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--text-muted);
 }
@@ -1072,7 +1116,7 @@ body {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .form-row input:focus,
@@ -1086,7 +1130,7 @@ body {
     border: none;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
 }
 
@@ -1112,14 +1156,14 @@ body {
 
 .error {
     color: var(--error);
-    font-size: 12px;
+    font-size: 14px;
     margin-top: var(--spacing-base);
 }
 
 .loading {
     padding: 12px;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 14px;
     text-align: center;
 }
 
@@ -1140,7 +1184,7 @@ body {
 }
 
 .winbox .wb-title {
-    font-size: 13px;
+    font-size: 15px;
     color: var(--text) !important;
     display: flex;
     align-items: center;
@@ -1324,7 +1368,7 @@ body .winbox.max {
 }
 
 .list-title {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -1335,7 +1379,7 @@ body .winbox.max {
     background: none;
     border: none;
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 16px;
     cursor: pointer;
     padding: 4px var(--spacing-base);
     border-radius: 4px;
@@ -1380,7 +1424,7 @@ body .winbox.max {
 }
 
 .list-item-meta {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 
@@ -1431,7 +1475,7 @@ body .winbox.max {
 
 .hierarchy-tag {
     display: inline-block;
-    font-size: 10px;
+    font-size: 12px;
     padding: 1px 6px;
     border-radius: 8px;
     background: rgba(168, 85, 247, 0.1);
@@ -1447,7 +1491,7 @@ body .winbox.max {
     display: inline-block;
     padding: 2px 8px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     text-transform: lowercase;
     white-space: nowrap;
@@ -1638,7 +1682,7 @@ body .winbox.max {
 
 .session-card .session-name {
     font-weight: 600;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .session-meta {
@@ -1646,7 +1690,7 @@ body .winbox.max {
     justify-content: space-between;
     align-items: center;
     gap: 16px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 
@@ -1703,12 +1747,12 @@ body .winbox.max {
     padding: 2px 6px;
     background: var(--hover);
     border-radius: 10px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 
 .presence-icon {
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1;
 }
 
@@ -1720,7 +1764,7 @@ body .winbox.max {
 
 .list-item-actions button {
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: 13px;
     background: var(--background);
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
@@ -1760,7 +1804,7 @@ body .winbox.max {
     padding: 24px 12px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .list-error {
@@ -1829,17 +1873,19 @@ body .winbox.max {
     position: relative;
 }
 
-/* xterm.js needs explicit sizing and font to fill container correctly */
+/* xterm.js needs explicit sizing and font to fill container correctly.
+   Font size is driven by --terminal-font-size (set responsively in session-window.js)
+   so xterm's DOM measurement and its canvas/WebGL renderer agree on cell width. */
 .session-terminal .xterm {
     height: 100%;
     width: 100%;
     font-family: "FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace !important;
-    font-size: 14px !important;
+    font-size: var(--terminal-font-size, 16px) !important;
 }
 
 .session-terminal .xterm-rows {
     font-family: "FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace !important;
-    font-size: 14px !important;
+    font-size: var(--terminal-font-size, 16px) !important;
 }
 
 .session-terminal .xterm-viewport {
@@ -1861,7 +1907,7 @@ body .winbox.max {
     background: #000;
     color: #e6edf3;
     font-family: "FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace;
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1.4;
     white-space: pre;
 }
@@ -1892,7 +1938,7 @@ body .winbox.max {
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text);
 }
 
@@ -1908,7 +1954,7 @@ body .winbox.max {
 }
 
 .session-status-bar {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 
@@ -1928,13 +1974,13 @@ body .winbox.max {
 
 .config-key {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 15px;
     flex-shrink: 0;
 }
 
 .config-value {
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     text-align: right;
     max-width: 60%;
     overflow-x: auto;
@@ -1976,7 +2022,7 @@ body .winbox.max {
 
 .config-object {
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 
@@ -2241,7 +2287,7 @@ body .winbox.max {
     padding: 8px 12px;
     border-radius: 8px;
     max-width: 85%;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.4;
 }
 
@@ -2260,7 +2306,7 @@ body .winbox.max {
 }
 
 .chat-message .timestamp {
-    font-size: 10px;
+    font-size: 12px;
     opacity: 0.7;
     margin-top: 4px;
 }
@@ -2271,7 +2317,7 @@ body .winbox.max {
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     background: var(--chrome);
     border-top: 1px solid var(--chrome-border);
@@ -2348,7 +2394,7 @@ body .winbox.max {
 
     /* Smaller title font */
     .winbox .wb-title {
-        font-size: 12px;
+        font-size: 14px;
     }
 
     /* Config modal responsive: stack label/value vertically */
@@ -2364,14 +2410,11 @@ body .winbox.max {
         width: 100%;
     }
 
-    /* Terminal/Monitor font size reduction for better fit */
-    .session-terminal .xterm,
-    .session-terminal .xterm-rows {
-        font-size: 12px !important;
-    }
+    /* Terminal font size at narrow viewport is driven by --terminal-font-size
+       (set in session-window.js) so DOM measurement and renderer agree. */
 
     .session-output {
-        font-size: 12px;
+        font-size: 14px;
     }
 
 }
@@ -2391,7 +2434,7 @@ body .winbox.max {
     border: 1px solid var(--chrome-border);
     background: var(--chrome);
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -2457,7 +2500,7 @@ body .winbox.max {
 }
 
 .icon-picker-title {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 500;
     color: var(--text);
 }
@@ -2556,7 +2599,7 @@ body .winbox.max {
     align-items: center;
     justify-content: center;
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 16px;
     z-index: 1;
     pointer-events: none;
 }
@@ -2583,7 +2626,7 @@ body .winbox.max {
 
 .artifact-error-message {
     color: var(--error);
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .artifact-reload-btn {
@@ -2593,7 +2636,7 @@ body .winbox.max {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .artifact-reload-btn:hover {
@@ -2611,7 +2654,7 @@ body .winbox.max {
     height: 100%;
     background: var(--background);
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
 }
 
 /* Status Header */
@@ -2661,14 +2704,14 @@ body .winbox.max {
 
 .sched-status-label {
     font-weight: 600;
-    font-size: 12px;
+    font-size: 14px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 .sched-uptime {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
 }
 
@@ -2690,7 +2733,7 @@ body .winbox.max {
 .sched-current-activity {
     font-weight: 400;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 14px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2703,14 +2746,14 @@ body .winbox.max {
 
 .sched-activity-elapsed {
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     opacity: 0.8;
 }
 
 .sched-activity-countdown {
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     opacity: 0.8;
 }
 
@@ -2745,7 +2788,7 @@ body .winbox.max {
 }
 
 .sched-stat {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text-muted);
 }
 
@@ -2773,7 +2816,7 @@ body .winbox.max {
     border: none;
     border-bottom: 2px solid transparent;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -2801,7 +2844,7 @@ body .winbox.max {
     border-radius: 4px;
     padding: 4px 10px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .sched-refresh-btn:hover {
@@ -2811,7 +2854,7 @@ body .winbox.max {
 
 /* Start/Stop power button */
 .sched-power-btn {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.3px;
@@ -2859,7 +2902,7 @@ body .winbox.max {
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
     color: var(--text);
-    font-size: 12px;
+    font-size: 14px;
     outline: none;
 }
 
@@ -2888,7 +2931,7 @@ body .winbox.max {
 .sched-board-table th {
     background: var(--chrome);
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -2906,7 +2949,7 @@ body .winbox.max {
     padding: 7px 10px;
     border-bottom: 1px solid rgba(42, 42, 42, 0.5);
     white-space: nowrap;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sched-row:hover {
@@ -2928,7 +2971,7 @@ body .winbox.max {
 .sched-task-session {
     color: var(--text-muted);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
 }
 
 .sched-session-link,
@@ -2946,14 +2989,14 @@ body .winbox.max {
 
 .sched-filler-tag {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     font-style: italic;
     font-weight: 400;
 }
 
 .sched-overdue {
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
 }
 
 /* Toggle Dot */
@@ -2983,7 +3026,7 @@ body .winbox.max {
     display: inline-block;
     padding: 1px 7px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     text-transform: lowercase;
 }
@@ -3037,7 +3080,7 @@ body .winbox.max {
     border-radius: 3px;
     background: transparent;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
 }
@@ -3070,7 +3113,7 @@ body .winbox.max {
 }
 
 .sched-queue-section-label {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -3095,7 +3138,7 @@ body .winbox.max {
 
 .sched-queue-task-name {
     font-weight: 600;
-    font-size: 13px;
+    font-size: 15px;
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -3105,14 +3148,14 @@ body .winbox.max {
 
 .sched-queue-session {
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 
 .sched-queue-elapsed {
     color: #38bdf8;
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
 }
 
@@ -3125,7 +3168,7 @@ body .winbox.max {
     align-items: center;
     gap: 12px;
     padding: 5px 16px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sched-queue-row:hover {
@@ -3135,7 +3178,7 @@ body .winbox.max {
 .sched-queue-time {
     color: var(--text-muted);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     width: 80px;
     flex-shrink: 0;
     text-align: right;
@@ -3148,7 +3191,7 @@ body .winbox.max {
 .sched-queue-session-small {
     color: var(--text-muted);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 10px;
+    font-size: 12px;
     opacity: 0.7;
     width: 110px;
     flex-shrink: 0;
@@ -3185,7 +3228,7 @@ body .winbox.max {
     border-radius: 3px;
     background: transparent;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     cursor: pointer;
     text-transform: lowercase;
 }
@@ -3214,7 +3257,7 @@ body .winbox.max {
     align-items: center;
     gap: 10px;
     padding: 6px 16px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sched-history-row:hover .sched-history-row-main {
@@ -3224,7 +3267,7 @@ body .winbox.max {
 .sched-history-ts {
     color: var(--text-muted);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 10px;
+    font-size: 12px;
     flex-shrink: 0;
     min-width: 135px;
 }
@@ -3238,14 +3281,14 @@ body .winbox.max {
 .sched-history-duration {
     color: var(--text-muted);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     flex-shrink: 0;
     min-width: 50px;
 }
 
 .sched-history-preview {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3256,7 +3299,7 @@ body .winbox.max {
 .sched-history-expand {
     cursor: pointer;
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     flex-shrink: 0;
     width: 16px;
     text-align: center;
@@ -3306,7 +3349,7 @@ body .winbox.max {
 
 .sched-drilldown-title {
     font-weight: 600;
-    font-size: 13px;
+    font-size: 15px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3317,7 +3360,7 @@ body .winbox.max {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 14px;
+    font-size: 16px;
     padding: 2px 6px;
 }
 
@@ -3337,7 +3380,7 @@ body .winbox.max {
 }
 
 .sched-drilldown-section-title {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -3362,7 +3405,7 @@ body .winbox.max {
     gap: 8px;
     padding: 6px 0;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sched-drilldown-run-header:hover {
@@ -3373,20 +3416,20 @@ body .winbox.max {
 
 .sched-drilldown-run-ts {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
     flex-shrink: 0;
 }
 
 .sched-drilldown-run-dur {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
 }
 
 .sched-drilldown-run-chevron {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     margin-left: auto;
 }
 
@@ -3408,7 +3451,7 @@ body .winbox.max {
 .sched-detail-table td {
     padding: 5px 10px;
     border-bottom: 1px solid rgba(42, 42, 42, 0.5);
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sched-detail-table td:first-child {
@@ -3416,7 +3459,7 @@ body .winbox.max {
     font-weight: 500;
     width: 100px;
     text-transform: uppercase;
-    font-size: 11px;
+    font-size: 13px;
     letter-spacing: 0.3px;
 }
 
@@ -3425,7 +3468,7 @@ body .winbox.max {
     padding: 10px;
     background: var(--chrome);
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .sched-detail-summary pre {
@@ -3434,7 +3477,7 @@ body .winbox.max {
     word-break: break-word;
     color: var(--text-muted);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     max-height: 200px;
     overflow-y: auto;
 }
@@ -3444,7 +3487,7 @@ body .winbox.max {
     word-break: break-word;
     color: var(--text);
     font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-    font-size: 12px;
+    font-size: 14px;
     background: var(--chrome);
     padding: 12px;
     border-radius: 4px;
@@ -3457,7 +3500,7 @@ body .winbox.max {
 /* Section labels (shared) */
 .sched-section-count {
     font-weight: 400;
-    font-size: 10px;
+    font-size: 12px;
     color: var(--text-muted);
     opacity: 0.6;
 }
@@ -3498,7 +3541,7 @@ body .winbox.max {
 }
 
 .sched-agent-badge {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -3522,13 +3565,13 @@ body .winbox.max {
 }
 
 .sched-agent-responses {
-    font-size: 11px;
+    font-size: 13px;
     font-family: monospace;
     color: var(--text-muted);
 }
 
 .sched-diff-indicator {
-    font-size: 12px;
+    font-size: 14px;
     color: #c084fc;
     title: "Files changed";
 }
@@ -3538,7 +3581,7 @@ body .winbox.max {
     border: 1px solid var(--chrome-border);
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 10px;
+    font-size: 12px;
     padding: 2px 6px;
     border-radius: 3px;
     line-height: 1;
@@ -3563,7 +3606,7 @@ body .winbox.max {
 .sched-output-pre {
     margin: 0;
     padding: 8px 10px;
-    font-size: 11px;
+    font-size: 13px;
     font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
     color: var(--text-muted);
     white-space: pre-wrap;
@@ -3594,7 +3637,7 @@ body .winbox.max {
     justify-content: center;
     padding: 0;
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1;
     opacity: 0.5;
     transition: opacity 150ms ease, left var(--sidebar-transition), background 150ms ease;
@@ -3668,7 +3711,7 @@ body.sidebar-pinned .sidebar-tab {
 
 .sidebar-clock {
     font-variant-numeric: tabular-nums;
-    font-size: 14px;
+    font-size: 16px;
     color: var(--text);
 }
 
@@ -3679,7 +3722,7 @@ body.sidebar-pinned .sidebar-tab {
     padding: 4px 8px;
     cursor: pointer;
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1;
 }
 
@@ -3800,7 +3843,7 @@ body.sidebar-pinned .sidebar-tab {
     background: transparent;
     color: var(--accent);
     cursor: pointer;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1;
     padding: 0;
     vertical-align: middle;
@@ -3884,7 +3927,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 .notification-session-badge {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--accent);
     background: rgba(74, 222, 128, 0.1);
     padding: 1px 6px;
@@ -3896,7 +3939,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 .notification-time {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     margin-left: auto;
 }
@@ -3916,7 +3959,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 .notification-toast-body {
-    font-size: 13px;
+    font-size: 15px;
     color: var(--text);
     line-height: 1.4;
     cursor: pointer;
@@ -3934,7 +3977,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 .sidebar-workflow-runner {
-    font-size: 10px;
+    font-size: 12px;
     padding: 1px 6px;
     border-radius: 3px;
     background: var(--surface-2, #2a2a2a);
@@ -3960,7 +4003,7 @@ body.sidebar-pinned .sidebar-tab {
     padding: 16px 20px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.5;
     overflow-y: auto;
     height: 100%;
@@ -3988,16 +4031,16 @@ body.sidebar-pinned .sidebar-tab {
 }
 .wf-meta-label {
     color: var(--text-muted, #888);
-    font-size: 11px;
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     padding-top: 2px;
 }
 .wf-meta-value {
     font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-    font-size: 12px;
+    font-size: 14px;
 }
-.wf-meta-runid { font-size: 11px; word-break: break-all; color: var(--text-muted, #888); }
+.wf-meta-runid { font-size: 13px; word-break: break-all; color: var(--text-muted, #888); }
 .wf-status-success { color: var(--accent, #5fc572); }
 .wf-status-failed,
 .wf-status-error { color: var(--error, #dc2626); }
@@ -4008,7 +4051,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 .wf-section summary {
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text-muted, #888);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -4018,7 +4061,7 @@ body.sidebar-pinned .sidebar-tab {
     background: rgba(0,0,0,0.25);
     padding: 8px 12px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 13px;
     font-family: ui-monospace, 'SF Mono', Menlo, monospace;
     overflow-x: auto;
     white-space: pre-wrap;
@@ -4028,7 +4071,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 .wf-section-header {
-    font-size: 11px;
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-muted, #888);
@@ -4048,7 +4091,7 @@ body.sidebar-pinned .sidebar-tab {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 12px;
+    font-size: 14px;
     flex-wrap: wrap;
 }
 .wf-status-dot {
@@ -4071,7 +4114,7 @@ body.sidebar-pinned .sidebar-tab {
 .wf-node-tokens,
 .wf-node-events {
     color: var(--text-muted, #888);
-    font-size: 11px;
+    font-size: 13px;
     font-family: ui-monospace, 'SF Mono', Menlo, monospace;
 }
 .wf-node-runner {
@@ -4086,14 +4129,14 @@ body.sidebar-pinned .sidebar-tab {
     background: rgba(220, 38, 38, 0.1);
     border-radius: 4px;
     color: var(--error, #dc2626);
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .wf-node-tools {
     margin-top: 8px;
 }
 .wf-node-label {
-    font-size: 10px;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted, #888);
@@ -4103,7 +4146,7 @@ body.sidebar-pinned .sidebar-tab {
     display: flex;
     gap: 8px;
     padding: 3px 0;
-    font-size: 11px;
+    font-size: 13px;
     font-family: ui-monospace, 'SF Mono', Menlo, monospace;
 }
 .wf-tool-name {
@@ -4124,7 +4167,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 .wf-node-final summary {
     cursor: pointer;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted, #888);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -4147,14 +4190,14 @@ body.sidebar-pinned .sidebar-tab {
     background: #000;
     color: var(--foreground, #e2e8f0);
     font-family: 'SF Mono', ui-monospace, Menlo, monospace;
-    font-size: 12px;
+    font-size: 14px;
 }
 .sdk-watch-status {
     padding: 4px 10px;
     background: #000;
     color: var(--text-muted, #888);
     border-bottom: 1px solid #27272a;
-    font-size: 11px;
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
 }

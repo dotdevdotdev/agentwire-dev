@@ -9,6 +9,12 @@
 
 import { desktop } from './desktop-manager.js';
 import { sessionIcons } from './icon-manager.js';
+import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
+
+const NARROW_VIEWPORT = '(max-width: 768px)';
+function pickTerminalFontSize() {
+    return getTerminalFontSize();
+}
 
 export class SessionWindow {
     /**
@@ -97,6 +103,17 @@ export class SessionWindow {
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
             this.resizeObserver = null;
+        }
+
+        // Clean up viewport breakpoint listener
+        if (this._narrowMedia && this._narrowMediaHandler) {
+            this._narrowMedia.removeEventListener('change', this._narrowMediaHandler);
+            this._narrowMedia = null;
+            this._narrowMediaHandler = null;
+        }
+        if (this._fontPrefHandler) {
+            window.removeEventListener(FONT_SIZE_EVENT, this._fontPrefHandler);
+            this._fontPrefHandler = null;
         }
 
         // Clean up PTT keyboard handler
@@ -264,10 +281,14 @@ export class SessionWindow {
 
         // Terminal mode: full xterm.js setup
         const terminalEl = container.querySelector('.session-terminal');
+        this._terminalEl = terminalEl;
+
+        const initialFontSize = pickTerminalFontSize();
+        terminalEl.style.setProperty('--terminal-font-size', `${initialFontSize}px`);
 
         this.terminal = new Terminal({
             cursorBlink: true,
-            fontSize: 14,
+            fontSize: initialFontSize,
             fontFamily: '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace',
             altClickMovesCursor: false,
             macOptionClickForcesSelection: true,  // Allow Option/Alt+drag for native selection (bypasses tmux mouse mode)
@@ -296,7 +317,22 @@ export class SessionWindow {
 
         // Fit after font loads and layout is complete
         const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
-        const fontSize = 14;
+        const fontSize = pickTerminalFontSize();
+
+        // Re-pick font size on viewport breakpoint changes (mobile rotation, window resize)
+        // and on user override via the sidebar Config slider.
+        const applyNewSize = () => {
+            if (!this.terminal) return;
+            const newSize = pickTerminalFontSize();
+            this._terminalEl?.style.setProperty('--terminal-font-size', `${newSize}px`);
+            this.terminal.options.fontSize = newSize;
+            this._handleResize();
+        };
+        this._narrowMedia = window.matchMedia(NARROW_VIEWPORT);
+        this._narrowMediaHandler = applyNewSize;
+        this._fontPrefHandler = applyNewSize;
+        this._narrowMedia.addEventListener('change', this._narrowMediaHandler);
+        window.addEventListener(FONT_SIZE_EVENT, this._fontPrefHandler);
 
         const doInitialFit = (fontLoaded) => {
             requestAnimationFrame(() => {
@@ -558,7 +594,7 @@ export class SessionWindow {
                 try {
                     // Ensure font options are correct before fitting
                     const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
-                    const fontSize = 14;
+                    const fontSize = pickTerminalFontSize();
                     this.terminal.options.fontFamily = fontFamily;
                     this.terminal.options.fontSize = fontSize;
 
@@ -579,7 +615,7 @@ export class SessionWindow {
             try {
                 // Ensure font options are set before fitting (in case they weren't applied correctly)
                 const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
-                const fontSize = 14;
+                const fontSize = pickTerminalFontSize();
                 this.terminal.options.fontFamily = fontFamily;
                 this.terminal.options.fontSize = fontSize;
 
