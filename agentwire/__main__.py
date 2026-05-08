@@ -3650,6 +3650,34 @@ def cmd_new(args) -> int:
 
     # Local session
     # Resolve path
+    base_branch = getattr(args, 'base', 'main') or 'main'
+    pull_first = getattr(args, 'pull_first', True)
+
+    def _spawn_worktree(project_path: Path, session_path: Path) -> tuple[bool, str | None]:
+        """Fetch origin/<base> if requested, then create worktree starting at that ref."""
+        worktree_commit: str | None = None
+        if pull_first:
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", base_branch],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+            )
+            if fetch.returncode != 0:
+                stderr = (fetch.stderr or fetch.stdout or "").strip()
+                return False, f"git fetch origin {base_branch} failed: {stderr}"
+            worktree_commit = f"origin/{base_branch}"
+        ok = ensure_worktree(
+            project_path,
+            branch,
+            session_path,
+            auto_create_branch=auto_create_branch,
+            commit=worktree_commit,
+        )
+        if not ok:
+            return False, f"Failed to create worktree for branch '{branch}' in {project_path}"
+        return True, None
+
     if path and branch and worktrees_enabled:
         # Path + branch: use provided path as main repo, create worktree from it
         project_path = Path(path).expanduser().resolve()
@@ -3659,15 +3687,9 @@ def cmd_new(args) -> int:
         if not session_path.exists():
             if not project_path.exists():
                 return _output_result(False, json_mode, f"Project path does not exist: {project_path}")
-
-            success = ensure_worktree(
-                project_path,
-                branch,
-                session_path,
-                auto_create_branch=auto_create_branch,
-            )
-            if not success:
-                return _output_result(False, json_mode, f"Failed to create worktree for branch '{branch}' in {project_path}")
+            ok, err = _spawn_worktree(project_path, session_path)
+            if not ok:
+                return _output_result(False, json_mode, err or "worktree creation failed")
     elif path:
         session_path = Path(path).expanduser().resolve()
     elif branch and worktrees_enabled:
@@ -3679,15 +3701,9 @@ def cmd_new(args) -> int:
         if not session_path.exists():
             if not project_path.exists():
                 return _output_result(False, json_mode, f"Project path does not exist: {project_path}")
-
-            success = ensure_worktree(
-                project_path,
-                branch,
-                session_path,
-                auto_create_branch=auto_create_branch,
-            )
-            if not success:
-                return _output_result(False, json_mode, f"Failed to create worktree for branch '{branch}' in {project_path}")
+            ok, err = _spawn_worktree(project_path, session_path)
+            if not ok:
+                return _output_result(False, json_mode, err or "worktree creation failed")
     else:
         # Simple session: ~/projects/project/
         session_path = projects_dir / project
@@ -10552,6 +10568,9 @@ def main() -> int:
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     new_parser.add_argument("--persist", action="store_true", help="Write --type/--roles to .agentwire.yml (default: session-level override only)")
     new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
+    new_parser.add_argument("--base", default="main", help="For worktree sessions: base branch to fork the new branch from (default: main)")
+    new_parser.add_argument("--pull-first", dest="pull_first", action="store_true", default=True, help="For worktree sessions: fetch origin/<base> before branching (default)")
+    new_parser.add_argument("--no-pull-first", dest="pull_first", action="store_false", help="Skip the fetch — branch from the local copy of <base> as-is")
     new_parser.add_argument("--json", action="store_true", help="Output as JSON")
     new_parser.set_defaults(func=cmd_new)
 

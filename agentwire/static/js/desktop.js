@@ -24,6 +24,7 @@ import { workflowsSection } from './sidebar/workflows-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { socialsSection } from './sidebar/socials-section.js';
 import { notificationsPanel } from './notifications-panel.js';
+import { openQuicktaskModal, isQuicktaskOpen } from './quicktask-modal.js';
 
 // State - track open windows
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
@@ -55,6 +56,10 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
     sidebar.init();
+    document.getElementById('sidebarQuicktask')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openQuicktaskModal();
+    });
     sidebar.addSection('sessions', sessionsSection);
     sidebar.addSection('sdk-sessions', sdkSessionsSection);
     sidebar.addSection('socials', socialsSection);
@@ -800,6 +805,12 @@ function setupGlobalPtt() {
         if ((e.ctrlKey || e.metaKey) && e.code === 'Space' && globalPttState === 'idle') {
             e.preventDefault();
             startGlobalRecording();
+        }
+        // Cmd/Ctrl + K opens the Quicktask modal. xterm.js uses a hidden textarea
+        // for terminal input, so we don't skip on tag — Cmd+K is always intercepted.
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+            e.preventDefault();
+            if (!isQuicktaskOpen()) openQuicktaskModal();
         }
     });
     document.addEventListener('keyup', (e) => {

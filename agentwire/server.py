@@ -2567,6 +2567,8 @@ class AgentWireServer:
             machine = data.get("machine", "local")
             worktree = data.get("worktree", False)
             branch = data.get("branch", "").strip()
+            base = (data.get("base") or "main").strip() or "main"
+            pull_first = bool(data.get("pull_first", True))
 
             if not name:
                 return web.json_response({"error": "Session name is required"})
@@ -2592,6 +2594,10 @@ class AgentWireServer:
                 args.extend(["-p", custom_path])
             # Set session type via --type flag
             args.extend(["--type", session_type])
+            # Worktree-only flags: base branch + pull-first behaviour
+            if worktree and branch:
+                args.extend(["--base", base])
+                args.append("--pull-first" if pull_first else "--no-pull-first")
             # Set roles if provided (handle both array and string formats)
             if roles:
                 # Validate roles exist before passing to CLI
