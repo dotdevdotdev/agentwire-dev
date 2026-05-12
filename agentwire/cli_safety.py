@@ -190,7 +190,10 @@ def query_audit_logs(
     if today:
         log_files = [LOGS_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"]
     else:
-        log_files = sorted(LOGS_DIR.glob("*.jsonl"), reverse=True)
+        # Sort chronologically (oldest first) so that within the merged list,
+        # entries are strictly in time order. Callers that want newest-first
+        # (e.g. the portal Safety section) reverse on their end after slicing.
+        log_files = sorted(LOGS_DIR.glob("*.jsonl"))
 
     for log_file in log_files:
         if not log_file.exists():

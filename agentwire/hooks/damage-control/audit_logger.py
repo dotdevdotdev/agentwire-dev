@@ -56,6 +56,9 @@ def log_entry(
     blocked_by: Optional[str] = None,
     user_approved: Optional[bool] = None,
     pattern_matched: Optional[str] = None,
+    rule_id: Optional[str] = None,
+    escape_reason: Optional[str] = None,
+    cwd: Optional[str] = None,
 ) -> None:
     """
     Write a log entry to the audit log.
@@ -63,11 +66,15 @@ def log_entry(
     Args:
         tool: Tool name (Bash, Edit, Write)
         command: Command or path that was checked
-        decision: "blocked", "asked", or "allowed"
+        decision: "blocked", "asked", "allowed", "allowed_by_escape", or "allowed_by_disabled"
         blocked_by: Reason/pattern that triggered block
         user_approved: Whether user approved (for ask patterns)
         pattern_matched: The regex pattern that matched
+        rule_id: Stable identifier of the matched rule (when applicable)
+        escape_reason: Reason supplied via "# allow:" escape hatch (when applicable)
+        cwd: Working directory where the command would have run
     """
+    import os
     context = get_session_context()
 
     entry = {
@@ -80,6 +87,9 @@ def log_entry(
         "blocked_by": blocked_by,
         "user_approved": user_approved,
         "pattern_matched": pattern_matched,
+        "rule_id": rule_id,
+        "escape_reason": escape_reason,
+        "cwd": cwd or os.environ.get("PWD") or os.getcwd(),
     }
 
     log_file = get_log_file()
@@ -94,6 +104,7 @@ def log_blocked(
     command: str,
     reason: str,
     pattern: Optional[str] = None,
+    rule_id: Optional[str] = None,
 ) -> None:
     """
     Log a blocked operation.
@@ -103,6 +114,7 @@ def log_blocked(
         command: Command or path that was blocked
         reason: Human-readable reason for block
         pattern: The regex pattern that matched
+        rule_id: Stable identifier of the matched rule
     """
     log_entry(
         tool=tool,
@@ -110,6 +122,39 @@ def log_blocked(
         decision="blocked",
         blocked_by=reason,
         pattern_matched=pattern,
+        rule_id=rule_id,
+    )
+
+
+def log_escape(
+    tool: str,
+    command: str,
+    escape_reason: str,
+) -> None:
+    """
+    Log a command that was allowed through the ``# allow: <reason>`` escape hatch.
+    """
+    log_entry(
+        tool=tool,
+        command=command,
+        decision="allowed_by_escape",
+        blocked_by=f"Escape hatch: {escape_reason}",
+        escape_reason=escape_reason,
+    )
+
+
+def log_disabled(
+    tool: str,
+    command: str,
+) -> None:
+    """
+    Log a command that was allowed because the safety system is disabled.
+    """
+    log_entry(
+        tool=tool,
+        command=command,
+        decision="allowed_by_disabled",
+        blocked_by="safety disabled",
     )
 
 

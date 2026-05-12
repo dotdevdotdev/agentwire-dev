@@ -13,6 +13,7 @@ import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { sidebar } from './sidebar.js';
 import { configSection } from './sidebar/config-section.js';
+import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
 import { machinesSection } from './sidebar/machines-section.js';
 import { sessionsSection } from './sidebar/sessions-section.js';
@@ -69,6 +70,7 @@ async function init() {
     sidebar.addSection('artifacts', artifactsSection);
     sidebar.addSection('scheduler', schedulerSection);
     sidebar.addSection('workflows', workflowsSection);
+    sidebar.addSection('safety', safetySection);
     sidebar.addSection('config', configSection);
     setupClock();
     setupPageUnload();

@@ -22,10 +22,11 @@ import sys
 from pathlib import Path
 
 try:
-    from audit_logger import log_allowed, log_blocked
+    from audit_logger import log_allowed, log_blocked, log_disabled
 except ImportError:
     def log_allowed(*args, **kwargs): pass
     def log_blocked(*args, **kwargs): pass
+    def log_disabled(*args, **kwargs): pass
 
 
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
@@ -405,11 +406,42 @@ def load_write_patterns_from_tooldefs(tooldefs_dir: Optional[Path]) -> List[Dict
     return patterns
 
 
+_RULE_ID_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug_for_rule(text: str, max_len: int = 60) -> str:
+    """Lowercase, ASCII, kebab-case slug suitable for rule IDs."""
+    s = _RULE_ID_SLUG_RE.sub("-", (text or "").lower()).strip("-")
+    return s[:max_len] or "rule"
+
+
+def _assign_rule_id(pattern_obj: Dict[str, Any], file_stem: str, taken: set) -> str:
+    """Generate (or honor) an ID for a bash pattern. Mutates pattern_obj in place."""
+    existing = pattern_obj.get("id")
+    if isinstance(existing, str) and existing.strip():
+        pattern_obj["id"] = existing.strip()
+        taken.add(pattern_obj["id"])
+        return pattern_obj["id"]
+    slug = _slug_for_rule(pattern_obj.get("reason", "rule"))
+    candidate = f"{file_stem}.{slug}"
+    n = 2
+    while candidate in taken:
+        candidate = f"{file_stem}.{slug}-{n}"
+        n += 1
+    pattern_obj["id"] = candidate
+    taken.add(candidate)
+    return candidate
+
+
 def load_config(
     rules_dir: Path,
     tooldefs_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Load and merge all rule YAMLs in ``rules_dir`` plus tooldef ask-patterns."""
+    """Load and merge all rule YAMLs in ``rules_dir`` plus tooldef ask-patterns.
+
+    Bash patterns get a stable ``id`` field (``"<file>.<slug-of-reason>"``) so
+    they can be referenced by the ``safety.disabled_rules`` config.
+    """
     merged: Dict[str, Any] = {
         "bashToolPatterns": [],
         "zeroAccessPaths": [],
@@ -419,20 +451,108 @@ def load_config(
     }
     if not yaml or not rules_dir.exists():
         return merged
+    taken_ids: set = set()
     yaml_files = sorted(rules_dir.glob("*.yaml"))
     for rules_file in yaml_files:
         try:
             with open(rules_file, "r") as f:
                 data = yaml.safe_load(f) or {}
             for key in merged:
-                merged[key].extend(data.get(key, []))
+                items = data.get(key, []) or []
+                if key == "bashToolPatterns":
+                    for it in items:
+                        if isinstance(it, dict):
+                            _assign_rule_id(it, rules_file.stem, taken_ids)
+                            it.setdefault("source", rules_file.stem)
+                merged[key].extend(items)
         except Exception:
             continue
     if tooldefs_dir is not None:
-        merged["bashToolPatterns"].extend(
-            load_write_patterns_from_tooldefs(tooldefs_dir)
-        )
+        tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir)
+        for it in tooldef_patterns:
+            _assign_rule_id(it, "tooldef", taken_ids)
+            it.setdefault("source", "tooldef")
+        merged["bashToolPatterns"].extend(tooldef_patterns)
     return merged
+
+
+def load_safety_config(
+    global_config_path: Optional[Path] = None,
+    cwd: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve the effective ``safety`` block from global + nearest project config.
+
+    Returns ``{enabled: bool, disabled_rules: list[str]}``. Project ``.agentwire.yml``
+    overrides global; ``disabled_rules`` are merged (set-union).
+    """
+    enabled = True
+    disabled_rules: List[str] = []
+    project_enabled: Optional[bool] = None
+    if not yaml:
+        return {"enabled": enabled, "disabled_rules": disabled_rules}
+
+    if global_config_path is None:
+        global_config_path = Path.home() / ".agentwire" / "config.yaml"
+    try:
+        if global_config_path.exists():
+            with open(global_config_path, "r") as f:
+                data = yaml.safe_load(f) or {}
+            safety = data.get("safety", {})
+            if isinstance(safety, dict):
+                if "enabled" in safety:
+                    enabled = bool(safety["enabled"])
+                rules = safety.get("disabled_rules", [])
+                if isinstance(rules, list):
+                    disabled_rules.extend(str(r) for r in rules if r)
+    except Exception:
+        pass
+
+    if cwd is None:
+        cwd = os.environ.get("PWD", os.getcwd())
+    current = os.path.abspath(cwd)
+    while True:
+        candidate = os.path.join(current, ".agentwire.yml")
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, "r") as f:
+                    pdata = yaml.safe_load(f) or {}
+                psafety = pdata.get("safety", {})
+                if isinstance(psafety, dict):
+                    if "enabled" in psafety and psafety["enabled"] is not None:
+                        project_enabled = bool(psafety["enabled"])
+                    prules = psafety.get("disabled_rules", [])
+                    if isinstance(prules, list):
+                        disabled_rules.extend(str(r) for r in prules if r)
+            except Exception:
+                pass
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    if project_enabled is not None:
+        enabled = project_enabled
+
+    return {"enabled": enabled, "disabled_rules": sorted(set(disabled_rules))}
+
+
+_ESCAPE_HATCH_RE = re.compile(r"#\s*allow:[ \t]*([^\n]+)", re.IGNORECASE)
+
+
+def detect_escape_hatch(command: str) -> Optional[str]:
+    """Return the reason if ``command`` contains a ``# allow: <reason>`` marker.
+
+    Non-empty reason required; matches the rest of the comment line so the
+    marker works on multi-line / chained commands too.
+    """
+    if not command:
+        return None
+    m = _ESCAPE_HATCH_RE.search(command)
+    if not m:
+        return None
+    reason = m.group(1).strip()
+    return reason or None
 
 
 # ============================================================================
@@ -443,26 +563,56 @@ def load_config(
 def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Decide whether a bash command should be allowed/blocked/asked.
 
-    Returns ``{decision, reason, pattern, command}``.
+    Returns ``{decision, reason, pattern, command}`` plus optional ``id``,
+    ``escape_reason``, ``escape``, ``disabled``.
 
     Order:
-      1. Hard-blocked bash patterns (no ``bypassable`` flag) → BLOCK
-      2. Ask patterns → ASK
-      3. Bypassable bash patterns → check allowlist for required operation
-      4. zeroAccessPaths → check allowlist with ``read`` permission
-      5. readOnlyPaths → match against READ_ONLY_BLOCKED operation patterns
-      6. noDeletePaths → match against NO_DELETE_BLOCKED patterns
+      0. Escape hatch (``# allow: <reason>``) → ALLOW (escape=True)
+      1. Kill switch (``config["safety"]["enabled"] is False``) → ALLOW (disabled=True)
+      2. Hard-blocked bash patterns (skip if ``id`` in ``disabled_rules``)
+      3. Ask patterns
+      4. Bypassable bash patterns → check allowlist for required operation
+      5. zeroAccessPaths → check allowlist with ``read`` permission
+      6. readOnlyPaths → match against READ_ONLY_BLOCKED operation patterns
+      7. noDeletePaths → match against NO_DELETE_BLOCKED patterns
     """
+    safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
+    disabled_rules = set(safety_cfg.get("disabled_rules", []) or [])
+    is_enabled = safety_cfg.get("enabled", True)
+
+    escape_reason = detect_escape_hatch(command)
+    if escape_reason:
+        return {
+            "decision": "allow",
+            "reason": f"Escape hatch: {escape_reason}",
+            "pattern": None,
+            "command": command,
+            "escape": True,
+            "escape_reason": escape_reason,
+        }
+
+    if is_enabled is False:
+        return {
+            "decision": "allow",
+            "reason": "safety disabled",
+            "pattern": None,
+            "command": command,
+            "disabled": True,
+        }
+
     bash_patterns = config.get("bashToolPatterns", [])
     zero_access = config.get("zeroAccessPaths", [])
     read_only = config.get("readOnlyPaths", [])
     no_delete = config.get("noDeletePaths", [])
     allowed = load_allowed_paths(config)
 
-    bypassable_matches: List[Tuple[str, str]] = []
+    bypassable_matches: List[Tuple[str, str, Optional[str]]] = []
 
     for pattern_obj in bash_patterns:
         if not isinstance(pattern_obj, dict):
+            continue
+        rule_id = pattern_obj.get("id")
+        if rule_id and rule_id in disabled_rules:
             continue
         pattern = pattern_obj.get("pattern", "")
         reason = pattern_obj.get("reason", "Matched pattern")
@@ -476,20 +626,22 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                         "reason": reason,
                         "pattern": pattern,
                         "command": command,
+                        "id": rule_id,
                     }
                 elif bypassable:
-                    bypassable_matches.append((pattern, reason))
+                    bypassable_matches.append((pattern, reason, rule_id))
                 else:
                     return {
                         "decision": "block",
                         "reason": reason,
                         "pattern": pattern,
                         "command": command,
+                        "id": rule_id,
                     }
         except re.error:
             continue
 
-    for pattern, reason in bypassable_matches:
+    for pattern, reason, rule_id in bypassable_matches:
         operation = _infer_operation_from_reason(reason)
         if not is_command_path_allowed(command, allowed, operation):
             return {
@@ -497,6 +649,7 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                 "reason": reason,
                 "pattern": pattern,
                 "command": command,
+                "id": rule_id,
             }
 
     for path in zero_access:
@@ -545,6 +698,10 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
 
 def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     """File-path-only check used by edit/write hooks. Returns ``(blocked, reason)``."""
+    safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
+    if safety_cfg.get("enabled", True) is False:
+        return False, ""
+
     allowed = load_allowed_paths(config)
 
     if is_path_allowed_for_op(file_path, allowed, "edit"):
@@ -577,6 +734,7 @@ def _resolve_rules_dir() -> Path:
 
 def main() -> None:
     config = load_config(_resolve_rules_dir())
+    config["safety"] = load_safety_config()
 
     try:
         input_data = json.load(sys.stdin)
@@ -592,6 +750,10 @@ def main() -> None:
 
     file_path = tool_input.get("file_path", "")
     if not file_path:
+        sys.exit(0)
+
+    if config["safety"].get("enabled", True) is False:
+        log_disabled("Edit", file_path)
         sys.exit(0)
 
     blocked, reason = check_path(file_path, config)
