@@ -24,11 +24,14 @@ import termios
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict
 
 import aiohttp
 import aiohttp_jinja2
 import jinja2
+import yaml
 from aiohttp import web
 
 from .config import Config, load_config
@@ -196,6 +199,10 @@ class AgentWireServer:
         self.app.router.add_get("/api/config", self.api_get_config)
         self.app.router.add_post("/api/config", self.api_save_config)
         self.app.router.add_post("/api/config/reload", self.api_reload_config)
+        self.app.router.add_get("/api/safety/status", self.api_safety_status)
+        self.app.router.add_get("/api/safety/logs", self.api_safety_logs)
+        self.app.router.add_get("/api/safety/rules", self.api_safety_rules)
+        self.app.router.add_post("/api/safety/config", self.api_safety_config_post)
         self.app.router.add_post("/api/sessions/refresh", self.api_refresh_sessions)
         # Icon listing for dynamic icon picker
         self.app.router.add_get("/api/icons/{category}", self.api_icons)
@@ -3113,6 +3120,110 @@ projects:
             return web.json_response({"success": True})
         except Exception as e:
             return web.json_response({"error": str(e)})
+
+    async def api_safety_status(self, request: web.Request) -> web.Response:
+        """Damage-control current state: master enable, disabled rules, today's counts."""
+        try:
+            from .cli_safety import load_patterns, LOGS_DIR
+            patterns = load_patterns()
+            today = datetime.now().strftime("%Y-%m-%d")
+            log_file = LOGS_DIR / f"{today}.jsonl"
+            counts: Dict[str, int] = {}
+            if log_file.exists():
+                try:
+                    with open(log_file, "r") as f:
+                        for line in f:
+                            try:
+                                entry = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            d = entry.get("decision", "")
+                            counts[d] = counts.get(d, 0) + 1
+                except Exception:
+                    pass
+            safety_cfg = getattr(self.config, "safety", None)
+            return web.json_response({
+                "enabled": getattr(safety_cfg, "enabled", True) if safety_cfg else True,
+                "disabled_rules": list(getattr(safety_cfg, "disabled_rules", []) or []),
+                "rule_count": len(patterns.get("bashToolPatterns", [])),
+                "today_counts": counts,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_safety_logs(self, request: web.Request) -> web.Response:
+        """Recent safety audit log entries with optional filters."""
+        try:
+            from .cli_safety import query_audit_logs
+            limit = int(request.query.get("limit", "200"))
+            decision = request.query.get("decision")
+            entries = query_audit_logs()  # all entries, newest-first by file
+            if decision:
+                wanted = {d.strip() for d in decision.split(",") if d.strip()}
+                entries = [e for e in entries if e.get("decision") in wanted]
+            if limit > 0:
+                entries = entries[-limit:]
+            return web.json_response({"entries": entries})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_safety_rules(self, request: web.Request) -> web.Response:
+        """Flat list of bash-rule IDs with their patterns/reasons."""
+        try:
+            from .cli_safety import load_patterns
+            patterns = load_patterns()
+            rules = []
+            for p in patterns.get("bashToolPatterns", []):
+                if not isinstance(p, dict):
+                    continue
+                rules.append({
+                    "id": p.get("id"),
+                    "pattern": p.get("pattern"),
+                    "reason": p.get("reason"),
+                    "ask": bool(p.get("ask", False)),
+                    "bypassable": bool(p.get("bypassable", False)),
+                    "source": p.get("source"),
+                })
+            return web.json_response({"rules": rules})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_safety_config_post(self, request: web.Request) -> web.Response:
+        """Update ~/.agentwire/config.yaml safety block (enabled, disabled_rules)."""
+        try:
+            data = await request.json()
+            cfg_path = Path.home() / ".agentwire" / "config.yaml"
+            raw: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, "r") as f:
+                        raw = yaml.safe_load(f) or {}
+                except Exception:
+                    raw = {}
+            safety = raw.get("safety", {})
+            if not isinstance(safety, dict):
+                safety = {}
+            if "enabled" in data:
+                safety["enabled"] = bool(data["enabled"])
+            if "disabled_rules" in data and isinstance(data["disabled_rules"], list):
+                safety["disabled_rules"] = sorted({str(r) for r in data["disabled_rules"] if r})
+            raw["safety"] = safety
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cfg_path, "w") as f:
+                yaml.safe_dump(raw, f, sort_keys=False)
+            # Reload runtime config so /api/safety/status sees the change immediately
+            try:
+                from .config import reload_config
+                self.config = reload_config()
+            except Exception:
+                pass
+            return web.json_response({
+                "success": True,
+                "enabled": safety.get("enabled", True),
+                "disabled_rules": safety.get("disabled_rules", []),
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def api_refresh_sessions(self, request: web.Request) -> web.Response:
         """Refresh sessions and broadcast update to all dashboard clients.

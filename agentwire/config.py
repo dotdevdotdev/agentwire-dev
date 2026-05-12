@@ -268,6 +268,14 @@ class OvernightConfig:
 
 
 @dataclass
+class SafetyConfig:
+    """Global damage-control safety knobs."""
+
+    enabled: bool = True
+    disabled_rules: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     """Root configuration for AgentWire."""
 
@@ -285,6 +293,7 @@ class Config:
     repl: ReplConfig = field(default_factory=ReplConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     overnight: OvernightConfig = field(default_factory=OvernightConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
     channels: dict = field(default_factory=dict)
 
 
@@ -508,6 +517,18 @@ def _dict_to_config(data: dict) -> Config:
         theme_overrides = {}
     repl = ReplConfig(theme={str(k): str(v) for k, v in theme_overrides.items()})
 
+    # Safety (damage-control kill switch + disabled rules)
+    safety_data = data.get("safety", {}) or {}
+    if not isinstance(safety_data, dict):
+        safety_data = {}
+    disabled_rules_raw = safety_data.get("disabled_rules", []) or []
+    if not isinstance(disabled_rules_raw, list):
+        disabled_rules_raw = []
+    safety = SafetyConfig(
+        enabled=bool(safety_data.get("enabled", True)),
+        disabled_rules=[str(r) for r in disabled_rules_raw if r],
+    )
+
     return Config(
         server=server,
         projects=projects,
@@ -523,6 +544,7 @@ def _dict_to_config(data: dict) -> Config:
         overnight=overnight,
         channels=channel_configs,
         repl=repl,
+        safety=safety,
     )
 
 
