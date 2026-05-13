@@ -1592,21 +1592,21 @@ class AgentWireServer:
                             data = await data_queue.get()
                             if data is None:  # EOF signal
                                 logger.info(f"[Terminal] Received EOF from PTY for {session_name}")
-                                # For remote sessions, check exit code to determine message type
-                                if is_remote and not ws.closed:
+                                # Tell the browser *why* the stream ended so it can decide between
+                                # closing the window (session truly gone) vs showing a reconnect
+                                # overlay (transient — bg process side effect, portal restart, etc).
+                                if not ws.closed:
                                     try:
-                                        # Wait for SSH process to exit and get return code
                                         exit_code = await proc.wait() if proc else None
-                                        logger.info(f"[Terminal] SSH exit code for {session_name}: {exit_code}")
+                                        logger.info(f"[Terminal] tmux attach exit code for {session_name}: {exit_code}")
 
+                                        prefix = "remote" if is_remote else "local"
                                         if exit_code == 0:
-                                            # Clean exit - tmux session ended normally, close window
-                                            await ws.send_json({"type": "remote_session_ended", "session": session_name})
-                                            logger.info(f"[Terminal] Sent remote_session_ended to browser for {session_name}")
+                                            await ws.send_json({"type": f"{prefix}_session_ended", "session": session_name})
+                                            logger.info(f"[Terminal] Sent {prefix}_session_ended to browser for {session_name}")
                                         else:
-                                            # Non-zero exit - connection issue, show reconnect overlay
-                                            await ws.send_json({"type": "remote_disconnected", "session": session_name})
-                                            logger.info(f"[Terminal] Sent remote_disconnected to browser for {session_name}")
+                                            await ws.send_json({"type": f"{prefix}_disconnected", "session": session_name})
+                                            logger.info(f"[Terminal] Sent {prefix}_disconnected to browser for {session_name}")
                                     except Exception as e:
                                         logger.warning(f"[Terminal] Failed to send disconnect message: {e}")
                                 break

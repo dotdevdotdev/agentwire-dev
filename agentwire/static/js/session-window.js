@@ -496,12 +496,15 @@ export class SessionWindow {
                                 return;
                             } else if (msg.type === 'session_unlocked' || msg.type === 'session_locked') {
                                 return; // Ignore lock messages
-                            } else if (msg.type === 'remote_session_ended') {
-                                // Clean exit - tmux session ended, close window like local
+                            } else if (msg.type === 'remote_session_ended' || msg.type === 'local_session_ended') {
+                                // Clean exit - tmux session truly ended, close window
+                                this._sessionEnded = true;
                                 this.close();
                                 return;
-                            } else if (msg.type === 'remote_disconnected') {
-                                // Connection issue - show overlay for reconnect
+                            } else if (msg.type === 'remote_disconnected' || msg.type === 'local_disconnected') {
+                                // Transient drop (bg process side effect, portal restart, etc) -
+                                // show overlay so user can reconnect instead of losing the window
+                                this._sessionEnded = true; // suppress the onclose fallback close
                                 this._updateStatus('disconnected', 'Connection lost');
                                 this._showDisconnectOverlay();
                                 return;
@@ -555,11 +558,14 @@ export class SessionWindow {
                 this._updateStatus('error', 'Connection lost');
             }
 
-            // Local sessions: close window when WebSocket closes (session died)
-            // Remote sessions: don't close - we detect disconnect via terminal output patterns
-            if (!this.machine) {
-                this.close();
-            }
+            // The server sends a typed message (*_session_ended / *_disconnected) before
+            // closing the WS so we can distinguish "session truly ended" from "transient
+            // drop". If we already saw one of those, _sessionEnded is set and there's
+            // nothing more to do here. If we get here without one, fall back to showing
+            // the reconnect overlay rather than destroying the window — a bg-process kill
+            // or portal hot-reload should never cause the user to lose their session UI.
+            if (this._sessionEnded) return;
+            this._showDisconnectOverlay();
         };
 
         // For terminal mode, send input to WebSocket. Only attach once — xterm.js
