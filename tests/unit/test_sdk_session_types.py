@@ -1,7 +1,6 @@
 """Tests for sdk-* session types + build_agent_command dispatch + REPL scaffold.
 
-Phase 1 PR 1 — covers the session-type plumbing end-to-end.
-See docs/missions/agentwire-repl.md for the mission scope.
+Covers the session-type plumbing end-to-end.
 """
 
 from __future__ import annotations

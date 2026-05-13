@@ -1,7 +1,7 @@
 """Tests for agentwire/sdk/capabilities.py.
 
-One test per row of the capability table in docs/missions/anthropic-sdk-runner.md.
-Keep it strict — silent validation failures are worse than loud ones.
+One test per row of the capability table. Keep it strict — silent
+validation failures are worse than loud ones.
 """
 
 from __future__ import annotations

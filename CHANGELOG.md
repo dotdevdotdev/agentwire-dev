@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Live event streaming under `--verbose`** — `agentwire workflow run … -v` now streams per-event output for anthropic nodes: `[node] → tool_use Read …`, `← tool_result (ok/err)`, `▓ text`, `✓ turn 42+18 tok`, `■ agent_end 3.1s`
 - **Runner recorded in metadata** — `metadata.json` bumped to `schema_version: 2` with run-level and per-node `runner` fields; `workflow show` renders a `Runner:` line + per-node tag + `Totals:` aggregation; `workflow history` gains a `runner` column
 - **`--runner {pi,anthropic}` CLI override** — `agentwire workflow run` accepts `--runner` to flip every node's runner for one invocation; runner/field mismatches surface as normal validation errors
-- **Canary live** — `daily-book-report` (daily 13:30) flipped to anthropic on 2026-04-17 (Sonnet 4.6 for fetch, Opus 4.7 for compose_and_send). Findings tracked in `docs/missions/anthropic-sdk-runner.md`
+- **Canary live** — `daily-book-report` (daily 13:30) flipped to anthropic on 2026-04-17 (Sonnet 4.6 for fetch, Opus 4.7 for compose_and_send)
 - **Damage-control honors session bypass modes** — `permission_mode: "bypassPermissions"` and `"auto"` now skip `ask:true` escalations for write-tier commands; hard blocks still fire. Fixes `--dangerously-skip-permissions` and autonomous-mode sessions being prompted per Bash call
 
 ### Documentation

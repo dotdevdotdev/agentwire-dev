@@ -11,8 +11,7 @@ columns with different models / different roles / different effort, then
 pick the best output. Per-column overrides land in a follow-on PR.
 
 This is the first composite view built on `agentwire.sdk.*` — it
-validates that the primitives are actually reusable. See
-docs/missions/agentwire-sdk-primitives.md Phase 2.
+validates that the primitives are actually reusable.
 """
 
 from __future__ import annotations

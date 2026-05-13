@@ -279,7 +279,6 @@ Pi's forking is manual (copy JSONL, run with `--session <copy> --continue`). Age
 
 - `agentwire-pi` skill — concise reference for setting up pi sessions
 - `agentwire-config` skill — `pi:` config block field reference
-- Roadmap: `docs/missions/pi-harness-overview.md`
 - Pi upstream: https://github.com/badlogic/pi-mono
 - Z.AI docs: https://docs.z.ai/
 - DeepSeek docs: https://api-docs.deepseek.com/

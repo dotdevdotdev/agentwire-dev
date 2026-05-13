@@ -7,20 +7,16 @@ install: npm install -g @googleworkspace/cli
 # Multi-account usage:
 #   ALWAYS use --params '{"userId":"me"}' — gws requires explicit userId
 #   Account selection via GOOGLE_WORKSPACE_CLI_CONFIG_DIR env var:
-#     GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-jordan gws gmail ...
+#     GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-<name> gws gmail ...
 #   NOTE: GOOGLE_WORKSPACE_CLI_ACCOUNT does NOT exist in v0.16.0 — ignore docs that mention it
 #
 # To add a new account: gws-auth ~/.config/gws-<name>
 #   (copies client_secret.json, opens browser, sign in as target account)
 #
-# Authed accounts:
-#   dotdevdotdev@gmail.com     — default (no env var needed)
-#   jordangarygerard@gmail.com — GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-jordan
+# Authed accounts live in ~/.config/gws-*/ — list directories there to see which
+# accounts are set up locally. The default account requires no env var.
 #
-# Granted scopes:
-#   Account       Gmail      Drive      Calendar     Cloud Platform
-#   dotdev        read-only  read-only  read+write   read-only
-#   jordan        read-only  read-only  full access  read-only
+# Granted scopes depend on what was approved at auth time; check with `gws auth status`.
 
 commands:
   # Auth

@@ -1,8 +1,7 @@
 """Agentwire SDK primitives.
 
 Reusable building blocks that wrap claude-agent-sdk for both interactive
-(Textual REPL) and headless (workflow runner) consumers. See
-docs/missions/agentwire-sdk-primitives.md for the architecture.
+(Textual REPL) and headless (workflow runner) consumers.
 """
 
 from agentwire.sdk.client import (

@@ -130,9 +130,13 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 
 - CLI: `agentwire --help` or `agentwire <cmd> --help`
 - **[`docs/wiki/INDEX.md`](docs/wiki/INDEX.md)** — feature reference manual (sessions, communication, scheduling, integrations, deployment, TTS, internals)
-- `docs/missions/completed/` — historical design + shipping records (per-mission)
-- `docs/missions/pi-harness-overview.md` — pi integration roadmap (active reference)
 
-## Mission tracking
+## Mission tracking — GitHub Issues only
 
-New missions live in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues). Issue body = plan; comments = progress updates; PR description = canonical end-of-project summary. Don't add new mission docs to this repo — only the wiki receives post-ship reference content.
+**Issues are the single source of truth for plans, status, and history.** The project board is the kanban (Proposed → Accepted → Active → Shipped → Stalled → Declined); the issue body holds the plan; comments hold the phase breadcrumbs + verification notes; PRs reference the issue and close it on merge.
+
+Don't write parallel mission specs into the repo. If a plan is long, expand it inside the issue body or as comments. Post-ship reference content (concepts, architecture, troubleshooting) lives in `docs/wiki/`, never as mission files.
+
+Per-mission convention: branch `mission/{slug}`, push after every commit, PR back to `main` and close the issue. The PR description is the breadcrumb — what was built, decisions locked in, schemas, surprises, verification results.
+
+Full conventions (columns, `feature:*` / `area:*` labels, importing historical work): `~/.claude/rules/project-tracking.md`.

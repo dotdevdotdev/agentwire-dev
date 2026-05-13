@@ -1,7 +1,4 @@
-"""Tests for the REPL slash command registry + state tracking.
-
-Phase 2 PR 1. See docs/missions/agentwire-repl.md.
-"""
+"""Tests for the REPL slash command registry + state tracking."""
 
 from __future__ import annotations
 

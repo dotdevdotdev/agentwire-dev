@@ -1,7 +1,4 @@
-"""Tests for the SDK-backed REPL — build_options, render_message, print mode.
-
-Phase 1 PR 2. See docs/missions/agentwire-repl.md.
-"""
+"""Tests for the SDK-backed REPL — build_options, render_message, print mode."""
 
 from __future__ import annotations
 

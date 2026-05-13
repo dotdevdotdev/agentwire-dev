@@ -24,7 +24,7 @@ tasks:
       command: "test -f /tmp/ready.flag"  # Skip if command exits non-zero
 ```
 
-Gates are evaluated before dispatching and skip the task (zero AI cost) if conditions fail. Multiple gates are AND'd. Gates fail open on errors. See `docs/missions/completed/master-ralph-loop.md` for details.
+Gates are evaluated before dispatching and skip the task (zero AI cost) if conditions fail. Multiple gates are AND'd. Gates fail open on errors.
 
 ## Scheduler Task Scheduling
 

@@ -2,7 +2,7 @@
 
 Runs `pi -p <prompt> --mode json --no-session ...` and parses the streaming
 JSONL output into structured NodeResult. Event schema captured empirically
-from pi 0.67.1 (see `docs/missions/pi-workflow-engine.md`).
+from pi 0.67.1.
 """
 
 from __future__ import annotations

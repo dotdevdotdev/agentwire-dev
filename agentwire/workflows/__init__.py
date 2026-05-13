@@ -2,7 +2,6 @@
 
 Ships DAG execution, Jinja2 templating, output extraction, retries,
 `when` conditionals, on_error branching, and persistent run storage.
-See `docs/missions/pi-workflow-engine.md` for the roadmap.
 """
 
 from agentwire.workflows.context import Context

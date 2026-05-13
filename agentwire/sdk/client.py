@@ -8,8 +8,7 @@ shape (max_thinking_tokens, max_budget_usd, task_budget_tokens, betas).
 
 Defaults: claude-opus-4-7 + adaptive thinking + effort=high. Mode-derived
 permission + tool surface match the `sdk-bypass` / `sdk-prompted` /
-`sdk-restricted` session-type variants documented in
-docs/missions/agentwire-repl.md.
+`sdk-restricted` session-type variants.
 """
 
 from __future__ import annotations

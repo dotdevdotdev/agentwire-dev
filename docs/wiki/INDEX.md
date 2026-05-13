@@ -84,6 +84,6 @@ Agent-facing reference lives in `.claude/skills/` and loads automatically inside
 | `agentwire-pi` | Pi sessions for any provider (zai, deepseek, openai, …) |
 | `agentwire-workflows` | Authoring/debugging pi workflow YAMLs |
 
-## Mission Archive
+## Mission tracking
 
-Historical design and shipping records: [`docs/missions/completed/`](../missions/completed/). New missions are tracked in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues) — issue body for the plan, comments for progress, PR description for the canonical end-of-project summary.
+Plans, status, and history live in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues). Issue body = plan, comments = progress breadcrumbs, PR description = canonical end-of-project summary.

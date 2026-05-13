@@ -199,6 +199,5 @@ Each JSONL line records one event: model, user message, assistant message with t
 ## See Also
 
 - `docs/wiki/sessions/pi.md` — full user guide, compatibility matrix, troubleshooting
-- `docs/missions/pi-harness-overview.md` — pi integration roadmap
 - `agentwire-config` skill — `pi:` config block reference
 - `agentwire-project-config` skill — `.agentwire.yml` session type field

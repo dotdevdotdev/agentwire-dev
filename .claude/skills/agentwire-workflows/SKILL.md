@@ -103,6 +103,6 @@ Full reference in `docs/wiki/scheduling/workflows.md` → "Scheduler integration
 
 `docs/wiki/scheduling/workflows.md` — concept intro, full YAML anatomy, per-field semantics, debugging guide, FAQ.
 
-## Mission
+## Mission tracking
 
-Phase 2 status + roadmap lives in `docs/missions/pi-workflow-engine.md`. Sub-missions for later phases: `pi-scheduler-workflows.md` (Phase 3), `pi-workflow-advanced.md` (Phase 4), `pi-workflow-ui.md` (Phase 5).
+Workflow engine roadmap and shipped phases live in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues?q=label%3Afeature%3Aworkflows).

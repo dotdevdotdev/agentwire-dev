@@ -26,9 +26,6 @@ Event flow:
     → on_sdk_event → render_message(out=RichLogSink) on UI thread
 
 Workers MUST use `self.post_message(...)` — never call RichLog.write directly.
-
-See `docs/missions/agentwire-repl-textual.md` and
-`docs/missions/agentwire-sdk-primitives.md` (Phase 5: bullet redesign).
 """
 
 from __future__ import annotations

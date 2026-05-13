@@ -1,9 +1,8 @@
 """Human-in-the-loop workflow runner.
 
-Phase 4 of `docs/missions/agentwire-repl.md`. Pauses a workflow at the node,
-spawns an interactive REPL pre-loaded with the upstream context, and feeds
-the human's final assistant text back as `NodeResult.final_text` for
-downstream nodes.
+Pauses a workflow at the node, spawns an interactive REPL pre-loaded with
+the upstream context, and feeds the human's final assistant text back as
+`NodeResult.final_text` for downstream nodes.
 
 Boundaries:
 - Requires an interactive TTY. Scheduler / overnight-queue / piped runs fail

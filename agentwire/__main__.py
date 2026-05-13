@@ -227,7 +227,7 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
 
     # === Agentwire REPL (claude-agent-sdk) ===
     # sdk-bypass / sdk-prompted / sdk-restricted — Python REPL running in a
-    # tmux pane, auth via Claude subscription. See docs/missions/agentwire-repl.md.
+    # tmux pane, auth via Claude subscription.
     if session_type.startswith("sdk-"):
         # Permission mode maps to SDK's permission_mode parameter
         mode_map = {
@@ -10505,7 +10505,7 @@ def main() -> int:
     # === new command (top-level) ===
     # === repl command (top-level, internal — invoked by build_agent_command) ===
     # Users spawn it via `agentwire new -s <name> --type sdk-bypass`; this is
-    # the process that runs inside the tmux pane. See docs/missions/agentwire-repl.md.
+    # the process that runs inside the tmux pane.
     repl_parser = subparsers.add_parser(
         "repl",
         help="Agentwire REPL (internal — runs inside tmux pane for sdk-* session types)",

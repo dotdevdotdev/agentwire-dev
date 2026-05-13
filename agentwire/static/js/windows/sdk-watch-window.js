@@ -6,8 +6,6 @@
  * REPL would: text, thinking, tool_use, tool_result, turn_end.
  *
  * Pure read-only. No input field — close the window to stop tailing.
- *
- * Phase 3 of docs/missions/agentwire-sdk-primitives.md.
  */
 
 import { desktop } from '../desktop-manager.js';
