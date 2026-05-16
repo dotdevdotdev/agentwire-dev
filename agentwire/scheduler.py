@@ -750,7 +750,7 @@ def _notify_portal_state() -> None:
 
         requests.post(
             f"{portal_url}/api/notify",
-            json={"event": "scheduler_state", **state},
+            json={"event": "scheduler_state", "running": True, **state},
             verify=False,
             timeout=timeout,
         )
