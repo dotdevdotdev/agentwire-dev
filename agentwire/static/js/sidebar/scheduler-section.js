@@ -24,8 +24,17 @@ export const schedulerSection = {
 
     async refresh(body) {
         try {
-            const res = await fetch('/api/scheduler/state');
-            this._state = await res.json();
+            const [liveRes, boardRes] = await Promise.all([
+                fetch('/api/scheduler/live'),
+                fetch('/api/scheduler/board'),
+            ]);
+            const live = liveRes.ok ? await liveRes.json() : null;
+            const board = boardRes.ok ? await boardRes.json() : null;
+            if (live) {
+                this._state = { ...live, tasks: board?.tasks || [] };
+            } else {
+                this._state = null;
+            }
         } catch (e) {
             this._state = null;
         }
@@ -77,11 +86,11 @@ export const schedulerSection = {
         const action = btn.dataset.action;
         try {
             if (action === 'run') {
-                await fetch(`/api/scheduler/run/${encodeURIComponent(task)}`, { method: 'POST' });
+                await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/run`, { method: 'POST' });
             } else if (action === 'enable') {
-                await fetch(`/api/scheduler/enable/${encodeURIComponent(task)}`, { method: 'POST' });
+                await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/enable`, { method: 'POST' });
             } else if (action === 'disable') {
-                await fetch(`/api/scheduler/disable/${encodeURIComponent(task)}`, { method: 'POST' });
+                await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/disable`, { method: 'POST' });
             }
             await this.refresh(body);
         } catch (e) { console.warn('Scheduler action failed', e); }
