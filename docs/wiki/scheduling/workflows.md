@@ -124,7 +124,7 @@ Every run persists **independently of notifications**. Whether the workflow emai
     └── <node-id>.events.jsonl     # full event stream per node (tool calls, results, text)
 ```
 
-**Notification is a prompt-level choice, not an engine feature.** If a prompt calls `agentwire email` or `agentwire webhook send` or `agentwire quo send`, that channel fires. If it doesn't, nothing goes out — but history is still there. See `agentwire/workflows/examples/silent-save.yaml` for an action-only workflow that produces a markdown file and zero notifications.
+**Notification is a prompt-level choice, not an engine feature.** If a prompt calls `agentwire email` or `agentwire quo`, that channel fires. If it doesn't, nothing goes out — but history is still there. See `agentwire/workflows/examples/silent-save.yaml` for an action-only workflow that produces a markdown file and zero notifications.
 
 You can inspect past runs three ways:
 

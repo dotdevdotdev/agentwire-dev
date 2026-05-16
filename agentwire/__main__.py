@@ -1703,279 +1703,6 @@ def cmd_channels_list(args) -> int:
     return 0
 
 
-def get_telegram_session_name() -> str:
-    """Get Telegram bridge tmux session name from config."""
-    config = load_config()
-    return config.get("services", {}).get("telegram", {}).get("session_name", "agentwire-telegram")
-
-
-def _bridge_tmux_cmd(source_dir: Path, python_invocation: str) -> str:
-    """Build a tmux command that sources ~/.agentwire/.env (if present) under bash,
-    then execs the bridge. Wrapped in bash -c so it works regardless of the user's
-    default shell (zsh can choke on .env values containing special chars)."""
-    env_file = Path.home() / ".agentwire" / ".env"
-    parts = [f"cd {source_dir}"]
-    if env_file.exists():
-        parts.append(f"set -a; source {env_file}; set +a")
-    parts.append(f"exec {python_invocation}")
-    return "bash -c '" + "; ".join(parts) + "'"
-
-
-def cmd_telegram_start(args) -> int:
-    """Start the Telegram bridge in tmux."""
-    session_name = get_telegram_session_name()
-
-    if tmux_session_exists(session_name):
-        print(f"Telegram bridge already running in tmux session '{session_name}'")
-        print("Attaching... (Ctrl+B D to detach)")
-        subprocess.run(["tmux", "attach-session", "-t", session_name])
-        return 0
-
-    # Find agentwire source directory
-    source_dir = get_source_dir()
-    venv_python = source_dir / ".venv" / "bin" / "python"
-    if not venv_python.exists():
-        print(f"Error: Cannot find venv at {venv_python}", file=sys.stderr)
-        return 1
-
-    cmd = _bridge_tmux_cmd(source_dir, f"{venv_python} -m agentwire.bridges.telegram")
-
-    subprocess.run(["tmux", "new-session", "-d", "-s", session_name, "-c", str(source_dir)])
-    subprocess.run(["tmux", "send-keys", "-t", session_name, cmd, "Enter"])
-
-    print(f"Telegram bridge starting in tmux session '{session_name}'")
-    print(f"  Attach: tmux attach -t {session_name}")
-    return 0
-
-
-def cmd_telegram_serve(args) -> int:
-    """Run the Telegram bridge directly (foreground)."""
-    from .bridges.telegram import run_bridge
-    run_bridge()
-    return 0
-
-
-def cmd_telegram_stop(args) -> int:
-    """Stop the Telegram bridge."""
-    session_name = get_telegram_session_name()
-
-    if not tmux_session_exists(session_name):
-        print("Telegram bridge is not running.")
-        return 1
-
-    subprocess.run(["tmux", "kill-session", "-t", session_name])
-    print("Telegram bridge stopped.")
-    return 0
-
-
-def cmd_telegram_status(args) -> int:
-    """Check Telegram bridge status."""
-    json_mode = getattr(args, 'json', False)
-    session_name = get_telegram_session_name()
-
-    running = tmux_session_exists(session_name)
-
-    if json_mode:
-        _output_json({
-            "success": True,
-            "running": running,
-            "session": session_name if running else None,
-        })
-    else:
-        if running:
-            print(f"Telegram bridge is running in tmux session '{session_name}'")
-            print(f"  Attach: tmux attach -t {session_name}")
-        else:
-            print("Telegram bridge is not running.")
-            print("  Start: agentwire telegram start")
-
-    return 0 if running else 1
-
-
-def cmd_telegram_notify(args) -> int:
-    """Send a Telegram notification."""
-    from .channels.telegram import TelegramConfigError, send_telegram
-
-    body = args.body
-    if not body and not sys.stdin.isatty():
-        body = sys.stdin.read()
-
-    if not body:
-        print("Error: No message body. Use --body or pipe content.", file=sys.stderr)
-        return 1
-
-    chat_id = getattr(args, "chat_id", None)
-
-    try:
-        result = send_telegram(text=body, chat_id=chat_id)
-        if result.success:
-            if not getattr(args, "quiet", False):
-                print(f"Telegram message sent (id: {result.message_id})")
-            return 0
-        else:
-            print(f"Error: {result.error}", file=sys.stderr)
-            return 1
-    except TelegramConfigError as e:
-        print(f"Configuration error: {e}", file=sys.stderr)
-        return 1
-
-
-# === Discord Commands ===
-
-def get_discord_session_name() -> str:
-    """Get Discord bridge tmux session name from config."""
-    config = load_config()
-    return config.get("channels", {}).get("discord", {}).get("session_name", "agentwire-discord")
-
-
-def cmd_discord_start(args) -> int:
-    """Start the Discord bridge in tmux."""
-    session_name = get_discord_session_name()
-
-    if tmux_session_exists(session_name):
-        print(f"Discord bridge already running in tmux session '{session_name}'")
-        print("Attaching... (Ctrl+B D to detach)")
-        subprocess.run(["tmux", "attach-session", "-t", session_name])
-        return 0
-
-    source_dir = get_source_dir()
-    venv_python = source_dir / ".venv" / "bin" / "python"
-    if not venv_python.exists():
-        print(f"Error: Cannot find venv at {venv_python}", file=sys.stderr)
-        return 1
-
-    cmd = _bridge_tmux_cmd(source_dir, f'{venv_python} -c "from agentwire.channels.discord import run_bridge; run_bridge()"')
-
-    subprocess.run(["tmux", "new-session", "-d", "-s", session_name, "-c", str(source_dir)])
-    subprocess.run(["tmux", "send-keys", "-t", session_name, cmd, "Enter"])
-
-    print(f"Discord bridge starting in tmux session '{session_name}'")
-    print(f"  Attach: tmux attach -t {session_name}")
-    return 0
-
-
-def cmd_discord_serve(args) -> int:
-    """Run the Discord bridge directly (foreground)."""
-    from .channels.discord import run_bridge
-    run_bridge()
-    return 0
-
-
-def cmd_discord_stop(args) -> int:
-    """Stop the Discord bridge."""
-    session_name = get_discord_session_name()
-
-    if not tmux_session_exists(session_name):
-        print("Discord bridge is not running.")
-        return 1
-
-    subprocess.run(["tmux", "kill-session", "-t", session_name])
-    print("Discord bridge stopped.")
-    return 0
-
-
-def cmd_discord_status(args) -> int:
-    """Check Discord bridge status."""
-    json_mode = getattr(args, 'json', False)
-    session_name = get_discord_session_name()
-
-    running = tmux_session_exists(session_name)
-
-    if json_mode:
-        _output_json({
-            "success": True,
-            "running": running,
-            "session": session_name if running else None,
-        })
-    else:
-        if running:
-            print(f"Discord bridge is running in tmux session '{session_name}'")
-            print(f"  Attach: tmux attach -t {session_name}")
-        else:
-            print("Discord bridge is not running.")
-            print("  Start: agentwire discord start")
-
-    return 0 if running else 1
-
-
-# === Slack Commands ===
-
-def get_slack_session_name() -> str:
-    """Get Slack bridge tmux session name from config."""
-    config = load_config()
-    return config.get("channels", {}).get("slack", {}).get("session_name", "agentwire-slack")
-
-
-def cmd_slack_start(args) -> int:
-    """Start the Slack bridge in tmux."""
-    session_name = get_slack_session_name()
-
-    if tmux_session_exists(session_name):
-        print(f"Slack bridge already running in tmux session '{session_name}'")
-        print("Attaching... (Ctrl+B D to detach)")
-        subprocess.run(["tmux", "attach-session", "-t", session_name])
-        return 0
-
-    source_dir = get_source_dir()
-    venv_python = source_dir / ".venv" / "bin" / "python"
-    if not venv_python.exists():
-        print(f"Error: Cannot find venv at {venv_python}", file=sys.stderr)
-        return 1
-
-    cmd = _bridge_tmux_cmd(source_dir, f'{venv_python} -c "from agentwire.channels.slack import run_bridge; run_bridge()"')
-
-    subprocess.run(["tmux", "new-session", "-d", "-s", session_name, "-c", str(source_dir)])
-    subprocess.run(["tmux", "send-keys", "-t", session_name, cmd, "Enter"])
-
-    print(f"Slack bridge starting in tmux session '{session_name}'")
-    print(f"  Attach: tmux attach -t {session_name}")
-    return 0
-
-
-def cmd_slack_serve(args) -> int:
-    """Run the Slack bridge directly (foreground)."""
-    from .channels.slack import run_bridge
-    run_bridge()
-    return 0
-
-
-def cmd_slack_stop(args) -> int:
-    """Stop the Slack bridge."""
-    session_name = get_slack_session_name()
-
-    if not tmux_session_exists(session_name):
-        print("Slack bridge is not running.")
-        return 1
-
-    subprocess.run(["tmux", "kill-session", "-t", session_name])
-    print("Slack bridge stopped.")
-    return 0
-
-
-def cmd_slack_status(args) -> int:
-    """Check Slack bridge status."""
-    json_mode = getattr(args, 'json', False)
-    session_name = get_slack_session_name()
-
-    running = tmux_session_exists(session_name)
-
-    if json_mode:
-        _output_json({
-            "success": True,
-            "running": running,
-            "session": session_name if running else None,
-        })
-    else:
-        if running:
-            print(f"Slack bridge is running in tmux session '{session_name}'")
-            print(f"  Attach: tmux attach -t {session_name}")
-        else:
-            print("Slack bridge is not running.")
-            print("  Start: agentwire slack start")
-
-    return 0 if running else 1
-
-
 # === Say Command ===
 
 def _get_portal_url() -> str:
@@ -2471,64 +2198,6 @@ def cmd_say(args) -> int:
             return result
 
     return 0
-
-
-def _portal_broadcast(text: str, session: str, source: str) -> bool:
-    """Broadcast a message via portal WebSocket. Returns True if sent."""
-    try:
-        import ssl
-        import urllib.request
-        portal_url = _get_portal_url()
-        data = json.dumps({
-            "type": "alert",
-            "text": text,
-            "session": session,
-            "source": source,
-        }).encode()
-        req = urllib.request.Request(
-            f"{portal_url}/api/session/{session}/broadcast",
-            data=data,
-            headers={"Content-Type": "application/json"},
-        )
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-        urllib.request.urlopen(req, timeout=3, context=ssl_ctx)
-        return True
-    except Exception:
-        return False
-
-
-def cmd_reply(args) -> int:
-    """Reply to the channel user (Discord, Slack, Telegram) who messaged this session.
-
-    Broadcasts via portal WebSocket — channel bridges pick it up and deliver
-    the message back to the originating platform (Discord channel, Slack DM, etc.).
-
-    This is for channel sessions only. For worker→parent communication, use notify.
-
-    Examples:
-        agentwire reply "Here's what I found..."
-        agentwire reply "The weather tomorrow is sunny and 22°C"
-    """
-    text = " ".join(args.text) if args.text else ""
-
-    if not text:
-        print("Usage: agentwire reply <message>", file=sys.stderr)
-        return 1
-
-    current_session = pane_manager.get_current_session()
-    if not current_session:
-        print("Cannot determine current session", file=sys.stderr)
-        return 1
-
-    if _portal_broadcast(text, current_session, current_session):
-        if not getattr(args, 'quiet', False):
-            print(f"Reply sent.")
-        return 0
-    else:
-        print("Failed to send reply (portal not reachable?)", file=sys.stderr)
-        return 1
 
 
 def cmd_notify_parent(args) -> int:
@@ -6429,24 +6098,6 @@ def cmd_doctor(args) -> int:
             else:
                 print(f"     -> Service is remote, start it on {service_config.machine}")
 
-    # 8b. Check Telegram bridge
-    print("\nChecking Telegram bridge...")
-    telegram_session = get_telegram_session_name()
-    if tmux_session_exists(telegram_session):
-        print(f"  [ok] Telegram bridge: running in tmux session '{telegram_session}'")
-    else:
-        print(f"  [--] Telegram bridge: not running")
-    try:
-        from .channels.telegram import check_telegram_bot
-        healthy, info = check_telegram_bot()
-        if healthy:
-            print(f"  [ok] Telegram bot: {info}")
-        else:
-            print(f"  [!!] Telegram bot: {info}")
-            issues_found += 1
-    except Exception as e:
-        print(f"  [--] Telegram bot: not configured ({e})")
-
     # 9. Validate remote machines
     print("\nChecking remote machines...")
     remote_machines = {mid: m for mid, m in ctx.machines.items() if mid != ctx.local_machine_id}
@@ -8491,10 +8142,6 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                     if not json_mode:
                         print(f"  Warning: template error in post-command: {e}")
 
-        # Handle notifications
-        if task.output.notify:
-            _handle_task_notification(task.output.notify, ctx, session, json_mode)
-
         # Save output if configured
         if task.output.save:
             try:
@@ -8544,69 +8191,6 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
         print(f"\nTask {task.name}: {last_status}")
 
     return exit_code
-
-
-def _handle_task_notification(notify_config: str, ctx, session: str, json_mode: bool) -> None:
-    """Handle task notification based on config."""
-    from .templating import expand_all, expand_env_vars
-
-    if notify_config == "voice":
-        # Speak result
-        message = f"Task {ctx.task} {ctx.status}"
-        if ctx.summary:
-            message += f": {ctx.summary}"
-        subprocess.run(["agentwire", "say", "-s", session, message], capture_output=True)
-
-    elif notify_config == "alert":
-        # Send text notification to parent
-        message = f"Task {ctx.task} {ctx.status}"
-        if ctx.summary:
-            message += f": {ctx.summary}"
-        subprocess.run(["agentwire", "notify-parent", "--to", session, message], capture_output=True)
-
-    elif notify_config.startswith("webhook "):
-        # POST to webhook URL
-        url = expand_env_vars(notify_config[8:].strip())
-        payload = {
-            "task": ctx.task,
-            "session": ctx.session,
-            "status": ctx.status,
-            "summary": ctx.summary,
-            "timestamp": datetime.datetime.now().isoformat(),
-            "attempt": ctx.attempt,
-        }
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=10)
-        except Exception as e:
-            if not json_mode:
-                print(f"Warning: Webhook notification failed: {e}")
-
-    elif notify_config == "email":
-        # Send email with task result
-        subject = f"Task {ctx.task}: {ctx.status}"
-        body_lines = [f"**{ctx.task}** finished with status: **{ctx.status}**"]
-        if ctx.summary:
-            body_lines.append(f"\n{ctx.summary}")
-        body_lines.append(f"\nSession: {ctx.session}")
-        subprocess.run(
-            ["agentwire", "email", "--subject", subject, "--body", "\n".join(body_lines)],
-            capture_output=True,
-        )
-
-    elif notify_config.startswith("command "):
-        # Run custom command
-        cmd = notify_config[8:].strip()
-        try:
-            expanded = expand_all(cmd, ctx)
-            subprocess.run(expanded, shell=True, capture_output=True, timeout=30)
-        except Exception as e:
-            if not json_mode:
-                print(f"Warning: Notification command failed: {e}")
 
 
 def cmd_task_list(args) -> int:
@@ -10212,68 +9796,6 @@ def main() -> int:
     stt_status.add_argument("--json", action="store_true", help="Output JSON")
     stt_status.set_defaults(func=cmd_stt_status)
 
-    # === telegram command group ===
-    telegram_parser = subparsers.add_parser("telegram", help="Manage Telegram bridge")
-    telegram_subparsers = telegram_parser.add_subparsers(dest="telegram_command")
-
-    # telegram start
-    telegram_start = telegram_subparsers.add_parser("start", help="Start Telegram bridge in tmux")
-    telegram_start.set_defaults(func=cmd_telegram_start)
-
-    # telegram serve (foreground)
-    telegram_serve = telegram_subparsers.add_parser("serve", help="Run Telegram bridge in foreground")
-    telegram_serve.set_defaults(func=cmd_telegram_serve)
-
-    # telegram stop
-    telegram_stop = telegram_subparsers.add_parser("stop", help="Stop Telegram bridge")
-    telegram_stop.set_defaults(func=cmd_telegram_stop)
-
-    # telegram status
-    telegram_status = telegram_subparsers.add_parser("status", help="Check Telegram bridge status")
-    telegram_status.add_argument("--json", action="store_true", help="Output JSON")
-    telegram_status.set_defaults(func=cmd_telegram_status)
-
-    # telegram notify
-    telegram_notify = telegram_subparsers.add_parser("notify", help="Send a Telegram notification")
-    telegram_notify.add_argument("--body", "-b", type=str, help="Message body (or pipe via stdin)")
-    telegram_notify.add_argument("--chat-id", type=int, help="Target chat ID (default: first allowed user)")
-    telegram_notify.add_argument("-q", "--quiet", action="store_true", help="Suppress success output")
-    telegram_notify.set_defaults(func=cmd_telegram_notify)
-
-    # === discord command group ===
-    discord_parser = subparsers.add_parser("discord", help="Manage Discord bridge")
-    discord_subparsers = discord_parser.add_subparsers(dest="discord_command")
-
-    discord_start = discord_subparsers.add_parser("start", help="Start Discord bridge in tmux")
-    discord_start.set_defaults(func=cmd_discord_start)
-
-    discord_serve = discord_subparsers.add_parser("serve", help="Run Discord bridge in foreground")
-    discord_serve.set_defaults(func=cmd_discord_serve)
-
-    discord_stop = discord_subparsers.add_parser("stop", help="Stop Discord bridge")
-    discord_stop.set_defaults(func=cmd_discord_stop)
-
-    discord_status_cmd = discord_subparsers.add_parser("status", help="Check Discord bridge status")
-    discord_status_cmd.add_argument("--json", action="store_true", help="Output JSON")
-    discord_status_cmd.set_defaults(func=cmd_discord_status)
-
-    # === slack command group ===
-    slack_parser = subparsers.add_parser("slack", help="Manage Slack bridge")
-    slack_subparsers = slack_parser.add_subparsers(dest="slack_command")
-
-    slack_start = slack_subparsers.add_parser("start", help="Start Slack bridge in tmux")
-    slack_start.set_defaults(func=cmd_slack_start)
-
-    slack_serve = slack_subparsers.add_parser("serve", help="Run Slack bridge in foreground")
-    slack_serve.set_defaults(func=cmd_slack_serve)
-
-    slack_stop = slack_subparsers.add_parser("stop", help="Stop Slack bridge")
-    slack_stop.set_defaults(func=cmd_slack_stop)
-
-    slack_status_cmd = slack_subparsers.add_parser("status", help="Check Slack bridge status")
-    slack_status_cmd.add_argument("--json", action="store_true", help="Output JSON")
-    slack_status_cmd.set_defaults(func=cmd_slack_status)
-
     # === quo command ===
     from agentwire.channels.quo import cmd_quo
     quo_parser = subparsers.add_parser("quo", help="Send SMS via Quo (OpenPhone)")
@@ -10281,22 +9803,6 @@ def main() -> int:
     quo_parser.add_argument("--to", type=str, help="Recipient phone number (+E.164 format)")
     quo_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress success output")
     quo_parser.set_defaults(func=cmd_quo)
-
-    # === sms command ===
-    from agentwire.channels.sms import cmd_sms
-    sms_parser = subparsers.add_parser("sms", help="Send SMS via Twilio")
-    sms_parser.add_argument("--body", "-b", type=str, help="Message body (or pipe via stdin)")
-    sms_parser.add_argument("--to", type=str, help="Recipient phone number (+E.164 format)")
-    sms_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress success output")
-    sms_parser.set_defaults(func=cmd_sms)
-
-    # === webhook command ===
-    from agentwire.channels.webhook import cmd_webhook
-    webhook_parser = subparsers.add_parser("webhook", help="Send message via HTTP webhook")
-    webhook_parser.add_argument("--body", "-b", type=str, help="Message body (or pipe via stdin)")
-    webhook_parser.add_argument("--url", type=str, help="Target URL (overrides config)")
-    webhook_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress success output")
-    webhook_parser.set_defaults(func=cmd_webhook)
 
     # === tunnels command group ===
     tunnels_parser = subparsers.add_parser("tunnels", help="Manage SSH tunnels for service routing")
@@ -10332,12 +9838,6 @@ def main() -> int:
     say_parser.add_argument("--notify", type=str, metavar="SESSION", help="Also notify this session (sends message as input)")
     say_parser.add_argument("--no-auto-notify", action="store_true", help="Disable auto-notify to pane 0 when in worker pane")
     say_parser.set_defaults(func=cmd_say)
-
-    # === reply command ===
-    reply_parser = subparsers.add_parser("reply", help="Reply to channel user (Discord, Slack, Telegram)")
-    reply_parser.add_argument("text", nargs="*", help="Reply message")
-    reply_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
-    reply_parser.set_defaults(func=cmd_reply)
 
     # === notify command (worker→parent) ===
     notify_cmd_parser = subparsers.add_parser("notify-parent", help="Notify parent session (worker→orchestrator)")

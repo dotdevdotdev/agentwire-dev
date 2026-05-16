@@ -4,19 +4,6 @@ import { desktop } from '../desktop-manager.js';
 export const activityStates = new Map();
 export function isService(name) { return name.startsWith('agentwire-'); }
 
-const SOCIAL_PREFIXES = [
-    'discord-dm-', 'slack-dm-', 'telegram-dm-',
-    'discord-ch-', 'slack-ch-',
-];
-const SOCIAL_ROLES = ['discord-dm', 'slack-dm', 'telegram-dm'];
-
-export function isSocial(session) {
-    const name = session.name || '';
-    if (SOCIAL_PREFIXES.some(p => name.startsWith(p))) return true;
-    const roles = session.roles || [];
-    return roles.some(r => SOCIAL_ROLES.includes(r));
-}
-
 let allSessions = [];
 const listeners = new Set();
 
@@ -234,7 +221,7 @@ export const sessionsSection = {
     },
 
     _render(body) {
-        const work = allSessions.filter(s => !isService(s.name || '') && !isSocial(s));
+        const work = allSessions.filter(s => !isService(s.name || ''));
         let html = this._renderForm();
         if (!work.length && !this._formType) {
             html += '<div class="sidebar-empty">No sessions</div>';

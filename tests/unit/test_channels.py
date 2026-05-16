@@ -1,12 +1,7 @@
-"""Tests for agentwire/channels/ — registry, base classes, config, and channel modules."""
+"""Tests for agentwire/channels/ — registry, base classes, email, quo."""
 
-import asyncio
 import json
-import os
-import subprocess
-from dataclasses import dataclass
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -17,23 +12,14 @@ from agentwire.channels.base import (
     ChannelResult,
     NotificationError,
     SendOnlyChannel,
-    ServiceChannel,
-    _run_cmd,
-    _run_cmd_raw,
 )
-
-
-# =============================================================================
-# ChannelRegistry
-# =============================================================================
 
 
 class TestChannelRegistry:
     def test_builtin_channels_registered(self):
-        """All 7 built-in channels should be registered, exactly 7, no extras."""
+        """Only email + quo are registered after the inbound-channel gut."""
         channels = ChannelRegistry.all()
-        expected = {"email", "telegram", "quo", "sms", "webhook", "discord", "slack"}
-        assert set(channels.keys()) == expected
+        assert set(channels.keys()) == {"email", "quo"}
 
     def test_get_existing(self):
         cls = ChannelRegistry.get("email")
@@ -44,7 +30,6 @@ class TestChannelRegistry:
         assert ChannelRegistry.get("nonexistent_channel") is None
 
     def test_register_decorator(self):
-        """@register decorator should add class to registry."""
         @ChannelRegistry.register("_test_channel")
         class _TestChannel(SendOnlyChannel):
             name = "_test_channel"
@@ -56,18 +41,12 @@ class TestChannelRegistry:
         "module,cls_name,expected_name,expected_type,expected_config_key",
         [
             ("agentwire.channels.email", "EmailChannel", "email", "send_only", "email"),
-            ("agentwire.channels.telegram", "TelegramChannel", "telegram", "service", "telegram"),
             ("agentwire.channels.quo", "QuoChannel", "quo", "send_only", "quo"),
-            ("agentwire.channels.sms", "SMSChannel", "sms", "send_only", "sms"),
-            ("agentwire.channels.webhook", "WebhookChannel", "webhook", "send_only", "webhook"),
-            ("agentwire.channels.discord", "DiscordChannel", "discord", "service", "discord"),
-            ("agentwire.channels.slack", "SlackChannel", "slack", "service", "slack"),
         ],
     )
     def test_channel_class_metadata(
         self, module, cls_name, expected_name, expected_type, expected_config_key
     ):
-        """Each channel class declares correct name/type/config_key (single source of truth)."""
         import importlib
         cls = getattr(importlib.import_module(module), cls_name)
         assert cls.name == expected_name
@@ -75,95 +54,43 @@ class TestChannelRegistry:
         assert cls.config_key == expected_config_key
 
 
-# =============================================================================
-# ChannelRegistry.resolve_config
-# =============================================================================
-
-
 class TestResolveConfig:
-    def test_channels_path(self):
-        """channels.email: in YAML should be found."""
-        data = {"channels": {"email": {"api_key": "new-key", "from_address": "a@b.com"}}}
-        resolved = ChannelRegistry.resolve_config("email", data)
-        assert resolved["api_key"] == "new-key"
-        assert resolved["from_address"] == "a@b.com"
+    def test_resolve_existing(self):
+        data = {"channels": {"email": {"from_address": "x@y.com"}}}
+        cfg = ChannelRegistry.resolve_config("email", data)
+        assert cfg == {"from_address": "x@y.com"}
 
-    def test_empty_data(self):
-        resolved = ChannelRegistry.resolve_config("email", {})
-        assert resolved == {}
+    def test_resolve_unregistered_channel(self):
+        assert ChannelRegistry.resolve_config("nope", {"channels": {"nope": {}}}) == {}
 
-    def test_nonexistent_channel(self):
-        resolved = ChannelRegistry.resolve_config("nonexistent", {"channels": {"email": {}}})
-        assert resolved == {}
-
-    def test_channel_with_no_config_section(self):
-        """Registered channel with no channels.{name}: entry returns empty dict."""
-        data = {"channels": {"other": {"x": "y"}}}
-        resolved = ChannelRegistry.resolve_config("email", data)
-        assert resolved == {}
+    def test_resolve_missing_section(self):
+        assert ChannelRegistry.resolve_config("email", {}) == {}
 
 
-# =============================================================================
-# Config loading integration
-# =============================================================================
+class TestBaseChannel:
+    def test_channel_defaults(self):
+        ch = Channel()
+        assert ch.config is None
+        assert ch.name == ""
 
+    def test_sendonly_send_not_implemented(self):
+        ch = SendOnlyChannel()
+        import asyncio
+        with pytest.raises(NotImplementedError):
+            asyncio.run(ch.send("hi"))
 
-class TestConfigChannelLoading:
-    def test_channels_loaded_from_yaml(self, tmp_path):
-        """Config should load channel configs from channels: key."""
-        config_data = {
-            "server": {"port": 8765},
-            "channels": {
-                "email": {
-                    "api_key": "test-key",
-                    "from_address": "test@test.com",
-                    "default_to": "user@test.com",
-                },
-            },
-        }
-        config_path = tmp_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config_data, f)
+    def test_channel_result_defaults(self):
+        r = ChannelResult(success=True)
+        assert r.success is True
+        assert r.message_id is None
+        assert r.error is None
 
-        from agentwire.config import load_config
-        config = load_config(config_path)
-
-        assert "email" in config.channels
-        email_config = config.channels["email"]
-        assert email_config.api_key == "test-key"
-        assert email_config.from_address == "test@test.com"
-        assert email_config.default_to == "user@test.com"
-
-    def test_all_seven_channels_in_config(self, tmp_path):
-        """Even with no YAML config, all 7 channels should get default configs."""
-        config_path = tmp_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump({}, f)
-
-        from agentwire.config import load_config
-        config = load_config(config_path)
-
-        for name in ["email", "telegram", "quo", "sms", "webhook", "discord", "slack"]:
-            assert name in config.channels, f"Channel {name} missing from config.channels"
-
-    def test_channels_field_is_dict(self, tmp_path):
-        """config.channels should be a dict, not a dataclass."""
-        config_path = tmp_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump({}, f)
-
-        from agentwire.config import load_config
-        config = load_config(config_path)
-        assert isinstance(config.channels, dict)
-
-# =============================================================================
-# Email channel
-# =============================================================================
+    def test_notification_error_is_exception(self):
+        assert issubclass(NotificationError, Exception)
 
 
 class TestEmailChannel:
     def test_email_config_env_fallback(self, monkeypatch):
-        """EmailConfig should fall back to RESEND_API_KEY env var."""
         monkeypatch.setenv("RESEND_API_KEY", "env-key-123")
         from agentwire.channels.email import EmailConfig
         config = EmailConfig()
@@ -194,12 +121,10 @@ class TestEmailChannel:
         assert _markdown_to_html(html) == html
 
     def test_send_email_no_api_key(self, tmp_path, monkeypatch):
-        """send_email should raise EmailConfigError if no API key."""
         monkeypatch.delenv("RESEND_API_KEY", raising=False)
         config_data = {"channels": {"email": {"api_key": "", "from_address": "x@y.com"}}}
         config_path = tmp_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config_data, f)
+        config_path.write_text(yaml.safe_dump(config_data))
 
         from agentwire.config import load_config
         import agentwire.config as config_mod
@@ -219,9 +144,7 @@ class TestEmailChannel:
             ("a@x.com", "fallback@x.com", ["a@x.com"]),
             ("a@x.com, b@x.com ,c@x.com", "", ["a@x.com", "b@x.com", "c@x.com"]),
             (["a@x.com", "b@x.com"], "", ["a@x.com", "b@x.com"]),
-            # argparse --to a,b --to c produces ["a,b", "c"]; each entry splits on commas
             (["a@x.com,b@x.com", "c@x.com"], "", ["a@x.com", "b@x.com", "c@x.com"]),
-            # Dedupes while preserving order
             (["a@x.com", "b@x.com", "a@x.com"], "", ["a@x.com", "b@x.com"]),
             (None, "default@x.com", ["default@x.com"]),
             ("", "default@x.com", ["default@x.com"]),
@@ -234,54 +157,6 @@ class TestEmailChannel:
         assert _normalize_recipients(raw, default) == expected
 
 
-# =============================================================================
-# Telegram channel
-# =============================================================================
-
-
-class TestTelegramChannel:
-    def test_telegram_config_env_fallback(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_AGENTWIRE_BOT_TOKEN", "env-token")
-        from agentwire.channels.telegram import TelegramConfig
-        config = TelegramConfig()
-        assert config.bot_token == "env-token"
-
-    def test_telegram_config_defaults(self):
-        from agentwire.channels.telegram import TelegramConfig
-        # Don't rely on env state — test explicit defaults
-        config = TelegramConfig(bot_token="tok")
-        assert config.default_session == "main"
-        assert config.voice_replies is True
-        assert config.forward_questions is True
-        assert config.forward_alerts is True
-        assert config.session_name == "agentwire-telegram"
-        assert config.allowed_users == []
-
-    def test_telegram_result_dataclass(self):
-        from agentwire.channels.telegram import TelegramResult
-        r = TelegramResult(success=True, message_id=999)
-        assert r.success is True
-        assert r.message_id == 999
-
-    def test_get_telegram_config_no_token(self, monkeypatch, tmp_path):
-        """Should raise TelegramConfigError if no token anywhere."""
-        monkeypatch.delenv("TELEGRAM_AGENTWIRE_BOT_TOKEN", raising=False)
-        monkeypatch.delenv("TELEGRAM_USER_ID", raising=False)
-        # Mock load_dotenv to prevent it from loading real .env files
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
-        # Point HOME to tmp_path so config.yaml isn't found
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        from agentwire.channels.telegram import TelegramConfigError, _get_telegram_config
-        with pytest.raises(TelegramConfigError, match="No Telegram bot token"):
-            _get_telegram_config()
-
-
-# =============================================================================
-# Quo channel
-# =============================================================================
-
-
 class TestQuoChannel:
     def test_quo_config_env_fallback(self, monkeypatch):
         monkeypatch.setenv("QUO_API_KEY", "quo-key-123")
@@ -290,12 +165,11 @@ class TestQuoChannel:
         assert config.api_key == "quo-key-123"
 
     def test_quo_config_openphone_env_fallback(self, monkeypatch, tmp_path):
-        # Patch HOME to prevent load_dotenv from reading real ~/.agentwire/.env
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.delenv("QUO_API_KEY", raising=False)
         monkeypatch.setenv("OPENPHONE_API_KEY", "op-key-456")
         from agentwire.channels.quo import QuoConfig
-        config = QuoConfig(api_key="")  # Force empty to test env fallback
+        config = QuoConfig(api_key="")
         assert config.api_key == "op-key-456"
 
     def test_quo_config_defaults(self):
@@ -305,13 +179,11 @@ class TestQuoChannel:
         assert config.default_to == ""
 
     def test_send_quo_no_api_key(self, tmp_path, monkeypatch):
-        """Should raise QuoConfigError if no API key."""
         monkeypatch.delenv("QUO_API_KEY", raising=False)
         monkeypatch.delenv("OPENPHONE_API_KEY", raising=False)
         config_data = {"channels": {"quo": {"api_key": ""}}}
         config_path = tmp_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config_data, f)
+        config_path.write_text(yaml.safe_dump(config_data))
 
         from agentwire.config import load_config
         import agentwire.config as config_mod
@@ -326,314 +198,9 @@ class TestQuoChannel:
             config_mod._config = old
 
 
-# =============================================================================
-# SMS channel
-# =============================================================================
-
-
-class TestSMSChannel:
-    def test_sms_config_env_fallback(self, monkeypatch):
-        monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid-env")
-        monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok-env")
-        from agentwire.channels.sms import SMSConfig
-        config = SMSConfig()
-        assert config.account_sid == "sid-env"
-        assert config.auth_token == "tok-env"
-
-    def test_sms_no_twilio_installed(self):
-        """send_sms should return error if twilio not installed."""
-        from agentwire.channels.sms import send_sms
-        # twilio is likely not installed in test env — this tests the fallback
-        try:
-            import twilio
-            pytest.skip("twilio is installed, can't test missing dep path")
-        except ImportError:
-            pass
-
-        result = send_sms(body="test", to="+1234567890")
-        assert result.success is False
-        assert "not installed" in result.error.lower() or "twilio" in result.error.lower()
-
-
-# =============================================================================
-# Webhook channel
-# =============================================================================
-
-
-class TestWebhookChannel:
-    def test_webhook_config_defaults(self):
-        from agentwire.channels.webhook import WebhookConfig
-        config = WebhookConfig()
-        assert config.url == ""
-        assert config.method == "POST"
-        assert config.headers == {}
-        assert config.content_type == "application/json"
-
-    def test_send_webhook_no_url(self, tmp_path, monkeypatch):
-        """Should raise WebhookConfigError if no URL."""
-        config_data = {"channels": {"webhook": {"url": ""}}}
-        config_path = tmp_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config_data, f)
-
-        from agentwire.config import load_config
-        import agentwire.config as config_mod
-        config_mod._config_cache = None
-        config = load_config(config_path)
-        config_mod._config_cache = config
-
-        from agentwire.channels.webhook import WebhookConfigError, send_webhook
-        with pytest.raises(WebhookConfigError, match="No URL"):
-            send_webhook(text="test")
-
-        config_mod._config_cache = None
-
-
-# =============================================================================
-# Discord channel
-# =============================================================================
-
-
-class TestDiscordChannel:
-    def test_discord_config_env_fallback(self, monkeypatch):
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "disc-tok")
-        from agentwire.channels.discord import DiscordConfig
-        config = DiscordConfig()
-        assert config.bot_token == "disc-tok"
-
-    def test_discord_config_defaults(self):
-        from agentwire.channels.discord import DiscordConfig
-        config = DiscordConfig(bot_token="tok")
-        assert config.default_session == "agentwire"
-        assert config.voice_replies is True
-        assert config.session_name == "agentwire-discord"
-        assert config.allowed_user_ids == []
-
-# =============================================================================
-# Slack channel
-# =============================================================================
-
-
-class TestSlackChannel:
-    def test_slack_config_env_fallback(self, monkeypatch):
-        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-        monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
-        from agentwire.channels.slack import SlackConfig
-        config = SlackConfig()
-        assert config.bot_token == "xoxb-test"
-        assert config.app_token == "xapp-test"
-
-    def test_slack_config_defaults(self):
-        from agentwire.channels.slack import SlackConfig
-        config = SlackConfig(bot_token="tok", app_token="app")
-        assert config.default_session == "agentwire"
-        assert config.voice_replies is True
-        assert config.session_name == "agentwire-slack"
-        assert config.allowed_user_ids == []
-
-# =============================================================================
-# Base class
-# =============================================================================
-
-
-class TestBaseChannel:
-    def test_channel_init(self):
-        ch = Channel(config={"key": "val"})
-        assert ch.config == {"key": "val"}
-
-    def test_channel_init_no_config(self):
-        ch = Channel()
-        assert ch.config is None
-
-    def test_service_channel_not_implemented(self):
-        ch = ServiceChannel()
-        with pytest.raises(NotImplementedError):
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(ch.start())
-
-    def test_send_only_channel_not_implemented(self):
-        ch = SendOnlyChannel()
-        with pytest.raises(NotImplementedError):
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(ch.send("test"))
-
-    def test_service_channel_default_max_message_length(self):
-        ch = ServiceChannel()
-        assert ch.max_message_length == 2000
-
-    def test_truncate_output_short_text(self):
-        ch = ServiceChannel()
-        assert ch.truncate_output("hello") == "hello"
-
-    def test_truncate_output_long_text(self):
-        ch = ServiceChannel()
-        long_text = "x" * 3000
-        result = ch.truncate_output(long_text)
-        assert len(result) == 2000
-        # Should keep the tail
-        assert result == long_text[-2000:]
-
-    def test_truncate_output_exact_length(self):
-        ch = ServiceChannel()
-        exact = "x" * 2000
-        assert ch.truncate_output(exact) == exact
-
-    def test_discord_max_message_length(self):
-        from agentwire.channels.discord import DiscordChannel
-        assert DiscordChannel.max_message_length == 1800
-
-    def test_slack_max_message_length(self):
-        from agentwire.channels.slack import SlackChannel
-        assert SlackChannel.max_message_length == 2800
-
-    def test_discord_truncate_uses_own_limit(self):
-        from agentwire.channels.discord import DiscordChannel
-        ch = DiscordChannel()
-        result = ch.truncate_output("x" * 3000)
-        assert len(result) == 1800
-
-    def test_slack_truncate_uses_own_limit(self):
-        from agentwire.channels.slack import SlackChannel
-        ch = SlackChannel()
-        result = ch.truncate_output("x" * 5000)
-        assert len(result) == 2800
-
-
-class TestSharedSessionHelpers:
-    """Tests for shared session_exists, ensure_session, wait_for_session_ready."""
-
-    def test_session_exists_found(self):
-        from agentwire.channels.base import session_exists
-        with patch("agentwire.channels.base._run_cmd") as mock:
-            mock.return_value = {"success": True}
-            assert session_exists("test-session") is True
-            mock.assert_called_once_with(["info", "-s", "test-session"])
-
-    def test_session_exists_not_found(self):
-        from agentwire.channels.base import session_exists
-        with patch("agentwire.channels.base._run_cmd") as mock:
-            mock.return_value = {"success": False}
-            assert session_exists("missing") is False
-
-    def test_ensure_session_already_exists(self):
-        from agentwire.channels.base import ensure_session
-        with patch("agentwire.channels.base.session_exists", return_value=True):
-            assert ensure_session("existing") is True
-
-    def test_ensure_session_creates_new(self):
-        from agentwire.channels.base import ensure_session
-        with patch("agentwire.channels.base.session_exists", return_value=False):
-            with patch("agentwire.channels.base._run_cmd") as mock:
-                mock.return_value = {"success": True}
-                assert ensure_session("new-session", "/path/to/project") is True
-                mock.assert_called_once()
-                args = mock.call_args[0][0]
-                assert "new" in args
-                assert "-s" in args
-                assert "new-session" in args
-                assert "-p" in args
-
-    def test_queued_message_dataclass(self):
-        from agentwire.channels.base import QueuedMessage
-        msg = QueuedMessage(
-            platform_msg={"ts": "123"},
-            text="hello",
-            session="test",
-            project="/tmp",
-            prefix="[Test: 'hello']",
-        )
-        assert msg.text == "hello"
-        assert msg.session == "test"
-        assert msg.platform_msg == {"ts": "123"}
-
-
-# =============================================================================
-# Shared CLI runners
-# =============================================================================
-
-
-class TestCLIRunners:
-    def test_run_cmd_success(self):
-        """_run_cmd with a working command."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout='{"success": true, "data": "test"}',
-                stderr="",
-            )
-            result = _run_cmd(["list"])
-            assert result["success"] is True
-            assert result["data"] == "test"
-            # Verify --json was appended
-            call_args = mock_run.call_args[0][0]
-            assert "--json" in call_args
-
-    def test_run_cmd_timeout(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 30)):
-            result = _run_cmd(["list"])
-            assert result["success"] is False
-            assert "timed out" in result["error"].lower()
-
-    def test_run_cmd_raw(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="raw output here")
-            result = _run_cmd_raw(["output", "-s", "main"])
-            assert result == "raw output here"
-
-
-# =============================================================================
-# Notifications.py deleted — import should fail
-# =============================================================================
-
-
-class TestNotificationsDeleted:
-    def test_old_import_fails(self):
-        """from agentwire.notifications import ... should fail."""
-        with pytest.raises(ModuleNotFoundError):
-            from agentwire.notifications import send_email  # noqa: F401
-
-    def test_old_import_check_telegram_fails(self):
-        with pytest.raises(ModuleNotFoundError):
-            from agentwire.notifications import check_telegram_bot  # noqa: F401
-
-
-# =============================================================================
-# Import rewiring — new paths work
-# =============================================================================
-
-
-class TestImportRewiring:
-    def test_email_imports_from_channels(self):
-        from agentwire.channels.email import send_email, cmd_email, EmailConfigError
-        assert callable(send_email)
-        assert callable(cmd_email)
-
-    def test_telegram_imports_from_channels(self):
-        from agentwire.channels.telegram import (
-            send_telegram,
-            check_telegram_bot,
-            TelegramConfigError,
-        )
-        assert callable(send_telegram)
-        assert callable(check_telegram_bot)
-
-    def test_registry_from_init(self):
-        from agentwire.channels import ChannelRegistry, Channel, SendOnlyChannel, ServiceChannel
-        assert ChannelRegistry is not None
-        assert Channel is not None
-
-    def test_notification_error_from_channels(self):
-        from agentwire.channels import NotificationError
-        assert issubclass(NotificationError, Exception)
-
-
-# =============================================================================
-# Happy-path send tests (mocked external calls)
-# =============================================================================
-
-
 @pytest.fixture
 def _mock_config():
-    """Fixture to safely swap agentwire config for tests, with guaranteed cleanup."""
+    """Swap agentwire config for tests, restore on teardown."""
     import agentwire.config as config_mod
     from agentwire.config import load_config
 
@@ -652,7 +219,6 @@ def _mock_config():
 
 class TestSendEmailSuccess:
     def test_send_email_success(self, tmp_path, _mock_config):
-        """Email send with mocked resend API returns success."""
         _mock_config({"channels": {"email": {
             "api_key": "re_test_key",
             "from_address": "test@example.com",
@@ -671,7 +237,6 @@ class TestSendEmailSuccess:
         mock_resend.Emails.send.assert_called_once()
 
     def test_send_email_with_to_override(self, tmp_path, _mock_config):
-        """Email send with explicit to= overrides default_to."""
         _mock_config({"channels": {"email": {
             "api_key": "re_test_key",
             "from_address": "test@example.com",
@@ -685,41 +250,13 @@ class TestSendEmailSuccess:
             result = send_email(body="Hello", to="override@example.com")
 
         assert result.success is True
-        # Verify the override was used
         call_args = mock_resend.Emails.send.call_args[0][0]
         assert call_args["to"] == ["override@example.com"]
 
 
-class TestSendTelegramSuccess:
-    def test_send_telegram_success(self, tmp_path, _mock_config, monkeypatch):
-        """Telegram send with mocked urllib returns success."""
-        _mock_config({"channels": {"telegram": {
-            "bot_token": "bot123:ABC",
-            "allowed_users": [12345],
-        }}}, tmp_path)
-
-        from agentwire.channels.telegram import send_telegram
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({
-            "ok": True,
-            "result": {"message_id": 42}
-        }).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            result = send_telegram(text="Hello from test", chat_id=12345)
-
-        assert result.success is True
-        assert result.message_id == 42
-        assert result.error is None
-
-
 class TestSendQuoSuccess:
     def test_send_quo_success(self, tmp_path, _mock_config, monkeypatch):
-        """Quo SMS send with mocked urllib returns success."""
-        monkeypatch.setenv("HOME", str(tmp_path))  # Prevent dotenv from loading real keys
+        monkeypatch.setenv("HOME", str(tmp_path))
         _mock_config({"channels": {"quo": {
             "api_key": "test-quo-key",
             "from_number": "+15551234567",
@@ -742,955 +279,3 @@ class TestSendQuoSuccess:
         assert result.success is True
         assert result.message_id == "quo-msg-001"
         assert result.error is None
-
-
-class TestSendSMSSuccess:
-    def test_send_sms_success(self, tmp_path, _mock_config):
-        """SMS send with mocked Twilio client returns success."""
-        _mock_config({"channels": {"sms": {
-            "account_sid": "AC_test",
-            "auth_token": "test_token",
-            "from_number": "+15551234567",
-            "default_to": "+15559876543",
-        }}}, tmp_path)
-
-        from agentwire.channels.sms import send_sms
-
-        mock_msg = MagicMock()
-        mock_msg.sid = "SM1234567890"
-
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = mock_msg
-
-        with patch.dict("sys.modules", {"twilio": MagicMock(), "twilio.rest": MagicMock()}):
-            with patch("agentwire.channels.sms.send_sms") as mock_send:
-                # Since twilio import is dynamic, mock at the function level
-                mock_send.return_value = ChannelResult(success=True, message_id="SM1234567890")
-                result = mock_send(body="Test SMS")
-
-        assert result.success is True
-        assert result.message_id == "SM1234567890"
-
-    def test_send_sms_with_twilio_mock(self, tmp_path, _mock_config):
-        """SMS send using actual function with mocked twilio module."""
-        _mock_config({"channels": {"sms": {
-            "account_sid": "AC_test",
-            "auth_token": "auth_test",
-            "from_number": "+15551234567",
-            "default_to": "+15559876543",
-        }}}, tmp_path)
-
-        mock_msg = MagicMock()
-        mock_msg.sid = "SM_unit_test"
-        mock_client_instance = MagicMock()
-        mock_client_instance.messages.create.return_value = mock_msg
-        mock_client_class = MagicMock(return_value=mock_client_instance)
-
-        mock_twilio = MagicMock()
-        mock_twilio.rest.Client = mock_client_class
-
-        with patch.dict("sys.modules", {"twilio": mock_twilio, "twilio.rest": mock_twilio.rest}):
-            # Re-import to pick up mocked twilio
-            from agentwire.channels.sms import send_sms
-            result = send_sms(body="Twilio test")
-
-        assert result.success is True
-        assert result.message_id == "SM_unit_test"
-
-
-class TestSendWebhookSuccess:
-    def test_send_webhook_success(self, tmp_path, _mock_config):
-        """Webhook send with mocked urllib returns success."""
-        _mock_config({"channels": {"webhook": {
-            "url": "https://hooks.example.com/test",
-            "method": "POST",
-        }}}, tmp_path)
-
-        from agentwire.channels.webhook import send_webhook
-
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            result = send_webhook(text="Test webhook payload")
-
-        assert result.success is True
-        assert result.error is None
-
-    def test_send_webhook_with_extra(self, tmp_path, _mock_config):
-        """Webhook send merges extra data into payload."""
-        _mock_config({"channels": {"webhook": {
-            "url": "https://hooks.example.com/test",
-        }}}, tmp_path)
-
-        from agentwire.channels.webhook import send_webhook
-
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-            result = send_webhook(text="msg", extra={"channel": "#alerts"})
-
-        assert result.success is True
-        # Verify extra was included in payload
-        call_args = mock_urlopen.call_args
-        req = call_args[0][0]
-        payload = json.loads(req.data.decode())
-        assert payload["text"] == "msg"
-        assert payload["channel"] == "#alerts"
-
-    def test_send_webhook_server_error(self, tmp_path, _mock_config):
-        """Webhook returns failure for HTTP 500."""
-        _mock_config({"channels": {"webhook": {
-            "url": "https://hooks.example.com/test",
-        }}}, tmp_path)
-
-        from agentwire.channels.webhook import send_webhook
-
-        mock_resp = MagicMock()
-        mock_resp.status = 500
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            result = send_webhook(text="will fail")
-
-        assert result.success is False
-
-
-# =============================================================================
-# Composable session config hierarchy
-# =============================================================================
-
-
-class TestComposeSessionConfig:
-    """Tests for compose_session_config — platform → scope → specific."""
-
-    def test_platform_only(self):
-        from agentwire.channels.base import compose_session_config
-        t, r, i = compose_session_config(
-            platform={"type": "claude-bypass", "roles": ["agentwire"], "instructions": "Top level"},
-            scope={},
-            specific={},
-        )
-        assert t == "claude-bypass"
-        assert r == ["agentwire"]
-        assert i == "Top level"
-
-    def test_three_levels_append_instructions(self):
-        from agentwire.channels.base import compose_session_config
-        _, _, i = compose_session_config(
-            platform={"instructions": "Platform rule"},
-            scope={"instructions": "Scope rule"},
-            specific={"instructions": "Specific rule"},
-        )
-        # Joined with blank lines, in order
-        assert i == "Platform rule\n\nScope rule\n\nSpecific rule"
-
-    def test_three_levels_append_roles_deduped(self):
-        from agentwire.channels.base import compose_session_config
-        _, r, _ = compose_session_config(
-            platform={"roles": ["agentwire", "common"]},
-            scope={"roles": ["slack-dm", "common"]},      # "common" is dup
-            specific={"roles": ["expert", "agentwire"]},  # "agentwire" is dup
-        )
-        # Order preserved, dups removed
-        assert r == ["agentwire", "common", "slack-dm", "expert"]
-
-    def test_type_precedence_specific_wins(self):
-        from agentwire.channels.base import compose_session_config
-        t, _, _ = compose_session_config(
-            platform={"type": "claude-bypass"},
-            scope={"type": "claude-auto"},
-            specific={"type": "claude-auto"},
-        )
-        assert t == "claude-auto"
-
-    def test_type_precedence_scope_over_platform(self):
-        from agentwire.channels.base import compose_session_config
-        t, _, _ = compose_session_config(
-            platform={"type": "claude-bypass"},
-            scope={"type": "claude-auto"},
-            specific={},
-        )
-        assert t == "claude-auto"
-
-    def test_type_fallback_when_all_empty(self):
-        from agentwire.channels.base import compose_session_config
-        t, _, _ = compose_session_config(platform={}, scope={}, specific={})
-        assert t == "claude-bypass"
-
-    def test_type_custom_fallback(self):
-        from agentwire.channels.base import compose_session_config
-        t, _, _ = compose_session_config(
-            platform={}, scope={}, specific={}, fallback_type="claude-prompted",
-        )
-        assert t == "claude-prompted"
-
-    def test_empty_instructions_skipped(self):
-        from agentwire.channels.base import compose_session_config
-        _, _, i = compose_session_config(
-            platform={"instructions": "Only platform"},
-            scope={"instructions": ""},
-            specific={"instructions": "   "},  # whitespace only
-        )
-        assert i == "Only platform"
-
-    def test_missing_keys_tolerated(self):
-        from agentwire.channels.base import compose_session_config
-        # All three levels with no relevant keys
-        t, r, i = compose_session_config(
-            platform={"unrelated": "x"},
-            scope={"unrelated": "y"},
-            specific={},
-        )
-        assert t == "claude-bypass"
-        assert r == []
-        assert i == ""
-
-
-class TestInjectInstructions:
-    """Tests for inject_instructions — marker-block CLAUDE.md injection."""
-
-    def test_create_new_file(self, tmp_path):
-        from agentwire.channels.base import inject_instructions, INSTRUCTIONS_MARKER_BEGIN
-        claude = tmp_path / "CLAUDE.md"
-        inject_instructions(claude, "Be helpful.")
-        content = claude.read_text()
-        assert INSTRUCTIONS_MARKER_BEGIN in content
-        assert "Be helpful." in content
-
-    def test_empty_instructions_no_file(self, tmp_path):
-        from agentwire.channels.base import inject_instructions
-        claude = tmp_path / "CLAUDE.md"
-        inject_instructions(claude, "")
-        assert not claude.exists()
-
-    def test_prepend_to_existing_file(self, tmp_path):
-        from agentwire.channels.base import inject_instructions, INSTRUCTIONS_MARKER_BEGIN
-        claude = tmp_path / "CLAUDE.md"
-        claude.write_text("# My Project\n\nHuman notes here.\n")
-        inject_instructions(claude, "Auto instruction")
-        content = claude.read_text()
-        assert content.startswith(INSTRUCTIONS_MARKER_BEGIN)
-        assert "# My Project" in content
-        assert "Human notes here." in content
-        assert "Auto instruction" in content
-
-    def test_replace_existing_block(self, tmp_path):
-        from agentwire.channels.base import inject_instructions
-        claude = tmp_path / "CLAUDE.md"
-        inject_instructions(claude, "Original rules")
-        inject_instructions(claude, "Updated rules")
-        content = claude.read_text()
-        assert "Updated rules" in content
-        assert "Original rules" not in content
-
-    def test_remove_block_when_empty(self, tmp_path):
-        from agentwire.channels.base import inject_instructions, INSTRUCTIONS_MARKER_BEGIN
-        claude = tmp_path / "CLAUDE.md"
-        claude.write_text("# Header\n\nHuman stuff.\n")
-        inject_instructions(claude, "To be removed")
-        assert INSTRUCTIONS_MARKER_BEGIN in claude.read_text()
-        inject_instructions(claude, "")
-        content = claude.read_text()
-        assert INSTRUCTIONS_MARKER_BEGIN not in content
-        # Human content preserved
-        assert "# Header" in content
-        assert "Human stuff." in content
-
-    def test_preserves_human_edits_outside_block(self, tmp_path):
-        """Human edits above AND below the block must survive regeneration."""
-        from agentwire.channels.base import inject_instructions
-        claude = tmp_path / "CLAUDE.md"
-        claude.write_text("# Header\n\nBefore block.\n")
-        inject_instructions(claude, "Agent rules v1")
-        # Human adds text after the block
-        content = claude.read_text()
-        claude.write_text(content + "\n## After\n\nHuman footer.\n")
-        # Regenerate with new rules
-        inject_instructions(claude, "Agent rules v2")
-        final = claude.read_text()
-        assert "# Header" in final
-        assert "Before block." in final
-        assert "Agent rules v2" in final
-        assert "Agent rules v1" not in final
-        assert "## After" in final
-        assert "Human footer." in final
-
-    def test_empty_noop_when_no_file(self, tmp_path):
-        from agentwire.channels.base import inject_instructions
-        claude = tmp_path / "CLAUDE.md"
-        inject_instructions(claude, "")  # no file, no instructions
-        assert not claude.exists()
-
-
-class TestChannelErrorPaths:
-    """Network and HTTP error handling in send_* functions.
-
-    Covers the HTTPError/Exception fall-through branches in webhook and
-    quo. These were 0% covered — only happy-path send tests existed.
-    """
-
-    @pytest.fixture
-    def _set_config(self, tmp_path):
-        """Set agentwire config from a dict; restore on teardown."""
-        import agentwire.config as config_mod
-        from agentwire.config import load_config
-        original = config_mod._config
-
-        def _set(data):
-            (tmp_path / "config.yaml").write_text(yaml.safe_dump(data))
-            config_mod._config = load_config(tmp_path / "config.yaml")
-        yield _set
-        config_mod._config = original
-
-    def test_webhook_http_error(self, _set_config):
-        import urllib.error
-        _set_config({"channels": {"webhook": {"url": "https://h.example.com/x"}}})
-        from agentwire.channels.webhook import send_webhook
-
-        err = urllib.error.HTTPError(
-            url="https://h.example.com/x", code=503,
-            msg="Service Unavailable", hdrs=None, fp=None,
-        )
-        with patch("urllib.request.urlopen", side_effect=err):
-            result = send_webhook(text="msg")
-        assert result.success is False
-        assert "503" in result.error
-
-    def test_webhook_network_exception(self, _set_config):
-        _set_config({"channels": {"webhook": {"url": "https://h.example.com/x"}}})
-        from agentwire.channels.webhook import send_webhook
-
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("DNS fail")):
-            result = send_webhook(text="msg")
-        assert result.success is False
-        assert "DNS fail" in result.error
-
-    def test_quo_http_error(self, _set_config, monkeypatch, tmp_path):
-        import urllib.error
-        monkeypatch.setenv("HOME", str(tmp_path))  # block dotenv loading real keys
-        _set_config({"channels": {"quo": {
-            "api_key": "k", "from_number": "+15551112222", "default_to": "+15553334444",
-        }}})
-        from agentwire.channels.quo import send_quo_sms
-
-        err = urllib.error.HTTPError(
-            url="https://api.openphone.com/v1/messages", code=401,
-            msg="Unauthorized", hdrs=None, fp=None,
-        )
-        with patch("urllib.request.urlopen", side_effect=err):
-            result = send_quo_sms(body="hi")
-        assert result.success is False
-
-    def test_quo_generic_exception(self, _set_config, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        _set_config({"channels": {"quo": {
-            "api_key": "k", "from_number": "+15551112222", "default_to": "+15553334444",
-        }}})
-        from agentwire.channels.quo import send_quo_sms
-
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("read timeout")):
-            result = send_quo_sms(body="hi")
-        assert result.success is False
-        assert "timeout" in result.error.lower()
-
-
-class TestSlackComposeHierarchy:
-    """Tests for SlackBridge.compose_dm_config and compose_channel_config."""
-
-    def test_dm_uses_platform_and_dm_scope_defaults(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            default_instructions="Slack-wide rule",
-            dm_instructions="DM-specific rule",
-        )
-        bridge = SlackBridge(cfg)
-        t, r, i = bridge.compose_dm_config("U_new_user")
-        assert t == "claude-bypass"
-        assert "agentwire" in r
-        assert "slack-dm" in r
-        assert "Slack-wide rule" in i
-        assert "DM-specific rule" in i
-
-    def test_channel_uses_platform_and_channel_scope_defaults(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            default_instructions="Slack-wide rule",
-            channel_instructions="Channel-specific rule",
-        )
-        bridge = SlackBridge(cfg)
-        t, r, i = bridge.compose_channel_config("C_nomap")
-        assert "Slack-wide rule" in i
-        assert "Channel-specific rule" in i
-
-    def test_user_map_adds_specific_dm_instructions(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            default_instructions="Platform",
-            dm_instructions="DM",
-            user_map={"U123": {
-                "roles": ["admin"],
-                "instructions": "This user is the team lead.",
-            }},
-        )
-        bridge = SlackBridge(cfg)
-        t, r, i = bridge.compose_dm_config("U123")
-        assert "Platform" in i
-        assert "DM" in i
-        assert "team lead" in i
-        assert "admin" in r
-
-    def test_channel_map_adds_specific_channel_override(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            channel_map={"C456": {
-                "session": "backend",
-                "type": "claude-auto",
-                "roles": ["python-expert"],
-                "instructions": "Backend channel: Python focus.",
-            }},
-        )
-        bridge = SlackBridge(cfg)
-        t, r, i = bridge.compose_channel_config("C456")
-        assert t == "claude-auto"
-        assert "python-expert" in r
-        assert "Backend channel" in i
-
-    def test_user_map_does_not_affect_channel_compose(self):
-        """user_map is DM-only — channel compose must ignore it."""
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            user_map={"U123": {"instructions": "User-level rule"}},
-            channel_map={"C456": {"session": "s"}},
-        )
-        bridge = SlackBridge(cfg)
-        _, _, i = bridge.compose_channel_config("C456")
-        assert "User-level rule" not in i
-
-
-class TestDiscordComposeHierarchy:
-    """Tests for DiscordBridge.compose_dm_config and compose_channel_config."""
-
-    def test_dm_with_user_map_override(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        cfg = DiscordConfig(
-            bot_token="x",
-            default_instructions="Discord-wide",
-            dm_instructions="DM scope",
-            user_map={"999": {"instructions": "Known admin"}},
-        )
-        bridge = DiscordBridge(cfg)
-        t, r, i = bridge.compose_dm_config(999)
-        assert "Discord-wide" in i
-        assert "DM scope" in i
-        assert "Known admin" in i
-
-    def test_channel_with_channel_map_override(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        cfg = DiscordConfig(
-            bot_token="x",
-            channel_map={"1234": {
-                "session": "core",
-                "roles": ["reviewer"],
-                "instructions": "Review PRs here",
-            }},
-        )
-        bridge = DiscordBridge(cfg)
-        _, r, i = bridge.compose_channel_config(1234)
-        assert "reviewer" in r
-        assert "Review PRs here" in i
-
-    def test_default_behavior_empty_config(self):
-        """With no custom config, bridge produces sensible defaults: claude-bypass + core roles."""
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        cfg = DiscordConfig(bot_token="x")
-        bridge = DiscordBridge(cfg)
-        dm_t, dm_r, dm_i = bridge.compose_dm_config(123)
-        assert dm_t == "claude-bypass"
-        assert dm_r == ["agentwire", "discord-dm"]
-        assert dm_i == ""
-
-        ch_t, ch_r, ch_i = bridge.compose_channel_config(456)
-        assert ch_t == "claude-bypass"
-        assert ch_r == ["agentwire", "discord-dm"]
-        assert ch_i == ""
-
-
-# =============================================================================
-# Bridge channels — error paths (Discord, Slack)
-#
-# Phase 3f of #160 deferred discord/slack coverage. These tests target the
-# control flow that doesn't need a live discord.py / slack-bolt event loop:
-# state load/save, auth checks, mapping lookups, and outbound event handling.
-# =============================================================================
-
-
-class TestDiscordBridgeAuth:
-    """_is_allowed gate behaviour (DM whitelist)."""
-
-    def test_empty_whitelist_allows_anyone(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-        assert bridge._is_allowed(12345) is True
-
-    def test_whitelist_with_match(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x", allowed_user_ids=[111, 222]))
-        assert bridge._is_allowed(111) is True
-
-    def test_whitelist_blocks_nonmatch(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x", allowed_user_ids=[111, 222]))
-        assert bridge._is_allowed(999) is False
-
-
-class TestSlackBridgeAuth:
-    def test_empty_whitelist_allows_anyone(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        assert bridge._is_allowed("U_ANY") is True
-
-    def test_whitelist_with_match(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(
-            bot_token="x", app_token="y", allowed_user_ids=["U1", "U2"],
-        ))
-        assert bridge._is_allowed("U1") is True
-
-    def test_whitelist_blocks_nonmatch(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(
-            bot_token="x", app_token="y", allowed_user_ids=["U1"],
-        ))
-        assert bridge._is_allowed("U999") is False
-
-
-class TestBridgeMappingLookups:
-    """_get_channel_mapping / _get_user_mapping return None for unknown ids."""
-
-    def test_discord_channel_mapping_missing(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-        assert bridge._get_channel_mapping(404) is None
-
-    def test_discord_user_mapping_missing(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-        assert bridge._get_user_mapping(404) is None
-
-    def test_slack_channel_mapping_missing(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        assert bridge._get_channel_mapping("C_404") is None
-
-    def test_slack_user_mapping_missing(self):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        assert bridge._get_user_mapping("U_404") is None
-
-
-class TestBridgeStatePersistence:
-    """State load/save round-trips and resilience to corrupt files."""
-
-    def test_discord_state_corrupt_json_silently_recovered(self, tmp_path, monkeypatch):
-        # Point STATE_FILE at a corrupt file — bridge should not raise.
-        state_file = tmp_path / "discord-state.json"
-        state_file.write_text("{not valid json")
-        monkeypatch.setattr("agentwire.channels.discord.STATE_FILE", state_file)
-
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-        assert bridge.user_sessions == {}
-
-    def test_discord_state_missing_file_starts_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "agentwire.channels.discord.STATE_FILE", tmp_path / "no-state.json",
-        )
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-        assert bridge.user_sessions == {}
-
-    def test_discord_state_save_then_load(self, tmp_path, monkeypatch):
-        state_file = tmp_path / "discord-state.json"
-        monkeypatch.setattr("agentwire.channels.discord.STATE_FILE", state_file)
-
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-        bridge._set_dm_session(42, "discord-dm-42")
-        assert state_file.exists()
-        # Reload via a fresh bridge.
-        bridge2 = DiscordBridge(DiscordConfig(bot_token="x"))
-        assert bridge2.user_sessions == {42: "discord-dm-42"}
-
-    def test_slack_state_corrupt_json_silently_recovered(self, tmp_path, monkeypatch):
-        state_file = tmp_path / "slack-state.json"
-        state_file.write_text("garbage{")
-        monkeypatch.setattr("agentwire.channels.slack.STATE_FILE", state_file)
-
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        assert bridge.user_sessions == {}
-
-    def test_slack_state_save_then_load(self, tmp_path, monkeypatch):
-        state_file = tmp_path / "slack-state.json"
-        monkeypatch.setattr("agentwire.channels.slack.STATE_FILE", state_file)
-
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        bridge._set_dm_session("U_PERSIST", "slack-dm-persist")
-        bridge2 = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        assert bridge2.user_sessions == {"U_PERSIST": "slack-dm-persist"}
-
-
-class TestDiscordHandleWsEvent:
-    """DiscordBridge._handle_ws_event — outbound event routing.
-
-    Mocks the discord client object directly. No real bot loop needed.
-    """
-
-    @pytest.fixture
-    def bridge(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        return DiscordBridge(DiscordConfig(
-            bot_token="x", forward_questions=True, forward_alerts=True,
-            voice_replies=True,
-        ))
-
-    async def test_channel_target_not_found_returns_silently(self, bridge):
-        client = MagicMock()
-        client.get_channel.return_value = None
-        client.fetch_channel = AsyncMock(return_value=None)
-        # Should not raise, and should not call .send (no channel object).
-        await bridge._handle_ws_event(
-            client,
-            {"type": "alert", "text": "msg"},
-            target_type="channel", target_id=12345,
-        )
-
-    async def test_channel_alert_forwarded(self, bridge):
-        channel = MagicMock()
-        channel.name = "general"
-        channel.send = AsyncMock()
-        client = MagicMock()
-        client.get_channel.return_value = channel
-
-        await bridge._handle_ws_event(
-            client, {"type": "alert", "text": "fire"},
-            target_type="channel", target_id=999,
-        )
-        channel.send.assert_awaited_once_with("fire")
-
-    async def test_channel_question_forwarded(self, bridge):
-        channel = MagicMock()
-        channel.name = "general"
-        channel.send = AsyncMock()
-        client = MagicMock()
-        client.get_channel.return_value = channel
-
-        await bridge._handle_ws_event(
-            client, {"type": "question", "question": "Pick one?"},
-            target_type="channel", target_id=999,
-        )
-        channel.send.assert_awaited_once()
-        sent = channel.send.call_args.args[0]
-        assert "Pick one?" in sent
-
-    async def test_alert_suppressed_when_forward_alerts_disabled(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x", forward_alerts=False))
-        channel = MagicMock()
-        channel.send = AsyncMock()
-        client = MagicMock()
-        client.get_channel.return_value = channel
-
-        await bridge._handle_ws_event(
-            client, {"type": "alert", "text": "fire"},
-            target_type="channel", target_id=999,
-        )
-        channel.send.assert_not_called()
-
-    async def test_question_suppressed_when_forward_questions_disabled(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x", forward_questions=False))
-        channel = MagicMock()
-        channel.send = AsyncMock()
-        client = MagicMock()
-        client.get_channel.return_value = channel
-
-        await bridge._handle_ws_event(
-            client, {"type": "question", "question": "?"},
-            target_type="channel", target_id=999,
-        )
-        channel.send.assert_not_called()
-
-    async def test_dm_alert_forwarded(self, bridge):
-        user = MagicMock()
-        user.send = AsyncMock()
-        client = MagicMock()
-        client.fetch_user = AsyncMock(return_value=user)
-
-        await bridge._handle_ws_event(
-            client, {"type": "alert", "text": "ping"},
-            target_type="dm", target_id=42,
-        )
-        user.send.assert_awaited_once()
-
-    async def test_dm_audio_skipped_when_voice_replies_disabled(self):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x", voice_replies=False))
-        user = MagicMock()
-        user.send = AsyncMock()
-        client = MagicMock()
-        client.fetch_user = AsyncMock(return_value=user)
-
-        await bridge._handle_ws_event(
-            client, {"type": "audio", "audio": "AAAA"},
-            target_type="dm", target_id=42,
-        )
-        user.send.assert_not_called()
-
-    async def test_send_failure_swallowed(self, bridge):
-        """If channel.send() raises (e.g. permissions / rate limit),
-        the handler must not propagate — the bot needs to keep listening."""
-        channel = MagicMock()
-        channel.name = "general"
-        channel.send = AsyncMock(side_effect=RuntimeError("rate limited"))
-        client = MagicMock()
-        client.get_channel.return_value = channel
-
-        # Must not raise.
-        await bridge._handle_ws_event(
-            client, {"type": "alert", "text": "x"},
-            target_type="channel", target_id=999,
-        )
-
-    async def test_unknown_event_type_ignored(self, bridge):
-        channel = MagicMock()
-        channel.send = AsyncMock()
-        client = MagicMock()
-        client.get_channel.return_value = channel
-
-        await bridge._handle_ws_event(
-            client, {"type": "weather_report", "data": "sunny"},
-            target_type="channel", target_id=999,
-        )
-        channel.send.assert_not_called()
-
-
-class TestDiscordReactionCallbacks:
-    """The reaction callback set tolerates Discord API errors silently."""
-
-    async def test_clear_and_react_swallows_remove_failure(self):
-        from agentwire.channels.discord import _discord_reaction_callbacks
-        _, _, on_sent, _ = _discord_reaction_callbacks()
-
-        msg = MagicMock()
-        msg.guild = MagicMock()
-        msg.guild.me = MagicMock()
-        msg.remove_reaction = AsyncMock(side_effect=RuntimeError("forbidden"))
-        msg.add_reaction = AsyncMock()
-
-        # Must not raise.
-        await on_sent(msg)
-        msg.add_reaction.assert_awaited()
-
-    async def test_on_starting_swallows_remove_failure(self):
-        from agentwire.channels.discord import _discord_reaction_callbacks
-        _, on_starting, _, _ = _discord_reaction_callbacks()
-
-        msg = MagicMock()
-        msg.guild = MagicMock()
-        msg.guild.me = MagicMock()
-        msg.remove_reaction = AsyncMock(side_effect=RuntimeError("nope"))
-        msg.add_reaction = AsyncMock()
-
-        await on_starting(msg)
-        msg.add_reaction.assert_awaited()
-
-    async def test_on_queued_calls_add_reaction(self):
-        from agentwire.channels.discord import _discord_reaction_callbacks, EMOJI_QUEUED
-        on_queued, _, _, _ = _discord_reaction_callbacks()
-        msg = MagicMock()
-        msg.add_reaction = AsyncMock()
-        await on_queued(msg)
-        msg.add_reaction.assert_awaited_once_with(EMOJI_QUEUED)
-
-    async def test_dm_reaction_skips_remove_when_no_guild(self):
-        """DMs have no guild — the bot_user is None, so remove_reaction
-        should be skipped without erroring."""
-        from agentwire.channels.discord import _discord_reaction_callbacks
-        _, _, on_sent, _ = _discord_reaction_callbacks()
-
-        msg = MagicMock()
-        msg.guild = None
-        msg.add_reaction = AsyncMock()
-        msg.remove_reaction = AsyncMock()
-
-        await on_sent(msg)
-        msg.remove_reaction.assert_not_called()
-        msg.add_reaction.assert_awaited()
-
-
-class TestDiscordRunImportFailure:
-    """DiscordBridge.run() should fail gracefully without discord.py installed."""
-
-    async def test_missing_discord_py_logs_and_returns(self, capsys):
-        from agentwire.channels.discord import DiscordBridge, DiscordConfig
-        bridge = DiscordBridge(DiscordConfig(bot_token="x"))
-
-        # Force ImportError on `import discord` inside .run().
-        import builtins
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "discord":
-                raise ImportError("no module named discord")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=fake_import):
-            await bridge.run()  # Should return cleanly, not raise.
-
-        # The function prints an error to stderr — validate the user-visible cue.
-        captured = capsys.readouterr()
-        assert "discord.py not installed" in captured.err
-
-
-class TestSlackRunImportFailure:
-    """SlackBridge.run() must fail gracefully without slack-bolt installed."""
-
-    def test_missing_slack_bolt_logs_and_returns(self, capsys):
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-
-        import builtins
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "slack_bolt" or name.startswith("slack_bolt."):
-                raise ImportError(f"no module named {name}")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=fake_import):
-            bridge.run()  # Must return cleanly.
-
-        captured = capsys.readouterr()
-        assert "slack-bolt not installed" in captured.err
-
-
-class TestSlackBridgePathHelpers:
-    """SlackBridge path/session helpers — pure string composition."""
-
-    def test_get_dm_session_default_format(self, tmp_path, monkeypatch):
-        # Isolate state file so a previous test's saved session doesn't leak.
-        monkeypatch.setattr(
-            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
-        )
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        assert bridge._get_dm_session("U_ABC") == "slack-dm-U_ABC"
-
-    def test_get_dm_session_returns_persisted_override(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
-        )
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(bot_token="x", app_token="y"))
-        bridge._set_dm_session("U_ABC", "custom-session")
-        assert bridge._get_dm_session("U_ABC") == "custom-session"
-
-    def test_get_dm_project_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
-        )
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(
-            bot_token="x", app_token="y", channels_dir="/tmp/slack",
-        ))
-        assert bridge._get_dm_project("U_ABC") == "/tmp/slack/dm-U_ABC"
-
-    def test_get_channel_project_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "agentwire.channels.slack.STATE_FILE", tmp_path / "slack-state.json",
-        )
-        from agentwire.channels.slack import SlackBridge, SlackConfig
-        bridge = SlackBridge(SlackConfig(
-            bot_token="x", app_token="y", channels_dir="/tmp/slack",
-        ))
-        assert bridge._get_channel_project("C_XYZ") == "/tmp/slack/ch-C_XYZ"
-
-
-class TestSlackConfigNormalization:
-    """SlackConfig.__post_init__ normalizes channel_map / user_map shapes."""
-
-    def test_channel_map_string_shorthand(self):
-        from agentwire.channels.slack import SlackConfig, SlackChannelMapping
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            channel_map={"C123": "support"},
-        )
-        assert "C123" in cfg.channel_map
-        assert isinstance(cfg.channel_map["C123"], SlackChannelMapping)
-        assert cfg.channel_map["C123"].session == "slack-ch-support"
-
-    def test_channel_map_dict_with_session(self):
-        from agentwire.channels.slack import SlackConfig
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            channel_map={"C456": {"session": "explicit", "project": "/p"}},
-        )
-        m = cfg.channel_map["C456"]
-        assert m.session == "explicit"
-        assert m.project == "/p"
-
-    def test_user_map_dict_normalized(self):
-        from agentwire.channels.slack import SlackConfig, SlackUserMapping
-        cfg = SlackConfig(
-            bot_token="x", app_token="y",
-            user_map={"U999": {"type": "claude-auto", "roles": ["admin"]}},
-        )
-        m = cfg.user_map["U999"]
-        assert isinstance(m, SlackUserMapping)
-        assert m.type == "claude-auto"
-        assert m.roles == ["admin"]
-
-
-class TestDiscordConfigNormalization:
-    """DiscordConfig.__post_init__ normalizes channel_map / user_map shapes."""
-
-    def test_channel_map_string_shorthand(self):
-        from agentwire.channels.discord import DiscordConfig, ChannelMapping
-        cfg = DiscordConfig(
-            bot_token="x", channel_map={"123456": "general"},
-        )
-        m = cfg.channel_map["123456"]
-        assert isinstance(m, ChannelMapping)
-        assert m.session == "discord-ch-general"
-
-    def test_channel_map_id_coerced_to_string(self):
-        """Discord IDs from YAML may parse as int; channel_map keys must
-        always be strings to match runtime lookups."""
-        from agentwire.channels.discord import DiscordConfig
-        cfg = DiscordConfig(
-            bot_token="x", channel_map={123: {"session": "s"}},
-        )
-        assert "123" in cfg.channel_map
-        assert 123 not in cfg.channel_map
-
-    def test_user_map_id_coerced_to_string(self):
-        from agentwire.channels.discord import DiscordConfig
-        cfg = DiscordConfig(
-            bot_token="x", user_map={42: {"type": "claude-bypass"}},
-        )
-        assert "42" in cfg.user_map
-        assert 42 not in cfg.user_map
