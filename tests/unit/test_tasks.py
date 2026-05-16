@@ -77,7 +77,7 @@ class TestParseTaskConfig:
             },
             "on_task_end": "Save results.",
             "post": ["echo done"],
-            "output": {"capture": 100, "notify": "voice"},
+            "output": {"capture": 100, "save": "~/logs/full.log"},
         }
         task = parse_task_config("full", config)
         assert task.shell == "/bin/bash"
@@ -92,7 +92,7 @@ class TestParseTaskConfig:
         assert task.on_task_end == "Save results."
         assert task.post == ["echo done"]
         assert task.output.capture == 100
-        assert task.output.notify == "voice"
+        assert task.output.save == "~/logs/full.log"
 
     def test_shell_inheritance(self):
         task = parse_task_config("t", {"prompt": "go"}, default_shell="/bin/zsh")

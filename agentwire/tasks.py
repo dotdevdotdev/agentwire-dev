@@ -56,7 +56,6 @@ class OutputConfig:
 
     capture: int = 50  # Lines to capture from session
     save: str | None = None  # Path to save captured output (supports {{ }})
-    notify: str | None = None  # Notification method (voice, alert, webhook ${URL}, command "...")
 
 
 @dataclass
@@ -137,7 +136,7 @@ def parse_output_config(config: dict | None) -> OutputConfig:
     """Parse output configuration from dict.
 
     Args:
-        config: Dict with capture, save, notify keys
+        config: Dict with capture, save keys
 
     Returns:
         OutputConfig instance
@@ -148,7 +147,6 @@ def parse_output_config(config: dict | None) -> OutputConfig:
     return OutputConfig(
         capture=config.get("capture", 50),
         save=config.get("save"),
-        notify=config.get("notify"),
     )
 
 

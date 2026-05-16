@@ -48,10 +48,6 @@ stt = [
     "python-multipart>=0.0.6",
     "faster-whisper>=1.0.0",
 ]
-# Telegram bridge
-telegram = [
-    "aiogram>=3.20",
-]
 # TTS server dependencies (for GPU machines running the TTS backend)
 tts = [
     "fastapi>=0.104.0",

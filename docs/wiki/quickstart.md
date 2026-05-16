@@ -123,30 +123,27 @@ The scheduler runs the prompt headless in a fresh tmux session, captures the age
 
 ---
 
-## 5. Your first channel
+## 5. Outbound notifications
 
-The simplest bidirectional channel is **Telegram** — no app review, no domain setup, just a bot token.
+Channels are outbound-only — a session sends you an email or SMS without exposing any inbound surface. Two ship today: **email** (Resend) and **quo** (OpenPhone SMS).
 
-1. Talk to [@BotFather](https://t.me/botfather) on Telegram, run `/newbot`, save the token it gives you.
-2. Add to `~/.agentwire/config.yaml`:
+1. Add to `~/.agentwire/config.yaml`:
 
    ```yaml
    channels:
-     telegram:
-       bot_token: "123456:ABC..."   # from BotFather
-       allowed_user_ids: [12345678]  # your Telegram user ID; get it from @userinfobot
-       default_session: hello
+     email:
+       from_address: "you@example.com"   # verified Resend sender
+       default_to: "you@example.com"
+       # api_key falls back to RESEND_API_KEY env var
    ```
 
-3. Start the bridge:
+2. From a session, send yourself a note:
 
    ```bash
-   agentwire telegram start
+   agentwire email --subject "Task done" --body "Build green on main."
    ```
 
-4. Open Telegram, find your bot by name, send it a message. It routes to the `hello` session. The session's responses come back as Telegram messages; voice is converted to audio.
-
-Discord and Slack work the same way (composable session config — defaults + scope + per-channel overrides). → [Channels](communication/channels.md).
+That's it — the session can `agentwire email ...` or `agentwire quo ...` whenever it wants to escalate. Inbound user input flows through the portal (web + tunnel), not through a chat-app bridge. → [Channels](communication/channels.md).
 
 ---
 

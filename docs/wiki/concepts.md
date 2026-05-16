@@ -48,15 +48,13 @@ It also explains a lot of design choices in the wiki. Damage-control rules are s
 
 ---
 
-## How channels turn agents into bots
+## How channels turn agents into pushers
 
-Without channels, AgentWire is a developer tool: you `agentwire new`, you talk to the orchestrator, you watch panes. Channels invert the direction. Now an external platform — Discord, Slack, Telegram, email, SMS, a webhook URL — can address an agentwire session as if it were a chatbot, and the session can speak back through the same medium.
+Inbound interaction with AgentWire flows through the **portal** — the web UI + WebSocket. Channels handle the *other* direction: outbound notifications from a session to a human reachable somewhere off the wire. Today that means email (Resend) and SMS (Quo / OpenPhone).
 
-There are two flavors. **Send-only channels** (email, SMS, webhook, Quo) are stateless and outbound: a session calls `agentwire email --body ...` and that's it. **Service channels / bridges** (Discord, Slack, Telegram) are long-lived processes — usually their own tmux session — that hold a connection to the platform, route inbound messages to the right session, and forward outbound events (alerts, AskUserQuestion, voice) back out.
+The shape is dead simple. A channel is a `SendOnlyChannel` subclass with a `send()` coroutine, a YAML config slot, and a CLI wrapper. A session that wants to escalate runs `agentwire email --subject "..." --body "..."` or `agentwire quo --body "..."` and the channel module makes the API call. No background process, no inbound webhook, no public surface.
 
-The bridge half is the interesting half. A bridge subscribes to the portal's WebSocket for outbound events on the sessions it manages. When the agent emits an alert or a voice message or an AskUserQuestion, the bridge formats it for the platform (a Slack thread, a Discord message, a Telegram audio file) and posts it. When a user replies on the platform, the bridge calls `send_to_session()` and the agent continues the conversation. Composable session config (default → scope → specific) means a single Slack workspace can route every channel and every DM to a different session with a different role and different instructions, all via YAML.
-
-The takeaway: a channel is just an addressable transport between AgentWire sessions and the outside world. The agent doesn't know it's "in Slack" any more than it knows it's "in tmux" — it gets text in, produces text and tool calls, and the channel layer handles the medium.
+The takeaway: channels are stateless outbound notifications. Inbound user input is the portal's job. If you want a session to nudge you when it's done or stuck, you wire an `agentwire email` or `agentwire quo` call into the prompt — that's the whole pattern.
 
 → Detailed: [Channels](communication/channels.md).
 

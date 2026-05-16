@@ -14,7 +14,7 @@ A subtype of *channel* that runs as its own tmux service session and routes inbo
 
 ## C — Channel
 
-An integration that connects an external platform (email, SMS, Discord, Slack, Telegram, webhook, Quo) to agentwire sessions. Send-only channels are stateless; service channels (bridges) are long-lived. → [Channels](communication/channels.md).
+An outbound notification integration — a session pushes a message to an external platform (email via Resend, SMS via Quo / OpenPhone). Stateless `SendOnlyChannel` subclasses; no inbound surface. → [Channels](communication/channels.md).
 
 ## D — Damage Control
 

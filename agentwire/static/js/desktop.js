@@ -21,7 +21,6 @@ import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
 import { workflowsSection } from './sidebar/workflows-section.js';
 import { servicesSection } from './sidebar/services-section.js';
-import { socialsSection } from './sidebar/socials-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { openQuicktaskModal, isQuicktaskOpen } from './quicktask-modal.js';
 
@@ -59,7 +58,6 @@ async function init() {
         openQuicktaskModal();
     });
     sidebar.addSection('sessions', sessionsSection);
-    sidebar.addSection('socials', socialsSection);
     sidebar.addSection('services', servicesSection);
     sidebar.addSection('machines', machinesSection);
     sidebar.addSection('projects', projectsSection);

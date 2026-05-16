@@ -95,7 +95,6 @@ tasks:
     output:
       capture: 50                    # Lines to capture from session
       save: ~/logs/{{ task }}.log    # Save captured output here
-      notify: voice                  # voice | alert | webhook ${URL} | command "..."
 ```
 
 ---

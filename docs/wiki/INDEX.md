@@ -27,7 +27,7 @@ How AgentWire runs AI agents — session types, REPLs, and permission models.
 
 How sessions talk to humans and external platforms.
 
-- **[Channels](communication/channels.md)** — email, SMS, Discord, Slack, webhooks → sessions
+- **[Channels](communication/channels.md)** — outbound notifications (email, SMS) from sessions
 - **[Hammerspoon push-to-talk](communication/hammerspoon.md)** — global voice hotkeys on macOS
 - **[Conversation handoffs](communication/handoff.md)** — `/handoff` produces a portable bundle (LLM-targeted .md + human-targeted .html) for async teammate pickup
 
