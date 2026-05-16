@@ -440,13 +440,6 @@ body {
     color: #c084fc;
 }
 
-/* SDK session types — distinct teal, called out as the agentwire-native
-   harness vs. claude-* (orange/green/blue). */
-.sidebar-tag.sidebar-tag-sdk {
-    background: rgba(45, 212, 191, 0.18);
-    color: #5eead4;
-}
-
 .sidebar-status-dot {
     width: 8px;
     height: 8px;
