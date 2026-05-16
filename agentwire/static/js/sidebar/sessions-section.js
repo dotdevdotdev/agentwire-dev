@@ -2,7 +2,15 @@ import { desktop } from '../desktop-manager.js';
 
 // Shared state across sessions and services sections
 export const activityStates = new Map();
-export function isService(name) { return name.startsWith('agentwire-'); }
+
+const SERVICE_SESSIONS = new Set([
+    'agentwire-portal',
+    'agentwire-tts',
+    'agentwire-stt',
+    'agentwire-scheduler',
+    'agentwire-notifications',
+]);
+export function isService(name) { return SERVICE_SESSIONS.has(name); }
 
 let allSessions = [];
 const listeners = new Set();
@@ -20,8 +28,7 @@ export function renderCard(s) {
     const dotClass = activity === 'idle' ? 'dot-idle' : activity === 'processing' ? 'dot-processing' : activity === 'generating' ? 'dot-generating' : 'dot-playing';
     const tags = [];
     if (s.type) {
-        const typeClass = String(s.type).startsWith('sdk-') ? 'sidebar-tag sidebar-tag-sdk' : 'sidebar-tag';
-        tags.push(`<span class="${typeClass}">${s.type}</span>`);
+        tags.push(`<span class="sidebar-tag">${s.type}</span>`);
     }
     if (machine) tags.push(`<span class="sidebar-tag">@${machine}</span>`);
     const roles = (s.roles || []).map(r => `<span class="sidebar-tag sidebar-tag-role">${r}</span>`).join('');
