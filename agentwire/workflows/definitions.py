@@ -8,7 +8,7 @@ are validated here (cycle detection) and executed by the runner.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -153,23 +153,6 @@ def _find_cycle(nodes: list[ActionNode]) -> list[str] | None:
             if result:
                 return result
     return None
-
-
-def apply_runner_override(
-    workflow: WorkflowDef,
-    runner: str | None,
-) -> WorkflowDef:
-    """Return a copy of `workflow` with every node's `runner` set to `runner`.
-
-    Pass-through when `runner is None`. Uses `dataclasses.replace` to avoid
-    mutating the input — `discover_workflows()` hands out cached instances,
-    and an in-place mutation would poison subsequent invocations in the
-    same process.
-    """
-    if runner is None:
-        return workflow
-    new_nodes = [replace(n, runner=runner) for n in workflow.nodes]
-    return replace(workflow, nodes=new_nodes)
 
 
 def topological_sort(nodes: list[ActionNode]) -> list[ActionNode]:

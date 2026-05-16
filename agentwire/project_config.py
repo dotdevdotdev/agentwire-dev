@@ -21,9 +21,6 @@ class SessionType(str, Enum):
     CLAUDE_RESTRICTED = "claude-restricted"  # Claude with only say allowed
     # Pi coding agent session types (`pi-zai`, `pi-deepseek`, `pi-<provider>[-restricted|-readonly]`)
     # are handled dynamically by `_missing_` below — no explicit members needed.
-    SDK_BYPASS = "sdk-bypass"          # Agentwire REPL (claude-agent-sdk), bypass permissions
-    SDK_PROMPTED = "sdk-prompted"      # Agentwire REPL, ask before each tool call
-    SDK_RESTRICTED = "sdk-restricted"  # Agentwire REPL, plan / read-only
     # Universal types (agent-agnostic, map to agent-specific types)
     STANDARD = "standard"  # Full automation -> claude-bypass
     WORKER = "worker"      # Worker pane -> claude-restricted
@@ -33,7 +30,7 @@ class SessionType(str, Enum):
     def _missing_(cls, value: object) -> "SessionType | None":
         """Handle dynamic pi-<provider> types not enumerated at definition time.
 
-        Only `pi-*` is dynamic — the claude-* and sdk-* families are closed sets,
+        Only `pi-*` is dynamic — the claude-* family is a closed set,
         so unknown variants there should fail loudly rather than silently round-trip.
         """
         if isinstance(value, str) and value.startswith("pi-"):
@@ -77,7 +74,6 @@ def normalize_session_type(session_type: str, agent_type: str) -> str:
     if (
         session_type.startswith("claude-")
         or session_type.startswith("pi-")
-        or session_type.startswith("sdk-")
         or session_type == "bare"
     ):
         return session_type

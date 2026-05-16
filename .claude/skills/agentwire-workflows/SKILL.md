@@ -5,7 +5,7 @@ description: Pi workflow engine — YAML-defined DAGs of pi invocations chained 
 
 # Pi workflow engine — quick reference
 
-Workflows live in `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user). Each node runs against one of two backends via `runner:` — `pi` (subprocess per node, default) or `anthropic` (`claude-agent-sdk` in-process, subscription auth). Both return the same `NodeResult` shape. See `docs/wiki/scheduling/workflows.md` → "Runners" for the full per-runner field table; quick reference below is pi-focused.
+Workflows live in `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user). Each node runs against `pi` — a subprocess invocation of `pi -p --mode json` against the configured provider (default Z.AI / GLM-5.1). For Anthropic-quality scheduled work, use a `claude-bypass` tmux session via `.agentwire.yml` + scheduler, not the workflow engine.
 
 ## Minimum viable YAML
 
@@ -28,16 +28,15 @@ nodes:
 - **Retries** — `retries: N` (default 0), `retry_delay: S` (default 10). Triggered on status in `{failure, timeout}` only. Template/extraction errors never retry.
 - **on_error** (after retries exhausted) — `fail` (halt) | `continue` (downstream gets `None` outputs, workflow → partial) | `branch` (requires `on_error_goto`; skip normal dependents, rescue target).
 - **Skipping** — `when:` false OR upstream skipped/branched → node is `skipped`; dependents propagated unless rescued by a branch `on_error_goto`.
-- **Tools (pi)** — subset of `{read, bash, edit, write, grep, find, ls}`. Default `[read, bash, edit, write]`. Empty list → `--no-tools`.
-- **Thinking (pi)** — `off | minimal | low | medium | high | xhigh`. Default `medium`. Use `off` for flash-tier cheap nodes.
-- **Anthropic runner** — uses `model` (required, e.g. `claude-opus-4-7`), `effort` (low|medium|high|max|xhigh), `thinking_config` (dict), CamelCase tools (`Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `WebFetch`, `WebSearch`). See `docs/wiki/scheduling/workflows.md` → Runners for the full table.
+- **Tools** — subset of `{read, bash, edit, write, grep, find, ls}`. Default `[read, bash, edit, write]`. Empty list → `--no-tools`.
+- **Thinking** — `off | minimal | low | medium | high | xhigh`. Default `medium`. Use `off` for flash-tier cheap nodes.
 
 ## CLI
 
 ```bash
 agentwire workflow list [--json]
 agentwire workflow validate <name-or-path>
-agentwire workflow run <name> [--input KEY=VAL]... [--input-file FILE] [--runner pi|anthropic] [--dry-run] [--verbose] [--json]
+agentwire workflow run <name> [--input KEY=VAL]... [--input-file FILE] [--dry-run] [--verbose] [--json]
 agentwire workflow history [--workflow NAME] [--limit N] [--json]
 agentwire workflow show <run-id> [--events] [--node ID] [--json]
 ```

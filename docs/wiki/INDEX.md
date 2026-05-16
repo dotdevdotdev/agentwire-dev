@@ -15,7 +15,6 @@ New to AgentWire? Start here:
 5. **[README](../../README.md)** — what AgentWire is, full install matrix, feature list
 6. **[CLAUDE.md](../../CLAUDE.md)** — agent-facing project guide
 7. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
-8. **[REPL walkthrough](sessions/repl-tui.md)** — the Textual TUI for interactive sessions
 
 ## Sessions
 
@@ -23,7 +22,6 @@ How AgentWire runs AI agents — session types, REPLs, and permission models.
 
 - **[claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — Auto mode session type with classifier safety net
 - **[pi](sessions/pi.md)** — Pi coding agent (multi-provider: zai, deepseek, openai, openrouter, …)
-- **[REPL TUI](sessions/repl-tui.md)** — Textual REPL walkthrough — slash commands, shortcuts, theming, `--view fanout`
 
 ## Communication
 

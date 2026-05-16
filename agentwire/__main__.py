@@ -225,38 +225,6 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
             env=env,
         )
 
-    # === Agentwire REPL (claude-agent-sdk) ===
-    # sdk-bypass / sdk-prompted / sdk-restricted — Python REPL running in a
-    # tmux pane, auth via Claude subscription.
-    if session_type.startswith("sdk-"):
-        # Permission mode maps to SDK's permission_mode parameter
-        mode_map = {
-            "sdk-bypass": "bypass",
-            "sdk-prompted": "prompted",
-            "sdk-restricted": "restricted",
-        }
-        mode = mode_map.get(session_type, "bypass")
-
-        parts = ["agentwire", "repl", "--mode", mode]
-        if model:
-            parts.extend(["--model", model])
-
-        # Role-based system prompt (same temp-file pattern as claude-* / pi-*
-        # to avoid shell escaping on multiline content; --append-system-prompt
-        # must be last).
-        temp_file = None
-        if merged and merged.instructions:
-            f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-            f.write(merged.instructions)
-            f.close()
-            temp_file = f.name
-            parts.append(f'--append-system-prompt "$(<{temp_file})"')
-
-        return AgentCommand(
-            command=" ".join(parts),
-            temp_file=temp_file,
-        )
-
     # === Claude Code ===
     if session_type.startswith("claude"):
         parts = ["claude"]
@@ -3416,31 +3384,6 @@ def cmd_list(args) -> int:
         print()
 
     return 0
-
-
-def cmd_repl(args) -> int:
-    """Agentwire REPL — interactive harness built on claude-agent-sdk.
-
-    Invoked by build_agent_command when a session is spawned with --type sdk-*.
-    Interactive mode auto-persists every turn under
-    `~/.agentwire/sessions/repl/<session-name>/`; `--resume NAME` continues a
-    prior session by reusing its sdk_session_id.
-    """
-    from agentwire.repl.app import run_repl
-    return run_repl(
-        mode=args.mode,
-        model=args.model,
-        print_prompt=args.print,
-        system_prompt=args.append_system_prompt,
-        session_name=getattr(args, "session_name", None),
-        resume=getattr(args, "resume", None),
-        roles=getattr(args, "roles", None),
-        view=getattr(args, "view", "chat"),
-        cols=getattr(args, "cols", 3),
-        col_models=getattr(args, "col_models", None),
-        col_efforts=getattr(args, "col_efforts", None),
-        col_roles=getattr(args, "col_roles", None),
-    )
 
 
 def cmd_new(args) -> int:
@@ -10502,61 +10445,6 @@ def main() -> int:
     list_parser.add_argument("--sessions", action="store_true", help="Show sessions instead of panes")
     list_parser.set_defaults(func=cmd_list)
 
-    # === new command (top-level) ===
-    # === repl command (top-level, internal — invoked by build_agent_command) ===
-    # Users spawn it via `agentwire new -s <name> --type sdk-bypass`; this is
-    # the process that runs inside the tmux pane.
-    repl_parser = subparsers.add_parser(
-        "repl",
-        help="Agentwire REPL (internal — runs inside tmux pane for sdk-* session types)",
-    )
-    repl_parser.add_argument(
-        "--mode", choices=["bypass", "prompted", "restricted"], default="bypass",
-        help="Permission mode (bypass=run tools without asking, prompted=ask, restricted=read-only)",
-    )
-    repl_parser.add_argument("--model", default=None, help="Model override (default: claude-opus-4-7)")
-    repl_parser.add_argument(
-        "-p", "--print", dest="print", default=None, metavar="PROMPT",
-        help="One-shot mode: run PROMPT, emit output, exit (no interactive loop)",
-    )
-    repl_parser.add_argument(
-        "--append-system-prompt", dest="append_system_prompt", default=None, metavar="TEXT",
-        help="Additional system prompt content (appended after base prompt)",
-    )
-    repl_parser.add_argument(
-        "--session-name", dest="session_name", default=None, metavar="NAME",
-        help="Transcript directory name under ~/.agentwire/sessions/repl/ (default: auto-generated timestamp+hash)",
-    )
-    repl_parser.add_argument(
-        "--resume", dest="resume", default=None, metavar="NAME",
-        help="Resume the saved session NAME (reuses its sdk_session_id to continue the prior conversation)",
-    )
-    repl_parser.add_argument(
-        "--role", dest="roles", action="append", metavar="NAME",
-        help="Role name to compose into the system prompt (repeatable). Overrides .agentwire.yml roles.",
-    )
-    repl_parser.add_argument(
-        "--view", choices=["chat", "fanout"], default="chat",
-        help="UI view: 'chat' (default, single conversation) or 'fanout' (N parallel columns).",
-    )
-    repl_parser.add_argument(
-        "--cols", type=int, default=3, metavar="N",
-        help="Column count for --view fanout (2-6, default 3).",
-    )
-    repl_parser.add_argument(
-        "--col-model", dest="col_models", action="append", metavar="N=MODEL",
-        help="Per-column model override for --view fanout (e.g. --col-model 0=claude-opus-4-7 --col-model 1=claude-sonnet-4-6). Repeatable.",
-    )
-    repl_parser.add_argument(
-        "--col-effort", dest="col_efforts", action="append", metavar="N=EFFORT",
-        help="Per-column effort override for --view fanout (e.g. --col-effort 0=max --col-effort 1=high). Repeatable.",
-    )
-    repl_parser.add_argument(
-        "--col-role", dest="col_roles", action="append", metavar="N=ROLE[,ROLE...]",
-        help="Per-column role override for --view fanout (e.g. --col-role 0=skeptic --col-role 1=optimist,explainer). Repeatable.",
-    )
-    repl_parser.set_defaults(func=cmd_repl)
-
     new_parser = subparsers.add_parser("new", help="Create new Claude Code session")
     new_parser.add_argument("-s", "--session", required=True, help="Session name (project, project/branch, or project/branch@machine)")
     new_parser.add_argument("-p", "--path", help="Working directory (default: ~/projects/<name>)")
@@ -10707,10 +10595,6 @@ def main() -> int:
     wf_run.add_argument(
         "--input-file", metavar="PATH",
         help="JSON file with inputs (object mapping name → value)"
-    )
-    wf_run.add_argument(
-        "--runner", choices=["pi", "anthropic"], default=None,
-        help="Override runner for every node in this run (YAML declarations ignored)."
     )
     wf_run.add_argument("--dry-run", action="store_true", help="Print plan without running")
     wf_run.add_argument("--verbose", "-v", action="store_true", help="Verbose output")

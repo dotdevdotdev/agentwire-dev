@@ -68,7 +68,7 @@ There's frequent confusion about when to reach for **`agentwire ensure`** (sched
 
 **Ensure tasks** answer: "How do I run a Claude Code session, headless, on a schedule, with branch management and PR creation?" The whole machinery — tmux session, pre-commands, prompt templating, summary file, on_task_end, post-commands, lock — exists because you want a *Claude Code session that mostly does its thing* and reports back. Use this when the work needs MCP tools, Claude's reasoning quality, or git plumbing wired in. Nightly tests, lint cleanup, doc rewrites, refactor passes — all ensure-shaped.
 
-**Workflows** answer: "How do I chain N small reliable nodes with retries, conditional branches, and outputs flowing between them?" Each node runs against pi (cheap, fast, Z.AI-backed) or anthropic-runner (Claude SDK in-process). No tmux, no session, no Claude Code. Use this when each step has clear inputs/outputs and you'd rather pay for retries than pray a giant prompt does the right thing. Web research pipelines, doc-drift checks, daily briefings — workflow-shaped.
+**Workflows** answer: "How do I chain N small reliable nodes with retries, conditional branches, and outputs flowing between them?" Each node runs against pi (cheap, fast, Z.AI-backed). No tmux, no session, no Claude Code. Use this when each step has clear inputs/outputs and you'd rather pay for retries than pray a giant prompt does the right thing. Web research pipelines, doc-drift checks, daily briefings — workflow-shaped.
 
 **The overnight queue** answers a different question entirely: "How do I run *judgment-heavy* work that I can't express as a recurring YAML?" The premise is that autonomous agents fail on judgment-heavy work because they lack the micro-decisions humans make. The overnight queue front-loads all human judgment into interactive preparation time (5–30 minutes per task in the evening), captures the prepared session's Claude conversation context, and dispatches the prepared sessions overnight. You wake up to a stack of draft PRs that contain decisions you'd have made yourself, but didn't have to stay up to make.
 
@@ -88,7 +88,7 @@ A practical decision shortcut:
 
 You now have the mental model. Pick a path:
 
-- **Run something today**: `agentwire new -s test` and follow the [REPL walkthrough](sessions/repl-tui.md), or pick a session type from the [sessions index](INDEX.md#sessions).
+- **Run something today**: `agentwire new -s test` and pick a session type from the [sessions index](INDEX.md#sessions).
 - **Define a recurring task**: [Scheduled workloads](scheduling/scheduled-workloads.md).
 - **Wire a channel**: [Channels](communication/channels.md).
 - **Need a term defined**: [Glossary](glossary.md).
