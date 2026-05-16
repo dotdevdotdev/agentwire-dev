@@ -46,7 +46,10 @@ export const schedulerSection = {
             body.innerHTML = '<div class="sidebar-empty">Scheduler not running</div>';
             return;
         }
-        const { running, current_task, tasks, uptime } = this._state;
+        const { current_task, tasks, uptime } = this._state;
+        // Tolerate both shapes: HTTP /live sends `running: true`; older WS
+        // events only had `status: "running"`.
+        const running = this._state.running ?? (this._state.status === 'running');
         const statusDot = running ? 'dot-online' : 'dot-offline';
         const statusText = running ? 'Running' : 'Stopped';
 
