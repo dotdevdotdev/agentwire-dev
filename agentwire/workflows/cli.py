@@ -18,7 +18,6 @@ from typing import Any, Callable
 
 from agentwire.workflows import storage
 from agentwire.workflows.definitions import (
-    apply_runner_override,
     discover_workflows,
     resolve_workflow,
 )
@@ -175,8 +174,6 @@ def cmd_workflow_run(args) -> int:
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-
-    workflow = apply_runner_override(workflow, getattr(args, "runner", None))
 
     errors = workflow.validate()
     if errors:

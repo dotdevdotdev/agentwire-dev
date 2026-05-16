@@ -307,19 +307,6 @@ class TestValidateTaskPayload:
         )
         assert any("not found" in e for e in errors)
 
-    @pytest.mark.parametrize("session_type", [
-        "sdk-bypass", "sdk-prompted", "sdk-restricted",
-    ])
-    def test_sdk_session_types_validate(self, session_type):
-        # Phase 5: scheduled tasks accept the new SDK REPL session types.
-        from agentwire.scheduler import _validate_task_payload
-        errors = _validate_task_payload(
-            "t",
-            self._task(type=session_type),
-        )
-        assert errors == [], f"sdk type {session_type} should pass: {errors}"
-
-
 class TestWorkflowStatusMapping:
     @pytest.mark.parametrize("wf_status,sched_status", [
         ("success", "complete"),

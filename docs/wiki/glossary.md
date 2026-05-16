@@ -76,13 +76,9 @@ A reusable system-prompt persona stored at `~/.agentwire/roles/<name>.md`. Liste
 
 An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `at:`, `after:`). Sets exactly one of `task:` (delegates to `agentwire ensure`) or `workflow:` (delegates to the workflow engine in-process). → [Scheduled workloads](scheduling/scheduled-workloads.md).
 
-## S — SDK Session
-
-Sessions of type `sdk-bypass` / `sdk-prompted` / `sdk-restricted`. They run inside the `agentwire/sdk/` package (a thin wrapper around `claude-agent-sdk`) and surface as the `agentwire repl` Textual TUI. → [REPL TUI walkthrough](sessions/repl-tui.md).
-
 ## S — Session
 
-A tmux session running an AI agent (claude-*, claudeglm-*, pi-*, sdk-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
+A tmux session running an AI agent (claude-*, claudeglm-*, pi-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
 
 ## T — Tunnel
 
@@ -98,4 +94,4 @@ An agent in a pane 1+ of a session, spawned by the orchestrator (typically via t
 
 ## W — Workflow
 
-A YAML file under `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user) describing a DAG of nodes. Each node runs against the `pi` runner or the `anthropic` runner; nodes flow templated outputs to dependents. Run with `agentwire workflow run <name>`. → [Pi workflows](scheduling/workflows.md).
+A YAML file under `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user) describing a DAG of nodes. Each node runs against the `pi` runner; nodes flow templated outputs to dependents. Run with `agentwire workflow run <name>`. → [Pi workflows](scheduling/workflows.md).

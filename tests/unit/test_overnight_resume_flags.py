@@ -35,20 +35,6 @@ class TestClaudeTypes:
         assert _inject_resume_flags(cmd, "claude-bypass", "") == cmd
 
 
-class TestSdkTypes:
-    @pytest.mark.parametrize("sdk_type", ["sdk-bypass", "sdk-prompted", "sdk-restricted"])
-    def test_sdk_passthrough_even_with_resume_id(self, sdk_type):
-        # SDK has its own --resume NAME convention; the claude UUID isn't usable.
-        cmd = "agentwire repl --mode bypass --model claude-opus-4-7"
-        out = _inject_resume_flags(cmd, sdk_type, "abc123")
-        assert out == cmd
-        assert "--fork-session" not in out
-
-    def test_sdk_with_no_resume_id_passthrough(self):
-        cmd = "agentwire repl --mode bypass"
-        assert _inject_resume_flags(cmd, "sdk-bypass", "") == cmd
-
-
 class TestPiTypes:
     @pytest.mark.parametrize(
         "pi_type",

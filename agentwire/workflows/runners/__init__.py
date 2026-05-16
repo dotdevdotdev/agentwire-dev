@@ -3,8 +3,6 @@
 Each runner implements `NodeRunner` — it takes an ActionNode and returns a
 NodeResult. The workflow DAG executor resolves the runner per node via
 `get_runner(node.runner)`, so the engine itself stays runner-agnostic.
-
-Phase 6 introduces `anthropic` alongside `pi`. New runners register here.
 """
 
 from __future__ import annotations
@@ -53,15 +51,6 @@ def available_runners() -> list[str]:
 def _register_builtins() -> None:
     from agentwire.workflows.runners.pi import PiRunner
     register_runner(PiRunner())
-    try:
-        from agentwire.workflows.runners.anthropic import AnthropicRunner
-        register_runner(AnthropicRunner())
-    except Exception:
-        # claude-agent-sdk optional at import time — validation still flags
-        # `runner: anthropic` as unknown if the runner isn't registered.
-        pass
-    from agentwire.workflows.runners.human_gate import HumanGateRunner
-    register_runner(HumanGateRunner())
 
 
 _register_builtins()

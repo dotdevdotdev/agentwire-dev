@@ -35,15 +35,15 @@ inputs:                              # CLI-supplied variables, optional
 
 nodes:                               # at least one required
   analyze:
-    runner: pi                       # pi | anthropic (default: pi). See "Runners" below.
+    runner: pi                       # only `pi` is supported
     prompt: |                        # Jinja2 template — required
       Look at {{ inputs.target }}. Return JSON: {"issues": [...]}
     # provider + model are optional — default to zai + glm-5.1
     # set explicitly only when you need a different model/provider
-    model: glm-5.1                   # default: glm-5.1 (pi); anthropic needs e.g. claude-opus-4-7
-    provider: zai                    # default: zai (pi-only)
-    tools: [read, grep]              # pi: lowercase {read, bash, edit, write, grep, find, ls}
-    thinking: "low"                  # pi: off|minimal|low|medium|high|xhigh
+    model: glm-5.1                   # default: glm-5.1
+    provider: zai                    # default: zai
+    tools: [read, grep]              # pi tools (lowercase): {read, bash, edit, write, grep, find, ls}
+    thinking: "low"                  # off|minimal|low|medium|high|xhigh
     timeout: 300                     # seconds per attempt (default 300)
     retries: 2                       # extra attempts on failure|timeout (default 0)
     retry_delay: 10                  # seconds between attempts (default 10)
@@ -67,65 +67,11 @@ Bundled examples live in `agentwire/workflows/examples/` and are always discover
 
 ---
 
-## Runners
+## Runner
 
-Each node runs against one of two backends, selected per-node via `runner:`. Both runners return the same `NodeResult` shape — the rest of the workflow engine (DAG, templating, outputs, retries, `on_error`, scheduler hookup) is identical.
+All nodes run against `pi` — a subprocess invocation of `pi -p --mode json` against the configured provider (default Z.AI / GLM-5.1). Pi tool names are lowercase: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`. Thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Flash-tier (`glm-4.7-flash`) is free.
 
-| Runner | Default model | Process model | Tool namespace | When to pick |
-|---|---|---|---|---|
-| `pi` (default) | `glm-5.1` on Z.AI | Subprocess per node (`pi -p --mode json`) | lowercase: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Cheap, fast, deterministic for one-shot extraction/transform nodes. Flash-tier (`glm-4.7-flash`) is free. |
-| `anthropic` | (none — required) | In-process via `claude-agent-sdk`, subscription auth | CamelCase: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `WebFetch`, `WebSearch` | Quality-sensitive reasoning, Claude's richer toolset, anywhere the pi subprocess overhead dominates. Events stream live under `--verbose`. |
-
-### Anthropic-only fields
-
-| Field | Values | Notes |
-|---|---|---|
-| `model` | `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5`, … | Required. No default. |
-| `effort` | `low`, `medium`, `high`, `max`, `xhigh` | `max` = Opus-only. `xhigh` = Opus 4.7-only. Not valid on Haiku 4.5 or Sonnet 4.5. |
-| `thinking_config` | `{type: adaptive}` (recommended), `{type: disabled}`, `{type: enabled, budget_tokens: N}` | `enabled` removed on 4.6/4.7 — use `adaptive` + `effort`. |
-| `task_budget_tokens` | int ≥ 20000 | Opus 4.7 only. Beta. |
-| `max_thinking_tokens`, `max_budget_usd` | int / float | Passed through to the SDK. |
-
-Pi ignores these; setting them on a pi node is a parse-time validation error.
-
-### Pi-only fields
-
-| Field | Values | Notes |
-|---|---|---|
-| `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | String. Default `medium`. Use `off` for flash-tier cheap nodes. |
-| `provider` | `zai` (default) | Leave default unless routing through a different Z.AI deployment. |
-
-Anthropic uses `thinking_config` (dict) instead; the pi string `thinking:` field is simply ignored when `runner: anthropic`. No auto-translation — if you switch a node from pi to anthropic, rewrite the thinking field too.
-
-### `--runner` override
-
-To run an entire workflow on the other runner without editing YAML:
-
-```bash
-# Force every node to anthropic (YAML declarations ignored)
-agentwire workflow run daily-book-report --runner anthropic
-
-# Or force to pi
-agentwire workflow run claude-tool-use --runner pi
-```
-
-Override applies to **every node** in the workflow. Field/runner mismatches surface as normal validation errors — e.g. overriding an anthropic workflow to pi rejects any `effort:`, `task_budget_tokens:`, or `thinking_config:` fields. Fix the YAML or pick a different override.
-
-This is the canary / A-B flag: "run the same workflow on both runners, see which wins." Past runs record which runner executed them — `agentwire workflow show <run-id>` prints a `Runner:` line, and `workflow history` has a `runner` column — so comparing outcomes after the fact is direct.
-
-### Live event output (`--verbose`)
-
-`agentwire workflow run … -v` streams a one-line summary per event as nodes execute. Anthropic nodes emit live tool calls, tool results, text fragments, token counts, and agent-end timings:
-
-```
-[summarize] → tool_use Read file_path='README.md'
-[summarize] ← tool_result (ok) # AgentWire - Voice interface for…
-[summarize] ▓ AgentWire is a voice interface for AI coding agents…
-[summarize] ✓ turn 1342+187 tok
-[summarize] ■ agent_end 4.2s
-```
-
-Pi nodes are silent under `--verbose` (pi parses stdout after the subprocess exits — retrofitting live streaming is deferred).
+For Anthropic-quality scheduled work, use a `claude-bypass` tmux session via `.agentwire.yml` + scheduler — not the workflow engine.
 
 ---
 
@@ -154,19 +100,15 @@ Pattern for a research workflow node:
 ```yaml
 nodes:
   research_and_send:
-    runner: anthropic
-    model: claude-opus-4-7
-    effort: high
-    thinking_config: { type: adaptive }
-    tools: [Bash, Write]     # NO WebSearch/WebFetch
+    runner: pi
+    model: glm-5.1
+    tools: [bash, write]
     prompt: |
       Run 5-7 queries via `agentwire brave "..." --count 5` to cover your
       topics. Compose from the compact output. Fetch specific URLs with
       `curl -sL | python3 -c "strip html"` only if Brave's description
       field is too thin.
 ```
-
-The pattern is deliberately runner-agnostic — pi workflows can call `agentwire brave` through their `bash` tool identically.
 
 ---
 
@@ -208,7 +150,6 @@ agentwire workflow run my-workflow
 agentwire workflow run my-workflow --input target=src/api.ts
 agentwire workflow run my-workflow --input target=src/api.ts --input verbose=true
 agentwire workflow run my-workflow --input-file inputs.json
-agentwire workflow run my-workflow --runner anthropic   # override runner for every node
 agentwire workflow run my-workflow --dry-run            # plan only, no pi calls
 agentwire workflow run my-workflow --verbose            # show plan + live events
 agentwire workflow run my-workflow --json               # structured result

@@ -33,16 +33,12 @@ dependencies = [
     "mcp>=1.2.0",
     "resend>=2.0.0",
     "markdown>=3.5",
-    "claude-agent-sdk>=0.1.0",
-    "rich>=13.0",
-    "textual>=0.80",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23.0",
-    "pytest-textual-snapshot>=1.0.0",
     "ruff>=0.1.0",
 ]
 # STT server dependencies (faster-whisper for speech-to-text)
@@ -168,12 +164,10 @@ norecursedirs = ["tests/snapshot/apps"]
 # Default: skip snapshot tests in the main run. Snapshots leave asyncio
 # state polluted in a way that breaks subsequent tests when interleaved.
 # Run them separately via `pytest tests/snapshot/ -m snapshots`.
-addopts = "-m 'not snapshots'"
 markers = [
     "slow: marks tests as slow",
     "integration: requires subprocess mocking",
     "e2e: end-to-end portal tests",
-    "snapshots: textual SVG snapshot tests (opt-in; run via `pytest -m snapshots`)",
 ]
 asyncio_mode = "auto"
 

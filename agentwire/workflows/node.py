@@ -1,8 +1,8 @@
 """Workflow node dataclasses.
 
-ActionNode represents a single runner invocation — pi or anthropic.
-OutputSpec declares how to extract named variables from a node's result
-for use in downstream node templates.
+ActionNode represents a single runner invocation (pi). OutputSpec declares
+how to extract named variables from a node's result for use in downstream
+node templates.
 """
 
 from __future__ import annotations
@@ -46,32 +46,21 @@ class OutputSpec:
 
 @dataclass
 class ActionNode:
-    """A single runner invocation in a workflow (pi or anthropic)."""
+    """A single runner invocation in a workflow (pi)."""
 
     id: str
     prompt: str
 
-    # Which runner executes this node. Defaults to pi, the original Phase 2 runner.
-    # Set to "anthropic" to route through claude-agent-sdk instead.
+    # Which runner executes this node. Only `pi` is supported.
     runner: str = "pi"
 
     provider: str = "zai"
     model: str = "glm-5.1"
-    # Empty list → each runner applies its own default (pi: DEFAULT_TOOLS;
-    # anthropic: no allowlist, which the SDK treats as "all tools available").
+    # Empty list → pi applies DEFAULT_TOOLS.
     tools: list[str] = field(default_factory=list)
 
     # pi's thinking string: off|minimal|low|medium|high|xhigh.
-    # Anthropic runner ignores this and uses thinking_config instead.
     thinking: str = "medium"
-
-    # Anthropic-runner settings — optional, strictly validated against
-    # runners/anthropic_capabilities.py when runner == "anthropic".
-    thinking_config: dict | None = None          # {type: adaptive|enabled|disabled, ...}
-    effort: str | None = None                    # low|medium|high|max|xhigh
-    max_thinking_tokens: int | None = None
-    max_budget_usd: float | None = None
-    task_budget_tokens: int | None = None        # Opus 4.7 only, min 20000
 
     # Declared for YAML forward-compat; runner MVP does not use these yet.
     depends_on: list[str] = field(default_factory=list)
@@ -110,7 +99,7 @@ class ActionNode:
                 f"node[{self.id}].runner={self.runner!r} not in {valid_runners}"
             )
 
-        # Runner-specific validation.
+        # Runner-specific validation (pi is the only runner).
         if self.runner == "pi":
             if self.thinking not in VALID_THINKING:
                 errors.append(
@@ -122,24 +111,6 @@ class ActionNode:
                     f"node[{self.id}].tools contains invalid: {bad_tools} "
                     f"(pi valid: {sorted(VALID_PI_TOOLS)})"
                 )
-            # Anthropic-only fields must not be set on pi nodes.
-            for fname in ("effort", "max_thinking_tokens", "max_budget_usd", "task_budget_tokens", "thinking_config"):
-                if getattr(self, fname) is not None:
-                    errors.append(
-                        f"node[{self.id}].{fname} is only valid when runner=anthropic"
-                    )
-        elif self.runner == "anthropic":
-            from agentwire.sdk.capabilities import (
-                validate_node_settings,
-            )
-            errors.extend(validate_node_settings(
-                model=self.model,
-                tools=self.tools if self.tools else None,
-                effort=self.effort,
-                task_budget_tokens=self.task_budget_tokens,
-                thinking=self.thinking_config,
-                node_id=self.id,
-            ))
 
         if self.on_error not in ("fail", "continue", "branch"):
             errors.append(

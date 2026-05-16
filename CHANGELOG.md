@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Anthropic SDK surface** — entire `agentwire/sdk/` package, `agentwire/repl/` (Textual REPL), `agentwire/workflows/runners/{anthropic,human_gate}.py`, `sdk-bypass` / `sdk-prompted` / `sdk-restricted` session types, `sdk-watch` portal window + sidebar section, `--runner` workflow CLI override, and the `claude-agent-sdk` dependency. Anthropic moved Agent SDK + `claude -p` usage out of the monthly subscription tier on 2026-05-13 (now API-billed); the in-tree consumers were too expensive to keep running. The `pi` workflow runner is now the only runner. For Anthropic-quality scheduled work, use a `claude-bypass` tmux session via `.agentwire.yml` + scheduler. Mission [#184](https://github.com/dotdevdotdev/agentwire-dev/issues/184). Findings captured in `~/.agentwire/wiki/` (anthropic-agent-sdk, anthropic-runner-findings, textual-repl-retrospective, workflow-runner-choice, claude-code-print-mode).
+
 ### Added
 
 - **Shareable conversation handoffs** — `agentwire handoff` produces two artifacts from one conversation: `ai-handoff.md` (XML-tagged markdown a teammate can paste into another LLM) and `show-the-story.html` (single-file presentation with tabs and scroll-slides) — issue [#157](https://github.com/dotdevdotdev/agentwire-dev/issues/157)

@@ -17,8 +17,6 @@ import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
 import { machinesSection } from './sidebar/machines-section.js';
 import { sessionsSection } from './sidebar/sessions-section.js';
-import { sdkSessionsSection } from './sidebar/sdk-sessions-section.js';
-import { SdkWatchWindow } from './windows/sdk-watch-window.js';
 import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
 import { workflowsSection } from './sidebar/workflows-section.js';
@@ -30,7 +28,6 @@ import { openQuicktaskModal, isQuicktaskOpen } from './quicktask-modal.js';
 // State - track open windows
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
 const artifactWindows = new Map();  // artifactId -> ArtifactWindow instance
-const sdkWatchWindows = new Map(); // sdkSessionName -> SdkWatchWindow instance
 
 // Global PTT state
 let globalPttState = 'idle';  // idle | recording | processing
@@ -62,7 +59,6 @@ async function init() {
         openQuicktaskModal();
     });
     sidebar.addSection('sessions', sessionsSection);
-    sidebar.addSection('sdk-sessions', sdkSessionsSection);
     sidebar.addSection('socials', socialsSection);
     sidebar.addSection('services', servicesSection);
     sidebar.addSection('machines', machinesSection);
@@ -494,48 +490,7 @@ let taskbarDragoverBound = false;
 let restoringTaskbar = false;
 
 function _lookupWindowInstance(id) {
-    return sessionWindows.get(id) || artifactWindows.get(id) || sdkWatchWindows.get(id) || null;
-}
-
-/**
- * Open a watch window for a saved SDK REPL session.
- *
- * Tails ~/.agentwire/sessions/repl/<name>/transcript.jsonl over WS and
- * renders text/thinking/tool_use/tool_result events the way the Textual
- * REPL does. Read-only.
- */
-export function openSdkWatchWindow(sessionName) {
-    const id = `sdk-watch-${sessionName}`;
-    if (sdkWatchWindows.has(id)) {
-        const existing = sdkWatchWindows.get(id);
-        if (existing.isMinimized) {
-            if (!desktop.isTiled(id)) desktop.minimizeAllExcept(id);
-            existing.restore();
-        } else {
-            existing.focus();
-        }
-        return;
-    }
-    desktop.minimizeAllExcept(null);
-    const w = new SdkWatchWindow({
-        session: sessionName,
-        windowId: id,
-        root: elements.desktopArea,
-        onClose: () => {
-            sdkWatchWindows.delete(id);
-            removeTaskbarButton(id);
-            unrecordTaskbarEntry(id);
-        },
-        onFocus: () => {
-            updateTaskbarActive(id);
-            desktop.setActiveWindow(id);
-            saveTaskbarState();
-        },
-    });
-    w.open();
-    sdkWatchWindows.set(id, w);
-    addTaskbarButton(id, w);
-    recordTaskbarEntry({ kind: 'sdk-watch', id, sessionName });
+    return sessionWindows.get(id) || artifactWindows.get(id) || null;
 }
 
 function loadTaskbarState() {

@@ -1,11 +1,9 @@
 """Integration tests for portal WebSocket endpoints.
 
-Covers the 3 endpoints not exercised by tests/unit/test_server_sdk_watch.py
-and tests/e2e/test_portal_ui.py:
+Covers:
 
 - /ws/{name}              session output stream (handle_websocket)
 - /ws/terminal/{name}     interactive PTY (handle_terminal_ws)
-- /ws/sdk-watch/{name}    transcript tail (additional disconnect/replay coverage)
 
 Uses aiohttp's TestClient/TestServer harness (same shape as test_portal_ui.py).
 The agent backend is replaced with a MagicMock so handle_websocket's
@@ -22,7 +20,6 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from agentwire.config import load_config
-from agentwire.repl.persistence import create_session
 from agentwire.server import AgentWireServer
 
 
@@ -44,10 +41,6 @@ async def portal_client(tmp_path, monkeypatch):
 
     # Subprocess shouldn't fire from any WS path we test.
     server.run_agentwire_cmd = AsyncMock(return_value=(True, {"sessions": []}))
-
-    # Redirect REPL persistence so /ws/sdk-watch tests are isolated.
-    from agentwire.repl import persistence
-    monkeypatch.setattr(persistence, "DEFAULT_REPL_HOME", tmp_path / "repl")
 
     async with TestClient(TestServer(server.app)) as client:
         yield client, server
@@ -190,75 +183,3 @@ class TestTerminalWebSocket:
         assert "local-session" in server.active_sessions
 
 
-# ---------------------------------------------------------------------------
-# /ws/sdk-watch/{name} — additional coverage
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-class TestSdkWatchWebSocket:
-    async def test_disconnect_mid_stream(self, portal_client, tmp_path):
-        """Client disconnects while events are being streamed — server should
-        cancel the tail task without raising."""
-        client, server = portal_client
-        home = tmp_path / "repl"
-        t = create_session(mode="bypass", model="m", allowed_tools=[], name="mid-stream", home=home)
-        try:
-            t.write_event({"type": "session"})
-            t.write_event({"type": "agent_start"})
-
-            async with client.ws_connect("/ws/sdk-watch/mid-stream") as ws:
-                ev1 = await _recv_json(ws)
-                assert ev1["type"] == "session"
-                # Disconnect after receiving only one of two pre-existing events.
-            # Give the cancelled stream task a tick to clean up.
-            await asyncio.sleep(0.1)
-            # No assertion needed — the goal is to confirm no exceptions leak.
-        finally:
-            t.close()
-
-    async def test_reconnect_replays_all_events(self, portal_client, tmp_path):
-        """Reconnecting to the same session replays the full transcript."""
-        client, server = portal_client
-        home = tmp_path / "repl"
-        t = create_session(mode="bypass", model="m", allowed_tools=[], name="replay", home=home)
-        try:
-            t.write_event({"type": "session"})
-            t.write_event({"type": "agent_start"})
-            t.write_event({"type": "turn_end"})
-
-            # First connection — drain all 3 events, disconnect.
-            async with client.ws_connect("/ws/sdk-watch/replay") as ws:
-                for expected in ("session", "agent_start", "turn_end"):
-                    ev = await _recv_json(ws)
-                    assert ev["type"] == expected
-
-            await asyncio.sleep(0.05)
-
-            # Second connection — full replay (no dedup on the server side).
-            async with client.ws_connect("/ws/sdk-watch/replay") as ws:
-                for expected in ("session", "agent_start", "turn_end"):
-                    ev = await _recv_json(ws)
-                    assert ev["type"] == expected
-        finally:
-            t.close()
-
-    async def test_inbound_messages_ignored(self, portal_client, tmp_path):
-        """Watcher is read-only: inbound text from the client must not break
-        the stream."""
-        client, server = portal_client
-        home = tmp_path / "repl"
-        t = create_session(mode="bypass", model="m", allowed_tools=[], name="readonly", home=home)
-        try:
-            t.write_event({"type": "session"})
-            async with client.ws_connect("/ws/sdk-watch/readonly") as ws:
-                ev = await _recv_json(ws)
-                assert ev["type"] == "session"
-                # Send something — should be ignored without error.
-                await ws.send_json({"type": "ignored"})
-                # Append a new event and confirm it still flows through.
-                t.write_event({"type": "turn_end"})
-                ev2 = await _recv_json(ws)
-                assert ev2["type"] == "turn_end"
-        finally:
-            t.close()
