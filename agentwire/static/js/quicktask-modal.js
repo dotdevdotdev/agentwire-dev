@@ -226,7 +226,7 @@ function attachListeners() {
     }
 }
 
-export async function openQuicktaskModal() {
+export async function openQuicktaskModal({ project: prefillProject } = {}) {
     if (modalEl) return;
     lastFocus = document.activeElement;
     const projects = await fetchProjects();
@@ -235,9 +235,17 @@ export async function openQuicktaskModal() {
     modalEl = wrapper.firstElementChild;
     document.body.appendChild(modalEl);
     attachListeners();
-    // Focus the first empty required field
     const projectInput = modalEl.querySelector('input[name="project"]');
+    const baseInput = modalEl.querySelector('input[name="base"]');
     const branchInput = modalEl.querySelector('input[name="branch"]');
+    // If launched from a project row, pre-fill project + base, skip straight to branch
+    if (prefillProject && projectInput) {
+        projectInput.value = prefillProject;
+        if (baseInput) {
+            const stored = localStorage.getItem(LS_BASE_PREFIX + prefillProject);
+            baseInput.value = stored || 'main';
+        }
+    }
     if (projectInput && !projectInput.value) projectInput.focus();
     else if (branchInput) branchInput.focus();
 }

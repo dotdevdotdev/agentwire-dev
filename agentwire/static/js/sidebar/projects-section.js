@@ -30,8 +30,9 @@ export const projectsSection = {
                 }
                 for (const p of items) {
                     const name = p.name || p.path?.split('/').pop() || '?';
-                    html += `<div class="sidebar-list-item sidebar-project-item" data-path="${p.path || ''}" data-machine="${p.machine || ''}">
+                    html += `<div class="sidebar-list-item sidebar-project-item" data-path="${p.path || ''}" data-machine="${p.machine || ''}" data-name="${name}">
                         <span class="sidebar-list-item-title">${name}</span>
+                        <button class="sidebar-list-item-btn" data-action="worktree" title="New worktree session">⎇</button>
                         <button class="sidebar-list-item-btn" data-action="open" title="Open session">▸</button>
                     </div>`;
                 }
@@ -48,9 +49,18 @@ export const projectsSection = {
         if (!btn) return;
         const item = btn.closest('[data-path]');
         if (!item) return;
+        const action = btn.dataset.action;
         const path = item.dataset.path;
         const machine = item.dataset.machine || null;
-        if (btn.dataset.action === 'open' && path) {
+        const name = item.dataset.name || '';
+
+        if (action === 'worktree' && name) {
+            const { openQuicktaskModal } = await import('../quicktask-modal.js');
+            openQuicktaskModal({ project: name });
+            return;
+        }
+
+        if (action === 'open' && path) {
             try {
                 const res = await fetch('/api/create', {
                     method: 'POST',
