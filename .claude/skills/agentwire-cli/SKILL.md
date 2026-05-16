@@ -1,6 +1,6 @@
 ---
 name: agentwire-cli
-description: Full `agentwire` CLI command reference — session/pane management, portal, TTS/STT, voice, channels (email/sms/webhook/telegram/discord/slack), machine/tunnel/lock management, projects/history/roles, scheduler, overnight queue, web helpers (brave, fetch), safety/diagnostics. Use when running or composing `agentwire ...` shell commands, building automation scripts, or answering "how do I X from the CLI".
+description: Full `agentwire` CLI command reference — session/pane management, portal, TTS/STT, voice, channels (email + quo, outbound-only), machine/tunnel/lock management, projects/history/roles, scheduler, overnight queue, web helpers (brave, fetch), safety/diagnostics. Use when running or composing `agentwire ...` shell commands, building automation scripts, or answering "how do I X from the CLI".
 ---
 
 # AgentWire CLI Reference
@@ -61,7 +61,7 @@ agentwire voiceclone delete name # delete a voice clone
 agentwire open <url> --title "T"  # open URL or local file as artifact window
 agentwire open dashboard.html     # open from ~/.agentwire/artifacts/
 
-# Channels (communication integrations)
+# Channels (outbound notification integrations — email + quo)
 agentwire channels list         # list all registered channels
 agentwire channels list --json  # JSON output
 
@@ -72,24 +72,6 @@ agentwire email --attach file.pdf --body "See attached"
 
 # Quo SMS (send-only channel, no deps)
 agentwire quo --body "msg" --to "+1234567890"
-
-# SMS via Twilio (send-only channel, requires twilio)
-agentwire sms --body "msg" --to "+1234567890"
-
-# Webhook (send-only channel)
-agentwire webhook --body "msg" --url "https://hooks.example.com"
-
-# Telegram bridge (service channel)
-agentwire telegram start       # start bot in tmux
-agentwire telegram stop        # stop bot
-agentwire telegram serve       # run bot in foreground
-agentwire telegram status      # check bot status
-
-# Discord bridge (service channel, requires discord.py)
-agentwire discord start|serve|stop|status
-
-# Slack bridge (service channel, requires slack-bolt)
-agentwire slack start|serve|stop|status
 
 # Machine management
 agentwire machine list

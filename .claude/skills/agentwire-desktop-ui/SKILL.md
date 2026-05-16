@@ -13,15 +13,14 @@ The portal uses a left sidebar with a floating tab handle instead of hover hotzo
 - **Tab handle**: floating 20×40px button on left edge, rides sidebar when open, chevron flips direction
 - **Header**: connection status dot, session count, clock, pin toggle
 - **Open Windows section**: lists currently-open windows (drag to reorder, click to focus, × to close). Persisted in `localStorage['taskbar-state']` — restores on refresh.
-- **Accordion sections**: Sessions, Socials, Services, Machines, Projects, Artifacts, Scheduler, Config. Click header to expand/collapse. Data fetched on first expand.
+- **Accordion sections**: Sessions, Services, Machines, Projects, Artifacts, Scheduler, Workflows, Safety, Config. Click header to expand/collapse. Data fetched on first expand.
 - **Footer**: global PTT button, voice indicator
 
-**Session grouping:** Sessions are split into three accordion sections based on type:
-- **Sessions**: working sessions (excludes services and socials)
-- **Socials**: DM/channel sessions (`discord-dm-*`, `slack-dm-*`, `discord-ch-*`, `slack-ch-*`, or sessions with social roles)
-- **Services**: infrastructure sessions (`agentwire-*` prefix: portal, tts, stt, telegram, discord, slack)
+**Session grouping:** Sessions are split into two accordion sections based on the name:
+- **Services**: infrastructure sessions, matched against an explicit allowlist in `sessions-section.js` (`agentwire-portal`, `agentwire-tts`, `agentwire-stt`, `agentwire-scheduler`, `agentwire-notifications`)
+- **Sessions**: everything else (working sessions, worktrees, remote sessions)
 
-All three share session data from `sessions-section.js` (single fetch, shared activity state, pub-sub via `onSessionsChanged`).
+Both share session data from `sessions-section.js` (single fetch, shared activity state, pub-sub via `onSessionsChanged`).
 
 **Keyboard:** Tab cycles forward through open windows, Shift+Tab cycles backward. Works inside terminals (captured on `window` in capture phase before xterm).
 

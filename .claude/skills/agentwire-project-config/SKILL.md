@@ -162,8 +162,5 @@ Roles define agent behavior and are composable. Mix and match roles in `.agentwi
 | `task-runner` | Scheduled task execution |
 | `chatbot` | Conversational personality |
 | `init` | Setup wizard behavior |
-| `slack-dm` | Slack bot — reply()-based conversation with Slack users |
-| `discord-dm` | Discord bot — reply()-based conversation with Discord users |
-| `channel-admin` | Self-configure channel setup via chat (edit config.yaml, restart bridges) |
 
 Use `agentwire roles list` to see available roles. Roles are bundled in `agentwire/roles/` and can be composed freely in `.agentwire.yml`.

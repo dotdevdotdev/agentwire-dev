@@ -1,6 +1,6 @@
 ---
 name: agentwire-mcp-tools
-description: Reference for the 90 `mcp__agentwire__*` MCP tools — session/pane management, voice/TTS, tasks/locks, channels (email/sms/webhook/discord/slack), machines/tunnels/network, history/roles/projects, scheduler, overnight queue, desktop UI, notifications. Use when agents inside agentwire sessions need to pick the right MCP tool instead of shelling out to the `agentwire` CLI.
+description: Reference for the `mcp__agentwire__*` MCP tools — session/pane management, voice/TTS, tasks/locks, channels (email + quo, outbound-only), machines/tunnels/network, history/roles/projects, scheduler, overnight queue, desktop UI, notifications. Use when agents inside agentwire sessions need to pick the right MCP tool instead of shelling out to the `agentwire` CLI.
 ---
 
 # AgentWire MCP Tools
@@ -84,17 +84,13 @@ description: Reference for the 90 `mcp__agentwire__*` MCP tools — session/pane
 | `agentwire handoff list` | `handoff_list()` |
 | `agentwire email --body "..." --to addr` | `email_send(body="...", to="...", attachments=["..."], plain_text=False)` |
 
-## Channels (7 tools)
+## Channels (outbound-only)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
 | `agentwire channels list` | `channels_list()` |
-| `agentwire quo --body "..." --to "+1..."` | `quo_send(body="...", to="+1...")` |
-| `agentwire sms --body "..." --to "+1..."` | `sms_send(body="...", to="+1...")` |
-| `agentwire webhook --body "..." --url "..."` | `webhook_send(text="...", url="...")` |
-| `agentwire discord status` | `discord_status()` |
-| `agentwire slack status` | `slack_status()` |
 | `agentwire email --body "..." --to addr` | `email_send(body="...", to="...", attachments=["..."])` |
+| `agentwire quo --body "..." --to "+1..."` | `quo_send(body="...", to="+1...")` |
 
 ## Notifications & Network (5 tools)
 
