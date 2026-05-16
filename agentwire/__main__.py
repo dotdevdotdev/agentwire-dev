@@ -2206,8 +2206,8 @@ def cmd_notify_parent(args) -> int:
     Sends a prefixed text message to the parent session via tmux.
     The parent is determined from .agentwire.yml or --to flag.
 
-    This is for session hierarchy communication. For replying to channel
-    users (Discord, Slack, etc.), use reply.
+    This is for session hierarchy communication. For outbound notifications
+    to the user across devices, use `agentwire email` or `agentwire quo`.
 
     Notification targets (in priority order):
     1. --to SESSION if specified

@@ -73,7 +73,6 @@ tasks:
     output:
       capture: 50              # Lines to capture
       save: ~/logs/{{ task }}.log
-      notify: voice            # voice, alert, webhook ${URL}, command "..."
 
     # Branch management (for overnight/async agent workflows)
     starting_ref: main         # Git ref to checkout before task runs

@@ -8,13 +8,9 @@ Terms that show up across the docs without a single source-of-truth definition. 
 
 An agent-generated HTML file written to `~/.agentwire/artifacts/` and served by the portal at `/artifacts/<filename>`. Used to share rich output (charts, dashboards, reports) across sessions and devices. → [Portal](internals/portal.md#artifacts).
 
-## B — Bridge
-
-A subtype of *channel* that runs as its own tmux service session and routes inbound messages from a platform (Discord, Slack, Telegram) to agentwire sessions. Bidirectional, long-lived, composable per channel/user. → [Channels](communication/channels.md).
-
 ## C — Channel
 
-An outbound notification integration — a session pushes a message to an external platform (email via Resend, SMS via Quo / OpenPhone). Stateless `SendOnlyChannel` subclasses; no inbound surface. → [Channels](communication/channels.md).
+An outbound notification integration — a session pushes a message to an external platform (email via Resend, SMS via Quo / OpenPhone). Stateless `SendOnlyChannel` subclasses; no inbound surface. Inbound user input flows through the portal, not channels. → [Channels](communication/channels.md).
 
 ## D — Damage Control
 

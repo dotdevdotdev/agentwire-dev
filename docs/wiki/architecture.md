@@ -12,7 +12,7 @@ tmux is the substrate. One agentwire session = one tmux session. Inside that ses
 
 ```
 tmux session "myproject"
-├── pane 0  → orchestrator   (Claude Code, claudeglm, pi, sdk-*)
+├── pane 0  → orchestrator   (Claude Code, claudeglm, pi)
 ├── pane 1  → worker          (spawned via pane_spawn, auto-kills on idle)
 ├── pane 2  → worker
 └── ...
@@ -20,7 +20,7 @@ tmux session "myproject"
 
 The orchestrator coordinates work and dispatches workers via the MCP `pane_spawn` tool. Workers fire an *idle notification* on completion (via `~/.claude/hooks/idle-handler.sh`); the hook routes the alert to pane 0 and kills the worker. Pane 0's own idle notifications route to whatever session is named in `parent:` (typically the human-facing session).
 
-For session types — claude-bypass, claude-auto, claudeglm-*, pi-*, sdk-*, bare — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
+For session types — claude-bypass, claude-auto, claudeglm-*, pi-*, bare — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
 
 ---
 
@@ -107,25 +107,25 @@ tasks:
 ## Communication Graph
 
 ```
-       External platforms (channels)             Voice / audio (primitives)
-       ───────────────────────────────           ──────────────────────────
-       Discord, Slack, Telegram (bridges)        TTS server (port 8100)
-       Email, SMS, Webhook, Quo (send-only)      STT server (whisperkit / faster-whisper)
-              │              ▲                          │            ▲
-              ▼              │                          ▼            │
+       Outbound channels (send-only)            Voice / audio (primitives)
+       ───────────────────────────────          ──────────────────────────
+       Email (Resend), Quo / OpenPhone SMS      TTS server (port 8100)
+                  ▲                              STT server (whisperkit / faster-whisper)
+                  │                                       │            ▲
+                  │ outbound notifications                ▼            │
        ┌─────────────────────────────────────────────────────────────────┐
        │                      AgentWire sessions                          │
        │                                                                  │
        │   parent: main ◄───── orchestrator ──── pane_spawn ──► worker   │
        │                            │                              │     │
        │                            └───── idle notifications ◄────┘     │
-       └──────────────────────────────────────────────────────────────────┘
+       └─────────────────────────────────────────────────────────────────┘
                                     ▲ ▼
-                          smart audio routing
-                          (browser if connected, else local speakers)
+                          smart audio routing                inbound input
+                  (browser if connected, else local)     ←── via portal WS
 ```
 
-- **Channels** are outbound-only notification integrations — a session calls `agentwire email` or `agentwire quo` to push a notification out. Inbound user input flows through the portal, not channels. → [Channels](communication/channels.md).
+- **Channels** are outbound-only notification integrations — a session calls `agentwire email` or `agentwire quo` to push a notification out. Inbound user input flows through the portal (web + tunnel), not channels. Inbound chat-platform bridges (Telegram, Discord, Slack) were removed; the portal is the single inbound surface. → [Channels](communication/channels.md).
 - **Voice and STT** live on the portal side as `say()` / `listen()` agent tools.
 - **Idle notifications** form a tree: workers → pane 0 of the same session → the `parent:` session (typically human-facing). This is what makes hierarchical multi-session orchestration tractable.
 

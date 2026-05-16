@@ -36,12 +36,11 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire jump --pane 1` | `pane_jump(pane=1)` |
 | `agentwire resize` | `pane_resize()` |
 
-## Voice & TTS (12 tools)
+## Voice & TTS (11 tools)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
 | `agentwire say "text"` | `say(text="...")` |
-| `agentwire reply "text"` | `reply(text="...")` |
 | `agentwire notify-parent "text"` | `notify(text="...", to="...")` |
 | `agentwire listen start` | `listen_start()` |
 | `agentwire listen stop` | `listen_stop()` |
@@ -66,7 +65,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire lock clean` | `lock_clean()` |
 | `agentwire lock remove session` | `lock_remove(session="...")` |
 
-## Operations (10 tools)
+## Operations (12 tools)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
@@ -82,14 +81,13 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire handoff init --title hint` | `handoff_init(title="...")` |
 | `agentwire handoff render <bundle-dir>` | `handoff_render(bundle_dir="...", story=True)` |
 | `agentwire handoff list` | `handoff_list()` |
-| `agentwire email --body "..." --to addr` | `email_send(body="...", to="...", attachments=["..."], plain_text=False)` |
 
 ## Channels (outbound-only)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
 | `agentwire channels list` | `channels_list()` |
-| `agentwire email --body "..." --to addr` | `email_send(body="...", to="...", attachments=["..."])` |
+| `agentwire email --body "..." --to addr` | `email_send(body="...", to="...", attachments=["..."], plain_text=False)` |
 | `agentwire quo --body "..." --to "+1..."` | `quo_send(body="...", to="+1...")` |
 
 ## Notifications & Network (5 tools)
@@ -151,7 +149,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | Minimize all | `desktop_minimize_all()` |
 | Multi-window layout | `desktop_layout(windows=[{id: "...", zone: "left"}])` |
 
-**90 tools total.** When to use CLI vs MCP:
+**~85 tools total** (sessions, panes, voice, tasks, channels, scheduler, overnight queue, desktop UI, handoffs). When to use CLI vs MCP:
 - **MCP tools** — Agents in sessions (orchestrators, workers)
 - **CLI commands** — Humans, shell scripts, automation outside of agent sessions
 

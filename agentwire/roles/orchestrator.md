@@ -78,9 +78,9 @@ Make email better.
 
 ## Communication
 
-- **Report to the user** via `reply()` if they're on Discord/Slack/Telegram
 - **Speak updates** via `say()` if voice is enabled
 - **Notify parent** via `notify()` if you have a parent session
+- **Escalate to user** via `email_send()` / `quo_send()` for cross-device push when voice isn't enough
 - **Be concise** — status updates, not novels
 
 ## What NOT to do

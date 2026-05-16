@@ -1,6 +1,6 @@
 ---
 name: agentwire-desktop-ui
-description: Portal desktop UI patterns — left sidebar (click-toggle tab handle, accordion sections, session grouping into Sessions/Socials/Services, keyboard nav), session window modes (Monitor `<pre>` vs Terminal xterm.js — Monitor MUST NOT use xterm), artifact windows (sandboxed iframes from `~/.agentwire/artifacts/`). Use when editing portal static files (`static/js/sidebar/*`, `desktop.js`, `desktop.css`), changing window behavior, or adding sidebar sections.
+description: Portal desktop UI patterns — left sidebar (click-toggle tab handle, accordion sections, session grouping into Sessions/Services via explicit allowlist, keyboard nav), session window modes (Monitor `<pre>` vs Terminal xterm.js — Monitor MUST NOT use xterm), artifact windows (sandboxed iframes from `~/.agentwire/artifacts/`). Use when editing portal static files (`static/js/sidebar/*`, `desktop.js`, `desktop.css`), changing window behavior, or adding sidebar sections.
 ---
 
 # Portal Desktop UI Patterns

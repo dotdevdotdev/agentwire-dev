@@ -46,7 +46,6 @@ agentwire stt start|stop|status # STT server management
 # Voice
 agentwire say "text"            # speak (auto-routes to browser or local)
 agentwire say -s name "text"    # speak to specific session
-agentwire reply "text"           # reply to channel user (Discord/Slack/Telegram)
 agentwire notify-parent "text"   # notify parent session (worker→orchestrator)
 agentwire notify-parent --to name "text" # notify specific session
 agentwire listen start|stop|cancel  # voice recording
