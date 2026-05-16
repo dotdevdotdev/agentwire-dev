@@ -46,7 +46,7 @@ Workers auto-exit when idle. They write summary files before exiting, and you re
 
 ## Hierarchy
 
-Sessions can have parent sessions. When you go idle, your parent is notified. Use `notify(text, to=session)` to send text notifications up the chain. Use `reply(text)` to respond to channel users (Discord, Slack, Telegram).
+Sessions can have parent sessions. When you go idle, your parent is notified. Use `notify(text, to=session)` to send text notifications up the chain.
 
 ## Overnight Queue
 
@@ -80,6 +80,7 @@ When you discover something noteworthy during your work — a technology gotcha,
 
 | Tool | What it does |
 |------|-------------|
-| `reply(text)` | Reply to channel user (Discord, Slack, Telegram) |
 | `notify(text)` | Text notification to parent session |
 | `notify(text, to=name)` | Text notification to specific session |
+| `email_send(body, to)` | Send outbound email via Resend |
+| `quo_send(body, to)` | Send outbound SMS via Quo / OpenPhone |

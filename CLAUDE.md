@@ -42,7 +42,7 @@ Full CLI command reference lives in the `agentwire-cli` skill.
 
 **Agents running in agentwire sessions should use MCP tools instead of CLI commands.**
 
-The `agentwire-mcp-tools` skill has the full reference (87 tools covering sessions, panes, voice, tasks, channels, scheduler, overnight queue, desktop UI). Rule of thumb: MCP for agents, CLI for humans/scripts.
+The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, tasks, outbound channels, scheduler, overnight queue, desktop UI, handoffs). Rule of thumb: MCP for agents, CLI for humans/scripts.
 
 **Note:** MCP tools don't support git worktree creation. For isolated commits with worktrees, use the CLI `agentwire spawn --branch <name>` directly.
 

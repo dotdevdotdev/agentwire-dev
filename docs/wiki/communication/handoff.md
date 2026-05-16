@@ -151,6 +151,6 @@ The agent picks a theme JSON block based on the session's emotional tone. The re
 ## Out of scope (today)
 
 - Live regeneration / "living HTML presentation" session type — would watch the bundle dir and re-render as the source session adds turns. Future v2.
-- Bundle delivery via Slack / Discord / email — the channels module would extend cleanly to accept a bundle dir; not done yet.
+- Bundle delivery via email — the channels module would extend cleanly to accept a bundle dir; not done yet.
 - Fork-from-bundle — receiver's edits stay separate, optional merge-back.
 - Multi-session bundles (orchestrator + workers).

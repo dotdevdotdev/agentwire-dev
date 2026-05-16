@@ -114,7 +114,7 @@ nodes:
 
 ## History, persistence, and notifications
 
-Every run persists **independently of notifications**. Whether the workflow emails, posts to Slack, or does nothing at all, you always get:
+Every run persists **independently of notifications**. Whether the workflow emails the user, texts via Quo, or does nothing at all, you always get:
 
 ```
 ~/.agentwire/workflows/runs/<run-id>/

@@ -59,14 +59,6 @@ while true; do
         else
             log "Alert failed with exit code $?"
         fi
-        # Also send to Telegram if configured
-        if [[ -n "${TELEGRAM_AGENTWIRE_BOT_TOKEN:-}" && -n "${TELEGRAM_USER_ID:-}" ]]; then
-            TELEGRAM_MSG="[${SESSION}] ${MESSAGE}"
-            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_AGENTWIRE_BOT_TOKEN}/sendMessage" \
-                -H "Content-Type: application/json" \
-                -d "{\"chat_id\":${TELEGRAM_USER_ID},\"text\":$(printf '%s' "$TELEGRAM_MSG" | jq -Rs .)}" \
-                >>"$DEBUG_LOG" 2>&1 && log "Telegram alert sent" || log "Telegram alert failed"
-        fi
     else
         log "Empty message, skipping"
     fi

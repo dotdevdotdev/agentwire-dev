@@ -665,25 +665,6 @@ def say(text: str, session: str | None = None, voice: str | None = None) -> str:
 
 
 @mcp.tool()
-def reply(text: str) -> str:
-    """Reply to the channel user who messaged this session.
-
-    Use this to respond to Discord, Slack, or Telegram messages.
-    The message is delivered back to the originating platform.
-
-    Args:
-        text: Reply message text
-
-    Returns:
-        Success message or error description.
-    """
-    data = run_agentwire_cmd(["reply", text], json_output=False)
-    if data.get("success"):
-        return "Reply sent."
-    return f"Failed to send reply: {data.get('error', 'Unknown error')}"
-
-
-@mcp.tool()
 def notify(text: str, to: str | None = None) -> str:
     """Notify parent session (worker→orchestrator communication).
 

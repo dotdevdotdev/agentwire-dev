@@ -87,9 +87,9 @@ def generate_id() -> str:
 def _inject_resume_flags(agent_cmd: str, session_type: str, resume_session_id: str) -> str:
     """Insert `--resume <id> --fork-session` after the `claude` binary token.
 
-    Phase 5: claude-* only. Other session types (sdk-*, pi-*) have their
-    own resume conventions and the claude-style UUID we record doesn't apply.
-    A no-op when there's nothing to resume or the type doesn't qualify.
+    claude-* only. Other session types (pi-*, bare) have their own resume
+    conventions and the claude-style UUID we record doesn't apply. A no-op
+    when there's nothing to resume or the type doesn't qualify.
 
     The previous form used `rfind("claude")` which was buggy for commands
     that also carry `--model claude-opus-4-7` — it would match inside the
