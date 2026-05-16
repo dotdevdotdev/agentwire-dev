@@ -125,8 +125,8 @@ tasks:
                           (browser if connected, else local speakers)
 ```
 
-- **Channels** route inbound messages from external platforms into specific sessions, and forward outbound events (alerts, AskUserQuestion, voice) back out. → [Channels](communication/channels.md).
-- **Voice and STT** are *primitives*, not channels: any channel can call `self.tts(...)` and `self.stt(...)` from the base class.
+- **Channels** are outbound-only notification integrations — a session calls `agentwire email` or `agentwire quo` to push a notification out. Inbound user input flows through the portal, not channels. → [Channels](communication/channels.md).
+- **Voice and STT** live on the portal side as `say()` / `listen()` agent tools.
 - **Idle notifications** form a tree: workers → pane 0 of the same session → the `parent:` session (typically human-facing). This is what makes hierarchical multi-session orchestration tractable.
 
 ---
