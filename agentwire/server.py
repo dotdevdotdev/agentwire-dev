@@ -998,7 +998,12 @@ class AgentWireServer:
     # =========================================================================
 
     async def api_desktop_notification(self, request):
-        """POST /api/desktop/notification — post a toast notification to the portal."""
+        """POST /api/desktop/notification — post a toast notification to the portal.
+
+        One toast per session: if a toast with the same `session` is already
+        active, it is dismissed before the new one is posted. Keeps the nagger
+        from stacking N toasts for the same idle session across nag cycles.
+        """
         data = await request.json()
         text = data.get("text", "")
         if not text:
@@ -1008,6 +1013,15 @@ class AgentWireServer:
         notification_id = data.get("id") or str(uuid.uuid4())[:8]
         session = data.get("session")
         priority = data.get("priority", "normal")
+
+        if session:
+            stale_ids = [
+                nid for nid, n in self.active_notifications.items()
+                if n.get("session") == session
+            ]
+            for nid in stale_ids:
+                self.active_notifications.pop(nid, None)
+                await self.broadcast_dashboard("notification_dismiss", {"id": nid})
 
         notification = {
             "id": notification_id,
@@ -1313,10 +1327,13 @@ class AgentWireServer:
                 await asyncio.sleep(2)  # Back off on errors
 
     async def idle_nag_loop(self):
-        """Background task: periodically check for idle sessions with open browser windows.
+        """Background task: periodically check for idle sessions.
 
-        Gathers idle session data and sends it to the agentwire-notifications session,
-        which crafts a natural TTS message and speaks it via say().
+        Gathers idle session data for every non-service tmux session (whether
+        or not its terminal is currently open in the dashboard) and sends it
+        to the agentwire-notifications session, which crafts a natural TTS
+        message and speaks it via say(). The dashboard itself must have at
+        least one connected client — no listeners means no nags.
         """
         NAG_INTERVAL = 120  # seconds between scans
         NAG_IDLE_THRESHOLD = 120  # seconds idle before including in nag (2 min minimum)
@@ -1337,15 +1354,15 @@ class AgentWireServer:
                     await asyncio.sleep(NAG_INTERVAL)
                     continue
 
-                # Find sessions with open browser windows that are truly idle
+                # Find every non-service session that has gone idle. Whether
+                # its terminal is currently open in the dashboard doesn't
+                # matter — the user wants to know it needs attention either
+                # way; they may have closed or minimized the window.
                 idle_sessions = []
                 for name, info in self.session_activity.items():
                     if name.startswith(SERVICE_PREFIX):
                         continue
                     if name == NAG_SESSION:
-                        continue
-                    if self.session_client_counts.get(name, 0) == 0:
-                        nag_counts.pop(name, None)
                         continue
                     last_ts = info.get("last_output_timestamp", 0.0)
                     idle_secs = time.time() - last_ts if last_ts else float('inf')
