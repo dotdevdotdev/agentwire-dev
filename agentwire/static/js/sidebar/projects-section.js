@@ -11,7 +11,11 @@ export const projectsSection = {
 
     async onAction(actionId, body) {
         if (actionId !== 'new') return;
-        const { openNewProjectModal } = await import('../new-project-modal.js');
+        const [{ openNewProjectModal }, { sidebar }] = await Promise.all([
+            import('../new-project-modal.js'),
+            import('../sidebar.js'),
+        ]);
+        sidebar.close();
         openNewProjectModal({
             onCreated: () => { this.refresh(body); },
         });
@@ -64,24 +68,36 @@ export const projectsSection = {
         const name = item.dataset.name || '';
 
         if (action === 'worktree' && name) {
-            const { openQuicktaskModal } = await import('../quicktask-modal.js');
+            const [{ openQuicktaskModal }, { sidebar }] = await Promise.all([
+                import('../quicktask-modal.js'),
+                import('../sidebar.js'),
+            ]);
+            sidebar.close();
             openQuicktaskModal({ project: name });
             return;
         }
 
-        if (action === 'open' && path) {
+        if (action === 'open' && name) {
+            const [{ openSessionTerminal }, { sidebar }] = await Promise.all([
+                import('../desktop.js'),
+                import('../sidebar.js'),
+            ]);
             try {
                 const res = await fetch('/api/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path, machine }),
+                    body: JSON.stringify({ name, path, machine }),
                 });
-                if (res.ok) {
-                    const data = await res.json();
-                    const { openSessionTerminal } = await import('../desktop.js');
-                    openSessionTerminal(data.session || data.name, 'terminal', machine);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) {
+                    console.warn('Failed to create session from project:', data.error || `HTTP ${res.status}`);
+                    return;
                 }
-            } catch (e) { console.warn('Failed to create session from project', e); }
+                sidebar.close();
+                openSessionTerminal(data.session || data.name || name, 'terminal', machine);
+            } catch (e) {
+                console.warn('Failed to create session from project', e);
+            }
         }
     },
 };
