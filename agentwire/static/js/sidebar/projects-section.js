@@ -1,11 +1,33 @@
+import { normalizeMachine, sameMachine } from '../session-id.js';
+
 export const projectsSection = {
     title: 'Projects',
     autoRefreshMs: 30000,
+    actions: [{ id: 'new', label: '+', title: 'New project' }],
     _body: null,
 
     async mount(body) {
         this._body = body;
         await this.refresh(body);
+    },
+
+    async onAction(actionId, body) {
+        if (actionId !== 'new') return;
+        const [{ openNewProjectModal }, { sidebar }] = await Promise.all([
+            import('../new-project-modal.js'),
+            import('../sidebar.js'),
+        ]);
+        sidebar.close();
+        openNewProjectModal({
+            onCreated: async (data) => {
+                this.refresh(body);
+                await this._startProjectSession({
+                    name: data.name,
+                    path: data.path,
+                    machine: normalizeMachine(data.machine),
+                });
+            },
+        });
     },
 
     async refresh(body) {
@@ -32,8 +54,8 @@ export const projectsSection = {
                     const name = p.name || p.path?.split('/').pop() || '?';
                     html += `<div class="sidebar-list-item sidebar-project-item" data-path="${p.path || ''}" data-machine="${p.machine || ''}" data-name="${name}">
                         <span class="sidebar-list-item-title">${name}</span>
-                        <button class="sidebar-list-item-btn" data-action="worktree" title="New worktree session">⎇</button>
-                        <button class="sidebar-list-item-btn" data-action="open" title="Open session">▸</button>
+                        <button class="sidebar-list-item-btn" data-action="worktree" title="New worktree session for this project">⎇</button>
+                        <button class="sidebar-list-item-btn" data-action="start" title="Start session for this project (resumes if already running)">▶</button>
                     </div>`;
                 }
             }
@@ -51,28 +73,71 @@ export const projectsSection = {
         if (!item) return;
         const action = btn.dataset.action;
         const path = item.dataset.path;
-        const machine = item.dataset.machine || null;
+        const machine = normalizeMachine(item.dataset.machine);
         const name = item.dataset.name || '';
 
         if (action === 'worktree' && name) {
-            const { openQuicktaskModal } = await import('../quicktask-modal.js');
+            const [{ openQuicktaskModal }, { sidebar }] = await Promise.all([
+                import('../quicktask-modal.js'),
+                import('../sidebar.js'),
+            ]);
+            sidebar.close();
             openQuicktaskModal({ project: name });
             return;
         }
 
-        if (action === 'open' && path) {
-            try {
-                const res = await fetch('/api/create', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path, machine }),
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    const { openSessionTerminal } = await import('../desktop.js');
-                    openSessionTerminal(data.session || data.name, 'terminal', machine);
-                }
-            } catch (e) { console.warn('Failed to create session from project', e); }
+        if (action === 'start' && name) {
+            await this._startProjectSession({ name, path, machine });
+        }
+    },
+
+    /**
+     * Resume the project's session if one already exists, otherwise create it.
+     * Either way, close the sidebar and attach the terminal window.
+     */
+    async _startProjectSession({ name, path, machine }) {
+        if (!name) return;
+        const [{ openSessionTerminal }, { sidebar }] = await Promise.all([
+            import('../desktop.js'),
+            import('../sidebar.js'),
+        ]);
+        const open = (sessionName) => {
+            sidebar.close();
+            openSessionTerminal(sessionName, 'terminal', machine);
+        };
+
+        // Fast path: if a session with this name already exists, just resume it.
+        try {
+            const url = machine
+                ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
+                : '/api/sessions/local';
+            const r = await fetch(url);
+            const d = await r.json().catch(() => ({}));
+            const sessions = d.sessions
+                || (d.machines || []).flatMap((m) => m.sessions || []);
+            if (sessions.some((s) => s.name === name && sameMachine(s.machine, machine))) {
+                open(name);
+                return;
+            }
+        } catch (e) { /* fall through and try to create */ }
+
+        // Create fresh session
+        try {
+            const res = await fetch('/api/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, path, machine }),
+            });
+            const data = await res.json().catch(() => ({}));
+            const err = data.error || '';
+            // If a race made the session appear, that's fine — just open it.
+            if (!res.ok || (err && !/already exists/i.test(err))) {
+                console.warn('Failed to start session from project:', err || `HTTP ${res.status}`);
+                return;
+            }
+            open(data.session || data.name || name);
+        } catch (e) {
+            console.warn('Failed to start session from project', e);
         }
     },
 };

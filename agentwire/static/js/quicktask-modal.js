@@ -7,6 +7,8 @@
  * session terminal window.
  */
 
+import { isLocalMachine } from './session-id.js';
+
 const PILL_TYPES = ['feat', 'fix', 'chore', 'refactor', 'docs'];
 const LS_LAST_PROJECT = 'quicktask:lastProject';
 const LS_BASE_PREFIX = 'quicktask:base:';
@@ -34,7 +36,7 @@ async function fetchProjects() {
         const res = await fetch('/api/projects');
         const data = await res.json();
         const all = data.projects || [];
-        projectsCache = all.filter((p) => !p.machine || p.machine === 'local');
+        projectsCache = all.filter((p) => isLocalMachine(p.machine));
     } catch (e) {
         projectsCache = [];
     }

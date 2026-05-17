@@ -12,6 +12,7 @@ import { tileManager } from './tile-manager.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { sidebar } from './sidebar.js';
+import { buildSessionId, normalizeMachine } from './session-id.js';
 import { configSection } from './sidebar/config-section.js';
 import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
@@ -389,7 +390,9 @@ function updateVoiceIndicator(state) {
  * @param {string|null} machine - Remote machine ID (optional)
  */
 export function openSessionTerminal(session, mode, machine = null) {
-    const id = machine ? `${session}@${machine}` : session;
+    // Normalize once at the boundary — see session-id.js for the encoding rules.
+    machine = normalizeMachine(machine);
+    const id = buildSessionId(session, machine);
 
     // Check if already open — restore if minimized, otherwise focus
     if (sessionWindows.has(id)) {

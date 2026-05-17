@@ -170,6 +170,7 @@ class AgentWireServer:
         self.app.router.add_get("/api/sessions/local", self.api_sessions_local)
         self.app.router.add_get("/api/sessions/remote", self.api_sessions_remote)
         self.app.router.add_get("/api/projects", self.api_projects)
+        self.app.router.add_post("/api/projects/create", self.api_projects_create)
         self.app.router.add_post("/api/projects/delete", self.api_projects_delete)
         self.app.router.add_get("/api/roles", self.api_roles)
         self.app.router.add_get("/api/machine/{machine_id}/status", self.api_machine_status)
@@ -773,6 +774,36 @@ class AgentWireServer:
                 future = self._desktop_window_responses[request_id]
                 if not future.done():
                     future.set_result(windows)
+
+    async def _wait_for_pane_ready(self, session_name: str, timeout: float = 2.0) -> bool:
+        """Poll `tmux capture-pane -p` until non-empty (or timeout).
+
+        After `agentwire new` returns, the tmux session exists but the agent
+        process started via `tmux send-keys` may not have rendered its first
+        frame. A WS attach in that window can race the startup and show a
+        disconnected/reconnect overlay. We use capture-pane as a cheap "is the
+        pane producing output yet?" probe — usually <100ms, never longer than
+        `timeout` so the UI never feels stuck.
+
+        Returns True if pane became non-empty before timeout, False otherwise.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        # parse_session_name handles "name", "project/branch", and trailing "@machine"
+        local_name = session_name.split("@", 1)[0]
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "tmux", "capture-pane", "-p", "-t", local_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                stdout, _ = await proc.communicate()
+                if stdout and stdout.strip():
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+        return False
 
     async def _get_sessions_data(self) -> list:
         """Get all sessions list for dashboard (local + remote + SDK)."""
@@ -1478,6 +1509,10 @@ class AgentWireServer:
             # Parse session name for local vs remote
             project, branch, machine_id = parse_session_name(session_name)
             session_name = f"{project}/{branch}" if branch else project
+            # "local" is the implicit machine and is never present in machines.json.
+            # Treat it the same as no machine — local tmux attach.
+            if machine_id == "local":
+                machine_id = None
 
             # Build tmux attach command
             # Check if this is a remote machine (needs SSH)
@@ -2233,6 +2268,43 @@ class AgentWireServer:
             logger.error(f"Exception scanning projects on {machine_id}: {e}")
             return {"status": "offline", "projects": []}
 
+    async def api_projects_create(self, request: web.Request) -> web.Response:
+        """Create a new local project.
+
+        Body:
+            {
+                "name": "myproject",          # required, alphanumerics + ._-
+                "clone_url": "git@..."         # optional, clone from this URL
+                "git_init": false              # optional, init empty git repo (ignored with clone_url)
+            }
+
+        Response:
+            {"success": true, "name": "...", "path": "...", "machine": "local"}
+            {"success": false, "error": "..."}
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        name = (data.get("name") or "").strip()
+        clone_url = (data.get("clone_url") or "").strip() or None
+        git_init = bool(data.get("git_init"))
+
+        if not name:
+            return web.json_response({"success": False, "error": "name is required"}, status=400)
+
+        args = ["projects", "create", name]
+        if clone_url:
+            args.extend(["--from", clone_url])
+        elif git_init:
+            args.append("--git-init")
+
+        success, result = await self.run_agentwire_cmd(args)
+        if not success:
+            return web.json_response({"success": False, "error": result.get("error", "Unknown error")}, status=400)
+        return web.json_response(result)
+
     async def api_projects_delete(self, request: web.Request) -> web.Response:
         """Delete a project (remove .agentwire.yml or entire folder).
 
@@ -2592,6 +2664,16 @@ class AgentWireServer:
             await self.broadcast_dashboard("session_created", {"session": session_name})
             sessions_data = await self._get_sessions_data()
             await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
+
+            # Wait until the tmux pane has actually rendered something. The CLI
+            # returns the moment `tmux send-keys` *queues* the agent command, so
+            # the WS attach can race the agent's startup and show a disconnect
+            # overlay even though the session is healthy. Polling `capture-pane`
+            # is event-driven (we return the instant there's output) and bounded
+            # at ~2s so we never block the UI for long. Skip on remote sessions
+            # — tmux lives on the other side of SSH there.
+            if "@" not in session_name:
+                await self._wait_for_pane_ready(session_name)
 
             return web.json_response({"success": True, "name": session_name})
 
