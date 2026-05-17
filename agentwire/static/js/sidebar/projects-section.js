@@ -82,6 +82,27 @@ export const projectsSection = {
                 import('../desktop.js'),
                 import('../sidebar.js'),
             ]);
+            const open = (sessionName) => {
+                sidebar.close();
+                openSessionTerminal(sessionName, 'terminal', machine);
+            };
+
+            // Fast path: if a session with this name already exists, just open it.
+            try {
+                const url = machine && machine !== 'local'
+                    ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
+                    : '/api/sessions/local';
+                const r = await fetch(url);
+                const d = await r.json().catch(() => ({}));
+                const sessions = d.sessions
+                    || (d.machines || []).flatMap((m) => m.sessions || []);
+                const target = (machine && machine !== 'local') ? machine : null;
+                if (sessions.some((s) => s.name === name && (s.machine || null) === target)) {
+                    open(name);
+                    return;
+                }
+            } catch (e) { /* fall through and try to create */ }
+
             try {
                 const res = await fetch('/api/create', {
                     method: 'POST',
@@ -89,12 +110,14 @@ export const projectsSection = {
                     body: JSON.stringify({ name, path, machine }),
                 });
                 const data = await res.json().catch(() => ({}));
-                if (!res.ok || data.error) {
-                    console.warn('Failed to create session from project:', data.error || `HTTP ${res.status}`);
+                const err = data.error || '';
+                // If the CLI says the session already exists, treat it as success — the
+                // user clicked "open" and the session is right there to open.
+                if (!res.ok || (err && !/already exists/i.test(err))) {
+                    console.warn('Failed to create session from project:', err || `HTTP ${res.status}`);
                     return;
                 }
-                sidebar.close();
-                openSessionTerminal(data.session || data.name || name, 'terminal', machine);
+                open(data.session || data.name || name);
             } catch (e) {
                 console.warn('Failed to create session from project', e);
             }
