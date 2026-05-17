@@ -1,4 +1,5 @@
 import { desktop } from '../desktop-manager.js';
+import { buildSessionId, normalizeMachine } from '../session-id.js';
 
 // Shared state across sessions and services sections
 export const activityStates = new Map();
@@ -22,8 +23,8 @@ function notifyListeners() { for (const fn of listeners) fn(); }
 
 export function renderCard(s) {
     const name = s.name || '';
-    const machine = s.machine || null;
-    const id = machine ? `${name}@${machine}` : name;
+    const machine = normalizeMachine(s.machine);
+    const id = buildSessionId(name, machine);
     const activity = activityStates.get(name) || s.activity || 'idle';
     const dotClass = activity === 'idle' ? 'dot-idle' : activity === 'processing' ? 'dot-processing' : activity === 'generating' ? 'dot-generating' : 'dot-playing';
     const tags = [];
@@ -60,7 +61,7 @@ export async function handleSessionClick(e) {
     const item = btn.closest('[data-session]');
     if (!item) return;
     const session = item.dataset.session;
-    const machine = item.dataset.machine || null;
+    const machine = normalizeMachine(item.dataset.machine);
     const action = btn.dataset.action;
     const { openSessionTerminal } = await import('../desktop.js');
     if (action === 'connect') openSessionTerminal(session, 'terminal', machine);

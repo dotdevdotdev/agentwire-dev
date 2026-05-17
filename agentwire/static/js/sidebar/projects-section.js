@@ -1,3 +1,5 @@
+import { normalizeMachine, sameMachine } from '../session-id.js';
+
 export const projectsSection = {
     title: 'Projects',
     autoRefreshMs: 30000,
@@ -64,7 +66,7 @@ export const projectsSection = {
         if (!item) return;
         const action = btn.dataset.action;
         const path = item.dataset.path;
-        const machine = item.dataset.machine || null;
+        const machine = normalizeMachine(item.dataset.machine);
         const name = item.dataset.name || '';
 
         if (action === 'worktree' && name) {
@@ -89,15 +91,14 @@ export const projectsSection = {
 
             // Fast path: if a session with this name already exists, just resume it.
             try {
-                const url = machine && machine !== 'local'
+                const url = machine
                     ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
                     : '/api/sessions/local';
                 const r = await fetch(url);
                 const d = await r.json().catch(() => ({}));
                 const sessions = d.sessions
                     || (d.machines || []).flatMap((m) => m.sessions || []);
-                const target = (machine && machine !== 'local') ? machine : null;
-                if (sessions.some((s) => s.name === name && (s.machine || null) === target)) {
+                if (sessions.some((s) => s.name === name && sameMachine(s.machine, machine))) {
                     open(name);
                     return;
                 }

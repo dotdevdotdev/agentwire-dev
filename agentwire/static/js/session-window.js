@@ -10,6 +10,7 @@
 import { desktop } from './desktop-manager.js';
 import { sessionIcons } from './icon-manager.js';
 import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
+import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
 
 const NARROW_VIEWPORT = '(max-width: 768px)';
 function pickTerminalFontSize() {
@@ -29,7 +30,7 @@ export class SessionWindow {
     constructor(options) {
         this.session = options.session;
         this.mode = options.mode || 'terminal';
-        this.machine = options.machine || null;
+        this.machine = normalizeMachine(options.machine);
         this.root = options.root || document.body;
         this.onCloseCallback = options.onClose || null;
         this.onFocusCallback = options.onFocus || null;
@@ -224,11 +225,7 @@ export class SessionWindow {
      * Get the full session identifier (includes machine if remote).
      */
     get sessionId() {
-        // Avoid doubling machine suffix if session name already includes it
-        if (this.machine && !this.session.endsWith(`@${this.machine}`)) {
-            return `${this.session}@${this.machine}`;
-        }
-        return this.session;
+        return buildSessionId(this.session, this.machine);
     }
 
     // Private methods
@@ -719,7 +716,7 @@ export class SessionWindow {
                 // Flatten sessions from all machines: {machines: [{sessions: [...]}]} -> [...]
                 const allSessions = (data.machines || []).flatMap(m => m.sessions || []);
                 const sessionExists = allSessions.some(s =>
-                    s.name === this.session && s.machine === this.machine
+                    s.name === this.session && sameMachine(s.machine, this.machine)
                 );
 
                 if (!sessionExists) {
