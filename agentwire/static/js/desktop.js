@@ -389,6 +389,11 @@ function updateVoiceIndicator(state) {
  * @param {string|null} machine - Remote machine ID (optional)
  */
 export function openSessionTerminal(session, mode, machine = null) {
+    // "local" is the implicit machine — never appears in machines.json, and the
+    // server's WS handler rejects unknown machine ids. Callers from different
+    // APIs disagree on the encoding (projects API → "local"; sessions API → null),
+    // so normalize here.
+    if (machine === 'local') machine = null;
     const id = machine ? `${session}@${machine}` : session;
 
     // Check if already open — restore if minimized, otherwise focus

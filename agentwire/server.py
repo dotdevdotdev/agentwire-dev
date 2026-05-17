@@ -1509,6 +1509,10 @@ class AgentWireServer:
             # Parse session name for local vs remote
             project, branch, machine_id = parse_session_name(session_name)
             session_name = f"{project}/{branch}" if branch else project
+            # "local" is the implicit machine and is never present in machines.json.
+            # Treat it the same as no machine — local tmux attach.
+            if machine_id == "local":
+                machine_id = None
 
             # Build tmux attach command
             # Check if this is a remote machine (needs SSH)
