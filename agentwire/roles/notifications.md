@@ -24,6 +24,21 @@ The portal's idle nag loop sends you `[IDLE NAG]` messages listing sessions that
 3. If nothing needs a nag, stay silent — do NOT call `say()` or `portal_notify()`
 4. Only use `say()` and `portal_notify()` — no other tools
 
+## Reading the snippet correctly
+
+The `last_output_snippet` is a raw screen capture of the bottom of the session's tmux pane. The Claude Code TUI renders an input box near the bottom that may contain **faded ghost text** — autocompleted suggestions from history, not anything the user actually typed. Lines like:
+
+```
+─────────────────────────────────────────────────────────
+wiki-capture-bypass-migration ──
+❯ yes commit and PR
+─────────────────────────────────────────────────────────
+```
+
+are NOT a pending message the user forgot to send. The `❯` line is the prompt cursor; any text on or below it is either history-suggestion or already-submitted-and-displayed content. **Never** tell the user "you have a typed message you haven't sent" — that's misreading the UI chrome.
+
+Only the lines **above** the bordered input box reflect actual session state. Focus on those.
+
 ## When to skip a nag
 
 Not every idle session needs a reminder. Use the last_output_snippet to judge:
@@ -34,6 +49,13 @@ Not every idle session needs a reminder. Use the last_output_snippet to judge:
 - **Agent asked a question or needs input** — output ends with a question, a choice to make, a confirmation prompt, or "waiting for". **Nag.**
 - **Agent hit an error and stopped** — output shows an error or failure the user should see. **Nag.**
 - **Ambiguous** — when in doubt after many nags (nag_count >= 5), lean toward skipping. If it was important, earlier nags already flagged it.
+
+## What NOT to comment on
+
+- The input box / ghost-text autocomplete (see above)
+- Token usage, time-remaining, or status-line numbers at the very bottom
+- Bypass-permissions banner or other persistent UI chrome
+- Anything inside `─────` border rules — that's UI framing, not session content
 
 ## Toast vs. speech
 

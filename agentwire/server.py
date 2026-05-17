@@ -4696,6 +4696,11 @@ projects:
         Audio is broadcast only to clients connected to this specific session
         (terminal, monitor, or chat windows viewing that session).
 
+        Special case: the `agentwire-notifications` session is a meta-session —
+        its audio is meant for whoever is watching the dashboard. If it has no
+        own clients, fan the audio out across every session that does, so the
+        nag is heard wherever the user has a browser window open.
+
         Returns:
             True if audio was sent to clients, False if no clients connected.
         """
@@ -4707,12 +4712,26 @@ projects:
 
         session = self.active_sessions[session_name]
 
-        # Check if any clients are connected to this session
-        if not session.clients:
+        # Notifications session: fan out to whichever session(s) the user
+        # currently has open, since this session itself rarely has listeners.
+        fanout_targets: list = []
+        if session_name == "agentwire-notifications" and not session.clients:
+            fanout_targets = [
+                s for s in self.active_sessions.values()
+                if s.name != session_name and s.clients
+            ]
+            if not fanout_targets:
+                logger.warning(f"[{session_name}] speak: no dashboard listeners anywhere")
+                return False
+            logger.info(
+                f"[{session_name}] speak: no own clients, fanning out to "
+                f"{len(fanout_targets)} session(s): {[s.name for s in fanout_targets]}"
+            )
+        elif not session.clients:
             logger.warning(f"[{session_name}] speak: no session clients connected")
             return False
-
-        logger.info(f"[{session_name}] speak: {len(session.clients)} session client(s)")
+        else:
+            logger.info(f"[{session_name}] speak: {len(session.clients)} session client(s)")
 
         # Get voice settings (resolve "random" once per session)
         voice = session.config.voice or self.config.tts.default_voice
@@ -4725,7 +4744,9 @@ projects:
 
         # Notify clients TTS is starting (session clients + dashboard)
         tts_start_msg = {"type": "tts_start", "session": session_name, "text": text}
-        await self._broadcast(session, tts_start_msg)
+        broadcast_to = fanout_targets if fanout_targets else [session]
+        for target in broadcast_to:
+            await self._broadcast(target, tts_start_msg)
         await self.broadcast_dashboard("tts_start", {"session": session_name, "text": text})
 
         try:
@@ -4748,7 +4769,9 @@ projects:
                     audio_b64 = base64.b64encode(audio_data).decode()
                     logger.info(f"[{session_name}] Broadcasting audio chunk ({len(audio_b64)} bytes b64)")
 
-                    await self._broadcast(session, {"type": "audio", "session": session_name, "data": audio_b64})
+                    audio_msg = {"type": "audio", "session": session_name, "data": audio_b64}
+                    for target in broadcast_to:
+                        await self._broadcast(target, audio_msg)
                     await self.broadcast_dashboard("audio_playing", {"session": session_name})
 
                     # Estimate audio duration and schedule audio_done notification

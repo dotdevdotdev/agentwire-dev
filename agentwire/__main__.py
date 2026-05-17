@@ -496,6 +496,53 @@ def get_stt_session_name() -> str:
     return config.get("services", {}).get("stt", {}).get("session_name", "agentwire-stt")
 
 
+def get_notifications_session_name() -> str:
+    """Get notifications tmux session name from config."""
+    config = load_config()
+    return config.get("services", {}).get("notifications", {}).get(
+        "session_name", "agentwire-notifications"
+    )
+
+
+def _ensure_notifications_session() -> None:
+    """Spawn agentwire-notifications if it isn't already running.
+
+    The portal's idle_nag_loop sends `[IDLE NAG]` prompts to this session.
+    Without it the prompt is dropped and the user never hears the TTS reminder.
+    Safe to call repeatedly — does nothing when the session already exists.
+    Failures are non-fatal: TTS itself still works, idle nags just stay silent.
+    """
+    session_name = get_notifications_session_name()
+    if tmux_session_exists(session_name):
+        return
+
+    source_dir = get_source_dir()
+    if not source_dir:
+        return
+
+    try:
+        subprocess.run(
+            [
+                sys.executable, "-m", "agentwire", "new",
+                "-s", session_name,
+                "-p", str(source_dir),
+                "--roles", "notifications",
+                "--type", "claude-bypass",
+                "--json",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        print(f"  Spawned {session_name} (idle-nag TTS bridge).")
+    except Exception as e:
+        print(
+            f"  Warning: could not spawn {session_name}: {e}. "
+            "Idle nags will be silent until you start it manually.",
+            file=sys.stderr,
+        )
+
+
 # === Wave 2: Remote Infrastructure Helpers ===
 
 
@@ -774,6 +821,8 @@ def _start_portal_local(args) -> int:
 
     # Install global tmux hooks for portal sync
     _install_global_tmux_hooks()
+
+    _ensure_notifications_session()
 
     print("Portal started. Attaching... (Ctrl+B D to detach)")
     subprocess.run(["tmux", "attach-session", "-t", session_name])
@@ -1141,6 +1190,8 @@ def _start_tts_local(args, venv_override: str | None = None) -> int:
     subprocess.run([
         "tmux", "send-keys", "-t", session_name, tts_cmd, "Enter",
     ])
+
+    _ensure_notifications_session()
 
     print("TTS server started. Attaching... (Ctrl+B D to detach)")
     subprocess.run(["tmux", "attach-session", "-t", session_name])
@@ -5951,6 +6002,17 @@ def cmd_doctor(args) -> int:
         print(f"  [ok] Queue processor: {queue_processor}")
     else:
         print("  [!!] Queue processor: not found (required for notification queuing)")
+        issues_found += 1
+
+    # Check notifications bridge session (drives idle-nag TTS)
+    notif_session = get_notifications_session_name()
+    if tmux_session_exists(notif_session):
+        print(f"  [ok] Notifications session: {notif_session}")
+    else:
+        print(f"  [!!] Notifications session: {notif_session} not running")
+        print("     The portal's idle-nag prompts will be silent. Start TTS or "
+              "portal to auto-spawn it, or run: agentwire new -s "
+              f"{notif_session} -p {get_source_dir()} --roles notifications --type claude-bypass")
         issues_found += 1
 
     # 5. Validate config
