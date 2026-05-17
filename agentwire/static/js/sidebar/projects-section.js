@@ -117,14 +117,7 @@ export const projectsSection = {
                     console.warn('Failed to start session from project:', err || `HTTP ${res.status}`);
                     return;
                 }
-                const sessionName = data.session || data.name || name;
-                // Brief delay before attaching — `agentwire new` returns after `tmux
-                // send-keys` queues the agent command, but the WS attach can race the
-                // agent's startup and end up showing a disconnected/reconnect overlay.
-                // 600ms is enough headroom for tmux + the agent's first prompt without
-                // being long enough to feel laggy.
-                await new Promise((resolve) => setTimeout(resolve, 600));
-                open(sessionName);
+                open(data.session || data.name || name);
             } catch (e) {
                 console.warn('Failed to start session from project', e);
             }
