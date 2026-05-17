@@ -57,6 +57,14 @@ export class SessionWindow {
         this._audioEndedHandler = null;
         this._activityTimeout = null;
         this._activityThreshold = 3000; // ms before considered idle
+
+        // Silent retry for "disconnect before first data" — `agentwire new` returns
+        // before the agent's first frame, so the very first WS attach can race the
+        // tmux/agent startup and exit with a non-zero code. If that happens without
+        // ever showing the user terminal output, transparently retry instead of
+        // throwing the reconnect overlay in their face.
+        this._dataReceived = false;
+        this._silentRetriesRemaining = 4;
     }
 
     /**
@@ -502,9 +510,19 @@ export class SessionWindow {
                                 this.close();
                                 return;
                             } else if (msg.type === 'remote_disconnected' || msg.type === 'local_disconnected') {
-                                // Transient drop (bg process side effect, portal restart, etc) -
-                                // show overlay so user can reconnect instead of losing the window
+                                // Transient drop. If we haven't received any terminal data yet,
+                                // the very first attach raced tmux/agent startup — retry silently
+                                // a few times instead of showing the reconnect overlay.
                                 this._sessionEnded = true; // suppress the onclose fallback close
+                                if (!this._dataReceived && this._silentRetriesRemaining > 0) {
+                                    this._silentRetriesRemaining -= 1;
+                                    this._updateStatus('connecting', 'Connecting...');
+                                    setTimeout(() => {
+                                        this._sessionEnded = false; // reopen path
+                                        this._connectWebSocket();
+                                    }, 300);
+                                    return;
+                                }
                                 this._updateStatus('disconnected', 'Connection lost');
                                 this._showDisconnectOverlay();
                                 return;
@@ -523,6 +541,9 @@ export class SessionWindow {
                 } else {
                     this.terminal.write(data);
                 }
+                // First terminal payload — the attach is healthy. Suppress the silent-retry
+                // path so any later disconnect surfaces the reconnect overlay normally.
+                this._dataReceived = true;
                 // Mark activity when terminal data received
                 this._markActivity();
             } else {
@@ -536,6 +557,7 @@ export class SessionWindow {
                         // Convert ANSI to HTML and display
                         this.outputEl.innerHTML = this._ansiToHtml(msg.data);
                         this.outputEl.scrollTop = this.outputEl.scrollHeight;
+                        this._dataReceived = true;
                         // Mark activity when output received
                         this._markActivity();
                     }
@@ -565,6 +587,14 @@ export class SessionWindow {
             // the reconnect overlay rather than destroying the window — a bg-process kill
             // or portal hot-reload should never cause the user to lose their session UI.
             if (this._sessionEnded) return;
+            // First-attach race: WS closed before any data arrived. Retry silently a
+            // few times before surfacing the overlay.
+            if (!this._dataReceived && this._silentRetriesRemaining > 0) {
+                this._silentRetriesRemaining -= 1;
+                this._updateStatus('connecting', 'Connecting...');
+                setTimeout(() => this._connectWebSocket(), 300);
+                return;
+            }
             this._showDisconnectOverlay();
         };
 
