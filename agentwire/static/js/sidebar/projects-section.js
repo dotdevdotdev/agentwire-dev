@@ -19,7 +19,14 @@ export const projectsSection = {
         ]);
         sidebar.close();
         openNewProjectModal({
-            onCreated: () => { this.refresh(body); },
+            onCreated: async (data) => {
+                this.refresh(body);
+                await this._startProjectSession({
+                    name: data.name,
+                    path: data.path,
+                    machine: normalizeMachine(data.machine),
+                });
+            },
         });
     },
 
@@ -80,48 +87,57 @@ export const projectsSection = {
         }
 
         if (action === 'start' && name) {
-            const [{ openSessionTerminal }, { sidebar }] = await Promise.all([
-                import('../desktop.js'),
-                import('../sidebar.js'),
-            ]);
-            const open = (sessionName) => {
-                sidebar.close();
-                openSessionTerminal(sessionName, 'terminal', machine);
-            };
+            await this._startProjectSession({ name, path, machine });
+        }
+    },
 
-            // Fast path: if a session with this name already exists, just resume it.
-            try {
-                const url = machine
-                    ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
-                    : '/api/sessions/local';
-                const r = await fetch(url);
-                const d = await r.json().catch(() => ({}));
-                const sessions = d.sessions
-                    || (d.machines || []).flatMap((m) => m.sessions || []);
-                if (sessions.some((s) => s.name === name && sameMachine(s.machine, machine))) {
-                    open(name);
-                    return;
-                }
-            } catch (e) { /* fall through and try to create */ }
+    /**
+     * Resume the project's session if one already exists, otherwise create it.
+     * Either way, close the sidebar and attach the terminal window.
+     */
+    async _startProjectSession({ name, path, machine }) {
+        if (!name) return;
+        const [{ openSessionTerminal }, { sidebar }] = await Promise.all([
+            import('../desktop.js'),
+            import('../sidebar.js'),
+        ]);
+        const open = (sessionName) => {
+            sidebar.close();
+            openSessionTerminal(sessionName, 'terminal', machine);
+        };
 
-            // Create fresh session
-            try {
-                const res = await fetch('/api/create', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, path, machine }),
-                });
-                const data = await res.json().catch(() => ({}));
-                const err = data.error || '';
-                // If a race made the session appear, that's fine — just open it.
-                if (!res.ok || (err && !/already exists/i.test(err))) {
-                    console.warn('Failed to start session from project:', err || `HTTP ${res.status}`);
-                    return;
-                }
-                open(data.session || data.name || name);
-            } catch (e) {
-                console.warn('Failed to start session from project', e);
+        // Fast path: if a session with this name already exists, just resume it.
+        try {
+            const url = machine
+                ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
+                : '/api/sessions/local';
+            const r = await fetch(url);
+            const d = await r.json().catch(() => ({}));
+            const sessions = d.sessions
+                || (d.machines || []).flatMap((m) => m.sessions || []);
+            if (sessions.some((s) => s.name === name && sameMachine(s.machine, machine))) {
+                open(name);
+                return;
             }
+        } catch (e) { /* fall through and try to create */ }
+
+        // Create fresh session
+        try {
+            const res = await fetch('/api/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, path, machine }),
+            });
+            const data = await res.json().catch(() => ({}));
+            const err = data.error || '';
+            // If a race made the session appear, that's fine — just open it.
+            if (!res.ok || (err && !/already exists/i.test(err))) {
+                console.warn('Failed to start session from project:', err || `HTTP ${res.status}`);
+                return;
+            }
+            open(data.session || data.name || name);
+        } catch (e) {
+            console.warn('Failed to start session from project', e);
         }
     },
 };
