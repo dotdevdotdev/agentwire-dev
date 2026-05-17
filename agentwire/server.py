@@ -170,6 +170,7 @@ class AgentWireServer:
         self.app.router.add_get("/api/sessions/local", self.api_sessions_local)
         self.app.router.add_get("/api/sessions/remote", self.api_sessions_remote)
         self.app.router.add_get("/api/projects", self.api_projects)
+        self.app.router.add_post("/api/projects/create", self.api_projects_create)
         self.app.router.add_post("/api/projects/delete", self.api_projects_delete)
         self.app.router.add_get("/api/roles", self.api_roles)
         self.app.router.add_get("/api/machine/{machine_id}/status", self.api_machine_status)
@@ -2232,6 +2233,43 @@ class AgentWireServer:
         except Exception as e:
             logger.error(f"Exception scanning projects on {machine_id}: {e}")
             return {"status": "offline", "projects": []}
+
+    async def api_projects_create(self, request: web.Request) -> web.Response:
+        """Create a new local project.
+
+        Body:
+            {
+                "name": "myproject",          # required, alphanumerics + ._-
+                "clone_url": "git@..."         # optional, clone from this URL
+                "git_init": false              # optional, init empty git repo (ignored with clone_url)
+            }
+
+        Response:
+            {"success": true, "name": "...", "path": "...", "machine": "local"}
+            {"success": false, "error": "..."}
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        name = (data.get("name") or "").strip()
+        clone_url = (data.get("clone_url") or "").strip() or None
+        git_init = bool(data.get("git_init"))
+
+        if not name:
+            return web.json_response({"success": False, "error": "name is required"}, status=400)
+
+        args = ["projects", "create", name]
+        if clone_url:
+            args.extend(["--from", clone_url])
+        elif git_init:
+            args.append("--git-init")
+
+        success, result = await self.run_agentwire_cmd(args)
+        if not success:
+            return web.json_response({"success": False, "error": result.get("error", "Unknown error")}, status=400)
+        return web.json_response(result)
 
     async def api_projects_delete(self, request: web.Request) -> web.Response:
         """Delete a project (remove .agentwire.yml or entire folder).

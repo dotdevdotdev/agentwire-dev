@@ -7,6 +7,7 @@ import datetime
 import importlib.resources
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -6841,6 +6842,88 @@ def cmd_projects_list(args) -> int:
     return 0
 
 
+_VALID_PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def cmd_projects_create(args) -> int:
+    """Create a new local project: make the directory, optionally git-init or clone, and write .agentwire.yml."""
+    from .config import get_config
+    from .project_config import ProjectConfig, SessionType, save_project_config
+
+    name = (args.name or "").strip()
+    clone_url = (getattr(args, "from_url", None) or "").strip() or None
+    do_git_init = bool(getattr(args, "git_init", False))
+    json_mode = getattr(args, "json", False)
+
+    def _fail(msg: str) -> int:
+        if json_mode:
+            _output_json({"success": False, "error": msg})
+        else:
+            print(f"Error: {msg}", file=sys.stderr)
+        return 1
+
+    if not name:
+        return _fail("Project name is required")
+    if not _VALID_PROJECT_NAME.match(name) or "/" in name or ".." in name:
+        return _fail("Invalid project name (allowed: letters, digits, '.', '_', '-')")
+
+    projects_dir = get_config().projects.dir.expanduser().resolve()
+    projects_dir.mkdir(parents=True, exist_ok=True)
+    project_path = projects_dir / name
+
+    if project_path.exists():
+        return _fail(f"Project already exists at {project_path}")
+
+    try:
+        if clone_url:
+            result = subprocess.run(
+                ["git", "clone", clone_url, str(project_path)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode != 0:
+                return _fail(f"git clone failed: {result.stderr.strip() or 'unknown error'}")
+        else:
+            project_path.mkdir(parents=True, exist_ok=False)
+            if do_git_init:
+                result = subprocess.run(
+                    ["git", "init"],
+                    cwd=str(project_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    return _fail(f"git init failed: {result.stderr.strip() or 'unknown error'}")
+    except subprocess.TimeoutExpired:
+        return _fail("Operation timed out")
+    except OSError as e:
+        return _fail(f"Failed to create directory: {e}")
+
+    config = ProjectConfig(type=SessionType.from_str("claude-bypass"), roles=[], voice=None)
+    if not save_project_config(config, project_path):
+        return _fail("Created project directory but failed to write .agentwire.yml")
+
+    payload = {
+        "success": True,
+        "name": name,
+        "path": str(project_path),
+        "machine": "local",
+        "cloned": bool(clone_url),
+        "git_init": do_git_init and not clone_url,
+    }
+    if json_mode:
+        _output_json(payload)
+    else:
+        print(f"Created project '{name}' at {project_path}")
+        if clone_url:
+            print(f"  Cloned from: {clone_url}")
+        elif do_git_init:
+            print("  Initialized empty git repository")
+    return 0
+
+
 def cmd_roles_show(args) -> int:
     """Show details for a specific role."""
     from .roles import discover_role, parse_role_file
@@ -10329,6 +10412,21 @@ def main() -> int:
     projects_list.add_argument("--machine", help="Filter by machine ID (e.g., 'local', 'mac-studio')")
     projects_list.add_argument("--json", action="store_true", help="Output as JSON")
     projects_list.set_defaults(func=cmd_projects_list)
+
+    # projects create
+    projects_create = projects_subparsers.add_parser(
+        "create",
+        help="Create a new local project under projects.dir with a default .agentwire.yml",
+    )
+    projects_create.add_argument("name", help="Project name (directory name under projects.dir)")
+    projects_create.add_argument(
+        "--from", dest="from_url", help="Clone from this git URL instead of creating an empty directory"
+    )
+    projects_create.add_argument(
+        "--git-init", action="store_true", help="Run 'git init' in the new project (ignored when --from is given)"
+    )
+    projects_create.add_argument("--json", action="store_true", help="Output as JSON")
+    projects_create.set_defaults(func=cmd_projects_create)
 
     # === hooks command group ===
     hooks_parser = subparsers.add_parser(

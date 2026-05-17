@@ -91,6 +91,9 @@ agentwire lock remove <session> # force-remove a specific lock
 # Project discovery
 agentwire projects list         # discover projects from projects_dir
 agentwire projects list --json  # JSON output for scripting
+agentwire projects create name              # mkdir + minimal .agentwire.yml (claude-bypass)
+agentwire projects create name --git-init   # also run `git init`
+agentwire projects create name --from URL   # git clone URL instead of mkdir
 
 # Session history
 agentwire history list          # list conversation history

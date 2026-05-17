@@ -1,11 +1,20 @@
 export const projectsSection = {
     title: 'Projects',
     autoRefreshMs: 30000,
+    actions: [{ id: 'new', label: '+', title: 'New project' }],
     _body: null,
 
     async mount(body) {
         this._body = body;
         await this.refresh(body);
+    },
+
+    async onAction(actionId, body) {
+        if (actionId !== 'new') return;
+        const { openNewProjectModal } = await import('../new-project-modal.js');
+        openNewProjectModal({
+            onCreated: () => { this.refresh(body); },
+        });
     },
 
     async refresh(body) {
