@@ -45,8 +45,8 @@ export const projectsSection = {
                     const name = p.name || p.path?.split('/').pop() || '?';
                     html += `<div class="sidebar-list-item sidebar-project-item" data-path="${p.path || ''}" data-machine="${p.machine || ''}" data-name="${name}">
                         <span class="sidebar-list-item-title">${name}</span>
-                        <button class="sidebar-list-item-btn" data-action="worktree" title="New worktree session">⎇</button>
-                        <button class="sidebar-list-item-btn" data-action="open" title="Open session">▸</button>
+                        <button class="sidebar-list-item-btn" data-action="worktree" title="New worktree session for this project">⎇</button>
+                        <button class="sidebar-list-item-btn" data-action="start" title="Start session for this project (resumes if already running)">▶</button>
                     </div>`;
                 }
             }
@@ -77,7 +77,7 @@ export const projectsSection = {
             return;
         }
 
-        if (action === 'open' && name) {
+        if (action === 'start' && name) {
             const [{ openSessionTerminal }, { sidebar }] = await Promise.all([
                 import('../desktop.js'),
                 import('../sidebar.js'),
@@ -87,7 +87,7 @@ export const projectsSection = {
                 openSessionTerminal(sessionName, 'terminal', machine);
             };
 
-            // Fast path: if a session with this name already exists, just open it.
+            // Fast path: if a session with this name already exists, just resume it.
             try {
                 const url = machine && machine !== 'local'
                     ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
@@ -103,6 +103,7 @@ export const projectsSection = {
                 }
             } catch (e) { /* fall through and try to create */ }
 
+            // Create fresh session
             try {
                 const res = await fetch('/api/create', {
                     method: 'POST',
@@ -111,15 +112,21 @@ export const projectsSection = {
                 });
                 const data = await res.json().catch(() => ({}));
                 const err = data.error || '';
-                // If the CLI says the session already exists, treat it as success — the
-                // user clicked "open" and the session is right there to open.
+                // If a race made the session appear, that's fine — just open it.
                 if (!res.ok || (err && !/already exists/i.test(err))) {
-                    console.warn('Failed to create session from project:', err || `HTTP ${res.status}`);
+                    console.warn('Failed to start session from project:', err || `HTTP ${res.status}`);
                     return;
                 }
-                open(data.session || data.name || name);
+                const sessionName = data.session || data.name || name;
+                // Brief delay before attaching — `agentwire new` returns after `tmux
+                // send-keys` queues the agent command, but the WS attach can race the
+                // agent's startup and end up showing a disconnected/reconnect overlay.
+                // 600ms is enough headroom for tmux + the agent's first prompt without
+                // being long enough to feel laggy.
+                await new Promise((resolve) => setTimeout(resolve, 600));
+                open(sessionName);
             } catch (e) {
-                console.warn('Failed to create session from project', e);
+                console.warn('Failed to start session from project', e);
             }
         }
     },
