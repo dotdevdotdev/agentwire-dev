@@ -92,6 +92,15 @@ export class SessionWindow {
         this._setupActivityIndicator();
 
         this.isOpen = true;
+
+        // Focus the terminal so the user can type immediately. Deferred to the
+        // next frame so WinBox's maximize animation has settled — focusing
+        // during the transition gets stolen back by the parent.
+        if (this.mode === 'terminal') {
+            requestAnimationFrame(() => {
+                if (this.terminal) this.terminal.focus();
+            });
+        }
     }
 
     /**
