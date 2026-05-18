@@ -2907,40 +2907,14 @@ def cmd_send(args) -> int:
             print(f"Session '{session}' not found", file=sys.stderr)
         return 1
 
-    # Send the prompt — use load-buffer for anything non-trivial to avoid PTY flooding
-    use_buffer = len(prompt) > 10 or "\n" in prompt
-
-    if use_buffer:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write(prompt)
-            temp_path = f.name
-        try:
-            subprocess.run(["tmux", "load-buffer", temp_path], check=True)
-            subprocess.run(["tmux", "paste-buffer", "-t", session], check=True)
-        finally:
-            os.unlink(temp_path)
-    else:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", session, "-l", prompt],
-            check=True
-        )
-
-    # Wait for text to be displayed before pressing Enter
-    time.sleep(0.5)
-
-    subprocess.run(
-        ["tmux", "send-keys", "-t", session, "Enter"],
-        check=True
-    )
-
-    # For multi-line text, Claude Code shows "[Pasted text...]" and waits for Enter
-    # Send another Enter after a short delay to confirm the paste
-    if "\n" in prompt or len(prompt) > 200:
-        time.sleep(0.5)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", session, "Enter"],
-            check=True
-        )
+    # Delegate paste + Enter handling to the shared pane_manager helper so
+    # send-to-session and send-to-pane stay in lockstep. The helper handles
+    # buffer-vs-send-keys, settle delay, and the bracketed-paste double-Enter
+    # in one place.
+    try:
+        pane_manager.send_to_target(session, prompt, enter=True)
+    except RuntimeError as e:
+        return _output_result(False, json_mode, str(e))
 
     if json_mode:
         print(json.dumps({"success": True, "session": session_full, "machine": None, "message": "Prompt sent"}))

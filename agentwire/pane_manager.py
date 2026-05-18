@@ -248,11 +248,65 @@ def list_panes(session: str | None = None) -> list[PaneInfo]:
     return panes
 
 
+def send_to_target(target: str, text: str, enter: bool = True) -> None:
+    """Send text to a tmux target (session or `session.pane_index`).
+
+    Single source of truth for "paste text into tmux + press Enter the right
+    number of times". Both pane-scoped (`send_to_pane`) and session-scoped
+    (`agentwire send -s ...`) callers route through here, so the paste
+    threshold, the wait-before-Enter, and the bracketed-paste double-Enter
+    behave identically everywhere.
+
+    Behavior:
+      - Non-trivial text (`\\n` or len > 10) is pasted via load-buffer +
+        paste-buffer; short text uses `send-keys -l` (literal mode).
+      - When `enter=True`, an Enter is sent after a 0.5–1.0s settle delay.
+      - Multi-line / long prompts (`\\n` or len > 200) get a SECOND Enter
+        after another 0.5s. Claude Code renders these as
+        `[Pasted text +N lines]` and needs one Enter to dismiss the banner
+        plus one to actually submit. Skipping the second leaves the prompt
+        stuck in the input — the failure that hung the scheduler at 8am.
+    """
+    import tempfile
+
+    use_buffer = "\n" in text or len(text) > 10
+    needs_double_enter = "\n" in text or len(text) > 200
+
+    if use_buffer:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write(text)
+            temp_path = f.name
+        try:
+            result = run_command(["tmux", "load-buffer", temp_path], timeout=5)
+            if not result.success:
+                raise RuntimeError(f"Failed to load buffer: {result.stderr.strip()}")
+            result = run_command(["tmux", "paste-buffer", "-t", target], timeout=5)
+            if not result.success:
+                raise RuntimeError(f"Target '{target}' not found: {result.stderr.strip()}")
+        finally:
+            os.unlink(temp_path)
+    else:
+        result = run_command(["tmux", "send-keys", "-t", target, "-l", text], timeout=5)
+        if not result.success:
+            raise RuntimeError(f"Target '{target}' not found: {result.stderr.strip()}")
+
+    if not enter:
+        return
+
+    time.sleep(1.0 if use_buffer else 0.5)
+    run_command(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
+
+    if needs_double_enter:
+        time.sleep(0.5)
+        run_command(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
+
+
 def send_to_pane(session: str | None, pane_index: int, text: str, enter: bool = True) -> None:
     """Send text to a specific pane.
 
-    Uses tmux load-buffer + paste-buffer for multi-line text to ensure
-    proper paste handling (avoids newlines being interpreted as Enter keys).
+    Thin wrapper over :func:`send_to_target` that resolves the session and
+    builds the `session.pane_index` target string. All paste / Enter
+    behavior lives in `send_to_target` — keep changes there, not here.
 
     Args:
         session: Target session (default: auto-detect from $TMUX_PANE)
@@ -260,54 +314,12 @@ def send_to_pane(session: str | None, pane_index: int, text: str, enter: bool = 
         text: Text to send
         enter: Whether to send Enter key after text
     """
-    import tempfile
-
     if session is None:
         session = get_current_session()
         if session is None:
             raise RuntimeError("Not in tmux session and no session specified")
 
-    target = f"{session}.{pane_index}"
-
-    # For multi-line or long text, use load-buffer + paste-buffer
-    # This ensures text is pasted as a single unit, not character-by-character
-    if "\n" in text or len(text) > 10:
-        # Write text to temp file, load into tmux buffer, paste
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write(text)
-            temp_path = f.name
-
-        try:
-            result = run_command(["tmux", "load-buffer", temp_path], timeout=5)
-            if not result.success:
-                raise RuntimeError(f"Failed to load buffer: {result.stderr.strip()}")
-            result = run_command(["tmux", "paste-buffer", "-t", target], timeout=5)
-            if not result.success:
-                raise RuntimeError(f"Pane {pane_index} not found: {result.stderr.strip()}")
-        finally:
-            import os
-            os.unlink(temp_path)
-    else:
-        # Short single-line text: send-keys is fine
-        result = run_command(["tmux", "send-keys", "-t", target, text], timeout=5)
-        if not result.success:
-            raise RuntimeError(f"Pane {pane_index} not found: {result.stderr.strip()}")
-
-    if enter:
-        # Wait for text to be displayed before sending Enter
-        wait_time = 0.5 if len(text) < 10 else 1.0
-        time.sleep(wait_time)
-        run_command(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
-
-        # Multi-line / long prompts arrive as a bracketed paste — Claude Code
-        # renders them as `[Pasted text +N lines]` and waits for ANOTHER Enter
-        # to submit. The first Enter dismisses the paste banner; the second
-        # actually sends the message. Without this, ensure/scheduler dispatch
-        # pastes the prompt into the input box and stalls forever waiting on
-        # an idle signal that never fires.
-        if "\n" in text or len(text) > 200:
-            time.sleep(0.5)
-            run_command(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
+    send_to_target(f"{session}.{pane_index}", text, enter=enter)
 
 
 def capture_pane(
