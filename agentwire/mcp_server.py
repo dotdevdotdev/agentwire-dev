@@ -337,7 +337,11 @@ def session_send(session: str, message: str) -> str:
     """
     caller = get_caller_session()
     if caller and caller != session:
-        message = f"[From: {caller}]\n{message}"
+        message = (
+            f"[MESSAGE FROM SESSION \"{caller}\" — to reply, call "
+            f"session_send(session=\"{caller}\", message=\"<your reply>\")]\n"
+            f"{message}"
+        )
     args = ["send", "-s", session, message]
     data = run_agentwire_cmd(args)
     if data.get("success"):
