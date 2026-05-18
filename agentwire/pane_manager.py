@@ -299,6 +299,16 @@ def send_to_pane(session: str | None, pane_index: int, text: str, enter: bool = 
         time.sleep(wait_time)
         run_command(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
 
+        # Multi-line / long prompts arrive as a bracketed paste — Claude Code
+        # renders them as `[Pasted text +N lines]` and waits for ANOTHER Enter
+        # to submit. The first Enter dismisses the paste banner; the second
+        # actually sends the message. Without this, ensure/scheduler dispatch
+        # pastes the prompt into the input box and stalls forever waiting on
+        # an idle signal that never fires.
+        if "\n" in text or len(text) > 200:
+            time.sleep(0.5)
+            run_command(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
+
 
 def capture_pane(
     session: str | None,
