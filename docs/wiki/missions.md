@@ -248,4 +248,4 @@ These are future considerations, not promised:
 - Sidebar UI: `agentwire/static/js/sidebar/missions-section.js` + `/api/missions/*` in `server.py`
 - launchd templates: `templates/launchd/dev.agentwire.mission-*.plist`
 
-> Live-shakedown verified on 2026-05-19 — first end-to-end mission run.
+> Live-shakedown verified on 2026-05-19 (issue #199, PR #200) — first end-to-end mission run.
