@@ -2,7 +2,6 @@
 
 import argparse
 import base64
-from dataclasses import dataclass, field
 import datetime
 import importlib.resources
 import json
@@ -17,6 +16,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -1386,8 +1386,9 @@ def cmd_tts_restart(args) -> int:
     Used by CLI when venv_mismatch occurs during TTS request.
     Supports both local and remote TTS servers.
     """
-    from .network import NetworkContext
     import time
+
+    from .network import NetworkContext
 
     ctx = NetworkContext.from_config()
     session_name = get_tts_session_name()
@@ -6265,8 +6266,9 @@ def cmd_voiceclone_list(args) -> int:
     """List available voices."""
     json_mode = getattr(args, 'json', False)
 
-    from .voiceclone import is_runpod_backend, list_voices_runpod, get_tts_url
     import requests
+
+    from .voiceclone import get_tts_url, is_runpod_backend, list_voices_runpod
 
     if is_runpod_backend():
         success, result = list_voices_runpod()
@@ -7728,22 +7730,16 @@ def cmd_ensure(args) -> int:
     10. Handle retries on failure
     """
     from .completion import (
-        CompletionTimeout,
-        generate_summary_filename,
         get_summary_prompt,
-        status_to_exit_code,
     )
     from .locking import LockConflict, LockTimeout, session_lock
     from .tasks import (
-        PreCommandError,
         TaskNotFound,
         TaskValidationError,
         load_task,
-        run_post_command,
-        run_pre_command,
         validate_task,
     )
-    from .templating import TemplateContext, TemplateError, expand_all, preview_template
+    from .templating import TemplateContext, preview_template
 
     session_name = args.session
     task_name = args.task
@@ -8083,7 +8079,7 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                         capture_output=True, text=True,
                     )
                     if fork_result.returncode != 0 and not json_mode:
-                        print(f"Warning: context fork failed, starting fresh session")
+                        print("Warning: context fork failed, starting fresh session")
                 elif not json_mode:
                     print(f"Warning: starting_session '{task.starting_session}' not found, starting fresh")
 
@@ -8946,8 +8942,8 @@ def cmd_scheduler_history(args) -> int:
 
 def cmd_scheduler_report(args) -> int:
     """Generate a morning report HTML artifact of recent task runs."""
-    import re as _re
     from html import escape as html_escape
+
     from .scheduler import _parse_duration, format_interval, load_board, read_events
 
     json_mode = getattr(args, 'json', False)
@@ -9510,7 +9506,7 @@ def cmd_overnight_prepare(args) -> int:
             "status": item.status,
         })
     else:
-        print(f"Queued for overnight execution:")
+        print("Queued for overnight execution:")
         print(f"  ID: {item.id}")
         print(f"  Session: {item.session}")
         print(f"  Branch: {item.work_branch}")
@@ -9522,7 +9518,7 @@ def cmd_overnight_prepare(args) -> int:
 
 def cmd_overnight_list(args) -> int:
     """List overnight queue items."""
-    from .overnight import load_queue, load_done
+    from .overnight import load_done, load_queue
 
     json_mode = getattr(args, "json", False)
     show_all = getattr(args, "all", False)
@@ -9561,7 +9557,7 @@ def cmd_overnight_list(args) -> int:
 
 def cmd_overnight_status(args) -> int:
     """Show overnight orchestrator state and queue summary."""
-    from .overnight import load_queue, read_live_state, in_overnight_window
+    from .overnight import in_overnight_window, load_queue, read_live_state
 
     json_mode = getattr(args, "json", False)
 
@@ -9607,7 +9603,7 @@ def cmd_overnight_status(args) -> int:
 
 def cmd_overnight_cancel(args) -> int:
     """Cancel a queued overnight item."""
-    from .overnight import load_item, save_item, delete_item
+    from .overnight import delete_item, load_item
 
     item_id = args.id
     json_mode = getattr(args, "json", False)
@@ -10756,6 +10752,95 @@ def main() -> int:
     sched_report.add_argument("--json", action="store_true", help="Output JSON")
     sched_report.set_defaults(func=cmd_scheduler_report)
 
+    # === mission command group ===
+    from .missions import cli as mission_cli
+
+    mission_parser = subparsers.add_parser(
+        "mission",
+        help="Manage agent-driven missions (issue→branch→draft PR cycles)",
+        description=(
+            "First-class auto-dispatcher: stateless orchestrators tick the GitHub "
+            "issue board, spawn worker sessions in isolated worktrees, route PR "
+            "feedback back, and gc when the PR closes. See docs/MISSIONS.md."
+        ),
+    )
+    mission_subparsers = mission_parser.add_subparsers(dest="mission_command")
+
+    # mission list
+    m_list = mission_subparsers.add_parser("list", help="List active workers + eligible issues")
+    m_list.add_argument("--json", action="store_true", help="Output JSON")
+    m_list.set_defaults(func=mission_cli.cmd_mission_list)
+
+    # mission show <N>
+    m_show = mission_subparsers.add_parser("show", help="Show one issue + dispatch + PR state")
+    m_show.add_argument("number", type=int, help="GitHub issue number")
+    m_show.add_argument("--repo", required=True, help="Repo short name (from missions config)")
+    m_show.add_argument("--json", action="store_true", help="Output JSON")
+    m_show.set_defaults(func=mission_cli.cmd_mission_show)
+
+    # mission status
+    m_status = mission_subparsers.add_parser("status", help="Per-repo summary of active + eligible")
+    m_status.add_argument("--json", action="store_true", help="Output JSON")
+    m_status.set_defaults(func=mission_cli.cmd_mission_status)
+
+    # mission spawn <N>
+    m_spawn = mission_subparsers.add_parser(
+        "spawn", help="Force-dispatch an issue, bypassing eligibility"
+    )
+    m_spawn.add_argument("number", type=int, help="GitHub issue number")
+    m_spawn.add_argument("--repo", required=True, help="Repo short name")
+    m_spawn.add_argument("--json", action="store_true", help="Output JSON")
+    m_spawn.set_defaults(func=mission_cli.cmd_mission_spawn)
+
+    # mission stall <N>
+    m_stall = mission_subparsers.add_parser("stall", help="Stop dispatch for an issue with a reason")
+    m_stall.add_argument("number", type=int, help="GitHub issue number")
+    m_stall.add_argument("--repo", required=True, help="Repo short name")
+    m_stall.add_argument("--reason", required=True, help="Reason (posted as comment)")
+    m_stall.add_argument("--json", action="store_true", help="Output JSON")
+    m_stall.set_defaults(func=mission_cli.cmd_mission_stall)
+
+    # mission resume <N>
+    m_resume = mission_subparsers.add_parser("resume", help="Re-enable an issue for dispatch")
+    m_resume.add_argument("number", type=int, help="GitHub issue number")
+    m_resume.add_argument("--repo", required=True, help="Repo short name")
+    m_resume.add_argument("--json", action="store_true", help="Output JSON")
+    m_resume.set_defaults(func=mission_cli.cmd_mission_resume)
+
+    # mission kill <N>
+    m_kill = mission_subparsers.add_parser(
+        "kill", help="Kill worker session + worktree (does NOT close the PR)"
+    )
+    m_kill.add_argument("number", type=int, help="GitHub issue number")
+    m_kill.add_argument("--repo", required=True, help="Repo short name")
+    m_kill.add_argument("--json", action="store_true", help="Output JSON")
+    m_kill.set_defaults(func=mission_cli.cmd_mission_kill)
+
+    # mission gc
+    m_gc = mission_subparsers.add_parser("gc", help="Reap sessions whose PR is merged/closed")
+    m_gc.add_argument("--json", action="store_true", help="Output JSON")
+    m_gc.set_defaults(func=mission_cli.cmd_mission_gc)
+
+    # mission tick
+    m_tick = mission_subparsers.add_parser("tick", help="Run one dispatcher tick now")
+    m_tick.add_argument("--json", action="store_true", help="Output JSON")
+    m_tick.set_defaults(func=mission_cli.cmd_mission_tick)
+
+    # mission route-feedback
+    m_route = mission_subparsers.add_parser(
+        "route-feedback", help="Run one PR-feedback router tick now"
+    )
+    m_route.add_argument("--json", action="store_true", help="Output JSON")
+    m_route.set_defaults(func=mission_cli.cmd_mission_route_feedback)
+
+    # mission init <repo>
+    m_init = mission_subparsers.add_parser(
+        "init", help="Create the agent-ready label on a repo (idempotent)"
+    )
+    m_init.add_argument("repo", help="Repo short name (from config) or owner/repo form")
+    m_init.add_argument("--json", action="store_true", help="Output JSON")
+    m_init.set_defaults(func=mission_cli.cmd_mission_init)
+
     # === overnight command group ===
     overnight_parser = subparsers.add_parser(
         "overnight",
@@ -10890,6 +10975,10 @@ def main() -> int:
 
     if args.command == "scheduler" and getattr(args, "scheduler_command", None) is None:
         scheduler_parser.print_help()
+        return 0
+
+    if args.command == "mission" and getattr(args, "mission_command", None) is None:
+        mission_parser.print_help()
         return 0
 
     if args.command == "overnight" and getattr(args, "overnight_command", None) is None:
