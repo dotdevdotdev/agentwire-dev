@@ -14,6 +14,7 @@ def isolated_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "STATE_DIR", state_dir)
     monkeypatch.setattr(state, "LAST_TICK_PATH", state_dir / "last_tick.json")
     monkeypatch.setattr(state, "ROUTED_REVIEWS_PATH", state_dir / "routed_reviews.json")
+    monkeypatch.setattr(state, "NOTIFIED_PRS_PATH", state_dir / "notified_prs.json")
     return state_dir
 
 
@@ -81,3 +82,39 @@ def test_routed_reviews_file_is_pretty_printed(isolated_state_dir):
     text = (isolated_state_dir / "routed_reviews.json").read_text()
     assert "\n" in text
     assert json.loads(text) == {"42": 1001}
+
+
+class TestNotifiedPrs:
+    def test_unmarked_pr_is_not_notified(self):
+        assert state.is_pr_notified(42) is False
+        assert state.read_notified_prs() == set()
+
+    def test_mark_then_check(self):
+        state.mark_pr_notified(42)
+        assert state.is_pr_notified(42) is True
+        assert state.read_notified_prs() == {42}
+
+    def test_mark_is_idempotent(self):
+        state.mark_pr_notified(42)
+        state.mark_pr_notified(42)
+        assert state.read_notified_prs() == {42}
+
+    def test_forget_drops_one_pr(self):
+        state.mark_pr_notified(42)
+        state.mark_pr_notified(43)
+        state.forget_notified_pr(42)
+        assert state.read_notified_prs() == {43}
+
+    def test_forget_pr_clears_both_tracking_stores(self):
+        # forget_pr is what gc calls on reap — should clear both reviews
+        # and notification stores for the same PR.
+        state.update_routed_review(42, 1001)
+        state.mark_pr_notified(42)
+        state.forget_pr(42)
+        assert state.last_routed_review(42) is None
+        assert state.is_pr_notified(42) is False
+
+    def test_corrupt_notified_file_falls_back_to_empty(self, isolated_state_dir):
+        isolated_state_dir.mkdir(parents=True, exist_ok=True)
+        (isolated_state_dir / "notified_prs.json").write_text("{ not json")
+        assert state.read_notified_prs() == set()

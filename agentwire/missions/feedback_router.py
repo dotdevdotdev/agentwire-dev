@@ -84,6 +84,51 @@ def build_summary(
     )
 
 
+def _notify_pr_ready(repo_name: str, issue: github.Issue, pr: github.PullRequest) -> tuple[bool, str]:
+    """Send a 'draft PR ready for review' email. Returns (sent, error_or_message).
+
+    Best-effort: any email-config or send failure is non-fatal for the router.
+    The PR is still marked as notified so we don't retry on every tick — the
+    operator can resend manually if needed.
+    """
+    try:
+        from agentwire.channels.email import send_email, EmailConfigError
+    except ImportError as e:
+        return False, f"email channel unavailable: {e}"
+
+    criteria = eligibility.extract_acceptance_criteria(issue.body) or []
+    crit_lines = "\n".join(f"- {c}" for c in criteria) or "_(no acceptance criteria parsed)_"
+    subject = f"Mission #{issue.number}: draft PR ready for review"
+    body = (
+        f"A mission worker has opened a **draft PR** and is now waiting for your review.\n"
+        f"\n"
+        f"**Issue:** [#{issue.number} — {issue.title}](https://github.com/{repo_name}/issues/{issue.number})  \n"
+        f"**Draft PR:** [#{pr.number}]({pr.url})\n"
+        f"\n"
+        f"### Acceptance criteria\n"
+        f"\n"
+        f"{crit_lines}\n"
+        f"\n"
+        f"### What to do\n"
+        f"\n"
+        f"Review the PR. Leave comments / request changes / approve as usual — the\n"
+        f"feedback router will pick up new reviews on its next 15-minute tick and\n"
+        f"send them back into the worker session. Merge when satisfied; the janitor\n"
+        f"will reap the worker on its next pass.\n"
+    )
+
+    try:
+        result = send_email(subject=subject, body=body)
+    except EmailConfigError as e:
+        return False, f"email config error: {e}"
+    except Exception as e:
+        return False, f"send_email raised: {e}"
+
+    if not result.success:
+        return False, f"send_email returned error: {result.error}"
+    return True, result.message_id or "(no message_id)"
+
+
 def _send_context_refresh(session_full: str, summary_file: Path) -> None:
     """Send ``/clear`` and then a refresh prompt pointing at ``summary_file``.
 
@@ -135,6 +180,29 @@ def route_feedback(config: MissionsConfig | None = None) -> FeedbackReport:
         if pr.state != "OPEN":
             report.skipped.append({"session": session_full, "reason": f"PR is {pr.state}"})
             continue
+
+        # First-time-seen draft PR → send the operator an email and remember.
+        # Done before review processing so a brand-new PR gets noticed even on
+        # the same tick it first appears (PRs typically open with zero reviews).
+        if not state.is_pr_notified(pr.number):
+            try:
+                issue_for_notify = github.get_issue(repo.name, issue_number)
+            except github.GitHubError as e:
+                log.warning("notify: get_issue failed for #%d: %s", issue_number, e)
+                issue_for_notify = None
+            if issue_for_notify is not None:
+                sent, detail = _notify_pr_ready(repo.name, issue_for_notify, pr)
+                # Mark notified even on send failure so we don't retry every
+                # 15 minutes — operator can resend manually if needed.
+                state.mark_pr_notified(pr.number)
+                report.routed.append(
+                    {
+                        "session": session_full,
+                        "pr": pr.number,
+                        "event": "pr_opened_email" if sent else "pr_opened_email_failed",
+                        "detail": detail,
+                    }
+                )
 
         try:
             reviews = github.list_pr_reviews(repo.name, pr.number)

@@ -15,6 +15,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "STATE_DIR", state_dir)
     monkeypatch.setattr(state, "LAST_TICK_PATH", state_dir / "last_tick.json")
     monkeypatch.setattr(state, "ROUTED_REVIEWS_PATH", state_dir / "routed_reviews.json")
+    monkeypatch.setattr(state, "NOTIFIED_PRS_PATH", state_dir / "notified_prs.json")
 
 
 @pytest.fixture

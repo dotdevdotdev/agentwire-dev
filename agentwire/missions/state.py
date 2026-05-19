@@ -21,6 +21,7 @@ from pathlib import Path
 STATE_DIR = Path.home() / ".agentwire" / "missions" / "state"
 LAST_TICK_PATH = STATE_DIR / "last_tick.json"
 ROUTED_REVIEWS_PATH = STATE_DIR / "routed_reviews.json"
+NOTIFIED_PRS_PATH = STATE_DIR / "notified_prs.json"
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -100,3 +101,36 @@ def forget_pr(pr_number: int) -> None:
     data = read_routed_reviews()
     data.pop(str(pr_number), None)
     write_routed_reviews(data)
+    forget_notified_pr(pr_number)
+
+
+def read_notified_prs() -> set[int]:
+    """Return the set of PR numbers we've already sent a 'draft ready' email for."""
+    raw = _read_json(NOTIFIED_PRS_PATH)
+    pr_numbers = raw.get("pr_numbers", []) if isinstance(raw, dict) else []
+    out: set[int] = set()
+    for n in pr_numbers:
+        try:
+            out.add(int(n))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def is_pr_notified(pr_number: int) -> bool:
+    """True iff a 'draft PR ready' email has already gone out for this PR."""
+    return int(pr_number) in read_notified_prs()
+
+
+def mark_pr_notified(pr_number: int) -> None:
+    """Record that a 'draft PR ready' email has been sent for this PR."""
+    current = read_notified_prs()
+    current.add(int(pr_number))
+    _atomic_write(NOTIFIED_PRS_PATH, {"pr_numbers": sorted(current)})
+
+
+def forget_notified_pr(pr_number: int) -> None:
+    """Drop a PR's notification tracking (called by gc when PR is reaped)."""
+    current = read_notified_prs()
+    current.discard(int(pr_number))
+    _atomic_write(NOTIFIED_PRS_PATH, {"pr_numbers": sorted(current)})
