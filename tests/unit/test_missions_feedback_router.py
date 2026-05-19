@@ -16,6 +16,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "STATE_DIR", state_dir)
     monkeypatch.setattr(state, "LAST_TICK_PATH", state_dir / "last_tick.json")
     monkeypatch.setattr(state, "ROUTED_REVIEWS_PATH", state_dir / "routed_reviews.json")
+    monkeypatch.setattr(state, "NOTIFIED_PRS_PATH", state_dir / "notified_prs.json")
     monkeypatch.setattr(feedback_router, "SUMMARIES_DIR", summaries_dir)
 
 
@@ -40,6 +41,8 @@ def patch_world(monkeypatch):
         reviews_by_pr: dict = {}
         issue_by_n: dict = {}
         prompts_sent: list = []
+        notifications_sent: list = []
+        notify_result: tuple[bool, str] = (True, "stub-message-id")
 
     world = World()
     world.active_sessions = []
@@ -47,6 +50,8 @@ def patch_world(monkeypatch):
     world.reviews_by_pr = {}
     world.issue_by_n = {}
     world.prompts_sent = []
+    world.notifications_sent = []
+    world.notify_result = (True, "stub-message-id")
 
     monkeypatch.setattr(dispatcher, "list_mission_sessions", lambda: list(world.active_sessions))
     monkeypatch.setattr(github, "get_pr_by_branch", lambda r, b: world.pr_by_branch.get((r, b)))
@@ -60,6 +65,12 @@ def patch_world(monkeypatch):
         lambda s, p: world.prompts_sent.append((s, p)),
     )
     monkeypatch.setattr(feedback_router.time, "sleep", lambda s: None)
+
+    def _stub_notify(repo_name, issue, pr):
+        world.notifications_sent.append({"repo": repo_name, "issue": issue.number, "pr": pr.number})
+        return world.notify_result
+
+    monkeypatch.setattr(feedback_router, "_notify_pr_ready", _stub_notify)
     return world
 
 
@@ -128,12 +139,15 @@ class TestSkips:
         assert any("repo not in config" in s.get("reason", "") for s in report.skipped)
 
     def test_no_new_reviews(self, cfg, patch_world):
+        # PR opened previously and already notified → router skips quietly.
+        state.mark_pr_notified(42)
         patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
         patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
         patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): []}
         patch_world.issue_by_n = {("owner/agentwire-dev", 195): mk_issue()}
         report = feedback_router.route_feedback(cfg)
         assert report.routed == []
+        assert patch_world.notifications_sent == []
         assert any("no new reviews" in s.get("reason", "") for s in report.skipped)
 
     def test_non_mission_session_ignored(self, cfg, patch_world):
@@ -144,6 +158,7 @@ class TestSkips:
 
 class TestRouting:
     def test_routes_single_new_review(self, cfg, patch_world):
+        state.mark_pr_notified(42)  # pretend PR already announced
         patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
         patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
         patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): [mk_review(1001)]}
@@ -166,6 +181,7 @@ class TestRouting:
         assert state.last_routed_review(42) == 1001
 
     def test_filters_already_routed(self, cfg, patch_world):
+        state.mark_pr_notified(42)
         state.update_routed_review(42, 1001)
         patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
         patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
@@ -186,6 +202,7 @@ class TestRouting:
         assert state.last_routed_review(42) == 1042
 
     def test_summary_includes_criteria(self, cfg, patch_world):
+        state.mark_pr_notified(42)
         patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
         patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
         patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): [mk_review(1001)]}
@@ -196,8 +213,49 @@ class TestRouting:
         assert "- [ ] b" in text
 
 
+class TestPrOpenedNotification:
+    def test_first_seen_pr_triggers_email(self, cfg, patch_world):
+        patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
+        patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
+        patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): []}
+        patch_world.issue_by_n = {("owner/agentwire-dev", 195): mk_issue()}
+
+        report = feedback_router.route_feedback(cfg)
+
+        assert patch_world.notifications_sent == [
+            {"repo": "owner/agentwire-dev", "issue": 195, "pr": 42}
+        ]
+        assert state.is_pr_notified(42)
+        assert any(r.get("event") == "pr_opened_email" for r in report.routed)
+
+    def test_second_tick_does_not_resend(self, cfg, patch_world):
+        patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
+        patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
+        patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): []}
+        patch_world.issue_by_n = {("owner/agentwire-dev", 195): mk_issue()}
+
+        feedback_router.route_feedback(cfg)
+        feedback_router.route_feedback(cfg)
+
+        # First tick sends the email; second is a no-op.
+        assert len(patch_world.notifications_sent) == 1
+
+    def test_send_failure_still_marks_notified(self, cfg, patch_world):
+        # Don't retry on every tick when SMTP / config breaks.
+        patch_world.notify_result = (False, "stub failure")
+        patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
+        patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
+        patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): []}
+        patch_world.issue_by_n = {("owner/agentwire-dev", 195): mk_issue()}
+
+        report = feedback_router.route_feedback(cfg)
+        assert state.is_pr_notified(42)
+        assert any(r.get("event") == "pr_opened_email_failed" for r in report.routed)
+
+
 class TestIdempotentReplay:
     def test_second_run_with_no_new_reviews_is_quiet(self, cfg, patch_world):
+        state.mark_pr_notified(42)  # PR-opened email already sent
         patch_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
         patch_world.pr_by_branch = {("owner/agentwire-dev", "mission-195-foo-bar"): mk_pr()}
         patch_world.reviews_by_pr = {("owner/agentwire-dev", 42): [mk_review(1001)]}
