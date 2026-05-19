@@ -1857,9 +1857,19 @@ def mission_list() -> str:
         for repo_short, rows in active.items():
             for row in rows:
                 lines.append(f"    {repo_short} #{row['issue']}  → {row['session']}")
+    # Exclude already-active issues from the eligible queue so a dispatched
+    # issue doesn't show up twice.
+    active_by_repo = {
+        repo: {row["issue"] for row in rows}
+        for repo, rows in active.items()
+    }
     eligible = data.get("eligible", {}) or {}
     for repo_short, rows in eligible.items():
-        eligibles = [r for r in rows if r.get("eligible")]
+        active_set = active_by_repo.get(repo_short, set())
+        eligibles = [
+            r for r in rows
+            if r.get("eligible") and r["issue"] not in active_set
+        ]
         if eligibles:
             lines.append(f"  Eligible in {repo_short}:")
             for r in eligibles:

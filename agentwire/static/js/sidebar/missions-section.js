@@ -88,11 +88,19 @@ export const missionsSection = {
             }
         }
 
-        // Eligible queue
+        // Eligible queue — exclude issues that are already running as active
+        // workers so a dispatched issue doesn't appear in both lists.
+        const activeIssueByRepo = {};
+        for (const repo of Object.keys(active)) {
+            activeIssueByRepo[repo] = new Set((active[repo] || []).map(r => r.issue));
+        }
         let eligibleTotal = 0;
         const eligibleRows = {};
         for (const repo of Object.keys(eligible)) {
-            const rows = (eligible[repo] || []).filter(r => r.eligible);
+            const activeSet = activeIssueByRepo[repo] || new Set();
+            const rows = (eligible[repo] || []).filter(
+                r => r.eligible && !activeSet.has(r.issue)
+            );
             eligibleRows[repo] = rows;
             eligibleTotal += rows.length;
         }

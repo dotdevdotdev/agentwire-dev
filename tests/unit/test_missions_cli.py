@@ -374,16 +374,21 @@ class TestRouteFeedback:
 
 
 class TestInit:
-    def test_creates_label_via_short_name(self, stub_world, capsys):
+    def test_creates_labels_via_short_name(self, stub_world, capsys):
         rc = cli.cmd_mission_init(_ns(repo="agentwire-dev", json=True))
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data["created"] is True
-        assert stub_world.labels_created[0]["repo"] == "owner/agentwire-dev"
+        assert {entry["label"] for entry in data["labels"]} == {"agent-ready", "stalled"}
+        assert all(entry["created"] is True for entry in data["labels"])
+        created_names = {row["name"] for row in stub_world.labels_created}
+        assert created_names == {"agent-ready", "stalled"}
+        assert all(row["repo"] == "owner/agentwire-dev" for row in stub_world.labels_created)
 
-    def test_creates_label_via_owner_repo_form(self, stub_world, capsys):
+    def test_creates_labels_via_owner_repo_form(self, stub_world, capsys):
         rc = cli.cmd_mission_init(_ns(repo="some-owner/some-repo", json=True))
         assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert {entry["label"] for entry in data["labels"]} == {"agent-ready", "stalled"}
 
     def test_idempotent_second_call(self, stub_world, capsys):
         cli.cmd_mission_init(_ns(repo="agentwire-dev", json=True))
@@ -391,7 +396,7 @@ class TestInit:
         rc = cli.cmd_mission_init(_ns(repo="agentwire-dev", json=True))
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data["created"] is False
+        assert all(entry["created"] is False for entry in data["labels"])
 
     def test_rejects_bare_short_with_no_config(self, stub_world, capsys):
         rc = cli.cmd_mission_init(_ns(repo="unknown-short-name", json=True))
