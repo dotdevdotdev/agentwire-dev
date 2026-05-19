@@ -247,3 +247,5 @@ These are future considerations, not promised:
 - Damage-control: `agentwire/safety/_core.py` (search for `_is_mission_worker_session`)
 - Sidebar UI: `agentwire/static/js/sidebar/missions-section.js` + `/api/missions/*` in `server.py`
 - launchd templates: `templates/launchd/dev.agentwire.mission-*.plist`
+
+> Live-shakedown verified on 2026-05-19 — first end-to-end mission run.
