@@ -3276,7 +3276,13 @@ projects:
             return web.json_response({"error": str(e)}, status=500)
 
     async def handle_transcribe(self, request: web.Request) -> web.Response:
-        """Transcribe audio to text."""
+        """Transcribe audio to text.
+
+        Decodes WebM/Opus uploads in-process via PyAV (no ffmpeg subprocess
+        startup) and resamples to 16 kHz mono PCM16 — the canonical input
+        shape for Whisper- and Moonshine-class models. Optionally prepends a
+        configurable amount of silence (``stt.silence_prepend_ms``, default 0).
+        """
         try:
             reader = await request.multipart()
             audio_field = await reader.next()
@@ -3284,45 +3290,87 @@ projects:
             if audio_field is None:
                 return web.json_response({"error": "No audio data"})
 
-            # Read audio data
             audio_data = await audio_field.read()
-
             if not audio_data:
                 return web.json_response({"error": "Empty audio data"})
 
-            # Save webm to temp file
-            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
-                f.write(audio_data)
-                webm_path = f.name
+            silence_ms = int(getattr(self.config.stt, "silence_prepend_ms", 0) or 0)
 
-            # Convert webm to wav (16kHz mono for Whisper)
-            wav_path = webm_path.replace(".webm", ".wav")
             try:
-                logger.info("Converting webm to wav: %s -> %s", webm_path, wav_path)
-                proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-i", webm_path,
-                    "-ar", "16000", "-ac", "1", "-y", wav_path,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                wav_data = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    self._decode_audio_to_wav,
+                    audio_data,
+                    silence_ms,
                 )
-                await proc.wait()
+            except Exception as e:
+                logger.error("Failed to decode audio: %s", e)
+                return web.json_response({"error": "Audio conversion failed"})
 
-                if proc.returncode != 0 or not Path(wav_path).exists():
-                    logger.error("Failed to convert webm to wav (ffmpeg returned %d)", proc.returncode)
-                    return web.json_response({"error": "Audio conversion failed"})
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(wav_data)
+                wav_path = f.name
 
-                # Transcribe the wav file
+            try:
                 logger.info("Transcribing %s via %s backend", wav_path, type(self.stt).__name__)
                 text = await self.stt.transcribe(Path(wav_path))
                 logger.info("Transcription result: %s", text)
                 return web.json_response({"text": text})
             finally:
-                Path(webm_path).unlink(missing_ok=True)
                 Path(wav_path).unlink(missing_ok=True)
 
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             return web.json_response({"error": str(e)})
+
+    @staticmethod
+    def _decode_audio_to_wav(audio_data: bytes, silence_prepend_ms: int = 0) -> bytes:
+        """Decode arbitrary input audio (WebM/Opus, MP3, M4A, …) to 16 kHz mono PCM16 WAV.
+
+        Replaces the previous ``ffmpeg -i in.webm out.wav`` subprocess. Subprocess
+        cold-start was 100–300 ms before any actual decoding; PyAV uses libav
+        bindings in-process so the only cost is the decoding itself.
+        """
+        import io
+        import wave
+
+        import av  # PyAV — declared in pyproject.toml `dependencies`
+
+        target_rate = 16000
+
+        with av.open(io.BytesIO(audio_data), mode="r") as container:
+            if not container.streams.audio:
+                raise RuntimeError("Input contains no audio stream")
+
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=target_rate)
+            pcm_chunks: list[bytes] = []
+
+            def _frame_bytes(f) -> bytes:
+                # AudioFrame.planes[0] may include SIMD alignment padding; slice
+                # to the exact PCM length (samples × channels × bytes_per_sample).
+                bytes_per_sample = f.format.bytes  # 2 for s16
+                channels = len(f.layout.channels)  # 1 for mono
+                size = f.samples * channels * bytes_per_sample
+                return bytes(f.planes[0])[:size]
+
+            for frame in container.decode(audio=0):
+                for resampled in resampler.resample(frame):
+                    pcm_chunks.append(_frame_bytes(resampled))
+            for resampled in resampler.resample(None):
+                pcm_chunks.append(_frame_bytes(resampled))
+
+        if silence_prepend_ms > 0:
+            silence_samples = int(target_rate * silence_prepend_ms / 1000)
+            pcm_chunks.insert(0, b"\x00\x00" * silence_samples)
+
+        pcm_data = b"".join(pcm_chunks)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)  # 16-bit
+            wav.setframerate(target_rate)
+            wav.writeframes(pcm_data)
+        return buf.getvalue()
 
     async def handle_upload(self, request: web.Request) -> web.Response:
         """Upload an image file for attachment to messages."""

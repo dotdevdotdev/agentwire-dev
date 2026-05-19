@@ -109,6 +109,10 @@ class STTConfig:
 
     url: str | None = None  # STT server URL (e.g., http://localhost:8100)
     timeout: int = 30
+    # Milliseconds of silence to prepend to the decoded audio before sending
+    # to the STT backend. Default 0 — moonshine doesn't need it. Set to ~300
+    # if your backend (e.g. older faster-whisper builds) clips the first syllable.
+    silence_prepend_ms: int = 0
 
 
 @dataclass
@@ -406,6 +410,7 @@ def _dict_to_config(data: dict) -> Config:
     stt = STTConfig(
         url=stt_data.get("url"),
         timeout=stt_data.get("timeout", 30),
+        silence_prepend_ms=int(stt_data.get("silence_prepend_ms", 0)),
     )
 
     # Agent
