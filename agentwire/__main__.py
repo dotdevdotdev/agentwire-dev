@@ -101,6 +101,17 @@ def _build_tmux_env_flags_shell(env: dict[str, str]) -> str:
     return " ".join(parts) + " "
 
 
+def _set_session_name_env(agent: "AgentCommand", session_name: str) -> None:
+    """Stamp ``AGENTWIRE_SESSION_NAME`` onto an ``AgentCommand.env``.
+
+    Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
+    / ``cmd_fork`` / scheduler-spawn paths gets this so downstream tooling
+    (notably the mission-worker damage-control rules in ``safety/_core.py``)
+    can identify which agentwire session the running tool is part of.
+    """
+    agent.env["AGENTWIRE_SESSION_NAME"] = session_name
+
+
 def inject_session_env(session: str, env: dict[str, str], remote_host: str | None = None) -> None:
     """Set env vars on an existing tmux session for FUTURE shells in that session.
 
@@ -3406,6 +3417,7 @@ def cmd_new(args) -> int:
     model_override = getattr(args, 'model', None)
     agent = build_agent_command(session_type, roles if roles else None, model=model_override)
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
+    _set_session_name_env(agent, session_name)
 
     agent_cmd = agent.command
 
