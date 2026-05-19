@@ -481,7 +481,13 @@ def cmd_mission_route_feedback(args) -> int:
 
 
 def cmd_mission_init(args) -> int:
-    """Create the ``agent-ready`` label on a target repo (idempotent)."""
+    """Create the ``agent-ready`` and ``stalled`` labels on a target repo (idempotent).
+
+    Both labels are required for the mission lifecycle: ``agent-ready`` gates the
+    dispatcher, ``stalled`` is applied by ``mission stall``. Without ``stalled``
+    pre-created, ``mission stall`` would fail with "'stalled' not found" on a
+    fresh repo.
+    """
     config = load_config()
     # Allow either short name (looked up via config) or owner/repo form.
     short = args.repo
@@ -492,20 +498,24 @@ def cmd_mission_init(args) -> int:
             args,
             f"'{short}' is not a configured repo short name and not in 'owner/repo' form",
         )
-    try:
-        created = github.create_label(
-            repo_name,
-            "agent-ready",
-            color="0e8a16",
-            description="Eligible for mission-dispatcher to pick up.",
-        )
-    except github.GitHubError as e:
-        return _emit_error(args, f"create_label failed: {e}")
 
+    labels_spec = [
+        ("agent-ready", "0e8a16", "Eligible for mission-dispatcher to pick up."),
+        ("stalled", "d93f0b", "Paused by `agentwire mission stall` — not eligible."),
+    ]
+    results: list[dict] = []
+    for name, color, description in labels_spec:
+        try:
+            created = github.create_label(repo_name, name, color=color, description=description)
+        except github.GitHubError as e:
+            return _emit_error(args, f"create_label '{name}' failed: {e}")
+        results.append({"label": name, "created": created})
+
+    summary = ", ".join(
+        f"'{r['label']}' {'created' if r['created'] else 'exists'}" for r in results
+    )
     return _emit(
         args,
-        {"success": True, "repo": repo_name, "created": created},
-        human=(
-            f"Label 'agent-ready' {'created' if created else 'already exists'} on {repo_name}"
-        ),
+        {"success": True, "repo": repo_name, "labels": results},
+        human=f"{summary} on {repo_name}",
     )

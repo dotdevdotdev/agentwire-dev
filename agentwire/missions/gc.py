@@ -64,12 +64,18 @@ def kill_session(session_full_name: str) -> None:
 
 
 def remove_worktree(path: Path) -> None:
-    """Remove a git worktree at ``path`` via ``git worktree remove --force``.
+    """Remove a git worktree at ``path`` via ``git worktree remove --force``,
+    then delete the local branch it pointed at.
 
     ``--force`` because by the time gc runs the PR is merged/closed and any
     uncommitted work is moot. Runs from inside the worktree so git can resolve
     the main repo via the worktree's .git pointer. Raises ``RuntimeError`` on
     failure (e.g. broken worktree pointer, or path not registered with git).
+
+    After worktree removal, attempts ``git branch -D <branch>`` from the
+    canonical repo so killed missions don't leak local branches. Branch name
+    is derived from the worktree directory name (``mission-N-slug``). Branch
+    deletion failures are NOT fatal — the worktree is the load-bearing part.
     """
     cwd = str(path) if path.is_dir() else None
     result = subprocess.run(
@@ -83,6 +89,22 @@ def remove_worktree(path: Path) -> None:
         raise RuntimeError(
             f"git worktree remove failed (rc={result.returncode}): "
             f"{(result.stderr or result.stdout).strip()}"
+        )
+
+    # Best-effort branch cleanup. The worktree's parent is `{repo}-worktrees`;
+    # the canonical repo lives at `{projects_dir}/{repo}` (one level up + drop
+    # the `-worktrees` suffix). Run `git branch -D` from there.
+    branch = path.name
+    worktrees_parent = path.parent
+    canonical_repo = worktrees_parent.parent / worktrees_parent.name.removesuffix("-worktrees")
+    if canonical_repo.is_dir():
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(canonical_repo),
+            check=False,
         )
 
 

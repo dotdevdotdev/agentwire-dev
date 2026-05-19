@@ -171,6 +171,18 @@ launchctl unload ~/Library/LaunchAgents/dev.agentwire.mission-*.plist
 rm ~/Library/LaunchAgents/dev.agentwire.mission-*.plist
 ```
 
+## Keeping the installed CLI in sync
+
+`uv tool install` caches builds. After editing any file under `agentwire/missions/`, `agentwire/safety/_core.py`, or the launchd plists, the installed `agentwire` binary still runs the **previous** code until you rebuild. The orchestrator launchd jobs invoke that installed binary directly — they will keep running stale code indefinitely.
+
+```bash
+agentwire rebuild   # reinstall from source so the installed CLI picks up changes
+```
+
+A symptom of forgetting this: you push a fix (e.g. branch cleanup in `gc.remove_worktree`), the next `mission gc` looks like it ran successfully, but the bug persists. Run `agentwire rebuild` between code change and any live test against the dispatcher / feedback-router / janitor.
+
+The portal (Python web server) needs `agentwire portal restart --dev` for static-file changes; the launchd plists pick up the new binary on their next tick — no service restart needed.
+
 ## Your first mission
 
 1. **One-time setup:**
@@ -224,6 +236,7 @@ rm ~/Library/LaunchAgents/dev.agentwire.mission-*.plist
 | `mission gc` keeps complaining "no PR for branch yet" | Worker hasn't pushed/opened the PR. That's a skip, not a failure — gc only reaps when state is MERGED/CLOSED. |
 | Feedback router routes the same review twice | Shouldn't happen — `state/routed_reviews.json` keys on PR number. If it does, that file may be corrupted; delete it and the router will re-route everything once. |
 | Worker tried to edit a file outside its worktree | Damage-control blocked it. The block message points at which file. If the edit is legitimate (rare — usually it's not), use the `# allow:` escape hatch in a Bash command, or kill+respawn the worker with a wider config (don't disable safety system-wide). |
+| Code change to `agentwire/missions/` doesn't take effect | The installed CLI is stale. Run `agentwire rebuild` — see [Keeping the installed CLI in sync](#keeping-the-installed-cli-in-sync). |
 
 ## Out of scope (v1)
 
