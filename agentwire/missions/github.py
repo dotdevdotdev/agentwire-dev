@@ -202,3 +202,51 @@ def comment_issue(repo: str, number: int, body: str) -> None:
         ],
         parse_json=False,
     )
+
+
+def edit_issue_labels(
+    repo: str,
+    number: int,
+    add: list[str] | None = None,
+    remove: list[str] | None = None,
+) -> None:
+    """Add and/or remove labels on an issue via ``gh issue edit``."""
+    args = ["issue", "edit", str(number), "--repo", repo]
+    for label in add or []:
+        args.extend(["--add-label", label])
+    for label in remove or []:
+        args.extend(["--remove-label", label])
+    if len(args) == 5:
+        return  # no labels to change
+    _run_gh(args, parse_json=False)
+
+
+_ALREADY_EXISTS_FRAGMENTS = ("already exists", "label already exists")
+
+
+def create_label(
+    repo: str,
+    name: str,
+    color: str = "0e8a16",
+    description: str = "",
+) -> bool:
+    """Create a label on a repo. Idempotent — returns False if it already existed.
+
+    ``color`` is a 6-char hex without ``#``. Default is green (0e8a16) for
+    the ``agent-ready`` semantic.
+    """
+    args = ["label", "create", name, "--repo", repo, "--color", color]
+    if description:
+        args.extend(["--description", description])
+    result = subprocess.run(
+        ["gh", *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode == 0:
+        return True
+    stderr = (result.stderr or "").lower()
+    if any(frag in stderr for frag in _ALREADY_EXISTS_FRAGMENTS):
+        return False
+    raise GitHubError(f"gh label create failed: {(result.stderr or result.stdout).strip()}")
