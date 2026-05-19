@@ -37,6 +37,7 @@ Headless and scheduled execution.
 
 - **[Scheduled workloads](scheduling/scheduled-workloads.md)** — `agentwire ensure`, `.agentwire.yml` task schema, overnight queue
 - **[Pi workflows](scheduling/workflows.md)** — YAML-defined DAGs of pi invocations
+- **[Missions](missions.md)** — issue → branch → draft PR → review → merge orchestration; launchd-driven dispatcher + feedback router + worktree janitor
 
 ## Integrations
 

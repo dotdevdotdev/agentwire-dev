@@ -34,9 +34,9 @@ import jinja2
 import yaml
 from aiohttp import web
 
+from .cached_status import CachedStatusChecker
 from .config import Config, load_config
 from .worktree import parse_session_name
-from .cached_status import CachedStatusChecker
 
 __version__ = "1.3.0"
 
@@ -238,6 +238,11 @@ class AgentWireServer:
         self.app.router.add_post("/api/scheduler/start", self.api_scheduler_start)
         self.app.router.add_post("/api/scheduler/stop", self.api_scheduler_stop)
         self.app.router.add_get("/api/scheduler/output", self.api_scheduler_session_output)
+        # Mission endpoints — first-class auto-dispatcher subsystem
+        self.app.router.add_get("/api/missions/list", self.api_missions_list)
+        self.app.router.add_get("/api/missions/status", self.api_missions_status)
+        self.app.router.add_post("/api/missions/tick", self.api_missions_tick)
+        self.app.router.add_post("/api/missions/gc", self.api_missions_gc)
         # Workflow history endpoints
         self.app.router.add_get("/api/workflows/runs", self.api_workflows_runs_list)
         self.app.router.add_get("/api/workflows/runs/{run_id}", self.api_workflows_run_detail)
@@ -3153,7 +3158,7 @@ projects:
     async def api_safety_status(self, request: web.Request) -> web.Response:
         """Damage-control current state: master enable, disabled rules, today's counts."""
         try:
-            from .cli_safety import load_patterns, LOGS_DIR
+            from .cli_safety import LOGS_DIR, load_patterns
             patterns = load_patterns()
             today = datetime.now().strftime("%Y-%m-%d")
             log_file = LOGS_DIR / f"{today}.jsonl"
@@ -4476,7 +4481,7 @@ projects:
         run_id = request.match_info["run_id"]
         try:
             from .workflows.cli import RUNS_DIR
-            from .workflows.storage import load_run, load_context, load_events
+            from .workflows.storage import load_context, load_events, load_run
 
             loop = asyncio.get_event_loop()
             meta = await loop.run_in_executor(None, lambda: load_run(RUNS_DIR, run_id))
@@ -4564,6 +4569,41 @@ projects:
             return web.json_response({"session": session, "output": output})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    # ------------------------------------------------------------------
+    # Missions endpoints (delegate to `agentwire mission ...` CLI)
+    # ------------------------------------------------------------------
+
+    async def api_missions_list(self, request: web.Request) -> web.Response:
+        """GET /api/missions/list - active workers + eligible issues per repo."""
+        success, result = await self.run_agentwire_cmd(["mission", "list"])
+        if not success:
+            return web.json_response(result, status=500)
+        return web.json_response(result)
+
+    async def api_missions_status(self, request: web.Request) -> web.Response:
+        """GET /api/missions/status - per-repo summary + last-tick heartbeats."""
+        success, result = await self.run_agentwire_cmd(["mission", "status"])
+        if not success:
+            return web.json_response(result, status=500)
+        return web.json_response(result)
+
+    async def api_missions_tick(self, request: web.Request) -> web.Response:
+        """POST /api/missions/tick - run one dispatcher tick now.
+
+        Synchronous in the request path so the caller gets the dispatch report
+        back. Broadcasts ``mission_changed`` to all WS clients on completion
+        so other sidebar consumers can refresh.
+        """
+        success, result = await self.run_agentwire_cmd(["mission", "tick"])
+        await self.broadcast_dashboard("mission_changed", {"source": "tick"})
+        return web.json_response(result, status=200 if success else 500)
+
+    async def api_missions_gc(self, request: web.Request) -> web.Response:
+        """POST /api/missions/gc - run the worktree-janitor now."""
+        success, result = await self.run_agentwire_cmd(["mission", "gc"])
+        await self.broadcast_dashboard("mission_changed", {"source": "gc"})
+        return web.json_response(result, status=200 if success else 500)
 
     async def api_notify(self, request: web.Request) -> web.Response:
         """POST /api/notify - Receive tmux hook notifications.
