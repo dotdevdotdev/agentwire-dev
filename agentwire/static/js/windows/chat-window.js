@@ -11,6 +11,7 @@
 
 import { desktop } from '../desktop-manager.js';
 import { sessionIcons } from '../icon-manager.js';
+import { pinnedMessage } from '../pinned-message.js';
 
 /** @type {ChatWindow|null} */
 let chatWindowInstance = null;
@@ -445,9 +446,15 @@ class ChatWindow {
         const msgEl = document.createElement('div');
         msgEl.className = `chat-message ${role}`;
         msgEl.innerHTML = `
+            <button class="chat-message-pin-btn" title="Pin this message" aria-label="Pin message">📌</button>
             <div class="message-text">${this._escapeHtml(text)}</div>
             <div class="timestamp">${message.timestamp.toLocaleTimeString()}</div>
         `;
+        const pinBtn = msgEl.querySelector('.chat-message-pin-btn');
+        pinBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            pinnedMessage.pin({ role, text });
+        });
         this.messagesEl.appendChild(msgEl);
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     }
