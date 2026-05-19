@@ -111,6 +111,10 @@ LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wik
 
 `/handoff` distills the current conversation into a shareable bundle: `ai-handoff.md` for another LLM and `show-the-story.html` for humans. The agent does the distillation in-context (free); the CLI/MCP renders deterministically. Outputs in `~/.agentwire/artifacts/handoff-<slug>/`. Full reference: [`docs/wiki/communication/handoff.md`](docs/wiki/communication/handoff.md).
 
+## Missions
+
+First-class auto-dispatcher subsystem (sibling to Sessions/Tasks/Workflows): stateless launchd orchestrators tick the GitHub issue board, spawn worker sessions in isolated worktrees for `agent-ready` issues, route PR-review feedback back to the worker, and reap on PR close. CLI under `agentwire mission ...`, 8 MCP `mission_*` tools. Full reference: [`docs/wiki/missions.md`](docs/wiki/missions.md).
+
 ## Reference Skills
 
 Reference detail lives in skills under `.claude/skills/` — invoke as needed:

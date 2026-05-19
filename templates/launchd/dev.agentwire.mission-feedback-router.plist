@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PR-feedback router — polls each active mission's PR for new reviews and
+  injects them into the worker session as a /clear + summary-file prompt
+  pair. Runs every 15 minutes, 24/7 (worker may still pick up the morning
+  feedback even outside work hours, since dispatch already happened).
+
+  Install:
+    1. Edit paths below for your agentwire install location.
+    2. cp dev.agentwire.mission-feedback-router.plist ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/dev.agentwire.mission-feedback-router.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.agentwire.mission-feedback-router</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USER/.local/bin/agentwire</string>
+        <string>mission</string>
+        <string>route-feedback</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USER</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/YOUR_USER/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/YOUR_USER</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USER/Library/Logs/agentwire-mission-feedback-router.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USER/Library/Logs/agentwire-mission-feedback-router.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

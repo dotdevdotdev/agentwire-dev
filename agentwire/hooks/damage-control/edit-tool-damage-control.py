@@ -556,6 +556,82 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 
 
 # ============================================================================
+# MISSION-WORKER RULES
+# ============================================================================
+#
+# When a tmux session is a mission worker (its name is "{repo}/mission-{N}-{slug}",
+# carried through to hooks as the ``AGENTWIRE_SESSION_NAME`` env var), tighten
+# damage control beyond the standard ruleset:
+#
+#   1. Edit/Write must target a path inside a mission worktree
+#      (``{...}-worktrees/mission-{N}-{slug}/...``). No writing to the canonical
+#      repo, sibling projects, or arbitrary filesystem locations.
+#   2. Bash ``git push --force`` (or ``--force-with-lease``) is blocked unless
+#      the target is a mission-* branch and not main/master/develop.
+#
+# Detection uses the session-name regex (set by ``cmd_new`` / spawn lifecycle);
+# enforcement uses a separate path regex to allow simple realpath checks.
+
+_MISSION_SESSION_RE = re.compile(r"^[^/]+/mission-\d+-")
+_MISSION_WORKTREE_PATH_RE = re.compile(r"-worktrees/mission-\d+-")
+_PROTECTED_BRANCH_RE = re.compile(r"\b(?:main|master|develop)\b")
+_FORCE_PUSH_RE = re.compile(r"\bgit\s+push\b[^|;&]*--force(?:-with-lease)?\b", re.IGNORECASE)
+
+
+def _is_mission_worker_session() -> bool:
+    """True iff ``AGENTWIRE_SESSION_NAME`` env var matches the mission pattern."""
+    return bool(_MISSION_SESSION_RE.match(os.environ.get("AGENTWIRE_SESSION_NAME", "") or ""))
+
+
+def check_mission_worker_path(file_path: str) -> Tuple[bool, str]:
+    """If we're in a mission worker, allow only paths under a mission worktree.
+
+    Returns ``(blocked, reason)``. ``(False, "")`` when not in a mission session
+    or when ``file_path`` resolves inside a ``*-worktrees/mission-N-...`` dir.
+
+    Realpath is used so symlink escapes from within the worktree still resolve
+    to their canonical location for the check.
+    """
+    if not _is_mission_worker_session():
+        return False, ""
+    try:
+        abs_path = os.path.realpath(os.path.expanduser(file_path))
+    except (OSError, ValueError):
+        return False, ""
+    if _MISSION_WORKTREE_PATH_RE.search(abs_path):
+        return False, ""
+    return True, (
+        "mission worker may only write inside its assigned worktree "
+        "({repo}-worktrees/mission-{N}-{slug}/...)"
+    )
+
+
+def check_mission_worker_bash(command: str) -> Tuple[bool, str]:
+    """If we're in a mission worker, gate force-pushes by target branch.
+
+    Rules:
+      - Any ``git push --force`` referencing ``main`` / ``master`` / ``develop``
+        is blocked outright.
+      - A ``git push --force`` targeting a ``mission-*`` branch is allowed
+        (the worker's own branch; rebases on top of merge-base happen here).
+      - All other ``git push --force`` patterns are blocked — mission workers
+        should never overwrite shared history.
+
+    Returns ``(blocked, reason)``; ``(False, "")`` if not in a mission session
+    or the command isn't a force-push.
+    """
+    if not _is_mission_worker_session():
+        return False, ""
+    if not _FORCE_PUSH_RE.search(command):
+        return False, ""
+    if _PROTECTED_BRANCH_RE.search(command):
+        return True, "mission worker: --force push to main/master/develop is blocked"
+    if re.search(r"\bmission-\d+-", command):
+        return False, ""
+    return True, "mission worker: --force push allowed only on mission-* branches"
+
+
+# ============================================================================
 # DECISION LADDERS
 # ============================================================================
 
@@ -598,6 +674,15 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             "pattern": None,
             "command": command,
             "disabled": True,
+        }
+
+    blocked, reason = check_mission_worker_bash(command)
+    if blocked:
+        return {
+            "decision": "block",
+            "reason": reason,
+            "pattern": "mission-worker:force-push",
+            "command": command,
         }
 
     bash_patterns = config.get("bashToolPatterns", [])
@@ -701,6 +786,10 @@ def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
     if safety_cfg.get("enabled", True) is False:
         return False, ""
+
+    blocked, reason = check_mission_worker_path(file_path)
+    if blocked:
+        return True, reason
 
     allowed = load_allowed_paths(config)
 

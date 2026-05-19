@@ -20,6 +20,7 @@ import { machinesSection } from './sidebar/machines-section.js';
 import { sessionsSection } from './sidebar/sessions-section.js';
 import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
+import { missionsSection } from './sidebar/missions-section.js';
 import { workflowsSection } from './sidebar/workflows-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
@@ -64,6 +65,7 @@ async function init() {
     sidebar.addSection('projects', projectsSection);
     sidebar.addSection('artifacts', artifactsSection);
     sidebar.addSection('scheduler', schedulerSection);
+    sidebar.addSection('missions', missionsSection);
     sidebar.addSection('workflows', workflowsSection);
     sidebar.addSection('safety', safetySection);
     sidebar.addSection('config', configSection);
