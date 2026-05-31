@@ -294,14 +294,31 @@ def session_create(
     project_dir: str | None = None,
     roles: str | None = None,
     session_type: str | None = None,
+    base: str | None = None,
+    pull_first: bool = True,
 ) -> str:
     """Create a new AgentWire session.
 
+    Worktree mode: use 'project/branch' as the name (e.g. 'fragmentz/nav-dropdown-185')
+    to fork an isolated git worktree off `base` (default 'main') at
+    `<project_dir>-worktrees/<branch>/`. This is the safe way to spin up parallel
+    agents on the same repo — each gets its own working tree and branch.
+
+    Flat names (no slash) attach a session directly to `project_dir` as-is. If
+    that path is already the working directory of another active session, the
+    call is refused — two agents on the same dirty tree is unsafe.
+
     Args:
-        name: Session name (required)
-        project_dir: Project directory path (optional)
-        roles: Comma-separated list of roles to apply (optional)
-        session_type: Session type like 'claude-bypass', 'claude-bypass' (optional)
+        name: Session name. Use 'project/branch' for an isolated worktree;
+            a flat name attaches to project_dir directly.
+        project_dir: Project directory path. For worktree mode, this is the main
+            repo (the worktree is created alongside it). Optional.
+        roles: Comma-separated list of roles to apply. Optional.
+        session_type: Session type like 'claude-bypass'. Optional.
+        base: Base branch to fork the worktree from (worktree mode only,
+            default 'main'). Ignored for flat names.
+        pull_first: Fetch origin/<base> before branching (worktree mode only,
+            default True). Set False to branch off the local <base> as-is.
 
     Returns:
         Success message or error description.
@@ -314,6 +331,10 @@ def session_create(
         args.extend(["--roles", roles])
     if session_type:
         args.extend(["--type", session_type])
+    if base:
+        args.extend(["--base", base])
+    if not pull_first:
+        args.append("--no-pull-first")
 
     data = run_agentwire_cmd(args)
     if data.get("success"):
