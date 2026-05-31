@@ -244,6 +244,7 @@ class AgentWireServer:
         self.app.router.add_post("/api/missions/tick", self.api_missions_tick)
         self.app.router.add_post("/api/missions/gc", self.api_missions_gc)
         # Workflow history endpoints
+        self.app.router.add_get("/api/workflows/list", self.api_workflows_list)
         self.app.router.add_get("/api/workflows/runs", self.api_workflows_runs_list)
         self.app.router.add_get("/api/workflows/runs/{run_id}", self.api_workflows_run_detail)
         # Artifact windows: upload and serve agent-generated HTML
@@ -4423,6 +4424,118 @@ projects:
             tail = int(request.query.get("tail", "100"))
             events = read_events(tail=tail, task_filter=name)
             return web.json_response({"events": events})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_workflows_list(self, request: web.Request) -> web.Response:
+        """GET /api/workflows/list - All workflow defs joined with scheduler state.
+
+        Returns one entry per WorkflowDef found by discover_workflows(), marked
+        as scheduled/enabled by cross-referencing scheduler.yaml tasks. Scheduler
+        tasks that reference a workflow with no matching def are returned in
+        `orphans` so the UI can surface broken config.
+        """
+        try:
+            from .workflows.cli import RUNS_DIR
+            from .workflows.definitions import discover_workflows
+            from .workflows.storage import list_runs
+            from .scheduler import load_board
+
+            def _summarize_schedule(sched) -> str:
+                if sched is None:
+                    return ""
+                if sched.after:
+                    base = f"after {sched.after}"
+                    if sched.delay:
+                        mins, secs = divmod(int(sched.delay), 60)
+                        suffix = f"{mins}m" if mins and not secs else (
+                            f"{mins}m{secs}s" if mins else f"{secs}s"
+                        )
+                        base = f"{base} +{suffix}"
+                    return base
+                every = (sched.every or "").strip().lower()
+                at = sched.at
+                weekdays = {
+                    "monday", "tuesday", "wednesday", "thursday",
+                    "friday", "saturday", "sunday",
+                }
+                if every in weekdays and at:
+                    return f"{every.capitalize()} {at}"
+                if every == "day" and at:
+                    return f"daily {at}"
+                if every == "week" and at:
+                    return f"weekly {at}"
+                if every == "weekday" and at:
+                    return f"weekdays {at}"
+                if not every:
+                    return f"at {at}" if at else ""
+                if at:
+                    return f"every {every} at {at}"
+                return f"every {every}"
+
+            def _collect() -> dict:
+                defs = discover_workflows()
+                board = load_board()
+                # name -> SchedulerTask, picking the first task per workflow name
+                tasks_by_workflow: dict[str, object] = {}
+                for task in board.tasks.values():
+                    if task.workflow and task.workflow not in tasks_by_workflow:
+                        tasks_by_workflow[task.workflow] = task
+
+                workflows: list[dict] = []
+                claimed_tasks: set[str] = set()
+                for wf in defs:
+                    task = tasks_by_workflow.get(wf.name)
+                    scheduled = task is not None
+                    enabled = bool(task.enabled) if task else False
+                    schedule_summary = _summarize_schedule(task.schedule) if task else ""
+                    last_run_at: float | None = None
+                    last_status: str = ""
+                    if task is not None:
+                        state = board.state.get(task.name)
+                        if state and state.last_run:
+                            last_run_at = state.last_run.timestamp()
+                            last_status = state.last_status
+                            claimed_tasks.add(task.name)
+                    if last_run_at is None:
+                        # Fall back to the most recent run dir for this workflow
+                        runs = list_runs(RUNS_DIR, workflow=wf.name, limit=1)
+                        if runs:
+                            last_run_at = runs[0].get("started_at")
+                            last_status = runs[0].get("status", "")
+                    workflows.append({
+                        "name": wf.name,
+                        "description": wf.description,
+                        "node_count": len(wf.nodes),
+                        "scheduled": scheduled,
+                        "enabled": enabled,
+                        "task_name": task.name if task else "",
+                        "schedule_summary": schedule_summary,
+                        "last_run_at": last_run_at,
+                        "last_status": last_status,
+                    })
+
+                # Orphans: scheduler tasks pointing at workflows that have no def.
+                def_names = {wf.name for wf in defs}
+                orphans: list[dict] = []
+                for wf_name, task in tasks_by_workflow.items():
+                    if wf_name in def_names:
+                        continue
+                    state = board.state.get(task.name)
+                    orphans.append({
+                        "name": wf_name,
+                        "task_name": task.name,
+                        "enabled": bool(task.enabled),
+                        "schedule_summary": _summarize_schedule(task.schedule),
+                        "last_run_at": state.last_run.timestamp() if state and state.last_run else None,
+                        "last_status": state.last_status if state else "",
+                    })
+
+                return {"workflows": workflows, "orphans": orphans}
+
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, _collect)
+            return web.json_response(data)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
