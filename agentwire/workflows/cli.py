@@ -95,7 +95,7 @@ def cmd_workflow_list(args) -> int:
 
     if not workflows:
         print("No workflows found.")
-        print("  Drop YAML files in ~/.agentwire/workflows/defs/ or see workflows/examples/.")
+        print("  Drop YAML files in ~/.agentwire/workflows/defs/.")
         return 0
 
     for wf in workflows:

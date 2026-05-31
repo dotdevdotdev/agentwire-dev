@@ -5,7 +5,7 @@ description: Pi workflow engine — YAML-defined DAGs of pi invocations chained 
 
 # Pi workflow engine — quick reference
 
-Workflows live in `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user). Each node runs against `pi` — a subprocess invocation of `pi -p --mode json` against the configured provider (default Z.AI / GLM-5.1). For Anthropic-quality scheduled work, use a `claude-bypass` tmux session via `.agentwire.yml` + scheduler, not the workflow engine.
+Workflows live in `~/.agentwire/workflows/defs/`. Each node runs against `pi` — a subprocess invocation of `pi -p --mode json` against the configured provider (default Z.AI / GLM-5.1). For Anthropic-quality scheduled work, use a `claude-bypass` tmux session via `.agentwire.yml` + scheduler, not the workflow engine.
 
 ## Minimum viable YAML
 

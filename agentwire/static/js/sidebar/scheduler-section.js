@@ -9,7 +9,10 @@ export const schedulerSection = {
         this._body = body;
 
         desktop.on('scheduler_state', (state) => {
-            this._state = state;
+            // Merge instead of overwrite — WebSocket events carry status fields
+            // but not the task list, so overwriting wipes tasks fetched by
+            // refresh() and the sidebar collapses to a bare status indicator.
+            this._state = this._state ? Object.assign(this._state, state) : state;
             this._render(body);
         });
         desktop.on('scheduler_update', (update) => {
