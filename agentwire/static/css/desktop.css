@@ -4459,13 +4459,13 @@ body.sidebar-pinned .sidebar-tab {
 
 .notification-panel {
     position: fixed;
-    bottom: 16px;
+    bottom: 150px;
     right: 16px;
     z-index: 1500;
     display: flex;
     flex-direction: column-reverse;
     gap: 8px;
-    max-height: calc(100vh - 32px);
+    max-height: calc(100vh - 166px);
     overflow-y: auto;
     pointer-events: none;
     scrollbar-width: none;
@@ -4585,6 +4585,33 @@ body.sidebar-pinned .sidebar-tab {
 .sidebar-workflow-runner[data-runner="mixed"] {
     background: rgba(150, 120, 200, 0.18);
     color: #a994d4;
+}
+
+.sidebar-workflow-def {
+    cursor: pointer;
+}
+.sidebar-workflow-def .sidebar-chevron {
+    flex-shrink: 0;
+    opacity: 0.5;
+    font-size: 11px;
+    transition: transform 0.15s ease;
+    width: 10px;
+    text-align: center;
+}
+.sidebar-workflow-def[data-expanded="true"] .sidebar-chevron {
+    transform: rotate(90deg);
+}
+.sidebar-workflow-runs {
+    padding-left: 14px;
+    margin: 2px 0 4px 11px;
+    border-left: 1px solid var(--chrome-border);
+}
+.sidebar-tag-warn {
+    background: rgba(220, 38, 38, 0.18);
+    color: #f87171;
+}
+.sidebar-workflow-orphan .sidebar-list-item-title {
+    color: #f87171;
 }
 
 .workflow-window-content {

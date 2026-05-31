@@ -3358,6 +3358,40 @@ def cmd_new(args) -> int:
         # Simple session: ~/projects/project/
         session_path = projects_dir / project
 
+    # Safety: refuse to attach a new session to a path that is already the working
+    # directory of another active session. Two agents sharing the same working tree
+    # is the dangerous footgun (one's dirty state visible to the other, branches
+    # mixing). Worktree sessions (project/branch) get unique paths and won't trip
+    # this. --force overrides.
+    if not args.force:
+        target = str(session_path.resolve()) if session_path.exists() else str(session_path)
+        panes_result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"],
+            capture_output=True, text=True,
+        )
+        if panes_result.returncode == 0:
+            conflicting: set[str] = set()
+            for line in panes_result.stdout.splitlines():
+                if "\t" not in line:
+                    continue
+                sess, p = line.split("\t", 1)
+                if sess == session_name:
+                    continue
+                try:
+                    if str(Path(p).resolve()) == target:
+                        conflicting.add(sess)
+                except (OSError, RuntimeError):
+                    continue
+            if conflicting:
+                others = ", ".join(sorted(conflicting))
+                hint = (
+                    f"Refusing to attach session '{session_name}' to {session_path}: "
+                    f"already the working directory of active session(s): {others}. "
+                    "Use a 'project/branch' name to create an isolated worktree, "
+                    "pick a different path, or pass --force to override."
+                )
+                return _output_result(False, json_mode, hint)
+
     if not session_path.exists():
         if args.force or path:
             # Auto-create directory with -f flag or when custom path explicitly provided
