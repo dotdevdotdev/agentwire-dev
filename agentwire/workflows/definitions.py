@@ -17,9 +17,6 @@ import yaml
 from agentwire.workflows.node import ActionNode, OutputSpec
 
 # Where workflow YAML files are discovered by `agentwire workflow list` / run.
-# Order matters: first match wins.
-# User overrides live in `~/.agentwire/workflows/defs/`. Bundled examples are
-# resolved via `_repo_examples_dir()` at runtime (see discover_workflows).
 DISCOVERY_DIRS = [
     Path.home() / ".agentwire" / "workflows" / "defs",
 ]
@@ -331,16 +328,10 @@ def load_workflow(path: Path) -> WorkflowDef:
     )
 
 
-def _repo_examples_dir() -> Path:
-    """Path to the bundled `agentwire/workflows/examples/` dir."""
-    return Path(__file__).resolve().parent / "examples"
-
-
 def discover_workflows() -> list[WorkflowDef]:
     """Find all workflow YAMLs in known discovery dirs."""
-    search_dirs = [*DISCOVERY_DIRS, _repo_examples_dir()]
     found: dict[str, WorkflowDef] = {}
-    for directory in search_dirs:
+    for directory in DISCOVERY_DIRS:
         if not directory.is_dir():
             continue
         for yaml_file in sorted(directory.glob("*.yaml")):
@@ -348,7 +339,6 @@ def discover_workflows() -> list[WorkflowDef]:
                 wf = load_workflow(yaml_file)
             except Exception:
                 continue
-            # First match wins — user's ~/.agentwire dir overrides repo examples
             if wf.name not in found:
                 found[wf.name] = wf
     return list(found.values())
@@ -366,5 +356,5 @@ def resolve_workflow(name_or_path: str) -> WorkflowDef:
 
     raise FileNotFoundError(
         f"workflow {name_or_path!r} not found. "
-        f"Searched: {[str(p) for p in [*DISCOVERY_DIRS, _repo_examples_dir()]]}"
+        f"Searched: {[str(p) for p in DISCOVERY_DIRS]}"
     )

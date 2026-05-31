@@ -90,4 +90,4 @@ An agent in a pane 1+ of a session, spawned by the orchestrator (typically via t
 
 ## W — Workflow
 
-A YAML file under `agentwire/workflows/examples/` (bundled) or `~/.agentwire/workflows/defs/` (user) describing a DAG of nodes. Each node runs against the `pi` runner; nodes flow templated outputs to dependents. Run with `agentwire workflow run <name>`. → [Pi workflows](scheduling/workflows.md).
+A YAML file under `~/.agentwire/workflows/defs/` describing a DAG of nodes. Each node runs against the `pi` runner; nodes flow templated outputs to dependents. Run with `agentwire workflow run <name>`. → [Pi workflows](scheduling/workflows.md).

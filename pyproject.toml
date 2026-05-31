@@ -96,8 +96,6 @@ include = [
     "agentwire/hooks/**/*.sh",
     # Optional bundled voice samples
     "agentwire/voices/*.wav",
-    # Bundled workflow example YAMLs
-    "agentwire/workflows/examples/*.yaml",
     # Top-level docs to ship in wheel
     "LICENSE",
     "README.md",
