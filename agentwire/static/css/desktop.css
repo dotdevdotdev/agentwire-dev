@@ -477,6 +477,48 @@ body {
     opacity: 0.7;
 }
 
+.sidebar-subheader-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding: 8px 4px 4px;
+    opacity: 0.7;
+    cursor: pointer;
+    user-select: none;
+}
+.sidebar-subheader-toggle:hover {
+    opacity: 1;
+}
+.sidebar-subheader-toggle .sidebar-chevron {
+    font-size: 10px;
+    width: 10px;
+    text-align: center;
+    opacity: 0.7;
+    margin-left: 0;  /* override the workflow PR rule that pushes chevron to far right */
+    transition: transform 0.15s;
+}
+.sidebar-subheader-toggle[data-collapsed="false"] .sidebar-chevron {
+    transform: rotate(0deg);
+}
+.sidebar-subheader-count {
+    margin-left: auto;
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+}
+.sidebar-subheader-parent {
+    font-weight: 600;
+    opacity: 0.85;
+}
+.sidebar-subheader-children {
+    padding-left: 10px;
+    border-left: 1px solid var(--chrome-border);
+    margin-left: 6px;
+}
+
 .sidebar-section-toggle {
     cursor: pointer;
     user-select: none;

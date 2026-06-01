@@ -1,12 +1,43 @@
 import { desktop } from '../desktop-manager.js';
 
+const COLLAPSED_KEY = 'scheduler-section-collapsed';
+const DEFAULT_COLLAPSED = ['inactive'];  // first-load: hide the long disabled list
+
+function _loadCollapsed() {
+    try {
+        const raw = localStorage.getItem(COLLAPSED_KEY);
+        if (!raw) return new Set(DEFAULT_COLLAPSED);
+        const arr = JSON.parse(raw);
+        return new Set(Array.isArray(arr) ? arr : DEFAULT_COLLAPSED);
+    } catch {
+        return new Set(DEFAULT_COLLAPSED);
+    }
+}
+
+function _saveCollapsed(set) {
+    try {
+        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+    } catch {
+        // localStorage unavailable — collapse state stays session-scoped
+    }
+}
+
+function _escape(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[c]);
+}
+
 export const schedulerSection = {
     title: 'Scheduler',
     _body: null,
     _state: null,
+    _collapsed: null,  // Set<string> hydrated lazily on mount
+    _lastHtml: '',     // dedupe identical re-renders (kills WS-driven flicker)
 
     async mount(body) {
         this._body = body;
+        if (this._collapsed === null) this._collapsed = _loadCollapsed();
 
         desktop.on('scheduler_state', (state) => {
             // Merge instead of overwrite — WebSocket events carry status fields
@@ -26,6 +57,7 @@ export const schedulerSection = {
     },
 
     async refresh(body) {
+        if (this._collapsed === null) this._collapsed = _loadCollapsed();
         try {
             const [liveRes, boardRes] = await Promise.all([
                 fetch('/api/scheduler/live'),
@@ -44,14 +76,35 @@ export const schedulerSection = {
         this._render(body);
     },
 
+    _renderTaskRow(t, current_task) {
+        const name = typeof t === 'string' ? t : (t.name || t.task || '?');
+        const enabled = typeof t === 'object' ? t.enabled !== false : true;
+        const statusClass = !enabled ? 'dot-offline' : (name === current_task ? 'dot-processing' : 'dot-idle');
+        const safeName = _escape(name);
+        return `<div class="sidebar-list-item sidebar-scheduler-task" data-task="${safeName}">
+            <span class="sidebar-status-dot ${statusClass}"></span>
+            <span class="sidebar-list-item-title">${safeName}</span>
+            <button class="sidebar-list-item-btn" data-action="${enabled ? 'disable' : 'enable'}" title="${enabled ? 'Disable' : 'Enable'}">${enabled ? '⏸' : '▶'}</button>
+            <button class="sidebar-list-item-btn" data-action="run" title="Run now">⚡</button>
+        </div>`;
+    },
+
+    _renderGroup(key, label, count, rowsHtml) {
+        const collapsed = this._collapsed.has(key);
+        const chevron = collapsed ? '▸' : '▾';
+        return `<div class="sidebar-subheader-toggle" data-group="${key}" data-collapsed="${collapsed}">
+            <span class="sidebar-chevron">${chevron}</span>
+            <span>${label}</span>
+            <span class="sidebar-subheader-count">${count}</span>
+        </div>${collapsed ? '' : rowsHtml}`;
+    },
+
     _render(body) {
         if (!this._state) {
             body.innerHTML = '<div class="sidebar-empty">Scheduler not running</div>';
             return;
         }
-        const { current_task, tasks, uptime } = this._state;
-        // Tolerate both shapes: HTTP /live sends `running: true`; older WS
-        // events only had `status: "running"`.
+        const { current_task, tasks } = this._state;
         const running = this._state.running ?? (this._state.status === 'running');
         const statusDot = running ? 'dot-online' : 'dot-offline';
         const statusText = running ? 'Running' : 'Stopped';
@@ -60,30 +113,52 @@ export const schedulerSection = {
 
         if (current_task) {
             html += `<div class="sidebar-section-subheader">Current</div>`;
-            html += `<div class="sidebar-list-item sidebar-scheduler-current"><span class="sidebar-activity-dot dot-processing"></span><span class="sidebar-list-item-title">${current_task}</span></div>`;
+            html += `<div class="sidebar-list-item sidebar-scheduler-current"><span class="sidebar-activity-dot dot-processing"></span><span class="sidebar-list-item-title">${_escape(current_task)}</span></div>`;
         }
 
         const taskList = tasks || this._state.task_list || [];
         if (taskList.length) {
-            html += `<div class="sidebar-section-subheader">Tasks</div>`;
-            for (const t of taskList) {
-                const name = typeof t === 'string' ? t : (t.name || t.task || '?');
-                const enabled = typeof t === 'object' ? t.enabled !== false : true;
-                const statusClass = !enabled ? 'dot-offline' : (name === current_task ? 'dot-processing' : 'dot-idle');
-                html += `<div class="sidebar-list-item sidebar-scheduler-task" data-task="${name}">
-                    <span class="sidebar-status-dot ${statusClass}"></span>
-                    <span class="sidebar-list-item-title">${name}</span>
-                    <button class="sidebar-list-item-btn" data-action="${enabled ? 'disable' : 'enable'}" title="${enabled ? 'Disable' : 'Enable'}">${enabled ? '⏸' : '▶'}</button>
-                    <button class="sidebar-list-item-btn" data-action="run" title="Run now">⚡</button>
-                </div>`;
+            const tasksCollapsed = this._collapsed.has('tasks');
+            const tasksChevron = tasksCollapsed ? '▸' : '▾';
+            html += `<div class="sidebar-subheader-toggle sidebar-subheader-parent" data-group="tasks" data-collapsed="${tasksCollapsed}">
+                <span class="sidebar-chevron">${tasksChevron}</span>
+                <span>Tasks</span>
+                <span class="sidebar-subheader-count">${taskList.length}</span>
+            </div>`;
+
+            if (!tasksCollapsed) {
+                const active = [];
+                const inactive = [];
+                for (const t of taskList) {
+                    const enabled = typeof t === 'object' ? t.enabled !== false : true;
+                    (enabled ? active : inactive).push(t);
+                }
+                const activeRows = active.map(t => this._renderTaskRow(t, current_task)).join('');
+                const inactiveRows = inactive.map(t => this._renderTaskRow(t, current_task)).join('');
+                html += `<div class="sidebar-subheader-children">`;
+                html += this._renderGroup('active', 'Active', active.length, activeRows);
+                html += this._renderGroup('inactive', 'Inactive', inactive.length, inactiveRows);
+                html += `</div>`;
             }
         }
 
+        if (html === this._lastHtml) return;  // dedupe: WS-driven re-renders w/ same DOM
+        this._lastHtml = html;
         body.innerHTML = html;
         body.onclick = (e) => this._handleClick(e, body);
     },
 
     async _handleClick(e, body) {
+        const toggle = e.target.closest('[data-group]');
+        if (toggle) {
+            const key = toggle.dataset.group;
+            if (this._collapsed.has(key)) this._collapsed.delete(key);
+            else this._collapsed.add(key);
+            _saveCollapsed(this._collapsed);
+            this._render(body);
+            return;
+        }
+
         const btn = e.target.closest('[data-action]');
         if (!btn) return;
         const item = btn.closest('[data-task]');
