@@ -131,42 +131,38 @@ tasks:
 
 ---
 
-## Scheduling / Workflows / Overnight
+## Scheduling / Overnight
 
-Three execution paths for non-interactive work, each picked per use case:
+Two execution paths for non-interactive work:
 
 | Path | Field | Dispatch | Best for |
 |---|---|---|---|
-| **Ensure task** | `task: <name>` in scheduler.yaml + `tasks: <name>:` in .agentwire.yml | `agentwire ensure` → tmux session → Claude Code | Multi-step agent work needing branch/PR/MCP tools |
-| **Workflow task** | `workflow: <name>` in scheduler.yaml | `run_workflow()` in-process → pi or anthropic-runner subprocesses per node | Deterministic DAGs of small reliable nodes |
-| **Overnight queue** | `agentwire overnight prepare …` | Orchestrator dispatches forked Claude sessions during a configured window | Human-prepared one-shot work that can't be expressed as recurring YAML |
-
-The scheduler handles ensure + workflow tasks. The overnight queue is **separate**: it dispatches sessions outside the scheduler's task model, with full forked Claude conversation context as the entry point.
+| **Ensure task** | `task: <name>` in scheduler.yaml + `tasks: <name>:` in .agentwire.yml | `agentwire ensure` → tmux session → Claude Code | Recurring agent work |
+| **Overnight queue** | `agentwire overnight prepare …` | Orchestrator dispatches forked Claude sessions during a configured window | Human-prepared one-shot work |
 
 ```
-                ┌──────────── ~/.agentwire/scheduler.yaml ────────────┐
-                │   tasks:                                            │
-                │     nightly-tests:    task: write-tests             │
-                │     nightly-doc-drift: workflow: doc-drift-check    │
-                └──────────────┬─────────────────┬────────────────────┘
-                               ▼                 ▼
-                  agentwire ensure       run_workflow() in-process
-                  (tmux + Claude)        (pi or anthropic-runner per node)
+                ┌──────── ~/.agentwire/scheduler.yaml ─────────┐
+                │   tasks:                                     │
+                │     nightly-tests:    task: write-tests      │
+                └──────────────────┬───────────────────────────┘
+                                   ▼
+                          agentwire ensure
+                          (tmux + Claude)
 
-                ┌── ~/.agentwire/queues/  (overnight prepare queue) ──┐
-                │  human prepares interactively → captured sessionId  │
-                └──────────────┬──────────────────────────────────────┘
+                ┌── ~/.agentwire/queues/  (overnight prepare) ──┐
+                │  human prepares interactively → sessionId     │
+                └──────────────┬────────────────────────────────┘
                                ▼
                     overnight orchestrator dispatches inside window
                     (forks Claude context, runs to completion, opens PR)
 ```
 
 Decision shortcut:
-- Recurring + autonomous → scheduler with `task:` or `workflow:`.
+- Recurring + autonomous → scheduler with `task:`.
 - One-shot, judgment-heavy → overnight queue.
 - Ad-hoc → `agentwire ensure` or just open a session.
 
-→ [Scheduled workloads](scheduling/scheduled-workloads.md), [Pi workflows](scheduling/workflows.md).
+→ [Scheduled workloads](scheduling/scheduled-workloads.md).
 
 ---
 

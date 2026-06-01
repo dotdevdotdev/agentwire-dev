@@ -259,7 +259,7 @@ class TestPickNextTask:
         assert wait == 0.0
 
 
-# --- Workflow task validation ---
+# --- Ensure-task validation ---
 
 class TestValidateTaskPayload:
     def _task(self, **kwargs) -> SchedulerTask:
@@ -278,134 +278,12 @@ class TestValidateTaskPayload:
         errors = _validate_task_payload("t", self._task())
         assert errors == []
 
-    def test_both_task_and_workflow_rejected(self):
+    def test_missing_task_rejected(self):
         from agentwire.scheduler import _validate_task_payload
-        errors = _validate_task_payload("t", self._task(task="t", workflow="demo"))
-        # Workflow resolution will fail first because 'demo' doesn't exist; mutex check also fires.
-        assert any("cannot set both" in e for e in errors)
-
-    def test_neither_task_nor_workflow_rejected(self):
-        from agentwire.scheduler import _validate_task_payload
-        errors = _validate_task_payload("t", self._task(task="", workflow=""))
-        assert any("must set either" in e for e in errors)
-
-    def test_inputs_without_workflow_rejected(self):
-        from agentwire.scheduler import _validate_task_payload
-        errors = _validate_task_payload("t", self._task(inputs={"k": "v"}))
-        assert any("'inputs' only valid with 'workflow'" in e for e in errors)
+        errors = _validate_task_payload("t", self._task(task=""))
+        assert any("must set 'task'" in e for e in errors)
 
     def test_git_gate_requires_project(self):
         from agentwire.scheduler import _validate_task_payload
         errors = _validate_task_payload("t", self._task(project="", gate={"git_commit": True}))
         assert any("gate git_commit requires 'project' path" in e for e in errors)
-
-    def test_unknown_workflow_rejected(self):
-        from agentwire.scheduler import _validate_task_payload
-        errors = _validate_task_payload(
-            "t",
-            self._task(task="", workflow="__does_not_exist__xyz__"),
-        )
-        assert any("not found" in e for e in errors)
-
-class TestWorkflowStatusMapping:
-    @pytest.mark.parametrize("wf_status,sched_status", [
-        ("success", "complete"),
-        ("partial", "incomplete"),
-        ("failure", "failed"),
-    ])
-    def test_mapping(self, wf_status, sched_status):
-        from agentwire.scheduler import _WORKFLOW_STATUS_TO_SCHED
-        assert _WORKFLOW_STATUS_TO_SCHED[wf_status] == sched_status
-
-
-class TestRenderWorkflowInputs:
-    def _task(self, **kwargs) -> SchedulerTask:
-        defaults = dict(
-            name="my-task",
-            project="/tmp/foo",
-            session="sess",
-            task="",
-            workflow="demo",
-            schedule=Schedule(every="1h"),
-        )
-        defaults.update(kwargs)
-        return SchedulerTask(**defaults)
-
-    def test_substitutes_known_vars(self):
-        from agentwire.scheduler import _render_workflow_inputs
-        task = self._task()
-        out = _render_workflow_inputs(
-            {"p": "{{ project }}", "t": "{{ task }}", "s": "{{ session }}", "w": "{{ workflow }}"},
-            task,
-        )
-        assert out == {"p": "/tmp/foo", "t": "my-task", "s": "sess", "w": "demo"}
-
-    def test_leaves_unknown_vars_untouched(self):
-        from agentwire.scheduler import _render_workflow_inputs
-        out = _render_workflow_inputs({"x": "{{ something_else }}"}, self._task())
-        assert out == {"x": "{{ something_else }}"}
-
-    def test_non_string_values_passthrough(self):
-        from agentwire.scheduler import _render_workflow_inputs
-        out = _render_workflow_inputs({"n": 5, "b": True, "lst": ["a"]}, self._task())
-        assert out == {"n": 5, "b": True, "lst": ["a"]}
-
-    def test_empty_inputs_returns_empty(self):
-        from agentwire.scheduler import _render_workflow_inputs
-        assert _render_workflow_inputs({}, self._task()) == {}
-        assert _render_workflow_inputs(None, self._task()) == {}
-
-
-class TestParseWorkflowSummary:
-    def _run(self, status="success", node_results=None, error=None, workflow="demo"):
-        from types import SimpleNamespace
-        return SimpleNamespace(
-            status=status,
-            workflow=workflow,
-            error=error,
-            node_results=node_results or [],
-        )
-
-    def _node(self, node_id, status="success", final_text="", error=None):
-        from types import SimpleNamespace
-        return SimpleNamespace(
-            node_id=node_id, status=status, final_text=final_text, error=error,
-            duration_ms=0, attempts=1,
-        )
-
-    def test_success_run(self):
-        from agentwire.scheduler import _parse_workflow_summary
-        run = self._run(
-            status="success",
-            node_results=[
-                self._node("a", "success", "step one done"),
-                self._node("b", "success", "final answer 42\nmore detail"),
-            ],
-        )
-        summary, files, blockers = _parse_workflow_summary(run)
-        assert "demo → success" in summary
-        assert "a=success" in summary and "b=success" in summary
-        assert "final answer 42" in summary
-        assert files == []
-        assert blockers == []
-
-    def test_failure_run_collects_blockers(self):
-        from agentwire.scheduler import _parse_workflow_summary
-        run = self._run(
-            status="failure",
-            error="node[b] failed",
-            node_results=[
-                self._node("a", "success", ""),
-                self._node("b", "failure", "", error="pi exited 2"),
-            ],
-        )
-        summary, files, blockers = _parse_workflow_summary(run)
-        assert summary.startswith("demo → failure")
-        assert "node[b] failed" in blockers
-        assert any("[b] pi exited 2" in b for b in blockers)
-
-    def test_empty_nodes(self):
-        from agentwire.scheduler import _parse_workflow_summary
-        run = self._run(status="success", node_results=[])
-        summary, _, _ = _parse_workflow_summary(run)
-        assert "(no nodes)" in summary
