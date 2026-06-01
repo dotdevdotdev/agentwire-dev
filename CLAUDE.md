@@ -125,10 +125,9 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 | `agentwire-mcp-tools` | Picking the right MCP tool from inside an agent session |
 | `agentwire-config` | Editing `~/.agentwire/config.yaml` (TTS, channels, services, etc.) |
 | `agentwire-project-config` | Editing `.agentwire.yml`, defining tasks, roles, idle notifications |
-| `agentwire-scheduler` | Scheduled task gates/schedule/priority + overnight queue + workflow-backed tasks |
+| `agentwire-scheduler` | Scheduled task gates/schedule/priority + overnight queue |
 | `agentwire-desktop-ui` | Editing portal static files (sidebar, windows, artifacts) |
 | `agentwire-pi` | Setting up pi sessions (zai, deepseek, openai, etc.) via pi coding agent |
-| `agentwire-workflows` | Authoring or debugging pi workflow YAMLs (`agentwire workflow ...`) |
 
 ## Docs
 

@@ -1,6 +1,6 @@
 ---
 name: agentwire-scheduler
-description: Scheduler configuration and the overnight session queue — task gates (`git_commit`, `git_diff`, `command`), `schedule` field reference (duration vs calendar, `at`/`every`/`after`/`delay`/`cooldown`/`not_before`/`not_after`/`except`), priority/pipeline ordering, one-time/max_runs tasks, workflow-backed tasks (`workflow:` + `inputs:`), overnight prepare-and-dispatch workflow. Use when adding or debugging scheduled tasks in `~/.agentwire/scheduler.yaml`, wiring up overnight sessions, or explaining how gating/dispatch works.
+description: Scheduler configuration and the overnight session queue — task gates (`git_commit`, `git_diff`, `command`), `schedule` field reference (duration vs calendar, `at`/`every`/`after`/`delay`/`cooldown`/`not_before`/`not_after`/`except`), priority/pipeline ordering, one-time/max_runs tasks, overnight prepare-and-dispatch flow. Use when adding or debugging scheduled tasks in `~/.agentwire/scheduler.yaml`, wiring up overnight sessions, or explaining how gating/dispatch works.
 ---
 
 # AgentWire Scheduler & Overnight Queue
@@ -76,39 +76,6 @@ schedule:
 Tasks sort by `priority` first (lower = runs first), with overdue score as tiebreaker. This ensures pipeline ordering — upstream stages run before downstream when multiple tasks are overdue.
 
 Tasks with default priority (99) sort after all prioritized tasks. Fillers always run after all regular tasks regardless of priority.
-
-## Workflow-Backed Tasks
-
-A scheduler task can dispatch a pi workflow DAG (Phase 3) instead of shelling out
-to `agentwire ensure`. Use `workflow:` + `inputs:` on the task; omit `session:` and
-`task:`. Workflow tasks run in-process via `agentwire.workflows.runner.run_workflow`,
-bypass tmux entirely, and write their run under `~/.agentwire/workflows/runs/<run_id>/`.
-
-```yaml
-tasks:
-  nightly-doc-audit:
-    schedule: { every: day, at: "23:00" }
-    workflow: doc-drift-check        # workflow name or absolute YAML path
-    inputs:
-      paths: "docs/,agentwire/"
-      context: "{{ project }}"       # {{ task }}, {{ project }}, {{ session }}, {{ workflow }} expand from scheduler context
-    gate:
-      git_diff: [docs/, agentwire/]  # git gates still need `project:`
-    project: /Users/dotdev/projects/agentwire-dev
-    max_runs: 30
-```
-
-**Status mapping:** workflow `success` → `complete`, `partial` → `incomplete`,
-`failure` → `failed`. Node-level detail is included in the `task_completed`
-event (`workflow`, `run_id`, `nodes[]`) and rendered in `agentwire scheduler
-report --artifact`.
-
-**Dry-run:** `agentwire scheduler run <name> --dry-run` prints the workflow
-plan without touching state — workflow tasks only.
-
-**Rule:** a task must set either `task:` (ensure path) or `workflow:` (DAG path),
-not both. `inputs:` is only valid with `workflow:`. Git gates (`git_commit`,
-`git_diff`) require `project:` to be set regardless of dispatch path.
 
 ## One-Time and Limited Tasks
 

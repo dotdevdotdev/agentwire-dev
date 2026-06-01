@@ -74,18 +74,16 @@ class Schedule:
 @dataclass
 class SchedulerTask:
     name: str
-    project: str = ""     # ~/projects/foo (expanded at load time) — optional for workflow tasks
-    session: str = ""     # session name for ensure (required iff task is set)
-    task: str = ""        # task name in project's .agentwire.yml (mutually exclusive with workflow)
-    workflow: str = ""    # workflow name or YAML path (mutually exclusive with task)
-    inputs: dict = field(default_factory=dict)  # workflow inputs passed to run_workflow
+    project: str = ""     # ~/projects/foo (expanded at load time)
+    session: str = ""     # tmux session name for ensure dispatch
+    task: str = ""        # task name in project's .agentwire.yml
     schedule: Schedule = field(default_factory=Schedule)  # REQUIRED (replaces interval)
     enabled: bool = True
     filler: bool = False  # only runs in spare cycles
     priority: int = 99    # task ordering (lower = higher priority)
-    type: str | None = None  # session type override (e.g., claude-bypass) — ignored for workflow tasks
-    roles: list[str] | None = None  # role override — ignored for workflow tasks
-    model: str | None = None  # model override — ignored for workflow tasks
+    type: str | None = None  # session type override (e.g., claude-bypass)
+    roles: list[str] | None = None  # role override
+    model: str | None = None  # model override
     gate: dict | None = None  # precondition gate (git_commit, git_diff, command)
     max_runs: int | None = None  # auto-disable after N successful dispatches
     once: bool = False           # shorthand for max_runs: 1
@@ -221,25 +219,14 @@ def load_board() -> Board:
         raw_project = t.get("project", "")
         project_path = str(Path(raw_project).expanduser()) if raw_project else ""
 
-        workflow = str(t.get("workflow") or "")
-        raw_inputs = t.get("inputs") or {}
-        if not isinstance(raw_inputs, dict):
-            raw_inputs = {}
-
-        if workflow:
-            session_name = str(t.get("session") or "")
-            task_name = str(t.get("task") or "")
-        else:
-            session_name = str(t.get("session") or name)
-            task_name = str(t.get("task") or name)
+        session_name = str(t.get("session") or name)
+        task_name = str(t.get("task") or name)
 
         board.tasks[name] = SchedulerTask(
             name=name,
             project=project_path,
             session=session_name,
             task=task_name,
-            workflow=workflow,
-            inputs=dict(raw_inputs),
             schedule=schedule,
             enabled=bool(t.get("enabled", True)),
             filler=bool(t.get("filler", False)),
@@ -1005,7 +992,7 @@ def _auto_commit(task: SchedulerTask, task_name: str, status: str) -> None:
 
 
 def dispatch_task(board: Board, task_name: str) -> TaskState:
-    """Run a task (workflow DAG or `agentwire ensure`) and return updated state.
+    """Run a task via `agentwire ensure` and return updated state.
 
     Args:
         board: Current board (for reading task config).
@@ -1026,8 +1013,6 @@ def dispatch_task(board: Board, task_name: str) -> TaskState:
     _log_event("task_started", task=task_name, session=task.session,
                project=task.project, attempt=existing_state.run_count + 1)
 
-    if task.workflow:
-        return _dispatch_workflow_task(board, task, existing_state)
     return _dispatch_ensure_task(board, task, existing_state)
 
 
@@ -1146,196 +1131,6 @@ _WORKFLOW_STATUS_TO_SCHED = {
     "partial": "incomplete",
     "failure": "failed",
 }
-
-_SCHED_INPUT_VAR_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
-
-
-def _render_workflow_inputs(inputs: dict, task: SchedulerTask) -> dict:
-    """Expand `{{ task }}`, `{{ project }}`, `{{ session }}`, `{{ workflow }}` in string inputs.
-
-    Unknown variables pass through untouched so workflow nodes can reference their
-    own Jinja variables without collision.
-    """
-    vars_ = {
-        "task": task.name,
-        "project": task.project,
-        "session": task.session,
-        "workflow": task.workflow,
-    }
-
-    def _sub(value):
-        if not isinstance(value, str):
-            return value
-        return _SCHED_INPUT_VAR_RE.sub(
-            lambda m: vars_[m.group(1)] if m.group(1) in vars_ else m.group(0),
-            value,
-        )
-
-    return {k: _sub(v) for k, v in (inputs or {}).items()}
-
-
-def _parse_workflow_summary(run) -> tuple[str, list[str], list[str]]:
-    """Build a single-line summary + rough blockers list from a workflow run."""
-    node_line = ", ".join(f"{r.node_id}={r.status}" for r in run.node_results) or "(no nodes)"
-    head = f"{run.workflow} → {run.status}"
-    last_text = ""
-    for r in reversed(run.node_results):
-        if r.final_text:
-            first_line = r.final_text.strip().splitlines()[0] if r.final_text.strip() else ""
-            last_text = first_line[:200]
-            break
-    summary = f"{head}: {node_line}" + (f" — {last_text}" if last_text else "")
-    blockers: list[str] = []
-    if run.error:
-        blockers.append(run.error)
-    for r in run.node_results:
-        if r.status in ("failure", "timeout") and r.error:
-            blockers.append(f"[{r.node_id}] {r.error}")
-    return summary[:500], [], blockers
-
-
-def _node_summary_records(run) -> list[dict]:
-    """Project workflow node results into compact dicts for event logs."""
-    return [
-        {
-            "id": r.node_id,
-            "status": r.status,
-            "duration_ms": r.duration_ms,
-            "attempts": r.attempts,
-            "error": r.error,
-        }
-        for r in run.node_results
-    ]
-
-
-def _workflow_failure_state(
-    board: Board,
-    task: SchedulerTask,
-    existing_state: TaskState,
-    duration: int,
-    summary: str,
-    error: str,
-    workflow_name: str = "",
-    run_id: str = "",
-) -> TaskState:
-    """Persist a failure outcome when the workflow couldn't be loaded or never started."""
-    status = "failed"
-    _log_event(
-        "task_completed",
-        task=task.name,
-        session=task.session or "",
-        status=status,
-        duration=duration,
-        summary=summary,
-        files_modified=[],
-        blockers=[error] if error else [],
-        workflow=workflow_name or task.workflow,
-        run_id=run_id,
-        nodes=[],
-    )
-    _notify_portal(task.name, status, duration, summary)
-
-    new_run_count = existing_state.run_count + 1
-    new_state = TaskState(
-        last_run=datetime.now(timezone.utc),
-        last_status=status,
-        last_duration=duration,
-        run_count=new_run_count,
-        last_summary=summary,
-        last_gate_commit=_capture_head(task.project),
-    )
-
-    if task.max_runs is not None and new_run_count >= task.max_runs:
-        task.enabled = False
-        board.state[task.name] = new_state
-        save_board(board)
-        _log_event("task_disabled", task=task.name, reason="max_runs_reached",
-                   run_count=new_run_count, max_runs=task.max_runs)
-
-    return new_state
-
-
-def _dispatch_workflow_task(board: Board, task: SchedulerTask, existing_state: TaskState) -> TaskState:
-    """Dispatch a workflow task in-process via agentwire.workflows.runner.run_workflow."""
-    from agentwire.workflows.cli import RUNS_DIR
-    from agentwire.workflows.definitions import resolve_workflow
-    from agentwire.workflows.runner import run_workflow
-
-    start_time = time.time()
-
-    try:
-        wf = resolve_workflow(task.workflow)
-    except FileNotFoundError:
-        duration = int(time.time() - start_time)
-        return _workflow_failure_state(
-            board, task, existing_state, duration,
-            summary=f"{task.workflow} → failed: workflow not found",
-            error=f"workflow '{task.workflow}' not found",
-        )
-    except Exception as e:
-        duration = int(time.time() - start_time)
-        return _workflow_failure_state(
-            board, task, existing_state, duration,
-            summary=f"{task.workflow} → failed: {e}",
-            error=f"workflow load error: {e}",
-        )
-
-    rendered_inputs = _render_workflow_inputs(task.inputs, task)
-
-    try:
-        run = run_workflow(wf, runs_dir=RUNS_DIR, inputs=rendered_inputs, dry_run=False)
-    except Exception as e:
-        duration = int(time.time() - start_time)
-        return _workflow_failure_state(
-            board, task, existing_state, duration,
-            summary=f"{task.workflow} → failed: runner crashed",
-            error=f"runner crashed: {e}",
-            workflow_name=wf.name,
-        )
-
-    duration = int(time.time() - start_time)
-    status = _WORKFLOW_STATUS_TO_SCHED.get(run.status, "failed")
-    summary, files_modified, blockers = _parse_workflow_summary(run)
-
-    _log_event(
-        "task_completed",
-        task=task.name,
-        session=task.session or "",
-        status=status,
-        duration=duration,
-        summary=summary,
-        files_modified=files_modified,
-        blockers=blockers,
-        workflow=wf.name,
-        run_id=run.run_id,
-        nodes=_node_summary_records(run),
-    )
-
-    _notify_portal(task.name, status, duration, summary)
-
-    if task.project:
-        _auto_commit(task, task.name, status)
-
-    gate_commit = _capture_head(task.project)
-
-    new_run_count = existing_state.run_count + 1
-    new_state = TaskState(
-        last_run=datetime.now(timezone.utc),
-        last_status=status,
-        last_duration=duration,
-        run_count=new_run_count,
-        last_summary=summary,
-        last_gate_commit=gate_commit,
-    )
-
-    if task.max_runs is not None and new_run_count >= task.max_runs:
-        task.enabled = False
-        board.state[task.name] = new_state
-        save_board(board)
-        _log_event("task_disabled", task=task.name, reason="max_runs_reached",
-                   run_count=new_run_count, max_runs=task.max_runs)
-
-    return new_state
 
 
 def format_interval(seconds: int) -> str:
@@ -1625,33 +1420,11 @@ def read_live_state() -> dict | None:
 
 
 def _validate_task_payload(name: str, task: SchedulerTask) -> list[str]:
-    """Validate the task vs workflow payload shape for a single task."""
+    """Validate the ensure-task payload shape for a single scheduler entry."""
     errors: list[str] = []
 
-    has_workflow = bool(task.workflow)
-    has_task = bool(task.task)
-
-    if has_workflow and has_task:
-        errors.append(f"{name}: cannot set both 'task' and 'workflow'")
-    if not has_workflow and not has_task:
-        errors.append(f"{name}: must set either 'task' or 'workflow'")
-
-    if task.inputs and not has_workflow:
-        errors.append(f"{name}: 'inputs' only valid with 'workflow'")
-
-    if has_workflow:
-        try:
-            from agentwire.workflows.definitions import resolve_workflow
-            wf = resolve_workflow(task.workflow)
-        except FileNotFoundError:
-            errors.append(f"{name}: workflow '{task.workflow}' not found")
-            return errors
-        except Exception as e:
-            errors.append(f"{name}: workflow '{task.workflow}' could not be loaded: {e}")
-            return errors
-        wf_errors = wf.validate()
-        for err in wf_errors:
-            errors.append(f"{name}: workflow: {err}")
+    if not task.task:
+        errors.append(f"{name}: must set 'task'")
 
     gate = task.gate or {}
     if isinstance(gate, dict):

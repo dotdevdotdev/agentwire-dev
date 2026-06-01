@@ -8829,10 +8829,9 @@ def cmd_scheduler_board(args) -> int:
 
 def cmd_scheduler_run(args) -> int:
     """Force-run a specific task now."""
-    from .scheduler import _render_workflow_inputs, dispatch_task, load_board, save_board
+    from .scheduler import dispatch_task, load_board, save_board
 
     json_mode = getattr(args, 'json', False)
-    dry_run = getattr(args, 'dry_run', False)
     name = args.name
 
     try:
@@ -8845,40 +8844,6 @@ def cmd_scheduler_run(args) -> int:
             False, json_mode,
             f"Task '{name}' not found in board. Available: {', '.join(board.tasks.keys())}",
         )
-
-    task = board.tasks[name]
-
-    if dry_run:
-        if not task.workflow:
-            return _output_result(
-                False, json_mode,
-                f"--dry-run only applies to workflow tasks; '{name}' runs via ensure.",
-            )
-        from agentwire.workflows.definitions import resolve_workflow
-        from agentwire.workflows.runner import run_workflow
-        try:
-            wf = resolve_workflow(task.workflow)
-        except Exception as e:
-            return _output_result(False, json_mode, f"Could not load workflow '{task.workflow}': {e}")
-        rendered_inputs = _render_workflow_inputs(task.inputs, task)
-        run = run_workflow(wf, runs_dir=None, inputs=rendered_inputs, dry_run=True)
-        if json_mode:
-            _output_json({
-                "success": True,
-                "task": name,
-                "dry_run": True,
-                "workflow": wf.name,
-                "inputs": rendered_inputs,
-                "nodes": [r.node_id for r in run.node_results],
-                "status": run.status,
-            })
-            return 0
-        print(f"Dry-run: {name} → workflow '{wf.name}'")
-        if rendered_inputs:
-            print(f"  inputs: {rendered_inputs}")
-        for r in run.node_results:
-            print(f"  - {r.node_id}: {r.final_text}")
-        return 0
 
     if not json_mode:
         print(f"Running: {name}")
@@ -8962,7 +8927,6 @@ def cmd_scheduler_history(args) -> int:
                 "last_status": state.last_status,
                 "last_duration": state.last_duration,
                 "run_count": state.run_count,
-                "workflow": (task.workflow if task else "") or None,
             })
         _output_json({"success": True, "history": history})
         return 0
@@ -9061,38 +9025,11 @@ def cmd_scheduler_report(args) -> int:
         color = colors.get(status, "#78909c")
         return f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:12px;font-size:0.85em">{status}</span>'
 
-    def node_badges(nodes: list) -> str:
-        if not nodes:
-            return ""
-        node_colors = {
-            "success": "#00c853",
-            "failure": "#ff5252",
-            "timeout": "#ff7043",
-            "skipped": "#78909c",
-        }
-        pieces = []
-        for n in nodes:
-            nid = html_escape(str(n.get("id", "?")))
-            nstatus = str(n.get("status", "?"))
-            color = node_colors.get(nstatus, "#556")
-            pieces.append(
-                f'<span style="background:{color};color:#fff;padding:1px 6px;border-radius:8px;font-size:0.75em;margin-right:3px">{nid}</span>'
-            )
-        return "".join(pieces)
-
     rows_html = ""
     for r in runs:
         duration_str = format_interval(r["duration"]) if r["duration"] else "-"
         pr_link = f'<a href="{r["pr_url"]}" target="_blank" style="color:#00d4ff">{r["pr_url"][:40]}...</a>' if r.get("pr_url") else "-"
-        branch_col = ""
-        if r.get("workflow"):
-            wf_label = html_escape(r["workflow"])
-            run_id = html_escape(r.get("run_id", ""))
-            badges = node_badges(r["nodes"])
-            run_hint = f' <span style="color:#556;font-size:0.75em">({run_id[:20]}…)</span>' if run_id else ""
-            branch_col = f'<code style="font-size:0.85em">workflow:{wf_label}</code>{run_hint}<div style="margin-top:4px">{badges}</div>'
-        else:
-            branch_col = f'<code style="font-size:0.85em">{r.get("work_branch") or "-"}</code>'
+        branch_col = f'<code style="font-size:0.85em">{r.get("work_branch") or "-"}</code>'
         summary_text = r["summary"][:120] if r["summary"] else "-"
         rows_html += f"""
         <tr>
@@ -10225,70 +10162,6 @@ def main() -> int:
     )
     dev_parser.set_defaults(func=cmd_dev)
 
-    # === workflow command group ===
-    from agentwire.workflows.cli import (
-        cmd_workflow_history,
-        cmd_workflow_list,
-        cmd_workflow_run,
-        cmd_workflow_show,
-        cmd_workflow_validate,
-    )
-
-    workflow_parser = subparsers.add_parser("workflow", help="Pi workflow engine")
-    workflow_subparsers = workflow_parser.add_subparsers(dest="workflow_command")
-
-    wf_list = workflow_subparsers.add_parser("list", help="List discoverable workflows")
-    wf_list.add_argument("--json", action="store_true", help="Output as JSON")
-    wf_list.set_defaults(func=cmd_workflow_list)
-
-    wf_validate = workflow_subparsers.add_parser(
-        "validate", help="Validate a workflow YAML without running it"
-    )
-    wf_validate.add_argument("workflow", help="Workflow name or path to YAML")
-    wf_validate.set_defaults(func=cmd_workflow_validate)
-
-    wf_run = workflow_subparsers.add_parser("run", help="Execute a workflow")
-    wf_run.add_argument("workflow", help="Workflow name or path to YAML")
-    wf_run.add_argument(
-        "--input", action="append", metavar="KEY=VALUE",
-        help="Workflow input (repeatable). Overrides --input-file."
-    )
-    wf_run.add_argument(
-        "--input-file", metavar="PATH",
-        help="JSON file with inputs (object mapping name → value)"
-    )
-    wf_run.add_argument("--dry-run", action="store_true", help="Print plan without running")
-    wf_run.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    wf_run.add_argument("--json", action="store_true", help="Output as JSON")
-    wf_run.set_defaults(func=cmd_workflow_run)
-
-    wf_history = workflow_subparsers.add_parser(
-        "history", help="List past workflow runs"
-    )
-    wf_history.add_argument(
-        "--workflow", metavar="NAME", help="Filter by workflow name"
-    )
-    wf_history.add_argument(
-        "--limit", type=int, default=20, help="Max runs to show (default: 20)"
-    )
-    wf_history.add_argument("--json", action="store_true", help="Output as JSON")
-    wf_history.set_defaults(func=cmd_workflow_history)
-
-    wf_show = workflow_subparsers.add_parser(
-        "show", help="Inspect a past workflow run"
-    )
-    wf_show.add_argument("run_id", help="Run ID (from `workflow history`)")
-    wf_show.add_argument(
-        "--events", action="store_true",
-        help="Dump raw event JSONL for all nodes",
-    )
-    wf_show.add_argument(
-        "--node", metavar="ID",
-        help="Filter events to one node id (implies --events)",
-    )
-    wf_show.add_argument("--json", action="store_true", help="Output as JSON")
-    wf_show.set_defaults(func=cmd_workflow_show)
-
     # === listen command group ===
     listen_parser = subparsers.add_parser("listen", help="Voice input recording")
     listen_parser.add_argument(
@@ -10754,8 +10627,6 @@ def main() -> int:
     sched_run = scheduler_subparsers.add_parser("run", help="Force-run a task now")
     sched_run.add_argument("name", help="Task name from board")
     sched_run.add_argument("--json", action="store_true", help="Output JSON")
-    sched_run.add_argument("--dry-run", action="store_true",
-                           help="For workflow tasks: print the execution plan without running")
     sched_run.set_defaults(func=cmd_scheduler_run)
 
     # scheduler enable <name>

@@ -54,7 +54,7 @@ A tmux pane within a session. Convention: pane 0 is the *orchestrator*, panes 1+
 
 ## P — Pi
 
-The third-party `@mariozechner/pi-coding-agent` CLI. Powers `pi-<provider>` session types and `runner: pi` workflow nodes. Faster and cheaper than Claude Code for non-Anthropic models, but no MCP and no hook integration. → [Pi sessions](sessions/pi.md).
+The third-party `@mariozechner/pi-coding-agent` CLI. Powers `pi-<provider>` session types. Faster and cheaper than Claude Code for non-Anthropic models, but no MCP and no hook integration. → [Pi sessions](sessions/pi.md).
 
 ## P — Portal
 
@@ -70,7 +70,7 @@ A reusable system-prompt persona stored at `~/.agentwire/roles/<name>.md`. Liste
 
 ## S — Scheduled Task
 
-An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `at:`, `after:`). Sets exactly one of `task:` (delegates to `agentwire ensure`) or `workflow:` (delegates to the workflow engine in-process). → [Scheduled workloads](scheduling/scheduled-workloads.md).
+An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `at:`, `after:`). Delegates to `agentwire ensure` via `task:` + `session:` + `project:`. → [Scheduled workloads](scheduling/scheduled-workloads.md).
 
 ## S — Session
 
@@ -88,6 +88,3 @@ A TTS reference WAV (10–30 s) stored in `~/.agentwire/voices/`. Selected per-s
 
 An agent in a pane 1+ of a session, spawned by the orchestrator (typically via the MCP `pane_spawn` tool) for a bounded task. Auto-kills after sending its idle notification. Pane numbering reflects spawn order.
 
-## W — Workflow
-
-A YAML file under `~/.agentwire/workflows/defs/` describing a DAG of nodes. Each node runs against the `pi` runner; nodes flow templated outputs to dependents. Run with `agentwire workflow run <name>`. → [Pi workflows](scheduling/workflows.md).

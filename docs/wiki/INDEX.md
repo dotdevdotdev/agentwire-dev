@@ -31,12 +31,11 @@ How sessions talk to humans and external platforms.
 - **[Hammerspoon push-to-talk](communication/hammerspoon.md)** — global voice hotkeys on macOS
 - **[Conversation handoffs](communication/handoff.md)** — `/handoff` produces a portable bundle (LLM-targeted .md + human-targeted .html) for async teammate pickup
 
-## Scheduling & Workflows
+## Scheduling
 
 Headless and scheduled execution.
 
 - **[Scheduled workloads](scheduling/scheduled-workloads.md)** — `agentwire ensure`, `.agentwire.yml` task schema, overnight queue
-- **[Pi workflows](scheduling/workflows.md)** — YAML-defined DAGs of pi invocations
 - **[Missions](missions.md)** — issue → branch → draft PR → review → merge orchestration; launchd-driven dispatcher + feedback router + worktree janitor
 
 ## Integrations
@@ -81,7 +80,6 @@ Agent-facing reference lives in `.claude/skills/` and loads automatically inside
 | `agentwire-scheduler` | Scheduled tasks, gates, overnight queue |
 | `agentwire-desktop-ui` | Editing portal static files |
 | `agentwire-pi` | Pi sessions for any provider (zai, deepseek, openai, …) |
-| `agentwire-workflows` | Authoring/debugging pi workflow YAMLs |
 
 ## Mission tracking
 

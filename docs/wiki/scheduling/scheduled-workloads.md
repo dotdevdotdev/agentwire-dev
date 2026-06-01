@@ -8,32 +8,12 @@ Reliable headless task execution for overnight and automated agent workflows.
 
 ## Overview
 
-Three paths for running scheduled work, picked per task:
+Two paths for running scheduled work, picked per task:
 
 1. **`agentwire ensure` tasks** — Reliable session management + task execution with lifecycle hooks. A full Claude Code session runs a single prompt from `.agentwire.yml`. Best for multi-step agent work that needs its own branch / PR / MCP tools.
-2. **Pi workflow tasks** — A YAML DAG of `pi -p --mode json` invocations runs in-process. No tmux session, no project required. Best for deterministic pipelines where each step has clear inputs/outputs and you want cheap per-node retries.
-3. **Tasks in `.agentwire.yml`** — Named tasks with pre/prompt/post phases and branch management — the substrate for path #1.
+2. **Tasks in `.agentwire.yml`** — Named tasks with pre/prompt/post phases and branch management — the substrate for path #1.
 
-All three are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire scheduler daemon. A single board can mix ensure tasks and workflow tasks freely.
-
----
-
-## Choosing ensure vs workflow
-
-| | ensure task | workflow task |
-|---|---|---|
-| Schedule field | `task: <name>` + `session:` | `workflow: <name-or-path>` + `inputs:` |
-| Dispatch | `agentwire ensure` subprocess → tmux session → Claude Code | `run_workflow()` in-process → pi subprocesses per node |
-| Model family | Claude (subscription via session type) | Z.AI glm-5.1 by default (any pi-supported model per node) |
-| Session needed | yes | no |
-| Project needed | yes (for branch mgmt) | optional (only for git gates / auto-commit) |
-| Multi-step logic | inside one Claude prompt | first-class DAG with retries, branches, outputs |
-| Dry-run | no | `scheduler run <name> --dry-run` prints the plan |
-| Cost profile | subscription-covered | Z.AI credits (or free flash tier) |
-
-A task must set exactly one of `task:` or `workflow:`. Everything else (gates, priority, `max_runs`, `once`, `cooldown`, `not_before`/`not_after`) applies to both.
-
-Full workflow task reference: [`workflows.md#scheduler-integration`](workflows.md#scheduler-integration).
+Both are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire scheduler daemon.
 
 ---
 

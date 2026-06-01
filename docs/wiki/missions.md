@@ -12,10 +12,9 @@ Stateless orchestrators (launchd) tick the GitHub issue board. Persistent worker
 |---|---|
 | "Fix bug #195" (one engineering cycle → PR) | **Mission** |
 | "Run prod metrics export every night" | Scheduler task |
-| "Refresh search indexes on a cron" | Scheduler workflow |
 | "Plot agent activity hourly" (no PR involved) | Scheduler task |
 
-Missions are *engineering work* with a PR as the unit of delivery. Scheduler tasks/workflows are *automation runs* that don't necessarily produce code.
+Missions are *engineering work* with a PR as the unit of delivery. Scheduler tasks are *automation runs* that don't necessarily produce code.
 
 ## Architecture
 
