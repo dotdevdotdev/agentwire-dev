@@ -54,7 +54,7 @@ def project_config_file(project_dir):
     data = {
         "type": "claude-bypass",
         "roles": ["agentwire", "voice"],
-        "voice": "dotdev",
+        "voice": "default",
         "parent": "main",
     }
     with open(config_path, "w") as f:

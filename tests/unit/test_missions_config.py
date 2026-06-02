@@ -21,8 +21,8 @@ def missions_yaml(tmp_path):
                 "default_max_iterations": 3,
                 "repos": {
                     "agentwire-dev": {
-                        "name": "dotdevdotdev/agentwire-dev",
-                        "projects_dir": "/Users/dotdev/projects",
+                        "name": "acme/example-repo",
+                        "projects_dir": "/home/user/projects",
                         "per_repo_concurrency": 1,
                     },
                 },
@@ -47,8 +47,8 @@ class TestLoadConfig:
         assert cfg.global_concurrency == 3
         assert "agentwire-dev" in cfg.repos
         repo = cfg.repos["agentwire-dev"]
-        assert repo.name == "dotdevdotdev/agentwire-dev"
-        assert repo.projects_dir == Path("/Users/dotdev/projects")
+        assert repo.name == "acme/example-repo"
+        assert repo.projects_dir == Path("/home/user/projects")
         assert repo.per_repo_concurrency == 1
 
     def test_project_override_per_repo_concurrency(self, missions_yaml, tmp_path):
@@ -79,7 +79,7 @@ class TestLoadConfig:
         cfg = load_config(global_path=missions_yaml)
         repo = cfg.get_repo("agentwire-dev")
         assert repo is not None
-        assert repo.name == "dotdevdotdev/agentwire-dev"
+        assert repo.name == "acme/example-repo"
         assert cfg.get_repo("nope") is None
 
     def test_tilde_in_projects_dir_expanded(self, tmp_path):
