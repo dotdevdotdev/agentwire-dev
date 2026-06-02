@@ -19,9 +19,9 @@ class TestPathEncoding:
 
     def test_round_trip_lossy_with_hyphens(self):
         """Paths with hyphens lose information (known Claude Code limitation)."""
-        original = "/Users/dotdev/projects/agentwire-dev"
+        original = "/home/user/projects/my-app"
         encoded = encode_project_path(original)
-        assert encoded == "-Users-dotdev-projects-agentwire-dev"
+        assert encoded == "-home-user-projects-my-app"
         # decode converts ALL dashes to slashes — can't distinguish original hyphens
         decoded = decode_project_path(encoded)
         assert decoded != original  # Lossy

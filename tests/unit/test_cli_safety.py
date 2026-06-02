@@ -105,12 +105,16 @@ class TestIsPathAllowedForOp:
         assert is_path_allowed_for_op("/home/user/project/dist/file.whl", allowed, "delete") is True
 
     def test_limited_permissions_allow(self):
+        import os
+        env_path = os.path.expanduser("~/.env")
         allowed = [{"path": "~/.env", "allow": {"read", "write"}}]
-        assert is_path_allowed_for_op("/Users/dotdev/.env", allowed, "write") is True
+        assert is_path_allowed_for_op(env_path, allowed, "write") is True
 
     def test_limited_permissions_deny(self):
+        import os
+        env_path = os.path.expanduser("~/.env")
         allowed = [{"path": "~/.env", "allow": {"read", "write"}}]
-        assert is_path_allowed_for_op("/Users/dotdev/.env", allowed, "delete") is False
+        assert is_path_allowed_for_op(env_path, allowed, "delete") is False
 
 
 # --- check_command_safety ---

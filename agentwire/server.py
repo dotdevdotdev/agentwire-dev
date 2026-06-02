@@ -2343,39 +2343,49 @@ class AgentWireServer:
             machine = data.get("machine")
             delete_type = data.get("deleteType")
 
-            if not path:
+            if not path or not isinstance(path, str):
                 return web.json_response({"success": False, "error": "Missing path"})
             if delete_type not in ("config", "folder"):
                 return web.json_response({"success": False, "error": "Invalid deleteType"})
 
-            # Build the delete command
-            if delete_type == "config":
-                cmd = f"rm -f '{path}/.agentwire.yml'"
-            else:
-                # Safety check: don't allow deleting root or home
-                if path in ("/", "/root", "/home") or path.rstrip("/") in ("~", "$HOME"):
-                    return web.json_response({"success": False, "error": "Cannot delete protected paths"})
-                cmd = f"rm -rf '{path}'"
+            # Path validation: absolute, no traversal, no shell metacharacters.
+            # The endpoint has no auth (local-trust model — see SECURITY.md), so
+            # treat the input as untrusted regardless and reject anything that
+            # could escape argv quoting on either local or remote (SSH) execution.
+            if not path.startswith("/"):
+                return web.json_response({"success": False, "error": "path must be absolute"})
+            if ".." in Path(path).parts:
+                return web.json_response({"success": False, "error": "path may not contain '..'"})
+            if re.search(r"[\s;&|`$<>(){}\[\]\\\"'*?#]", path):
+                return web.json_response({"success": False, "error": "path contains disallowed characters"})
+            if path.rstrip("/") in ("", "/root", "/home", "/Users", "/tmp", "/etc") or path.rstrip("/") in ("~", "$HOME"):
+                return web.json_response({"success": False, "error": "Cannot delete protected paths"})
 
-            # Execute locally or remotely
+            # Build argv. For SSH we still need to cross a remote shell, so
+            # quote with shlex; locally we use array form with shell=False.
+            if delete_type == "config":
+                target = f"{path.rstrip('/')}/.agentwire.yml"
+                local_argv = ["rm", "-f", target]
+            else:
+                local_argv = ["rm", "-rf", path]
+
             if machine and machine != "local":
-                # Remote machine
+                # Remote shell — quote each argv element through shlex.
+                remote_cmd = " ".join(shlex.quote(a) for a in local_argv)
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    ["ssh", machine, cmd],
+                    ["ssh", machine, remote_cmd],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
                 )
             else:
-                # Local
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    cmd,
-                    shell=True,
+                    local_argv,
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
                 )
 
             if result.returncode != 0:

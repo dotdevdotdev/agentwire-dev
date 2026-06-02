@@ -186,13 +186,13 @@ Each machine should have a `~/.agentwire/machine/CLAUDE.md` — a living documen
 When an AI agent needs to do ops work on a remote machine (manage services, install packages, debug the box itself), spawn a Claude Code session in `~/.agentwire/machine/` rather than SSHing and running ad-hoc commands. The agent picks up both `~/.claude/CLAUDE.md` (user preferences) and `~/.agentwire/machine/CLAUDE.md` (machine context) automatically, giving it full situational awareness without needing to rediscover everything.
 
 ```bash
-# Spawn an ops session on a remote machine
-ssh dotdev-pc
+# Spawn an ops session on a remote machine (replace `my-server` with your hostname)
+ssh my-server
 cd ~/.agentwire/machine
 claude  # gets both global prefs and machine context
 
 # Or spawn via agentwire from the Mac
-agentwire new -s dotdev-pc-ops --machine dotdev-pc -p ~/.agentwire/machine
+agentwire new -s my-server-ops --machine my-server -p ~/.agentwire/machine
 ```
 
 ### What to Put in `~/.agentwire/machine/CLAUDE.md`

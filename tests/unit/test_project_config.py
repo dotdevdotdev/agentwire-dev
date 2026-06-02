@@ -94,7 +94,7 @@ class TestProjectConfig:
         data = {
             "type": "claude-bypass",
             "roles": ["agentwire", "voice"],
-            "voice": "dotdev",
+            "voice": "default",
             "parent": "main",
             "shell": "/bin/bash",
             "tasks": {"t1": {"prompt": "hello"}},
@@ -102,7 +102,7 @@ class TestProjectConfig:
         config = ProjectConfig.from_dict(data)
         assert config.type == SessionType.CLAUDE_BYPASS
         assert config.roles == ["agentwire", "voice"]
-        assert config.voice == "dotdev"
+        assert config.voice == "default"
         assert config.parent == "main"
         assert config.shell == "/bin/bash"
         assert "t1" in config.tasks
@@ -133,11 +133,11 @@ class TestProjectConfig:
         full = ProjectConfig(
             type=SessionType.WORKER,
             roles=["agentwire"],
-            voice="dotdev",
+            voice="default",
         ).to_dict()
         assert full["type"] == "worker"
         assert full["roles"] == ["agentwire"]
-        assert full["voice"] == "dotdev"
+        assert full["voice"] == "default"
 
     def test_round_trip(self):
         original = ProjectConfig(
