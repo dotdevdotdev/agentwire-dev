@@ -12,7 +12,7 @@ import { tileManager } from './tile-manager.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { sidebar } from './sidebar.js';
-import { buildSessionId, normalizeMachine } from './session-id.js';
+import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
 import { configSection } from './sidebar/config-section.js';
 import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
@@ -210,6 +210,12 @@ async function init() {
     // Do this BEFORE fetching sessions — restore is independent of the sessions list and
     // /api/sessions can take several seconds when remote machines need SSH probing.
     restoreTaskbarState();
+
+    // After a reboot/portal restart the persisted taskbar still references tmux sessions
+    // that no longer exist. Reconcile the restored tabs against the first live sessions
+    // list and drop the dead ones. One-shot so transient list hiccups can't kill an
+    // active window mid-session.
+    desktop.once('sessions', reconcileTaskbarWithSessions);
 
     // Fetch initial data in the background (will emit events to listeners above)
     desktop.fetchSessions();
@@ -578,6 +584,46 @@ export function restoreTaskbarState() {
     } finally {
         restoringTaskbar = false;
         saveTaskbarState();
+    }
+}
+
+/**
+ * Drop restored taskbar tabs whose underlying session no longer exists.
+ *
+ * After a reboot or portal restart, tmux sessions are gone but the persisted
+ * taskbar (localStorage) still references them — leaving dead "Open Windows"
+ * tabs that never self-correct. We reconcile against the live sessions list.
+ *
+ * Only local sessions are reconciled: /api/sessions/local is authoritative and
+ * arrives first, whereas remote sessions merge in asynchronously and must not be
+ * pruned on the local-only snapshot. Artifact tabs are file-backed, not
+ * session-backed, so they survive a reboot and are left alone.
+ *
+ * @param {Array<{name: string, machine?: string}>} sessions - Live sessions list
+ */
+function reconcileTaskbarWithSessions(sessions) {
+    const liveLocalIds = new Set(
+        (sessions || [])
+            .filter(s => isLocalMachine(s.machine))
+            .map(s => buildSessionId(s.name, null))
+    );
+    const buttons = Array.from(elements.taskbarWindows.querySelectorAll('.sidebar-open-item'));
+    for (const btn of buttons) {
+        const id = btn.dataset.session;
+        const rec = taskbarRecords.get(id);
+        if (!rec || rec.kind !== 'session') continue;
+        if (!isLocalMachine(rec.machine)) continue;  // remote: not authoritative yet
+        if (liveLocalIds.has(id)) continue;           // session still alive
+
+        // Stale tab. A materialized window cleans up its own button + record via
+        // onClose; a placeholder has no instance, so tear it down directly.
+        const inst = _lookupWindowInstance(id);
+        if (inst && typeof inst.close === 'function') {
+            try { inst.close(); } catch (e) {}
+        } else {
+            btn.remove();
+            unrecordTaskbarEntry(id);
+        }
     }
 }
 

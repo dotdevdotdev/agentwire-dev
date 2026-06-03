@@ -776,6 +776,20 @@ class DesktopManager {
     }
 
     /**
+     * Subscribe to an event for a single emission, then auto-unsubscribe.
+     * @param {string} event - Event name
+     * @param {Function} callback - Callback function
+     * @returns {Function} Unsubscribe function
+     */
+    once(event, callback) {
+        const wrapper = (data) => {
+            this.off(event, wrapper);
+            callback(data);
+        };
+        return this.on(event, wrapper);
+    }
+
+    /**
      * Unsubscribe from an event.
      * @param {string} event - Event name
      * @param {Function} callback - Callback function
