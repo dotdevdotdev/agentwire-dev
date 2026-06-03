@@ -15,6 +15,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiohttp-jinja2" },
+    { name = "av" },
     { name = "jinja2" },
     { name = "markdown" },
     { name = "mcp" },
@@ -52,6 +53,7 @@ tts = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "aiohttp-jinja2", specifier = ">=1.6" },
+    { name = "av", specifier = ">=12.0.0" },
     { name = "chatterbox-tts", marker = "extra == 'tts'", specifier = ">=0.1.6" },
     { name = "fastapi", marker = "extra == 'stt'", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'tts'", specifier = ">=0.104.0" },

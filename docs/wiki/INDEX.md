@@ -51,12 +51,13 @@ Running AgentWire across machines and exposing the portal.
 - **[Remote machines](deployment/remote-machines.md)** — SSH-based multi-machine orchestration, WSL2 setup
 - **[Remote access](deployment/remote-access.md)** — Cloudflare Tunnel + Zero Trust auth for the portal
 
-## TTS
+## TTS & STT
 
-Voice output backends.
+Voice output and input backends.
 
 - **[Self-hosted TTS](tts/tts-self-hosted.md)** — local backends (Kokoro, XTTS, etc.)
 - **[RunPod TTS](tts/runpod-tts.md)** — serverless GPU TTS
+- **[Self-hosted STT](tts/stt-self-hosted.md)** — moonshine / faster-whisper, push-to-talk latency knobs
 
 ## Internals
 
