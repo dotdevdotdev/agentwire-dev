@@ -1162,6 +1162,111 @@ body {
     text-align: center;
 }
 
+/* =========================================================================
+   Command palette (Cmd/Ctrl+K)
+   ========================================================================= */
+
+.cmdk-overlay {
+    align-items: flex-start;
+    padding-top: 12vh;
+}
+
+.command-palette {
+    width: 560px;
+    max-width: 92vw;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.cmdk-search {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--chrome-border);
+}
+
+.cmdk-search-icon {
+    color: var(--text-muted);
+    font-size: 16px;
+}
+
+.cmdk-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-size: 16px;
+    font-family: inherit;
+}
+
+.cmdk-input::placeholder {
+    color: var(--text-muted);
+}
+
+.cmdk-body {
+    padding: 8px;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+/* Form drill-ins reuse the quicktask form styling. */
+.cmdk-body .quicktask-form {
+    padding: 8px 8px 4px;
+}
+
+.cmdk-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text);
+}
+
+.cmdk-item-selected {
+    background: var(--accent);
+    color: var(--background);
+}
+
+.cmdk-item-icon {
+    width: 18px;
+    text-align: center;
+    opacity: 0.85;
+}
+
+.cmdk-item-label {
+    flex: 1;
+}
+
+.cmdk-item-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.cmdk-item-selected .cmdk-item-sub {
+    color: var(--background);
+    opacity: 0.8;
+}
+
+.cmdk-empty {
+    padding: 20px 12px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.cmdk-footer {
+    padding: 8px 16px;
+    border-top: 1px solid var(--chrome-border);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
 .sidebar-quicktask {
     background: transparent;
     border: none;
