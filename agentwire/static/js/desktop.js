@@ -20,7 +20,9 @@ import { machinesSection } from './sidebar/machines-section.js';
 import { sessionsSection } from './sidebar/sessions-section.js';
 import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
-import { missionsSection } from './sidebar/missions-section.js';
+// Missions hidden for now — auto-spawn/state model under rethink. Re-enable by
+// uncommenting this import + the addSection('missions', …) call below.
+// import { missionsSection } from './sidebar/missions-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
@@ -64,7 +66,7 @@ async function init() {
     sidebar.addSection('projects', projectsSection);
     sidebar.addSection('artifacts', artifactsSection);
     sidebar.addSection('scheduler', schedulerSection);
-    sidebar.addSection('missions', missionsSection);
+    // sidebar.addSection('missions', missionsSection);  // hidden for now — see import note above
     sidebar.addSection('safety', safetySection);
     sidebar.addSection('config', configSection);
     setupClock();
