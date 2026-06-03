@@ -51,7 +51,18 @@ def get_stt_backend(config: Any) -> STTBackend:
             logger.info(f"Using STT server at {stt_url}")
             return STTServerBackend(url=stt_url, timeout=timeout)
         else:
-            logger.warning(f"STT server at {stt_url} not available, falling back to WhisperKit")
+            # Loud, actionable warning: this is the silent-failure trap. A
+            # configured-but-unreachable STT server means the moonshine server
+            # crashed or isn't started, and we're about to fall back to
+            # WhisperKit — which is usually NOT installed, so every transcription
+            # will then fail at request time with a confusing error. Say so here.
+            logger.warning(
+                "STT server configured at %s but not reachable — falling back to "
+                "WhisperKit (likely has no model installed; transcription will FAIL). "
+                "Start it with `agentwire stt start`; if it won't boot, install deps: "
+                "`uv pip install --python .venv/bin/python -e '.[stt]'`.",
+                stt_url,
+            )
 
     # Fall back to WhisperKit
     logger.info("Using local WhisperKitSTT")
