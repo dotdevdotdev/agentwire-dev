@@ -43,11 +43,16 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.1.0",
 ]
-# STT server dependencies (faster-whisper for speech-to-text)
+# STT server dependencies. Moonshine ONNX is the default backend on Mac
+# (small, fast, CPU-only, no torch) — it MUST be declared here or a fresh venv
+# silently loses the default backend and the portal falls back to a model-less
+# WhisperKit. faster-whisper is the higher-accuracy fallback for `STT_BACKEND=whisper`.
 stt = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "python-multipart>=0.0.6",
+    "useful-moonshine-onnx>=20250101",
+    "soundfile>=0.12.0",
     "faster-whisper>=1.0.0",
 ]
 # TTS server dependencies (for GPU machines running the TTS backend)

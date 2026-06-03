@@ -6182,6 +6182,23 @@ def cmd_doctor(args) -> int:
             else:
                 print(f"     -> Service is remote, start it on {service_config.machine}")
 
+    # 8b. Check STT server. STT isn't a `services.*` entry — it's configured via
+    # `stt.url`, so the loop above can't see it. Without this check, a crashed STT
+    # server is invisible and the portal silently falls back to a model-less
+    # WhisperKit (every push-to-talk then fails). Probe it explicitly.
+    stt_url = getattr(getattr(ctx.config, "stt", None), "url", None)
+    if stt_url:
+        from agentwire.stt.server_backend import STTServerBackend
+
+        if STTServerBackend.is_available(stt_url):
+            print(f"  [ok] Stt: responding on {stt_url}")
+        else:
+            print(f"  [!!] Stt: not responding on {stt_url}")
+            print("       Portal will fall back to WhisperKit (usually no model -> transcription FAILS).")
+            print("       Fix: agentwire stt start")
+            print("       If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'")
+            issues_found += 1
+
     # 9. Validate remote machines
     print("\nChecking remote machines...")
     remote_machines = {mid: m for mid, m in ctx.machines.items() if mid != ctx.local_machine_id}
