@@ -77,12 +77,12 @@ export const projectsSection = {
         const name = item.dataset.name || '';
 
         if (action === 'worktree' && name) {
-            const [{ openQuicktaskModal }, { sidebar }] = await Promise.all([
-                import('../quicktask-modal.js'),
+            const [{ openCommandPalette }, { sidebar }] = await Promise.all([
+                import('../command-palette.js'),
                 import('../sidebar.js'),
             ]);
             sidebar.close();
-            openQuicktaskModal({ project: name });
+            openCommandPalette({ view: 'worktree', project: name });
             return;
         }
 
