@@ -943,52 +943,81 @@ def _pre_create_session(task: SchedulerTask) -> None:
         print(f"[{_ts()}] Warning: Failed to pre-create session {task.session}: {result.stderr.strip()}")
 
 
-def _auto_commit(task: SchedulerTask, task_name: str, status: str) -> None:
-    """Auto-commit any changes the task made in the project directory.
+def _dirty_paths(project: str) -> set[str]:
+    """Working-tree paths with uncommitted changes (porcelain, -z, quote-safe).
 
-    Creates a standardized commit message so each task run is a single
-    revertable commit. No-op if there are no changes to commit.
+    Returns destination paths for renames/copies. Empty set if not a git
+    repo or on any error — callers treat "unknown" as "nothing dirty".
+    """
+    if not project:
+        return set()
+    res = subprocess.run(
+        ["git", "-C", project, "status", "--porcelain=v1", "-z"],
+        capture_output=True, text=True, timeout=_sched_config().git_timeout,
+    )
+    if res.returncode != 0:
+        return set()
+    paths: set[str] = set()
+    tokens = res.stdout.split("\0")
+    i = 0
+    while i < len(tokens):
+        entry = tokens[i]
+        if not entry:
+            i += 1
+            continue
+        xy = entry[:2]
+        paths.add(entry[3:])  # path begins after "XY "
+        # Renames/copies emit the original path as a following token; skip it.
+        i += 2 if xy and xy[0] in ("R", "C") else 1
+    return paths
+
+
+def _auto_commit(task: SchedulerTask, task_name: str, status: str,
+                 pre_dirty: set[str]) -> None:
+    """Auto-commit only the changes THIS task made in the project directory.
+
+    Scoped against a pre-task snapshot of dirty paths (`pre_dirty`): paths
+    that were already dirty before the task ran are left untouched, so a
+    task running against a repo with unrelated in-flight work never sweeps
+    that work into a `scheduler: <task>` commit. `.agentwire.yml` is always
+    protected — agent edits to it are reverted, never committed.
     """
     cfg = _sched_config()
     project = task.project
 
-    # Check if there are any changes to commit
-    check = subprocess.run(
-        ["git", "-C", project, "status", "--porcelain"],
-        capture_output=True, text=True, timeout=cfg.git_timeout,
-    )
-    if check.returncode != 0 or not check.stdout.strip():
-        return  # Not a git repo or no changes
+    post_dirty = _dirty_paths(project)
+    task_paths = post_dirty - pre_dirty  # only what this run newly touched
 
-    # Stage all changes, but protect project config from agent modifications
+    # Protect project config: revert it if the task changed it, never commit it.
+    if ".agentwire.yml" in task_paths:
+        subprocess.run(
+            ["git", "-C", project, "checkout", "--", ".agentwire.yml"],
+            capture_output=True, timeout=cfg.git_timeout,
+        )
+        task_paths.discard(".agentwire.yml")
+
+    if not task_paths:
+        return  # Task changed nothing of its own — nothing to commit
+
+    # Stage only the task-touched paths (never `git add -A`).
     subprocess.run(
-        ["git", "-C", project, "add", "-A"],
-        capture_output=True, timeout=cfg.git_timeout,
-    )
-    subprocess.run(
-        ["git", "-C", project, "reset", "HEAD", "--", ".agentwire.yml"],
-        capture_output=True, timeout=cfg.git_timeout,
-    )
-    subprocess.run(
-        ["git", "-C", project, "checkout", "--", ".agentwire.yml"],
+        ["git", "-C", project, "add", "--", *sorted(task_paths)],
         capture_output=True, timeout=cfg.git_timeout,
     )
 
-    # Re-check if anything is still staged after excluding protected files
     check = subprocess.run(
         ["git", "-C", project, "diff", "--cached", "--quiet"],
         capture_output=True, timeout=cfg.git_timeout,
     )
     if check.returncode == 0:
-        return  # Nothing left to commit
+        return  # Nothing actually staged
 
-    # Commit with standardized message
     msg = f"scheduler: {task_name} ({status})"
     subprocess.run(
         ["git", "-C", project, "commit", "-m", msg, "--no-verify"],
         capture_output=True, text=True, timeout=cfg.git_op_timeout,
     )
-    print(f"[{_ts()}] Auto-committed: {msg}")
+    print(f"[{_ts()}] Auto-committed: {msg} ({len(task_paths)} path(s))")
 
 
 def dispatch_task(board: Board, task_name: str) -> TaskState:
@@ -1045,6 +1074,10 @@ def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: Tas
         # No type/role overrides — kill stale session so ensure creates fresh
         _kill_session(task.session)
 
+    # Snapshot what's already dirty so auto-commit only captures what the
+    # task itself changes — not unrelated in-flight work in the repo.
+    pre_dirty = _dirty_paths(task.project)
+
     start_time = time.time()
     result = None
 
@@ -1084,7 +1117,7 @@ def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: Tas
 
     _notify_portal(task_name, status, duration, summary)
 
-    _auto_commit(task, task_name, status)
+    _auto_commit(task, task_name, status, pre_dirty)
 
     gate_commit = _capture_head(task.project)
 
