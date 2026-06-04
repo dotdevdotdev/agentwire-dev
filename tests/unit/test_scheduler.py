@@ -289,77 +289,119 @@ class TestValidateTaskPayload:
         assert any("gate git_commit requires 'project' path" in e for e in errors)
 
 
-class TestAutoCommitScoping:
-    """The scheduler must commit only what a task touched — never sweep up
-    unrelated in-flight work (regression for the `git add -A` hazard)."""
+class TestWorktreeMode:
+    """Worktree+PR task-mode selection and PR-number parsing."""
 
-    def _repo(self, tmp_path):
+    def _task(self, **kwargs):
+        defaults = dict(name="t", project="/tmp/p", session="t", task="t",
+                        schedule=Schedule(every="1h"))
+        defaults.update(kwargs)
+        return SchedulerTask(**defaults)
+
+    def test_explicit_worktree_true_wins(self):
+        from agentwire.scheduler import _is_worktree_task
+        assert _is_worktree_task(self._task(worktree=True)) is True
+
+    def test_explicit_worktree_false_wins(self, tmp_path):
+        from agentwire.scheduler import _is_worktree_task
+        # Even a real git repo is skipped when explicitly disabled.
         import subprocess
-        d = str(tmp_path)
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"])
+        t = self._task(project=str(tmp_path), worktree=False)
+        assert _is_worktree_task(t) is False
 
-        def git(*a):
-            return subprocess.run(["git", "-C", d, *a], capture_output=True, text=True)
+    def test_auto_on_for_git_repo(self, tmp_path):
+        from agentwire.scheduler import _is_worktree_task
+        import subprocess
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"])
+        assert _is_worktree_task(self._task(project=str(tmp_path))) is True
 
-        git("init", "-q")
-        git("config", "user.email", "t@t")
-        git("config", "user.name", "t")
-        (tmp_path / "README.md").write_text("base\n")
-        (tmp_path / ".agentwire.yml").write_text("type: claude-bypass\n")
-        git("add", "-A")
-        git("commit", "-qm", "base")
-        return d, git
+    def test_auto_off_for_non_repo(self, tmp_path):
+        from agentwire.scheduler import _is_worktree_task
+        assert _is_worktree_task(self._task(project=str(tmp_path))) is False
 
-    def _task(self, project):
-        return SchedulerTask(name="t", project=project, session="t", task="t",
+    def test_pr_number_from_url(self):
+        from agentwire.scheduler import _pr_number_from_url
+        assert _pr_number_from_url("https://github.com/o/r/pull/231\n") == 231
+        assert _pr_number_from_url("no number here") is None
+
+
+class TestFinalizeWorktree:
+    """`_finalize_worktree_pr` no-change path (no network)."""
+
+    def test_no_changes_removes_worktree_and_skips_pr(self, tmp_path, monkeypatch):
+        import subprocess
+        from agentwire import scheduler
+
+        # A clean "worktree" (no uncommitted changes).
+        d = tmp_path / "wt"
+        d.mkdir()
+        subprocess.run(["git", "-C", str(d), "init", "-q"])
+
+        removed = {}
+        monkeypatch.setattr(scheduler, "_remove_scheduler_worktree",
+                            lambda p, b: removed.update(path=p, branch=b))
+
+        task = SchedulerTask(name="t", project=str(tmp_path), session="t", task="t",
                              schedule=Schedule(every="1h"))
+        result = scheduler._finalize_worktree_pr(task, "t", "complete", str(d), "br", "")
+        assert result == {}
+        assert removed == {"path": str(d), "branch": "br"}
 
-    def test_dirty_paths_reports_renames_destination(self, tmp_path):
-        from agentwire.scheduler import _dirty_paths
-        d, git = self._repo(tmp_path)
-        git("mv", "README.md", "DOCS.md")
-        assert "DOCS.md" in _dirty_paths(d)
 
-    def test_pre_existing_work_is_not_committed(self, tmp_path):
-        from agentwire.scheduler import _auto_commit, _dirty_paths
-        d, git = self._repo(tmp_path)
+class TestReapWorktreePrs:
+    """The reaper tears down worktrees only when their PR is merged/closed."""
 
-        # Unrelated in-flight work present before the task runs.
-        (tmp_path / "human_work.py").write_text("# precious\n")
-        with open(tmp_path / "README.md", "a") as f:
-            f.write("human edit\n")
-        pre = _dirty_paths(d)
+    def _board_with_pr(self, state="OPEN"):
+        from agentwire.scheduler import Board, SchedulerTask, TaskState, Schedule
+        board = Board()
+        board.tasks["t"] = SchedulerTask(name="t", project="/tmp/p", session="t",
+                                         task="t", schedule=Schedule(every="1h"))
+        board.state["t"] = TaskState(
+            pr_number=42, worktree_path="/tmp/p-worktrees/scheduler-t-x",
+            worktree_branch="scheduler-t-x", worktree_session="p/scheduler-t-x",
+        )
+        return board
 
-        # Task creates its own output.
-        (tmp_path / "task_output.txt").write_text("result\n")
-        _auto_commit(self._task(d), "briefing", "complete", pre)
+    def _patch(self, monkeypatch, pr_state):
+        from agentwire import scheduler
+        killed, removed = [], []
+        monkeypatch.setattr(scheduler, "_pr_state", lambda n, cwd: pr_state)
+        monkeypatch.setattr(scheduler, "_kill_session", lambda s: killed.append(s))
+        monkeypatch.setattr(scheduler, "_remove_scheduler_worktree",
+                            lambda p, b: removed.append((p, b)))
+        monkeypatch.setattr(scheduler, "save_board", lambda b: None)
+        return killed, removed
 
-        committed = git("show", "--name-only", "--format=", "HEAD").stdout.split()
-        assert committed == ["task_output.txt"]
-        # Human work survives, uncommitted.
-        status = git("status", "--porcelain").stdout
-        assert "human_work.py" in status and "README.md" in status
+    def test_open_pr_not_reaped(self, monkeypatch):
+        from agentwire import scheduler
+        killed, removed = self._patch(monkeypatch, "OPEN")
+        board = self._board_with_pr()
+        assert scheduler.reap_worktree_prs(board) == []
+        assert killed == [] and removed == []
+        assert board.state["t"].pr_number == 42  # untouched
 
-    def test_agentwire_yml_is_protected(self, tmp_path):
-        from agentwire.scheduler import _auto_commit, _dirty_paths
-        d, git = self._repo(tmp_path)
-        pre = _dirty_paths(d)
+    def test_merged_pr_reaped(self, monkeypatch):
+        from agentwire import scheduler
+        killed, removed = self._patch(monkeypatch, "MERGED")
+        board = self._board_with_pr()
+        reaped = scheduler.reap_worktree_prs(board)
+        assert len(reaped) == 1 and reaped[0]["pr_state"] == "MERGED"
+        assert killed == ["p/scheduler-t-x"]
+        assert removed == [("/tmp/p-worktrees/scheduler-t-x", "scheduler-t-x")]
+        # Tracking fields cleared.
+        st = board.state["t"]
+        assert st.pr_number is None and st.worktree_path == "" and st.worktree_session == ""
 
-        # Task tampers with protected config and writes a legit output.
-        (tmp_path / ".agentwire.yml").write_text("type: HACKED\n")
-        (tmp_path / "out.txt").write_text("ok\n")
-        _auto_commit(self._task(d), "t", "complete", pre)
+    def test_closed_pr_reaped(self, monkeypatch):
+        from agentwire import scheduler
+        self._patch(monkeypatch, "CLOSED")
+        board = self._board_with_pr()
+        assert len(scheduler.reap_worktree_prs(board)) == 1
 
-        committed = git("show", "--name-only", "--format=", "HEAD").stdout.split()
-        assert ".agentwire.yml" not in committed
-        assert (tmp_path / ".agentwire.yml").read_text() == "type: claude-bypass\n"
-
-    def test_no_commit_when_task_changed_nothing(self, tmp_path):
-        from agentwire.scheduler import _auto_commit, _dirty_paths
-        d, git = self._repo(tmp_path)
-        (tmp_path / "human_work.py").write_text("# precious\n")
-        pre = _dirty_paths(d)
-
-        before = git("rev-parse", "HEAD").stdout.strip()
-        _auto_commit(self._task(d), "t", "complete", pre)  # task touched nothing
-        after = git("rev-parse", "HEAD").stdout.strip()
-        assert before == after
+    def test_pr_state_error_skips(self, monkeypatch):
+        from agentwire import scheduler
+        killed, removed = self._patch(monkeypatch, None)
+        board = self._board_with_pr()
+        assert scheduler.reap_worktree_prs(board) == []
+        assert killed == [] and removed == []

@@ -26,6 +26,32 @@ tasks:
 
 Gates are evaluated before dispatching and skip the task (zero AI cost) if conditions fail. Multiple gates are AND'd. Gates fail open on errors.
 
+## Worktree + PR Mode (the standard for repo work)
+
+Tasks that touch a git repo run in an **isolated worktree** forked off the latest `base` branch, and their output is proposed back as a **draft PR** — the live project folder is never modified and nothing lands on `main` unreviewed.
+
+```yaml
+tasks:
+  doc-drift:
+    project: ~/projects/agentwire-dev
+    worktree: true       # DEFAULT when project is a git repo
+    base: main           # fork the worktree off latest origin/main
+    pr_target: main      # draft PR base branch (defaults to `base`)
+    pr_draft: true       # open as draft (default)
+  ai-morning-briefing:
+    project: ~/projects/agentwire-dev
+    worktree: false      # research/email task — runs in place, never commits
+```
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `worktree` | auto (`true` if `project` is a git repo) | Run isolated + open a PR. Set `false` for tasks that only email/produce side effects. |
+| `base` | `main` | Branch the worktree forks from (fetched fresh from `origin`). |
+| `pr_target` | `base` | PR base branch. |
+| `pr_draft` | `true` | Open the PR as a draft. |
+
+**Lifecycle:** branch `scheduler-<task>-<timestamp>` → run in worktree → if it produced changes, `git add -A` + commit (`scheduler: <task> — <summary>`) + push + draft PR; if it produced **nothing**, the empty worktree is removed and no PR is opened. The worktree **persists while the PR is open** (so you can spawn a session there during review) and is **reaped automatically when the PR merges or closes** (worktree + branch + session torn down). `worktree: false` tasks run in place and never commit.
+
 ## Scheduler Task Scheduling
 
 Each task has a `schedule` field (replaces the old `interval`). The scheduler uses `_compute_next_eligible()` as the single source of truth for when a task becomes eligible.
