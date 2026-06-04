@@ -87,6 +87,12 @@ class SchedulerTask:
     gate: dict | None = None  # precondition gate (git_commit, git_diff, command)
     max_runs: int | None = None  # auto-disable after N successful dispatches
     once: bool = False           # shorthand for max_runs: 1
+    # Worktree+PR mode: run in an isolated worktree off `base`, open a draft PR
+    # back to `pr_target`. None = auto (on when `project` is a git repo).
+    worktree: bool | None = None
+    base: str = "main"           # branch the worktree forks from (fetched fresh)
+    pr_target: str | None = None  # PR base branch (defaults to `base`)
+    pr_draft: bool = True        # open the PR as a draft
 
 
 @dataclass
@@ -98,6 +104,13 @@ class TaskState:
     last_summary: str = ""
     last_gate_commit: str = ""    # HEAD at last dispatch (for gate checks)
     last_dispatch: datetime | None = None  # set BEFORE running (restart safety)
+    # Active worktree-PR tracking (set on finalize, cleared by the reaper on
+    # PR merge/close). Lets the daemon reap the worktree + branch + session.
+    worktree_branch: str = ""
+    worktree_path: str = ""
+    worktree_session: str = ""
+    pr_number: int | None = None
+    pr_url: str = ""
 
 
 @dataclass
@@ -237,6 +250,10 @@ def load_board() -> Board:
             gate=t.get("gate"),
             max_runs=int(t["max_runs"]) if t.get("max_runs") is not None else None,
             once=bool(t.get("once", False)),
+            worktree=t.get("worktree"),  # None = auto-detect (git repo)
+            base=str(t.get("base", "main")),
+            pr_target=t.get("pr_target"),
+            pr_draft=bool(t.get("pr_draft", True)),
         )
         # Normalize: once: true is shorthand for max_runs: 1
         st = board.tasks[name]
@@ -256,6 +273,11 @@ def load_board() -> Board:
                 last_summary=str(s.get("last_summary", "")),
                 last_gate_commit=str(s.get("last_gate_commit", "")),
                 last_dispatch=_parse_datetime_field(s.get("last_dispatch")),
+                worktree_branch=str(s.get("worktree_branch", "")),
+                worktree_path=str(s.get("worktree_path", "")),
+                worktree_session=str(s.get("worktree_session", "")),
+                pr_number=int(s["pr_number"]) if s.get("pr_number") is not None else None,
+                pr_url=str(s.get("pr_url", "")),
             )
 
     return board
@@ -285,6 +307,16 @@ def save_board(board: Board) -> None:
             entry["last_gate_commit"] = s.last_gate_commit
         if s.last_dispatch:
             entry["last_dispatch"] = s.last_dispatch.isoformat()
+        if s.worktree_branch:
+            entry["worktree_branch"] = s.worktree_branch
+        if s.worktree_path:
+            entry["worktree_path"] = s.worktree_path
+        if s.worktree_session:
+            entry["worktree_session"] = s.worktree_session
+        if s.pr_number is not None:
+            entry["pr_number"] = s.pr_number
+        if s.pr_url:
+            entry["pr_url"] = s.pr_url
         state_dict[name] = entry
 
     raw["state"] = state_dict
@@ -745,12 +777,19 @@ def _notify_portal_state() -> None:
         pass  # Portal may not be running
 
 
-def _parse_ensure_summary(task: SchedulerTask, result) -> tuple[str, list[str], list[str]]:
+def _parse_ensure_summary(task: SchedulerTask, result, project: str | None = None,
+                          session: str | None = None) -> tuple[str, list[str], list[str]]:
     """Try to extract summary info from ensure subprocess output.
+
+    `project`/`session` override `task.project`/`task.session` for worktree
+    dispatch, where the summary file lives in the worktree and is named after
+    the worktree session.
 
     Returns:
         (summary_text, files_modified, blockers)
     """
+    project = project or task.project
+    session = session or task.session
     summary = ""
     files_modified: list[str] = []
     blockers: list[str] = []
@@ -765,7 +804,7 @@ def _parse_ensure_summary(task: SchedulerTask, result) -> tuple[str, list[str], 
                 from .completion import parse_summary_file
                 sp = Path(summary_file)
                 if not sp.is_absolute():
-                    sp = Path(task.project) / sp
+                    sp = Path(project) / sp
                 if sp.exists():
                     parsed = parse_summary_file(sp)
                     summary = summary or parsed.summary
@@ -777,10 +816,10 @@ def _parse_ensure_summary(task: SchedulerTask, result) -> tuple[str, list[str], 
     # Fallback: glob for summary files if we didn't get one
     if not summary:
         try:
-            agentwire_dir = Path(task.project) / ".agentwire"
+            agentwire_dir = Path(project) / ".agentwire"
             if agentwire_dir.exists():
                 summaries = sorted(
-                    agentwire_dir.glob(f"task-summary-{task.session}-{task.task}-*.md"),
+                    agentwire_dir.glob(f"task-summary-{session}-{task.task}-*.md"),
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
@@ -943,81 +982,184 @@ def _pre_create_session(task: SchedulerTask) -> None:
         print(f"[{_ts()}] Warning: Failed to pre-create session {task.session}: {result.stderr.strip()}")
 
 
-def _dirty_paths(project: str) -> set[str]:
-    """Working-tree paths with uncommitted changes (porcelain, -z, quote-safe).
-
-    Returns destination paths for renames/copies. Empty set if not a git
-    repo or on any error — callers treat "unknown" as "nothing dirty".
-    """
+def _is_git_repo(project: str) -> bool:
+    """True if `project` is inside a git work tree."""
     if not project:
-        return set()
-    res = subprocess.run(
-        ["git", "-C", project, "status", "--porcelain=v1", "-z"],
-        capture_output=True, text=True, timeout=_sched_config().git_timeout,
-    )
-    if res.returncode != 0:
-        return set()
-    paths: set[str] = set()
-    tokens = res.stdout.split("\0")
-    i = 0
-    while i < len(tokens):
-        entry = tokens[i]
-        if not entry:
-            i += 1
-            continue
-        xy = entry[:2]
-        paths.add(entry[3:])  # path begins after "XY "
-        # Renames/copies emit the original path as a following token; skip it.
-        i += 2 if xy and xy[0] in ("R", "C") else 1
-    return paths
+        return False
+    try:
+        r = subprocess.run(
+            ["git", "-C", project, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=_sched_config().git_timeout,
+        )
+        return r.returncode == 0 and r.stdout.strip() == "true"
+    except Exception:
+        return False
 
 
-def _auto_commit(task: SchedulerTask, task_name: str, status: str,
-                 pre_dirty: set[str]) -> None:
-    """Auto-commit only the changes THIS task made in the project directory.
+def _is_worktree_task(task: SchedulerTask) -> bool:
+    """Whether a task runs in an isolated worktree and opens a PR.
 
-    Scoped against a pre-task snapshot of dirty paths (`pre_dirty`): paths
-    that were already dirty before the task ran are left untouched, so a
-    task running against a repo with unrelated in-flight work never sweeps
-    that work into a `scheduler: <task>` commit. `.agentwire.yml` is always
-    protected — agent edits to it are reverted, never committed.
+    Explicit `worktree:` wins; otherwise it auto-enables when the task's
+    project is a git repo (worktree+PR is the default for repo work; set
+    `worktree: false` for research/email tasks that produce no repo files).
+    """
+    if task.worktree is not None:
+        return bool(task.worktree)
+    return _is_git_repo(task.project)
+
+
+def _remove_scheduler_worktree(worktree_path: str, branch: str) -> None:
+    """Remove a scheduler worktree and delete its local branch (best-effort)."""
+    wt = Path(worktree_path)
+    if wt.exists():
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(wt)],
+            capture_output=True, text=True,
+            timeout=_sched_config().git_op_timeout,
+            cwd=str(wt) if wt.is_dir() else None,
+        )
+    # Best-effort branch cleanup from the canonical repo (parent of the
+    # `<repo>-worktrees` dir, with the suffix dropped).
+    if branch:
+        worktrees_parent = wt.parent
+        canonical = worktrees_parent.parent / worktrees_parent.name.removesuffix("-worktrees")
+        if canonical.is_dir():
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                capture_output=True, text=True, timeout=_sched_config().git_timeout,
+                cwd=str(canonical), check=False,
+            )
+
+
+def _pr_number_from_url(url: str) -> int | None:
+    """Parse the trailing PR number from a `gh pr create` URL."""
+    m = re.search(r"/pull/(\d+)", url.strip())
+    return int(m.group(1)) if m else None
+
+
+def _finalize_worktree_pr(task: SchedulerTask, task_name: str, status: str,
+                          worktree_path: str, branch: str, summary: str) -> dict:
+    """Commit + push + open a draft PR from an isolated worktree.
+
+    `git add -A` is safe here — the worktree was forked fresh off the base
+    branch, so there's no unrelated work to sweep. Returns
+    ``{"number": int|None, "url": str}`` when a PR is opened, or ``{}`` when
+    there was nothing to commit (in which case the empty worktree is removed).
     """
     cfg = _sched_config()
-    project = task.project
+    import shutil
 
-    post_dirty = _dirty_paths(project)
-    task_paths = post_dirty - pre_dirty  # only what this run newly touched
-
-    # Protect project config: revert it if the task changed it, never commit it.
-    if ".agentwire.yml" in task_paths:
-        subprocess.run(
-            ["git", "-C", project, "checkout", "--", ".agentwire.yml"],
-            capture_output=True, timeout=cfg.git_timeout,
-        )
-        task_paths.discard(".agentwire.yml")
-
-    if not task_paths:
-        return  # Task changed nothing of its own — nothing to commit
-
-    # Stage only the task-touched paths (never `git add -A`).
-    subprocess.run(
-        ["git", "-C", project, "add", "--", *sorted(task_paths)],
-        capture_output=True, timeout=cfg.git_timeout,
+    st = subprocess.run(
+        ["git", "-C", worktree_path, "status", "--porcelain"],
+        capture_output=True, text=True, timeout=cfg.git_timeout,
     )
+    if st.returncode != 0:
+        return {}
+    if not st.stdout.strip():
+        # Task produced no changes — don't leave an empty worktree lying around.
+        _remove_scheduler_worktree(worktree_path, branch)
+        print(f"[{_ts()}] {task_name}: no changes — worktree removed, no PR")
+        return {}
 
-    check = subprocess.run(
-        ["git", "-C", project, "diff", "--cached", "--quiet"],
-        capture_output=True, timeout=cfg.git_timeout,
-    )
-    if check.returncode == 0:
-        return  # Nothing actually staged
-
-    msg = f"scheduler: {task_name} ({status})"
-    subprocess.run(
-        ["git", "-C", project, "commit", "-m", msg, "--no-verify"],
+    msg = f"scheduler: {task_name} — {(summary or status).strip()[:60]}"
+    subprocess.run(["git", "-C", worktree_path, "add", "-A"],
+                   capture_output=True, timeout=cfg.git_timeout)
+    commit = subprocess.run(
+        ["git", "-C", worktree_path, "commit", "-m", msg, "--no-verify"],
         capture_output=True, text=True, timeout=cfg.git_op_timeout,
     )
-    print(f"[{_ts()}] Auto-committed: {msg} ({len(task_paths)} path(s))")
+    if commit.returncode != 0:
+        print(f"[{_ts()}] {task_name}: commit failed: {commit.stderr.strip()}")
+        return {}
+
+    push = subprocess.run(
+        ["git", "-C", worktree_path, "push", "-u", "origin", branch],
+        capture_output=True, text=True, timeout=cfg.git_op_timeout,
+    )
+    if push.returncode != 0:
+        # Keep the worktree so the work isn't lost; it'll be swept as an orphan.
+        print(f"[{_ts()}] {task_name}: push failed: {push.stderr.strip()}")
+        return {}
+
+    if shutil.which("gh") is None:
+        print(f"[{_ts()}] {task_name}: 'gh' not found — branch pushed, no PR")
+        return {}
+
+    pr_target = task.pr_target or task.base
+    title = f"scheduler: {task_name} — {(summary or status).strip()[:50]}"
+    body = (summary.strip() if summary else
+            f"Automated changes from scheduled task `{task_name}` (status: {status}).")
+    pr_cmd = ["gh", "pr", "create", "--base", pr_target, "--head", branch,
+              "--title", title, "--body", body]
+    if task.pr_draft:
+        pr_cmd.append("--draft")
+    pr = subprocess.run(pr_cmd, cwd=worktree_path, capture_output=True,
+                        text=True, timeout=cfg.git_op_timeout)
+    if pr.returncode != 0:
+        print(f"[{_ts()}] {task_name}: PR creation failed: {pr.stderr.strip()}")
+        return {}
+
+    url = pr.stdout.strip()
+    number = _pr_number_from_url(url)
+    print(f"[{_ts()}] {task_name}: opened PR {url}")
+    return {"number": number, "url": url}
+
+
+def _pr_state(pr_number: int, cwd: str | None) -> str | None:
+    """Return a PR's state (``OPEN``/``MERGED``/``CLOSED``) via gh, or None on error."""
+    import shutil
+    if shutil.which("gh") is None:
+        return None
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--json", "state", "-q", ".state"],
+            capture_output=True, text=True,
+            timeout=_sched_config().git_op_timeout, cwd=cwd,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def reap_worktree_prs(board: Board) -> list[dict]:
+    """Tear down worktrees whose PR is no longer OPEN (merged or closed).
+
+    Kills the worker session if still alive, removes the worktree + branch,
+    and clears the tracking fields so the task can run fresh next time.
+    Self-limiting: only touches tasks that have an open tracked PR.
+    """
+    reaped: list[dict] = []
+    for name, st in list(board.state.items()):
+        if not st.pr_number or not st.worktree_path:
+            continue
+
+        cwd = st.worktree_path if Path(st.worktree_path).exists() else None
+        if cwd is None:
+            task = board.tasks.get(name)
+            cwd = task.project if task and Path(task.project).exists() else None
+
+        state = _pr_state(st.pr_number, cwd)
+        if state is None or state == "OPEN":
+            continue  # error/unknown, or still under review — leave it be
+
+        if st.worktree_session:
+            _kill_session(st.worktree_session)
+        _remove_scheduler_worktree(st.worktree_path, st.worktree_branch)
+
+        record = {"task": name, "pr": st.pr_number, "pr_state": state,
+                  "worktree": st.worktree_path}
+        st.worktree_branch = ""
+        st.worktree_path = ""
+        st.worktree_session = ""
+        st.pr_number = None
+        st.pr_url = ""
+        save_board(board)
+        _log_event("worktree_reaped", task=name, pr=record["pr"], pr_state=state)
+        print(f"[{_ts()}] Reaped worktree for {name} (PR #{record['pr']} {state})")
+        reaped.append(record)
+    return reaped
 
 
 def dispatch_task(board: Board, task_name: str) -> TaskState:
@@ -1047,16 +1189,49 @@ def dispatch_task(board: Board, task_name: str) -> TaskState:
 
 def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: TaskState) -> TaskState:
     """Dispatch via `agentwire ensure` subprocess (tmux session path)."""
+    if _is_worktree_task(task):
+        return _dispatch_worktree_task(board, task, existing_state)
+    return _dispatch_inplace_task(board, task, existing_state)
+
+
+def _run_ensure(cmd: list[str]) -> tuple[int, "subprocess.CompletedProcess | None", int]:
+    """Run an `agentwire ensure` subprocess; return (exit_code, result, duration_s)."""
+    start_time = time.time()
+    result = None
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
+        stdout, stderr = proc.communicate()
+        exit_code = proc.returncode
+        result = subprocess.CompletedProcess(cmd, exit_code, stdout, stderr)
+    except Exception:
+        exit_code = _EXIT_FAILED
+    return exit_code, result, int(time.time() - start_time)
+
+
+def _apply_max_runs(board: Board, task: SchedulerTask, new_state: TaskState,
+                    new_run_count: int) -> None:
+    """Auto-disable a task that has hit its max_runs cap."""
+    if task.max_runs is not None and new_run_count >= task.max_runs:
+        task.enabled = False
+        board.state[task.name] = new_state
+        save_board(board)
+        _log_event("task_disabled", task=task.name, reason="max_runs_reached",
+                   run_count=new_run_count, max_runs=task.max_runs)
+
+
+def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: TaskState) -> TaskState:
+    """Run a non-worktree task in place. Produces no commits — side effects
+    only (email, files outside the repo). The repo is never modified."""
     task_name = task.name
 
     # Clean stale lock for this session before dispatching.
-    # Stale locks (from crashed ensure processes) cause --skip-if-locked
-    # to silently exit 0, making tasks appear to complete instantly.
     from .locking import remove_stale_lock
     remove_stale_lock(task.session)
 
     has_overrides = bool(task.type or task.roles is not None or task.model)
-
     if has_overrides:
         # Scheduler has type/role overrides — kill + pre-create ourselves,
         # then let ensure reuse the session (no --fresh)
@@ -1074,28 +1249,7 @@ def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: Tas
         # No type/role overrides — kill stale session so ensure creates fresh
         _kill_session(task.session)
 
-    # Snapshot what's already dirty so auto-commit only captures what the
-    # task itself changes — not unrelated in-flight work in the repo.
-    pre_dirty = _dirty_paths(task.project)
-
-    start_time = time.time()
-    result = None
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,  # Create new process group
-        )
-        stdout, stderr = proc.communicate()
-        exit_code = proc.returncode
-        result = subprocess.CompletedProcess(cmd, exit_code, stdout, stderr)
-    except Exception:
-        exit_code = _EXIT_FAILED
-
-    duration = int(time.time() - start_time)
+    exit_code, result, duration = _run_ensure(cmd)
     status = _EXIT_TO_STATUS.get(exit_code, "failed")
 
     # On lock conflict, don't update last_run so task remains eligible
@@ -1114,12 +1268,7 @@ def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: Tas
     _log_event("task_completed", task=task_name, session=task.session,
                status=status, duration=duration, summary=summary,
                files_modified=files_modified, blockers=blockers_list)
-
     _notify_portal(task_name, status, duration, summary)
-
-    _auto_commit(task, task_name, status, pre_dirty)
-
-    gate_commit = _capture_head(task.project)
 
     new_run_count = existing_state.run_count + 1
     new_state = TaskState(
@@ -1128,16 +1277,104 @@ def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: Tas
         last_duration=duration,
         run_count=new_run_count,
         last_summary=summary,
-        last_gate_commit=gate_commit,
+        last_gate_commit=_capture_head(task.project),
     )
+    _apply_max_runs(board, task, new_state, new_run_count)
+    return new_state
 
-    if task.max_runs is not None and new_run_count >= task.max_runs:
-        task.enabled = False
-        board.state[task_name] = new_state
-        save_board(board)
-        _log_event("task_disabled", task=task_name, reason="max_runs_reached",
-                   run_count=new_run_count, max_runs=task.max_runs)
 
+def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: TaskState) -> TaskState:
+    """Run a task in a fresh git worktree forked off `base`, then commit +
+    push + open a draft PR. The live project folder is never touched, and
+    `git add -A` in the worktree is safe (no unrelated work to sweep)."""
+    task_name = task.name
+    from .locking import remove_stale_lock
+    cfg = _sched_config()
+
+    proj = Path(task.project)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    branch = f"scheduler-{task_name}-{ts}"
+    wt_session = f"{proj.name}/{branch}"  # slash → ensure/new treat as worktree
+
+    remove_stale_lock(wt_session)
+    _kill_session(wt_session)  # paranoia — a timestamped session shouldn't exist
+
+    # Create the worktree + session off the latest origin/<base>.
+    new_cmd = [
+        "agentwire", "new", "-s", wt_session, "-p", task.project,
+        "--base", task.base, "--pull-first", "--json",
+    ]
+    if task.type:
+        new_cmd += ["--type", task.type]
+    if task.roles is not None:
+        new_cmd += ["--roles", ",".join(task.roles)]
+    if task.model:
+        new_cmd += ["--model", task.model]
+
+    worktree_path = ""
+    new_res = None
+    try:
+        new_res = subprocess.run(new_cmd, capture_output=True, text=True,
+                                 timeout=cfg.session_create_timeout)
+        if new_res.returncode == 0:
+            worktree_path = (json.loads(new_res.stdout) or {}).get("path", "")
+    except Exception:
+        worktree_path = ""
+
+    if not worktree_path:
+        err = (new_res.stderr or new_res.stdout).strip()[:200] if new_res else ""
+        _log_event("task_failed", task=task_name, session=wt_session,
+                   reason=f"worktree create failed: {err}")
+        print(f"[{_ts()}] {task_name}: worktree create failed")
+        new_run_count = existing_state.run_count + 1
+        return TaskState(
+            last_run=datetime.now(timezone.utc), last_status="failed",
+            last_duration=0, run_count=new_run_count,
+            last_summary="worktree creation failed",
+        )
+
+    # Run the task inside the worktree.
+    cmd = [
+        "agentwire", "ensure", "-s", wt_session, "--task", task.task,
+        "--project", worktree_path, "--json",
+    ]
+    exit_code, result, duration = _run_ensure(cmd)
+    status = _EXIT_TO_STATUS.get(exit_code, "failed")
+
+    if exit_code == _EXIT_LOCK_CONFLICT:
+        _log_event("task_skipped", task=task_name, session=wt_session,
+                    reason="lock_conflict")
+        _remove_scheduler_worktree(worktree_path, branch)  # task didn't run
+        return TaskState(
+            last_run=existing_state.last_run, last_status="lock_conflict",
+            last_duration=duration, run_count=existing_state.run_count,
+        )
+
+    summary, files_modified, blockers_list = _parse_ensure_summary(
+        task, result, project=worktree_path, session=wt_session)
+
+    _log_event("task_completed", task=task_name, session=wt_session,
+               status=status, duration=duration, summary=summary,
+               files_modified=files_modified, blockers=blockers_list)
+    _notify_portal(task_name, status, duration, summary)
+
+    pr = _finalize_worktree_pr(task, task_name, status, worktree_path, branch, summary)
+
+    new_run_count = existing_state.run_count + 1
+    new_state = TaskState(
+        last_run=datetime.now(timezone.utc),
+        last_status=status,
+        last_duration=duration,
+        run_count=new_run_count,
+        last_summary=summary,
+        last_gate_commit=_capture_head(task.project),
+        worktree_branch=branch if pr else "",
+        worktree_path=worktree_path if pr else "",
+        worktree_session=wt_session if pr else "",
+        pr_number=pr.get("number") if pr else None,
+        pr_url=pr.get("url", "") if pr else "",
+    )
+    _apply_max_runs(board, task, new_state, new_run_count)
     return new_state
 
 
@@ -1323,6 +1560,13 @@ def run_scheduler_loop() -> None:
             print(f"[{_ts()}] Board read error: {e}", file=sys.stderr)
             time.sleep(max_sleep)
             continue
+
+        # Reap worktrees whose PR has merged/closed (cheap — only tasks with
+        # an open tracked PR hit `gh`).
+        try:
+            reap_worktree_prs(board)
+        except Exception as e:
+            print(f"[{_ts()}] Worktree reap error: {e}", file=sys.stderr)
 
         task_name, wait_seconds = pick_next_task(board)
         uptime = int((datetime.now(timezone.utc) - started_at).total_seconds())
