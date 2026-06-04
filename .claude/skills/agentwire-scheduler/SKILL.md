@@ -52,6 +52,8 @@ tasks:
 
 **Lifecycle:** branch `scheduler-<task>-<timestamp>` → run in worktree → if it produced changes, `git add -A` + commit (`scheduler: <task> — <summary>`) + push + draft PR; if it produced **nothing**, the empty worktree is removed and no PR is opened. The worktree **persists while the PR is open** (so you can spawn a session there during review) and is **reaped automatically when the PR merges or closes** (worktree + branch + session torn down). `worktree: false` tasks run in place and never commit.
 
+**Seeded files:** `git worktree add` only checks out *tracked* files, so gitignored secrets/config (`.env` etc.) won't be in a fresh worktree — an agent that needs them to authenticate would fail. The files listed in `projects.worktrees.copy_files` (default `[".env"]`) are copied from the main repo into every new worktree. They stay gitignored there, so they're never committed.
+
 ## Scheduler Task Scheduling
 
 Each task has a `schedule` field (replaces the old `interval`). The scheduler uses `_compute_next_eligible()` as the single source of truth for when a task becomes eligible.

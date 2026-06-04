@@ -44,6 +44,11 @@ projects:
   worktrees:
     enabled: true
     suffix: "-worktrees"
+    auto_create_branch: true
+    copy_files: [".env"]   # gitignored files seeded into each new worktree
+                           # (git worktree add only checks out tracked files,
+                           #  so .env/secrets/local config don't carry over —
+                           #  add ".env.local", ".envrc", etc. as needed)
 
 tts:
   backend: "runpod"  # runpod | kokoro | chatterbox | chatterbox-streaming | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design | zonos-transformer | zonos-hybrid | none

@@ -66,6 +66,10 @@ class WorktreesConfig:
     enabled: bool = True
     suffix: str = "-worktrees"
     auto_create_branch: bool = True
+    # Gitignored files that `git worktree add` won't carry over (it only
+    # checks out tracked files). These are copied from the main repo into
+    # each fresh worktree so agents have the secrets/config they need.
+    copy_files: list = field(default_factory=lambda: [".env"])
 
 
 @dataclass
@@ -410,6 +414,7 @@ def _dict_to_config(data: dict) -> Config:
         enabled=worktrees_data.get("enabled", True),
         suffix=worktrees_data.get("suffix", "-worktrees"),
         auto_create_branch=worktrees_data.get("auto_create_branch", True),
+        copy_files=worktrees_data.get("copy_files", [".env"]),
     )
     projects = ProjectsConfig(
         dir=projects_data.get("dir", "~/projects"),
