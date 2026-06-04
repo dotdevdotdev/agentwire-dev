@@ -179,11 +179,33 @@ class ServiceConfig:
 
 
 @dataclass
+class CustomServiceConfig:
+    """A user-defined session that behaves like a service.
+
+    Custom services show up in the portal's Services column and are booted
+    by `agentwire up`. A service is just an agentwire session created in a
+    project directory; `roles`/`type` override the project's .agentwire.yml
+    when set.
+    """
+
+    name: str
+    project: Optional[str] = None
+    autostart: bool = True
+    roles: Optional[str] = None  # comma-separated; overrides project .agentwire.yml
+    type: Optional[str] = None   # session type override (e.g. claude-bypass)
+
+    def __post_init__(self):
+        if self.project:
+            self.project = str(_expand_path(self.project) or self.project)
+
+
+@dataclass
 class ServicesConfig:
     """Where each service runs in the network."""
 
     portal: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8765, scheme="https"))
     tts: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8100, scheme="http"))
+    custom: list = field(default_factory=list)  # list[CustomServiceConfig]
 
 
 @dataclass
@@ -218,6 +240,7 @@ class SessionConfig:
 class SchedulerConfig:
     """Scheduler daemon configuration."""
 
+    autostart: bool = True         # start the daemon when the portal boots
     board_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler.yaml")
     events_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler-events.jsonl")
     live_state_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler-live.json")
@@ -462,9 +485,22 @@ def _dict_to_config(data: dict) -> Config:
         health_endpoint=tts_service_data.get("health_endpoint", "/health"),
         scheme=tts_service_data.get("scheme", "http"),  # TTS defaults to HTTP
     )
+    custom_services = []
+    for entry in services_data.get("custom", []) or []:
+        if isinstance(entry, str):
+            custom_services.append(CustomServiceConfig(name=entry))
+        elif isinstance(entry, dict) and entry.get("name"):
+            custom_services.append(CustomServiceConfig(
+                name=entry["name"],
+                project=entry.get("project"),
+                autostart=entry.get("autostart", True),
+                roles=entry.get("roles"),
+                type=entry.get("type"),
+            ))
     services = ServicesConfig(
         portal=portal_service,
         tts=tts_service,
+        custom=custom_services,
     )
 
     # Channel configs (registry-driven)
@@ -485,6 +521,7 @@ def _dict_to_config(data: dict) -> Config:
     # Scheduler
     scheduler_data = data.get("scheduler", {})
     scheduler = SchedulerConfig(
+        autostart=scheduler_data.get("autostart", True),
         board_file=scheduler_data.get("board_file", "~/.agentwire/scheduler.yaml"),
         events_file=scheduler_data.get("events_file", "~/.agentwire/scheduler-events.jsonl"),
         live_state_file=scheduler_data.get("live_state_file", "~/.agentwire/scheduler-live.json"),

@@ -761,8 +761,12 @@ def _notify_portal_sessions_changed():
 # === Portal Commands ===
 
 
-def _start_portal_local(args) -> int:
-    """Start portal locally in tmux."""
+def _start_portal_local(args, attach: bool = True) -> int:
+    """Start portal locally in tmux.
+
+    When attach is False (used by `agentwire up`), the portal is started
+    detached and we return without attaching.
+    """
     from .network import NetworkContext
     from .tunnels import TunnelManager
 
@@ -770,8 +774,9 @@ def _start_portal_local(args) -> int:
 
     if tmux_session_exists(session_name):
         print(f"Portal already running in tmux session '{session_name}'")
-        print("Attaching... (Ctrl+B D to detach)")
-        subprocess.run(["tmux", "attach-session", "-t", session_name])
+        if attach:
+            print("Attaching... (Ctrl+B D to detach)")
+            subprocess.run(["tmux", "attach-session", "-t", session_name])
         return 0
 
     # Ensure required tunnels are up before starting portal
@@ -835,8 +840,11 @@ def _start_portal_local(args) -> int:
 
     _ensure_notifications_session()
 
-    print("Portal started. Attaching... (Ctrl+B D to detach)")
-    subprocess.run(["tmux", "attach-session", "-t", session_name])
+    if attach:
+        print("Portal started. Attaching... (Ctrl+B D to detach)")
+        subprocess.run(["tmux", "attach-session", "-t", session_name])
+    else:
+        print("Portal started.")
     return 0
 
 
@@ -1147,19 +1155,21 @@ def _get_venv_for_backend(backend: str) -> str:
     return "qwen"
 
 
-def _start_tts_local(args, venv_override: str | None = None) -> int:
+def _start_tts_local(args, venv_override: str | None = None, attach: bool = True) -> int:
     """Start TTS server locally in tmux.
 
     Args:
         args: Parsed CLI arguments
         venv_override: Force specific venv (used for restart after venv_mismatch)
+        attach: When False (used by `agentwire up`), start detached and return.
     """
     session_name = get_tts_session_name()
 
     if tmux_session_exists(session_name):
         print(f"TTS server already running in tmux session '{session_name}'")
-        print("Attaching... (Ctrl+B D to detach)")
-        subprocess.run(["tmux", "attach-session", "-t", session_name])
+        if attach:
+            print("Attaching... (Ctrl+B D to detach)")
+            subprocess.run(["tmux", "attach-session", "-t", session_name])
         return 0
 
     # Get TTS config
@@ -1204,8 +1214,11 @@ def _start_tts_local(args, venv_override: str | None = None) -> int:
 
     _ensure_notifications_session()
 
-    print("TTS server started. Attaching... (Ctrl+B D to detach)")
-    subprocess.run(["tmux", "attach-session", "-t", session_name])
+    if attach:
+        print("TTS server started. Attaching... (Ctrl+B D to detach)")
+        subprocess.run(["tmux", "attach-session", "-t", session_name])
+    else:
+        print("TTS server started.")
     return 0
 
 
@@ -5623,6 +5636,98 @@ def cmd_dev(args) -> int:
     print("Attaching... (Ctrl+B D to detach)")
     subprocess.run(["tmux", "attach-session", "-t", session_name])
     return 0
+
+
+def _start_custom_service(svc) -> None:
+    """Start a custom service session (detached) if not already running."""
+    if tmux_session_exists(svc.name):
+        print(f"  [ok] {svc.name} (already running)")
+        return
+
+    project = svc.project or str(get_source_dir())
+    cmd = [sys.executable, "-m", "agentwire", "new", "-s", svc.name, "-p", project, "--json"]
+    if svc.roles:
+        cmd.extend(["--roles", svc.roles])
+    if svc.type:
+        cmd.extend(["--type", svc.type])
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+        print(f"  [ok] {svc.name} (started)")
+    except Exception as e:
+        print(f"  [!!] {svc.name}: {e}", file=sys.stderr)
+
+
+def cmd_up(args) -> int:
+    """Boot all AgentWire services, then start/attach the dev session.
+
+    Brings up (detached): portal, TTS, STT, and any autostart custom
+    services from config. The scheduler is auto-started by the portal
+    (services.scheduler.autostart). Then runs `agentwire dev` to
+    create + attach the main session.
+
+    Per-service start is best-effort — a failure to start one service
+    doesn't block the rest or the dev session.
+    """
+    from argparse import Namespace
+    from .config import load_config as load_config_typed
+    from .network import NetworkContext
+
+    cfg_dict = load_config()
+    cfg = load_config_typed()
+    ctx = NetworkContext.from_config()
+
+    def _is_local(name: str) -> bool:
+        try:
+            return ctx.is_local(name)
+        except Exception:
+            return True
+
+    print("Bringing up AgentWire services...")
+
+    # Portal (autostarts the scheduler on boot)
+    if _is_local("portal"):
+        portal_args = Namespace(
+            dev=getattr(args, "dev", False),
+            no_tts=getattr(args, "no_tts", False),
+            no_stt=getattr(args, "no_stt", False),
+            port=None, host=None,
+            config=getattr(args, "config", None),
+        )
+        _start_portal_local(portal_args, attach=False)
+    else:
+        print("  Portal configured for a remote machine — skipping (start it there).")
+
+    # TTS — skip if disabled or using a cloud backend
+    tts_backend = cfg_dict.get("tts", {}).get("backend", "chatterbox")
+    if getattr(args, "no_tts", False):
+        print("  TTS skipped (--no-tts).")
+    elif tts_backend in ("none", "runpod"):
+        print(f"  TTS skipped (backend: {tts_backend}).")
+    elif _is_local("tts"):
+        tts_args = Namespace(port=None, host=None, backend=None)
+        _start_tts_local(tts_args, attach=False)
+    else:
+        print("  TTS configured for a remote machine — skipping (start it there).")
+
+    # STT — start when configured (uses a local source venv)
+    if getattr(args, "no_stt", False):
+        print("  STT skipped (--no-stt).")
+    elif cfg_dict.get("stt", {}).get("url"):
+        stt_args = Namespace(port=None, host=None, model=None, backend=None)
+        cmd_stt_start(stt_args)
+    else:
+        print("  STT skipped (no stt.url configured).")
+
+    # Custom services
+    custom = [s for s in cfg.services.custom if s.autostart]
+    if custom:
+        print("Starting custom services...")
+        for svc in custom:
+            _start_custom_service(svc)
+
+    print()
+    # Finally, the dev session (creates + attaches the agentwire session)
+    return cmd_dev(args)
 
 
 # === Init Command ===
@@ -10178,6 +10283,15 @@ def main() -> int:
         "dev", help="Start/attach to dev agentwire session"
     )
     dev_parser.set_defaults(func=cmd_dev)
+
+    up_parser = subparsers.add_parser(
+        "up", help="Boot all services (portal, TTS, STT, scheduler, custom) then the dev session"
+    )
+    up_parser.add_argument("--dev", action="store_true", help="Run portal from source (uv run)")
+    up_parser.add_argument("--no-tts", action="store_true", help="Skip starting the TTS server")
+    up_parser.add_argument("--no-stt", action="store_true", help="Skip starting the STT server")
+    up_parser.add_argument("--config", type=Path, default=None, help="Path to config file")
+    up_parser.set_defaults(func=cmd_up)
 
     # === listen command group ===
     listen_parser = subparsers.add_parser("listen", help="Voice input recording")

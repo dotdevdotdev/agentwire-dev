@@ -65,9 +65,13 @@ export const schedulerSection = {
             ]);
             const live = liveRes.ok ? await liveRes.json() : null;
             const board = boardRes.ok ? await boardRes.json() : null;
-            if (live) {
-                this._state = { ...live, tasks: board?.tasks || [] };
+            // The board (tasks, overdue, last status) is available whether or not
+            // the daemon is running. Render it regardless so a stopped scheduler
+            // still shows what's queued + how overdue it is, plus a start toggle.
+            if (board) {
+                this._state = { running: !!live, ...(live || {}), tasks: board.tasks || [] };
             } else {
+                // No board at all — API unreachable, not just a stopped daemon.
                 this._state = null;
             }
         } catch (e) {
@@ -77,13 +81,35 @@ export const schedulerSection = {
     },
 
     _renderTaskRow(t, current_task) {
-        const name = typeof t === 'string' ? t : (t.name || t.task || '?');
-        const enabled = typeof t === 'object' ? t.enabled !== false : true;
-        const statusClass = !enabled ? 'dot-offline' : (name === current_task ? 'dot-processing' : 'dot-idle');
+        const obj = typeof t === 'object' ? t : {};
+        const name = typeof t === 'string' ? t : (obj.name || obj.task || '?');
+        const enabled = obj.enabled !== false;
+        const inFlight = !!obj.in_flight;
+        const lastStatus = obj.last_status;
+        const isCurrent = inFlight || name === current_task;
+
+        // Status dot reflects task health, not just enabled/disabled.
+        let dotClass = 'sidebar-activity-dot dot-idle';
+        if (!enabled) dotClass = 'sidebar-activity-dot dot-idle';
+        else if (isCurrent) dotClass = 'sidebar-activity-dot dot-processing';
+        else if (lastStatus === 'failed') dotClass = 'sidebar-status-dot dot-offline';
+        else if (lastStatus === 'complete') dotClass = 'sidebar-status-dot dot-online';
+
+        // Overdue meta: real "+13h12m" string once it's run before; a plain
+        // "due" badge for never-run tasks (their overdue_str is epoch garbage).
+        let meta = '';
+        if (enabled && !isCurrent && obj.overdue_by > 0) {
+            meta = obj.last_run_iso
+                ? `<span class="sidebar-list-item-meta overdue">${_escape(obj.overdue_str || 'overdue')}</span>`
+                : `<span class="sidebar-list-item-meta">due</span>`;
+        }
+
         const safeName = _escape(name);
-        return `<div class="sidebar-list-item sidebar-scheduler-task" data-task="${safeName}">
-            <span class="sidebar-status-dot ${statusClass}"></span>
+        const title = _escape(`${name} — ${obj.schedule_str || ''}${obj.last_run ? ` · last: ${obj.last_run} (${lastStatus || '?'})` : ''}`);
+        return `<div class="sidebar-list-item sidebar-scheduler-task" data-task="${safeName}" title="${title}">
+            <span class="${dotClass}"></span>
             <span class="sidebar-list-item-title">${safeName}</span>
+            ${meta}
             <button class="sidebar-list-item-btn" data-action="${enabled ? 'disable' : 'enable'}" title="${enabled ? 'Disable' : 'Enable'}">${enabled ? '⏸' : '▶'}</button>
             <button class="sidebar-list-item-btn" data-action="run" title="Run now">⚡</button>
         </div>`;
@@ -101,15 +127,24 @@ export const schedulerSection = {
 
     _render(body) {
         if (!this._state) {
-            body.innerHTML = '<div class="sidebar-empty">Scheduler not running</div>';
+            // Null only when the board API itself is unreachable (portal down).
+            body.innerHTML = '<div class="sidebar-empty">Scheduler unavailable</div>';
+            this._lastHtml = '';
             return;
         }
         const { current_task, tasks } = this._state;
         const running = this._state.running ?? (this._state.status === 'running');
         const statusDot = running ? 'dot-online' : 'dot-offline';
         const statusText = running ? 'Running' : 'Stopped';
+        const toggleAction = running ? 'scheduler-stop' : 'scheduler-start';
+        const toggleIcon = running ? '⏸' : '▶';
+        const toggleTitle = running ? 'Stop scheduler' : 'Start scheduler';
 
-        let html = `<div class="sidebar-list-item"><span class="sidebar-status-dot ${statusDot}"></span><span class="sidebar-list-item-title">${statusText}</span></div>`;
+        let html = `<div class="sidebar-list-item sidebar-scheduler-status">
+            <span class="sidebar-status-dot ${statusDot}"></span>
+            <span class="sidebar-list-item-title">${statusText}</span>
+            <button class="sidebar-list-item-btn" data-action="${toggleAction}" title="${toggleTitle}">${toggleIcon}</button>
+        </div>`;
 
         if (current_task) {
             html += `<div class="sidebar-section-subheader">Current</div>`;
@@ -161,10 +196,23 @@ export const schedulerSection = {
 
         const btn = e.target.closest('[data-action]');
         if (!btn) return;
+        const action = btn.dataset.action;
+
+        // Daemon start/stop toggle (not tied to a task row).
+        if (action === 'scheduler-start' || action === 'scheduler-stop') {
+            btn.disabled = true;
+            try {
+                const path = action === 'scheduler-start' ? '/api/scheduler/start' : '/api/scheduler/stop';
+                await fetch(path, { method: 'POST' });
+            } catch (e) { console.warn('Scheduler toggle failed', e); }
+            // Daemon takes a moment to spin up / write its state file.
+            setTimeout(() => this.refresh(body), 1500);
+            return;
+        }
+
         const item = btn.closest('[data-task]');
         if (!item) return;
         const task = item.dataset.task;
-        const action = btn.dataset.action;
         try {
             if (action === 'run') {
                 await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/run`, { method: 'POST' });

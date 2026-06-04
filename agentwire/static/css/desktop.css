@@ -404,6 +404,10 @@ body {
     flex-shrink: 0;
 }
 
+.sidebar-list-item-meta.overdue {
+    color: var(--error);
+}
+
 .sidebar-list-item-btn {
     flex-shrink: 0;
     background: transparent;

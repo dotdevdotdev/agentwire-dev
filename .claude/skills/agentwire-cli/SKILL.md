@@ -33,6 +33,12 @@ agentwire split -s name         # add terminal pane(s)
 agentwire detach -s name        # move pane to its own session
 agentwire resize -s name        # resize window to fit largest client
 
+# Boot everything
+agentwire up                    # boot all services (portal, TTS, STT, scheduler,
+                                #   custom) then start/attach the dev session
+agentwire up --no-tts --no-stt  # skip optional voice services
+agentwire up --dev              # run portal from source (uv run)
+
 # Portal management
 agentwire portal start          # start in tmux
 agentwire portal stop           # stop portal
@@ -165,10 +171,17 @@ agentwire overnight report                  # morning report
 # Setup & Development
 agentwire init                  # interactive setup wizard
 agentwire generate-certs        # generate SSL certificates
-agentwire dev                   # start/attach to dev session
+agentwire up                    # boot all services + dev session (see "Boot everything")
+agentwire dev                   # start/attach to dev session ONLY (no services)
 agentwire rebuild               # clear uv cache and reinstall
 agentwire uninstall             # uninstall the tool
 ```
+
+`agentwire dev` only spawns the `agentwire` agent session — it does NOT start
+the portal or any service. Use `agentwire up` after a reboot to bring up the
+full stack. `up` brings up portal → TTS → STT → autostart custom services, then
+runs `dev`; the scheduler rides along via the portal's `scheduler.autostart`.
+TTS is skipped for `none`/`runpod` backends; STT is skipped without `stt.url`.
 
 Session formats: `name`, `project/branch` (worktree), `name@machine` (remote)
 Pane targeting: `--pane N` auto-detects session from `$TMUX_PANE`

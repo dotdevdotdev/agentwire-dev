@@ -13,6 +13,24 @@ const SERVICE_SESSIONS = new Set([
 ]);
 export function isService(name) { return SERVICE_SESSIONS.has(name); }
 
+// Merge config-defined custom services into the Services column. Fire-and-forget
+// on load; re-render once they arrive so flagged sessions hop to the right group.
+async function loadCustomServices() {
+    try {
+        const res = await fetch('/api/services/custom');
+        if (!res.ok) return;
+        const { names } = await res.json();
+        let changed = false;
+        for (const n of names || []) {
+            if (!SERVICE_SESSIONS.has(n)) { SERVICE_SESSIONS.add(n); changed = true; }
+        }
+        if (changed) notifyListeners();
+    } catch {
+        // Portal offline / endpoint missing — built-in services still group fine.
+    }
+}
+loadCustomServices();
+
 let allSessions = [];
 const listeners = new Set();
 

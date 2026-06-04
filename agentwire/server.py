@@ -227,6 +227,8 @@ class AgentWireServer:
         self.app.router.add_post("/api/desktop/notification", self.api_desktop_notification)
         self.app.router.add_post("/api/desktop/notification/dismiss", self.api_desktop_notification_dismiss)
         self.app.router.add_get("/api/desktop/notifications", self.api_desktop_notifications_list)
+        # Services registry (custom service sessions from config)
+        self.app.router.add_get("/api/services/custom", self.api_services_custom)
         # Scheduler monitoring endpoints
         self.app.router.add_get("/api/scheduler/live", self.api_scheduler_live)
         self.app.router.add_get("/api/scheduler/events", self.api_scheduler_events)
@@ -4348,6 +4350,18 @@ projects:
             logger.error(f"History resume API failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
+    async def api_services_custom(self, request: web.Request) -> web.Response:
+        """GET /api/services/custom - Names of config-defined custom services.
+
+        The sidebar merges these into its Services column so user-flagged
+        sessions group as services rather than regular sessions.
+        """
+        try:
+            names = [s.name for s in self.config.services.custom]
+            return web.json_response({"names": names})
+        except Exception as e:
+            return web.json_response({"error": str(e), "names": []}, status=500)
+
     async def api_scheduler_live(self, request: web.Request) -> web.Response:
         """GET /api/scheduler/live - Live scheduler state.
 
@@ -4435,26 +4449,36 @@ projects:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _start_scheduler_daemon(self) -> bool:
+        """Launch the scheduler daemon in a detached tmux session.
+
+        No-op if it's already running. Returns True if it was started.
+        """
+        if await self._is_scheduler_running():
+            return False
+        # Create tmux session and launch scheduler serve (same as CLI but detached)
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "new-session", "-d", "-s", "agentwire-scheduler",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+        proc2 = await asyncio.create_subprocess_exec(
+            "tmux", "send-keys", "-t", "agentwire-scheduler",
+            "agentwire scheduler serve", "Enter",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc2.wait()
+        return True
+
     async def api_scheduler_start(self, request: web.Request) -> web.Response:
         """POST /api/scheduler/start - Start the scheduler daemon in tmux."""
         try:
-            if await self._is_scheduler_running():
-                return web.json_response({"success": True, "status": "already_running"})
-            # Create tmux session and launch scheduler serve (same as CLI but detached)
-            proc = await asyncio.create_subprocess_exec(
-                "tmux", "new-session", "-d", "-s", "agentwire-scheduler",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+            started = await self._start_scheduler_daemon()
+            return web.json_response(
+                {"success": True, "status": "started" if started else "already_running"}
             )
-            await proc.wait()
-            proc2 = await asyncio.create_subprocess_exec(
-                "tmux", "send-keys", "-t", "agentwire-scheduler",
-                "agentwire scheduler serve", "Enter",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc2.wait()
-            return web.json_response({"success": True, "status": "started"})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -4785,6 +4809,14 @@ async def run_server(config: Config):
 
     # Cleanup old uploads on startup
     await server.cleanup_old_uploads()
+
+    # Auto-start the scheduler daemon alongside the portal (configurable).
+    if config.scheduler.autostart:
+        try:
+            if await server._start_scheduler_daemon():
+                logger.info("Auto-started scheduler daemon")
+        except Exception as e:
+            logger.warning(f"Scheduler autostart failed: {e}")
 
     # Start session monitor for all-sessions dashboard indicators
     monitor_task = asyncio.create_task(server.monitor_all_sessions())
