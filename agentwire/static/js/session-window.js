@@ -166,6 +166,12 @@ export class SessionWindow {
             this.ws = null;
         }
 
+        // Remove the two-finger touch-scroll listeners
+        if (this._touchScrollCleanup) {
+            this._touchScrollCleanup();
+            this._touchScrollCleanup = null;
+        }
+
         // Dispose terminal (terminal mode) or output element (monitor mode)
         if (this.terminal) {
             this.terminal.dispose();
@@ -321,6 +327,13 @@ export class SessionWindow {
 
         this.terminal.open(terminalEl);
 
+        // Touch devices emit no `wheel` events, so xterm's wheel-driven
+        // scrolling (tmux copy-mode / the app's own scroll) is unreachable on a
+        // tablet. Translate a two-finger vertical pan into synthetic wheel
+        // events so touch scrolls history exactly like a desktop mouse wheel.
+        // One finger stays free for tap/selection.
+        this._setupTouchScroll(terminalEl);
+
         // Fit after font loads and layout is complete
         const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
         const fontSize = pickTerminalFontSize();
@@ -365,6 +378,154 @@ export class SessionWindow {
             // Font loading API not available, use delayed fit
             doInitialFit(false);
         }
+    }
+
+    /**
+     * Translate a two-finger vertical pan into tmux mouse-wheel scroll.
+     *
+     * Touch devices emit no `wheel` events, so the desktop scroll path (mouse
+     * wheel → xterm encodes an SGR mouse event → tmux enters copy-mode and
+     * scrolls) never fires on a tablet. Rather than fake a WheelEvent and hope
+     * xterm's mouse encoder picks it up, we send the exact bytes a real wheel
+     * produces — the SGR-1006 mouse sequence — straight down the input
+     * WebSocket. tmux runs with `mouse on`, so it consumes these and scrolls
+     * history. One finger is left untouched for tap/selection.
+     *
+     * SGR wheel: ESC [ < Btn ; Col ; Row M  — Btn 64 = wheel-up, 65 = wheel-down
+     * (1-based Col/Row; any point inside the pane works for scroll).
+     */
+    _setupTouchScroll(terminalEl) {
+        // Finger travel, in text lines, that advances one tmux wheel tick. tmux
+        // scrolls 5 lines per wheel tick (its WheelUp/DownPane `-N 5` binding),
+        // so a strict 1:1 mapping would need 5 lines of finger travel per tick —
+        // on a short window that's nearly the whole draggable height, so you get
+        // one tick then nothing. Firing a tick every ~1.5 lines keeps it ticking
+        // continuously across the whole stroke; momentum then covers distance.
+        const FINGER_LINES_PER_TICK = 1.5;
+        // Cap ticks emitted per animation frame so a fast flick can't flood tmux
+        // faster than it can redraw (the source of the laggy/stuttery feel).
+        const MAX_TICKS_PER_FRAME = 8;
+        // First tick of a gesture fires after only this fraction of a full tick
+        // of travel, so the start feels immediate instead of dead until ~5 lines.
+        const FIRST_TICK_FRACTION = 0.35;
+        // Momentum: after lift, keep scrolling and decay velocity each frame.
+        const FRICTION = 0.94;          // per-frame velocity multiplier
+        const FLING_MIN_V = 0.04;       // px/ms at release needed to start a fling
+        const MOMENTUM_STOP_V = 0.012;  // px/ms below which momentum ends
+
+        let active = false;
+        let lastMidY = 0;
+        let accum = 0;        // unconsumed finger travel (px), sign = direction
+        let rafId = null;
+        let emitted = false;  // has any tick fired this gesture? (first-tick boost)
+        let velocity = 0;     // px/ms, smoothed — drives momentum
+        let lastMoveT = 0;
+        let lastFrameT = 0;
+        let momentum = false;
+
+        const midY = (touches) => (touches[0].clientY + touches[1].clientY) / 2;
+
+        // Finger pixels per tick = lines-per-tick × measured cell height.
+        const pxPerTick = () => {
+            const rows = this.terminal?.rows || 24;
+            const h = terminalEl.getBoundingClientRect().height;
+            const cell = rows > 0 && h > 0 ? h / rows : 18;
+            return FINGER_LINES_PER_TICK * cell;
+        };
+
+        // dir < 0 → wheel-up (older history); dir > 0 → wheel-down (newer).
+        const wheelSeq = (dir) => {
+            const col = Math.max(1, Math.floor(this.terminal.cols / 2));
+            const row = Math.max(1, Math.floor(this.terminal.rows / 2));
+            return `\x1b[<${dir < 0 ? 64 : 65};${col};${row}M`;
+        };
+
+        const sendTicks = (ticks) => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.terminal) return;
+            this.ws.send(JSON.stringify({ type: 'input', data: wheelSeq(ticks).repeat(Math.abs(ticks)) }));
+        };
+
+        // One frame: advance momentum, then batch all due ticks into one message.
+        const flush = (now) => {
+            rafId = null;
+
+            if (momentum) {
+                const dt = Math.min(now - lastFrameT, 50);
+                lastFrameT = now;
+                accum += velocity * dt;
+                velocity *= FRICTION;
+                if (Math.abs(velocity) < MOMENTUM_STOP_V) momentum = false;
+            }
+            if (active || momentum) rafId = requestAnimationFrame(flush);
+
+            const step = pxPerTick();
+            // Snappier first tick: lower the threshold until the gesture moves.
+            const threshold = emitted ? step : step * FIRST_TICK_FRACTION;
+            let ticks = Math.trunc(accum / threshold);
+            if (ticks === 0) return;
+            if (ticks > MAX_TICKS_PER_FRAME) ticks = MAX_TICKS_PER_FRAME;
+            else if (ticks < -MAX_TICKS_PER_FRAME) ticks = -MAX_TICKS_PER_FRAME;
+            accum -= ticks * threshold;
+            emitted = true;
+            sendTicks(ticks);
+        };
+
+        const startRaf = () => { if (rafId === null) { lastFrameT = performance.now(); rafId = requestAnimationFrame(flush); } };
+        const stopRaf = () => { if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; } };
+
+        const onTouchStart = (e) => {
+            if (e.touches.length !== 2) { active = false; momentum = false; stopRaf(); return; }
+            active = true;
+            momentum = false;
+            emitted = false;
+            velocity = 0;
+            accum = 0;
+            lastMidY = midY(e.touches);
+            lastMoveT = performance.now();
+            e.preventDefault();  // stop the page/WinBox from claiming the gesture
+            startRaf();
+        };
+
+        const onTouchMove = (e) => {
+            if (!active || e.touches.length !== 2) return;
+            e.preventDefault();
+            const now = performance.now();
+            const y = midY(e.touches);
+            // Fingers up (y decreases) → newer/down; fingers down → older/up.
+            const dy = lastMidY - y;
+            accum += dy;
+            const dt = now - lastMoveT;
+            if (dt > 0) velocity = 0.6 * velocity + 0.4 * (dy / dt);  // smoothed px/ms
+            lastMidY = y;
+            lastMoveT = now;
+        };
+
+        const onTouchEnd = (e) => {
+            if (e.touches.length >= 2) return;
+            active = false;
+            // Carry a fast lift into a decaying fling; otherwise stop clean.
+            if (Math.abs(velocity) >= FLING_MIN_V) {
+                momentum = true;
+                lastFrameT = performance.now();
+                startRaf();
+            } else {
+                velocity = 0;
+                accum = 0;
+            }
+        };
+
+        terminalEl.addEventListener('touchstart', onTouchStart, { passive: false });
+        terminalEl.addEventListener('touchmove', onTouchMove, { passive: false });
+        terminalEl.addEventListener('touchend', onTouchEnd);
+        terminalEl.addEventListener('touchcancel', onTouchEnd);
+
+        this._touchScrollCleanup = () => {
+            stopRaf();
+            terminalEl.removeEventListener('touchstart', onTouchStart);
+            terminalEl.removeEventListener('touchmove', onTouchMove);
+            terminalEl.removeEventListener('touchend', onTouchEnd);
+            terminalEl.removeEventListener('touchcancel', onTouchEnd);
+        };
     }
 
     _createWinBox(container) {
