@@ -320,6 +320,10 @@ class DesktopManager {
                 this.emit('desktop_minimize_all', {});
                 break;
 
+            case 'desktop_mission_control':
+                this.emit('desktop_mission_control', {});
+                break;
+
             case 'desktop_apply_layout':
                 this.emit('desktop_apply_layout', { windows: msg.windows });
                 break;

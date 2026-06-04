@@ -2096,6 +2096,26 @@ body .winbox.max {
     display: none;
 }
 
+/* Mission Control — dim scrim behind the window grid collage. Grid windows are
+ * raised above this via inline z-index (see mission-control.js). Clicking the
+ * scrim (the gaps between tiles) exits the overlay. */
+.mission-control-overlay {
+    position: absolute;
+    top: var(--menu-height);
+    left: 0;
+    right: 0;
+    bottom: var(--taskbar-height);
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(2px);
+    opacity: 1;
+    transition: opacity 0.15s ease;
+}
+
+.mission-control-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
 /* ListWindow component */
 .list-window {
     display: flex;

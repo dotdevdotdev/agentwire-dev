@@ -9,6 +9,7 @@
 
 import { desktop } from './desktop-manager.js';
 import { tileManager } from './tile-manager.js';
+import { missionControl } from './mission-control.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { sidebar } from './sidebar.js';
@@ -73,6 +74,7 @@ async function init() {
     setupPageUnload();
     setupGlobalPtt();
     setupWindowCycling();
+    setupMissionControl();
 
     // Set up event listeners BEFORE fetching data
     desktop.on('disconnect', () => updateConnectionStatus(false));
@@ -183,6 +185,10 @@ async function init() {
 
     desktop.on('desktop_minimize_all', () => {
         desktop.minimizeAllExcept(null);
+    });
+
+    desktop.on('desktop_mission_control', () => {
+        missionControl.toggle();
     });
 
     desktop.on('desktop_apply_layout', ({ windows }) => {
@@ -319,6 +325,20 @@ function setupWindowCycling() {
         updateTaskbarActive(nextId);
         saveTaskbarState();
     }, true);  // capture phase — runs before xterm's handlers
+}
+
+// Mission Control — Alt/Option + ` collages all open windows into a grid.
+function setupMissionControl() {
+    missionControl.init();
+    // Capture phase on window: xterm's <textarea> swallows keydown otherwise.
+    // Detect via e.code, NOT e.key — on macOS Option+` is a dead key (grave accent)
+    // so e.key is "Dead", never a backtick. (Cmd/Ctrl+` is the sidebar toggle.)
+    window.addEventListener('keydown', (e) => {
+        if (!e.altKey || e.code !== 'Backquote') return;
+        if (isCommandPaletteOpen()) return;
+        e.preventDefault();
+        missionControl.toggle();
+    }, true);
 }
 
 // Clean up on page unload
