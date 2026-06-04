@@ -79,6 +79,14 @@ services:  # Where services run (for multi-machine setups)
     session_name: "agentwire-tts"
   stt:
     session_name: "agentwire-stt"
+  custom:  # User-defined service sessions — boot with `agentwire up`,
+           #   shown in the portal's Services column
+    - name: "agent-brain"          # tmux session name (required)
+      project: "~/projects/brain"  # project dir; defaults to dev source dir
+      autostart: true              # boot with `agentwire up` (default true)
+      roles: "brain"               # optional; overrides project .agentwire.yml
+      type: "claude-bypass"        # optional; session type override
+    - "simple-service"             # string shorthand = name only, autostart on
 
 executables:  # Override executable paths (optional, auto-detected by default)
   ffmpeg: "/opt/homebrew/bin/ffmpeg"
@@ -146,6 +154,7 @@ channels:  # Outbound-only notifications. Only email + quo ship.
     default_to: "+0987654321"
 
 scheduler:
+  autostart: true        # Start the scheduler daemon when the portal boots (default: true)
   dispatch_cooldown: 60  # Seconds between task dispatches (default: 60)
 
 worktree:

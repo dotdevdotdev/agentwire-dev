@@ -17,7 +17,7 @@ The portal uses a left sidebar with a floating tab handle instead of hover hotzo
 - **Footer**: global PTT button, voice indicator
 
 **Session grouping:** Sessions are split into two accordion sections based on the name:
-- **Services**: infrastructure sessions, matched against an explicit allowlist in `sessions-section.js` (`agentwire-portal`, `agentwire-tts`, `agentwire-stt`, `agentwire-scheduler`, `agentwire-notifications`)
+- **Services**: infrastructure sessions. The built-in allowlist in `sessions-section.js` (`agentwire-portal`, `agentwire-tts`, `agentwire-stt`, `agentwire-scheduler`, `agentwire-notifications`) is merged at load time with config-defined custom services fetched from `/api/services/custom` (driven by `services.custom` in `config.yaml`). When the fetch resolves, `notifyListeners()` re-renders so flagged sessions hop into this column.
 - **Sessions**: everything else (working sessions, worktrees, remote sessions)
 
 Both share session data from `sessions-section.js` (single fetch, shared activity state, pub-sub via `onSessionsChanged`).
