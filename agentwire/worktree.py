@@ -64,6 +64,7 @@ def ensure_worktree(
     worktree_path: Path,
     auto_create_branch: bool = True,
     commit: str | None = None,
+    copy_files: list[str] | None = None,
 ) -> bool:
     """Ensure a git worktree exists for the given branch.
 
@@ -73,6 +74,8 @@ def ensure_worktree(
         worktree_path: Path where the worktree should be created
         auto_create_branch: If True, create branch if it doesn't exist
         commit: Optional commit/ref to start the worktree from (default: HEAD)
+        copy_files: Gitignored files to seed into the fresh worktree. None
+            resolves the configured default (projects.worktrees.copy_files).
 
     Returns:
         True if worktree exists or was created successfully, False otherwise
@@ -96,40 +99,72 @@ def ensure_worktree(
     )
     branch_exists = result.returncode == 0
 
-    # Build git worktree add command
-    # git worktree add [-b branch] <path> [<commit-ish>]
-    cmd = ["git", "worktree", "add", str(worktree_path)]
-
     if branch_exists:
-        cmd.append(branch)
-        # Create worktree first, then checkout specific commit if requested
-        result = subprocess.run(cmd, cwd=project_path, capture_output=True)
+        result = subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), branch],
+            cwd=project_path, capture_output=True,
+        )
         if result.returncode != 0:
             return False
         if commit:
             # Detach HEAD at requested commit inside the worktree
             checkout = subprocess.run(
                 ["git", "checkout", commit],
-                cwd=worktree_path,
-                capture_output=True,
+                cwd=worktree_path, capture_output=True,
             )
-            return checkout.returncode == 0
-        return True
+            if checkout.returncode != 0:
+                return False
     elif auto_create_branch:
-        cmd.extend(["-b", branch])
+        cmd = ["git", "worktree", "add", "-b", branch, str(worktree_path)]
         if commit:
             cmd.append(commit)  # git worktree add -b branch path <commit> is native
+        result = subprocess.run(cmd, cwd=project_path, capture_output=True)
+        if result.returncode != 0:
+            return False
     else:
         return False
 
-    # Create worktree
-    result = subprocess.run(
-        cmd,
-        cwd=project_path,
-        capture_output=True,
-    )
+    _seed_worktree_files(project_path, worktree_path, copy_files)
+    return True
 
-    return result.returncode == 0
+
+def _seed_worktree_files(
+    project_path: Path,
+    worktree_path: Path,
+    copy_files: list[str] | None = None,
+) -> None:
+    """Copy gitignored-but-needed files (e.g. .env) into a fresh worktree.
+
+    `git worktree add` only checks out tracked files — untracked/ignored
+    files like .env, .env.local, or local config never come along, so an
+    agent working in the worktree can't authenticate. Copy a configured
+    seed list (relative paths) from the main repo. Best-effort: missing
+    sources are skipped and copy errors are swallowed. Files that are
+    gitignored in the repo stay ignored in the worktree, so they're never
+    committed.
+    """
+    if copy_files is None:
+        try:
+            from .config import load_config
+            copy_files = load_config().projects.worktrees.copy_files
+        except Exception:
+            copy_files = []
+
+    import shutil
+
+    for rel in copy_files or []:
+        src = project_path / rel
+        dst = worktree_path / rel
+        if not src.exists() or dst.exists():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        except Exception:
+            pass  # best-effort — a missing seed file shouldn't fail dispatch
 
 
 def list_worktrees(project_path: Path) -> list[dict]:
