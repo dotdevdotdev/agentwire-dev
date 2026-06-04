@@ -35,6 +35,8 @@ stt = [
     { name = "fastapi" },
     { name = "faster-whisper" },
     { name = "python-multipart" },
+    { name = "soundfile" },
+    { name = "useful-moonshine-onnx" },
     { name = "uvicorn" },
 ]
 tts = [
@@ -73,8 +75,10 @@ requires-dist = [
     { name = "resend", specifier = ">=2.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "runpod", marker = "extra == 'tts'", specifier = ">=1.6.0" },
+    { name = "soundfile", marker = "extra == 'stt'", specifier = ">=0.12.0" },
     { name = "torch", marker = "extra == 'tts'", specifier = ">=2.0.0" },
     { name = "torchaudio", marker = "extra == 'tts'", specifier = ">=2.0.0" },
+    { name = "useful-moonshine-onnx", marker = "extra == 'stt'", specifier = ">=20250101" },
     { name = "uvicorn", marker = "extra == 'stt'", specifier = ">=0.24.0" },
     { name = "uvicorn", marker = "extra == 'tts'", specifier = ">=0.24.0" },
 ]
@@ -5057,6 +5061,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/24/a2a2ed9addd907787d7aa0355ba36a6cadf1768b934c652ea78acbd59dcd/urllib3-2.6.2.tar.gz", hash = "sha256:016f9c98bb7e98085cb2b4b17b87d2c702975664e4f060c6532e64d1c1a5e797", size = 432930, upload-time = "2025-12-11T15:56:40.252Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6d/b9/4095b668ea3678bf6a0af005527f39de12fb026516fb3df17495a733b7f8/urllib3-2.6.2-py3-none-any.whl", hash = "sha256:ec21cddfe7724fc7cb4ba4bea7aa8e2ef36f607a4bab81aa6ce42a13dc3f03dd", size = 131182, upload-time = "2025-12-11T15:56:38.584Z" },
+]
+
+[[package]]
+name = "useful-moonshine-onnx"
+version = "20251121"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "librosa" },
+    { name = "numba" },
+    { name = "onnxruntime" },
+    { name = "tokenizers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/30/0260a3e61ddf944c7ce0f65fc94e5d7e846bc061e2c255f016093baec8cf/useful_moonshine_onnx-20251121.tar.gz", hash = "sha256:b1fabd5b7b5cd9f4ff22fdacc3cc8f6cee26232032a1ee24b85064070a9784bc", size = 721446, upload-time = "2025-11-21T22:57:11.917Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/44/f6151edd6defc96b25664579c037274109ff4d93191b561e0a321d82eda4/useful_moonshine_onnx-20251121-py3-none-any.whl", hash = "sha256:b4189b0d7dc8064d567fd0b5d5ce78634be290b0a3a3274ab80ad11c46d531a2", size = 729305, upload-time = "2025-11-21T22:56:53.261Z" },
 ]
 
 [[package]]
