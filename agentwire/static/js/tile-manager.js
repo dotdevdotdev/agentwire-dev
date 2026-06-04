@@ -290,6 +290,59 @@ class TileManager {
     }
 
     /**
+     * Lay a set of windows out into a grid collage across the desktop area.
+     *
+     * Reuses the same move/resize mechanics as _tileWindow (strip .max, position
+     * via winbox.move/resize, emit window_tiled so terminals refit) but for an
+     * arbitrary N-cell grid. Unlike tiling, this is a transient view: it does NOT
+     * write desktop.tileStates, so nothing persists or re-applies on restore.
+     *
+     * @param {string[]} ids - Window identifiers to place, in grid order
+     * @param {number} [gutter=8] - Pixel gap between tiles and around the edges
+     */
+    layoutGrid(ids, gutter = 8) {
+        if (!this.desktopArea || !ids.length) return;
+
+        const rect = this.desktopArea.getBoundingClientRect();
+        const n = ids.length;
+
+        // Fit cols×rows to the desktop aspect ratio so tiles stay close to the
+        // viewport shape rather than squashed. cols = ceil(sqrt(n * aspect)).
+        const aspect = rect.width / rect.height;
+        let cols = Math.max(1, Math.round(Math.sqrt(n * aspect)));
+        cols = Math.min(cols, n);
+        let rows = Math.ceil(n / cols);
+        // Avoid a trailing near-empty row when one more column packs it tighter.
+        while (cols > 1 && (cols - 1) * rows >= n) cols--;
+        rows = Math.ceil(n / cols);
+
+        const cellW = (rect.width - gutter * (cols + 1)) / cols;
+        const cellH = (rect.height - gutter * (rows + 1)) / rows;
+
+        ids.forEach((id, i) => {
+            const winbox = desktop.getWindow(id);
+            if (!winbox || !winbox.window) return;
+
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = rect.left + gutter + col * (cellW + gutter);
+            const y = rect.top + gutter + row * (cellH + gutter);
+
+            // Strip maximized state — .max CSS uses !important and overrides move/resize.
+            winbox.window.classList.remove('max');
+            winbox.max = false;
+            // Reuse .tiled for the smooth left/top/width/height transition.
+            winbox.window.classList.add('tiled');
+
+            winbox.move(x, y);
+            winbox.resize(cellW, cellH);
+
+            // Trigger terminal refit after the transition (same wiring as tiling).
+            desktop.emit('window_tiled', { id });
+        });
+    }
+
+    /**
      * Re-maximize a window (remove tiling).
      * @param {string} id - Window identifier
      */

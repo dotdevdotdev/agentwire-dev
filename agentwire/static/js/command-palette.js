@@ -35,6 +35,11 @@ const COMMANDS = [
     { id: 'new-session', icon: '▶', label: 'New session', keywords: 'create new session start spawn run project', run: () => setView('new-session') },
     { id: 'worktree', icon: '⎇', label: 'New worktree', keywords: 'worktree branch quicktask task feat fix base', run: () => setView('worktree') },
     { id: 'open-session', icon: '👁', label: 'Open session', keywords: 'open attach connect existing session', run: () => setView('open-session') },
+    { id: 'mission-control', icon: '▦', label: 'Mission Control', keywords: 'mission control collage grid windows overview show all', run: async () => {
+        closeCommandPalette();
+        const { missionControl } = await import('./mission-control.js');
+        missionControl.enter();
+    } },
 ];
 
 // ---------------------------------------------------------------------------

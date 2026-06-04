@@ -222,6 +222,7 @@ class AgentWireServer:
         self.app.router.add_post("/api/desktop/window/focus", self.api_desktop_focus)
         self.app.router.add_post("/api/desktop/window/tile", self.api_desktop_tile)
         self.app.router.add_post("/api/desktop/window/minimize-all", self.api_desktop_minimize_all)
+        self.app.router.add_post("/api/desktop/mission-control", self.api_desktop_mission_control)
         self.app.router.add_post("/api/desktop/layout", self.api_desktop_layout)
         # Desktop notifications
         self.app.router.add_post("/api/desktop/notification", self.api_desktop_notification)
@@ -983,6 +984,11 @@ class AgentWireServer:
     async def api_desktop_minimize_all(self, request):
         """POST /api/desktop/window/minimize-all — minimize all windows."""
         await self.broadcast_dashboard("desktop_minimize_all", {})
+        return web.json_response({"success": True})
+
+    async def api_desktop_mission_control(self, request):
+        """POST /api/desktop/mission-control — toggle the Mission Control window collage."""
+        await self.broadcast_dashboard("desktop_mission_control", {})
         return web.json_response({"success": True})
 
     async def api_desktop_layout(self, request):
