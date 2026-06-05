@@ -11,6 +11,7 @@ import { desktop } from './desktop-manager.js';
 import { sessionIcons } from './icon-manager.js';
 import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
 import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
+import { ansiToHtml } from './utils/ansi.js';
 
 const NARROW_VIEWPORT = '(max-width: 768px)';
 function pickTerminalFontSize() {
@@ -316,7 +317,7 @@ export class SessionWindow {
         this.terminal.loadAddon(this.fitAddon);
 
         // Add WebGL addon for performance (optional). Keep a reference: after a
-        // large container resize (collage grid→max) the WebGL renderer can leave
+        // large container resize (tile grid→max) the WebGL renderer can leave
         // the newly-exposed area transparent until its texture atlas is rebuilt.
         this.webglAddon = null;
         try {
@@ -704,7 +705,7 @@ export class SessionWindow {
                         desktop._playAudio(msg.data, this.sessionId);
                     } else if (msg.type === 'output' && msg.data) {
                         // Convert ANSI to HTML and display
-                        this.outputEl.innerHTML = this._ansiToHtml(msg.data);
+                        this.outputEl.innerHTML = ansiToHtml(msg.data);
                         this.outputEl.scrollTop = this.outputEl.scrollHeight;
                         // Mark activity when output received
                         this._markActivity();
@@ -784,29 +785,10 @@ export class SessionWindow {
     }
 
     /**
-     * Refit + force a full repaint. After a window snaps from a small grid cell
-     * (collage) back to maximized, xterm can leave the newly-exposed area
-     * unpainted (transparent) until the user clicks — fit() resizes the buffer
-     * but doesn't always repaint, so refresh() the whole viewport explicitly.
-     */
-    refit() {
-        if (this.mode !== 'terminal' || !this.fitAddon || !this.terminal) return;
-        requestAnimationFrame(() => {
-            try {
-                this.fitAddon.fit();
-                this._sendResize();
-                this._forceRepaint();
-            } catch (e) {
-                console.error('[refit] error:', e);
-            }
-        });
-    }
-
-    /**
      * Force a full WebGL repaint. fit() resizes the buffer but doesn't redraw, so
-     * after a window snaps back from a collage transform/grid cell the newly-exposed
-     * canvas stays transparent until interaction. The WebGL renderer needs its stale
-     * texture atlas rebuilt; then a full viewport refresh repaints every cell.
+     * after a large container resize (tile grid → maximized) the newly-exposed
+     * canvas can stay transparent until interaction. The WebGL renderer needs its
+     * stale texture atlas rebuilt; then a full viewport refresh repaints every cell.
      */
     _forceRepaint() {
         try { this.webglAddon?.clearTextureAtlas(); } catch (e) {}
@@ -968,122 +950,6 @@ export class SessionWindow {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
-    }
-
-    /**
-     * Convert ANSI escape codes to HTML for monitor mode display.
-     * Supports basic colors, 256-color, and true color (24-bit).
-     * @param {string} text - Text with ANSI codes
-     * @returns {string} HTML string
-     */
-    _ansiToHtml(text) {
-        // Escape HTML entities first
-        let html = text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-
-        // Basic 16 colors (standard + bright)
-        const basicColors = {
-            0: '#000', 1: '#cd0000', 2: '#00cd00', 3: '#cdcd00',
-            4: '#0000ee', 5: '#cd00cd', 6: '#00cdcd', 7: '#e5e5e5',
-            8: '#7f7f7f', 9: '#ff0000', 10: '#00ff00', 11: '#ffff00',
-            12: '#5c5cff', 13: '#ff00ff', 14: '#00ffff', 15: '#ffffff'
-        };
-
-        // Convert 256-color index to hex
-        const color256ToHex = (n) => {
-            if (n < 16) return basicColors[n];
-            if (n < 232) {
-                // 216 color cube: 6x6x6
-                n -= 16;
-                const r = Math.floor(n / 36) * 51;
-                const g = Math.floor((n % 36) / 6) * 51;
-                const b = (n % 6) * 51;
-                return `rgb(${r},${g},${b})`;
-            }
-            // Grayscale: 24 shades
-            const gray = (n - 232) * 10 + 8;
-            return `rgb(${gray},${gray},${gray})`;
-        };
-
-        // Track current styles
-        let fg = null, bg = null, bold = false, italic = false, underline = false;
-
-        const buildSpan = () => {
-            const styles = [];
-            if (fg) styles.push(`color:${fg}`);
-            if (bg) styles.push(`background:${bg}`);
-            if (bold) styles.push('font-weight:bold');
-            if (italic) styles.push('font-style:italic');
-            if (underline) styles.push('text-decoration:underline');
-            return styles.length ? `<span style="${styles.join(';')}">` : '';
-        };
-
-        // Process ANSI sequences
-        html = html.replace(/\x1b\[([0-9;]*)m/g, (match, codes) => {
-            const parts = (codes || '0').split(';').map(Number);
-            let i = 0;
-            let needsNewSpan = false;
-
-            while (i < parts.length) {
-                const code = parts[i];
-
-                if (code === 0) {
-                    // Reset all
-                    fg = bg = null;
-                    bold = italic = underline = false;
-                    needsNewSpan = true;
-                } else if (code === 1) {
-                    bold = true; needsNewSpan = true;
-                } else if (code === 3) {
-                    italic = true; needsNewSpan = true;
-                } else if (code === 4) {
-                    underline = true; needsNewSpan = true;
-                } else if (code === 22) {
-                    bold = false; needsNewSpan = true;
-                } else if (code === 23) {
-                    italic = false; needsNewSpan = true;
-                } else if (code === 24) {
-                    underline = false; needsNewSpan = true;
-                } else if (code >= 30 && code <= 37) {
-                    fg = basicColors[code - 30]; needsNewSpan = true;
-                } else if (code >= 90 && code <= 97) {
-                    fg = basicColors[code - 90 + 8]; needsNewSpan = true;
-                } else if (code === 39) {
-                    fg = null; needsNewSpan = true;
-                } else if (code >= 40 && code <= 47) {
-                    bg = basicColors[code - 40]; needsNewSpan = true;
-                } else if (code >= 100 && code <= 107) {
-                    bg = basicColors[code - 100 + 8]; needsNewSpan = true;
-                } else if (code === 49) {
-                    bg = null; needsNewSpan = true;
-                } else if (code === 38 && parts[i + 1] === 5) {
-                    // 256-color foreground: 38;5;N
-                    fg = color256ToHex(parts[i + 2]);
-                    i += 2; needsNewSpan = true;
-                } else if (code === 48 && parts[i + 1] === 5) {
-                    // 256-color background: 48;5;N
-                    bg = color256ToHex(parts[i + 2]);
-                    i += 2; needsNewSpan = true;
-                } else if (code === 38 && parts[i + 1] === 2) {
-                    // True color foreground: 38;2;R;G;B
-                    fg = `rgb(${parts[i + 2]},${parts[i + 3]},${parts[i + 4]})`;
-                    i += 4; needsNewSpan = true;
-                } else if (code === 48 && parts[i + 1] === 2) {
-                    // True color background: 48;2;R;G;B
-                    bg = `rgb(${parts[i + 2]},${parts[i + 3]},${parts[i + 4]})`;
-                    i += 4; needsNewSpan = true;
-                }
-                i++;
-            }
-
-            // Close previous span and open new one with current styles
-            return needsNewSpan ? `</span>${buildSpan()}` : '';
-        });
-
-        // Wrap in initial span and close at end
-        return `<span>${html}</span>`;
     }
 
     // Reconnect button handler

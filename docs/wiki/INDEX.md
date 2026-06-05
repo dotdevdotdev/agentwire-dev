@@ -64,6 +64,7 @@ Voice output and input backends.
 Implementation reference for contributors and advanced users.
 
 - **[Portal](internals/portal.md)** — modes, REST API, WebSocket events
+- **[Window collage](internals/window-collage.md)** — Mission Control overlay: preview-tile architecture + why mutating real WinBox windows can never work
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries
 - **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
 - **[Troubleshooting](internals/troubleshooting.md)** — common issues and fixes

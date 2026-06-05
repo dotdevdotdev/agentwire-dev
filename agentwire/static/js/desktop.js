@@ -327,33 +327,20 @@ function setupWindowCycling() {
     }, true);  // capture phase — runs before xterm's handlers
 }
 
-// Collage — HOLD Alt/Option + ` to grid all open windows; release to restore.
+// Collage — tap F3 (like macOS Mission Control) to grid all open windows; tap
+// again, press Esc, or click a window to restore.
 function setupCollage() {
     collage.init(_lookupWindowInstance);
-    let held = false;
 
     // Capture phase on window + stopPropagation so xterm's <textarea> never sees
-    // the keystroke (otherwise a stray ` leaks into the focused session). Detect
-    // via e.code, NOT e.key — on macOS Option+` is a dead key (grave accent) so
-    // e.key is "Dead", never a backtick. (Cmd/Ctrl+` is the sidebar toggle.)
+    // F3 (and the browser's default Find-next is suppressed).
     window.addEventListener('keydown', (e) => {
-        if (!e.altKey || e.code !== 'Backquote') return;
+        if (e.code !== 'F3') return;
         if (isCommandPaletteOpen()) return;
         e.preventDefault();
         e.stopPropagation();
-        if (held) return;  // ignore key auto-repeat while held
-        held = true;
-        collage.enter();
-    }, true);
-
-    // Release either the backquote or Alt to end the peek.
-    window.addEventListener('keyup', (e) => {
-        if (!held) return;
-        if (e.code !== 'Backquote' && e.key !== 'Alt') return;
-        e.preventDefault();
-        e.stopPropagation();
-        held = false;
-        collage.exit();
+        if (e.repeat) return;  // ignore auto-repeat while the key is held
+        collage.toggle();
     }, true);
 }
 
@@ -599,7 +586,7 @@ export function restoreTaskbarState() {
         // Materialize EVERY saved window — not just the active one — so they all
         // register with the desktop manager. Otherwise only the active window is a
         // real window and the rest are click-to-open placeholders, which leaves
-        // collage (Alt/Option+`) and Tab window-cycling with nothing to act on
+        // collage (F3) and Tab window-cycling with nothing to act on
         // until each other window is clicked. Open in saved order so the sidebar
         // "Open Windows" list keeps its order (open* appends to the end).
         const focusRec = (activeId && tabs.find(t => t.id === activeId)) || tabs[tabs.length - 1];

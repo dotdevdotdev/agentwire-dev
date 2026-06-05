@@ -1,6 +1,6 @@
 ---
 name: agentwire-desktop-ui
-description: Portal desktop UI patterns — left sidebar (click-toggle tab handle, accordion sections, session grouping into Sessions/Services via explicit allowlist, keyboard nav), session window modes (Monitor `<pre>` vs Terminal xterm.js — Monitor MUST NOT use xterm), artifact windows (sandboxed iframes from `~/.agentwire/artifacts/`). Use when editing portal static files (`static/js/sidebar/*`, `desktop.js`, `desktop.css`), changing window behavior, or adding sidebar sections.
+description: Portal desktop UI patterns — left sidebar (click-toggle tab handle, accordion sections, session grouping into Sessions/Services via explicit allowlist, keyboard nav), session window modes (Monitor `<pre>` vs Terminal xterm.js — Monitor MUST NOT use xterm), artifact windows (sandboxed iframes from `~/.agentwire/artifacts/`), window collage (preview overlay — NEVER mutate real WinBox windows). Use when editing portal static files (`static/js/sidebar/*`, `desktop.js`, `desktop.css`), changing window behavior, or adding sidebar sections.
 ---
 
 # Portal Desktop UI Patterns
@@ -36,6 +36,20 @@ Both share session data from `sessions-section.js` (single fetch, shared activit
 **Important:** Monitor mode must use a simple `<pre>` element, NOT xterm.js. xterm.js requires precise container dimensions for its fit addon to work correctly. Since monitor mode just displays captured text output, a `<pre>` element with `white-space: pre-wrap` and ANSI-to-HTML conversion is simpler and more reliable.
 
 **Per-session PTT** lives in the WinBox titlebar (next to the activity indicator), not as a floating button.
+
+## Window Collage (Mission Control)
+
+F3 / `desktop_collage` MCP / command palette → grid of live previews of every open window; click a tile to focus, Esc to exit.
+
+**The one rule: tiles are overlay-local previews — NEVER mutate the real WinBox windows.** Session tiles stream pane content over a second monitor WS (`/ws/{sessionId}`, rendered via shared `utils/ansi.js`); artifact tiles are cloned iframes. Real windows are never moved/resized/transformed/un-minimized, so exit has nothing to restore.
+
+Why this is load-bearing (each broke a previous implementation — full autopsy in `docs/wiki/internals/window-collage.md`):
+- Faking `winbox.min` corrupts WinBox's internal min-stack → later minimizes re-lay windows out as 250×35px bars, with duplicate entries compounding per cycle.
+- WinBox animates geometry over 300ms → `getBoundingClientRect` right after a write returns mid-transition garbage.
+- Resizing a terminal window fires ResizeObserver → `fitAddon.fit()` + PTY resize per frame → resizes the real tmux session and corrupts the xterm WebGL layer (transparent windows).
+- `registerWindow`/`setActiveWindow` auto-minimize all others (single-window mode) → any window event mid-overlay fights manual layouts.
+
+**Z-index landscape:** WinBox windows (inline, grows from 10) < collage overlay (1400) < toasts (1500) < modals (2000) < command palette (3000) < sidebar (9001) < tile drag overlay (99999).
 
 ## Artifact Windows
 
