@@ -2096,24 +2096,27 @@ body .winbox.max {
     display: none;
 }
 
-/* Mission Control — dim scrim behind the window grid collage. Grid windows are
- * raised above this via inline z-index (see mission-control.js). Clicking the
+/* Collage — dim scrim behind the window grid collage. Grid windows are
+ * raised above this via inline z-index (see collage.js). Clicking the
  * scrim (the gaps between tiles) exits the overlay. */
-.mission-control-overlay {
+.collage-overlay {
     position: absolute;
     top: var(--menu-height);
     left: 0;
     right: 0;
     bottom: var(--taskbar-height);
-    background: rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(2px);
+    /* No backdrop-filter here: a blur filter on this scrim leaves a stale
+     * compositor layer when the overlay is removed, so the window that returns
+     * to full size renders translucent/transparent until the next repaint (a
+     * click). The flat dim below gives the same overlay affordance without the
+     * GPU-layer hazard. */
+    background: rgba(0, 0, 0, 0.55);
     opacity: 1;
     transition: opacity 0.15s ease;
 }
 
-.mission-control-overlay.hidden {
-    opacity: 0;
-    pointer-events: none;
+.collage-overlay.hidden {
+    display: none;
 }
 
 /* ListWindow component */

@@ -315,11 +315,14 @@ export class SessionWindow {
         this.fitAddon = new FitAddon.FitAddon();
         this.terminal.loadAddon(this.fitAddon);
 
-        // Add WebGL addon for performance (optional)
+        // Add WebGL addon for performance (optional). Keep a reference: after a
+        // large container resize (collage grid→max) the WebGL renderer can leave
+        // the newly-exposed area transparent until its texture atlas is rebuilt.
+        this.webglAddon = null;
         try {
             if (typeof WebglAddon !== 'undefined') {
-                const webglAddon = new WebglAddon.WebglAddon();
-                this.terminal.loadAddon(webglAddon);
+                this.webglAddon = new WebglAddon.WebglAddon();
+                this.terminal.loadAddon(this.webglAddon);
             }
         } catch (e) {
             console.warn('[SessionWindow] WebGL not available:', e);
@@ -780,6 +783,36 @@ export class SessionWindow {
         }
     }
 
+    /**
+     * Refit + force a full repaint. After a window snaps from a small grid cell
+     * (collage) back to maximized, xterm can leave the newly-exposed area
+     * unpainted (transparent) until the user clicks — fit() resizes the buffer
+     * but doesn't always repaint, so refresh() the whole viewport explicitly.
+     */
+    refit() {
+        if (this.mode !== 'terminal' || !this.fitAddon || !this.terminal) return;
+        requestAnimationFrame(() => {
+            try {
+                this.fitAddon.fit();
+                this._sendResize();
+                this._forceRepaint();
+            } catch (e) {
+                console.error('[refit] error:', e);
+            }
+        });
+    }
+
+    /**
+     * Force a full WebGL repaint. fit() resizes the buffer but doesn't redraw, so
+     * after a window snaps back from a collage transform/grid cell the newly-exposed
+     * canvas stays transparent until interaction. The WebGL renderer needs its stale
+     * texture atlas rebuilt; then a full viewport refresh repaints every cell.
+     */
+    _forceRepaint() {
+        try { this.webglAddon?.clearTextureAtlas(); } catch (e) {}
+        this.terminal.refresh(0, this.terminal.rows - 1);
+    }
+
     _handleResizeAfterAnimation() {
         // Listen for CSS transition to complete before fitting terminal
         if (this.mode !== 'terminal' || !this.fitAddon || !this.terminal || !this.winbox) return;
@@ -794,6 +827,7 @@ export class SessionWindow {
 
                 this.fitAddon.fit();
                 this._sendResize();
+                this._forceRepaint();
             } catch (err) {
                 console.error('[SessionWindow] Fit error:', err);
             }

@@ -2727,19 +2727,19 @@ def desktop_minimize_all() -> str:
 
 
 @mcp.tool()
-def desktop_mission_control() -> str:
-    """Toggle Mission Control in the portal desktop.
+def desktop_collage() -> str:
+    """Toggle the window collage in the portal desktop.
 
-    Lays every open window into a grid collage so they can all be seen at once;
+    Lays every open window into a grid so they can all be seen at once;
     toggling again (or the user clicking a tile / pressing Esc) exits the overlay.
 
     Returns:
         Success message or error description.
     """
-    data = _portal_request("POST", "/api/desktop/mission-control")
+    data = _portal_request("POST", "/api/desktop/collage")
     if data.get("success"):
-        return "Mission Control toggled."
-    return f"Failed to toggle Mission Control: {data.get('error', 'Unknown error')}"
+        return "Collage toggled."
+    return f"Failed to toggle Collage: {data.get('error', 'Unknown error')}"
 
 
 @mcp.tool()

@@ -9,7 +9,7 @@
 
 import { desktop } from './desktop-manager.js';
 import { tileManager } from './tile-manager.js';
-import { missionControl } from './mission-control.js';
+import { collage } from './collage.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { sidebar } from './sidebar.js';
@@ -74,7 +74,7 @@ async function init() {
     setupPageUnload();
     setupGlobalPtt();
     setupWindowCycling();
-    setupMissionControl();
+    setupCollage();
 
     // Set up event listeners BEFORE fetching data
     desktop.on('disconnect', () => updateConnectionStatus(false));
@@ -187,8 +187,8 @@ async function init() {
         desktop.minimizeAllExcept(null);
     });
 
-    desktop.on('desktop_mission_control', () => {
-        missionControl.toggle();
+    desktop.on('desktop_collage', () => {
+        collage.toggle();
     });
 
     desktop.on('desktop_apply_layout', ({ windows }) => {
@@ -327,17 +327,33 @@ function setupWindowCycling() {
     }, true);  // capture phase — runs before xterm's handlers
 }
 
-// Mission Control — Alt/Option + ` collages all open windows into a grid.
-function setupMissionControl() {
-    missionControl.init();
-    // Capture phase on window: xterm's <textarea> swallows keydown otherwise.
-    // Detect via e.code, NOT e.key — on macOS Option+` is a dead key (grave accent)
-    // so e.key is "Dead", never a backtick. (Cmd/Ctrl+` is the sidebar toggle.)
+// Collage — HOLD Alt/Option + ` to grid all open windows; release to restore.
+function setupCollage() {
+    collage.init(_lookupWindowInstance);
+    let held = false;
+
+    // Capture phase on window + stopPropagation so xterm's <textarea> never sees
+    // the keystroke (otherwise a stray ` leaks into the focused session). Detect
+    // via e.code, NOT e.key — on macOS Option+` is a dead key (grave accent) so
+    // e.key is "Dead", never a backtick. (Cmd/Ctrl+` is the sidebar toggle.)
     window.addEventListener('keydown', (e) => {
         if (!e.altKey || e.code !== 'Backquote') return;
         if (isCommandPaletteOpen()) return;
         e.preventDefault();
-        missionControl.toggle();
+        e.stopPropagation();
+        if (held) return;  // ignore key auto-repeat while held
+        held = true;
+        collage.enter();
+    }, true);
+
+    // Release either the backquote or Alt to end the peek.
+    window.addEventListener('keyup', (e) => {
+        if (!held) return;
+        if (e.code !== 'Backquote' && e.key !== 'Alt') return;
+        e.preventDefault();
+        e.stopPropagation();
+        held = false;
+        collage.exit();
     }, true);
 }
 
@@ -580,28 +596,25 @@ export function restoreTaskbarState() {
     if (tabs.length === 0) return;
     restoringTaskbar = true;
     try {
-        // Choose which window to actually construct now: saved active, else last in list.
+        // Materialize EVERY saved window — not just the active one — so they all
+        // register with the desktop manager. Otherwise only the active window is a
+        // real window and the rest are click-to-open placeholders, which leaves
+        // collage (Alt/Option+`) and Tab window-cycling with nothing to act on
+        // until each other window is clicked. Open in saved order so the sidebar
+        // "Open Windows" list keeps its order (open* appends to the end).
         const focusRec = (activeId && tabs.find(t => t.id === activeId)) || tabs[tabs.length - 1];
-        // Build placeholders first so they occupy the correct DOM order, then materialize the focus one.
         for (const rec of tabs) {
-            if (rec.id === focusRec.id) continue;
-            addPlaceholderTaskbarButton(rec);
-        }
-        // Open the focus window for real. The minimizeAllExcept inside its open path
-        // is harmless because no real windows exist yet.
-        try {
-            _openByRecord(focusRec);
-        } catch (e) {
-            console.warn('[taskbar] Failed to restore focus window', focusRec, e);
-        }
-        // Move the focus button into its saved DOM slot (open* appends to end of taskbar)
-        const focusBtn = elements.taskbarWindows.querySelector(`[data-session="${CSS.escape(focusRec.id)}"]`);
-        const focusIndex = tabs.findIndex(t => t.id === focusRec.id);
-        if (focusBtn && focusIndex >= 0) {
-            const refBtn = elements.taskbarWindows.querySelectorAll('.sidebar-open-item')[focusIndex];
-            if (refBtn && refBtn !== focusBtn) {
-                elements.taskbarWindows.insertBefore(focusBtn, refBtn);
+            try {
+                _openByRecord(rec);
+            } catch (e) {
+                console.warn('[taskbar] Failed to restore window', rec, e);
             }
+        }
+        // Each open maximizes itself + minimizes the rest, so whichever opened last
+        // is active. Re-activate the saved-active window: maximizes it, minimizes
+        // the others — leaving the exact single-window state we had before refresh.
+        if (focusRec && desktop.windows.has(focusRec.id)) {
+            desktop.setActiveWindow(focusRec.id);
         }
     } finally {
         restoringTaskbar = false;
@@ -646,70 +659,6 @@ function reconcileTaskbarWithSessions(sessions) {
             btn.remove();
             unrecordTaskbarEntry(id);
         }
-    }
-}
-
-function addPlaceholderTaskbarButton(rec) {
-    const id = rec.id;
-    if (elements.taskbarWindows.querySelector(`[data-session="${CSS.escape(id)}"]`)) return;
-    const btn = document.createElement('div');
-    btn.className = 'sidebar-open-item minimized';
-    btn.dataset.session = id;
-    btn.draggable = true;
-
-    const titleEl = document.createElement('span');
-    titleEl.className = 'sidebar-open-item-title';
-    titleEl.textContent = rec.session || rec.title || rec.panel || id;
-    btn.appendChild(titleEl);
-
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'sidebar-open-item-close';
-    closeBtn.type = 'button';
-    closeBtn.title = 'Remove';
-    closeBtn.textContent = '×';
-    closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-    closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        btn.remove();
-        unrecordTaskbarEntry(id);
-    });
-    btn.appendChild(closeBtn);
-
-    btn.addEventListener('click', () => materializePlaceholder(btn, rec));
-    btn.addEventListener('dragstart', (e) => {
-        btn.classList.add('dragging');
-        if (e.dataTransfer) {
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', id);
-        }
-    });
-    btn.addEventListener('dragend', () => {
-        btn.classList.remove('dragging');
-        saveTaskbarState();
-    });
-    elements.taskbarWindows.appendChild(btn);
-    bindTaskbarDragover();
-    // Pre-populate record so saveTaskbarState includes the placeholder.
-    taskbarRecords.set(id, { ...rec, minimized: true });
-}
-
-function materializePlaceholder(btn, rec) {
-    if (btn._materialized) return;
-    btn._materialized = true;
-    const id = rec.id;
-    const nextSibling = btn.nextSibling;
-    btn.remove();
-    try {
-        _openByRecord(rec);
-    } catch (e) {
-        console.warn('[taskbar] Failed to materialize placeholder', rec, e);
-        return;
-    }
-    // Move the freshly-created real button to the placeholder's slot.
-    const newBtn = elements.taskbarWindows.querySelector(`[data-session="${CSS.escape(id)}"]`);
-    if (newBtn && nextSibling && newBtn !== nextSibling) {
-        elements.taskbarWindows.insertBefore(newBtn, nextSibling);
-        saveTaskbarState();
     }
 }
 

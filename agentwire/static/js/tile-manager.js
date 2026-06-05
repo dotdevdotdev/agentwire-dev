@@ -328,8 +328,13 @@ class TileManager {
             const x = rect.left + gutter + col * (cellW + gutter);
             const y = rect.top + gutter + row * (cellH + gutter);
 
-            // Strip maximized state — .max CSS uses !important and overrides move/resize.
-            winbox.window.classList.remove('max');
+            // Un-hide and de-maximize: `.winbox.min` is `display:none !important`
+            // (minimized windows), and `.max` uses !important geometry — both
+            // override move/resize, so a window would stay hidden/maximized in
+            // its grid cell. Clear the classes AND the flags (kept in sync so a
+            // later minimizeAllExcept still re-minimizes correctly).
+            winbox.window.classList.remove('min', 'max');
+            winbox.min = false;
             winbox.max = false;
             // Reuse .tiled for the smooth left/top/width/height transition.
             winbox.window.classList.add('tiled');
