@@ -1,44 +1,63 @@
 /**
- * Collage - window collage overlay.
+ * Collage — Mission Control overlay of live window previews.
  *
- * Lays every open window into a grid so the whole desktop can be scanned at once.
- * Click any tile to focus that window and exit; Esc exits restoring the prior state.
+ * F3 (or the desktop_collage MCP tool, or the command palette) lays a preview
+ * of every open window into a grid so the whole desktop can be scanned at once.
+ * Click a tile to focus that window; Esc, F3, or clicking the backdrop exits.
  *
- * The portal runs in single-window mode (one maximized window, the rest minimized),
- * so "prior state" is just: which window was active + each window's minimized flag +
- * any tile zones.
+ * The tiles are NOT the real windows. Each tile is a lightweight live view:
+ * session windows stream the same pane content as Monitor mode over their own
+ * monitor WebSocket (/ws/{sessionId} — the server pushes the current screen on
+ * connect and re-broadcasts on change); artifact windows render a cloned
+ * iframe. The real WinBox windows are never moved, resized, transformed,
+ * minimized, or restored by this module — entering and exiting the collage is
+ * pure DOM addition/removal in an overlay layer.
  *
- * Tiles are the live windows, placed via CSS `transform: translate()+scale()` — NOT
- * by resizing them. Resizing a live window that hosts an xterm down to a grid cell
- * and back corrupts its GPU compositing layer: the background renders transparent
- * and nothing (refresh, reflow, even a real click or window resize) repaints it.
- * A transform is a cheap GPU op that reuses the window's existing full-size raster,
- * so the layer never re-rasters small. The active window's geometry is left fully
- * untouched (only transformed); minimized windows are first grown to the full box,
- * then scaled into their cell. Exit just drops the transform.
+ * That constraint is the whole design. The previous implementation manipulated
+ * the real windows (un-minimize, grow, transform-scale into a grid, restore on
+ * exit) and was structurally unfixable:
+ *   - faking `winbox.min` corrupted WinBox's internal min-stack, so any later
+ *     minimize re-laid stale entries out as 250px-wide taskbar bars (the
+ *     "windows shrink to thin bars" bug) and duplicated stack entries grew
+ *     worse every enter/exit cycle;
+ *   - WinBox animates left/top/width/height over 300ms, so any geometry read
+ *     taken right after a write measured mid-transition garbage;
+ *   - growing a hidden window to full size fired its ResizeObserver every
+ *     animation frame → fitAddon.fit() + PTY resize spam → the real tmux
+ *     session got resized and the xterm WebGL layer corrupted (transparent
+ *     window backgrounds);
+ *   - registerWindow/setActiveWindow enforce single-window mode (minimize all
+ *     others), so any window event mid-overlay re-minimized the tiles
+ *     (windows vanishing) while relayout fought to undo it.
+ * A preview overlay sidesteps all of it: there is no state to restore, so
+ * there is nothing to corrupt.
  *
  * @module collage
  */
 
 import { desktop } from './desktop-manager.js';
-import { tileManager } from './tile-manager.js';
+import { ansiToHtml } from './utils/ansi.js';
+import { isCommandPaletteOpen } from './command-palette.js';
 
-/** z-index band: scrim sits at BASE, grid windows above it. */
-const SCRIM_Z = 5000;
+/** Overlay z-index: above all windows (WinBox's focus counter sets inline
+ * z-indexes that grow from 10), below notification toasts (1500), modals
+ * (2000), the command palette (3000), and the sidebar (9001) — all of those
+ * must stay usable on top of the collage. */
+const OVERLAY_Z = 1400;
 
 class Collage {
     constructor() {
         /** @type {boolean} */
         this._active = false;
 
-        /** @type {HTMLElement|null} */
-        this._scrim = null;
+        /** @type {HTMLElement|null} Backdrop + grid root (created in init) */
+        this._overlay = null;
 
-        /** @type {Object|null} Pre-collage state snapshot */
-        this._snapshot = null;
+        /** @type {HTMLElement|null} Current grid element */
+        this._grid = null;
 
-        /** @type {Array<{el: HTMLElement, fn: Function}>} Per-window click handlers */
-        this._clickHandlers = [];
+        /** @type {Array<{ws: WebSocket|null}>} Per-tile live resources */
+        this._tiles = [];
 
         /** @type {Array<Function>} desktop event unsubscribe fns (active only) */
         this._unsubs = [];
@@ -50,19 +69,20 @@ class Collage {
     }
 
     /**
-     * Initialize. Creates the scrim element (hidden) inside the desktop area.
+     * Initialize. Creates the overlay element (hidden) inside the desktop area.
      * @param {function(string): (object|null)} [lookupInstance] - Resolves a
-     *   window id to its SessionWindow/ArtifactWindow instance (for refit on exit).
+     *   window id to its SessionWindow/ArtifactWindow instance.
      */
     init(lookupInstance) {
         if (typeof lookupInstance === 'function') this._lookup = lookupInstance;
         const area = document.getElementById('desktopArea');
         if (!area) return;
-        this._scrim = document.createElement('div');
-        this._scrim.className = 'collage-overlay hidden';
-        this._scrim.style.zIndex = String(SCRIM_Z);
-        this._scrim.addEventListener('click', () => this.exit());
-        area.appendChild(this._scrim);
+        this._overlay = document.createElement('div');
+        this._overlay.className = 'collage-overlay hidden';
+        this._overlay.style.zIndex = String(OVERLAY_Z);
+        // Backdrop click (the gaps between tiles) exits; tile clicks stop propagation.
+        this._overlay.addEventListener('click', () => this.exit());
+        area.appendChild(this._overlay);
     }
 
     /**
@@ -73,123 +93,53 @@ class Collage {
     }
 
     /**
-     * Enter Collage: restore every window and lay them into a grid.
+     * Enter the collage: build a live preview tile for every open window.
      */
     enter() {
-        if (this._active) return;
+        if (this._active || !this._overlay) return;
         const ids = [...desktop.windows.keys()];
         if (ids.length < 2) return;  // nothing to collage
 
-        // Snapshot the single-window state so we can restore it on Esc.
-        const minimized = new Map();
-        for (const [id, winbox] of desktop.windows) {
-            minimized.set(id, !!winbox.min);
-        }
-        this._snapshot = {
-            activeId: desktop.getActiveWindow(),
-            minimized,
-            tileStates: new Map(desktop.tileStates),
-        };
-
-        // Clear tile states BEFORE laying out — otherwise tile-manager's
-        // window_restored handler re-tiles each window to its old zone, fighting
-        // the grid. The snapshot above lets us put them back on exit.
-        desktop.tileStates.clear();
-
-        // macOS Option+` is a dead key: its grave accent commits via the
-        // composition/input path (not keydown), so stopPropagation on the hotkey
-        // can't block it leaking into the focused terminal. Blur the active
-        // element so the composed ` has no target; _refitActive refocuses on exit.
-        if (document.activeElement && typeof document.activeElement.blur === 'function') {
-            document.activeElement.blur();
-        }
-
         this._active = true;
-        this._showScrim();
-        this._layout(ids);
+
+        // Keystrokes would otherwise still reach the focused xterm <textarea>
+        // behind the backdrop; exit() hands focus back to the active window.
+        const ae = document.activeElement;
+        if (ae && typeof ae.blur === 'function') ae.blur();
+
+        this._overlay.classList.remove('hidden');
+        this._buildGrid(ids);
 
         document.addEventListener('keydown', this._onKeydown, true);
         this._unsubs.push(
-            desktop.on('window_registered', () => this._relayout()),
-            desktop.on('window_unregistered', () => this._relayout()),
-            desktop.on('session_closed', () => this._relayout()),
-            // External activation (Tab cycle, sidebar click) sets single-window
-            // mode out from under us — tear the overlay down cleanly instead of
-            // leaving a stale active state that fights the next toggle.
-            desktop.on('active_window_changed', () => { this._snapshot = null; this._teardown(); }),
+            // Window set changed underneath us — rebuild the previews.
+            desktop.on('window_registered', () => this._rebuild()),
+            desktop.on('window_unregistered', () => this._rebuild()),
+            // Something else activated a window (Tab cycle, sidebar click, a
+            // freshly-opened window): get out of the way and show it.
+            desktop.on('active_window_changed', () => this._teardown()),
+            // Grid geometry depends on the desktop area size.
+            desktop.on('viewport_resize', () => this._rebuild()),
         );
     }
 
     /**
-     * Exit Collage.
-     * @param {string|null} focusId - If given, that window becomes the single
-     *   maximized window (click-to-focus). Otherwise the pre-collage state restores.
+     * Exit the collage.
+     * @param {string|null} focusId - If given, that window becomes the active
+     *   (maximized) window via the standard setActiveWindow path. Otherwise
+     *   the desktop is exactly as it was — nothing to restore.
      */
     exit(focusId = null) {
         if (!this._active) return;
-
-        const snap = this._snapshot;
-        this._snapshot = null;
-        this._teardown();  // sets _active=false, removes scrim/handlers/transform
+        this._teardown();
 
         if (focusId && desktop.windows.has(focusId)) {
-            // Commit to the clicked window: single-window mode, rest minimized.
-            desktop.setActiveWindow(focusId);
-        } else if (snap) {
-            // Esc/release: restore exact prior state — re-tile what was tiled, then
-            // re-maximize the prior active window (setActiveWindow minimizes others).
-            for (const [id, zone] of snap.tileStates) {
-                if (desktop.windows.has(id)) tileManager._tileWindow(id, zone);
-            }
-            if (snap.activeId && desktop.windows.has(snap.activeId) && !desktop.tileStates.has(snap.activeId)) {
-                desktop.setActiveWindow(snap.activeId);
-            } else if (desktop.tileStates.size === 0) {
-                desktop.minimizeAllExcept(null);
-            }
+            desktop.setActiveWindow(focusId);  // maximizes it, minimizes the rest
         }
 
-        // Refocus the now-active window (we blurred on enter).
-        this._refitActive();
-    }
-
-    /** Refocus + refit/repaint whichever window is now active (we blurred on enter). */
-    _refitActive() {
+        // Hand keyboard focus (back) to whichever window is now active.
         const inst = this._lookup(desktop.getActiveWindow());
-        if (!inst) return;
-        if (typeof inst.focus === 'function') inst.focus();
-        if (typeof inst.refit === 'function') inst.refit();
-    }
-
-    /**
-     * Remove all overlay chrome (scrim, key/click handlers, event subs) and the
-     * collage transform, marking inactive — WITHOUT changing window placement.
-     * Shared by exit() and the external-activation handler (Tab cycle / sidebar
-     * click). Clearing the transform snaps each window back to its full box (its
-     * raster is intact, so no corruption); setActiveWindow/minimizeAllExcept then
-     * re-maximize/minimize as needed. The inline geometry box set in _layout is
-     * left in place — this app's `.max` CSS only overrides top/height, so width/left
-     * come from inline geometry, and WinBox's minimize overwrites it for the windows
-     * that should hide.
-     */
-    _teardown() {
-        if (!this._active) return;
-        this._active = false;
-
-        document.removeEventListener('keydown', this._onKeydown, true);
-        this._unsubs.forEach((fn) => { try { fn(); } catch (e) {} });
-        this._unsubs = [];
-        this._clearClickHandlers();
-        this._hideScrim();
-
-        for (const [, winbox] of desktop.windows) {
-            const el = winbox?.window;
-            if (el) {
-                el.classList.remove('tiled');
-                el.style.transform = '';
-                el.style.transformOrigin = '';
-                el.style.zIndex = '';
-            }
-        }
+        if (inst && typeof inst.focus === 'function') inst.focus();
     }
 
     // ============================================
@@ -197,112 +147,220 @@ class Collage {
     // ============================================
 
     /**
-     * Lay the given windows into the grid via transforms and (re)wire
-     * click-to-focus + z-index. Every tile is translated+scaled into its cell —
-     * never resized (see module header for why resizing corrupts the xterm layer).
+     * Remove the overlay chrome: subscriptions, key handler, tile sockets, grid
+     * DOM. The real windows were never touched, so this is the entire exit path.
+     */
+    _teardown() {
+        if (!this._active) return;
+        this._active = false;
+        document.removeEventListener('keydown', this._onKeydown, true);
+        this._unsubs.forEach((fn) => { try { fn(); } catch (e) {} });
+        this._unsubs = [];
+        this._destroyTiles();
+        this._overlay.classList.add('hidden');
+    }
+
+    /** Close every tile's WebSocket and drop the grid DOM. */
+    _destroyTiles() {
+        for (const tile of this._tiles) {
+            if (tile.ws) {
+                try {
+                    tile.ws.onmessage = null;
+                    tile.ws.onclose = null;
+                    tile.ws.close();
+                } catch (e) {}
+            }
+        }
+        this._tiles = [];
+        if (this._grid) {
+            this._grid.remove();
+            this._grid = null;
+        }
+    }
+
+    /**
+     * Rebuild the grid against the current window set (mid-overlay churn).
+     */
+    _rebuild() {
+        if (!this._active) return;
+        this._destroyTiles();
+        const ids = [...desktop.windows.keys()];
+        if (ids.length < 2) { this.exit(); return; }
+        this._buildGrid(ids);
+    }
+
+    /**
+     * Build the preview grid for the given window ids.
      * @param {string[]} ids
      */
-    _layout(ids) {
+    _buildGrid(ids) {
         const area = document.getElementById('desktopArea');
         if (!area) return;
-        const rect = area.getBoundingClientRect();
+        const areaRect = area.getBoundingClientRect();
         const n = ids.length;
 
-        // Grid sizing — fit cols×rows to the desktop aspect (matches the look of
-        // the old tile-grid layout).
-        const aspect = rect.width / rect.height;
+        // Fit cols×rows to the desktop aspect so cells stay window-shaped.
+        const aspect = areaRect.width / Math.max(1, areaRect.height);
         let cols = Math.max(1, Math.round(Math.sqrt(n * aspect)));
         cols = Math.min(cols, n);
         let rows = Math.ceil(n / cols);
         while (cols > 1 && (cols - 1) * rows >= n) cols--;
         rows = Math.ceil(n / cols);
-        const gutter = 8;
-        const cellW = (rect.width - gutter * (cols + 1)) / cols;
-        const cellH = (rect.height - gutter * (rows + 1)) / rows;
 
-        // Canonical full box = the currently-active (maximized) window's rendered
-        // rect — used to grow a minimized window's collapsed bar back to full before
-        // it's scaled down.
-        const activeEl = desktop.getWindow(desktop.getActiveWindow())?.window;
-        let box = (activeEl && !activeEl.classList.contains('min')) ? activeEl.getBoundingClientRect() : null;
-        if (!box || !box.width || !box.height) box = rect;
+        this._grid = document.createElement('div');
+        this._grid.className = 'collage-grid';
+        this._grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        this._grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+        // Name-label size tracks cell height: big on a sparse grid, smaller (but
+        // never tiny) on a dense one. Matches the .collage-card-label CSS var.
+        const cellH = (areaRect.height - 18 * 2 - 14 * (rows - 1)) / rows;
+        this._grid.style.setProperty(
+            '--collage-label-size',
+            `${Math.round(Math.min(30, Math.max(15, cellH * 0.09)))}px`,
+        );
 
-        this._clearClickHandlers();
-        ids.forEach((id, i) => {
-            const winbox = desktop.getWindow(id);
-            const el = winbox?.window;
-            if (!el) return;
+        const activeId = desktop.getActiveWindow();
+        for (const id of ids) {
+            this._grid.appendChild(this._buildTile(id, id === activeId, areaRect));
+        }
+        this._overlay.appendChild(this._grid);
 
-            // CRITICAL: never change the geometry of a window that's already shown
-            // at full size — resizing a live xterm window is exactly what corrupts
-            // its compositing layer (transparent background). We only ever SCALE it
-            // via transform below, leaving its real size + .max class untouched.
-            // Minimized windows are collapsed to a tiny bar, so those (and only
-            // those) we grow to the full box first, while still hidden.
-            if (el.classList.contains('min')) {
-                el.classList.remove('min');
-                winbox.min = false;
-                el.style.left = Math.round(box.left) + 'px';
-                el.style.top = Math.round(box.top) + 'px';
-                el.style.width = Math.round(box.width) + 'px';
-                el.style.height = Math.round(box.height) + 'px';
-            }
-
-            // Measure THIS window's actual rect, then place + shrink it into the
-            // cell with a transform (cheap GPU op, no re-raster). Uniform scale +
-            // centered = letterboxed thumbnail that lands exactly in its cell.
-            const wb = el.getBoundingClientRect();
-            if (!wb.width || !wb.height) return;
-            const col = i % cols;
-            const row = Math.floor(i / cols);
-            const cellX = rect.left + gutter + col * (cellW + gutter);
-            const cellY = rect.top + gutter + row * (cellH + gutter);
-            const scale = Math.min(cellW / wb.width, cellH / wb.height);
-            const drawW = wb.width * scale;
-            const drawH = wb.height * scale;
-            const tx = cellX + (cellW - drawW) / 2 - wb.left;
-            const ty = cellY + (cellH - drawH) / 2 - wb.top;
-
-            el.style.transformOrigin = 'top left';
-            el.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-            el.style.zIndex = String(SCRIM_Z + 1 + i);
-
-            // Capture-phase click anywhere in the window focuses it and exits.
-            const fn = (e) => { e.stopPropagation(); this.exit(id); };
-            el.addEventListener('click', fn, true);
-            this._clickHandlers.push({ el, fn });
-        });
+        // Scale each miniature into its tile body. Overlay elements have no
+        // geometry transitions, so measuring right after append is exact.
+        for (const mini of this._grid.querySelectorAll('.collage-mini')) {
+            const body = mini.parentElement;
+            const scale = Math.min(
+                body.clientWidth / Math.max(1, areaRect.width),
+                body.clientHeight / Math.max(1, areaRect.height),
+                1,
+            );
+            mini.style.transform = `translate(-50%, -50%) scale(${scale})`;
+        }
     }
 
     /**
-     * Re-run the layout against the current window set (handles mid-overlay churn).
+     * Build one preview tile: header (icon + window title) + live content.
+     * @param {string} id - Window id
+     * @param {boolean} isActive - Whether this is the currently-active window
+     * @param {DOMRect} areaRect - Desktop area rect (miniatures render at this size)
      */
-    _relayout() {
-        if (!this._active) return;
-        const ids = [...desktop.windows.keys()];
-        if (ids.length < 2) { this.exit(); return; }
-        this._layout(ids);
+    _buildTile(id, isActive, areaRect) {
+        const winbox = desktop.getWindow(id);
+        const inst = this._lookup(id);
+
+        const card = document.createElement('div');
+        card.className = 'collage-card' + (isActive ? ' is-active' : '');
+        card.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.exit(id);
+        });
+
+        const header = document.createElement('div');
+        header.className = 'collage-card-header';
+        // Reuse the window's existing titlebar icon (background-image on .wb-icon).
+        const iconBg = winbox?.window?.querySelector('.wb-icon')?.style.backgroundImage;
+        if (iconBg && iconBg !== 'none') {
+            const icon = document.createElement('span');
+            icon.className = 'collage-card-icon';
+            icon.style.backgroundImage = iconBg;
+            header.appendChild(icon);
+        }
+        const title = document.createElement('span');
+        title.className = 'collage-card-title';
+        title.textContent = (winbox && winbox.title) || id;
+        header.appendChild(title);
+        card.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'collage-card-body';
+        card.appendChild(body);
+
+        if (inst && typeof inst.session === 'string') {
+            this._mountSessionPreview(body, inst, areaRect);
+        } else if (inst && inst.iframe && inst.iframe.src) {
+            this._mountArtifactPreview(body, inst, areaRect);
+        } else {
+            body.classList.add('collage-card-empty');
+            body.textContent = 'no preview';
+        }
+
+        // Big centered name label — the primary identification when tiles are
+        // small. Session name (no mode suffix) / artifact title; fades on hover
+        // so the live content underneath stays inspectable.
+        const label = document.createElement('div');
+        label.className = 'collage-card-label';
+        label.textContent =
+            (inst && typeof inst.session === 'string') ? inst.sessionId
+            : (inst && inst.title) ? inst.title
+            : ((winbox && winbox.title) || id);
+        body.appendChild(label);
+
+        return card;
+    }
+
+    /** Fixed-size miniature canvas, centered + scaled into the tile body. */
+    _makeMini(body, areaRect) {
+        const mini = document.createElement('div');
+        mini.className = 'collage-mini';
+        mini.style.width = Math.round(areaRect.width) + 'px';
+        mini.style.height = Math.round(areaRect.height) + 'px';
+        body.appendChild(mini);
+        return mini;
+    }
+
+    /**
+     * Live session preview: a mini Monitor view over the session's monitor
+     * WebSocket. The server pushes the current screen immediately on connect
+     * and re-broadcasts whenever the pane content changes.
+     */
+    _mountSessionPreview(body, inst, areaRect) {
+        const mini = this._makeMini(body, areaRect);
+        const pre = document.createElement('pre');
+        pre.className = 'collage-mini-pre';
+        mini.appendChild(pre);
+
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        let ws = null;
+        try {
+            ws = new WebSocket(`${protocol}//${location.host}/ws/${inst.sessionId}`);
+        } catch (e) {
+            return;
+        }
+        ws.onmessage = (event) => {
+            let msg;
+            try { msg = JSON.parse(event.data); } catch (e) { return; }
+            if (msg.type === 'output' && msg.data) {
+                pre.innerHTML = ansiToHtml(msg.data);
+                // Bottom-anchor: the tail of the capture is the live screen.
+                mini.scrollTop = mini.scrollHeight;
+            } else if (msg.type === 'audio' && msg.data) {
+                // Same behavior as an open Monitor window — play session audio.
+                // desktop._playAudio dedupes at the device level, so a real
+                // window attached to the same session won't double-play.
+                desktop._playAudio(msg.data, inst.sessionId);
+            }
+        };
+        this._tiles.push({ ws });
+    }
+
+    /** Live artifact preview: a cloned iframe at desktop size, scaled down. */
+    _mountArtifactPreview(body, inst, areaRect) {
+        const mini = this._makeMini(body, areaRect);
+        const iframe = document.createElement('iframe');
+        iframe.className = 'collage-mini-iframe';
+        const sandbox = inst.iframe.getAttribute('sandbox');
+        if (sandbox) iframe.setAttribute('sandbox', sandbox);
+        iframe.src = inst.iframe.src;
+        mini.appendChild(iframe);
+        this._tiles.push({ ws: null });
     }
 
     _onKeydown(e) {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && !isCommandPaletteOpen()) {
             e.preventDefault();
             e.stopPropagation();
             this.exit();
         }
-    }
-
-    _clearClickHandlers() {
-        this._clickHandlers.forEach(({ el, fn }) => el.removeEventListener('click', fn, true));
-        this._clickHandlers = [];
-    }
-
-    _showScrim() {
-        if (this._scrim) this._scrim.classList.remove('hidden');
-    }
-
-    _hideScrim() {
-        if (this._scrim) this._scrim.classList.add('hidden');
     }
 }
 

@@ -116,6 +116,10 @@ Sessions can be opened from the Sessions dropdown in two modes:
 
 **Terminal mode** uses xterm.js with WebGL acceleration (falls back to canvas). Full terminal emulation with vim, tab completion, readline support.
 
+### Window Collage
+
+F3 (or the `desktop_collage` MCP tool / command palette) shows a Mission Control-style grid of live previews of every open window — click a tile to focus, Esc to dismiss. The tiles are overlay-local live views (monitor WebSockets / cloned iframes); the real windows are never moved or resized. Architecture and the hard-won "never mutate real WinBox windows" lessons: **[Window collage](window-collage.md)**.
+
 ### Simultaneous Operation
 
 Multiple windows for the same session work together:
