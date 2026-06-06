@@ -85,6 +85,11 @@ class Collage {
         area.appendChild(this._overlay);
     }
 
+    /** @returns {boolean} Whether the overlay is currently up. */
+    get active() {
+        return this._active;
+    }
+
     /**
      * Toggle the overlay.
      */

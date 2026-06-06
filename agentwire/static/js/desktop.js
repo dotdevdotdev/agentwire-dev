@@ -327,20 +327,57 @@ function setupWindowCycling() {
     }, true);  // capture phase — runs before xterm's handlers
 }
 
-// Collage — tap F3 (like macOS Mission Control) to grid all open windows; tap
-// again, press Esc, or click a window to restore.
+// Collage — tap F3 (like macOS Mission Control) or Alt/Option+` to grid all
+// open windows; tap again, press Esc, or click a window to restore.
 function setupCollage() {
     collage.init(_lookupWindowInstance);
 
-    // Capture phase on window + stopPropagation so xterm's <textarea> never sees
-    // F3 (and the browser's default Find-next is suppressed).
+    // macOS quirk: Option+` is a dead key — pressing it starts a grave-accent
+    // composition against the focused element (an xterm <textarea>) before our
+    // keydown handler even runs, and the composed '`' is delivered through the
+    // composition/input path, which preventDefault on keydown cannot cancel.
+    // Fix: swallow composition events in the CAPTURE phase on window for a
+    // short window after the hotkey fires. xterm's composition listeners live
+    // on the textarea (target phase), so stopping propagation here means the
+    // accent never reaches the PTY.
+    let suppressCompositionUntil = 0;
+    for (const type of ['compositionstart', 'compositionupdate', 'compositionend']) {
+        window.addEventListener(type, (e) => {
+            if (performance.now() > suppressCompositionUntil) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            // The browser still commits the composed char into the target's
+            // value natively; xterm never saw the composition, so the residue
+            // would linger (xterm only rewrites the value through its own
+            // composition handling) and skew its position bookkeeping for the
+            // next real IME composition. Wipe it.
+            if (e.type === 'compositionend' && e.target?.classList?.contains('xterm-helper-textarea')) {
+                e.target.value = '';
+            }
+        }, true);
+    }
+
+    // Capture phase on window + stopPropagation so xterm's <textarea> never
+    // sees the keystroke (and the browser default — F3 find-next — is
+    // suppressed). Alt+` is detected via e.code: on macOS the dead key makes
+    // e.key 'Dead', never a backtick. Cmd/Ctrl+` stays the sidebar toggle.
     window.addEventListener('keydown', (e) => {
-        if (e.code !== 'F3') return;
+        const isF3 = e.code === 'F3';
+        const isAltBacktick = e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'Backquote';
+        if (!isF3 && !isAltBacktick) return;
         if (isCommandPaletteOpen()) return;
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;  // ignore auto-repeat while the key is held
+        // Arm BEFORE toggling: collage.enter() blurs the focused terminal,
+        // which makes Chrome finalize the pending dead-key composition
+        // immediately — the suppressor must already be active for it.
+        if (isAltBacktick) suppressCompositionUntil = performance.now() + 700;
+        const wasActive = collage.active;
         collage.toggle();
+        // No-op toggle (under 2 windows): disarm so the dead key composes
+        // normally — with no collage there's nothing to protect.
+        if (isAltBacktick && collage.active === wasActive) suppressCompositionUntil = 0;
     }, true);
 }
 

@@ -39,7 +39,7 @@ Both share session data from `sessions-section.js` (single fetch, shared activit
 
 ## Window Collage (Mission Control)
 
-F3 / `desktop_collage` MCP / command palette → grid of live previews of every open window; click a tile to focus, Esc to exit.
+F3 or Alt/Option+` / `desktop_collage` MCP / command palette → grid of live previews of every open window; click a tile to focus, Esc to exit.
 
 **The one rule: tiles are overlay-local previews — NEVER mutate the real WinBox windows.** Session tiles stream pane content over a second monitor WS (`/ws/{sessionId}`, rendered via shared `utils/ansi.js`); artifact tiles are cloned iframes. Real windows are never moved/resized/transformed/un-minimized, so exit has nothing to restore.
 
