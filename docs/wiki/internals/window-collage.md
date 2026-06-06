@@ -2,7 +2,7 @@
 
 > Living wiki. Update this page, don't create new versions.
 
-F3 (or the `desktop_collage` MCP tool, or the command palette → "Window collage") lays a live preview of every open window into a grid so the whole desktop can be scanned at once. Click a tile to focus that window; Esc, F3, or clicking the backdrop exits.
+F3 or Alt/Option+` (or the `desktop_collage` MCP tool, or the command palette → "Window collage") lays a live preview of every open window into a grid so the whole desktop can be scanned at once. Click a tile to focus that window; Esc, the hotkey again, or clicking the backdrop exits.
 
 Module: `agentwire/static/js/collage.js`. Styles: the `.collage-*` block in `agentwire/static/css/desktop.css`. Hotkey wiring: `setupCollage()` in `agentwire/static/js/desktop.js`.
 
@@ -27,6 +27,7 @@ Any future feature that wants to show multiple windows at once — exposé varia
 | **Click-to-focus** | Tile click → tear down overlay → `desktop.setActiveWindow(id)` — the same battle-tested path as a sidebar tab click. Nothing collage-specific touches window state. |
 | **Mid-overlay churn** | `window_registered` / `window_unregistered` → rebuild the grid. `active_window_changed` (Tab cycle, sidebar click, a freshly-opened window's focus) → tear down and get out of the way. `viewport_resize` → rebuild. |
 | **Keyboard** | Entering blurs the focused element so keystrokes can't leak into the xterm `<textarea>` behind the backdrop; exit refocuses the active window. Esc is capture-phase and defers to the command palette when it's open. |
+| **Alt/Option+` dead key** | On macOS, Option+` starts a grave-accent composition against the focused xterm textarea *before* keydown fires, and the composed `` ` `` arrives via `composition*` events that `preventDefault()` cannot cancel — the reason this hotkey leaked backticks historically. `setupCollage()` swallows composition events at the **window capture phase** for ~700ms after the hotkey (xterm's composition listeners are target-phase on the textarea, so nothing reaches the PTY) and clears the textarea's value on the suppressed `compositionend` (the browser commits the char natively; residue would skew xterm's composition position bookkeeping). The suppressor is disarmed if the toggle was a no-op (<2 windows), so the dead key composes normally when the collage isn't in play. |
 
 Tile sockets are closed on every teardown/rebuild — verified by watching the server's `Client connected (total: N)` logs stay flat across many cycles.
 
