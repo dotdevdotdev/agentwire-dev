@@ -26,6 +26,7 @@ import { schedulerSection } from './sidebar/scheduler-section.js';
 // import { missionsSection } from './sidebar/missions-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
+import { scratchpad } from './scratchpad.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 
 // State - track open windows
@@ -201,6 +202,9 @@ async function init() {
 
     // Initialize notifications panel
     notificationsPanel.init();
+
+    // Scratch pad drawer (Alt+N, right-edge handle, selection capture)
+    scratchpad.init();
 
     // Click on a toast -> open the notifications session as interactive terminal
     document.addEventListener('open-notification-session', () => {

@@ -45,6 +45,12 @@ agentwire portal stop           # stop portal
 agentwire portal restart        # stop + start
 agentwire portal status         # check health
 
+# Scratch pad (shared notes — portal drawer Alt+N; file: ~/.agentwire/scratchpad.json)
+agentwire scratchpad list       # list notes (newest first)
+agentwire scratchpad add "text" --source mysession  # add a note (drawer refreshes live)
+agentwire scratchpad remove <id> # delete a note
+agentwire scratchpad clear      # delete all notes
+
 # Custom services (registered long-running sessions — services.custom in config;
 # autostart on portal launch, health-checked + restarted by the portal watchdog)
 agentwire services list         # registry: autostart/restart/healthcheck per service
