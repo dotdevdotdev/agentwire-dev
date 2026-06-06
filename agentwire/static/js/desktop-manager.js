@@ -349,6 +349,10 @@ class DesktopManager {
                 this.emit('notification_dismiss', { id: msg.id });
                 break;
 
+            case 'scratchpad_updated':
+                this.emit('scratchpad_updated', { notes: msg.notes || [] });
+                break;
+
             default:
                 // Unknown message types are silently ignored
         }

@@ -26,6 +26,8 @@ import { schedulerSection } from './sidebar/scheduler-section.js';
 // import { missionsSection } from './sidebar/missions-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
+import { scratchpad } from './scratchpad.js';
+import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppressor.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 
 // State - track open windows
@@ -202,6 +204,9 @@ async function init() {
     // Initialize notifications panel
     notificationsPanel.init();
 
+    // Scratch pad drawer (Alt+N, right-edge handle, selection capture)
+    scratchpad.init();
+
     // Click on a toast -> open the notifications session as interactive terminal
     document.addEventListener('open-notification-session', () => {
         openSessionTerminal('agentwire-notifications', 'terminal');
@@ -329,33 +334,10 @@ function setupWindowCycling() {
 
 // Collage — tap F3 (like macOS Mission Control) or Alt/Option+` to grid all
 // open windows; tap again, press Esc, or click a window to restore.
+// Dead-key handling (Option+` composes a grave accent) lives in the shared
+// suppressor — see dead-key-suppressor.js.
 function setupCollage() {
     collage.init(_lookupWindowInstance);
-
-    // macOS quirk: Option+` is a dead key — pressing it starts a grave-accent
-    // composition against the focused element (an xterm <textarea>) before our
-    // keydown handler even runs, and the composed '`' is delivered through the
-    // composition/input path, which preventDefault on keydown cannot cancel.
-    // Fix: swallow composition events in the CAPTURE phase on window for a
-    // short window after the hotkey fires. xterm's composition listeners live
-    // on the textarea (target phase), so stopping propagation here means the
-    // accent never reaches the PTY.
-    let suppressCompositionUntil = 0;
-    for (const type of ['compositionstart', 'compositionupdate', 'compositionend']) {
-        window.addEventListener(type, (e) => {
-            if (performance.now() > suppressCompositionUntil) return;
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            // The browser still commits the composed char into the target's
-            // value natively; xterm never saw the composition, so the residue
-            // would linger (xterm only rewrites the value through its own
-            // composition handling) and skew its position bookkeeping for the
-            // next real IME composition. Wipe it.
-            if (e.type === 'compositionend' && e.target?.classList?.contains('xterm-helper-textarea')) {
-                e.target.value = '';
-            }
-        }, true);
-    }
 
     // Capture phase on window + stopPropagation so xterm's <textarea> never
     // sees the keystroke (and the browser default — F3 find-next — is
@@ -369,15 +351,14 @@ function setupCollage() {
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;  // ignore auto-repeat while the key is held
-        // Arm BEFORE toggling: collage.enter() blurs the focused terminal,
-        // which makes Chrome finalize the pending dead-key composition
-        // immediately — the suppressor must already be active for it.
-        if (isAltBacktick) suppressCompositionUntil = performance.now() + 700;
+        // Arm BEFORE toggling — the suppressor must be active when the
+        // pending composition finalizes (blur of the focused terminal).
+        if (isAltBacktick) armDeadKeySuppressor();
         const wasActive = collage.active;
         collage.toggle();
         // No-op toggle (under 2 windows): disarm so the dead key composes
         // normally — with no collage there's nothing to protect.
-        if (isAltBacktick && collage.active === wasActive) suppressCompositionUntil = 0;
+        if (isAltBacktick && collage.active === wasActive) disarmDeadKeySuppressor();
     }, true);
 }
 

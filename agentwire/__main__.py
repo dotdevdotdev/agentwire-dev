@@ -5610,6 +5610,77 @@ def cmd_dev(args) -> int:
     return 0
 
 
+# === Scratchpad Commands ===
+
+def _ping_scratchpad_changed() -> None:
+    """Best-effort: tell a running portal the pad changed so clients refresh."""
+    portal_url = _get_portal_url()
+    if not portal_url:
+        return
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            f"{portal_url}/api/scratchpad/changed", data=b"{}",
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        urllib.request.urlopen(req, timeout=3, context=ctx)
+    except Exception:
+        pass  # portal down — file is still the source of truth
+
+
+def cmd_scratchpad_list(args) -> int:
+    """List scratch pad notes (newest first)."""
+    from . import scratchpad
+    json_mode = getattr(args, "json", False)
+    notes = scratchpad.load_notes()
+    if json_mode:
+        _output_json({"success": True, "notes": notes})
+        return 0
+    if not notes:
+        print("Scratch pad is empty.")
+        return 0
+    for n in notes:
+        src = f" [{n['source']}]" if n.get("source") else ""
+        first_line = n["text"].splitlines()[0][:80]
+        more = " …" if ("\n" in n["text"] or len(n["text"]) > 80) else ""
+        print(f"  {n['id']}{src}  {first_line}{more}")
+    return 0
+
+
+def cmd_scratchpad_add(args) -> int:
+    """Add a note to the scratch pad."""
+    from . import scratchpad
+    json_mode = getattr(args, "json", False)
+    try:
+        note = scratchpad.add_note(args.text, source=getattr(args, "source", None))
+    except ValueError as e:
+        return _output_result(False, json_mode, str(e))
+    _ping_scratchpad_changed()
+    return _output_result(True, json_mode, f"Added note {note['id']}", note=note)
+
+
+def cmd_scratchpad_remove(args) -> int:
+    """Remove a note by id."""
+    from . import scratchpad
+    json_mode = getattr(args, "json", False)
+    if not scratchpad.remove_note(args.id):
+        return _output_result(False, json_mode, f"No note with id: {args.id}")
+    _ping_scratchpad_changed()
+    return _output_result(True, json_mode, f"Removed note {args.id}")
+
+
+def cmd_scratchpad_clear(args) -> int:
+    """Remove all notes."""
+    from . import scratchpad
+    json_mode = getattr(args, "json", False)
+    count = scratchpad.clear_notes()
+    _ping_scratchpad_changed()
+    return _output_result(True, json_mode, f"Cleared {count} note(s)", count=count)
+
+
 # === Services Commands ===
 
 def _load_services_registry():
@@ -10886,6 +10957,37 @@ def main() -> int:
     lock_remove_parser.add_argument("session", help="Session name")
     lock_remove_parser.add_argument("--json", action="store_true", help="Output JSON")
     lock_remove_parser.set_defaults(func=cmd_lock_remove)
+
+    # === scratchpad command group ===
+    scratchpad_parser = subparsers.add_parser(
+        "scratchpad",
+        help="Shared scratch pad notes (portal drawer; agents add via MCP)",
+        description=(
+            "Persistent notes in ~/.agentwire/scratchpad.json, shared across all "
+            "portal clients (the slide-in drawer, Alt+N) and agents. Mutations "
+            "ping a running portal so open drawers refresh live."
+        ),
+    )
+    scratchpad_subparsers = scratchpad_parser.add_subparsers(dest="scratchpad_command")
+
+    scratchpad_list_parser = scratchpad_subparsers.add_parser("list", help="List notes")
+    scratchpad_list_parser.add_argument("--json", action="store_true", help="Output JSON")
+    scratchpad_list_parser.set_defaults(func=cmd_scratchpad_list)
+
+    scratchpad_add_parser = scratchpad_subparsers.add_parser("add", help="Add a note")
+    scratchpad_add_parser.add_argument("text", help="Note text")
+    scratchpad_add_parser.add_argument("--source", help="Provenance label (e.g. session name)")
+    scratchpad_add_parser.add_argument("--json", action="store_true", help="Output JSON")
+    scratchpad_add_parser.set_defaults(func=cmd_scratchpad_add)
+
+    scratchpad_remove_parser = scratchpad_subparsers.add_parser("remove", help="Remove a note")
+    scratchpad_remove_parser.add_argument("id", help="Note id (see list)")
+    scratchpad_remove_parser.add_argument("--json", action="store_true", help="Output JSON")
+    scratchpad_remove_parser.set_defaults(func=cmd_scratchpad_remove)
+
+    scratchpad_clear_parser = scratchpad_subparsers.add_parser("clear", help="Remove all notes")
+    scratchpad_clear_parser.add_argument("--json", action="store_true", help="Output JSON")
+    scratchpad_clear_parser.set_defaults(func=cmd_scratchpad_clear)
 
     # === services command group ===
     services_parser = subparsers.add_parser(

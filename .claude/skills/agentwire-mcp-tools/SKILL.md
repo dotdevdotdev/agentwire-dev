@@ -108,6 +108,17 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire tts status` | `tts_status()` |
 | `agentwire stt status` | `stt_status()` |
 
+## Scratch Pad (2 tools)
+
+The user's shared notes drawer (portal, Alt+N) — server-backed, synced live to
+every connected client. Use `scratchpad_add` when the user says "save this",
+"note that", or "add to my notes".
+
+| CLI Command | MCP Tool |
+|-------------|----------|
+| `agentwire scratchpad add "text" --source s` | `scratchpad_add(text, source)` |
+| `agentwire scratchpad list` | `scratchpad_list()` |
+
 ## Custom Services (2 tools)
 
 Registered long-running sessions (`services.custom` in config + the built-in

@@ -331,6 +331,18 @@ export class SessionWindow {
 
         this.terminal.open(terminalEl);
 
+        // xterm selections are canvas/WebGL-rendered, not DOM selections, so
+        // the scratch pad's selectionchange-based popover can't see them.
+        // Surface them via a custom event on mouseup (where the pointer is).
+        terminalEl.addEventListener('mouseup', (e) => {
+            const text = this.terminal?.getSelection();
+            if (text && text.trim()) {
+                window.dispatchEvent(new CustomEvent('terminal-selection', {
+                    detail: { text, x: e.clientX, y: e.clientY, session: this.session },
+                }));
+            }
+        });
+
         // Touch devices emit no `wheel` events, so xterm's wheel-driven
         // scrolling (tmux copy-mode / the app's own scroll) is unreachable on a
         // tablet. Translate a two-finger vertical pan into synthetic wheel
