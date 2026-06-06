@@ -39,6 +39,12 @@ def mocks(monkeypatch):
     monkeypatch.setattr(
         cli, "send_to_session", lambda s, m: calls["sent"].append((s, m))
     )
+
+    def verified(session, message, marker, retries=1):
+        calls["sent"].append((session, message))
+        return True
+
+    monkeypatch.setattr(cli, "send_verified", verified)
     monkeypatch.setattr(cli, "wait_ready", lambda s, timeout=45.0: True)
     monkeypatch.setattr(cli, "current_session", lambda: None)
     return calls
@@ -144,12 +150,13 @@ class TestAsk:
         _start(mocks)
         capsys.readouterr()
 
-        def send_checking(session, message):
+        def send_checking(session, message, marker, retries=1):
             # The inbox must exist before any soul could conceivably reply.
             assert inbox.replies_dir(1).is_dir()
             mocks["sent"].append((session, message))
+            return True
 
-        monkeypatch.setattr(cli, "send_to_session", send_checking)
+        monkeypatch.setattr(cli, "send_verified", send_checking)
         assert cli.cmd_council_ask(_args(prompt="ship it?", file=None, json=True)) == 0
         payload = _payload(capsys)
         assert payload["prompt_id"] == 1
@@ -168,6 +175,33 @@ class TestAsk:
         payload = _payload(capsys)
         assert payload["sent_to"] == ["brain"]
         assert payload["failed"][0]["soul"] == "gut"
+
+    def test_unconfirmed_delivery_reported(self, mocks, capsys, monkeypatch):
+        _start(mocks)
+        capsys.readouterr()
+        monkeypatch.setattr(cli, "send_verified", lambda s, m, marker, retries=1: False)
+        assert cli.cmd_council_ask(_args(prompt="x", file=None, json=True)) == 1
+        payload = _payload(capsys)
+        assert payload["sent_to"] == []
+        assert all(
+            f["error"] == "delivery not confirmed in pane" for f in payload["failed"]
+        )
+
+    def test_send_verified_retries_then_fails(self, monkeypatch):
+        sends = []
+        monkeypatch.setattr(cli, "send_to_session", lambda s, m: sends.append(s))
+        monkeypatch.setattr(cli, "capture_session", lambda s, lines=60: "no marker here")
+        monkeypatch.setattr(cli.time, "sleep", lambda _: None)
+        assert not cli.send_verified("council-gut", "msg", "[COUNCIL PROMPT #1]")
+        assert len(sends) == 2  # initial + one retry
+
+    def test_send_verified_confirms(self, monkeypatch):
+        monkeypatch.setattr(cli, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(
+            cli, "capture_session", lambda s, lines=60: "...[COUNCIL PROMPT #1]..."
+        )
+        monkeypatch.setattr(cli.time, "sleep", lambda _: None)
+        assert cli.send_verified("council-gut", "msg", "[COUNCIL PROMPT #1]")
 
     def test_no_sitting(self, mocks, capsys):
         assert cli.cmd_council_ask(_args(prompt="x", file=None, json=True)) == 1
@@ -262,6 +296,7 @@ class TestReply:
         assert self._reply(take=True, soul="brain", text="found it") == 0
         payload = _payload(capsys)
         assert payload["followup"]
+        assert payload["nudged"] is True
         nudges = mocks["sent"][sent_before:]
         assert len(nudges) == 1
         session, msg = nudges[0]

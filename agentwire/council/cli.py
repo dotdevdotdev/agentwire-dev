@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from typing import Any
 
 from agentwire.council import inbox, state
@@ -103,6 +104,31 @@ def send_to_session(session: str, message: str) -> None:
     from agentwire import pane_manager
 
     pane_manager.send_to_target(f"{session}.0", message, enter=True)
+
+
+def capture_session(session: str, lines: int = 60) -> str:
+    from agentwire import pane_manager
+
+    return pane_manager.capture_pane(session, 0, lines=lines)
+
+
+def send_verified(session: str, message: str, marker: str, retries: int = 1) -> bool:
+    """Send a message and verify it actually landed in the pane.
+
+    A freshly-booted Claude session renders its banner before its input
+    handler is wired — a paste in that window vanishes silently (same gray
+    zone the mission dispatcher documents). After sending, confirm ``marker``
+    is visible in the pane; retry once if not.
+    """
+    for _ in range(retries + 1):
+        send_to_session(session, message)
+        time.sleep(2.0)
+        try:
+            if marker in capture_session(session):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def wait_ready(session: str, timeout: float = 45.0) -> bool:
@@ -329,6 +355,7 @@ def cmd_council_ask(args) -> int:
         f"  agentwire council reply --prompt {prompt_id} --pass"
     )
 
+    marker = f"[COUNCIL PROMPT #{prompt_id}]"
     live = list_live_sessions()
     sent_to: list[str] = []
     failed: list[dict] = []
@@ -337,8 +364,10 @@ def cmd_council_ask(args) -> int:
             failed.append({"soul": lens, "error": "session not running"})
             continue
         try:
-            send_to_session(session, message)
-            sent_to.append(lens)
+            if send_verified(session, message, marker):
+                sent_to.append(lens)
+            else:
+                failed.append({"soul": lens, "error": "delivery not confirmed in pane"})
         except Exception as e:  # tmux failures shouldn't kill the whole fan-out
             failed.append({"soul": lens, "error": str(e)})
 
@@ -414,16 +443,20 @@ def cmd_council_reply(args) -> int:
     except (ValueError, FileNotFoundError) as e:
         return _emit_error(args, str(e))
 
+    nudged = None
     if is_followup:
         # Deterministic nudge — doesn't rely on the soul remembering to notify.
+        # Verified like the fan-out; the follow-up is on disk regardless, so a
+        # failed nudge only delays relay until the next collect.
         try:
-            send_to_session(
+            nudged = send_verified(
                 sitting.orchestrator,
                 f"[COUNCIL FOLLOW-UP] {soul} filed a follow-up on prompt "
                 f"#{prompt_id} — run council_collect({prompt_id}) and relay it.",
+                "[COUNCIL FOLLOW-UP]",
             )
         except Exception:
-            pass  # follow-up is on disk regardless; next collect finds it
+            nudged = False
 
     payload = {
         "success": True,
@@ -431,6 +464,7 @@ def cmd_council_reply(args) -> int:
         "soul": soul,
         "kind": kind,
         "followup": is_followup,
+        "nudged": nudged,
         "path": str(path),
     }
     return _emit(
