@@ -6103,32 +6103,42 @@ def cmd_doctor(args) -> int:
     else:
         print("  [..] say: not found (optional, use 'agentwire say' directly)")
 
-    # 4. Check Claude Code hooks
-    print("\nChecking Claude Code hooks...")
+    # 4. Check agentwire-owned hook files (existence AND drift from packaged source)
+    print("\nChecking AgentWire hooks...")
 
-    permission_hook = CLAUDE_HOOKS_DIR / "agentwire-permission.sh"
-    if permission_hook.exists():
-        print(f"  [ok] Permission hook: {permission_hook}")
-    else:
-        print("  [..] Permission hook: not found (optional for prompted sessions)")
-        print("     Run: agentwire hooks install")
+    hook_meta = {
+        "agentwire-permission.sh": ("Permission hook", False,
+                                    "optional for prompted sessions"),
+        "idle-handler.sh": ("Idle notification hook", True,
+                            "required for worker notifications and scheduled tasks"),
+        "queue-processor.sh": ("Queue processor", True,
+                               "required for notification queuing"),
+    }
+    try:
+        hooks_source = get_hooks_source()
+    except FileNotFoundError:
+        hooks_source = None
 
-    # Check Claude Code idle notification hook
-    idle_hook = CLAUDE_HOOKS_DIR / "idle-handler.sh"
-    if idle_hook.exists():
-        print(f"  [ok] Idle notification hook: {idle_hook}")
-    else:
-        print("  [!!] Idle notification hook: not found (required for worker notifications)")
-        print("     This hook enables output capture and auto-kill for Claude Code workers.")
-        issues_found += 1
+    for hook_name, target_dir, _event in _managed_hook_files():
+        label, required, why = hook_meta[hook_name]
+        target = target_dir / hook_name
+        source = hooks_source / hook_name if hooks_source else None
+        state = _managed_file_state(target, source) if source and source.exists() \
+            else ("ok" if target.exists() else "missing")
 
-    # Check queue processor
-    queue_processor = Path.home() / ".agentwire" / "queue-processor.sh"
-    if queue_processor.exists():
-        print(f"  [ok] Queue processor: {queue_processor}")
-    else:
-        print("  [!!] Queue processor: not found (required for notification queuing)")
-        issues_found += 1
+        if state == "ok":
+            print(f"  [ok] {label}: {target}")
+        elif state == "stale":
+            print(f"  [!!] {label}: STALE — installed copy differs from packaged source")
+            print("     Run: agentwire hooks install")
+            issues_found += 1
+        elif required:
+            print(f"  [!!] {label}: not found ({why})")
+            print("     Run: agentwire hooks install")
+            issues_found += 1
+        else:
+            print(f"  [..] {label}: not found ({why})")
+            print("     Run: agentwire hooks install")
 
     # Check notifications bridge session (drives idle-nag TTS)
     notif_session = get_notifications_session_name()
@@ -7253,19 +7263,19 @@ def install_commands(force: bool = False) -> list[str]:
     return installed
 
 
-def register_hook_in_settings() -> bool:
-    """Register the permission hook in Claude's settings.json.
+def register_hook_in_settings(event: str, hook_name: str) -> bool:
+    """Register a hook under `event` in Claude's settings.json.
 
     Returns True if settings were updated, False if already configured.
 
     Claude Code hook format:
     {
       "hooks": {
-        "PermissionRequest": [
+        "<event>": [
           {
             "matcher": ".*",
             "hooks": [
-              {"type": "command", "command": "~/.claude/hooks/agentwire-permission.sh"}
+              {"type": "command", "command": "~/.claude/hooks/<hook_name>"}
             ]
           }
         ]
@@ -7274,7 +7284,7 @@ def register_hook_in_settings() -> bool:
     """
     settings_file = Path.home() / ".claude" / "settings.json"
     # Use ~ for portability
-    hook_command = "~/.claude/hooks/agentwire-permission.sh"
+    hook_command = f"~/.claude/hooks/{hook_name}"
 
     # Load existing settings or create new
     if settings_file.exists():
@@ -7288,11 +7298,11 @@ def register_hook_in_settings() -> bool:
     # Ensure hooks structure exists
     if "hooks" not in settings:
         settings["hooks"] = {}
-    if "PermissionRequest" not in settings["hooks"]:
-        settings["hooks"]["PermissionRequest"] = []
+    if event not in settings["hooks"]:
+        settings["hooks"][event] = []
 
     # Check if already registered (check nested hooks array)
-    for entry in settings["hooks"]["PermissionRequest"]:
+    for entry in settings["hooks"][event]:
         if "hooks" in entry:
             for h in entry["hooks"]:
                 if h.get("command") == hook_command:
@@ -7305,7 +7315,7 @@ def register_hook_in_settings() -> bool:
             {"type": "command", "command": hook_command}
         ]
     }
-    settings["hooks"]["PermissionRequest"].append(hook_entry)
+    settings["hooks"][event].append(hook_entry)
 
     # Write back
     settings_file.parent.mkdir(parents=True, exist_ok=True)
@@ -7314,71 +7324,95 @@ def register_hook_in_settings() -> bool:
     return True
 
 
-def install_permission_hook(force: bool = False, copy: bool = False) -> bool:
-    """Install the permission hook for Claude Code integration.
+# Agentwire-owned files deployed by `hooks install`. Each entry:
+# (filename in agentwire/hooks/, target directory, settings.json event or None)
+def _managed_hook_files() -> list[tuple[str, Path, str | None]]:
+    return [
+        ("agentwire-permission.sh", CLAUDE_HOOKS_DIR, "PermissionRequest"),
+        ("idle-handler.sh", CLAUDE_HOOKS_DIR, "Notification"),
+        ("queue-processor.sh", Path.home() / ".agentwire", None),
+    ]
 
-    Returns True if hook was installed/updated, False if skipped.
+
+def _managed_file_state(target: Path, source: Path) -> str:
+    """Drift state of an agentwire-managed installed file: missing | stale | ok.
+
+    Symlinks are ok when they resolve to the packaged source; regular files
+    are ok when their content matches it byte-for-byte.
     """
-    hook_name = "agentwire-permission.sh"
+    if target.is_symlink():
+        if not target.exists():
+            return "stale"  # dangling symlink
+        return "ok" if target.resolve() == source.resolve() else "stale"
+    if not target.exists():
+        return "missing"
+    try:
+        return "ok" if target.read_bytes() == source.read_bytes() else "stale"
+    except OSError:
+        return "stale"
 
+
+def _install_managed_file(source: Path, target: Path, force: bool = False, copy: bool = False) -> bool:
+    """Install or refresh an agentwire-owned file (symlink by default).
+
+    These files carry no user edits to preserve — any drift from the packaged
+    source is replaced. Returns True if the target was created or updated.
+    """
+    if not force and _managed_file_state(target, source) == "ok":
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    if copy:
+        shutil.copy2(source, target)
+    else:
+        target.symlink_to(source.resolve())
+    target.chmod(0o755)
+    return True
+
+
+def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
+    """Install/refresh all agentwire-owned hook files + settings.json registration.
+
+    Returns {filename: "installed" | "updated" | "current" | "missing-source"}.
+    """
     try:
         hooks_source = get_hooks_source()
     except FileNotFoundError:
         print("  Warning: hooks directory not found, skipping hook installation")
-        return False
+        return {}
 
-    source_hook = hooks_source / hook_name
-    if not source_hook.exists():
-        print(f"  Warning: {hook_name} not found in package, skipping hook installation")
-        return False
+    results: dict[str, str] = {}
+    for hook_name, target_dir, event in _managed_hook_files():
+        source = hooks_source / hook_name
+        if not source.exists():
+            print(f"  Warning: {hook_name} not found in package, skipping")
+            results[hook_name] = "missing-source"
+            continue
 
-    # Create ~/.claude/hooks if it doesn't exist
-    CLAUDE_HOOKS_DIR.mkdir(parents=True, exist_ok=True)
-
-    target_hook = CLAUDE_HOOKS_DIR / hook_name
-
-    # Check if already installed
-    file_updated = False
-    if target_hook.exists():
-        if target_hook.is_symlink():
-            current_target = target_hook.resolve()
-            if current_target == source_hook.resolve() and not force:
-                file_updated = False  # File already correctly installed
-            else:
-                target_hook.unlink()
-                file_updated = True
-        elif not force:
-            print(f"  Hook already exists at {target_hook}")
-            file_updated = False
+        target = target_dir / hook_name
+        existed = target.exists() or target.is_symlink()
+        if _install_managed_file(source, target, force=force, copy=copy):
+            results[hook_name] = "updated" if existed else "installed"
         else:
-            target_hook.unlink()
-            file_updated = True
-    else:
-        file_updated = True
+            results[hook_name] = "current"
 
-    # Create symlink (preferred) or copy if needed
-    if file_updated or not target_hook.exists():
-        if copy:
-            shutil.copy2(source_hook, target_hook)
-        else:
-            target_hook.symlink_to(source_hook)
-        # Make executable
-        target_hook.chmod(0o755)
+        if event:
+            register_hook_in_settings(event, hook_name)
 
-    # Register in settings.json
-    settings_updated = register_hook_in_settings()
-
-    return file_updated or settings_updated
+    return results
 
 
 def cmd_hooks_install(args) -> int:
-    """Install Claude Code permission hook and slash commands for AgentWire integration."""
-    hook_installed = install_permission_hook(force=args.force, copy=args.copy)
-    if hook_installed:
-        print(f"Installed permission hook to {CLAUDE_HOOKS_DIR / 'agentwire-permission.sh'}")
-        print("\nPermission hook enables prompted sessions to show permission dialogs in the portal.")
-    else:
-        print("Permission hook already installed.")
+    """Install agentwire-owned hook files and slash commands for AgentWire integration."""
+    results = install_hooks(force=args.force, copy=args.copy)
+    for hook_name, target_dir, _event in _managed_hook_files():
+        state = results.get(hook_name)
+        if state in ("installed", "updated"):
+            print(f"{state.capitalize()} {hook_name} -> {target_dir / hook_name}")
+        elif state == "current":
+            print(f"{hook_name} already current.")
 
     installed_commands = install_commands(force=args.force)
     if installed_commands:
@@ -7391,13 +7425,13 @@ def cmd_hooks_install(args) -> int:
     return 0
 
 
-def unregister_hook_from_settings() -> bool:
-    """Remove the permission hook from Claude's settings.json.
+def unregister_hook_from_settings(event: str, hook_name: str) -> bool:
+    """Remove a hook registered under `event` from Claude's settings.json.
 
     Returns True if settings were updated, False if not found.
     """
     settings_file = Path.home() / ".claude" / "settings.json"
-    hook_command = "~/.claude/hooks/agentwire-permission.sh"
+    hook_command = f"~/.claude/hooks/{hook_name}"
 
     if not settings_file.exists():
         return False
@@ -7407,13 +7441,13 @@ def unregister_hook_from_settings() -> bool:
     except json.JSONDecodeError:
         return False
 
-    if "hooks" not in settings or "PermissionRequest" not in settings["hooks"]:
+    if "hooks" not in settings or event not in settings["hooks"]:
         return False
 
     # Filter out entries containing our hook
-    original_len = len(settings["hooks"]["PermissionRequest"])
+    original_len = len(settings["hooks"][event])
     new_entries = []
-    for entry in settings["hooks"]["PermissionRequest"]:
+    for entry in settings["hooks"][event]:
         if "hooks" in entry:
             # Check if any hook in this entry matches ours
             has_our_hook = any(h.get("command") == hook_command for h in entry["hooks"])
@@ -7422,14 +7456,14 @@ def unregister_hook_from_settings() -> bool:
         else:
             new_entries.append(entry)
 
-    settings["hooks"]["PermissionRequest"] = new_entries
+    settings["hooks"][event] = new_entries
 
-    if len(settings["hooks"]["PermissionRequest"]) == original_len:
+    if len(settings["hooks"][event]) == original_len:
         return False  # Hook wasn't registered
 
     # Clean up empty structures
-    if not settings["hooks"]["PermissionRequest"]:
-        del settings["hooks"]["PermissionRequest"]
+    if not settings["hooks"][event]:
+        del settings["hooks"][event]
     if not settings["hooks"]:
         del settings["hooks"]
 
@@ -7438,10 +7472,10 @@ def unregister_hook_from_settings() -> bool:
     return True
 
 
-def is_hook_registered() -> bool:
-    """Check if the permission hook is registered in Claude's settings.json."""
+def is_hook_registered(event: str, hook_name: str) -> bool:
+    """Check if a hook is registered under `event` in Claude's settings.json."""
     settings_file = Path.home() / ".claude" / "settings.json"
-    hook_command = "~/.claude/hooks/agentwire-permission.sh"
+    hook_command = f"~/.claude/hooks/{hook_name}"
 
     if not settings_file.exists():
         return False
@@ -7451,11 +7485,11 @@ def is_hook_registered() -> bool:
     except json.JSONDecodeError:
         return False
 
-    if "hooks" not in settings or "PermissionRequest" not in settings["hooks"]:
+    if "hooks" not in settings or event not in settings["hooks"]:
         return False
 
     # Check nested hooks array for our command
-    for entry in settings["hooks"]["PermissionRequest"]:
+    for entry in settings["hooks"][event]:
         if "hooks" in entry:
             for h in entry["hooks"]:
                 if h.get("command") == hook_command:
@@ -7464,48 +7498,54 @@ def is_hook_registered() -> bool:
 
 
 def cmd_hooks_uninstall(args) -> int:
-    """Uninstall Claude Code permission hook."""
-    hook_file = CLAUDE_HOOKS_DIR / "agentwire-permission.sh"
-    hook_removed = False
+    """Remove all agentwire-owned hook files and their settings.json registration."""
+    removed_any = False
+    for hook_name, target_dir, event in _managed_hook_files():
+        target = target_dir / hook_name
+        if target.exists() or target.is_symlink():
+            target.unlink()
+            print(f"Removed: {target}")
+            removed_any = True
+        if event and unregister_hook_from_settings(event, hook_name):
+            print(f"Unregistered {hook_name} from Claude settings.json")
 
-    if hook_file.exists():
-        hook_file.unlink()
-        print(f"Removed hook: {hook_file}")
-        hook_removed = True
-
-    # Also unregister from settings.json
-    if unregister_hook_from_settings():
-        print("Unregistered hook from Claude settings.json")
-
-    if not hook_removed:
-        print("Hook not installed")
+    if not removed_any:
+        print("No hooks installed")
 
     return 0
 
 
 def cmd_hooks_status(args) -> int:
-    """Check Claude Code permission hook and tmux portal sync hooks."""
-    # Claude Code permission hook
-    print("=== Claude Code Permission Hook ===")
-    hook_file = CLAUDE_HOOKS_DIR / "agentwire-permission.sh"
-    hook_installed = hook_file.exists()
-    hook_registered = is_hook_registered()
+    """Check agentwire-owned hook files and tmux portal sync hooks."""
+    print("=== AgentWire Hooks ===")
+    try:
+        hooks_source = get_hooks_source()
+    except FileNotFoundError:
+        hooks_source = None
 
-    if hook_installed:
-        if hook_file.is_symlink():
-            source = hook_file.resolve()
-            print("Status: installed (symlink)")
-            print(f"  Location: {hook_file} -> {source}")
+    for hook_name, target_dir, event in _managed_hook_files():
+        target = target_dir / hook_name
+        print(f"{hook_name}:")
+
+        if not (target.exists() or target.is_symlink()):
+            print("  Status: not installed — run 'agentwire hooks install'")
+            continue
+
+        kind = "symlink" if target.is_symlink() else "copy"
+        if hooks_source and (hooks_source / hook_name).exists():
+            state = _managed_file_state(target, hooks_source / hook_name)
+            drift = "" if state == "ok" else " — STALE, run 'agentwire hooks install'"
         else:
-            print("Status: installed (copy)")
-            print(f"  Location: {hook_file}")
-        if hook_registered:
-            print("  Registered: yes (in ~/.claude/settings.json)")
-        else:
-            print("  Registered: NO - run 'agentwire hooks install --force' to fix")
-    else:
-        print("Status: not installed")
-        print("  Run 'agentwire hooks install' to enable permission dialogs in portal")
+            drift = " — packaged source not found, drift unknown"
+        print(f"  Status: installed ({kind}){drift}")
+        location = f"{target} -> {target.resolve()}" if target.is_symlink() else str(target)
+        print(f"  Location: {location}")
+
+        if event:
+            if is_hook_registered(event, hook_name):
+                print(f"  Registered: yes ({event} in ~/.claude/settings.json)")
+            else:
+                print(f"  Registered: NO - run 'agentwire hooks install' to fix")
 
     # Tmux portal sync hooks
     print("\n=== Tmux Portal Sync Hooks ===")
@@ -10512,16 +10552,16 @@ def main() -> int:
 
     # === hooks command group ===
     hooks_parser = subparsers.add_parser(
-        "hooks", help="Manage Claude Code permission hook"
+        "hooks", help="Manage agentwire hook files (permission, idle handler, queue processor)"
     )
     hooks_subparsers = hooks_parser.add_subparsers(dest="hooks_command")
 
     # hooks install
     hooks_install = hooks_subparsers.add_parser(
-        "install", help="Install Claude Code permission hook"
+        "install", help="Install/refresh agentwire hook files and slash commands"
     )
     hooks_install.add_argument(
-        "--force", "-f", action="store_true", help="Overwrite existing installation"
+        "--force", "-f", action="store_true", help="Reinstall even when already current"
     )
     hooks_install.add_argument(
         "--copy", action="store_true", help="Copy files instead of symlinking"
@@ -10530,7 +10570,7 @@ def main() -> int:
 
     # hooks uninstall
     hooks_uninstall = hooks_subparsers.add_parser(
-        "uninstall", help="Remove Claude Code permission hook"
+        "uninstall", help="Remove agentwire hook files and their registration"
     )
     hooks_uninstall.set_defaults(func=cmd_hooks_uninstall)
 

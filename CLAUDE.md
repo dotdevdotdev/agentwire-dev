@@ -75,25 +75,22 @@ Workers auto-kill after sending idle notification. The idle hook captures output
 
 ## Hook Installation
 
-Install the idle notification hook:
+One command installs/refreshes everything agentwire-owned:
 
 ```bash
-mkdir -p ~/.claude/hooks
-agentwire hooks install
-agentwire doctor  # verify
+agentwire hooks install   # permission hook, idle handler, queue processor, slash commands
+agentwire doctor          # verify (flags stale copies, not just missing ones)
 ```
 
-The hook lives at `~/.claude/hooks/idle-handler.sh` and fires on `idle_prompt` notifications.
+Installs (symlinks by default, `--copy` to copy):
 
-### Queue Processor
+| File | Target | Purpose |
+|------|--------|---------|
+| `agentwire-permission.sh` | `~/.claude/hooks/` | Permission dialogs in portal (registered as `PermissionRequest` hook) |
+| `idle-handler.sh` | `~/.claude/hooks/` | Worker notifications + scheduled task completion (registered as `Notification` hook) |
+| `queue-processor.sh` | `~/.agentwire/` | Sends queued alerts with 15-second gaps to avoid overwhelming orchestrators |
 
-```bash
-mkdir -p ~/.agentwire
-cp ~/projects/agentwire-dev/scripts/queue-processor.sh ~/.agentwire/
-chmod +x ~/.agentwire/queue-processor.sh
-```
-
-Sends queued alerts with 15-second gaps to prevent overwhelming orchestrators.
+These files are agentwire-owned: `hooks install` replaces any copy that drifts from the packaged source. Re-run it after `agentwire rebuild` to pick up hook changes.
 
 ### Diagnosing Issues
 
