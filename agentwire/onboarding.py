@@ -353,7 +353,8 @@ services:
         print()
         tmux_choice = prompt_choice(
             "AgentWire includes a recommended tmux config with mouse scroll,\n"
-            "50k line history, vi copy mode, and a status bar with git/CPU/RAM.",
+            "50k line history, vi copy mode, focus events for Claude Code,\n"
+            "and a status bar with git/CPU/RAM.",
             [
                 ("skip", "Keep my existing config (no changes)"),
                 ("backup", "Install recommended config (backs up existing to .tmux.conf.bak)"),
@@ -366,6 +367,7 @@ services:
         print(f"  {CYAN}•{RESET} Mouse scroll through agent output")
         print(f"  {CYAN}•{RESET} 50k line scrollback buffer")
         print(f"  {CYAN}•{RESET} Vi copy mode (v to select, y to yank)")
+        print(f"  {CYAN}•{RESET} Focus events (silences Claude Code's per-session setup tip)")
         print(f"  {CYAN}•{RESET} Status bar with git branch, CPU/RAM, working dir")
         print(f"  {CYAN}•{RESET} Click/drag disabled (prevents accidental agent interaction)")
         print()

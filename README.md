@@ -83,6 +83,8 @@ pip install agentwire-dev
 
 </details>
 
+> **tmux config matters.** Default tmux has no mouse scroll, a tiny scrollback, and broken copy UX — see [Recommended tmux config](docs/wiki/quickstart.md#recommended-tmux-config), or let `agentwire init` install it for you.
+
 ---
 
 ## Features
