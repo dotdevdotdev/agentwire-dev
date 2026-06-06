@@ -2100,6 +2100,143 @@ def mission_gc() -> str:
 
 
 # =============================================================================
+# Council Tools (multi-soul orchestrator sitting)
+# =============================================================================
+
+
+@mcp.tool()
+def council_start(roster: str = "", model: str = "") -> str:
+    """Start a council sitting: orchestrator + one session per lens soul.
+
+    Spins up the ``agentwire-council`` orchestrator and a ``council-<lens>``
+    session per roster lens (default roster: brain, conscience, gut, critic,
+    historian, devils-advocate). Sessions stay warm for follow-up asks until
+    ``council_stop``.
+
+    Args:
+        roster: Comma-separated lens names (empty = full default roster)
+        model: Model override for all council sessions
+
+    Returns:
+        Orchestrator + soul session names, or failure details.
+    """
+    args = ["council", "start"]
+    if roster:
+        args += ["--roster", roster]
+    if model:
+        args += ["--model", model]
+    # Start waits for every session to boot — well past the default timeout.
+    data = run_agentwire_cmd(args, timeout=300)
+    if not data.get("success"):
+        return f"Failed to start council: {data.get('error') or data}"
+    sessions = data.get("sessions", {})
+    lines = [f"Council sitting started: {data.get('orchestrator')}"]
+    lines += [f"  {lens}: {name}" for lens, name in sessions.items()]
+    for f in data.get("failed") or []:
+        lines.append(f"  ! {f['soul']}: {f['error']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def council_stop() -> str:
+    """Stop the council sitting: kill all soul sessions + the orchestrator.
+
+    Prompt history under ``~/.agentwire/council/prompts/`` is kept.
+
+    Returns:
+        Which sessions were killed.
+    """
+    data = run_agentwire_cmd(["council", "stop"], timeout=60)
+    if not data.get("success"):
+        return f"Failed to stop council: {data.get('error', 'Unknown error')}"
+    killed = data.get("killed") or []
+    return f"Council sitting stopped. Killed: {', '.join(killed) or '(none)'}"
+
+
+@mcp.tool()
+def council_status() -> str:
+    """Show the council sitting: session liveness and per-prompt reply state.
+
+    Returns:
+        Roster health and which souls are still pending on open prompts.
+    """
+    data = run_agentwire_cmd(["council", "status"])
+    if not data.get("success"):
+        return f"Failed to get council status: {data.get('error', 'Unknown error')}"
+    if not data.get("running"):
+        return "No active council sitting."
+    lines = [
+        f"Council sitting (started {data.get('started_at')})",
+        f"  orchestrator: {data.get('orchestrator')} "
+        f"[{'alive' if data.get('orchestrator_alive') else 'DOWN'}]",
+    ]
+    for s in data.get("souls") or []:
+        lines.append(f"  {s['soul']}: {s['session']} [{'alive' if s['alive'] else 'DOWN'}]")
+    for p in data.get("prompts") or []:
+        status = "complete" if p["complete"] else f"pending: {', '.join(p['pending'])}"
+        lines.append(f"  prompt #{p['id']}: {status}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def council_ask(prompt: str) -> str:
+    """Fan a prompt out to every soul in the council sitting.
+
+    Creates the prompt's reply inbox, then sends the prompt to every live
+    lens session. Each soul will file exactly one of: a substantive take, an
+    ack (researching, follow-up coming), or a pass. Follow with
+    ``council_collect`` to gather the replies.
+
+    Args:
+        prompt: The question or decision to put before the council
+
+    Returns:
+        The prompt id (needed for council_collect) and fan-out result.
+    """
+    data = run_agentwire_cmd(["council", "ask", prompt])
+    if not data.get("success"):
+        return f"Failed to ask council: {data.get('error') or data}"
+    pid = data.get("prompt_id")
+    sent = data.get("sent_to") or []
+    out = f"PROMPT ID: {pid} — fanned out to {len(sent)} souls ({', '.join(sent)})"
+    for f in data.get("failed") or []:
+        out += f"\n  ! {f['soul']}: {f['error']}"
+    return out
+
+
+@mcp.tool()
+def council_collect(prompt_id: int = 0, timeout: int = 120) -> str:
+    """Collect the council's replies for a prompt (blocks until done/timeout).
+
+    Returns as soon as every roster soul has filed a take, ack, or pass — or
+    when the soft timeout lapses. Re-collecting a complete prompt returns
+    instantly and includes any follow-up takes filed since (the
+    ack-and-research path).
+
+    Args:
+        prompt_id: Prompt id from council_ask (0 = latest)
+        timeout: Soft timeout in seconds (default 120)
+
+    Returns:
+        Every reply attributed by soul, plus any souls still pending.
+    """
+    args = ["council", "collect", "--timeout", str(timeout)]
+    if prompt_id:
+        args += ["--prompt", str(prompt_id)]
+    # Pad the subprocess timeout past the blocking collect window.
+    data = run_agentwire_cmd(args, timeout=timeout + 15)
+    if not data.get("success"):
+        return f"Failed to collect: {data.get('error') or data}"
+    lines = [
+        f"Prompt #{data.get('prompt_id')}: "
+        + ("complete" if data.get("complete") else f"pending: {', '.join(data.get('pending') or [])}")
+    ]
+    for r in data.get("replies") or []:
+        lines.append(f"\n--- {r['soul']} ({r['kind']}) ---\n{r['text']}")
+    return "\n".join(lines)
+
+
+# =============================================================================
 # Overnight Session Tools
 # =============================================================================
 

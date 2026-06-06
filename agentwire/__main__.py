@@ -11115,6 +11115,7 @@ def main() -> int:
 
     # === mission command group ===
     from .missions import cli as mission_cli
+    from .council import cli as council_cli
 
     mission_parser = subparsers.add_parser(
         "mission",
@@ -11201,6 +11202,91 @@ def main() -> int:
     m_init.add_argument("repo", help="Repo short name (from config) or owner/repo form")
     m_init.add_argument("--json", action="store_true", help="Output JSON")
     m_init.set_defaults(func=mission_cli.cmd_mission_init)
+
+    # === council command group ===
+    council_parser = subparsers.add_parser(
+        "council",
+        help="Multi-soul council: fan a prompt out to lens sessions, synthesize",
+        description=(
+            "An agentwire-council orchestrator session fans prompts out to a "
+            "roster of lens souls (brain, conscience, gut, critic, historian, "
+            "devils-advocate), collects their takes through a file inbox, and "
+            "synthesizes. See docs/wiki/council.md."
+        ),
+    )
+    council_subparsers = council_parser.add_subparsers(dest="council_command")
+
+    # council start
+    c_start = council_subparsers.add_parser(
+        "start", help="Start a sitting: orchestrator + all soul sessions"
+    )
+    c_start.add_argument(
+        "--roster", help="Comma-separated lens names (default: full bundled roster)"
+    )
+    c_start.add_argument("--type", help="Session type (default: claude-bypass)")
+    c_start.add_argument("--model", help="Model override for all council sessions")
+    c_start.add_argument(
+        "--force", action="store_true", help="Tear down a live sitting first"
+    )
+    c_start.add_argument("--json", action="store_true", help="Output JSON")
+    c_start.set_defaults(func=council_cli.cmd_council_start)
+
+    # council stop
+    c_stop = council_subparsers.add_parser(
+        "stop", help="Kill the sitting's sessions (prompt history kept)"
+    )
+    c_stop.add_argument("--json", action="store_true", help="Output JSON")
+    c_stop.set_defaults(func=council_cli.cmd_council_stop)
+
+    # council status
+    c_status = council_subparsers.add_parser(
+        "status", help="Sitting state, session liveness, open prompts"
+    )
+    c_status.add_argument("--json", action="store_true", help="Output JSON")
+    c_status.set_defaults(func=council_cli.cmd_council_status)
+
+    # council ask
+    c_ask = council_subparsers.add_parser(
+        "ask", help="Fan a prompt out to every soul in the sitting"
+    )
+    c_ask.add_argument("prompt", nargs="?", help="Prompt text (or --file / stdin)")
+    c_ask.add_argument("--file", help="Read prompt text from a file")
+    c_ask.add_argument("--json", action="store_true", help="Output JSON")
+    c_ask.set_defaults(func=council_cli.cmd_council_ask)
+
+    # council collect
+    c_collect = council_subparsers.add_parser(
+        "collect", help="Wait for every soul's take/ack/pass (or timeout)"
+    )
+    c_collect.add_argument("--prompt", type=int, help="Prompt id (default: latest)")
+    c_collect.add_argument(
+        "--timeout", type=float, default=120, help="Soft timeout in seconds (default: 120)"
+    )
+    c_collect.add_argument(
+        "--no-wait", action="store_true", help="Snapshot once, don't block"
+    )
+    c_collect.add_argument("--json", action="store_true", help="Output JSON")
+    c_collect.set_defaults(func=council_cli.cmd_council_collect)
+
+    # council reply (run by souls)
+    c_reply = council_subparsers.add_parser(
+        "reply", help="File a soul's reply: --take / --ack / --pass"
+    )
+    c_reply.add_argument("--prompt", type=int, help="Prompt id (default: latest)")
+    c_reply.add_argument(
+        "--take", action="store_true", help="Substantive take (text required)"
+    )
+    c_reply.add_argument(
+        "--ack", action="store_true", help="Researching — follow-up coming"
+    )
+    c_reply.add_argument(
+        "--pass", action="store_true", help="Nothing to add through this lens"
+    )
+    c_reply.add_argument("--soul", help="Lens name (default: inferred from session)")
+    c_reply.add_argument("--text", help="Reply text")
+    c_reply.add_argument("--file", help="Read reply text from a file")
+    c_reply.add_argument("--json", action="store_true", help="Output JSON")
+    c_reply.set_defaults(func=council_cli.cmd_council_reply)
 
     # === overnight command group ===
     overnight_parser = subparsers.add_parser(
@@ -11340,6 +11426,10 @@ def main() -> int:
 
     if args.command == "mission" and getattr(args, "mission_command", None) is None:
         mission_parser.print_help()
+        return 0
+
+    if args.command == "council" and getattr(args, "council_command", None) is None:
+        council_parser.print_help()
         return 0
 
     if args.command == "overnight" and getattr(args, "overnight_command", None) is None:
