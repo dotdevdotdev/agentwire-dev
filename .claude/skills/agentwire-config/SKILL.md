@@ -84,14 +84,25 @@ services:  # Where services run (for multi-machine setups)
     session_name: "agentwire-tts"
   stt:
     session_name: "agentwire-stt"
-  custom:  # User-defined service sessions — boot with `agentwire up`,
-           #   shown in the portal's Services column
+  custom:  # User-defined service sessions — autostart on portal launch AND
+           #   `agentwire up`, health-checked by the portal watchdog, shown in
+           #   the portal's Services column. Manage with `agentwire services ...`.
+           #   The notifications bridge is a built-in registry entry (override
+           #   by defining a service with its name).
     - name: "agent-brain"          # tmux session name (required)
       project: "~/projects/brain"  # project dir; defaults to dev source dir
-      autostart: true              # boot with `agentwire up` (default true)
+      autostart: true              # boot on portal launch / `agentwire up` (default true)
       roles: "brain"               # optional; overrides project .agentwire.yml
       type: "claude-bypass"        # optional; session type override
-    - "simple-service"             # string shorthand = name only, autostart on
+      restart: on-failure          # never | on-failure | always (watchdog respawn
+                                   #   with 30s..10m exponential backoff; default on-failure;
+                                   #   `agentwire services down` always sticks)
+      healthcheck:                 # optional; defaults to tmux_session/60s
+        kind: tmux_session         # tmux_session | http | command
+        url: "http://..."          # for http (2xx = healthy)
+        command: "curl -sf ..."    # for command (exit 0 = healthy)
+        interval: 60               # seconds between watchdog checks
+    - "simple-service"             # string shorthand = name only, all defaults
 
 executables:  # Override executable paths (optional, auto-detected by default)
   ffmpeg: "/opt/homebrew/bin/ffmpeg"

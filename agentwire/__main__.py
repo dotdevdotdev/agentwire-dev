@@ -525,53 +525,6 @@ def get_stt_session_name() -> str:
     return config.get("services", {}).get("stt", {}).get("session_name", "agentwire-stt")
 
 
-def get_notifications_session_name() -> str:
-    """Get notifications tmux session name from config."""
-    config = load_config()
-    return config.get("services", {}).get("notifications", {}).get(
-        "session_name", "agentwire-notifications"
-    )
-
-
-def _ensure_notifications_session() -> None:
-    """Spawn agentwire-notifications if it isn't already running.
-
-    The portal's idle_nag_loop sends `[IDLE NAG]` prompts to this session.
-    Without it the prompt is dropped and the user never hears the TTS reminder.
-    Safe to call repeatedly — does nothing when the session already exists.
-    Failures are non-fatal: TTS itself still works, idle nags just stay silent.
-    """
-    session_name = get_notifications_session_name()
-    if tmux_session_exists(session_name):
-        return
-
-    source_dir = get_source_dir()
-    if not source_dir:
-        return
-
-    try:
-        subprocess.run(
-            [
-                sys.executable, "-m", "agentwire", "new",
-                "-s", session_name,
-                "-p", str(source_dir),
-                "--roles", "notifications",
-                "--type", "claude-bypass",
-                "--json",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-        print(f"  Spawned {session_name} (idle-nag TTS bridge).")
-    except Exception as e:
-        print(
-            f"  Warning: could not spawn {session_name}: {e}. "
-            "Idle nags will be silent until you start it manually.",
-            file=sys.stderr,
-        )
-
-
 # === Wave 2: Remote Infrastructure Helpers ===
 
 
@@ -856,7 +809,8 @@ def _start_portal_local(args, attach: bool = True) -> int:
     # Install global tmux hooks for portal sync
     _install_global_tmux_hooks()
 
-    _ensure_notifications_session()
+    # Custom services (incl. the notifications bridge) are autostarted by the
+    # portal server itself on launch — see run_server() in server.py.
 
     if attach:
         print("Portal started. Attaching... (Ctrl+B D to detach)")
@@ -1229,8 +1183,6 @@ def _start_tts_local(args, venv_override: str | None = None, attach: bool = True
     subprocess.run([
         "tmux", "send-keys", "-t", session_name, tts_cmd, "Enter",
     ])
-
-    _ensure_notifications_session()
 
     if attach:
         print("TTS server started. Attaching... (Ctrl+B D to detach)")
@@ -3393,8 +3345,10 @@ def cmd_new(args) -> int:
     # directory of another active session. Two agents sharing the same working tree
     # is the dangerous footgun (one's dirty state visible to the other, branches
     # mixing). Worktree sessions (project/branch) get unique paths and won't trip
-    # this. --force overrides.
-    if not args.force:
+    # this. --force overrides; --allow-shared-dir bypasses ONLY this guard
+    # (without --force's kill-replace of an existing same-name session — service
+    # respawns must never destroy a concurrently-created healthy instance).
+    if not args.force and not getattr(args, "allow_shared_dir", False):
         target = str(session_path.resolve()) if session_path.exists() else str(session_path)
         panes_result = subprocess.run(
             ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"],
@@ -5656,23 +5610,144 @@ def cmd_dev(args) -> int:
     return 0
 
 
-def _start_custom_service(svc) -> None:
-    """Start a custom service session (detached) if not already running."""
-    if tmux_session_exists(svc.name):
-        print(f"  [ok] {svc.name} (already running)")
-        return
+# === Services Commands ===
 
-    project = svc.project or str(get_source_dir())
-    cmd = [sys.executable, "-m", "agentwire", "new", "-s", svc.name, "-p", project, "--json"]
-    if svc.roles:
-        cmd.extend(["--roles", svc.roles])
-    if svc.type:
-        cmd.extend(["--type", svc.type])
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
-        print(f"  [ok] {svc.name} (started)")
-    except Exception as e:
-        print(f"  [!!] {svc.name}: {e}", file=sys.stderr)
+def _load_services_registry():
+    """(config, registry) for the services commands."""
+    from . import services as services_mod
+    from .config import load_config as load_config_typed
+    cfg = load_config_typed()
+    return services_mod, services_mod.registry(cfg)
+
+
+def _find_service(services_mod, reg, name: str):
+    for svc in reg:
+        if svc.name == name:
+            return svc
+    return None
+
+
+def cmd_services_list(args) -> int:
+    """List registered custom services (built-ins + config-defined)."""
+    json_mode = getattr(args, "json", False)
+    services_mod, reg = _load_services_registry()
+    disabled = services_mod.load_disabled()
+
+    entries = [{
+        "name": svc.name,
+        "project": svc.project,
+        "autostart": svc.autostart,
+        "restart": svc.restart,
+        "healthcheck": {"kind": svc.healthcheck.kind, "interval": svc.healthcheck.interval},
+        "roles": svc.roles,
+        "type": svc.type,
+        "disabled": svc.name in disabled,
+    } for svc in reg]
+
+    if json_mode:
+        _output_json({"success": True, "services": entries})
+        return 0
+
+    if not entries:
+        print("No custom services registered (services.custom in ~/.agentwire/config.yaml).")
+        return 0
+    for e in entries:
+        flags = []
+        if not e["autostart"]:
+            flags.append("autostart off")
+        if e["disabled"]:
+            flags.append("disabled")
+        suffix = f" [{', '.join(flags)}]" if flags else ""
+        print(f"  {e['name']}  restart={e['restart']}  "
+              f"healthcheck={e['healthcheck']['kind']}/{e['healthcheck']['interval']}s{suffix}")
+        if e["project"]:
+            print(f"    project: {e['project']}")
+    return 0
+
+
+def cmd_services_status(args) -> int:
+    """Health status for one or all custom services (runs healthchecks now).
+
+    Exit 0 when everything that should be running is healthy, 1 otherwise.
+    """
+    json_mode = getattr(args, "json", False)
+    name = getattr(args, "name", None)
+    services_mod, reg = _load_services_registry()
+
+    if name:
+        svc = _find_service(services_mod, reg, name)
+        if svc is None:
+            return _output_result(False, json_mode, f"Unknown service: {name}")
+        reg = [svc]
+
+    statuses = [services_mod.service_status(svc) for svc in reg]
+    # Disabled / autostart-off services aren't expected to be running
+    all_ok = all(s["healthy"] or s["disabled"] or not s["autostart"] for s in statuses)
+
+    if json_mode:
+        # Always exit 0 in JSON mode — the payload carries all_healthy, and
+        # callers (portal watchdog) need the data precisely when unhealthy.
+        _output_json({"success": True, "all_healthy": all_ok, "services": statuses})
+        return 0
+
+    for s in statuses:
+        if s["healthy"]:
+            mark = "[ok]"
+        elif s["disabled"] or not s["autostart"]:
+            mark = "[..]"
+        else:
+            mark = "[!!]"
+        extra = " (disabled)" if s["disabled"] else ("" if s["autostart"] else " (autostart off)")
+        print(f"  {mark} {s['name']}: {s['detail']}{extra}")
+    return 0 if all_ok else 1
+
+
+def cmd_services_up(args) -> int:
+    """Start a service (clears any 'down' state), or --all autostart services."""
+    json_mode = getattr(args, "json", False)
+    name = getattr(args, "name", None)
+    services_mod, reg = _load_services_registry()
+
+    if getattr(args, "all", False):
+        from .config import load_config as load_config_typed
+        results = services_mod.start_all_autostart(load_config_typed())
+        ok = all(r.get("ok", True) for r in results)
+        if json_mode:
+            # Always exit 0 in JSON mode — per-service results carry the
+            # failures; the portal autostart needs them either way.
+            _output_json({"success": ok, "results": results})
+            return 0
+        for r in results:
+            if "skipped" in r:
+                print(f"  [..] {r['name']}: {r['skipped']}")
+            else:
+                print(f"  [{'ok' if r['ok'] else '!!'}] {r['name']}: {r['result']}")
+        return 0 if ok else 1
+
+    if not name:
+        return _output_result(False, json_mode, "Service name required (or --all)")
+    svc = _find_service(services_mod, reg, name)
+    if svc is None:
+        return _output_result(False, json_mode, f"Unknown service: {name}")
+
+    services_mod.set_disabled(name, False)
+    ok, msg = services_mod.start_service(svc)
+    return _output_result(ok, json_mode, f"{name}: {msg}", name=name, result=msg)
+
+
+def cmd_services_down(args) -> int:
+    """Stop a service and keep it stopped (watchdog and up --all skip it)."""
+    json_mode = getattr(args, "json", False)
+    name = args.name
+    services_mod, reg = _load_services_registry()
+    if _find_service(services_mod, reg, name) is None:
+        return _output_result(False, json_mode, f"Unknown service: {name}")
+
+    # Disable BEFORE killing so the watchdog can't race a respawn
+    services_mod.set_disabled(name, True)
+    ok, msg = services_mod.stop_service(name)
+    return _output_result(ok, json_mode, f"{name}: {msg} (disabled until 'services up {name}')",
+                          name=name, result=msg, disabled=True)
 
 
 def cmd_up(args) -> int:
@@ -5736,12 +5811,16 @@ def cmd_up(args) -> int:
     else:
         print("  STT skipped (no stt.url configured).")
 
-    # Custom services
-    custom = [s for s in cfg.services.custom if s.autostart]
-    if custom:
-        print("Starting custom services...")
-        for svc in custom:
-            _start_custom_service(svc)
+    # Custom services (same shared path as portal-launch autostart)
+    from . import services as services_mod
+    print("Starting custom services...")
+    for r in services_mod.start_all_autostart(cfg):
+        if "skipped" in r:
+            print(f"  [..] {r['name']}: {r['skipped']}")
+        elif r.get("ok"):
+            print(f"  [ok] {r['name']} ({r['result']})")
+        else:
+            print(f"  [!!] {r['name']}: {r['result']}", file=sys.stderr)
 
     print()
     # Finally, the dev session (creates + attaches the agentwire session)
@@ -6174,16 +6253,28 @@ def cmd_doctor(args) -> int:
             print(f"  [..] {label}: not found ({why})")
             print("     Run: agentwire hooks install")
 
-    # Check notifications bridge session (drives idle-nag TTS)
-    notif_session = get_notifications_session_name()
-    if tmux_session_exists(notif_session):
-        print(f"  [ok] Notifications session: {notif_session}")
-    else:
-        print(f"  [!!] Notifications session: {notif_session} not running")
-        print("     The portal's idle-nag prompts will be silent. Start TTS or "
-              "portal to auto-spawn it, or run: agentwire new -s "
-              f"{notif_session} -p {get_source_dir()} --roles notifications --type claude-bypass")
-        issues_found += 1
+    # Check custom services (registry-driven: built-in notifications bridge
+    # + user-defined services from services.custom)
+    print("\nChecking custom services...")
+    from . import services as services_mod
+    from .config import load_config as _load_config_typed
+    try:
+        _svc_cfg = _load_config_typed()
+        _svc_disabled = services_mod.load_disabled()
+        for svc in services_mod.registry(_svc_cfg):
+            healthy, detail = services_mod.run_healthcheck(svc)
+            if healthy:
+                print(f"  [ok] Service {svc.name}: {detail}")
+            elif svc.name in _svc_disabled:
+                print(f"  [..] Service {svc.name}: stopped via 'services down' ({detail})")
+            elif not svc.autostart:
+                print(f"  [..] Service {svc.name}: not running (autostart off, {detail})")
+            else:
+                print(f"  [!!] Service {svc.name}: unhealthy — {detail}")
+                print(f"     Run: agentwire services up {svc.name}")
+                issues_found += 1
+    except Exception as e:
+        print(f"  [..] Could not check custom services: {e}")
 
     # 5. Validate config
     print("\nChecking configuration...")
@@ -10243,6 +10334,9 @@ def main() -> int:
     new_parser.add_argument("-s", "--session", required=True, help="Session name (project, project/branch, or project/branch@machine)")
     new_parser.add_argument("-p", "--path", help="Working directory (default: ~/projects/<name>)")
     new_parser.add_argument("-f", "--force", action="store_true", help="Replace existing session")
+    new_parser.add_argument("--allow-shared-dir", action="store_true",
+                            help="Allow attaching to a directory that already has active sessions "
+                                 "(unlike --force, never replaces an existing same-name session)")
     # Session type
     new_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
     # Roles
@@ -10792,6 +10886,47 @@ def main() -> int:
     lock_remove_parser.add_argument("session", help="Session name")
     lock_remove_parser.add_argument("--json", action="store_true", help="Output JSON")
     lock_remove_parser.set_defaults(func=cmd_lock_remove)
+
+    # === services command group ===
+    services_parser = subparsers.add_parser(
+        "services",
+        help="Manage user-defined services (long-running registered sessions)",
+        description=(
+            "Custom services are long-running agentwire sessions registered in "
+            "services.custom in ~/.agentwire/config.yaml. They autostart on portal "
+            "launch and `agentwire up`, and the portal watchdog health-checks them "
+            "(restart: never | on-failure | always, with backoff). "
+            "The notifications bridge session is a built-in registry entry."
+        ),
+    )
+    services_subparsers = services_parser.add_subparsers(dest="services_command")
+
+    services_list_parser = services_subparsers.add_parser("list", help="List registered services")
+    services_list_parser.add_argument("--json", action="store_true", help="Output JSON")
+    services_list_parser.set_defaults(func=cmd_services_list)
+
+    services_status_parser = services_subparsers.add_parser(
+        "status", help="Run healthchecks and report per-service status"
+    )
+    services_status_parser.add_argument("name", nargs="?", help="Service name (default: all)")
+    services_status_parser.add_argument("--json", action="store_true", help="Output JSON")
+    services_status_parser.set_defaults(func=cmd_services_status)
+
+    services_up_parser = services_subparsers.add_parser(
+        "up", help="Start a service (clears 'down' state)"
+    )
+    services_up_parser.add_argument("name", nargs="?", help="Service name")
+    services_up_parser.add_argument("--all", action="store_true",
+                                    help="Start all autostart services (skips downed ones)")
+    services_up_parser.add_argument("--json", action="store_true", help="Output JSON")
+    services_up_parser.set_defaults(func=cmd_services_up)
+
+    services_down_parser = services_subparsers.add_parser(
+        "down", help="Stop a service and keep it stopped"
+    )
+    services_down_parser.add_argument("name", help="Service name")
+    services_down_parser.add_argument("--json", action="store_true", help="Output JSON")
+    services_down_parser.set_defaults(func=cmd_services_down)
 
     # === scheduler command group ===
     scheduler_parser = subparsers.add_parser(

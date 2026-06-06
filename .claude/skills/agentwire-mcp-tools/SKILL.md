@@ -108,6 +108,18 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire tts status` | `tts_status()` |
 | `agentwire stt status` | `stt_status()` |
 
+## Custom Services (2 tools)
+
+Registered long-running sessions (`services.custom` in config + the built-in
+notifications bridge). Autostarted on portal launch; health-checked and
+restarted by the portal watchdog. Start/stop is CLI-only (`agentwire services
+up|down`) — the MCP surface is read-only introspection.
+
+| CLI Command | MCP Tool |
+|-------------|----------|
+| `agentwire services list` | `services_list()` |
+| `agentwire services status` | `services_status()` |
+
 ## Scheduler (8 tools)
 
 | CLI Command | MCP Tool |

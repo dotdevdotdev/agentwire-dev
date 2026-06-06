@@ -183,13 +183,34 @@ class ServiceConfig:
 
 
 @dataclass
+class HealthcheckConfig:
+    """How a custom service's health is probed.
+
+    kind:
+      tmux_session (default) — healthy when the tmux session exists
+      http                   — healthy when GET `url` returns 2xx
+      command                — healthy when `command` exits 0
+    """
+
+    kind: str = "tmux_session"
+    url: Optional[str] = None       # for kind: http
+    command: Optional[str] = None   # for kind: command
+    interval: int = 60              # seconds between watchdog checks
+
+
+@dataclass
 class CustomServiceConfig:
     """A user-defined session that behaves like a service.
 
-    Custom services show up in the portal's Services column and are booted
-    by `agentwire up`. A service is just an agentwire session created in a
+    Custom services show up in the portal's Services column, are booted by
+    `agentwire up` AND on portal launch, and are watched by the portal's
+    service watchdog. A service is just an agentwire session created in a
     project directory; `roles`/`type` override the project's .agentwire.yml
     when set.
+
+    restart: never | on-failure | always — what the watchdog does when the
+    healthcheck fails ("always" behaves like "on-failure" for tmux services;
+    manual `agentwire services down` always sticks regardless of policy).
     """
 
     name: str
@@ -197,6 +218,8 @@ class CustomServiceConfig:
     autostart: bool = True
     roles: Optional[str] = None  # comma-separated; overrides project .agentwire.yml
     type: Optional[str] = None   # session type override (e.g. claude-bypass)
+    restart: str = "on-failure"  # never | on-failure | always
+    healthcheck: HealthcheckConfig = field(default_factory=HealthcheckConfig)
 
     def __post_init__(self):
         if self.project:
@@ -495,12 +518,21 @@ def _dict_to_config(data: dict) -> Config:
         if isinstance(entry, str):
             custom_services.append(CustomServiceConfig(name=entry))
         elif isinstance(entry, dict) and entry.get("name"):
+            hc_data = entry.get("healthcheck") or {}
+            healthcheck = HealthcheckConfig(
+                kind=hc_data.get("kind", "tmux_session"),
+                url=hc_data.get("url"),
+                command=hc_data.get("command"),
+                interval=hc_data.get("interval", 60),
+            )
             custom_services.append(CustomServiceConfig(
                 name=entry["name"],
                 project=entry.get("project"),
                 autostart=entry.get("autostart", True),
                 roles=entry.get("roles"),
                 type=entry.get("type"),
+                restart=entry.get("restart", "on-failure"),
+                healthcheck=healthcheck,
             ))
     services = ServicesConfig(
         portal=portal_service,

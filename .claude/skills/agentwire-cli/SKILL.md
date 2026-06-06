@@ -45,6 +45,15 @@ agentwire portal stop           # stop portal
 agentwire portal restart        # stop + start
 agentwire portal status         # check health
 
+# Custom services (registered long-running sessions — services.custom in config;
+# autostart on portal launch, health-checked + restarted by the portal watchdog)
+agentwire services list         # registry: autostart/restart/healthcheck per service
+agentwire services status       # run healthchecks now (exit 1 if something's down)
+agentwire services status name  # one service
+agentwire services up <name>    # start (also clears 'down' state)
+agentwire services up --all     # start all autostart services (skips downed)
+agentwire services down <name>  # stop AND keep stopped (watchdog won't respawn)
+
 # TTS/STT servers
 agentwire tts start|stop|status # TTS server management
 agentwire stt start|stop|status # STT server management
