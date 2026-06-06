@@ -58,6 +58,24 @@ def _check_tmux_installed() -> bool:
     return True
 
 
+def _tmux_global_option(name: str) -> str | None:
+    """Read a global tmux option from the running server.
+
+    Returns the option value ("on"/"off"/...), or None when no server is
+    running or the option can't be read.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "show-option", "-gv", name],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _check_config_exists() -> bool:
     """Check ~/.agentwire/config.yaml exists; print init hint if not."""
     config_path = CONFIG_DIR / "config.yaml"
@@ -6054,6 +6072,22 @@ def cmd_doctor(args) -> int:
     tmux_path = shutil.which("tmux")
     if tmux_path:
         print(f"  [ok] tmux: {tmux_path}")
+        # Server-side options that make or break the agent UX (warn-only —
+        # config is user preference, not a broken install). Only checkable
+        # when a tmux server is running.
+        for opt, why in (
+            ("focus-events", "Claude Code shows a setup tip on every session start"),
+            ("mouse", "no mouse scroll or text selection in agent panes"),
+        ):
+            val = _tmux_global_option(opt)
+            if val is None:
+                break  # no running tmux server — nothing to inspect
+            if val == "on":
+                print(f"  [ok] tmux {opt}: on")
+            else:
+                print(f"  [..] tmux {opt}: {val} — {why}")
+                print("     Recommended config: agentwire init (tmux step), or see")
+                print("     docs/wiki/quickstart.md#recommended-tmux-config")
     else:
         print("  [!!] tmux: not found (required)")
         print("     macOS: brew install tmux")

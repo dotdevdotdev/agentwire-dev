@@ -32,6 +32,36 @@ agentwire doctor      # one-shot diagnostic — confirms tmux, ffmpeg, hooks, cl
 
 `agentwire doctor` reports anything missing with a fix suggestion. Re-run until it's all green.
 
+### Recommended tmux config
+
+AgentWire's whole UX is "tmux as the agent canvas" — but tmux's defaults fight it: no mouse scroll, a 2,000-line scrollback that loses agent transcripts, broken text selection, and a Claude Code setup tip on every session start (`focus-events off`).
+
+The fastest fix: **`agentwire init`** offers to install the full recommended config (backing up any existing `~/.tmux.conf` first; it never clobbers without asking). The bundled template lives at `agentwire/templates/tmux.conf` and also adds a status bar, pane-split bindings, and click/drag protection so stray clicks can't poke an agent.
+
+Already have a `~/.tmux.conf` you'd rather merge into? These are the settings that matter:
+
+```tmux
+set -g focus-events on        # Claude Code uses these; silences its per-session tip
+set -g mouse on               # scroll through agent output
+set -g history-limit 50000    # default 2000 is too small for agent transcripts
+set -s escape-time 0          # no delay after Esc
+
+# True color
+set -g default-terminal "screen-256color"
+set -ga terminal-overrides ",xterm-256color:Tc"
+
+# Copying that works: vi-style copy mode, selection survives mouse-drag end
+setw -g mode-keys vi
+bind -T copy-mode-vi v send -X begin-selection
+bind -T copy-mode-vi y send -X copy-selection-and-cancel
+unbind -T copy-mode-vi MouseDragEnd1Pane
+
+# Multiple clients (portal Monitor + your terminal) without window shrinking
+set -g window-size largest
+```
+
+`agentwire doctor` warns if the running tmux server has `focus-events` or `mouse` off.
+
 ---
 
 ## 2. Your first session
