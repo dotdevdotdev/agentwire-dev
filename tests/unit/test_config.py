@@ -122,3 +122,15 @@ class TestLoadConfig:
     def test_default_agent_command(self, tmp_path):
         config = load_config(tmp_path / "nonexistent.yaml")
         assert "claude" in config.agent.command
+
+    def test_session_defaults(self, tmp_path):
+        config = load_config(tmp_path / "nonexistent.yaml")
+        assert config.session.default_role == "agentwire"
+        assert config.session.inject_soul is True
+
+    def test_session_from_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"session": {"default_role": "custom", "inject_soul": False}}))
+        config = load_config(path)
+        assert config.session.default_role == "custom"
+        assert config.session.inject_soul is False

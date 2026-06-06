@@ -8,6 +8,7 @@ description: Full `agentwire` CLI command reference — session/pane management,
 ```bash
 # Session management
 agentwire new -s name           # not: tmux new-session
+agentwire new -s name --no-soul # skip the always-injected soul personality role
 agentwire send -s name "prompt" # not: tmux send-keys
 agentwire send-keys -s name key1 key2  # raw keys with pauses
 agentwire output -s name        # not: tmux capture-pane

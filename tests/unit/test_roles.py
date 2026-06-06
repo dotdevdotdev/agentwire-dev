@@ -10,6 +10,7 @@ from agentwire.roles import (
     parse_role_file,
     merge_roles,
     discover_role,
+    inject_soul,
 )
 
 
@@ -121,8 +122,8 @@ class TestMergeRoles:
 
 class TestDiscoverRole:
     def test_bundled_roles_found(self):
-        """All 6 bundled roles should be discoverable."""
-        for name in ["agentwire", "voice", "worker", "task-runner", "chatbot", "init"]:
+        """All bundled roles should be discoverable."""
+        for name in ["agentwire", "voice", "worker", "task-runner", "chatbot", "init", "soul"]:
             path = discover_role(name)
             assert path is not None, f"Bundled role '{name}' not found"
 
@@ -139,3 +140,58 @@ class TestDiscoverRole:
     def test_unknown_role_returns_none(self):
         path = discover_role("nonexistent-role-xyz")
         assert path is None
+
+
+# --- inject_soul ---
+
+class TestInjectSoul:
+    def test_appended_last(self):
+        assert inject_soul(["agentwire"]) == ["agentwire", "soul"]
+
+    def test_injected_with_explicit_roles(self):
+        assert inject_soul(["agentwire", "voice"]) == ["agentwire", "voice", "soul"]
+
+    def test_empty_list_gets_soul(self):
+        assert inject_soul([]) == ["soul"]
+
+    def test_headless_roles_excluded(self):
+        for headless in ["worker", "task-runner", "notifications"]:
+            assert inject_soul([headless]) == [headless]
+
+    def test_headless_mixed_excluded(self):
+        assert inject_soul(["agentwire", "worker"]) == ["agentwire", "worker"]
+
+    def test_no_double_add(self):
+        assert inject_soul(["soul"]) == ["soul"]
+        assert inject_soul(["agentwire", "soul"]) == ["agentwire", "soul"]
+
+    def test_soul_lens_variant_excluded(self):
+        # Council lens roles (#213) self-exclude the standard soul
+        assert inject_soul(["soul-brain"]) == ["soul-brain"]
+
+    def test_no_soul_flag(self):
+        assert inject_soul(["agentwire"], no_soul=True) == ["agentwire"]
+
+    def test_global_opt_out(self):
+        config = {"session": {"inject_soul": False}}
+        assert inject_soul(["agentwire"], config) == ["agentwire"]
+
+    def test_global_default_enabled(self):
+        assert inject_soul(["agentwire"], {}) == ["agentwire", "soul"]
+        assert inject_soul(["agentwire"], None) == ["agentwire", "soul"]
+
+    def test_input_not_mutated(self):
+        names = ["agentwire"]
+        inject_soul(names)
+        assert names == ["agentwire"]
+
+    def test_bundled_soul_is_pure_personality(self):
+        """soul.md must not widen or narrow tool permissions."""
+        path = discover_role("soul")
+        assert path is not None
+        role = parse_role_file(path)
+        assert role is not None
+        assert role.name == "soul"
+        assert role.tools == []
+        assert role.disallowed_tools == []
+        assert role.instructions

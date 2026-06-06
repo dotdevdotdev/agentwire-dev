@@ -36,7 +36,7 @@ from .project_config import (
     normalize_session_type,
     save_project_config,
 )
-from .roles import RoleConfig, load_roles, merge_roles
+from .roles import RoleConfig, inject_soul, load_roles, merge_roles
 from .worktree import ensure_worktree, parse_session_name, remove_worktree
 
 # Default config directory
@@ -3122,6 +3122,9 @@ def cmd_new(args) -> int:
             default_role = config.get("session", {}).get("default_role", "agentwire")
             role_names = [default_role] if default_role else []
 
+    # Always-inject the soul personality role (rides last for recency weight)
+    role_names = inject_soul(role_names, load_config(), no_soul=getattr(args, 'no_soul', False))
+
     # Load and validate roles
     roles: list[RoleConfig] = []
     if role_names:
@@ -4428,19 +4431,18 @@ def cmd_recreate(args) -> int:
     if type_arg:
         # CLI flag specified - use it directly and normalize (session-level only, not saved)
         session_type_str = normalize_session_type(type_arg, agent_type)
-        roles = None
-        if project_config and project_config.roles:
-            roles, _ = load_roles(project_config.roles, session_path)
     elif project_config:
         # Use existing config
         session_type_str = normalize_session_type(project_config.type.value, agent_type)
-        roles = None
-        if project_config.roles:
-            roles, _ = load_roles(project_config.roles, session_path)
     else:
         # Default to agent-bypass based on detected agent
         session_type_str = f"{agent_type}-bypass"
-        roles = None
+
+    role_names = list(project_config.roles) if project_config and project_config.roles else []
+    role_names = inject_soul(role_names, load_config())
+    roles = None
+    if role_names:
+        roles, _ = load_roles(role_names, session_path)
 
     # Build agent command
     agent = build_agent_command(session_type_str, roles)
@@ -4705,19 +4707,18 @@ def cmd_fork(args) -> int:
         if type_arg:
             # CLI flag specified - use it directly
             session_type_str = normalize_session_type(type_arg, agent_type)
-            roles = None
-            if source_config and source_config.roles:
-                roles, _ = load_roles(source_config.roles, Path(source_path))
         elif source_config:
             # Use source config
             session_type_str = normalize_session_type(source_config.type.value, agent_type)
-            roles = None
-            if source_config.roles:
-                roles, _ = load_roles(source_config.roles, Path(source_path))
         else:
             # Default to agent-bypass based on detected agent
             session_type_str = f"{agent_type}-bypass"
-            roles = None
+
+        role_names = list(source_config.roles) if source_config and source_config.roles else []
+        role_names = inject_soul(role_names, load_config())
+        roles = None
+        if role_names:
+            roles, _ = load_roles(role_names, Path(source_path))
 
         # Build agent command
         agent = build_agent_command(session_type_str, roles)
@@ -4798,19 +4799,18 @@ def cmd_fork(args) -> int:
         if type_arg:
             # CLI flag specified - use it directly
             session_type_str = normalize_session_type(type_arg, agent_type)
-            roles = None
-            if source_project_config and source_project_config.roles:
-                roles, _ = load_roles(source_project_config.roles, fork_path)
         elif source_project_config:
             # Use source config
             session_type_str = normalize_session_type(source_project_config.type.value, agent_type)
-            roles = None
-            if source_project_config.roles:
-                roles, _ = load_roles(source_project_config.roles, fork_path)
         else:
             # Default to agent-bypass based on detected agent
             session_type_str = f"{agent_type}-bypass"
-            roles = None
+
+        role_names = list(source_project_config.roles) if source_project_config and source_project_config.roles else []
+        role_names = inject_soul(role_names, load_config())
+        roles = None
+        if role_names:
+            roles, _ = load_roles(role_names, fork_path)
 
         # Find the conversation JSONL for the source session to enable context inheritance.
         # Uses history.jsonl filtered by the source tmux session's creation time to identify
@@ -4965,19 +4965,18 @@ def cmd_fork(args) -> int:
     if type_arg:
         # CLI flag specified - use it directly
         session_type_str = normalize_session_type(type_arg, agent_type)
-        roles = None
-        if source_config and source_config.roles:
-            roles, _ = load_roles(source_config.roles, config_path)
     elif source_config:
         # Use source config
         session_type_str = normalize_session_type(source_config.type.value, agent_type)
-        roles = None
-        if source_config.roles:
-            roles, _ = load_roles(source_config.roles, config_path)
     else:
         # Default to agent-bypass based on detected agent
         session_type_str = f"{agent_type}-bypass"
-        roles = None
+
+    role_names = list(source_config.roles) if source_config and source_config.roles else []
+    role_names = inject_soul(role_names, load_config())
+    roles = None
+    if role_names:
+        roles, _ = load_roles(role_names, config_path)
 
     # Build agent command
     agent = build_agent_command(session_type_str, roles)
@@ -5226,9 +5225,10 @@ def cmd_history_resume(args) -> int:
     cmd_parts = ["claude", "--resume", session_id, "--fork-session"]
     cmd_parts.extend(project_config.type.to_cli_flags())
 
-    # Load and apply roles if specified in config
-    if project_config.roles:
-        roles, missing = load_roles(project_config.roles, project_path)
+    # Load and apply roles (soul always injected for human-facing sessions)
+    role_names = inject_soul(list(project_config.roles or []), load_config())
+    if role_names:
+        roles, missing = load_roles(role_names, project_path)
         if not missing and roles:
             merged = merge_roles(roles)
             if merged.tools:
@@ -5574,8 +5574,8 @@ def cmd_dev(args) -> int:
         print(f"Project directory not found: {project_dir}", file=sys.stderr)
         return 1
 
-    # Dev session uses agentwire role by default
-    role_names = ["agentwire"]
+    # Dev session uses agentwire role by default, plus the soul personality
+    role_names = inject_soul(["agentwire"], load_config(), no_soul=getattr(args, 'no_soul', False))
     roles, missing = load_roles(role_names, project_dir)
     if missing:
         print(f"Warning: Roles not found: {', '.join(missing)}", file=sys.stderr)
@@ -10412,6 +10412,7 @@ def main() -> int:
     new_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
     # Roles
     new_parser.add_argument("--roles", help="Comma-separated list of roles (preserves existing config, defaults to agentwire for new projects)")
+    new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     new_parser.add_argument("--persist", action="store_true", help="Write --type/--roles to .agentwire.yml (default: session-level override only)")
     new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
@@ -10521,6 +10522,7 @@ def main() -> int:
     dev_parser = subparsers.add_parser(
         "dev", help="Start/attach to dev agentwire session"
     )
+    dev_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     dev_parser.set_defaults(func=cmd_dev)
 
     up_parser = subparsers.add_parser(
