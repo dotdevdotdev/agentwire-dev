@@ -405,3 +405,86 @@ class TestReapWorktreePrs:
         board = self._board_with_pr()
         assert scheduler.reap_worktree_prs(board) == []
         assert killed == [] and removed == []
+
+
+class TestPersistentSessionDispatch:
+    """Tasks with exit_on_complete: false must not have their session killed
+    at dispatch time (issue #234) — the live session is reused by ensure."""
+
+    def _project(self, tmp_path, task_yaml: str):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentwire.yml").write_text(task_yaml)
+        return proj
+
+    def _sched_task(self, proj, **kwargs):
+        return SchedulerTask(name="t", project=str(proj), session="persist-s",
+                             task="t", schedule=Schedule(every="1h"), **kwargs)
+
+    # --- _task_is_persistent ---
+
+    def test_persistent_when_exit_on_complete_false(self, tmp_path):
+        from agentwire import scheduler
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n    exit_on_complete: false\n")
+        assert scheduler._task_is_persistent(self._sched_task(proj)) is True
+
+    def test_not_persistent_by_default(self, tmp_path):
+        from agentwire import scheduler
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n")
+        assert scheduler._task_is_persistent(self._sched_task(proj)) is False
+
+    def test_not_persistent_when_task_unloadable(self, tmp_path):
+        from agentwire import scheduler
+        task = self._sched_task(tmp_path / "missing")
+        assert scheduler._task_is_persistent(task) is False
+
+    # --- _dispatch_inplace_task kill behavior ---
+
+    def _patch_dispatch(self, monkeypatch):
+        from agentwire import scheduler
+        import agentwire.locking
+        killed, precreated = [], []
+        monkeypatch.setattr(agentwire.locking, "remove_stale_lock", lambda s: None)
+        monkeypatch.setattr(scheduler, "_kill_session", lambda s: killed.append(s))
+        monkeypatch.setattr(scheduler, "_pre_create_session", lambda t: precreated.append(t.session))
+        monkeypatch.setattr(scheduler, "_run_ensure", lambda cmd: (0, None, 1))
+        monkeypatch.setattr(scheduler, "_parse_ensure_summary", lambda t, r: ("ok", [], []))
+        monkeypatch.setattr(scheduler, "_log_event", lambda *a, **k: None)
+        monkeypatch.setattr(scheduler, "_notify_portal", lambda *a, **k: None)
+        monkeypatch.setattr(scheduler, "_capture_head", lambda p: "")
+        monkeypatch.setattr(scheduler, "save_board", lambda b: None)
+        return killed, precreated
+
+    def _dispatch(self, proj, **task_kwargs):
+        from agentwire import scheduler
+        task = self._sched_task(proj, **task_kwargs)
+        board = Board()
+        board.tasks["t"] = task
+        return scheduler._dispatch_inplace_task(board, task, TaskState())
+
+    def test_persistent_task_session_not_killed(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n    exit_on_complete: false\n")
+        killed, _ = self._patch_dispatch(monkeypatch)
+        state = self._dispatch(proj)
+        assert killed == []
+        assert state.last_status == "complete"
+
+    def test_default_task_session_killed(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n")
+        killed, _ = self._patch_dispatch(monkeypatch)
+        self._dispatch(proj)
+        assert killed == ["persist-s"]
+
+    def test_persistent_with_overrides_not_killed_but_precreated(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n    exit_on_complete: false\n")
+        killed, precreated = self._patch_dispatch(monkeypatch)
+        self._dispatch(proj, type="claude-bypass")
+        assert killed == []
+        assert precreated == ["persist-s"]  # no-op when session exists
+
+    def test_overrides_without_persistence_killed_and_precreated(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n")
+        killed, precreated = self._patch_dispatch(monkeypatch)
+        self._dispatch(proj, type="claude-bypass")
+        assert killed == ["persist-s"]
+        assert precreated == ["persist-s"]

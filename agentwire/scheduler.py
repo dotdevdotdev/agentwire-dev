@@ -982,6 +982,19 @@ def _pre_create_session(task: SchedulerTask) -> None:
         print(f"[{_ts()}] Warning: Failed to pre-create session {task.session}: {result.stderr.strip()}")
 
 
+def _task_is_persistent(task: SchedulerTask) -> bool:
+    """Whether the project task opts out of session teardown (exit_on_complete: false).
+
+    Persistent sessions double as interactive receivers — the scheduler must
+    not kill them at dispatch. `ensure` reuses the live session instead.
+    """
+    from .tasks import load_task
+    try:
+        return not load_task(Path(task.project), task.task).exit_on_complete
+    except Exception:
+        return False
+
+
 def _is_git_repo(project: str) -> bool:
     """True if `project` is inside a git work tree."""
     if not project:
@@ -1231,12 +1244,17 @@ def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: Ta
     from .locking import remove_stale_lock
     remove_stale_lock(task.session)
 
+    # Tasks with exit_on_complete: false keep a long-lived session that may be
+    # in interactive use — never kill it at dispatch; ensure reuses it as-is.
+    persistent = _task_is_persistent(task)
+
     has_overrides = bool(task.type or task.roles is not None or task.model)
     if has_overrides:
         # Scheduler has type/role overrides — kill + pre-create ourselves,
         # then let ensure reuse the session (no --fresh)
-        _kill_session(task.session)
-        _pre_create_session(task)
+        if not persistent:
+            _kill_session(task.session)
+        _pre_create_session(task)  # no-op if the session already exists
 
     cmd = [
         "agentwire", "ensure",
@@ -1245,7 +1263,7 @@ def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: Ta
         "--project", task.project,
         "--json",
     ]
-    if not has_overrides:
+    if not has_overrides and not persistent:
         # No type/role overrides — kill stale session so ensure creates fresh
         _kill_session(task.session)
 

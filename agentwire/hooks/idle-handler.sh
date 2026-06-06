@@ -165,11 +165,13 @@ ${summary_content}"
         task_name=$(jq -r '.task // ""' "$task_context_file" 2>/dev/null)
         summary_file=$(jq -r '.summary_file // ""' "$task_context_file" 2>/dev/null)
         idle_count=$(jq -r '.idle_count // 0' "$task_context_file" 2>/dev/null)
-        exit_on_complete=$(jq -r '.exit_on_complete // true' "$task_context_file" 2>/dev/null)
+        # NOTE: jq's // operator coerces false to the default (false // true == true),
+        # so boolean fields must use an explicit null check to honor a stored false.
+        exit_on_complete=$(jq -r 'if .exit_on_complete == null then true else .exit_on_complete end' "$task_context_file" 2>/dev/null)
         mode=$(jq -r '.mode // "standard"' "$task_context_file" 2>/dev/null)
         max_iterations=$(jq -r '.max_iterations // 3' "$task_context_file" 2>/dev/null)
         iteration=$(jq -r '.iteration // 1' "$task_context_file" 2>/dev/null)
-        loop_review=$(jq -r '.loop_review // true' "$task_context_file" 2>/dev/null)
+        loop_review=$(jq -r 'if .loop_review == null then true else .loop_review end' "$task_context_file" 2>/dev/null)
         loop_delay=$(jq -r '.loop_delay // 0' "$task_context_file" 2>/dev/null)
         original_prompt=$(jq -r '.original_prompt // ""' "$task_context_file" 2>/dev/null)
 
@@ -309,6 +311,13 @@ complete | incomplete | error
               sleep 3
               echo "[$(date -Iseconds)] TASK: killing tmux session" >> "$dlog"
               tmux kill-session -t "$tmux_session" 2>/dev/null &
+            else
+              # Persistent session (exit_on_complete: false): leave it running,
+              # but still remove the context file — ensure's completion poll
+              # blocks until it's gone, and later interactive idles must take
+              # the normal (non-task) path.
+              rm "$task_context_file" 2>/dev/null
+              echo "[$(date -Iseconds)] TASK: exit_on_complete=false, session left alive, cleaned up task context" >> "$dlog"
             fi
           fi
         fi
