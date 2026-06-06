@@ -93,3 +93,40 @@ class TestAsyncRunAgentwireCmd:
             await server.run_agentwire_cmd(["say", "hi"], json_output=False)
             cmd_args = mock_exec.call_args[0]
             assert "--json" not in cmd_args
+
+
+class TestServiceAutostartAndWatchdog:
+    """Portal-side service lifecycle (#214) — thin shells over the CLI."""
+
+    async def test_autostart_calls_services_up_all(self, server, monkeypatch):
+        # Collapse the politeness delay so the test is instant.
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        server.run_agentwire_cmd = AsyncMock(return_value=(True, {"results": [
+            {"name": "tracker", "ok": True, "result": "started"},
+        ]}))
+        await server.autostart_custom_services()
+        server.run_agentwire_cmd.assert_awaited_once_with(["services", "up", "--all"])
+
+    async def test_notify_service_event_broadcasts_and_speaks(self, server):
+        server.broadcast_dashboard = AsyncMock()
+        server.run_agentwire_cmd = AsyncMock(return_value=(True, {}))
+        await server._notify_service_event("tracker", "Service tracker is down", speak=True)
+        # Toast stored + broadcast
+        assert any(n["session"] == "service:tracker"
+                   for n in server.active_notifications.values())
+        server.broadcast_dashboard.assert_awaited()
+        msg_type = server.broadcast_dashboard.await_args[0][0]
+        assert msg_type == "notification"
+        # TTS via the say CLI
+        server.run_agentwire_cmd.assert_awaited_once_with(
+            ["say", "Service tracker is down"], json_output=False)
+
+    async def test_notify_replaces_stale_toast_for_same_service(self, server):
+        server.broadcast_dashboard = AsyncMock()
+        server.run_agentwire_cmd = AsyncMock(return_value=(True, {}))
+        await server._notify_service_event("tracker", "down", speak=False)
+        await server._notify_service_event("tracker", "recovered", speak=False)
+        toasts = [n for n in server.active_notifications.values()
+                  if n["session"] == "service:tracker"]
+        assert len(toasts) == 1
+        assert toasts[0]["text"] == "recovered"

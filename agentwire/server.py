@@ -1455,6 +1455,116 @@ class AgentWireServer:
                 logger.debug("[IdleNag] Error: %s", e)
                 await asyncio.sleep(NAG_INTERVAL)
 
+    async def autostart_custom_services(self):
+        """Boot autostart custom services shortly after portal launch.
+
+        This is the reboot fix for #214: the launchd plist runs
+        `agentwire portal start`, not `agentwire up`, so the server itself
+        is the convergence point. Delegates to the CLI (single source of
+        truth) — `services up --all` is idempotent and skips downed services.
+        """
+        await asyncio.sleep(5)  # let the portal finish binding first
+        try:
+            success, result = await self.run_agentwire_cmd(["services", "up", "--all"])
+            if success:
+                started = [r["name"] for r in result.get("results", []) if r.get("result") == "started"]
+                if started:
+                    logger.info("[Services] Autostarted: %s", ", ".join(started))
+                else:
+                    logger.info("[Services] All autostart services already running")
+            else:
+                logger.warning("[Services] Autostart failed: %s", result.get("error"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[Services] Autostart error: %s", e)
+
+    async def _notify_service_event(self, name: str, text: str, speak: bool):
+        """Toast (+ optional TTS) for a service watchdog event."""
+        notification_id = f"svc-{name}-{str(uuid.uuid4())[:8]}"
+        # Replace any active toast for this service
+        stale = [nid for nid, n in self.active_notifications.items()
+                 if n.get("session") == f"service:{name}"]
+        for nid in stale:
+            self.active_notifications.pop(nid, None)
+            await self.broadcast_dashboard("notification_dismiss", {"id": nid})
+        notification = {
+            "id": notification_id,
+            "text": text,
+            "session": f"service:{name}",
+            "priority": "high",
+            "timestamp": time.time(),
+        }
+        self.active_notifications[notification_id] = notification
+        await self.broadcast_dashboard("notification", notification)
+        if speak:
+            await self.run_agentwire_cmd(["say", text], json_output=False)
+
+    async def service_watchdog_loop(self):
+        """Background task: healthcheck registered custom services.
+
+        Per-service cadence from healthcheck.interval. On failure: toast +
+        TTS on the healthy→unhealthy transition, then respawn per the
+        service's restart policy with exponential backoff (WatchdogState in
+        services.py — pure and unit-tested). `services down` services are
+        skipped entirely. Backoff state is in-memory; a portal restart
+        resets it, which is fine.
+        """
+        from .services import WatchdogState
+
+        TICK = 15  # seconds between scheduling passes
+        states: dict[str, WatchdogState] = {}
+        last_check: dict[str, float] = {}
+
+        logger.info("[Watchdog] Service watchdog started")
+        await asyncio.sleep(30)  # let autostart finish before first checks
+
+        while True:
+            try:
+                now = time.time()
+                success, result = await self.run_agentwire_cmd(["services", "status"])
+                if not success:
+                    logger.debug("[Watchdog] status failed: %s", result.get("error"))
+                    await asyncio.sleep(TICK)
+                    continue
+
+                for status in result.get("services", []):
+                    name = status["name"]
+                    interval = status.get("healthcheck", {}).get("interval", 60)
+                    if now - last_check.get(name, 0) < interval:
+                        continue
+                    last_check[name] = now
+
+                    if status.get("disabled") or not status.get("autostart"):
+                        states.pop(name, None)  # not managed while opted out
+                        continue
+
+                    state = states.setdefault(name, WatchdogState())
+                    actions = state.on_check(now, status["healthy"], status.get("restart", "on-failure"))
+
+                    for action in actions:
+                        if action == "notify_down":
+                            logger.warning("[Watchdog] %s unhealthy: %s", name, status.get("detail"))
+                            await self._notify_service_event(
+                                name, f"Service {name} is down ({status.get('detail')})", speak=True)
+                        elif action == "notify_recovered":
+                            logger.info("[Watchdog] %s recovered", name)
+                            await self._notify_service_event(
+                                name, f"Service {name} recovered", speak=False)
+                        elif action == "restart":
+                            logger.info("[Watchdog] Restarting %s (attempt %d)",
+                                        name, state.restart_count)
+                            await self.run_agentwire_cmd(["services", "up", name])
+
+                await asyncio.sleep(TICK)
+
+            except asyncio.CancelledError:
+                logger.info("[Watchdog] Service watchdog stopped")
+                break
+            except Exception as e:
+                logger.debug("[Watchdog] Error: %s", e)
+                await asyncio.sleep(TICK)
+
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
         """Handle WebSocket connections for a session."""
         name = request.match_info["name"]
@@ -4830,6 +4940,14 @@ async def run_server(config: Config):
     # Start idle nag loop (TTS reminders for idle sessions with open windows)
     idle_nag_task = asyncio.create_task(server.idle_nag_loop())
 
+    # Autostart custom services (incl. the notifications bridge) — the portal
+    # is the convergence point, so launchd/`portal start`/`agentwire up` all
+    # bring services back without a separate `agentwire up` run.
+    autostart_task = asyncio.create_task(server.autostart_custom_services())
+
+    # Watchdog: healthcheck registered services, notify + restart per policy
+    watchdog_task = asyncio.create_task(server.service_watchdog_loop())
+
     # Sessions are now fetched dynamically from tmux + .agentwire.yml
     # No cache to rebuild or periodically refresh
 
@@ -4860,11 +4978,12 @@ async def run_server(config: Config):
         while True:
             await asyncio.sleep(3600)
     finally:
-        monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
+        for task in (monitor_task, idle_nag_task, autostart_task, watchdog_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await server.close_backends()
         await runner.cleanup()
 
