@@ -261,6 +261,7 @@ class SessionConfig:
     """Default session configuration."""
 
     default_role: str = "agentwire"  # Default role for new sessions
+    inject_soul: bool = True  # Append the bundled soul personality role to human-facing sessions
 
 
 @dataclass
@@ -608,8 +609,16 @@ def _dict_to_config(data: dict) -> Config:
         disabled_rules=[str(r) for r in disabled_rules_raw if r],
     )
 
+    # Session defaults
+    session_data = data.get("session", {}) or {}
+    session = SessionConfig(
+        default_role=session_data.get("default_role", "agentwire"),
+        inject_soul=bool(session_data.get("inject_soul", True)),
+    )
+
     return Config(
         server=server,
+        session=session,
         projects=projects,
         tts=tts,
         stt=stt,

@@ -194,4 +194,8 @@ overnight:
 
 session:
   default_role: "agentwire"  # Default role for new sessions
+  inject_soul: true          # Append the bundled 'soul' personality role to every human-facing
+                             # session (appended last for recency weight). Headless roles
+                             # (worker, task-runner, notifications) and soul/soul-* sessions
+                             # are excluded automatically; per-session opt-out: --no-soul on new/dev
 ```

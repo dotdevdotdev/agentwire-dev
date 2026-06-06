@@ -160,6 +160,43 @@ def merge_roles(roles: list[RoleConfig]) -> MergedRole:
     )
 
 
+# Roles whose whole job is autonomous execution — personality actively
+# conflicts with them ("run, don't ask"), so soul is never injected.
+HEADLESS_ROLES = {"worker", "task-runner", "notifications"}
+
+
+def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool = False) -> list[str]:
+    """Append the bundled soul role to a session's role list.
+
+    Soul is the always-present default personality (tone, restraint,
+    ask-vs-proceed). It rides last so it gets recency weight in the merged
+    prompt, while a deliberately-appended stricter role can still override it.
+
+    Skipped when:
+    - no_soul is True (per-session --no-soul flag)
+    - config disables it globally (session.inject_soul: false)
+    - any role is headless (HEADLESS_ROLES — executors stay voiceless)
+    - a soul role is already present (soul itself, or a soul-* lens variant)
+
+    Args:
+        role_names: Resolved role names for the session
+        config: Main config dict (from load_config()), or None to skip the check
+        no_soul: Per-session opt-out
+
+    Returns:
+        role_names with "soul" appended last, or unchanged if excluded
+    """
+    if no_soul:
+        return role_names
+    if config is not None and not config.get("session", {}).get("inject_soul", True):
+        return role_names
+    if any(r in HEADLESS_ROLES for r in role_names):
+        return role_names
+    if any(r == "soul" or r.startswith("soul-") for r in role_names):
+        return role_names
+    return [*role_names, "soul"]
+
+
 def discover_role(name: str, project_path: Path | None = None) -> Path | None:
     """Find a role file by name using discovery order.
 

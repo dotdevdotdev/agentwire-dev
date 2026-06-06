@@ -76,6 +76,10 @@ An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `a
 
 A tmux session running an AI agent (claude-*, claudeglm-*, pi-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
 
+## S — Soul
+
+The bundled default-personality role (`agentwire/roles/soul.md`) — voice, restraint, ask-vs-proceed defaults. Always injected last into every human-facing session's role list, on top of whatever roles resolve. Headless roles (worker, task-runner, notifications) and `soul`/`soul-*` sessions are excluded. Opt out globally with `session.inject_soul: false` or per session with `--no-soul`; shadow the content per project via `.agentwire/roles/soul.md`. → `agentwire-config` skill.
+
 ## T — Tunnel
 
 An SSH or Cloudflare Tunnel that exposes a local agentwire service (TTS server, portal) on a remote machine or to the public internet. → [Remote access](deployment/remote-access.md).
