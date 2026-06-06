@@ -13,6 +13,7 @@
  */
 
 import { desktop } from './desktop-manager.js';
+import { armDeadKeySuppressor } from './dead-key-suppressor.js';
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -40,14 +41,19 @@ class ScratchPad {
         // Live sync from other clients / CLI / MCP writers
         desktop.on('scratchpad_updated', ({ notes }) => this._onRemoteUpdate(notes));
 
-        // Alt+N toggles the drawer (mirrors the Alt+` collage detection style:
-        // use e.code so macOS dead-key composition doesn't hide the key).
+        // Alt+N toggles the drawer. Capture phase + stopPropagation so xterm
+        // never sees the keystroke; e.code because on macOS Option+N is a
+        // dead key (e.key is 'Dead', and it starts a ˜ composition that the
+        // shared suppressor swallows — see dead-key-suppressor.js).
         window.addEventListener('keydown', (e) => {
             if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyN') {
                 e.preventDefault();
+                e.stopPropagation();
+                if (e.repeat) return;
+                armDeadKeySuppressor();
                 this.toggle();
             }
-        });
+        }, true);
 
         // Selection capture popover (DOM selections: Monitor panes, artifacts…)
         document.addEventListener('mouseup', () => this._maybeShowPopover());
