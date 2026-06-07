@@ -115,16 +115,16 @@ class QwenDesignEngine(TTSEngine):
         Raises:
             ValueError: If no instruct provided
         """
-        if not request.instruct:
+        if not request.instructions:
             raise ValueError(
-                "Qwen3-TTS VoiceDesign requires an 'instruct' parameter describing the voice. "
+                "Qwen3-TTS VoiceDesign requires an 'instructions' parameter describing the voice. "
                 "Example: 'Deep male voice with warm tone'"
             )
 
         wavs, sr = self._model.generate_voice_design(
             text=request.text,
             language=request.language,
-            instruct=request.instruct,
+            instruct=request.instructions,
         )
 
         # Convert to tensor
@@ -142,13 +142,13 @@ class QwenDesignEngine(TTSEngine):
 
         import torchaudio
 
-        if not request.instruct:
-            raise ValueError("Qwen3-TTS VoiceDesign requires an 'instruct' parameter.")
+        if not request.instructions:
+            raise ValueError("Qwen3-TTS VoiceDesign requires an 'instructions' parameter.")
 
         wavs, sr = self._model.generate_voice_design(
             text=request.text,
             language=request.language,
-            instruct=request.instruct,
+            instruct=request.instructions,
             non_streaming_mode=False,
         )
 

@@ -223,14 +223,34 @@ app = FastAPI(title="AgentWire TTS Server", lifespan=lifespan)
 # === TTS Endpoints ===
 
 
+# Contract `options` keys this shim understands — folded into TTSRequest
+# fields before engine dispatch. Unknown keys are ignored (envelope doctrine:
+# the caller passes options verbatim; the shim takes what it knows).
+KNOWN_OPTION_FIELDS = {
+    "exaggeration", "cfg_weight", "language", "backend", "stream",
+    "speaking_rate", "pitch_std",
+    "emotion_happiness", "emotion_sadness", "emotion_disgust", "emotion_fear",
+    "emotion_surprise", "emotion_anger", "emotion_other",
+}
+
+
 @app.post("/tts")
 async def generate_tts(request: TTSRequest):
     """Generate TTS audio from text.
 
-    Supports hot-swapping backends via the `backend` parameter.
+    Accepts the agentwire shim contract envelope: core `text`/`voice` plus
+    opaque `instructions` and `options`. Known option keys map onto engine
+    parameters; `options.backend` hot-swaps engines.
     """
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    # Fold known contract options into request fields (explicit fields win
+    # only when options doesn't name them; options is the envelope source)
+    if request.options:
+        for key, value in request.options.items():
+            if key in KNOWN_OPTION_FIELDS:
+                setattr(request, key, value)
 
     # Determine which backend to use
     backend = request.backend or registry.current_name or DEFAULT_BACKEND
@@ -440,6 +460,44 @@ async def health():
         "capabilities": asdict(registry.current_capabilities) if registry.current_capabilities else None,
         "available_engines": registry.available,
         "whisper_loaded": whisper_model is not None,
+    }
+
+
+def _default_tool_prompt(caps) -> str:
+    """Derive a `tool_prompt` from engine capabilities when the operator
+    hasn't set AGENTWIRE_TTS_TOOL_PROMPT. This text is injected verbatim into
+    the agent's `say` tooldef, so it speaks to the agent."""
+    parts = []
+    if caps and caps.paralinguistic_tags:
+        parts.append(
+            "This TTS supports inline paralinguistic tags like [laugh], "
+            "[chuckle], [sigh], [gasp] — use them sparingly for expressive delivery."
+        )
+    if caps and caps.emotion_control:
+        parts.append(
+            "You may pass an `instructions` field with a free-text style prompt "
+            "(e.g. \"speak warmly, slightly amused\") to shape delivery."
+        )
+    return " ".join(parts)
+
+
+@app.get("/capabilities")
+async def capabilities():
+    """Shim contract: capability discovery for agentwire.
+
+    `tool_prompt` is appended to the agent-facing `say` tooldef at MCP-server
+    start. Override with the AGENTWIRE_TTS_TOOL_PROMPT env var.
+    """
+    caps = registry.current_capabilities
+    voices = [f.stem for f in VOICES_DIR.glob("*.wav")]
+    return {
+        "tool_prompt": os.environ.get("AGENTWIRE_TTS_TOOL_PROMPT") or _default_tool_prompt(caps),
+        "voices": voices,
+        "engine": registry.current_name,
+        "emotion_control": bool(caps and caps.emotion_control),
+        "paralinguistic_tags": bool(caps and caps.paralinguistic_tags),
+        "voice_cloning": bool(caps and caps.voice_cloning),
+        "languages": caps.languages if caps else ["English"],
     }
 
 

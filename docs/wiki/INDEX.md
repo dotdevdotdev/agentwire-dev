@@ -53,13 +53,14 @@ Running AgentWire across machines and exposing the portal.
 - **[Remote machines](deployment/remote-machines.md)** — SSH-based multi-machine orchestration, WSL2 setup
 - **[Remote access](deployment/remote-access.md)** — Cloudflare Tunnel + Zero Trust auth for the portal
 
-## TTS & STT
+## Voice (TTS & STT)
 
-Voice output and input backends.
+Two-tier model: `default` (browser voice, zero setup — what a fresh install
+gets) and `custom` (any model behind a small HTTP shim).
 
-- **[Self-hosted TTS](tts/tts-self-hosted.md)** — local backends (Kokoro, XTTS, etc.)
-- **[RunPod TTS](tts/runpod-tts.md)** — serverless GPU TTS
-- **[Self-hosted STT](tts/stt-self-hosted.md)** — moonshine / faster-whisper, push-to-talk latency knobs
+- **[Shim contract](voice/shim-contract.md)** — the two tiers, the envelope (instructions/options pass-through), capabilities + tool_prompt injection, a from-scratch shim example
+- **[Self-hosted TTS](voice/tts-self-hosted.md)** — the bundled reference shim's engines (Kokoro, Chatterbox, Qwen, Zonos)
+- **[Self-hosted STT](voice/stt-self-hosted.md)** — moonshine / faster-whisper reference shim, push-to-talk latency knobs
 
 ## Internals
 

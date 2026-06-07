@@ -76,17 +76,6 @@ def _tmux_global_option(name: str) -> str | None:
     return None
 
 
-def _check_config_exists() -> bool:
-    """Check ~/.agentwire/config.yaml exists; print init hint if not."""
-    config_path = CONFIG_DIR / "config.yaml"
-    if not config_path.exists():
-        print("Error: AgentWire is not configured.", file=sys.stderr)
-        print(file=sys.stderr)
-        print("Run 'agentwire init' to set up your configuration.", file=sys.stderr)
-        return False
-    return True
-
-
 @dataclass
 class AgentCommand:
     """Result of building an agent command."""
@@ -569,13 +558,26 @@ def _portal_auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _default_portal_url() -> str:
+    """Default portal URL — scheme mirrors the typed config's logic: https
+    only when server.ssl cert/key are configured AND exist on disk."""
+    ssl_cfg = load_config().get("server", {}).get("ssl", {})
+    cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
+    enabled = bool(
+        cert and key
+        and Path(os.path.expanduser(cert)).exists()
+        and Path(os.path.expanduser(key)).exists()
+    )
+    return f"{'https' if enabled else 'http'}://localhost:8765"
+
+
 def _portal_api(method: str, path: str, data: dict | None = None, timeout: int = 10) -> dict | None:
     """Make an API request to the portal using curl (reliable with self-signed certs).
 
     Returns parsed JSON dict on success, None on failure.
     """
     config = load_config()
-    portal_url = config.get("portal", {}).get("url", "https://localhost:8765")
+    portal_url = config.get("portal", {}).get("url", _default_portal_url())
     url = f"{portal_url}{path}"
 
     cmd = ["curl", "-sk", "--max-time", str(timeout), "-o", "-", "-w", "\n%{http_code}"]
@@ -736,7 +738,7 @@ def _notify_portal_sessions_changed():
         ctx.verify_mode = ssl.CERT_NONE
 
         req = urllib.request.Request(
-            "https://localhost:8765/api/sessions/refresh",
+            f"{_default_portal_url()}/api/sessions/refresh",
             method="POST",
             data=b"",
             headers=_portal_auth_headers(),
@@ -947,8 +949,6 @@ def _check_portal_health(url: str, timeout: int = 2) -> bool:
 
 def cmd_portal_start(args) -> int:
     """Start the AgentWire portal web server in tmux."""
-    if not _check_config_exists():
-        return 1
     if not _check_tmux_installed():
         return 1
 
@@ -1832,19 +1832,20 @@ def _get_portal_url() -> str:
     ctx = NetworkContext.from_config()
 
     if ctx.is_local("portal"):
-        # Portal runs locally
-        return f"https://localhost:{ctx.config.services.portal.port}"
+        # Portal runs locally — scheme comes from services.portal.scheme
+        # (http unless SSL certs exist or explicitly configured)
+        return ctx.get_service_url("portal")
 
     # Portal is remote - check if tunnel exists by testing localhost first
     tunnel_url = ctx.get_service_url("portal", use_tunnel=True)
     direct_url = ctx.get_service_url("portal", use_tunnel=False)
 
     # Try tunnel first (more common setup)
-    if _check_portal_health(tunnel_url.replace("http://", "https://")):
-        return tunnel_url.replace("http://", "https://")
+    if _check_portal_health(tunnel_url):
+        return tunnel_url
 
     # Fall back to direct connection
-    return direct_url.replace("http://", "https://")
+    return direct_url
 
 
 def _get_agentwire_path() -> str:
@@ -2125,129 +2126,52 @@ def _check_portal_connections(session: str, portal_url: str) -> tuple[bool, str]
     return False, session
 
 
-def _local_say_runpod(
+def _local_say_os(text: str) -> int:
+    """Speak via the OS voice (default tier, no browser connected).
+
+    macOS `say` / Linux `espeak`. Zero setup, robotic, always available.
+    Absolute path on macOS — users commonly shadow `say` in PATH with an
+    `agentwire say` wrapper, which would recurse into a fork bomb.
+    """
+    from .utils.speech import strip_speech_tags
+
+    binary = "/usr/bin/say" if sys.platform == "darwin" else "espeak"
+    try:
+        subprocess.run([binary, strip_speech_tags(text)], check=True)
+        return 0
+    except FileNotFoundError:
+        print(f"OS voice binary '{binary}' not found", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as e:
+        print(f"OS voice failed: {e}", file=sys.stderr)
+        return 1
+
+
+def _local_say_dispatch(
     text: str,
     voice: str,
     exaggeration: float,
     cfg_weight: float,
     tts_config: dict,
     backend: str | None = None,
-    instruct: str | None = None,
+    instructions: str | None = None,
     language: str = "English",
     stream: bool = False,
 ) -> int:
-    """Generate TTS via RunPod API or local TTS server.
+    """Local (non-portal) TTS playback, dispatched on the configured tier.
 
-    Works with runpod backend - calls the API directly.
-    Falls back to HTTP TTS server for other backends.
+    default → OS voice; custom → HTTP shim + afplay/aplay.
     """
-    config_backend = tts_config.get("backend", "none")
+    if tts_config.get("backend", "default") != "custom":
+        return _local_say_os(text)
 
-    if config_backend == "runpod":
-        return _local_say_runpod_api(text, voice, exaggeration, cfg_weight, tts_config)
-    else:
-        # All HTTP-server-backed backends (kokoro, chatterbox, qwen-*, zonos-*, etc.)
-        from .network import NetworkContext
-        ctx = NetworkContext.from_config()
-        tts_url = ctx.get_service_url("tts", use_tunnel=True)
-        return _local_say(
-            text, voice, exaggeration, cfg_weight, tts_url,
-            backend=backend, instruct=instruct, language=language, stream=stream
-        )
-
-
-def _local_say_runpod_api(
-    text: str,
-    voice: str,
-    exaggeration: float,
-    cfg_weight: float,
-    tts_config: dict,
-) -> int:
-    """Generate TTS via RunPod serverless API and play locally."""
-
-    endpoint_id = tts_config.get("runpod_endpoint_id", "")
-    api_key = tts_config.get("runpod_api_key", "")
-    timeout = tts_config.get("runpod_timeout", 120)
-
-    if not endpoint_id or not api_key:
-        print("RunPod backend requires runpod_endpoint_id and runpod_api_key in config", file=sys.stderr)
-        return 1
-
-    endpoint_url = f"https://api.runpod.ai/v2/{endpoint_id}/runsync"
-
-    payload = {
-        "input": {
-            "action": "generate",
-            "text": text,
-            "voice": voice,
-            "exaggeration": exaggeration,
-            "cfg_weight": cfg_weight,
-        }
-    }
-
-    try:
-        data = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            endpoint_url,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-        )
-
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            result = json.loads(response.read().decode())
-
-            # Check RunPod status
-            if result.get("status") == "error":
-                print(f"RunPod error: {result.get('error', 'Unknown error')}", file=sys.stderr)
-                return 1
-
-            # Extract output
-            output = result.get("output", {})
-            if "error" in output:
-                print(f"TTS error: {output['error']}", file=sys.stderr)
-                return 1
-
-            # Decode base64 audio
-            audio_b64 = output.get("audio", "")
-            if not audio_b64:
-                print("No audio returned from TTS", file=sys.stderr)
-                return 1
-
-            audio_data = base64.b64decode(audio_b64)
-
-        # Save to temp file and play
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_data)
-            temp_path = f.name
-
-        # Play audio (cross-platform)
-        if sys.platform == "darwin":
-            subprocess.run(["afplay", temp_path], check=True)
-        elif sys.platform == "linux":
-            # Try various players
-            for player in ["aplay", "paplay", "play"]:
-                try:
-                    subprocess.run([player, temp_path], check=True)
-                    break
-                except FileNotFoundError:
-                    continue
-        else:
-            print(f"Audio saved to: {temp_path}")
-            return 0
-
-        # Clean up
-        Path(temp_path).unlink(missing_ok=True)
-        return 0
-
-    except urllib.error.URLError as e:
-        print(f"RunPod API not reachable: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"TTS failed: {e}", file=sys.stderr)
-        return 1
+    from .network import NetworkContext
+    ctx = NetworkContext.from_config()
+    tts_url = ctx.get_service_url("tts", use_tunnel=True)
+    return _local_say(
+        text, voice, exaggeration, cfg_weight, tts_url,
+        backend=backend, instructions=instructions, language=language, stream=stream
+    )
 
 
 def cmd_say(args) -> int:
@@ -2279,7 +2203,7 @@ def cmd_say(args) -> int:
 
     # New parameters for modular TTS
     backend = getattr(args, 'backend', None)
-    instruct = getattr(args, 'instruct', None)
+    instructions = getattr(args, 'instructions', None)
     language = getattr(args, 'language', "English")
     stream = getattr(args, 'stream', False)
 
@@ -2304,9 +2228,9 @@ def cmd_say(args) -> int:
     chunks = chunk_text(text)
 
     for chunk in chunks:
-        result = _local_say_runpod(
+        result = _local_say_dispatch(
             chunk, voice, exaggeration, cfg_weight, tts_config,
-            backend=backend, instruct=instruct, language=language, stream=stream
+            backend=backend, instructions=instructions, language=language, stream=stream
         )
         if result != 0:
             return result
@@ -2614,27 +2538,31 @@ def _local_say(
     cfg_weight: float,
     tts_url: str,
     backend: str | None = None,
-    instruct: str | None = None,
+    instructions: str | None = None,
     language: str = "English",
     stream: bool = False,
     _retry: bool = False,
 ) -> int:
-    """Generate TTS locally and play via system audio."""
+    """Generate TTS via the custom shim and play via system audio.
+
+    Sends the shim contract envelope: text/voice core + opaque
+    instructions/options (knobs and engine selection ride in options).
+    """
 
     try:
-        # Build request payload
-        payload = {
-            "text": text,
-            "voice": voice,
+        # Build contract-envelope payload
+        options: dict = {
             "exaggeration": exaggeration,
             "cfg_weight": cfg_weight,
             "language": language,
             "stream": stream,
+            **load_config().get("tts", {}).get("options", {}),
         }
         if backend:
-            payload["backend"] = backend
-        if instruct:
-            payload["instruct"] = instruct
+            options["backend"] = backend
+        payload: dict = {"text": text, "voice": voice, "options": options}
+        if instructions:
+            payload["instructions"] = instructions
 
         data = json.dumps(payload).encode()
 
@@ -2688,7 +2616,7 @@ def _local_say(
                     print("TTS server restarted. Retrying...")
                     return _local_say(
                         text, voice, exaggeration, cfg_weight, tts_url,
-                        backend=target_backend, instruct=instruct, language=language,
+                        backend=target_backend, instructions=instructions, language=language,
                         stream=stream, _retry=True
                     )
                 else:
@@ -2729,7 +2657,7 @@ def _remote_say(text: str, session: str, portal_url: str) -> int:
             headers={"Content-Type": "application/json", **_portal_auth_headers()},
         )
 
-        # 90 second timeout to handle RunPod cold starts
+        # 90 second timeout to handle TTS cold starts
         with urllib.request.urlopen(req, context=ctx, timeout=90) as response:
             result = json.loads(response.read().decode())
             if result.get("error"):
@@ -3154,9 +3082,6 @@ def cmd_new(args) -> int:
     - "project/branch@machine" -> remote worktree session
     """
     json_mode = getattr(args, 'json', False)
-
-    if not _check_config_exists():
-        return 1 if not json_mode else _output_result(False, json_mode, "AgentWire not configured. Run 'agentwire init'")
 
     if not _check_tmux_installed():
         return 1 if not json_mode else _output_result(False, json_mode, "tmux is required but not installed")
@@ -4571,8 +4496,6 @@ def cmd_worktree(args) -> int:
     use_existing = getattr(args, 'existing', False)
     ref = getattr(args, 'ref', None)
 
-    if not _check_config_exists():
-        return _output_result(False, json_mode, "AgentWire not configured. Run 'agentwire init'")
     if not _check_tmux_installed():
         return _output_result(False, json_mode, "tmux is required but not installed")
 
@@ -5930,26 +5853,26 @@ def cmd_up(args) -> int:
     else:
         print("  Portal configured for a remote machine — skipping (start it there).")
 
-    # TTS — skip if disabled or using a cloud backend
-    tts_backend = cfg_dict.get("tts", {}).get("backend", "chatterbox")
+    # TTS — only the custom tier has a local service to start
+    tts_backend = cfg_dict.get("tts", {}).get("backend", "default")
     if getattr(args, "no_tts", False):
         print("  TTS skipped (--no-tts).")
-    elif tts_backend in ("none", "runpod"):
-        print(f"  TTS skipped (backend: {tts_backend}).")
+    elif tts_backend != "custom":
+        print("  TTS skipped (default tier — browser/OS voice, no service needed).")
     elif _is_local("tts"):
         tts_args = Namespace(port=None, host=None, backend=None)
         _start_tts_local(tts_args, attach=False)
     else:
         print("  TTS configured for a remote machine — skipping (start it there).")
 
-    # STT — start when configured (uses a local source venv)
+    # STT — only the custom tier has a local service to start
     if getattr(args, "no_stt", False):
         print("  STT skipped (--no-stt).")
-    elif cfg_dict.get("stt", {}).get("url"):
+    elif cfg_dict.get("stt", {}).get("backend", "default") == "custom":
         stt_args = Namespace(port=None, host=None, model=None, backend=None)
         cmd_stt_start(stt_args)
     else:
-        print("  STT skipped (no stt.url configured).")
+        print("  STT skipped (default tier — browser speech recognition).")
 
     # Custom services (same shared path as portal-launch autostart)
     from . import services as services_mod
@@ -6078,14 +6001,13 @@ def cmd_network_status(args) -> int:
     print("\nServices")
     print("-" * 60)
 
-    # Check TTS backend - if using RunPod, skip local health check
+    # Default-tier TTS has no service to health-check
     tts_config = load_config().get("tts", {})
-    tts_backend = tts_config.get("backend", "chatterbox")
+    tts_backend = tts_config.get("backend", "default")
 
     for service_name in ["portal", "tts"]:
-        # Skip TTS local check if using RunPod backend
-        if service_name == "tts" and tts_backend == "runpod":
-            print(f"  {'Tts':<16}{'RunPod API':<18}[ok] cloud backend")
+        if service_name == "tts" and tts_backend != "custom":
+            print(f"  {'Tts':<16}{'browser/OS voice':<18}[ok] default tier")
             continue
 
         service_config = getattr(ctx.config.services, service_name, None)
@@ -6494,14 +6416,13 @@ def cmd_doctor(args) -> int:
     # 8. Check services
     print("\nChecking services...")
 
-    # Check TTS backend - if using RunPod, skip local health check
+    # Default-tier TTS has no service to health-check
     tts_config = load_config().get("tts", {})
-    tts_backend = tts_config.get("backend", "chatterbox")
+    tts_backend = tts_config.get("backend", "default")
 
     for service_name in ["portal", "tts"]:
-        # Skip TTS local check if using RunPod backend
-        if service_name == "tts" and tts_backend == "runpod":
-            print("  [ok] Tts: using RunPod backend (no local service needed)")
+        if service_name == "tts" and tts_backend != "custom":
+            print("  [ok] Tts: default tier (browser/OS voice, no local service needed)")
             continue
 
         service_config = getattr(ctx.config.services, service_name, None)
@@ -6562,19 +6483,21 @@ def cmd_doctor(args) -> int:
             else:
                 print(f"     -> Service is remote, start it on {service_config.machine}")
 
-    # 8b. Check STT server. STT isn't a `services.*` entry — it's configured via
-    # `stt.url`, so the loop above can't see it. Without this check, a crashed STT
-    # server is invisible and the portal silently falls back to a model-less
-    # WhisperKit (every push-to-talk then fails). Probe it explicitly.
-    stt_url = getattr(getattr(ctx.config, "stt", None), "url", None)
-    if stt_url:
+    # 8b. Check STT shim. STT isn't a `services.*` entry — it's configured via
+    # `stt.url`, so the loop above can't see it. Without this check, a crashed
+    # STT shim is invisible and every custom-tier push-to-talk fails at request
+    # time. Probe it explicitly. (Default tier transcribes in the browser — no
+    # service to check.)
+    stt_cfg = getattr(ctx.config, "stt", None)
+    if getattr(stt_cfg, "backend", "default") == "custom":
         from agentwire.stt.server_backend import STTServerBackend
 
+        stt_url = stt_cfg.url
         if STTServerBackend.is_available(stt_url):
             print(f"  [ok] Stt: responding on {stt_url}")
         else:
             print(f"  [!!] Stt: not responding on {stt_url}")
-            print("       Portal will fall back to WhisperKit (usually no model -> transcription FAILS).")
+            print("       Custom-tier push-to-talk will fail until it's back.")
             print("       Fix: agentwire stt start")
             print("       If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'")
             issues_found += 1
@@ -6706,82 +6629,51 @@ def cmd_voiceclone_cancel(args) -> int:
 
 
 def cmd_voiceclone_list(args) -> int:
-    """List available voices."""
+    """List available voices (custom TTS shim only)."""
     json_mode = getattr(args, 'json', False)
 
     import requests
 
-    from .voiceclone import get_tts_url, is_runpod_backend, list_voices_runpod
+    from .voiceclone import get_tts_url, is_custom_backend
 
-    if is_runpod_backend():
-        success, result = list_voices_runpod()
-        if success:
-            voices = result
+    if not is_custom_backend():
+        if json_mode:
+            _output_json({"success": True, "voices": []})
+        else:
+            print("No cloned voices in default tier (browser voice). "
+                  "Voice cloning requires tts.backend: custom.")
+        return 0
+
+    tts_url = get_tts_url()
+    try:
+        response = requests.get(f"{tts_url}/voices", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            voices = data.get("voices", data) if isinstance(data, dict) else data
             if json_mode:
-                # Normalize voice format
-                voice_list = []
-                for v in voices:
-                    if isinstance(v, str):
-                        voice_list.append({"name": v})
-                    else:
-                        voice_list.append(v)
-                _output_json({"success": True, "voices": voice_list})
+                _output_json({"success": True, "voices": voices or []})
             else:
                 if not voices:
                     print("No voices available")
                     return 0
                 print(f"Available voices ({len(voices)}):")
-                for v in sorted(voices):
-                    if isinstance(v, str):
-                        print(f"  {v}")
-                    else:
-                        name = v.get("name", "?")
-                        duration = v.get("duration", "?")
-                        print(f"  {name}: {duration}s")
+                for v in sorted(voices, key=lambda x: x.get("name", "")):
+                    name = v.get("name", "?")
+                    duration = v.get("duration", "?")
+                    print(f"  {name}: {duration}s")
             return 0
         else:
             if json_mode:
-                _output_json({"success": False, "error": str(result)})
+                _output_json({"success": False, "error": f"HTTP {response.status_code}"})
             else:
-                print(f"Failed to list voices: {result}")
+                print(f"Failed to list voices: {response.status_code}")
             return 1
-    else:
-        tts_url = get_tts_url()
-        if not tts_url:
-            if json_mode:
-                _output_json({"success": False, "error": "tts.url not configured"})
-            else:
-                print("Error: tts.url not configured in config.yaml")
-            return 1
-        try:
-            response = requests.get(f"{tts_url}/voices", timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                voices = data.get("voices", data) if isinstance(data, dict) else data
-                if json_mode:
-                    _output_json({"success": True, "voices": voices or []})
-                else:
-                    if not voices:
-                        print("No voices available")
-                        return 0
-                    print(f"Available voices ({len(voices)}):")
-                    for v in sorted(voices, key=lambda x: x.get("name", "")):
-                        name = v.get("name", "?")
-                        duration = v.get("duration", "?")
-                        print(f"  {name}: {duration}s")
-                return 0
-            else:
-                if json_mode:
-                    _output_json({"success": False, "error": f"HTTP {response.status_code}"})
-                else:
-                    print(f"Failed to list voices: {response.status_code}")
-                return 1
-        except requests.RequestException as e:
-            if json_mode:
-                _output_json({"success": False, "error": str(e)})
-            else:
-                print(f"Connection failed: {e}")
-            return 1
+    except requests.RequestException as e:
+        if json_mode:
+            _output_json({"success": False, "error": str(e)})
+        else:
+            print(f"Connection failed: {e}")
+        return 1
 
 
 def cmd_voiceclone_delete(args) -> int:
@@ -10366,7 +10258,7 @@ def main() -> int:
     say_parser.add_argument("--exaggeration", type=float, help="Voice exaggeration (0-1, Chatterbox)")
     say_parser.add_argument("--cfg", type=float, help="CFG weight (0-1, Chatterbox)")
     say_parser.add_argument("--backend", type=str, help="TTS backend (chatterbox, qwen-base-1.7b, qwen-design, qwen-custom)")
-    say_parser.add_argument("--instruct", type=str, help="Emotion/style instruction (qwen-design, qwen-custom)")
+    say_parser.add_argument("--instructions", type=str, help="Free-text style instructions passed to the TTS shim (e.g. 'speak warmly')")
     say_parser.add_argument("--language", type=str, default="English", help="Language (default: English)")
     say_parser.add_argument("--stream", action="store_true", help="Use streaming mode (if backend supports)")
     say_parser.add_argument("--notify", type=str, metavar="SESSION", help="Also notify this session (sends message as input)")

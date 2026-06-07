@@ -13,10 +13,12 @@ Use `say(text)` to speak. Audio routes to the portal browser if connected, other
 
 ```
 say(text="Working on that now")
-say(text="[chuckle] Well, that didn't work")
 ```
 
-Available tags: `[laugh]`, `[sigh]`, `[chuckle]`, `[hmm]`, `[excited]`
+Speak plain text by default. If a "TTS backend capabilities" section appears
+below, the configured voice model supports the inline tags or style
+instructions it describes — use them sparingly. Without that section, never
+emit bracketed tags; plain backends would strip or mispronounce them.
 
 ## Listening
 

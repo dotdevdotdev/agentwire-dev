@@ -481,3 +481,102 @@ class TestApiRestrictedMode:
         resp = await client.delete("/api/artifacts/.hidden-file")
         # Regex rejects filenames starting with dot
         assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# /transcribe under the default tier
+# ---------------------------------------------------------------------------
+
+
+class TestTranscribeDefaultTier:
+    async def test_transcribe_returns_501_without_custom_stt(self, portal_client):
+        client, server = portal_client
+        # Empty config → stt.backend "default" → NoSTT
+        from agentwire.stt import NoSTT
+        server.stt = NoSTT()
+
+        resp = await client.post("/transcribe", data=b"fakeaudio")
+        assert resp.status == 501
+        body = await resp.json()
+        assert "browser speech recognition" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# /api/voice-status
+# ---------------------------------------------------------------------------
+
+
+class TestVoiceStatus:
+    async def test_default_tier_shape(self, portal_client):
+        client, server = portal_client
+        resp = await client.get("/api/voice-status")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["stt"] == {"backend": "default", "url": None, "available": True}
+        assert body["tts"]["backend"] == "default"
+        assert body["tts"]["available"] is True
+        assert body["instant_mode"] is True
+        assert body["corrections"] == {}
+
+    async def test_custom_tier_probes_shim(self, portal_client):
+        client, server = portal_client
+        server.config.stt.backend = "custom"
+        server.config.stt.url = "http://localhost:8101"
+        server.config.stt.corrections = {"team up": "tmux"}
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+
+        async def fake_probe(base_url, path, timeout=1.5):
+            if path == "/health":
+                return {"status": "ok"}
+            if path == "/capabilities":
+                return {"tool_prompt": "supports [laugh]", "voices": ["amy"]}
+            return None
+
+        server._probe_shim = fake_probe
+
+        resp = await client.get("/api/voice-status")
+        body = await resp.json()
+        assert body["instant_mode"] is False
+        assert body["stt"]["available"] is True
+        assert body["tts"]["tool_prompt"] == "supports [laugh]"
+        assert body["tts"]["voices"] == ["amy"]
+        assert body["corrections"] == {"team up": "tmux"}
+
+    async def test_unreachable_shim_reports_unavailable(self, portal_client):
+        client, server = portal_client
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:9999"
+
+        async def fake_probe(base_url, path, timeout=1.5):
+            return None
+
+        server._probe_shim = fake_probe
+
+        resp = await client.get("/api/voice-status")
+        body = await resp.json()
+        assert body["tts"]["available"] is False
+        assert "tool_prompt" not in body["tts"]
+
+    async def test_result_is_cached(self, portal_client):
+        client, server = portal_client
+        calls = []
+
+        async def fake_probe(base_url, path, timeout=1.5):
+            calls.append(path)
+            return {"status": "ok"}
+
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+        server._probe_shim = fake_probe
+
+        await client.get("/api/voice-status")
+        first = len(calls)
+        await client.get("/api/voice-status")
+        assert len(calls) == first  # second hit served from cache
+
+    async def test_api_voices_empty_in_default_tier(self, portal_client):
+        client, server = portal_client
+        resp = await client.get("/api/voices")
+        assert resp.status == 200
+        assert await resp.json() == []

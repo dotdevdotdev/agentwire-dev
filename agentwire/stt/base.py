@@ -24,3 +24,19 @@ class STTBackend(ABC):
             Transcribed text, or None if transcription failed.
         """
         ...
+
+
+class NoSTT(STTBackend):
+    """Sentinel backend for the default tier.
+
+    Speech recognition happens in the browser (Chrome SpeechRecognition);
+    the server has no transcription role. ``/transcribe`` returns 501 when
+    this backend is active.
+    """
+
+    @property
+    def name(self) -> str:
+        return "none"
+
+    async def transcribe(self, audio_path: Path) -> str | None:
+        return None

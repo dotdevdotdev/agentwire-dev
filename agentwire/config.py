@@ -94,23 +94,51 @@ class ProjectsConfig:
         self.dir = _expand_path(self.dir) or Path.home() / "projects"
 
 
+_VOICE_BACKENDS = ("default", "custom")
+
+_VOICE_BACKEND_MIGRATION_HINT = (
+    "Use 'default' (browser speech in the portal + OS voice fallback, zero setup) "
+    "or 'custom' with url: pointing at your shim. "
+    "See docs/wiki/voice/shim-contract.md."
+)
+
+
+def _validate_voice_backend(kind: str, backend: str, url: str | None) -> None:
+    """Shared default|custom validation for STT/TTS config sections."""
+    if backend not in _VOICE_BACKENDS:
+        raise ValueError(
+            f"{kind}.backend '{backend}' is not valid. {_VOICE_BACKEND_MIGRATION_HINT}"
+        )
+    if backend == "custom" and not url:
+        raise ValueError(
+            f"{kind}.backend 'custom' requires {kind}.url pointing at your shim. "
+            f"{_VOICE_BACKEND_MIGRATION_HINT}"
+        )
+
+
 @dataclass
 class TTSConfig:
-    """Text-to-speech configuration."""
+    """Text-to-speech configuration.
 
-    backend: str = "chatterbox"  # chatterbox | runpod | none
-    url: str | None = None  # TTS server URL (required for chatterbox backend)
+    Two tiers: ``default`` speaks via the browser (speechSynthesis) with an
+    OS-voice fallback when no browser is connected; ``custom`` POSTs to any
+    HTTP shim implementing the contract (docs/wiki/voice/shim-contract.md).
+    """
+
+    backend: str = "default"  # default | custom
+    url: str | None = None  # shim URL (required for custom backend)
     default_voice: str = "default"
     voices_dir: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "voices")
-    # Voice parameters (applies to all backends)
+    # Session-default knobs; sent to custom shims inside `options`
     exaggeration: float = 0.5
     cfg_weight: float = 0.5
-    # RunPod serverless configuration
-    runpod_endpoint_id: str = ""
-    runpod_api_key: str = ""
-    runpod_timeout: int = 120
+    # Capability pass-through envelope — opaque to agentwire, verbatim to the shim
+    instructions: str = ""
+    options: dict = field(default_factory=dict)
+    timeout: int = 60
 
     def __post_init__(self):
+        _validate_voice_backend("tts", self.backend, self.url)
         self.voices_dir = _expand_path(self.voices_dir) or Path.home() / ".agentwire" / "voices"
 
 
@@ -118,15 +146,26 @@ class TTSConfig:
 class STTConfig:
     """Speech-to-text configuration.
 
-    STT uses a remote server. Configure url to enable.
+    Two tiers: ``default`` transcribes in the browser (Chrome SpeechRecognition);
+    ``custom`` uploads audio to any HTTP shim implementing the contract
+    (docs/wiki/voice/shim-contract.md).
     """
 
-    url: str | None = None  # STT server URL (e.g., http://localhost:8100)
+    backend: str = "default"  # default | custom
+    url: str | None = None  # shim URL (required for custom backend)
     timeout: int = 30
     # Milliseconds of silence to prepend to the decoded audio before sending
-    # to the STT backend. Default 0 — moonshine doesn't need it. Set to ~300
-    # if your backend (e.g. older faster-whisper builds) clips the first syllable.
+    # to the STT shim. Default 0 — moonshine doesn't need it. Set to ~300
+    # if your shim (e.g. older faster-whisper builds) clips the first syllable.
     silence_prepend_ms: int = 0
+    # User extensions to the portal's jargon-correction map (spoken → written)
+    corrections: dict = field(default_factory=dict)
+    # Capability pass-through envelope — opaque to agentwire, verbatim to the shim
+    instructions: str = ""
+    options: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        _validate_voice_backend("stt", self.backend, self.url)
 
 
 @dataclass
@@ -179,7 +218,7 @@ class ArtifactsConfig:
 class PortalConfig:
     """Portal connection settings (for remote machines)."""
 
-    url: str = "https://localhost:8765"  # URL to reach the portal
+    url: str = "http://localhost:8765"  # URL to reach the portal (https when SSL certs exist)
 
 
 @dataclass
@@ -240,7 +279,7 @@ class CustomServiceConfig:
 class ServicesConfig:
     """Where each service runs in the network."""
 
-    portal: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8765, scheme="https"))
+    portal: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8765))
     tts: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8100, scheme="http"))
     custom: list = field(default_factory=list)  # list[CustomServiceConfig]
 
@@ -462,20 +501,27 @@ def _dict_to_config(data: dict) -> Config:
     # TTS
     tts_data = data.get("tts", {})
     tts = TTSConfig(
-        backend=tts_data.get("backend", "chatterbox"),
+        backend=tts_data.get("backend", "default"),
         url=tts_data.get("url"),
         default_voice=tts_data.get("default_voice", "default"),
-        runpod_endpoint_id=tts_data.get("runpod_endpoint_id", ""),
-        runpod_api_key=tts_data.get("runpod_api_key", ""),
-        runpod_timeout=tts_data.get("runpod_timeout", 120),
+        voices_dir=tts_data.get("voices_dir", Path.home() / ".agentwire" / "voices"),
+        exaggeration=tts_data.get("exaggeration", 0.5),
+        cfg_weight=tts_data.get("cfg_weight", 0.5),
+        instructions=tts_data.get("instructions", ""),
+        options=tts_data.get("options") or {},
+        timeout=tts_data.get("timeout", 60),
     )
 
     # STT
     stt_data = data.get("stt", {})
     stt = STTConfig(
+        backend=stt_data.get("backend", "default"),
         url=stt_data.get("url"),
         timeout=stt_data.get("timeout", 30),
         silence_prepend_ms=int(stt_data.get("silence_prepend_ms", 0)),
+        corrections=stt_data.get("corrections") or {},
+        instructions=stt_data.get("instructions", ""),
+        options=stt_data.get("options") or {},
     )
 
     # Agent
@@ -505,10 +551,12 @@ def _dict_to_config(data: dict) -> Config:
         max_size_mb=artifacts_data.get("max_size_mb", 10),
     )
 
-    # Portal
+    # Portal — scheme follows SSL state unless explicitly configured, so a
+    # fresh no-cert install gets working http URLs out of the box
+    portal_scheme = "https" if ssl.enabled else "http"
     portal_data = data.get("portal", {})
     portal = PortalConfig(
-        url=portal_data.get("url", "https://localhost:8765"),
+        url=portal_data.get("url", f"{portal_scheme}://localhost:8765"),
     )
 
     # Services (network service locations)
@@ -519,7 +567,7 @@ def _dict_to_config(data: dict) -> Config:
         machine=portal_service_data.get("machine"),
         port=portal_service_data.get("port", 8765),
         health_endpoint=portal_service_data.get("health_endpoint", "/health"),
-        scheme=portal_service_data.get("scheme", "https"),  # Portal defaults to HTTPS
+        scheme=portal_service_data.get("scheme", portal_scheme),
     )
     tts_service = ServiceConfig(
         machine=tts_service_data.get("machine"),

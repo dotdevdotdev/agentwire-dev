@@ -2,9 +2,9 @@
 
 > Living document. Update this, don't create new versions.
 
-AgentWire supports multiple self-hosted TTS backends, each with different capabilities and hardware requirements. All backends share the same server (`agentwire tts start`) and can be hot-swapped at runtime without restarting.
+The bundled TTS server is the **reference implementation of the [shim contract](shim-contract.md)** — multiple engines, each with different capabilities and hardware requirements, all behind one server (`agentwire tts start`) with runtime hot-swap.
 
-> **Alternative:** [RunPod serverless TTS](runpod-tts.md) requires no GPU hardware and scales to zero when idle.
+> **Zero-setup alternative:** `tts.backend: default` needs none of this — the browser speaks via speechSynthesis (robotic but instant). This page is the `custom` tier upgrade.
 
 ## Quick Start
 
@@ -121,11 +121,14 @@ export PATH=/usr/local/cuda-12.4/bin:$PATH
 
 ```yaml
 tts:
-  backend: "zonos-transformer"  # runpod | kokoro | chatterbox | chatterbox-streaming | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design | zonos-transformer | zonos-hybrid
+  backend: "custom"
   url: "http://localhost:8100"
   default_voice: "default"
-
-  # Chatterbox-specific (ignored by other backends)
+  options:
+    backend: zonos-transformer  # engine: kokoro | chatterbox | chatterbox-streaming
+                                # | qwen-base-0.6b | qwen-base-1.7b | qwen-custom
+                                # | qwen-design | zonos-transformer | zonos-hybrid
+  # Chatterbox-style knobs (ignored by other engines)
   exaggeration: 0.5
   cfg_weight: 0.5
 ```

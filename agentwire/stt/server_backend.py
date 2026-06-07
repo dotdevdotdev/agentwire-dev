@@ -19,18 +19,28 @@ class STTServerBackend(STTBackend):
         """Return the backend name."""
         return "STTServer"
 
-    def __init__(self, url: str, timeout: int = 30):
-        """Initialize with server URL.
+    def __init__(
+        self,
+        url: str,
+        timeout: int = 30,
+        instructions: str = "",
+        options: dict | None = None,
+    ):
+        """Initialize with shim URL.
 
         Args:
-            url: STT server URL (e.g., http://localhost:8101)
+            url: STT shim URL (e.g., http://localhost:8101)
             timeout: Request timeout in seconds
+            instructions: Contract envelope free-text, passed verbatim to the shim
+            options: Contract envelope JSON, passed verbatim to the shim
         """
         self.url = url.rstrip("/")
         self.timeout = timeout
+        self.instructions = instructions
+        self.options = options or {}
 
     async def transcribe(self, audio_path: Path) -> str:
-        """Transcribe audio file via STT server.
+        """Transcribe audio file via the STT shim.
 
         Args:
             audio_path: Path to audio file (wav format)
@@ -42,13 +52,33 @@ class STTServerBackend(STTBackend):
         with open(audio_path, "rb") as f:
             audio_data = f.read()
 
-        # Build multipart form data
+        # Build multipart form data: the audio plus the optional contract
+        # envelope fields (instructions / options) as extra form parts
         boundary = "----AgentWireBoundary"
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
-            f"Content-Type: audio/wav\r\n\r\n"
-        ).encode() + audio_data + f"\r\n--{boundary}--\r\n".encode()
+        parts = [
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+                f"Content-Type: audio/wav\r\n\r\n"
+            ).encode() + audio_data
+        ]
+        if self.instructions:
+            parts.append(
+                (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="instructions"\r\n\r\n'
+                    f"{self.instructions}"
+                ).encode()
+            )
+        if self.options:
+            parts.append(
+                (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="options"\r\n\r\n'
+                    f"{json.dumps(self.options)}"
+                ).encode()
+            )
+        body = b"\r\n".join(parts) + f"\r\n--{boundary}--\r\n".encode()
 
         headers = {
             "Content-Type": f"multipart/form-data; boundary={boundary}",

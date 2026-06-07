@@ -110,7 +110,7 @@ tasks:
        Outbound channels (send-only)            Voice / audio (primitives)
        ───────────────────────────────          ──────────────────────────
        Email (Resend), Quo / OpenPhone SMS      TTS server (port 8100)
-                  ▲                              STT server (whisperkit / faster-whisper)
+                  ▲                              STT shim (moonshine / faster-whisper)
                   │                                       │            ▲
                   │ outbound notifications                ▼            │
        ┌─────────────────────────────────────────────────────────────────┐

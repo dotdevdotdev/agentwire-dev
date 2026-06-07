@@ -109,7 +109,7 @@ class TestLoadConfig:
     def test_from_yaml(self, config_file):
         config = load_config(config_file)
         assert config.server.port == 8765
-        assert config.tts.backend == "none"
+        assert config.tts.backend == "default"
 
     def test_ssl_not_enabled_without_certs(self, config_file):
         config = load_config(config_file)
@@ -135,3 +135,71 @@ class TestLoadConfig:
         config = load_config(path)
         assert config.session.default_role == "custom"
         assert config.session.inject_soul is False
+
+
+# --- two-tier voice backends ---
+
+class TestVoiceBackends:
+    def test_empty_config_is_default_tier(self, tmp_path):
+        config = load_config(tmp_path / "nonexistent.yaml")
+        assert config.tts.backend == "default"
+        assert config.stt.backend == "default"
+
+    def test_custom_tts_requires_url(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"tts": {"backend": "custom"}}))
+        with pytest.raises(ValueError, match="tts.backend 'custom' requires tts.url"):
+            load_config(path)
+
+    def test_custom_stt_requires_url(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"stt": {"backend": "custom"}}))
+        with pytest.raises(ValueError, match="stt.backend 'custom' requires stt.url"):
+            load_config(path)
+
+    def test_old_tts_vocabulary_raises(self, tmp_path):
+        for old in ("chatterbox", "runpod", "none", "kokoro"):
+            path = tmp_path / f"config-{old}.yaml"
+            path.write_text(yaml.dump({"tts": {"backend": old}}))
+            with pytest.raises(ValueError, match="is not valid"):
+                load_config(path)
+
+    def test_custom_with_url_parses(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "tts": {"backend": "custom", "url": "http://localhost:8100",
+                    "instructions": "speak warmly", "options": {"backend": "kokoro"}},
+            "stt": {"backend": "custom", "url": "http://localhost:8101",
+                    "corrections": {"team up": "tmux"}},
+        }))
+        config = load_config(path)
+        assert config.tts.backend == "custom"
+        assert config.tts.instructions == "speak warmly"
+        assert config.tts.options == {"backend": "kokoro"}
+        assert config.stt.corrections == {"team up": "tmux"}
+
+    def test_env_override_backend(self, tmp_path, monkeypatch, clean_env):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"tts": {"backend": "default"}}))
+        monkeypatch.setenv("AGENTWIRE_TTS__BACKEND", "custom")
+        monkeypatch.setenv("AGENTWIRE_TTS__URL", "http://localhost:9999")
+        config = load_config(path)
+        assert config.tts.backend == "custom"
+        assert config.tts.url == "http://localhost:9999"
+
+    def test_runpod_fields_gone(self, tmp_path):
+        config = load_config(tmp_path / "nonexistent.yaml")
+        assert not hasattr(config.tts, "runpod_endpoint_id")
+        assert not hasattr(config.tts, "runpod_api_key")
+
+    def test_portal_scheme_follows_ssl_state(self, tmp_path):
+        # No certs → http everywhere
+        config = load_config(tmp_path / "nonexistent.yaml")
+        assert config.portal.url.startswith("http://")
+        assert config.services.portal.scheme == "http"
+
+    def test_explicit_portal_scheme_wins(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"services": {"portal": {"scheme": "https"}}}))
+        config = load_config(path)
+        assert config.services.portal.scheme == "https"

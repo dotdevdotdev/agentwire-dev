@@ -44,13 +44,14 @@ def get_portal_url() -> str:
     Resolution order:
     1. AGENTWIRE_PORTAL_URL env var
     2. ~/.agentwire/config.yaml → portal.url
-    3. Default: https://localhost:8765
+    3. Default: localhost:8765 (https when SSL certs exist, else http)
     """
     # 1. Environment variable
     if url := os.environ.get("AGENTWIRE_PORTAL_URL"):
         return url
 
     # 2. Config file
+    config = {}
     config_path = Path.home() / ".agentwire" / "config.yaml"
     if config_path.exists():
         try:
@@ -62,8 +63,16 @@ def get_portal_url() -> str:
         except Exception as e:
             logger.warning(f"Failed to read config: {e}")
 
-    # 3. Default
-    return "https://localhost:8765"
+    # 3. Default — https only when server.ssl cert/key are configured AND
+    # exist (mirrors the typed config's scheme logic)
+    ssl_cfg = config.get("server", {}).get("ssl", {})
+    cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
+    enabled = bool(
+        cert and key
+        and Path(os.path.expanduser(cert)).exists()
+        and Path(os.path.expanduser(key)).exists()
+    )
+    return f"{'https' if enabled else 'http'}://localhost:8765"
 
 
 # =============================================================================
@@ -642,21 +651,51 @@ def machine_remove(machine_id: str) -> str:
 # =============================================================================
 
 
-@mcp.tool()
-def say(text: str, session: str | None = None, voice: str | None = None) -> str:
-    """Speak text via TTS.
+def _fetch_tts_tool_prompt() -> str:
+    """Fetch the shim-authored `tool_prompt` from a custom TTS shim's
+    GET /capabilities (fail-soft, 1.5s).
 
-    Audio routes to the browser portal if connected, otherwise local speakers.
-
-    Args:
-        text: Text to speak
-        session: Target session for audio routing (optional)
-        voice: Voice name to use (optional, uses default if not specified)
-
-    Returns:
-        Success message or error description.
+    This is the producer end of the capability loop: the shim dev writes a
+    prompt describing what their model accepts (emotion tags, style
+    instructions), and we append it verbatim to the `say` tooldef so agents
+    actually emit those tags. Tooldefs load at MCP-server start — a shim swap
+    needs a session restart to re-teach running agents.
     """
-    # Quick TTS health check — fail fast if server is unreachable
+    try:
+        import json as _json
+        import urllib.request
+
+        from .config import load_config as _load_typed
+
+        cfg = _load_typed()
+        if cfg.tts.backend != "custom" or not cfg.tts.url:
+            return ""
+        with urllib.request.urlopen(f"{cfg.tts.url.rstrip('/')}/capabilities", timeout=1.5) as r:
+            return (_json.load(r).get("tool_prompt") or "").strip()
+    except Exception:
+        return ""  # fail-soft: stock description
+
+
+_TTS_TOOL_PROMPT = _fetch_tts_tool_prompt()
+
+_SAY_DESCRIPTION = (
+    "Speak text via TTS.\n\n"
+    "Audio routes to the browser portal if connected, otherwise local speakers.\n\n"
+    "Args:\n"
+    "    text: Text to speak\n"
+    "    session: Target session for audio routing (optional)\n"
+    "    voice: Voice name to use (optional, uses default if not specified)\n\n"
+    "Returns:\n"
+    "    Success message or error description."
+    + (f"\n\nBackend capabilities:\n{_TTS_TOOL_PROMPT}" if _TTS_TOOL_PROMPT else "")
+)
+
+
+@mcp.tool(description=_SAY_DESCRIPTION)
+def say(text: str, session: str | None = None, voice: str | None = None) -> str:
+    """Speak text via TTS — description built dynamically in _SAY_DESCRIPTION."""
+    # Quick TTS health check — fail fast if a custom shim is unreachable.
+    # Default tier has no server dependency (browser/OS voice), nothing to probe.
     try:
         import urllib.request
 
@@ -664,7 +703,7 @@ def say(text: str, session: str | None = None, voice: str | None = None) -> str:
         from .network import NetworkContext
 
         cfg = load_typed_config()
-        if cfg.tts.backend not in ("runpod", "none"):
+        if cfg.tts.backend == "custom":
             ctx = NetworkContext.from_config()
             tts_url = ctx.get_service_url("tts", use_tunnel=True)
             urllib.request.urlopen(f"{tts_url}/health", timeout=3)

@@ -13,6 +13,8 @@ import { sessionIcons } from './icon-manager.js';
 import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
 import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
 import { ansiToHtml } from './utils/ansi.js';
+import * as browserStt from './voice/browser-stt.js';
+import { voicePromptWrap } from './voice/prompt.js';
 
 const NARROW_VIEWPORT = '(max-width: 768px)';
 function pickTerminalFontSize() {
@@ -676,6 +678,9 @@ export class SessionWindow {
                             if (msg.type === 'audio' && msg.data) {
                                 desktop._playAudio(msg.data, this.sessionId);
                                 return;
+                            } else if (msg.type === 'speak_text' && msg.text) {
+                                desktop._speakText(msg.text, this.sessionId);
+                                return;
                             } else if (msg.type === 'tts_start') {
                                 return;
                             } else if (msg.type === 'session_unlocked' || msg.type === 'session_locked') {
@@ -716,6 +721,8 @@ export class SessionWindow {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'audio' && msg.data) {
                         desktop._playAudio(msg.data, this.sessionId);
+                    } else if (msg.type === 'speak_text' && msg.text) {
+                        desktop._speakText(msg.text, this.sessionId);
                     } else if (msg.type === 'output' && msg.data) {
                         // Convert ANSI to HTML and display
                         this.outputEl.innerHTML = ansiToHtml(msg.data);
@@ -980,6 +987,7 @@ export class SessionWindow {
         // PTT now lives in the WinBox titlebar (next to the activity indicator),
         // not inside the container. Create it and prepend to .wb-title.
         if (!this.winbox) return;
+        this._pttContainer = container;  // transcript bar mounts here (default tier)
         const titleEl = this.winbox.window.querySelector('.wb-title');
         if (!titleEl) return;
 
@@ -1036,8 +1044,34 @@ export class SessionWindow {
         document.addEventListener('keyup', this._pttKeyHandler);
     }
 
+    _usesBrowserStt() {
+        return desktop.voiceStatus?.stt?.backend !== 'custom';
+    }
+
     async _startRecording() {
         if (this.pttState !== 'idle') return;
+
+        // Default tier: recognition happens in the browser (Chrome),
+        // transcript lands in an edit-before-send bar — no audio upload.
+        if (this._usesBrowserStt()) {
+            if (!browserStt.isSupported()) {
+                this._updateStatus('error', 'Browser voice input requires Chrome (or set stt.backend: custom)');
+                return;
+            }
+            this._sttCancelled = false;
+            const ok = browserStt.start({
+                onFinal: (text) => {
+                    this._setPTTState('idle');
+                    if (!this._sttCancelled && text) this._showTranscriptBar(text);
+                },
+                onError: (err) => {
+                    this._updateStatus('error', `Speech recognition failed: ${err}`);
+                    this._setPTTState('idle');
+                },
+            }, desktop.voiceStatus?.corrections || {});
+            if (ok) this._setPTTState('recording');
+            return;
+        }
 
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1077,18 +1111,95 @@ export class SessionWindow {
     }
 
     _stopRecording() {
-        if (this.pttState !== 'recording' || !this.mediaRecorder) return;
+        if (this.pttState !== 'recording') return;
 
+        if (this._usesBrowserStt()) {
+            this._setPTTState('processing');
+            browserStt.stop();  // onFinal fires from onend
+            return;
+        }
+
+        if (!this.mediaRecorder) return;
         this._setPTTState('processing');
         this.mediaRecorder.stop();
     }
 
     _cancelRecording() {
-        if (!this.mediaRecorder) return;
+        if (this._usesBrowserStt()) {
+            this._sttCancelled = true;
+            browserStt.stop();
+            this._setPTTState('idle');
+            return;
+        }
 
+        if (!this.mediaRecorder) return;
         this.audioChunks = [];
         this.mediaRecorder.stop();
         this._setPTTState('idle');
+    }
+
+    /**
+     * Edit-before-send transcript bar (default STT tier). Browser recognition
+     * misses jargon occasionally — a glance catches it before it ships.
+     * Mounted as the first child of the window content (never WinBox internals).
+     */
+    _showTranscriptBar(text) {
+        this._removeTranscriptBar();
+        if (!this._pttContainer) return;
+
+        const bar = document.createElement('div');
+        bar.className = 'wb-transcript-bar';
+        bar.innerHTML = `
+            <input type="text" class="wb-transcript-input" />
+            <button class="wb-transcript-send" title="Send (Enter)">➤</button>
+            <button class="wb-transcript-dismiss" title="Discard (Esc)">✕</button>
+        `;
+        const input = bar.querySelector('.wb-transcript-input');
+        input.value = text;
+
+        const send = () => {
+            const value = input.value.trim();
+            this._removeTranscriptBar();
+            if (value) this._sendVoiceText(value);
+        };
+        bar.querySelector('.wb-transcript-send').addEventListener('click', send);
+        bar.querySelector('.wb-transcript-dismiss').addEventListener('click', () => this._removeTranscriptBar());
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); send(); }
+            else if (e.key === 'Escape') { e.preventDefault(); this._removeTranscriptBar(); }
+            e.stopPropagation();  // don't leak keys to the terminal
+        });
+
+        this._pttContainer.insertBefore(bar, this._pttContainer.firstChild);
+        this._transcriptBar = bar;
+        input.focus();
+        input.select();
+    }
+
+    _removeTranscriptBar() {
+        this._transcriptBar?.remove();
+        this._transcriptBar = null;
+        // Hand focus back to the terminal so typing resumes naturally
+        this.terminal?.focus();
+    }
+
+    async _sendVoiceText(text) {
+        try {
+            const sendRes = await apiFetch(`/send/${this.sessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: voicePromptWrap(text) }),
+            });
+            const sendData = await sendRes.json();
+            if (sendData.error) throw new Error(sendData.error);
+            this._updateStatus('connected', `Sent: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
+            setTimeout(() => {
+                if (this.pttState === 'idle') this._updateStatus('connected', 'Connected');
+            }, 3000);
+        } catch (err) {
+            console.error('[SessionWindow] Voice send failed:', err);
+            this._updateStatus('error', err.message || 'Voice input failed');
+        }
     }
 
     async _processRecording(blob) {
@@ -1116,28 +1227,7 @@ export class SessionWindow {
             }
 
             // Step 2: Send to session with voice prompt hint
-            const sendRes = await apiFetch(`/send/${this.sessionId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: `[User said: '${text}' - respond using MCP tool: agentwire_say(text="your message")]`
-                }),
-            });
-
-            const sendData = await sendRes.json();
-
-            if (sendData.error) {
-                throw new Error(sendData.error);
-            }
-
-            this._updateStatus('connected', `Sent: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
-
-            // Reset status after a moment
-            setTimeout(() => {
-                if (this.pttState === 'idle') {
-                    this._updateStatus('connected', 'Connected');
-                }
-            }, 3000);
+            await this._sendVoiceText(text);
 
         } catch (err) {
             console.error('[SessionWindow] PTT processing failed:', err);

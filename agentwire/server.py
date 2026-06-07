@@ -208,6 +208,7 @@ class AgentWireServer:
         self.app.router.add_post("/api/session/{name:.+}/restart-service", self.api_restart_service)
         self.app.router.add_post("/api/session/{name:.+}/broadcast", self.api_session_broadcast)
         self.app.router.add_get("/api/voices", self.api_voices)
+        self.app.router.add_get("/api/voice-status", self.api_voice_status)
         self.app.router.add_delete("/api/sessions/{name:.+}", self.api_close_session)
         self.app.router.add_get("/api/machines", self.api_machines)
         self.app.router.add_post("/api/machines", self.api_add_machine)
@@ -288,9 +289,6 @@ class AgentWireServer:
                 "url": self.config.tts.url,
                 "exaggeration": self.config.tts.exaggeration,
                 "cfg_weight": self.config.tts.cfg_weight,
-                "runpod_endpoint_id": self.config.tts.runpod_endpoint_id,
-                "runpod_api_key": self.config.tts.runpod_api_key,
-                "runpod_timeout": self.config.tts.runpod_timeout,
             },
             "stt": {
                 "url": self.config.stt.url,
@@ -311,13 +309,7 @@ class AgentWireServer:
         from .agents import get_agent_backend
         from .stt import get_stt_backend
 
-        try:
-            self.stt = get_stt_backend(self.config)
-        except ValueError as e:
-            logger.warning(f"STT backend not available: {e}")
-            from .stt import NoSTT
-
-            self.stt = NoSTT()
+        self.stt = get_stt_backend(self.config)
         self.agent = get_agent_backend(config_dict)
 
         # Create HTTP session for TTS server calls
@@ -331,27 +323,42 @@ class AgentWireServer:
         if self._http_session:
             await self._http_session.close()
 
+    def _tts_envelope_options(self, exaggeration: float, cfg_weight: float) -> dict:
+        """Session knobs + config pass-through, merged into the shim `options`."""
+        return {
+            "exaggeration": exaggeration,
+            "cfg_weight": cfg_weight,
+            **self.config.tts.options,
+        }
+
     async def _tts_generate(
         self,
         text: str,
-        voice: str,
-        exaggeration: float = 0.5,
-        cfg_weight: float = 0.5,
+        voice: str | None,
+        instructions: str | None = None,
+        options: dict | None = None,
     ) -> bytes | None:
-        """Generate TTS audio via HTTP call to TTS server."""
+        """Generate TTS audio via the custom shim (contract envelope).
+
+        Core fields: text (+ optional voice). `instructions` and `options`
+        pass through verbatim — only the shim interprets them.
+        """
         if not self._http_session:
             return None
+
+        payload: dict = {"text": text}
+        if voice:
+            payload["voice"] = voice
+        if instructions:
+            payload["instructions"] = instructions
+        if options:
+            payload["options"] = options
 
         try:
             async with self._http_session.post(
                 f"{self.config.tts.url}/tts",
-                json={
-                    "text": text,
-                    "voice": voice,
-                    "exaggeration": exaggeration,
-                    "cfg_weight": cfg_weight,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=self.config.tts.timeout),
             ) as resp:
                 if resp.status == 200:
                     return await resp.read()
@@ -630,8 +637,65 @@ class AgentWireServer:
                 return False
 
     async def _get_voices(self) -> list[str]:
-        """Get available TTS voices."""
+        """Get available TTS voices (custom shim only — the default tier's
+        voices live in the browser via speechSynthesis.getVoices())."""
+        if self.config.tts.backend != "custom":
+            return []
         return await self._tts_get_voices()
+
+    async def _probe_shim(self, base_url: str, path: str, timeout: float = 1.5):
+        """GET a shim endpoint, returning parsed JSON or None (fail-soft)."""
+        if not self._http_session or not base_url:
+            return None
+        try:
+            async with self._http_session.get(
+                f"{base_url.rstrip('/')}{path}",
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception:
+            pass
+        return None
+
+    async def api_voice_status(self, request: web.Request) -> web.Response:
+        """GET /api/voice-status — voice tier + availability for the frontend.
+
+        The portal uses this to pick its input/output paths (browser speech
+        vs audio upload) and to render the instant-mode banner. Custom-shim
+        probes are cached for 30s.
+        """
+        now = time.time()
+        cached = getattr(self, "_voice_status_cache", None)
+        if cached and now - cached[0] < 30:
+            return web.json_response(cached[1])
+
+        stt_cfg, tts_cfg = self.config.stt, self.config.tts
+
+        stt: dict = {"backend": stt_cfg.backend, "url": stt_cfg.url, "available": True}
+        if stt_cfg.backend == "custom":
+            stt["available"] = await self._probe_shim(stt_cfg.url, "/health") is not None
+
+        tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
+        if tts_cfg.backend == "custom":
+            health = await self._probe_shim(tts_cfg.url, "/health")
+            tts["available"] = health is not None
+            if tts["available"]:
+                caps = await self._probe_shim(tts_cfg.url, "/capabilities")
+                if caps:
+                    if caps.get("tool_prompt"):
+                        tts["tool_prompt"] = caps["tool_prompt"]
+                    if caps.get("voices") is not None:
+                        tts["voices"] = caps["voices"]
+
+        status = {
+            "stt": stt,
+            "tts": tts,
+            "corrections": stt_cfg.corrections,
+            "instant_mode": stt_cfg.backend == "default" and tts_cfg.backend == "default",
+        }
+        self._voice_status_cache = (now, status)
+        return web.json_response(status)
 
     async def run_agentwire_cmd(self, args: list[str], json_output: bool = True) -> tuple[bool, dict]:
         """Run agentwire CLI command and parse output.
@@ -3233,9 +3297,10 @@ class AgentWireServer:
             # Return flattened key/value pairs from current config
             items = [
                 {"key": "TTS Backend", "value": self.config.tts.backend},
-                {"key": "TTS URL", "value": self.config.tts.url},
+                {"key": "TTS URL", "value": self.config.tts.url or "—"},
                 {"key": "TTS Default Voice", "value": self.config.tts.default_voice},
-                {"key": "STT URL", "value": self.config.stt.url},
+                {"key": "STT Backend", "value": self.config.stt.backend},
+                {"key": "STT URL", "value": self.config.stt.url or "—"},
                 {"key": "Server Host", "value": self.config.server.host},
                 {"key": "Server Port", "value": self.config.server.port},
                 {"key": "SSL Enabled", "value": self.config.server.ssl.enabled},
@@ -3254,25 +3319,28 @@ class AgentWireServer:
             try:
                 content = config_path.read_text()
                 # SECURITY: Redact sensitive fields before returning
-                # Matches patterns like: runpod_api_key: "secret" or auth_token: secret
+                # Matches patterns like: api_key: "secret" or auth_token: secret
                 content = re.sub(
-                    r'((?:runpod_api_key|auth_token)\s*:\s*)["\']?[^"\'\n]+["\']?',
+                    r'((?:api_key|auth_token)\s*:\s*)["\']?[^"\'\n]+["\']?',
                     r'\1"[REDACTED]"',
                     content
                 )
             except IOError as e:
                 return web.json_response({"error": str(e)})
         else:
-            # Return default config template
+            # Return default config template (instant mode: browser voice, loopback)
             content = """# AgentWire Configuration
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8765
 
 tts:
-  backend: "chatterbox"
-  url: "http://localhost:8100"
-  default_voice: "default"
+  backend: "default"  # browser voice — or "custom" with url: pointing at your shim
+  # url: "http://localhost:8100"
+
+stt:
+  backend: "default"  # browser speech recognition — or "custom" with url:
+  # url: "http://localhost:8101"
 
 projects:
   dir: "~/projects"
@@ -3447,7 +3515,21 @@ projects:
         startup) and resamples to 16 kHz mono PCM16 — the canonical input
         shape for Whisper- and Moonshine-class models. Optionally prepends a
         configurable amount of silence (``stt.silence_prepend_ms``, default 0).
+
+        Custom tier only — in the default tier, recognition happens in the
+        browser and this endpoint answers 501.
         """
+        from .stt import NoSTT
+
+        if isinstance(self.stt, NoSTT):
+            return web.json_response(
+                {
+                    "error": "Server-side STT is not configured (stt.backend: default — "
+                    "the portal uses browser speech recognition). Set stt.backend: "
+                    "custom with a url to enable audio-upload transcription."
+                },
+                status=501,
+            )
         try:
             reader = await request.multipart()
             audio_field = await reader.next()
@@ -3769,6 +3851,18 @@ projects:
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
 
+            # Default tier: play via OS voice — no shim, no WAV round-trip
+            if self.config.tts.backend == "default":
+                from .utils.speech import strip_speech_tags
+
+                ok = await self._os_say(strip_speech_tags(text))
+                if ok:
+                    return web.json_response({"success": True, "tier": "default"})
+                return web.json_response(
+                    {"success": False, "error": "OS voice playback failed"},
+                    status=500,
+                )
+
             # Get session config for defaults
             session_config = self._get_session_config(name)
             if voice is None:
@@ -3778,12 +3872,12 @@ projects:
 
             logger.info(f"[{name}] Local TTS: {text[:50]}... (voice={voice})")
 
-            # Generate audio via TTS server HTTP call
+            # Generate audio via TTS shim HTTP call
             audio_data = await self._tts_generate(
                 text=text,
                 voice=voice,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
+                instructions=self.config.tts.instructions or None,
+                options=self._tts_envelope_options(exaggeration, cfg_weight),
             )
 
             if not audio_data:
@@ -4909,6 +5003,38 @@ projects:
             logger.error(f"Notify API failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _os_say(self, text: str) -> bool:
+        """Speak via the OS voice (macOS `say` / Linux `espeak`).
+
+        Default-tier fallback when no browser is connected anywhere.
+        Absolute path on macOS — users commonly shadow `say` in PATH with an
+        `agentwire say` wrapper, which would recurse into a fork bomb.
+        """
+        import sys as _sys
+
+        binary = "/usr/bin/say" if _sys.platform == "darwin" else "espeak"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, text,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            return proc.returncode == 0
+        except FileNotFoundError:
+            logger.warning(f"OS voice binary not found: {binary}")
+            return False
+
+    async def _speak_no_clients_fallback(self, text: str) -> bool:
+        """No browser connected: default tier falls back to the OS voice so
+        notifications stay audible; custom tier returns False (the CLI's
+        smart routing handles local playback there)."""
+        if self.config.tts.backend == "default":
+            from .utils.speech import strip_speech_tags
+
+            return await self._os_say(strip_speech_tags(text))
+        return False
+
     async def speak(self, session_name: str, text: str) -> bool:
         """Generate TTS audio and send to session clients.
 
@@ -4941,17 +5067,37 @@ projects:
             ]
             if not fanout_targets:
                 logger.warning(f"[{session_name}] speak: no dashboard listeners anywhere")
-                return False
+                return await self._speak_no_clients_fallback(text)
             logger.info(
                 f"[{session_name}] speak: no own clients, fanning out to "
                 f"{len(fanout_targets)} session(s): {[s.name for s in fanout_targets]}"
             )
         elif not session.clients:
             logger.warning(f"[{session_name}] speak: no session clients connected")
-            return False
+            return await self._speak_no_clients_fallback(text)
         else:
             logger.info(f"[{session_name}] speak: {len(session.clients)} session client(s)")
 
+        # Notify clients TTS is starting (session clients + dashboard)
+        tts_start_msg = {"type": "tts_start", "session": session_name, "text": text}
+        broadcast_to = fanout_targets if fanout_targets else [session]
+        for target in broadcast_to:
+            await self._broadcast(target, tts_start_msg)
+
+        # Default tier: browsers synthesize speech themselves — broadcast the
+        # text (tags stripped) instead of generated audio. No voice resolution,
+        # no chunking (speechSynthesis handles long text in the client).
+        if self.config.tts.backend == "default":
+            from .utils.speech import strip_speech_tags
+
+            clean = strip_speech_tags(text)
+            speak_msg = {"type": "speak_text", "session": session_name, "text": clean}
+            for target in broadcast_to:
+                await self._broadcast(target, speak_msg)
+            await self.broadcast_dashboard("audio_playing", {"session": session_name})
+            return True
+
+        # Custom tier: generate audio via the shim and broadcast WAV chunks.
         # Get voice settings (resolve "random" once per session)
         voice = session.config.voice or self.config.tts.default_voice
         if voice.lower() == "random":
@@ -4960,12 +5106,6 @@ projects:
             logger.info(f"[{session_name}] Resolved random voice to: {voice}")
         exaggeration = session.config.exaggeration
         cfg_weight = session.config.cfg_weight
-
-        # Notify clients TTS is starting (session clients + dashboard)
-        tts_start_msg = {"type": "tts_start", "session": session_name, "text": text}
-        broadcast_to = fanout_targets if fanout_targets else [session]
-        for target in broadcast_to:
-            await self._broadcast(target, tts_start_msg)
         await self.broadcast_dashboard("tts_start", {"session": session_name, "text": text})
 
         try:
@@ -4979,8 +5119,8 @@ projects:
                 audio_data = await self._tts_generate(
                     text=chunk,
                     voice=voice,
-                    exaggeration=exaggeration,
-                    cfg_weight=cfg_weight,
+                    instructions=self.config.tts.instructions or None,
+                    options=self._tts_envelope_options(exaggeration, cfg_weight),
                 )
 
                 if audio_data:

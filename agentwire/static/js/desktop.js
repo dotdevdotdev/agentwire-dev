@@ -30,6 +30,8 @@ import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
 import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppressor.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
+import * as browserStt from './voice/browser-stt.js';
+import { voicePromptWrap } from './voice/prompt.js';
 
 // State - track open windows
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
@@ -53,6 +55,12 @@ const elements = {
     connectionStatus: document.getElementById('connectionStatus'),
     globalPtt: document.getElementById('sidebarGlobalPtt'),
     voiceIndicator: document.getElementById('sidebarVoiceIndicator'),
+    transcriptBar: document.getElementById('sidebarTranscriptBar'),
+    transcriptInput: document.getElementById('sidebarTranscriptInput'),
+    transcriptSend: document.getElementById('sidebarTranscriptSend'),
+    transcriptDismiss: document.getElementById('sidebarTranscriptDismiss'),
+    instantBanner: document.getElementById('instantModeBanner'),
+    instantBannerDismiss: document.getElementById('instantModeBannerDismiss'),
 };
 
 // Initialize
@@ -130,6 +138,11 @@ async function init() {
 
     await desktop.connect();
     updateConnectionStatus(true);
+
+    // Voice tier drives PTT path selection + the instant-mode banner
+    desktop.on('voice_status', renderInstantModeBanner);
+    await desktop.fetchVoiceStatus();
+    setupTranscriptBar();
 
     // Initialize tile manager for drag-to-tile window management
     tileManager.init();
@@ -802,8 +815,35 @@ function setupGlobalPtt() {
     });
 }
 
+function usesBrowserStt() {
+    return desktop.voiceStatus?.stt?.backend !== 'custom';
+}
+
+let globalSttCancelled = false;
+
 async function startGlobalRecording() {
     if (globalPttState !== 'idle') return;
+
+    // Default tier: browser speech recognition → edit-before-send bar
+    if (usesBrowserStt()) {
+        if (!browserStt.isSupported()) {
+            console.warn('[GlobalPTT] SpeechRecognition unsupported — use Chrome or set stt.backend: custom');
+            const icon = elements.globalPtt?.querySelector('.ptt-icon');
+            if (icon) icon.textContent = '🚫';
+            elements.globalPtt.title = 'Browser voice input requires Chrome (or set stt.backend: custom)';
+            return;
+        }
+        globalSttCancelled = false;
+        const ok = browserStt.start({
+            onFinal: (text) => {
+                updateGlobalPttState('idle');
+                if (!globalSttCancelled && text) showGlobalTranscript(text);
+            },
+            onError: () => updateGlobalPttState('idle'),
+        }, desktop.voiceStatus?.corrections || {});
+        if (ok) updateGlobalPttState('recording');
+        return;
+    }
 
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -831,9 +871,27 @@ async function startGlobalRecording() {
 }
 
 function stopGlobalRecording() {
-    if (globalPttState !== 'recording' || !globalMediaRecorder) return;
+    if (globalPttState !== 'recording') return;
+    if (usesBrowserStt()) {
+        updateGlobalPttState('processing');
+        browserStt.stop();  // onFinal fires from onend
+        return;
+    }
+    if (!globalMediaRecorder) return;
     globalMediaRecorder.stop();
     updateGlobalPttState('processing');
+}
+
+async function sendGlobalVoiceText(text) {
+    try {
+        await apiFetch('/send/agentwire', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: voicePromptWrap(text) })
+        });
+    } catch (err) {
+        console.error('[GlobalPTT] Send failed:', err);
+    }
 }
 
 async function processGlobalRecording() {
@@ -850,19 +908,63 @@ async function processGlobalRecording() {
         const { text } = await transcribeRes.json();
 
         if (text && text.trim()) {
-            // Send to agentwire session with voice prompt
-            await apiFetch('/send/agentwire', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: `[User said: '${text}' - respond using MCP tool: agentwire_say(text="your message")]`
-                })
-            });
+            await sendGlobalVoiceText(text.trim());
         }
     } catch (err) {
         console.error('[GlobalPTT] Processing failed:', err);
     } finally {
         updateGlobalPttState('idle');
+    }
+}
+
+// --- Edit-before-send transcript bar (default STT tier) ---
+
+function setupTranscriptBar() {
+    const { transcriptBar, transcriptInput, transcriptSend, transcriptDismiss } = elements;
+    if (!transcriptBar) return;
+
+    const send = () => {
+        const value = transcriptInput.value.trim();
+        hideGlobalTranscript();
+        if (value) sendGlobalVoiceText(value);
+    };
+    transcriptSend.addEventListener('click', send);
+    transcriptDismiss.addEventListener('click', hideGlobalTranscript);
+    transcriptInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); send(); }
+        else if (e.key === 'Escape') { e.preventDefault(); hideGlobalTranscript(); }
+        e.stopPropagation();
+    });
+}
+
+function showGlobalTranscript(text) {
+    const { transcriptBar, transcriptInput } = elements;
+    if (!transcriptBar) return;
+    transcriptBar.hidden = false;
+    transcriptInput.value = text;
+    transcriptInput.focus();
+    transcriptInput.select();
+}
+
+function hideGlobalTranscript() {
+    if (elements.transcriptBar) elements.transcriptBar.hidden = true;
+}
+
+// --- Instant-mode banner ---
+
+const INSTANT_BANNER_DISMISSED_KEY = 'aw-instant-banner-dismissed';
+
+function renderInstantModeBanner(status) {
+    const banner = elements.instantBanner;
+    if (!banner) return;
+    const dismissed = localStorage.getItem(INSTANT_BANNER_DISMISSED_KEY) === '1';
+    banner.hidden = !(status?.instant_mode && !dismissed);
+    if (!banner.dataset.wired) {
+        banner.dataset.wired = '1';
+        elements.instantBannerDismiss?.addEventListener('click', () => {
+            localStorage.setItem(INSTANT_BANNER_DISMISSED_KEY, '1');
+            banner.hidden = true;
+        });
     }
 }
 

@@ -321,7 +321,8 @@ class TestGetPortalUrl:
     def test_default_fallback(self, tmp_path, monkeypatch):
         monkeypatch.delenv("AGENTWIRE_PORTAL_URL", raising=False)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert self.fn() == "https://localhost:8765"
+        # No SSL certs configured -> http default (instant-mode model)
+        assert self.fn() == "http://localhost:8765"
 
     def test_env_var_priority_over_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AGENTWIRE_PORTAL_URL", "https://env:1111")
@@ -338,7 +339,8 @@ class TestGetPortalUrl:
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text(": : : bad yaml {{{{")
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert self.fn() == "https://localhost:8765"
+        # Malformed config + no certs -> http default
+        assert self.fn() == "http://localhost:8765"
 
 
 # ---------------------------------------------------------------------------
@@ -455,3 +457,49 @@ class TestPortalRequest:
         self.fn("POST", "/api/path")
         _, kwargs = mock_post.call_args
         assert kwargs["json"] == {}
+
+
+class TestTtsToolPromptFetch:
+    def test_default_tier_returns_empty(self, tmp_path, monkeypatch):
+        from agentwire import mcp_server
+        from agentwire.config import load_config
+        cfg = load_config(tmp_path / "nonexistent.yaml")  # default tier
+        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
+        assert mcp_server._fetch_tts_tool_prompt() == ""
+
+    def test_unreachable_shim_fails_soft(self, tmp_path, monkeypatch):
+        from agentwire import mcp_server
+        from agentwire.config import load_config
+        cfg = load_config(tmp_path / "nonexistent.yaml")
+        cfg.tts.backend = "custom"
+        cfg.tts.url = "http://localhost:1"  # nothing listens here
+        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
+        assert mcp_server._fetch_tts_tool_prompt() == ""
+
+    def test_custom_shim_prompt_returned(self, tmp_path, monkeypatch):
+        import io
+        from agentwire import mcp_server
+        from agentwire.config import load_config
+        cfg = load_config(tmp_path / "nonexistent.yaml")
+        cfg.tts.backend = "custom"
+        cfg.tts.url = "http://localhost:8100"
+        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
+
+        class FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda url, timeout=None: FakeResp(b'{"tool_prompt": "Use [laugh] sparingly."}'),
+        )
+        assert mcp_server._fetch_tts_tool_prompt() == "Use [laugh] sparingly."
+
+    def test_say_description_carries_core_text(self):
+        from agentwire import mcp_server
+        assert "Speak text via TTS" in mcp_server._SAY_DESCRIPTION
+        # With no shim prompt at import time, no capabilities section
+        if not mcp_server._TTS_TOOL_PROMPT:
+            assert "Backend capabilities" not in mcp_server._SAY_DESCRIPTION

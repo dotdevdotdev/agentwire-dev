@@ -159,37 +159,30 @@ agentwire say "Hello world"
 ```yaml
 # ~/.agentwire/config.yaml
 tts:
-  backend: "kokoro"  # kokoro | chatterbox | chatterbox-streaming
-                     # | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design
-                     # | zonos-transformer | zonos-hybrid | runpod
+  backend: "custom"          # default = browser/OS voice (no service to debug)
   url: "http://localhost:8100"
   default_voice: "default"
+  options:
+    backend: kokoro          # bundled-shim engine: kokoro | chatterbox |
+                             # chatterbox-streaming | qwen-* | zonos-*
 ```
 
-See `../tts/runpod-tts.md` for RunPod setup or `../tts/tts-self-hosted.md` for the full backend matrix.
+See `../voice/shim-contract.md` for the contract and `../voice/tts-self-hosted.md` for the full engine matrix.
 
 ### STT (Speech-to-Text) Not Working
 
-**Requirements (macOS):**
+**Default tier** (`stt.backend: default`): recognition happens in the browser.
+Use Chrome (the blessed browser); check the mic permission and that the page
+is on localhost or HTTPS (secure context). There is no server component.
 
-- Apple Silicon (M1/M2/M3)
-- whisperkit-cli installed: `brew install whisperkit-cli`
-- WhisperKit model downloaded
-
-**Check STT server:**
+**Custom tier** (`stt.backend: custom`): the portal uploads audio to your shim.
 
 ```bash
-agentwire stt status
-```
+agentwire stt status     # probe the shim
 
-**Test transcription manually:**
-
-```bash
-# Record a test file
+# Test transcription manually
 ffmpeg -f avfoundation -i ":default" -t 5 -ar 16000 -ac 1 test.wav
-
-# Transcribe
-whisperkit-cli transcribe --audio-path test.wav
+curl -s -X POST http://localhost:8101/transcribe -F file=@test.wav
 ```
 
 ### Microphone Not Detected

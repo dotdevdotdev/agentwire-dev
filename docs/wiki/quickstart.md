@@ -90,25 +90,31 @@ To kill it: `agentwire kill -s hello`.
 
 ## 3. Voice in / voice out
 
-Start the portal and the TTS server:
+Voice works out of the box — no certs, no GPU, no model downloads:
 
 ```bash
-agentwire generate-certs              # one-time, self-signed TLS for localhost
-agentwire portal start                # serves on https://localhost:8765
-agentwire tts start                   # default backend (kokoro on CPU, fallback for any machine)
+agentwire portal start                # serves on http://127.0.0.1:8765
 ```
 
-Open `https://localhost:8765` in any browser on your network — phone, tablet, laptop. Accept the self-signed cert warning. You'll see the desktop UI with a list of sessions.
+Open `http://127.0.0.1:8765` in **Chrome** (the blessed browser for instant
+mode). To **send your voice into a session**, hold the PTT button (or
+Ctrl+Space), speak, release — Chrome's built-in speech recognition
+transcribes, the transcript lands in an edit-before-send bar, Enter sends it.
 
-To **send your voice into a session**, click the PTT button (or hold Ctrl+Space), speak, release. The transcription is dispatched to whatever session is the current target.
-
-To **hear the agent talk back**, the agent calls `agentwire say` (it's an MCP tool: `say`). With the portal open, audio streams to your browser. With no browser connected, audio plays on the local machine's speakers. Test it:
+To **hear the agent talk back**, the agent calls the `say` MCP tool. In
+instant mode the browser speaks it (speechSynthesis — robotic but immediate);
+with no browser open, the OS voice (`say`/`espeak`) plays it. Test it:
 
 ```bash
 agentwire say "Hello, this is your agent speaking."
 ```
 
-For the rest of the TTS story (custom voices, alternative backends, RunPod for cloud GPUs), see [TTS](tts/tts-self-hosted.md).
+**Upgrading:** real cloned voices, Whisper-grade transcription, and
+phone-from-anywhere come from pointing `tts:`/`stt:` at a custom shim — the
+bundled servers (`agentwire tts start` / `agentwire stt start`) are reference
+implementations. See the [shim contract](voice/shim-contract.md) and
+[self-hosted TTS](voice/tts-self-hosted.md). Phone/LAN access additionally
+needs `server.host: 0.0.0.0` + certs + the portal token (see SECURITY.md).
 
 ---
 

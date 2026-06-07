@@ -139,7 +139,7 @@ class QwenCustomEngine(TTSEngine):
             text=request.text,
             language=request.language,
             speaker=speaker,
-            instruct=request.instruct,  # Optional emotion/style
+            instruct=request.instructions,  # Optional emotion/style
         )
 
         # Convert to tensor
@@ -167,7 +167,7 @@ class QwenCustomEngine(TTSEngine):
             text=request.text,
             language=request.language,
             speaker=speaker,
-            instruct=request.instruct,
+            instruct=request.instructions,
             non_streaming_mode=False,
         )
 
