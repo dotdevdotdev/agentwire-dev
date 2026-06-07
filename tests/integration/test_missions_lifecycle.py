@@ -24,6 +24,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "STATE_DIR", state_dir)
     monkeypatch.setattr(state, "LAST_TICK_PATH", state_dir / "last_tick.json")
     monkeypatch.setattr(state, "ROUTED_REVIEWS_PATH", state_dir / "routed_reviews.json")
+    monkeypatch.setattr(state, "NOTIFIED_PRS_PATH", state_dir / "notified_prs.json")
     monkeypatch.setattr(feedback_router, "SUMMARIES_DIR", tmp_path / "summaries")
     locks_dir = tmp_path / "locks"
     locks_dir.mkdir()
@@ -71,6 +72,7 @@ def world(monkeypatch, isolated_state):
         comments_made: list = []
         killed_sessions: list = []
         removed_worktrees: list = []
+        notifications_sent: list = []
 
     w = World()
     w.issues = []
@@ -81,6 +83,7 @@ def world(monkeypatch, isolated_state):
     w.comments_made = []
     w.killed_sessions = []
     w.removed_worktrees = []
+    w.notifications_sent = []
 
     # github wrappers
     monkeypatch.setattr(github, "list_issues", lambda repo, **kw: list(w.issues))
@@ -112,6 +115,12 @@ def world(monkeypatch, isolated_state):
     def _remove(path):
         w.removed_worktrees.append(path)
     monkeypatch.setattr(gc, "remove_worktree", _remove)
+
+    # PR-opened email — record instead of sending
+    def _notify(repo_name, issue, pr):
+        w.notifications_sent.append({"repo": repo_name, "issue": issue.number, "pr": pr.number})
+        return True, "stub-message-id"
+    monkeypatch.setattr(feedback_router, "_notify_pr_ready", _notify)
 
     return w
 
@@ -150,9 +159,11 @@ def test_full_lifecycle(world, cfg, projects_dir):
         url="https://github.com/o/r/pull/42", is_draft=True,
     )
 
-    # Run feedback router with no new reviews yet → noop
+    # Run feedback router with no new reviews yet → sends the one-time
+    # "draft PR ready" email, no review routing
     report = feedback_router.route_feedback(cfg)
-    assert report.routed == []
+    assert [r["event"] for r in report.routed] == ["pr_opened_email"]
+    assert world.notifications_sent == [{"repo": "owner/agentwire-dev", "issue": 195, "pr": 42}]
     assert any("no new reviews" in s.get("reason", "") for s in report.skipped)
 
     # --- 3. Reviewer leaves a review ---
@@ -205,6 +216,7 @@ def test_full_lifecycle(world, cfg, projects_dir):
     assert wt in world.removed_worktrees
     # State for this PR was cleared
     assert state.last_routed_review(42) is None
+    assert not state.is_pr_notified(42)
     # The session is no longer active
     assert expected_session not in world.active_sessions
 

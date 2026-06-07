@@ -22,6 +22,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "STATE_DIR", state_dir)
     monkeypatch.setattr(state, "LAST_TICK_PATH", state_dir / "last_tick.json")
     monkeypatch.setattr(state, "ROUTED_REVIEWS_PATH", state_dir / "routed_reviews.json")
+    monkeypatch.setattr(state, "NOTIFIED_PRS_PATH", state_dir / "notified_prs.json")
     monkeypatch.setattr(feedback_router, "SUMMARIES_DIR", summaries_dir)
 
 
@@ -63,6 +64,7 @@ def stub_world(monkeypatch, cfg):
         created_sessions: list = []
         prompts_sent: list = []
         wait_ready_response: bool = True
+        notifications_sent: list = []
         # gc side-effects
         kill_calls: list = []
         remove_calls: list = []
@@ -80,6 +82,7 @@ def stub_world(monkeypatch, cfg):
     w.labels_created = []
     w.created_sessions = []
     w.prompts_sent = []
+    w.notifications_sent = []
     w.kill_calls = []
     w.remove_calls = []
 
@@ -144,6 +147,13 @@ def stub_world(monkeypatch, cfg):
         w.remove_calls.append(path)
 
     monkeypatch.setattr(gc, "remove_worktree", _remove)
+
+    # Never send real PR-opened emails from tests
+    def _stub_notify(repo_name, issue, pr):
+        w.notifications_sent.append({"repo": repo_name, "issue": issue.number, "pr": pr.number})
+        return True, "stub-message-id"
+
+    monkeypatch.setattr(feedback_router, "_notify_pr_ready", _stub_notify)
 
     return w
 
@@ -357,6 +367,7 @@ class TestRouteFeedback:
         assert data["routed"] == [] and data["skipped"] == []
 
     def test_router_with_new_review(self, stub_world, capsys):
+        state.mark_pr_notified(42)  # pretend PR already announced
         stub_world.active_sessions = ["agentwire-dev/mission-195-foo-bar"]
         stub_world.prs_by_branch[("owner/agentwire-dev", "mission-195-foo-bar")] = PullRequest(
             number=42, state="OPEN", head_ref="mission-195-foo-bar",
