@@ -208,6 +208,7 @@ class AgentWireServer:
         self.app.router.add_post("/api/session/{name:.+}/restart-service", self.api_restart_service)
         self.app.router.add_post("/api/session/{name:.+}/broadcast", self.api_session_broadcast)
         self.app.router.add_get("/api/voices", self.api_voices)
+        self.app.router.add_get("/api/voice-status", self.api_voice_status)
         self.app.router.add_delete("/api/sessions/{name:.+}", self.api_close_session)
         self.app.router.add_get("/api/machines", self.api_machines)
         self.app.router.add_post("/api/machines", self.api_add_machine)
@@ -636,8 +637,65 @@ class AgentWireServer:
                 return False
 
     async def _get_voices(self) -> list[str]:
-        """Get available TTS voices."""
+        """Get available TTS voices (custom shim only — the default tier's
+        voices live in the browser via speechSynthesis.getVoices())."""
+        if self.config.tts.backend != "custom":
+            return []
         return await self._tts_get_voices()
+
+    async def _probe_shim(self, base_url: str, path: str, timeout: float = 1.5):
+        """GET a shim endpoint, returning parsed JSON or None (fail-soft)."""
+        if not self._http_session or not base_url:
+            return None
+        try:
+            async with self._http_session.get(
+                f"{base_url.rstrip('/')}{path}",
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception:
+            pass
+        return None
+
+    async def api_voice_status(self, request: web.Request) -> web.Response:
+        """GET /api/voice-status — voice tier + availability for the frontend.
+
+        The portal uses this to pick its input/output paths (browser speech
+        vs audio upload) and to render the instant-mode banner. Custom-shim
+        probes are cached for 30s.
+        """
+        now = time.time()
+        cached = getattr(self, "_voice_status_cache", None)
+        if cached and now - cached[0] < 30:
+            return web.json_response(cached[1])
+
+        stt_cfg, tts_cfg = self.config.stt, self.config.tts
+
+        stt: dict = {"backend": stt_cfg.backend, "url": stt_cfg.url, "available": True}
+        if stt_cfg.backend == "custom":
+            stt["available"] = await self._probe_shim(stt_cfg.url, "/health") is not None
+
+        tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
+        if tts_cfg.backend == "custom":
+            health = await self._probe_shim(tts_cfg.url, "/health")
+            tts["available"] = health is not None
+            if tts["available"]:
+                caps = await self._probe_shim(tts_cfg.url, "/capabilities")
+                if caps:
+                    if caps.get("tool_prompt"):
+                        tts["tool_prompt"] = caps["tool_prompt"]
+                    if caps.get("voices") is not None:
+                        tts["voices"] = caps["voices"]
+
+        status = {
+            "stt": stt,
+            "tts": tts,
+            "corrections": stt_cfg.corrections,
+            "instant_mode": stt_cfg.backend == "default" and tts_cfg.backend == "default",
+        }
+        self._voice_status_cache = (now, status)
+        return web.json_response(status)
 
     async def run_agentwire_cmd(self, args: list[str], json_output: bool = True) -> tuple[bool, dict]:
         """Run agentwire CLI command and parse output.
@@ -3239,9 +3297,10 @@ class AgentWireServer:
             # Return flattened key/value pairs from current config
             items = [
                 {"key": "TTS Backend", "value": self.config.tts.backend},
-                {"key": "TTS URL", "value": self.config.tts.url},
+                {"key": "TTS URL", "value": self.config.tts.url or "—"},
                 {"key": "TTS Default Voice", "value": self.config.tts.default_voice},
-                {"key": "STT URL", "value": self.config.stt.url},
+                {"key": "STT Backend", "value": self.config.stt.backend},
+                {"key": "STT URL", "value": self.config.stt.url or "—"},
                 {"key": "Server Host", "value": self.config.server.host},
                 {"key": "Server Port", "value": self.config.server.port},
                 {"key": "SSL Enabled", "value": self.config.server.ssl.enabled},
