@@ -54,12 +54,12 @@ agentwire generate-certs
 
 # Run
 agentwire portal start
-# Open https://localhost:8765
+# Open http://127.0.0.1:8765 in Chrome — voice works immediately
 ```
 
 **Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code
 
-**Honest setup time:** ~15 minutes for the full experience (certs, tmux config, voice). Text-only portal works immediately; TTS needs a GPU or RunPod account.
+**Honest setup time:** under a minute to a working voice portal (instant mode: Chrome speech in, browser voice out — robotic but real). ~15 minutes for the full experience: cloned voices via a self-hosted TTS shim, Whisper-grade transcription, phone-from-anywhere (certs + token).
 
 > **Network & trust model.** The portal binds `127.0.0.1` by default — local only. To use it from your phone, set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`. Non-loopback binds require an auth token (auto-generated on first start; print it with `agentwire portal token`) — your phone prompts for it once, then remembers it. Origin checks reject cross-site browser requests on every bind. Still: keep it on a trusted LAN. Never port-forward it or run it on a public-facing VPS — for internet access use Cloudflare Tunnel + Zero Trust. Details in [SECURITY.md](SECURITY.md).
 
@@ -111,13 +111,13 @@ agentwire new -s myproject -p ~/projects/myproject
 ```
 
 **2. Open the portal:**
-Visit `https://localhost:8765` on your phone/tablet/laptop
+Visit `http://127.0.0.1:8765` in Chrome (or your phone/tablet with LAN access configured)
 
 **3. Talk:**
-Hold the mic button, speak your request, release. The transcription goes to Claude Code.
+Hold the mic button, speak your request, release. In instant mode the transcript appears for a quick glance — Enter sends it to Claude Code.
 
 **4. Listen:**
-Agent responses are spoken back via TTS (optional, requires GPU for self-hosted or RunPod).
+Agent responses are spoken back — browser voice out of the box, or a real TTS model behind a custom shim.
 
 ---
 
@@ -166,29 +166,33 @@ All decisions logged for audit trails.
 
 ## Voice Configuration
 
-**TTS (Text-to-Speech):** Requires GPU. Options:
+Two tiers, both sides:
+
+**`default` (zero setup, what a fresh install gets):** Chrome speech recognition in, browser speechSynthesis out, OS voice when no browser is connected. No GPU, no models, no certs.
+
+**`custom` (bring your own model):** any HTTP shim implementing the [voice shim contract](docs/wiki/voice/shim-contract.md) — ~30 lines wraps anything (Deepgram, whisper.cpp, an expressive emotion-tag model). The bundled servers are reference shims:
 
 ```yaml
 # ~/.agentwire/config.yaml
 tts:
-  backend: "runpod"  # Recommended: RunPod serverless
-  runpod_endpoint_id: "your-endpoint"
-  runpod_api_key: "your-key"
+  backend: "custom"
+  url: "http://localhost:8100"     # agentwire tts start (kokoro CPU / chatterbox GPU / qwen / zonos)
+  options:
+    backend: kokoro
+stt:
+  backend: "custom"
+  url: "http://localhost:8101"     # agentwire stt start (moonshine ONNX, CPU)
 ```
 
-Or self-host with `agentwire tts start` on a GPU machine.
-
-**STT (Speech-to-Text):** Runs locally via `agentwire stt start`. Uses Moonshine ONNX by default (fast CPU inference, no GPU required), with automatic fallback to faster-whisper. Configure backend in `config.yaml`.
+Shims can declare capabilities (emotion tags, style instructions) via `GET /capabilities` — agentwire injects the shim's `tool_prompt` into the agent's `say` tooldef so agents actually use them.
 
 <details>
-<summary><strong>Disable voice (text-only mode)</strong></summary>
+<summary><strong>Prefer text-only?</strong></summary>
 
-```yaml
-tts:
-  backend: "none"
-```
-
-You can still use the portal for session management without voice.
+Instant mode already needs nothing — just don't press the mic. Agent speech
+plays through the browser; mute the tab (or close it — with no browser
+connected the OS voice handles notifications, which you can silence at the
+system level).
 
 </details>
 
@@ -266,7 +270,7 @@ Quick links:
 - [Troubleshooting](docs/wiki/internals/troubleshooting.md)
 - [Portal API](docs/wiki/internals/portal.md)
 - [Remote Machines](docs/wiki/deployment/remote-machines.md)
-- [RunPod TTS](docs/wiki/tts/runpod-tts.md) · [Self-Hosted TTS](docs/wiki/tts/tts-self-hosted.md)
+- [Voice Shim Contract](docs/wiki/voice/shim-contract.md) · [Self-Hosted TTS](docs/wiki/voice/tts-self-hosted.md)
 - [Safety Hooks](docs/wiki/internals/damage-control.md)
 
 ---

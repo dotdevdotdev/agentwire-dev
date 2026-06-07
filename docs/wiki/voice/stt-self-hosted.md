@@ -112,12 +112,10 @@ places**. Symptom: push-to-talk produces no transcription and no visible error
    most commonly `ModuleNotFoundError: No module named 'fastapi'` (or `moonshine_onnx`)
    because the project `.venv` is missing the STT deps. The crash is only visible in
    the tmux pane; the session stays alive at a shell prompt, so it *looks* started.
-2. The portal builds `self.stt` once at startup via `get_stt_backend()`. With `:8101`
-   unreachable, `STTServerBackend.is_available()` is `False`, so it **falls back to
-   `WhisperKitSTT`** — which usually has no model installed.
-3. Every `/transcribe` then returns `{"error": ...}` with HTTP **200**, so the browser
-   shows nothing. The only trace is `ERROR agentwire.stt.whisperkit: WhisperKit model
-   not found` in the portal log.
+2. The portal builds `self.stt` once at startup via `get_stt_backend()`. With
+   `stt.backend: custom`, every `/transcribe` then fails at request time with an
+   STT-server error (there is no silent fallback — WhisperKit was removed with
+   the two-tier model).
 
 **Diagnose (in order):**
 
@@ -125,12 +123,12 @@ places**. Symptom: push-to-talk produces no transcription and no visible error
 agentwire doctor                                   # now prints [!!] Stt if :8101 is down
 curl -s http://localhost:8101/health               # {"status":"ok","model":{"backend":"moonshine",...}}
 tmux capture-pane -pt agentwire-stt -S -50         # shows the real crash (missing import)
-tmux capture-pane -pt agentwire-portal -S -200 | grep -i stt   # "Using STT server" vs "falling back to WhisperKit"
+tmux capture-pane -pt agentwire-portal -S -200 | grep -i stt   # "Using STT shim" + backend name
 ```
 
 The portal log line at startup is the tell:
-- `Using STT server at http://localhost:8101` + `STT backend: STTServerBackend` → good.
-- `STT server ... not reachable — falling back to WhisperKit` → the server is down.
+- `Using STT shim at http://localhost:8101` + `STT backend: STTServerBackend` → good.
+- `STT backend: default (browser speech recognition)` → custom tier isn't configured.
 
 **Fix:** install the STT deps into the venv the server actually launches with
 (`.venv/bin/python`), restart the server, then **restart the portal** (it only picks
@@ -142,10 +140,9 @@ agentwire stt stop && agentwire stt start              # wait for "Moonshine ONN
 agentwire portal restart --dev                         # re-runs get_stt_backend()
 ```
 
-**Why it stayed hidden:** `stt.url` is configured but the server was down, and the
-WhisperKit fallback only errors at *request* time, not at startup. As of this writing
-the fallback now logs a loud, actionable warning and `agentwire doctor` health-checks
-`:8101` — so next time it surfaces immediately instead of silently degrading.
+**Why it stayed hidden historically:** an old WhisperKit fallback swallowed the
+failure until request time. The two-tier model removed it — custom tier now fails
+loudly at request time, and `agentwire doctor` health-checks `:8101` directly.
 
 **Tablet note:** if the mic does nothing on a phone/tablet *before* audio ever reaches
 `/transcribe`, that's a different problem — a non-secure browser context. Reaching the
