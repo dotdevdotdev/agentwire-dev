@@ -166,8 +166,16 @@ class TestInjectSoul:
         assert inject_soul(["agentwire", "soul"]) == ["agentwire", "soul"]
 
     def test_soul_lens_variant_excluded(self):
-        # Council lens roles (#213) self-exclude the standard soul
+        # soul-* variants self-exclude the standard soul
         assert inject_soul(["soul-brain"]) == ["soul-brain"]
+
+    def test_council_roles_excluded(self):
+        # Council sessions (#213) carry their own lens/synthesis voice
+        assert inject_soul(["council-member", "council-brain"]) == [
+            "council-member",
+            "council-brain",
+        ]
+        assert inject_soul(["council-orchestrator"]) == ["council-orchestrator"]
 
     def test_no_soul_flag(self):
         assert inject_soul(["agentwire"], no_soul=True) == ["agentwire"]
@@ -192,6 +200,34 @@ class TestInjectSoul:
         role = parse_role_file(path)
         assert role is not None
         assert role.name == "soul"
+        assert role.tools == []
+        assert role.disallowed_tools == []
+        assert role.instructions
+
+
+# --- council roles (#213) ---
+
+COUNCIL_ROLES = [
+    "council-member",
+    "council-brain",
+    "council-conscience",
+    "council-gut",
+    "council-critic",
+    "council-historian",
+    "council-devils-advocate",
+    "council-orchestrator",
+]
+
+
+class TestCouncilRoles:
+    @pytest.mark.parametrize("name", COUNCIL_ROLES)
+    def test_bundled_council_role_is_pure_personality(self, name):
+        """Council roles must parse and not widen or narrow tool permissions."""
+        path = discover_role(name)
+        assert path is not None, f"Bundled role '{name}' not found"
+        role = parse_role_file(path)
+        assert role is not None
+        assert role.name == name
         assert role.tools == []
         assert role.disallowed_tools == []
         assert role.instructions

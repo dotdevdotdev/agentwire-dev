@@ -177,6 +177,8 @@ def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool
     - config disables it globally (session.inject_soul: false)
     - any role is headless (HEADLESS_ROLES — executors stay voiceless)
     - a soul role is already present (soul itself, or a soul-* lens variant)
+    - a council-* role is present (council sessions carry their own lens or
+      synthesis voice — the standard soul would blur the decomposition)
 
     Args:
         role_names: Resolved role names for the session
@@ -192,7 +194,7 @@ def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool
         return role_names
     if any(r in HEADLESS_ROLES for r in role_names):
         return role_names
-    if any(r == "soul" or r.startswith("soul-") for r in role_names):
+    if any(r == "soul" or r.startswith("soul-") or r.startswith("council-") for r in role_names):
         return role_names
     return [*role_names, "soul"]
 

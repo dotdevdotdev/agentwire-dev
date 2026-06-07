@@ -112,6 +112,10 @@ LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wik
 
 First-class auto-dispatcher subsystem (sibling to Sessions/Tasks/Workflows): stateless launchd orchestrators tick the GitHub issue board, spawn worker sessions in isolated worktrees for `agent-ready` issues, route PR-review feedback back to the worker, and reap on PR close. CLI under `agentwire mission ...`, 8 MCP `mission_*` tools. Full reference: [`docs/wiki/missions.md`](docs/wiki/missions.md).
 
+## Council
+
+Multi-soul orchestrator sitting: `agentwire-council` fans prompts out to lens sessions (`council-brain`, `council-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/prompts/`; the orchestrator collects and synthesizes with attribution. The standard `soul` role self-excludes from any `council-*` session. CLI under `agentwire council ...`, 5 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](docs/wiki/council.md).
+
 ## Reference Skills
 
 Reference detail lives in skills under `.claude/skills/` — invoke as needed:
