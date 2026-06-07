@@ -47,15 +47,17 @@ See `docs/wiki/internals/damage-control.md` for details.
 
 ## Trust Model
 
-The portal **has no built-in authentication or authorization on its API endpoints**. This is by design — agentwire is built for a local-network trust perimeter, typically running on the same machine as the operator's browser or behind a Cloudflare Tunnel + Zero Trust gate (see `docs/wiki/deployment/remote-access.md`).
+The portal enforces two security layers in-process:
 
-The portal binds `127.0.0.1:8765` by default — local only. Phone/tablet access requires explicitly opting into LAN exposure with `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`; everything below applies the moment you do.
+1. **Origin validation (always on).** Every state-changing request (POST/PUT/DELETE/PATCH) and WebSocket upgrade with an `Origin` header must match the portal's own origin, a localhost equivalent, or an entry in `server.allowed_origins` (exact `scheme://host[:port]` strings — needed when fronting with Cloudflare Tunnel, where the browser's origin is the tunnel domain). Mismatches get a 403 and a log line. Requests without an Origin header (curl, CLI, scripts) pass — CSRF is a browser vector. This protects loopback-only users from malicious pages firing cross-site requests at `localhost:8765`.
+
+2. **Bearer-token auth (required for non-loopback binds).** The portal binds `127.0.0.1:8765` by default — local only. Binding anything else (`0.0.0.0`, a LAN IP) auto-generates a token at `~/.agentwire/portal.token` (mode 0600) and requires it on every request outside the public bootstrap surface (`GET /`, `/health`, `/static/*`): `Authorization: Bearer <token>` on HTTP, `agentwire.bearer.<token>` WebSocket subprotocol. The portal **refuses to start** on a non-loopback bind with auth explicitly disabled. Print the token with `agentwire portal token`; rotate with `--rotate`. Browsers prompt once per device and store it in localStorage.
+
+Token configuration (`server.auth_token` in `~/.agentwire/config.yaml`): unset = use the token file (auto-generated); any string = explicit override; `""` = auth disabled, allowed only on loopback binds. Tokens are compared constant-time and redacted from the config served to the portal's config editor.
 
 What this means in practice:
 
-- **Anyone who can reach the portal port can drive it.** All `/api/*` endpoints (scheduler control, missions dispatch, project deletion, artifact upload, desktop window control) execute without auth.
-- **Do not expose the portal directly to the public internet.** Use either firewall rules limiting access to trusted IPs, or front it with an auth gateway. Cloudflare Tunnel + Zero Trust is the recommended pattern; details in the deployment docs.
-- **Project deletion via `/api/projects/delete`** validates the path is absolute, contains no `..`, contains no shell metacharacters, and is not in a protected list. Local execution uses argv form (no shell); SSH execution uses `shlex.quote` per argument. These mitigations don't substitute for perimeter security — they reduce blast radius if the perimeter fails.
-- **CSRF / Origin checks are not enforced** on state-changing POSTs. A browser inside the trust perimeter that loads attacker-controlled content could be coerced into making requests to the portal. If your portal is reachable from a browser on a less-trusted network, add an origin check or fence it behind an auth proxy.
-
-If you need authentication, the recommended path is **Cloudflare Tunnel + Zero Trust** rather than adding auth in-process: identity, MFA, audit, and revocation are all handled upstream and survive process restarts.
+- **LAN exposure (`server.host: 0.0.0.0`) is protected by the token.** Someone on your network who can reach the port gets 401s until they present it. Treat the token like a password; rotate it if a device is lost.
+- **Do not expose the portal directly to the public internet.** Token auth raises the bar on a trusted LAN; it is not a substitute for identity, MFA, audit, and revocation. For anything internet-facing, front it with **Cloudflare Tunnel + Zero Trust** (see `docs/wiki/deployment/remote-access.md`) and add your tunnel domain to `server.allowed_origins`.
+- **Project deletion via `/api/projects/delete`** validates the path is absolute, contains no `..`, contains no shell metacharacters, and is not in a protected list. Local execution uses argv form (no shell); SSH execution uses `shlex.quote` per argument. These mitigations reduce blast radius if the perimeter fails.
+- **Self-hosted TTS/STT servers are a separate trust domain** — they have no auth of their own and are out of scope here.

@@ -32,12 +32,21 @@ These scripts are **not** managed by agentwire — they're local to each machine
 
 ```yaml
 server:
-  host: "127.0.0.1"  # default; set "0.0.0.0" to allow LAN/phone access — portal has NO auth (see SECURITY.md)
+  host: "127.0.0.1"  # default; "0.0.0.0" allows LAN/phone access and requires the auth token (see SECURITY.md)
   port: 8765
   activity_threshold_seconds: 3  # Seconds before session considered idle
   ssl:
     cert: "~/.agentwire/cert.pem"
     key: "~/.agentwire/key.pem"
+  # Auth token: unset = use ~/.agentwire/portal.token (auto-generated on first
+  # non-loopback start; print/rotate with `agentwire portal token [--rotate]`).
+  # Set a string to override the file; "" disables auth (loopback binds only —
+  # the portal refuses to start on 0.0.0.0 with auth disabled).
+  # auth_token: ""
+  # Extra browser origins allowed on state-changing requests (exact
+  # scheme://host[:port]). The portal's own origin and localhost always pass.
+  # Needed when fronting with Cloudflare Tunnel:
+  allowed_origins: []  # e.g. ["https://portal.example.com"]
 
 projects:
   dir: "~/projects"
