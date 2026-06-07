@@ -76,17 +76,6 @@ def _tmux_global_option(name: str) -> str | None:
     return None
 
 
-def _check_config_exists() -> bool:
-    """Check ~/.agentwire/config.yaml exists; print init hint if not."""
-    config_path = CONFIG_DIR / "config.yaml"
-    if not config_path.exists():
-        print("Error: AgentWire is not configured.", file=sys.stderr)
-        print(file=sys.stderr)
-        print("Run 'agentwire init' to set up your configuration.", file=sys.stderr)
-        return False
-    return True
-
-
 @dataclass
 class AgentCommand:
     """Result of building an agent command."""
@@ -569,13 +558,26 @@ def _portal_auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _default_portal_url() -> str:
+    """Default portal URL — scheme mirrors the typed config's logic: https
+    only when server.ssl cert/key are configured AND exist on disk."""
+    ssl_cfg = load_config().get("server", {}).get("ssl", {})
+    cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
+    enabled = bool(
+        cert and key
+        and Path(os.path.expanduser(cert)).exists()
+        and Path(os.path.expanduser(key)).exists()
+    )
+    return f"{'https' if enabled else 'http'}://localhost:8765"
+
+
 def _portal_api(method: str, path: str, data: dict | None = None, timeout: int = 10) -> dict | None:
     """Make an API request to the portal using curl (reliable with self-signed certs).
 
     Returns parsed JSON dict on success, None on failure.
     """
     config = load_config()
-    portal_url = config.get("portal", {}).get("url", "https://localhost:8765")
+    portal_url = config.get("portal", {}).get("url", _default_portal_url())
     url = f"{portal_url}{path}"
 
     cmd = ["curl", "-sk", "--max-time", str(timeout), "-o", "-", "-w", "\n%{http_code}"]
@@ -736,7 +738,7 @@ def _notify_portal_sessions_changed():
         ctx.verify_mode = ssl.CERT_NONE
 
         req = urllib.request.Request(
-            "https://localhost:8765/api/sessions/refresh",
+            f"{_default_portal_url()}/api/sessions/refresh",
             method="POST",
             data=b"",
             headers=_portal_auth_headers(),
@@ -947,8 +949,6 @@ def _check_portal_health(url: str, timeout: int = 2) -> bool:
 
 def cmd_portal_start(args) -> int:
     """Start the AgentWire portal web server in tmux."""
-    if not _check_config_exists():
-        return 1
     if not _check_tmux_installed():
         return 1
 
@@ -1832,19 +1832,20 @@ def _get_portal_url() -> str:
     ctx = NetworkContext.from_config()
 
     if ctx.is_local("portal"):
-        # Portal runs locally
-        return f"https://localhost:{ctx.config.services.portal.port}"
+        # Portal runs locally — scheme comes from services.portal.scheme
+        # (http unless SSL certs exist or explicitly configured)
+        return ctx.get_service_url("portal")
 
     # Portal is remote - check if tunnel exists by testing localhost first
     tunnel_url = ctx.get_service_url("portal", use_tunnel=True)
     direct_url = ctx.get_service_url("portal", use_tunnel=False)
 
     # Try tunnel first (more common setup)
-    if _check_portal_health(tunnel_url.replace("http://", "https://")):
-        return tunnel_url.replace("http://", "https://")
+    if _check_portal_health(tunnel_url):
+        return tunnel_url
 
     # Fall back to direct connection
-    return direct_url.replace("http://", "https://")
+    return direct_url
 
 
 def _get_agentwire_path() -> str:
@@ -2129,10 +2130,12 @@ def _local_say_os(text: str) -> int:
     """Speak via the OS voice (default tier, no browser connected).
 
     macOS `say` / Linux `espeak`. Zero setup, robotic, always available.
+    Absolute path on macOS — users commonly shadow `say` in PATH with an
+    `agentwire say` wrapper, which would recurse into a fork bomb.
     """
     from .utils.speech import strip_speech_tags
 
-    binary = "say" if sys.platform == "darwin" else "espeak"
+    binary = "/usr/bin/say" if sys.platform == "darwin" else "espeak"
     try:
         subprocess.run([binary, strip_speech_tags(text)], check=True)
         return 0
@@ -3079,9 +3082,6 @@ def cmd_new(args) -> int:
     - "project/branch@machine" -> remote worktree session
     """
     json_mode = getattr(args, 'json', False)
-
-    if not _check_config_exists():
-        return 1 if not json_mode else _output_result(False, json_mode, "AgentWire not configured. Run 'agentwire init'")
 
     if not _check_tmux_installed():
         return 1 if not json_mode else _output_result(False, json_mode, "tmux is required but not installed")
@@ -4496,8 +4496,6 @@ def cmd_worktree(args) -> int:
     use_existing = getattr(args, 'existing', False)
     ref = getattr(args, 'ref', None)
 
-    if not _check_config_exists():
-        return _output_result(False, json_mode, "AgentWire not configured. Run 'agentwire init'")
     if not _check_tmux_installed():
         return _output_result(False, json_mode, "tmux is required but not installed")
 

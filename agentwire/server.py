@@ -5007,10 +5007,12 @@ projects:
         """Speak via the OS voice (macOS `say` / Linux `espeak`).
 
         Default-tier fallback when no browser is connected anywhere.
+        Absolute path on macOS — users commonly shadow `say` in PATH with an
+        `agentwire say` wrapper, which would recurse into a fork bomb.
         """
         import sys as _sys
 
-        binary = "say" if _sys.platform == "darwin" else "espeak"
+        binary = "/usr/bin/say" if _sys.platform == "darwin" else "espeak"
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary, text,

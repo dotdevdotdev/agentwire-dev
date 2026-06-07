@@ -44,13 +44,14 @@ def get_portal_url() -> str:
     Resolution order:
     1. AGENTWIRE_PORTAL_URL env var
     2. ~/.agentwire/config.yaml → portal.url
-    3. Default: https://localhost:8765
+    3. Default: localhost:8765 (https when SSL certs exist, else http)
     """
     # 1. Environment variable
     if url := os.environ.get("AGENTWIRE_PORTAL_URL"):
         return url
 
     # 2. Config file
+    config = {}
     config_path = Path.home() / ".agentwire" / "config.yaml"
     if config_path.exists():
         try:
@@ -62,8 +63,16 @@ def get_portal_url() -> str:
         except Exception as e:
             logger.warning(f"Failed to read config: {e}")
 
-    # 3. Default
-    return "https://localhost:8765"
+    # 3. Default — https only when server.ssl cert/key are configured AND
+    # exist (mirrors the typed config's scheme logic)
+    ssl_cfg = config.get("server", {}).get("ssl", {})
+    cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
+    enabled = bool(
+        cert and key
+        and Path(os.path.expanduser(cert)).exists()
+        and Path(os.path.expanduser(key)).exists()
+    )
+    return f"{'https' if enabled else 'http'}://localhost:8765"
 
 
 # =============================================================================

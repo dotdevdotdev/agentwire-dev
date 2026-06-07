@@ -456,9 +456,10 @@ services:
     # Spawn Claude for Interactive Setup
     # ─────────────────────────────────────────────────────────────
     if skip_session:
+        portal_open_url = "https://localhost:8765" if is_multi_machine else "http://127.0.0.1:8765"
         print(f"{BOLD}Next steps:{RESET}")
         print(f"  1. {CYAN}agentwire portal start{RESET}")
-        print(f"  2. Open {CYAN}https://localhost:8765{RESET}")
+        print(f"  2. Open {CYAN}{portal_open_url}{RESET} in Chrome — voice works immediately")
         print()
         print_info("Run 'agentwire init' again to complete setup with Claude's help.")
         return 0

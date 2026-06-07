@@ -321,7 +321,8 @@ class TestGetPortalUrl:
     def test_default_fallback(self, tmp_path, monkeypatch):
         monkeypatch.delenv("AGENTWIRE_PORTAL_URL", raising=False)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert self.fn() == "https://localhost:8765"
+        # No SSL certs configured -> http default (instant-mode model)
+        assert self.fn() == "http://localhost:8765"
 
     def test_env_var_priority_over_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AGENTWIRE_PORTAL_URL", "https://env:1111")
@@ -338,7 +339,8 @@ class TestGetPortalUrl:
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text(": : : bad yaml {{{{")
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert self.fn() == "https://localhost:8765"
+        # Malformed config + no certs -> http default
+        assert self.fn() == "http://localhost:8765"
 
 
 # ---------------------------------------------------------------------------
