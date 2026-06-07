@@ -238,6 +238,36 @@ def discover_role(name: str, project_path: Path | None = None) -> Path | None:
     return None
 
 
+_tts_tool_prompt_cache: str | None = None
+
+
+def get_tts_tool_prompt() -> str:
+    """Shim-authored `tool_prompt` from a custom TTS shim's /capabilities.
+
+    Cached per process (fail-soft, 1.5s timeout). Injected into the `voice`
+    role so sessions learn model-specific tags/instructions — the producer
+    end of the capability loop.
+    """
+    global _tts_tool_prompt_cache
+    if _tts_tool_prompt_cache is not None:
+        return _tts_tool_prompt_cache
+    try:
+        import json
+        import urllib.request
+
+        from ..config import load_config
+
+        cfg = load_config()
+        if cfg.tts.backend != "custom" or not cfg.tts.url:
+            _tts_tool_prompt_cache = ""
+            return ""
+        with urllib.request.urlopen(f"{cfg.tts.url.rstrip('/')}/capabilities", timeout=1.5) as r:
+            _tts_tool_prompt_cache = (json.load(r).get("tool_prompt") or "").strip()
+    except Exception:
+        _tts_tool_prompt_cache = ""
+    return _tts_tool_prompt_cache
+
+
 def load_roles(
     role_names: list[str],
     project_path: Path | None = None,
@@ -264,5 +294,14 @@ def load_roles(
                 missing.append(name)
         else:
             missing.append(name)
+
+    # Teach the voice role what the configured TTS shim accepts (emotion
+    # tags, style instructions). Single chokepoint — covers every session
+    # creation path without touching the call sites.
+    prompt = get_tts_tool_prompt()
+    if prompt:
+        for role in roles:
+            if role.name == "voice":
+                role.instructions += f"\n\n## TTS backend capabilities\n{prompt}"
 
     return roles, missing

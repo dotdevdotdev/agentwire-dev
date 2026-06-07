@@ -231,3 +231,32 @@ class TestCouncilRoles:
         assert role.tools == []
         assert role.disallowed_tools == []
         assert role.instructions
+
+
+class TestTtsToolPromptInjection:
+    def test_voice_role_gains_capabilities_section(self, monkeypatch):
+        import agentwire.roles as roles_mod
+        monkeypatch.setattr(roles_mod, "get_tts_tool_prompt",
+                            lambda: "Supports inline [laugh] tags.")
+        roles, missing = roles_mod.load_roles(["voice", "agentwire"])
+        assert missing == []
+        voice = next(r for r in roles if r.name == "voice")
+        assert "## TTS backend capabilities" in voice.instructions
+        assert "Supports inline [laugh] tags." in voice.instructions
+        # Non-voice roles untouched
+        other = next(r for r in roles if r.name != "voice")
+        assert "TTS backend capabilities" not in other.instructions
+
+    def test_no_prompt_no_injection(self, monkeypatch):
+        import agentwire.roles as roles_mod
+        monkeypatch.setattr(roles_mod, "get_tts_tool_prompt", lambda: "")
+        roles, _ = roles_mod.load_roles(["voice"])
+        assert "## TTS backend capabilities" not in roles[0].instructions
+
+    def test_get_tts_tool_prompt_default_tier_is_empty(self, monkeypatch, tmp_path):
+        import agentwire.roles as roles_mod
+        monkeypatch.setattr(roles_mod, "_tts_tool_prompt_cache", None)
+        from agentwire.config import load_config
+        cfg = load_config(tmp_path / "nonexistent.yaml")  # default tier
+        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
+        assert roles_mod.get_tts_tool_prompt() == ""
