@@ -390,9 +390,10 @@ class TestPortalRequest:
         from agentwire.mcp_server import _portal_request
         self.fn = _portal_request
 
+    @patch("agentwire.security.get_local_portal_token", return_value="tok123")
     @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.get")
-    def test_get_request(self, mock_get, mock_url):
+    def test_get_request(self, mock_get, mock_url, mock_token):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"success": True, "windows": []}
@@ -400,7 +401,10 @@ class TestPortalRequest:
         result = self.fn("GET", "/api/desktop/windows")
         assert result == {"success": True, "windows": []}
         mock_get.assert_called_once_with(
-            "https://localhost:8765/api/desktop/windows", verify=False, timeout=10
+            "https://localhost:8765/api/desktop/windows",
+            headers={"Authorization": "Bearer tok123"},
+            verify=False,
+            timeout=10,
         )
 
     @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")

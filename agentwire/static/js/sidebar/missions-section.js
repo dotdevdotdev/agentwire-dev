@@ -7,6 +7,7 @@
  * the server and refreshes automatically.
  */
 
+import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
 
 export const missionsSection = {
@@ -28,7 +29,7 @@ export const missionsSection = {
 
     async refresh(body) {
         try {
-            const res = await fetch('/api/missions/list');
+            const res = await apiFetch('/api/missions/list');
             this._state = res.ok ? await res.json() : null;
         } catch (e) {
             this._state = null;
@@ -45,7 +46,7 @@ export const missionsSection = {
         this._busy = true;
         const endpoint = action === 'tick' ? '/api/missions/tick' : '/api/missions/gc';
         try {
-            await fetch(endpoint, { method: 'POST' });
+            await apiFetch(endpoint, { method: 'POST' });
         } catch (e) {
             console.warn('mission action failed', action, e);
         } finally {

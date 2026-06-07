@@ -5,6 +5,7 @@
  * supports dismiss and click-to-open-session.
  */
 
+import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 
 const NOTIFICATIONS_SESSION = 'agentwire-notifications';
@@ -32,7 +33,7 @@ class NotificationsPanel {
 
     async _restore() {
         try {
-            const resp = await fetch('/api/desktop/notifications');
+            const resp = await apiFetch('/api/desktop/notifications');
             if (!resp.ok) return;
             const data = await resp.json();
             const notifications = data.notifications || [];
@@ -112,7 +113,7 @@ class NotificationsPanel {
     async _dismissToast(id) {
         this._removeToast(id, true);
         try {
-            await fetch('/api/desktop/notification/dismiss', {
+            await apiFetch('/api/desktop/notification/dismiss', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id }),

@@ -5,6 +5,7 @@
  * in a sandboxed iframe within a WinBox window.
  */
 
+import { apiFetch, getToken } from './api.js';
 import { desktop } from './desktop-manager.js';
 
 export class ArtifactWindow {
@@ -28,6 +29,7 @@ export class ArtifactWindow {
         this.winbox = null;
         this.iframe = null;
         this.isOpen = false;
+        this._objectUrl = null; // blob URL for token-authed artifact loads
     }
 
     /**
@@ -56,6 +58,7 @@ export class ArtifactWindow {
             this.iframe.src = 'about:blank';
             this.iframe = null;
         }
+        this._revokeObjectUrl();
 
         if (this.winbox) {
             const wb = this.winbox;
@@ -92,7 +95,7 @@ export class ArtifactWindow {
      */
     reload() {
         if (this.iframe) {
-            this.iframe.src = this._resolveUrl();
+            this._setIframeSrc();
         }
     }
 
@@ -168,6 +171,39 @@ export class ArtifactWindow {
         return this.url.startsWith('http://') || this.url.startsWith('https://');
     }
 
+    _revokeObjectUrl() {
+        if (this._objectUrl) {
+            URL.revokeObjectURL(this._objectUrl);
+            this._objectUrl = null;
+        }
+    }
+
+    /**
+     * Point the iframe at the artifact. Plain iframe GETs can't carry the
+     * Authorization header, so when token auth is active we fetch the
+     * portal-served artifact with credentials and load it as a blob URL.
+     * Note: relative sub-resources inside multi-file artifacts won't resolve
+     * under a blob URL — self-contained HTML is the supported shape there.
+     */
+    async _setIframeSrc() {
+        const resolved = this._resolveUrl();
+        if (this._isExternalUrl() || !getToken()) {
+            this.iframe.src = resolved;
+            return;
+        }
+        try {
+            const resp = await apiFetch(resolved);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            this._revokeObjectUrl();
+            this._objectUrl = URL.createObjectURL(blob);
+            this.iframe.src = this._objectUrl;
+        } catch (e) {
+            // Fall back to a direct load; the iframe error handler reports it.
+            this.iframe.src = resolved;
+        }
+    }
+
     _loadUrl() {
         if (!this.winbox) return;
 
@@ -205,7 +241,7 @@ export class ArtifactWindow {
             }
         });
 
-        this.iframe.src = this._resolveUrl();
+        this._setIframeSrc();
         content.insertBefore(this.iframe, content.firstChild);
     }
 }

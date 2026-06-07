@@ -1044,7 +1044,8 @@ body {
     opacity: 0.7;
 }
 
-.quicktask-form input[type="text"] {
+.quicktask-form input[type="text"],
+.quicktask-form input[type="password"] {
     background: var(--background);
     border: 1px solid var(--chrome-border);
     border-radius: 4px;
@@ -1054,9 +1055,23 @@ body {
     font-family: inherit;
 }
 
-.quicktask-form input[type="text"]:focus {
+.quicktask-form input[type="text"]:focus,
+.quicktask-form input[type="password"]:focus {
     outline: none;
     border-color: var(--accent);
+}
+
+.quicktask-hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.quicktask-hint code {
+    font-family: monospace;
+    background: var(--background);
+    padding: 1px 4px;
+    border-radius: 3px;
 }
 
 .quicktask-pills {

@@ -1,3 +1,4 @@
+import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
 
 const COLLAPSED_KEY = 'scheduler-section-collapsed';
@@ -60,8 +61,8 @@ export const schedulerSection = {
         if (this._collapsed === null) this._collapsed = _loadCollapsed();
         try {
             const [liveRes, boardRes] = await Promise.all([
-                fetch('/api/scheduler/live'),
-                fetch('/api/scheduler/board'),
+                apiFetch('/api/scheduler/live'),
+                apiFetch('/api/scheduler/board'),
             ]);
             const live = liveRes.ok ? await liveRes.json() : null;
             const board = boardRes.ok ? await boardRes.json() : null;
@@ -203,7 +204,7 @@ export const schedulerSection = {
             btn.disabled = true;
             try {
                 const path = action === 'scheduler-start' ? '/api/scheduler/start' : '/api/scheduler/stop';
-                await fetch(path, { method: 'POST' });
+                await apiFetch(path, { method: 'POST' });
             } catch (e) { console.warn('Scheduler toggle failed', e); }
             // Daemon takes a moment to spin up / write its state file.
             setTimeout(() => this.refresh(body), 1500);
@@ -215,11 +216,11 @@ export const schedulerSection = {
         const task = item.dataset.task;
         try {
             if (action === 'run') {
-                await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/run`, { method: 'POST' });
+                await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/run`, { method: 'POST' });
             } else if (action === 'enable') {
-                await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/enable`, { method: 'POST' });
+                await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/enable`, { method: 'POST' });
             } else if (action === 'disable') {
-                await fetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/disable`, { method: 'POST' });
+                await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/disable`, { method: 'POST' });
             }
             await this.refresh(body);
         } catch (e) { console.warn('Scheduler action failed', e); }

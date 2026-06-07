@@ -12,6 +12,7 @@
  * selections are not DOM selections and are out of scope for v1).
  */
 
+import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { armDeadKeySuppressor } from './dead-key-suppressor.js';
 
@@ -203,7 +204,7 @@ class ScratchPad {
 
     async _fetchNotes() {
         try {
-            const resp = await fetch('/api/scratchpad');
+            const resp = await apiFetch('/api/scratchpad');
             if (!resp.ok) return;
             this.notes = (await resp.json()).notes || [];
             this._render();
@@ -212,7 +213,7 @@ class ScratchPad {
 
     async _apiAdd(text, source = null) {
         try {
-            const resp = await fetch('/api/scratchpad/notes', {
+            const resp = await apiFetch('/api/scratchpad/notes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text, source }),
@@ -230,7 +231,7 @@ class ScratchPad {
         this.saveTimers.set(id, setTimeout(async () => {
             this.saveTimers.delete(id);
             try {
-                await fetch(`/api/scratchpad/notes/${id}`, {
+                await apiFetch(`/api/scratchpad/notes/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text }),
@@ -241,7 +242,7 @@ class ScratchPad {
 
     async _apiRemove(id) {
         try {
-            await fetch(`/api/scratchpad/notes/${id}`, { method: 'DELETE' });
+            await apiFetch(`/api/scratchpad/notes/${id}`, { method: 'DELETE' });
         } catch { /* broadcast will reconcile */ }
     }
 
