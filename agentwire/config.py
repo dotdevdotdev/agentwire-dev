@@ -53,7 +53,10 @@ class SSLConfig:
 class ServerConfig:
     """WebSocket server configuration."""
 
-    host: str = "0.0.0.0"
+    # Local-only by default. The portal has no auth — binding 0.0.0.0 hands
+    # session control to anyone who can reach the port. Opt into LAN exposure
+    # explicitly via `server.host: 0.0.0.0` in config (see SECURITY.md).
+    host: str = "127.0.0.1"
     port: int = 8765
     ssl: SSLConfig = field(default_factory=SSLConfig)
     activity_threshold_seconds: float = 3.0  # Time in seconds before session is considered idle
@@ -425,7 +428,7 @@ def _dict_to_config(data: dict) -> Config:
         key=ssl_data.get("key"),
     )
     server = ServerConfig(
-        host=server_data.get("host", "0.0.0.0"),
+        host=server_data.get("host", "127.0.0.1"),
         port=server_data.get("port", 8765),
         ssl=ssl,
         activity_threshold_seconds=server_data.get("activity_threshold_seconds", 3.0),

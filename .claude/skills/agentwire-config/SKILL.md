@@ -32,7 +32,7 @@ These scripts are **not** managed by agentwire — they're local to each machine
 
 ```yaml
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"  # default; set "0.0.0.0" to allow LAN/phone access — portal has NO auth (see SECURITY.md)
   port: 8765
   activity_threshold_seconds: 3  # Seconds before session considered idle
   ssl:

@@ -103,7 +103,8 @@ class TestLoadConfig:
         config = load_config(tmp_path / "nonexistent.yaml")
         assert isinstance(config, Config)
         assert config.server.port == 8765
-        assert config.server.host == "0.0.0.0"
+        # Local-only by default — the portal has no auth (see SECURITY.md)
+        assert config.server.host == "127.0.0.1"
 
     def test_from_yaml(self, config_file):
         config = load_config(config_file)
