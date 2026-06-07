@@ -727,6 +727,14 @@ def _write_live_state(**fields) -> None:
         pass
 
 
+def _portal_auth_headers() -> dict:
+    """Headers carrying the portal auth token, if one is configured."""
+    from .security import get_local_portal_token
+
+    token = get_local_portal_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _notify_portal(task_name: str, status: str, duration: int, summary: str) -> None:
     """POST a scheduler_task_complete notification to the portal."""
     try:
@@ -746,6 +754,7 @@ def _notify_portal(task_name: str, status: str, duration: int, summary: str) -> 
                 "duration": duration,
                 "summary": summary,
             },
+            headers=_portal_auth_headers(),
             verify=False,
             timeout=timeout,
         )
@@ -770,6 +779,7 @@ def _notify_portal_state() -> None:
         requests.post(
             f"{portal_url}/api/notify",
             json={"event": "scheduler_state", "running": True, **state},
+            headers=_portal_auth_headers(),
             verify=False,
             timeout=timeout,
         )

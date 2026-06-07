@@ -45,6 +45,8 @@ agentwire portal start          # start in tmux
 agentwire portal stop           # stop portal
 agentwire portal restart        # stop + start
 agentwire portal status         # check health
+agentwire portal token          # print the auth token (devices enter it once)
+agentwire portal token --rotate # generate a new token (re-enter on devices)
 
 # Scratch pad (shared notes — portal drawer Alt+N; file: ~/.agentwire/scratchpad.json)
 agentwire scratchpad list       # list notes (newest first)

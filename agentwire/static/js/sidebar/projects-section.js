@@ -1,3 +1,4 @@
+import { apiFetch } from '../api.js';
 import { normalizeMachine, sameMachine } from '../session-id.js';
 
 export const projectsSection = {
@@ -32,7 +33,7 @@ export const projectsSection = {
 
     async refresh(body) {
         try {
-            const res = await fetch('/api/projects');
+            const res = await apiFetch('/api/projects');
             const data = await res.json();
             const projects = data.projects || [];
             if (!projects.length) {
@@ -111,7 +112,7 @@ export const projectsSection = {
             const url = machine
                 ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
                 : '/api/sessions/local';
-            const r = await fetch(url);
+            const r = await apiFetch(url);
             const d = await r.json().catch(() => ({}));
             const sessions = d.sessions
                 || (d.machines || []).flatMap((m) => m.sessions || []);
@@ -123,7 +124,7 @@ export const projectsSection = {
 
         // Create fresh session
         try {
-            const res = await fetch('/api/create', {
+            const res = await apiFetch('/api/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, path, machine }),

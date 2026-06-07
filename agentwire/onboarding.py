@@ -275,6 +275,12 @@ server:
   ssl:
     cert: "~/.agentwire/cert.pem"
     key: "~/.agentwire/key.pem"
+  # Auth token lives at ~/.agentwire/portal.token (print: agentwire portal token).
+  # Uncomment to override; "" disables auth (loopback binds only).
+  # auth_token: ""
+  # Extra browser origins allowed to call the portal, e.g. a Cloudflare
+  # Tunnel domain. The portal's own origin and localhost always pass.
+  allowed_origins: []
 
 projects:
   dir: "{projects_dir}"
@@ -309,6 +315,19 @@ services:
     config_path = CONFIG_DIR / "config.yaml"
     config_path.write_text(config_content)
     print_success(f"Created {config_path}")
+
+    # Portal auth token — required because the config binds 0.0.0.0
+    from .security import TOKEN_FILE, generate_token, read_token_file, write_token_file
+
+    token = read_token_file()
+    if token is None:
+        token = generate_token()
+        write_token_file(token)
+        print_success(f"Created {TOKEN_FILE}")
+    print()
+    print_info("Portal auth token (paste into your phone's browser when prompted):")
+    print(f"  {token}")
+    print_info("Show it again anytime: agentwire portal token")
 
     # Empty machines.json
     machines_path = CONFIG_DIR / "machines.json"

@@ -1,3 +1,4 @@
+import { apiFetch } from '../api.js';
 import {
     getTerminalFontSize, getOverride,
     setTerminalFontSize, clearTerminalFontSize,
@@ -43,7 +44,7 @@ export const configSection = {
     async mount(body) { await this.refresh(body); },
     async refresh(body) {
         try {
-            const res = await fetch('/api/config?format=display');
+            const res = await apiFetch('/api/config?format=display');
             const data = await res.json();
             const items = data.items || [];
             const itemHtml = items.map(({ key, value }) => {

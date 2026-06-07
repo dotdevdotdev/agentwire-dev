@@ -1,3 +1,4 @@
+import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
 import { buildSessionId, normalizeMachine } from '../session-id.js';
 
@@ -17,7 +18,7 @@ export function isService(name) { return SERVICE_SESSIONS.has(name); }
 // on load; re-render once they arrive so flagged sessions hop to the right group.
 async function loadCustomServices() {
     try {
-        const res = await fetch('/api/services/custom');
+        const res = await apiFetch('/api/services/custom');
         if (!res.ok) return;
         const { names } = await res.json();
         let changed = false;
@@ -119,7 +120,7 @@ function initData() {
 
 async function fetchSessions() {
     try {
-        const localRes = await fetch('/api/sessions/local');
+        const localRes = await apiFetch('/api/sessions/local');
         const localData = await localRes.json();
         allSessions = localData.sessions || [];
         notifyListeners();
@@ -127,7 +128,7 @@ async function fetchSessions() {
         allSessions = [];
         notifyListeners();
     }
-    fetch('/api/sessions/remote').then(async (res) => {
+    apiFetch('/api/sessions/remote').then(async (res) => {
         try {
             const data = await res.json();
             const remote = data.sessions || [];
@@ -222,7 +223,7 @@ export const sessionsSection = {
                     payload.worktree = true;
                     payload.branch = branch;
                 }
-                const res = await fetch('/api/create', {
+                const res = await apiFetch('/api/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),

@@ -35,6 +35,7 @@
  * @module collage
  */
 
+import { wsProtocols } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { ansiToHtml } from './utils/ansi.js';
 import { isCommandPaletteOpen } from './command-palette.js';
@@ -327,7 +328,7 @@ class Collage {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         let ws = null;
         try {
-            ws = new WebSocket(`${protocol}//${location.host}/ws/${inst.sessionId}`);
+            ws = new WebSocket(`${protocol}//${location.host}/ws/${inst.sessionId}`, wsProtocols());
         } catch (e) {
             return;
         }

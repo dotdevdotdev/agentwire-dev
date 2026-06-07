@@ -10,11 +10,13 @@
  *
  * Usage:
  *     async function fetchMachines() {
- *         const machines = await fetch('/api/machines').then(r => r.json());
+ *         const machines = await apiFetch('/api/machines').then(r => r.json());
  *         setupAutoRefresh(machines, machinesWindow, 'status', 'checking', 2000);
  *         return machines;
  *     }
  */
+
+import { apiFetch } from '../api.js';
 
 /**
  * Setup auto-refresh for items with checking status

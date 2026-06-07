@@ -36,6 +36,14 @@ from aiohttp import web
 
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
+from .security import (
+    WS_PROTOCOL_PREFIX,
+    create_security_middleware,
+    ensure_auth_token,
+    is_loopback_host,
+    resolve_auth_token,
+    validate_startup_security,
+)
 from .worktree import parse_session_name
 
 __version__ = "1.3.0"
@@ -146,7 +154,16 @@ class AgentWireServer:
         self.stt = None
         self.agent = None
         self._http_session: aiohttp.ClientSession | None = None  # For TTS HTTP calls
-        self.app = web.Application()
+        # Origin + token enforcement. The middleware is a pure function of
+        # config — run_server() resolves the token file into
+        # config.server.auth_token before constructing the server.
+        self.app = web.Application(
+            middlewares=[
+                create_security_middleware(
+                    config.server.auth_token, config.server.allowed_origins
+                )
+            ]
+        )
         self._setup_jinja2()
         self._setup_routes()
 
@@ -718,9 +735,25 @@ class AgentWireServer:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
+    def _ws_response(self, request: web.Request) -> web.WebSocketResponse:
+        """WebSocketResponse that echoes the auth bearer subprotocol.
+
+        Browsers pass the token as `Sec-WebSocket-Protocol:
+        agentwire.bearer.<token>` (validated by the security middleware before
+        the handler runs) and close the socket unless the server echoes the
+        protocol back.
+        """
+        offered = [
+            p.strip()
+            for p in request.headers.get("Sec-WebSocket-Protocol", "").split(",")
+            if p.strip()
+        ]
+        bearer = tuple(p for p in offered if p.startswith(WS_PROTOCOL_PREFIX))
+        return web.WebSocketResponse(protocols=bearer)
+
     async def handle_dashboard_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket endpoint for dashboard updates (sessions, machines, config)."""
-        ws = web.WebSocketResponse()
+        ws = self._ws_response(request)
         await ws.prepare(request)
 
         self.dashboard_clients.add(ws)
@@ -1575,7 +1608,7 @@ class AgentWireServer:
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
         """Handle WebSocket connections for a session."""
         name = request.match_info["name"]
-        ws = web.WebSocketResponse()
+        ws = self._ws_response(request)
         await ws.prepare(request)
 
         # Get or create session
@@ -1634,7 +1667,7 @@ class AgentWireServer:
         # Browser passes initial terminal size as query params to avoid 80x24 flash
         init_cols = int(request.rel_url.query.get("cols", 80))
         init_rows = int(request.rel_url.query.get("rows", 24))
-        ws = web.WebSocketResponse()
+        ws = self._ws_response(request)
         await ws.prepare(request)
 
         proc = None
@@ -3221,9 +3254,9 @@ class AgentWireServer:
             try:
                 content = config_path.read_text()
                 # SECURITY: Redact sensitive fields before returning
-                # Matches patterns like: runpod_api_key: "secret" or runpod_api_key: secret
+                # Matches patterns like: runpod_api_key: "secret" or auth_token: secret
                 content = re.sub(
-                    r'(runpod_api_key\s*:\s*)["\']?[^"\'\n]+["\']?',
+                    r'((?:runpod_api_key|auth_token)\s*:\s*)["\']?[^"\'\n]+["\']?',
                     r'\1"[REDACTED]"',
                     content
                 )
@@ -4983,6 +5016,17 @@ projects:
 
 async def run_server(config: Config):
     """Run the AgentWire server."""
+    # Resolve the auth token before the server is built — the security
+    # middleware reads it from config. Non-loopback binds auto-generate a
+    # token and refuse to start without one; loopback binds only enforce a
+    # token if one is already configured (origin checks cover the browser
+    # vector locally).
+    if is_loopback_host(config.server.host):
+        config.server.auth_token = resolve_auth_token(config)
+    else:
+        config.server.auth_token = ensure_auth_token(config)
+    validate_startup_security(config)
+
     server = AgentWireServer(config)
     await server.init_backends()
 

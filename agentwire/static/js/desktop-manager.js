@@ -10,6 +10,8 @@
  * @module desktop-manager
  */
 
+import { apiFetch, wsProtocols } from './api.js';
+
 // Reconnect configuration
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
@@ -91,14 +93,18 @@ class DesktopManager {
         const url = `${protocol}//${location.host}/ws`;
 
         try {
-            this.ws = new WebSocket(url);
+            // Re-reads the token each attempt, so reconnects pick up a
+            // freshly entered token.
+            this.ws = new WebSocket(url, wsProtocols());
         } catch (err) {
             console.error('[DesktopManager] Failed to create WebSocket:', err);
             this.scheduleReconnect();
             return;
         }
 
+        let opened = false;
         this.ws.onopen = () => {
+            opened = true;
             this.reconnectAttempts = 0;
             this.emit('connect');
         };
@@ -106,6 +112,14 @@ class DesktopManager {
         this.ws.onclose = (event) => {
             this.ws = null;
             this.emit('disconnect');
+
+            // Handshake never completed — likely a 401 from token auth.
+            // Probe the API once: apiFetch raises the token modal on 401,
+            // and the page reloads after entry.
+            if (!opened && !this.tokenProbeFired) {
+                this.tokenProbeFired = true;
+                apiFetch('/api/sessions/local').catch(() => {});
+            }
 
             if (!this.intentionalDisconnect) {
                 this.scheduleReconnect();
@@ -625,7 +639,7 @@ class DesktopManager {
     async fetchSessions() {
         // Local sessions first (fast), then merge remote when SSH completes.
         try {
-            const localRes = await fetch('/api/sessions/local');
+            const localRes = await apiFetch('/api/sessions/local');
             const localData = await localRes.json();
             this.sessions = localData.sessions || [];
             this.emit('sessions', this.sessions);
@@ -634,7 +648,7 @@ class DesktopManager {
         }
 
         // Fire-and-forget: merge remote sessions when they arrive
-        fetch('/api/sessions/remote').then(async (res) => {
+        apiFetch('/api/sessions/remote').then(async (res) => {
             try {
                 const data = await res.json();
                 const remote = data.sessions || [];
@@ -657,7 +671,7 @@ class DesktopManager {
      */
     async fetchMachines() {
         try {
-            const response = await fetch('/api/machines');
+            const response = await apiFetch('/api/machines');
             const data = await response.json();
 
             // API returns array directly, not {machines: [...]}
@@ -676,7 +690,7 @@ class DesktopManager {
      */
     async fetchConfig() {
         try {
-            const response = await fetch('/api/config');
+            const response = await apiFetch('/api/config');
             const data = await response.json();
 
             this.config = data || {};

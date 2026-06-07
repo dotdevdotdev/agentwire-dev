@@ -3,6 +3,8 @@
  * the full Safety review WinBox window.
  */
 
+import { apiFetch } from './api.js';
+
 export const DECISION_LABELS = {
     blocked: 'BLOCKED',
     asked: 'ASKED',
@@ -56,26 +58,26 @@ export function eventRow(e) {
 }
 
 export async function fetchSafetyStatus() {
-    try { return await fetch('/api/safety/status').then((r) => r.json()); } catch { return {}; }
+    try { return await apiFetch('/api/safety/status').then((r) => r.json()); } catch { return {}; }
 }
 
 export async function fetchSafetyLogs(decisionFilter = '', limit = 200) {
     const qs = `?limit=${limit}${decisionFilter ? '&decision=' + encodeURIComponent(decisionFilter) : ''}`;
     try {
-        const data = await fetch('/api/safety/logs' + qs).then((r) => r.json());
+        const data = await apiFetch('/api/safety/logs' + qs).then((r) => r.json());
         return data.entries || [];
     } catch { return []; }
 }
 
 export async function fetchSafetyRules() {
     try {
-        const data = await fetch('/api/safety/rules').then((r) => r.json());
+        const data = await apiFetch('/api/safety/rules').then((r) => r.json());
         return data.rules || [];
     } catch { return []; }
 }
 
 export async function postSafetyConfig(payload) {
-    return fetch('/api/safety/config', {
+    return apiFetch('/api/safety/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

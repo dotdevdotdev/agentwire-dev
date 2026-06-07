@@ -61,7 +61,7 @@ agentwire portal start
 
 **Honest setup time:** ~15 minutes for the full experience (certs, tmux config, voice). Text-only portal works immediately; TTS needs a GPU or RunPod account.
 
-> **Network & trust model.** The portal binds `127.0.0.1` by default — local only. To use it from your phone, set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml` and understand what that means: **anyone who can reach the port can drive your sessions** (there is no auth yet). Use it on a trusted LAN only. Never port-forward it or run it on a public-facing VPS. Details in [SECURITY.md](SECURITY.md).
+> **Network & trust model.** The portal binds `127.0.0.1` by default — local only. To use it from your phone, set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`. Non-loopback binds require an auth token (auto-generated on first start; print it with `agentwire portal token`) — your phone prompts for it once, then remembers it. Origin checks reject cross-site browser requests on every bind. Still: keep it on a trusted LAN. Never port-forward it or run it on a public-facing VPS — for internet access use Cloudflare Tunnel + Zero Trust. Details in [SECURITY.md](SECURITY.md).
 
 <details>
 <summary><strong>Platform-specific instructions</strong></summary>

@@ -6,6 +6,8 @@
  *   - "Initialize empty git repo" checkbox (ignored when a clone URL is set)
  */
 
+import { apiFetch } from './api.js';
+
 let modalEl = null;
 let lastFocus = null;
 let onCreatedCb = null;
@@ -100,7 +102,7 @@ async function handleSubmit(e) {
     showProgress(cloneUrl ? `Cloning ${cloneUrl}…` : `Creating ${name}…`);
 
     try {
-        const res = await fetch('/api/projects/create', {
+        const res = await apiFetch('/api/projects/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

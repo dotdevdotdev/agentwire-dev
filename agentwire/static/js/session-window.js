@@ -7,6 +7,7 @@
  */
 
 
+import { apiFetch, wsProtocols } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { sessionIcons } from './icon-manager.js';
 import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
@@ -638,7 +639,7 @@ export class SessionWindow {
             this.ws = null;
         }
 
-        this.ws = new WebSocket(url);
+        this.ws = new WebSocket(url, wsProtocols());
 
         if (this.mode === 'terminal') {
             // Binary data for terminal mode
@@ -909,7 +910,7 @@ export class SessionWindow {
         // For remote sessions, check if the session still exists before reconnecting
         if (this.machine) {
             try {
-                const response = await fetch(`/api/sessions/remote`);
+                const response = await apiFetch(`/api/sessions/remote`);
                 const data = await response.json();
                 // Flatten sessions from all machines: {machines: [{sessions: [...]}]} -> [...]
                 const allSessions = (data.machines || []).flatMap(m => m.sessions || []);
@@ -1096,7 +1097,7 @@ export class SessionWindow {
             const formData = new FormData();
             formData.append('audio', blob, 'recording.webm');
 
-            const transcribeRes = await fetch('/transcribe', {
+            const transcribeRes = await apiFetch('/transcribe', {
                 method: 'POST',
                 body: formData,
             });
@@ -1115,7 +1116,7 @@ export class SessionWindow {
             }
 
             // Step 2: Send to session with voice prompt hint
-            const sendRes = await fetch(`/send/${this.sessionId}`, {
+            const sendRes = await apiFetch(`/send/${this.sessionId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

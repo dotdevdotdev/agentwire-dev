@@ -7,6 +7,7 @@
  * - List windows for sessions/machines/config
  */
 
+import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
@@ -842,7 +843,7 @@ async function processGlobalRecording() {
         formData.append('audio', blob, 'recording.webm');
 
         // Transcribe
-        const transcribeRes = await fetch('/transcribe', {
+        const transcribeRes = await apiFetch('/transcribe', {
             method: 'POST',
             body: formData
         });
@@ -850,7 +851,7 @@ async function processGlobalRecording() {
 
         if (text && text.trim()) {
             // Send to agentwire session with voice prompt
-            await fetch('/send/agentwire', {
+            await apiFetch('/send/agentwire', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

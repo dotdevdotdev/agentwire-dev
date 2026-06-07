@@ -1,9 +1,11 @@
+
+import { apiFetch } from '../api.js';
 export const artifactsSection = {
     title: 'Artifacts',
     async mount(body) { await this.refresh(body); },
     async refresh(body) {
         try {
-            const res = await fetch('/api/artifacts');
+            const res = await apiFetch('/api/artifacts');
             const items = await res.json();
             if (!items.length) {
                 body.innerHTML = '<div class="sidebar-empty">No artifacts</div>';
@@ -34,7 +36,7 @@ export const artifactsSection = {
             openArtifactWindow(name, name);
         } else if (btn.dataset.action === 'delete') {
             try {
-                await fetch(`/api/artifacts/${encodeURIComponent(name)}`, { method: 'DELETE' });
+                await apiFetch(`/api/artifacts/${encodeURIComponent(name)}`, { method: 'DELETE' });
                 await this.refresh(body);
             } catch (e) { console.warn('Failed to delete artifact', e); }
         }

@@ -9,6 +9,8 @@
  * - User override: manual icon selection
  */
 
+import { apiFetch } from './api.js';
+
 /**
  * IconManager handles icon assignment for a specific category
  */
@@ -42,7 +44,7 @@ export class IconManager {
 
         this._loadPromise = (async () => {
             try {
-                const response = await fetch(`/api/icons/${this.type}`);
+                const response = await apiFetch(`/api/icons/${this.type}`);
                 if (response.ok) {
                     const data = await response.json();
                     this.customIcons = data.custom || [];

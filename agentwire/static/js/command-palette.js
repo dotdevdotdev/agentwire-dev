@@ -14,6 +14,7 @@
  * (/api/create, /api/projects/create) are unchanged.
  */
 
+import { apiFetch } from './api.js';
 import { normalizeMachine, sameMachine } from './session-id.js';
 import { isService } from './sidebar/sessions-section.js';
 
@@ -79,7 +80,7 @@ function matches(query, text) {
 async function loadProjects() {
     if (projectsCache) return projectsCache;
     try {
-        const res = await fetch('/api/projects');
+        const res = await apiFetch('/api/projects');
         const data = await res.json();
         projectsCache = data.projects || [];
     } catch (e) {
@@ -91,12 +92,12 @@ async function loadProjects() {
 async function loadSessions() {
     const out = [];
     try {
-        const r = await fetch('/api/sessions/local');
+        const r = await apiFetch('/api/sessions/local');
         const d = await r.json();
         out.push(...(d.sessions || []));
     } catch (e) { /* ignore */ }
     try {
-        const r = await fetch('/api/sessions/remote');
+        const r = await apiFetch('/api/sessions/remote');
         const d = await r.json();
         const names = new Set(out.map((s) => s.name));
         for (const s of (d.sessions || [])) {
@@ -122,7 +123,7 @@ async function spawnAndOpen({ name, path, machine }) {
         const url = machine
             ? `/api/sessions/remote?machine=${encodeURIComponent(machine)}`
             : '/api/sessions/local';
-        const r = await fetch(url);
+        const r = await apiFetch(url);
         const d = await r.json().catch(() => ({}));
         const sessions = d.sessions || (d.machines || []).flatMap((m) => m.sessions || []);
         if (sessions.some((s) => s.name === name && sameMachine(s.machine, machine))) {
@@ -132,7 +133,7 @@ async function spawnAndOpen({ name, path, machine }) {
         }
     } catch (e) { /* fall through and create */ }
 
-    const res = await fetch('/api/create', {
+    const res = await apiFetch('/api/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, path, machine }),
@@ -235,7 +236,7 @@ function bindNewProjectForm(form) {
         }
         showProgress(cloneUrl ? `Cloning ${cloneUrl}…` : `Creating ${name}…`);
         try {
-            const res = await fetch('/api/projects/create', {
+            const res = await apiFetch('/api/projects/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, clone_url: cloneUrl || undefined, git_init: gitInit }),
@@ -366,7 +367,7 @@ function bindWorktreeForm(form) {
         const proj = findProject(project);
         showProgress(pullFirst ? `Pulling ${base} and starting ${branch}…` : `Starting ${branch}…`);
         try {
-            const res = await fetch('/api/create', {
+            const res = await apiFetch('/api/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

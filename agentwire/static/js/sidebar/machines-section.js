@@ -1,10 +1,12 @@
+
+import { apiFetch } from '../api.js';
 export const machinesSection = {
     title: 'Machines',
     autoRefreshMs: 10000,
     async mount(body) { await this.refresh(body); },
     async refresh(body) {
         try {
-            const res = await fetch('/api/machines');
+            const res = await apiFetch('/api/machines');
             const data = await res.json();
             const machines = Array.isArray(data) ? data : (data.machines || []);
             if (!machines.length) {
@@ -37,7 +39,7 @@ export const machinesSection = {
         if (btn.dataset.action === 'new-session') {
             try {
                 const machine = machineId === 'local' ? null : machineId;
-                const res = await fetch('/api/create', {
+                const res = await apiFetch('/api/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ machine }),
