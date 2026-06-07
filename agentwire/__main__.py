@@ -2130,9 +2130,11 @@ def _local_say_os(text: str) -> int:
 
     macOS `say` / Linux `espeak`. Zero setup, robotic, always available.
     """
+    from .utils.speech import strip_speech_tags
+
     binary = "say" if sys.platform == "darwin" else "espeak"
     try:
-        subprocess.run([binary, text], check=True)
+        subprocess.run([binary, strip_speech_tags(text)], check=True)
         return 0
     except FileNotFoundError:
         print(f"OS voice binary '{binary}' not found", file=sys.stderr)

@@ -3456,7 +3456,21 @@ projects:
         startup) and resamples to 16 kHz mono PCM16 — the canonical input
         shape for Whisper- and Moonshine-class models. Optionally prepends a
         configurable amount of silence (``stt.silence_prepend_ms``, default 0).
+
+        Custom tier only — in the default tier, recognition happens in the
+        browser and this endpoint answers 501.
         """
+        from .stt import NoSTT
+
+        if isinstance(self.stt, NoSTT):
+            return web.json_response(
+                {
+                    "error": "Server-side STT is not configured (stt.backend: default — "
+                    "the portal uses browser speech recognition). Set stt.backend: "
+                    "custom with a url to enable audio-upload transcription."
+                },
+                status=501,
+            )
         try:
             reader = await request.multipart()
             audio_field = await reader.next()
@@ -3777,6 +3791,18 @@ projects:
 
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
+
+            # Default tier: play via OS voice — no shim, no WAV round-trip
+            if self.config.tts.backend == "default":
+                from .utils.speech import strip_speech_tags
+
+                ok = await self._os_say(strip_speech_tags(text))
+                if ok:
+                    return web.json_response({"success": True, "tier": "default"})
+                return web.json_response(
+                    {"success": False, "error": "OS voice playback failed"},
+                    status=500,
+                )
 
             # Get session config for defaults
             session_config = self._get_session_config(name)
@@ -4918,6 +4944,36 @@ projects:
             logger.error(f"Notify API failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _os_say(self, text: str) -> bool:
+        """Speak via the OS voice (macOS `say` / Linux `espeak`).
+
+        Default-tier fallback when no browser is connected anywhere.
+        """
+        import sys as _sys
+
+        binary = "say" if _sys.platform == "darwin" else "espeak"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, text,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            return proc.returncode == 0
+        except FileNotFoundError:
+            logger.warning(f"OS voice binary not found: {binary}")
+            return False
+
+    async def _speak_no_clients_fallback(self, text: str) -> bool:
+        """No browser connected: default tier falls back to the OS voice so
+        notifications stay audible; custom tier returns False (the CLI's
+        smart routing handles local playback there)."""
+        if self.config.tts.backend == "default":
+            from .utils.speech import strip_speech_tags
+
+            return await self._os_say(strip_speech_tags(text))
+        return False
+
     async def speak(self, session_name: str, text: str) -> bool:
         """Generate TTS audio and send to session clients.
 
@@ -4950,17 +5006,37 @@ projects:
             ]
             if not fanout_targets:
                 logger.warning(f"[{session_name}] speak: no dashboard listeners anywhere")
-                return False
+                return await self._speak_no_clients_fallback(text)
             logger.info(
                 f"[{session_name}] speak: no own clients, fanning out to "
                 f"{len(fanout_targets)} session(s): {[s.name for s in fanout_targets]}"
             )
         elif not session.clients:
             logger.warning(f"[{session_name}] speak: no session clients connected")
-            return False
+            return await self._speak_no_clients_fallback(text)
         else:
             logger.info(f"[{session_name}] speak: {len(session.clients)} session client(s)")
 
+        # Notify clients TTS is starting (session clients + dashboard)
+        tts_start_msg = {"type": "tts_start", "session": session_name, "text": text}
+        broadcast_to = fanout_targets if fanout_targets else [session]
+        for target in broadcast_to:
+            await self._broadcast(target, tts_start_msg)
+
+        # Default tier: browsers synthesize speech themselves — broadcast the
+        # text (tags stripped) instead of generated audio. No voice resolution,
+        # no chunking (speechSynthesis handles long text in the client).
+        if self.config.tts.backend == "default":
+            from .utils.speech import strip_speech_tags
+
+            clean = strip_speech_tags(text)
+            speak_msg = {"type": "speak_text", "session": session_name, "text": clean}
+            for target in broadcast_to:
+                await self._broadcast(target, speak_msg)
+            await self.broadcast_dashboard("audio_playing", {"session": session_name})
+            return True
+
+        # Custom tier: generate audio via the shim and broadcast WAV chunks.
         # Get voice settings (resolve "random" once per session)
         voice = session.config.voice or self.config.tts.default_voice
         if voice.lower() == "random":
@@ -4969,12 +5045,6 @@ projects:
             logger.info(f"[{session_name}] Resolved random voice to: {voice}")
         exaggeration = session.config.exaggeration
         cfg_weight = session.config.cfg_weight
-
-        # Notify clients TTS is starting (session clients + dashboard)
-        tts_start_msg = {"type": "tts_start", "session": session_name, "text": text}
-        broadcast_to = fanout_targets if fanout_targets else [session]
-        for target in broadcast_to:
-            await self._broadcast(target, tts_start_msg)
         await self.broadcast_dashboard("tts_start", {"session": session_name, "text": text})
 
         try:

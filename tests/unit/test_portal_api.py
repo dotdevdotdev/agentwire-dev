@@ -481,3 +481,21 @@ class TestApiRestrictedMode:
         resp = await client.delete("/api/artifacts/.hidden-file")
         # Regex rejects filenames starting with dot
         assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# /transcribe under the default tier
+# ---------------------------------------------------------------------------
+
+
+class TestTranscribeDefaultTier:
+    async def test_transcribe_returns_501_without_custom_stt(self, portal_client):
+        client, server = portal_client
+        # Empty config → stt.backend "default" → NoSTT
+        from agentwire.stt import NoSTT
+        server.stt = NoSTT()
+
+        resp = await client.post("/transcribe", data=b"fakeaudio")
+        assert resp.status == 501
+        body = await resp.json()
+        assert "browser speech recognition" in body["error"]

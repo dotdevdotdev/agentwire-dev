@@ -193,3 +193,74 @@ class TestTtsEnvelope:
         server.config.tts.options = {"exaggeration": 0.9}
         opts = server._tts_envelope_options(0.5, 0.5)
         assert opts["exaggeration"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Default-tier speech path
+# ---------------------------------------------------------------------------
+
+
+def _client(name="c1"):
+    """Minimal fake WebSocket client."""
+    return MagicMock(name=name)
+
+
+class TestSpeakDefaultTier:
+    """server.config defaults to tts.backend == 'default' (empty config)."""
+
+    async def test_broadcasts_speak_text_with_tags_stripped(self, server):
+        server._broadcast = AsyncMock()
+        server.broadcast_dashboard = AsyncMock()
+        # Session with a connected client
+        from agentwire.server import Session
+        session = Session(name="dev", config=server._get_session_config("dev"))
+        session.clients.add(_client())
+        server.active_sessions["dev"] = session
+
+        ok = await server.speak("dev", "[laugh] hello <emotion:happy> world")
+
+        assert ok is True
+        sent = [c.args[1] for c in server._broadcast.await_args_list]
+        speak_msgs = [m for m in sent if m.get("type") == "speak_text"]
+        assert speak_msgs == [{"type": "speak_text", "session": "dev", "text": "hello world"}]
+        # tts_start still announced
+        assert any(m.get("type") == "tts_start" for m in sent)
+        server.broadcast_dashboard.assert_any_await("audio_playing", {"session": "dev"})
+
+    async def test_no_clients_falls_back_to_os_voice(self, server):
+        server._broadcast = AsyncMock()
+        server.broadcast_dashboard = AsyncMock()
+        server._os_say = AsyncMock(return_value=True)
+
+        ok = await server.speak("dev", "[sigh] all alone")
+
+        assert ok is True
+        server._os_say.assert_awaited_once_with("all alone")
+        # No speak_text broadcast happened (no clients)
+        sent = [c.args[1] for c in server._broadcast.await_args_list]
+        assert not any(m.get("type") == "speak_text" for m in sent)
+
+    async def test_custom_tier_no_clients_returns_false(self, server):
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+        server._os_say = AsyncMock()
+
+        ok = await server.speak("dev", "hello")
+
+        assert ok is False
+        server._os_say.assert_not_awaited()
+
+    async def test_notifications_fanout_speaks_text_to_other_sessions(self, server):
+        server._broadcast = AsyncMock()
+        server.broadcast_dashboard = AsyncMock()
+        from agentwire.server import Session
+        other = Session(name="dev", config=server._get_session_config("dev"))
+        other.clients.add(_client())
+        server.active_sessions["dev"] = other
+
+        ok = await server.speak("agentwire-notifications", "heads up")
+
+        assert ok is True
+        # speak_text went to the fan-out target, not the notifications session
+        targets = [c.args[0] for c in server._broadcast.await_args_list]
+        assert all(t.name == "dev" for t in targets)
