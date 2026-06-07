@@ -792,10 +792,15 @@ def transcribe(audio_base64: str, format: str = "webm") -> str:
     portal_url = get_portal_url()
     url = f"{portal_url}/transcribe"
 
+    from .security import get_local_portal_token
+
+    token = get_local_portal_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
     try:
         # Create multipart form data
         files = {"audio": (f"audio.{format}", audio_bytes, mime_type)}
-        response = requests.post(url, files=files, verify=False, timeout=60)
+        response = requests.post(url, files=files, headers=headers, verify=False, timeout=60)
 
         if response.status_code != 200:
             return f"Transcription request failed: HTTP {response.status_code}"
@@ -2747,14 +2752,19 @@ def _portal_request(method: str, path: str, body: dict | None = None) -> dict:
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    from .security import get_local_portal_token
+
+    token = get_local_portal_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
     url = f"{get_portal_url()}{path}"
     try:
         if method == "GET":
-            resp = requests.get(url, verify=False, timeout=10)
+            resp = requests.get(url, headers=headers, verify=False, timeout=10)
         elif method == "DELETE":
-            resp = requests.delete(url, verify=False, timeout=10)
+            resp = requests.delete(url, headers=headers, verify=False, timeout=10)
         else:
-            resp = requests.post(url, json=body or {}, verify=False, timeout=10)
+            resp = requests.post(url, json=body or {}, headers=headers, verify=False, timeout=10)
 
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}"}

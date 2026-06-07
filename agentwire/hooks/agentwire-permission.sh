@@ -117,9 +117,28 @@ get_portal_url() {
 
 base_url=$(get_portal_url)
 
+# Portal auth token: server.auth_token in config.yaml overrides the token file
+get_portal_token() {
+    if [ -f "$HOME/.agentwire/config.yaml" ]; then
+        local override=$(grep -E "^\s*auth_token:" "$HOME/.agentwire/config.yaml" 2>/dev/null | head -1 | sed 's/.*auth_token:[[:space:]]*//' | tr -d '"'"'" || true)
+        if [ -n "$override" ]; then
+            echo "$override"
+            return
+        fi
+    fi
+    if [ -f "$HOME/.agentwire/portal.token" ]; then
+        tr -d '\n' < "$HOME/.agentwire/portal.token"
+    fi
+}
+
+token=$(get_portal_token)
+auth_args=()
+[ -n "$token" ] && auth_args=(-H "Authorization: Bearer $token")
+
 # POST to portal and wait for response (5 minute timeout)
 response=$(curl -s -X POST "${base_url}/api/permission/${session}" \
     -H "Content-Type: application/json" \
+    "${auth_args[@]}" \
     -d "$input" \
     --max-time 300 \
     --insecure 2>/dev/null)

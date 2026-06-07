@@ -427,7 +427,10 @@ def _notify_portal(item_id: str, status: str, summary: str = "") -> None:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         from .config import get_config
+        from .security import get_local_portal_token
+
         portal_url = get_config().portal.url
+        token = get_local_portal_token()
 
         requests.post(
             f"{portal_url}/api/notify",
@@ -437,6 +440,7 @@ def _notify_portal(item_id: str, status: str, summary: str = "") -> None:
                 "status": status,
                 "summary": summary,
             },
+            headers={"Authorization": f"Bearer {token}"} if token else {},
             verify=False,
             timeout=5,
         )

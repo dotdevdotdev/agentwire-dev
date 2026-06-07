@@ -40,6 +40,8 @@ from .security import (
     WS_PROTOCOL_PREFIX,
     create_security_middleware,
     ensure_auth_token,
+    is_loopback_host,
+    resolve_auth_token,
     validate_startup_security,
 )
 from .worktree import parse_session_name
@@ -5014,10 +5016,15 @@ projects:
 
 async def run_server(config: Config):
     """Run the AgentWire server."""
-    # Resolve (auto-generating if needed) the auth token before the server is
-    # built — the security middleware reads it from config. Non-loopback
-    # binds without a token refuse to start.
-    config.server.auth_token = ensure_auth_token(config)
+    # Resolve the auth token before the server is built — the security
+    # middleware reads it from config. Non-loopback binds auto-generate a
+    # token and refuse to start without one; loopback binds only enforce a
+    # token if one is already configured (origin checks cover the browser
+    # vector locally).
+    if is_loopback_host(config.server.host):
+        config.server.auth_token = resolve_auth_token(config)
+    else:
+        config.server.auth_token = ensure_auth_token(config)
     validate_startup_security(config)
 
     server = AgentWireServer(config)

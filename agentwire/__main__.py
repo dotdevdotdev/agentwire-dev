@@ -553,6 +553,22 @@ def _get_machine_config(machine_id: str) -> dict | None:
     return None
 
 
+def _portal_auth_curl_args() -> list[str]:
+    """curl args carrying the portal auth token, if one is configured."""
+    from .security import get_local_portal_token
+
+    token = get_local_portal_token()
+    return ["-H", f"Authorization: Bearer {token}"] if token else []
+
+
+def _portal_auth_headers() -> dict:
+    """Headers carrying the portal auth token, if one is configured."""
+    from .security import get_local_portal_token
+
+    token = get_local_portal_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _portal_api(method: str, path: str, data: dict | None = None, timeout: int = 10) -> dict | None:
     """Make an API request to the portal using curl (reliable with self-signed certs).
 
@@ -563,6 +579,7 @@ def _portal_api(method: str, path: str, data: dict | None = None, timeout: int =
     url = f"{portal_url}{path}"
 
     cmd = ["curl", "-sk", "--max-time", str(timeout), "-o", "-", "-w", "\n%{http_code}"]
+    cmd.extend(_portal_auth_curl_args())
     if method == "POST":
         cmd.extend(["-X", "POST", "-H", "Content-Type: application/json"])
         if data is not None:
@@ -722,6 +739,7 @@ def _notify_portal_sessions_changed():
             "https://localhost:8765/api/sessions/refresh",
             method="POST",
             data=b"",
+            headers=_portal_auth_headers(),
         )
         urllib.request.urlopen(req, timeout=2, context=ctx)
     except Exception:
@@ -1093,6 +1111,55 @@ def cmd_portal_status(args) -> int:
             if direct_url != url:
                 print(f"  Also checked: {direct_url}")
         return 1
+
+
+def cmd_portal_token(args) -> int:
+    """Print (or rotate) the portal auth token."""
+    from .security import (
+        TOKEN_FILE,
+        generate_token,
+        get_local_portal_token,
+        write_token_file,
+    )
+
+    config = load_config()
+    override = config.get("server", {}).get("auth_token")
+
+    if getattr(args, "rotate", False):
+        token = generate_token()
+        write_token_file(token)
+        print(token)
+        print(f"\nNew token written to {TOKEN_FILE}", file=sys.stderr)
+        print(
+            "Restart the portal (agentwire portal restart) and re-enter the "
+            "token on remote devices.",
+            file=sys.stderr,
+        )
+        if override:
+            print(
+                "Warning: server.auth_token is set in config.yaml and overrides "
+                "the token file — rotation has no effect until it's removed.",
+                file=sys.stderr,
+            )
+        return 0
+
+    if override == "":
+        print("Portal auth is disabled (server.auth_token: \"\" in config.yaml).", file=sys.stderr)
+        return 1
+
+    token = get_local_portal_token()
+    if not token:
+        print(
+            "No token configured yet — it's generated on first portal start, "
+            "or run `agentwire portal token --rotate` to create one now.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(token)
+    if override:
+        print("(from server.auth_token override in config.yaml)", file=sys.stderr)
+    return 0
 
 
 def cmd_portal_restart(args) -> int:
@@ -2043,7 +2110,7 @@ def _check_portal_connections(session: str, portal_url: str) -> tuple[bool, str]
         try:
             req = urllib.request.Request(
                 f"{portal_url}/api/sessions/{session_name}/connections",
-                headers={"Accept": "application/json"},
+                headers={"Accept": "application/json", **_portal_auth_headers()},
             )
 
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
@@ -2343,6 +2410,7 @@ def cmd_open(args) -> int:
         resp = requests.post(
             f"{portal_url}/api/desktop/window/open",
             json=body,
+            headers=_portal_auth_headers(),
             verify=False,
             timeout=10,
         )
@@ -2658,7 +2726,7 @@ def _remote_say(text: str, session: str, portal_url: str) -> int:
         req = urllib.request.Request(
             f"{portal_url}/api/say/{session}",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_portal_auth_headers()},
         )
 
         # 90 second timeout to handle RunPod cold starts
@@ -2764,7 +2832,7 @@ def cmd_notify(args) -> int:
         req = urllib.request.Request(
             f"{portal_url}/api/notify",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_portal_auth_headers()},
             method="POST"
         )
 
@@ -5624,7 +5692,8 @@ def _ping_scratchpad_changed() -> None:
         ctx.verify_mode = _ssl.CERT_NONE
         req = urllib.request.Request(
             f"{portal_url}/api/scratchpad/changed", data=b"{}",
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers={"Content-Type": "application/json", **_portal_auth_headers()},
+            method="POST",
         )
         urllib.request.urlopen(req, timeout=3, context=ctx)
     except Exception:
@@ -10176,6 +10245,15 @@ def main() -> int:
         "generate-certs", help="Generate SSL certificates"
     )
     portal_certs.set_defaults(func=cmd_generate_certs)
+
+    # portal token
+    portal_token = portal_subparsers.add_parser(
+        "token", help="Print the portal auth token (required for non-loopback binds)"
+    )
+    portal_token.add_argument(
+        "--rotate", action="store_true", help="Generate and save a new token"
+    )
+    portal_token.set_defaults(func=cmd_portal_token)
 
     # === tts command group ===
     tts_parser = subparsers.add_parser("tts", help="Manage TTS server")
