@@ -53,13 +53,20 @@ class SSLConfig:
 class ServerConfig:
     """WebSocket server configuration."""
 
-    # Local-only by default. The portal has no auth — binding 0.0.0.0 hands
-    # session control to anyone who can reach the port. Opt into LAN exposure
-    # explicitly via `server.host: 0.0.0.0` in config (see SECURITY.md).
+    # Local-only by default. Opt into LAN exposure explicitly via
+    # `server.host: 0.0.0.0` in config — non-loopback binds require an auth
+    # token (auto-generated at ~/.agentwire/portal.token; see SECURITY.md).
     host: str = "127.0.0.1"
     port: int = 8765
     ssl: SSLConfig = field(default_factory=SSLConfig)
     activity_threshold_seconds: float = 3.0  # Time in seconds before session is considered idle
+    # Exact origins (scheme://host[:port]) allowed on cross-origin browser
+    # requests, e.g. a Cloudflare Tunnel domain. The portal's own origin and
+    # localhost equivalents are always allowed.
+    allowed_origins: list = field(default_factory=list)
+    # None = use ~/.agentwire/portal.token (auto-generated). "" = auth
+    # disabled (loopback binds only). Any other string = explicit override.
+    auth_token: Optional[str] = None
 
 
 @dataclass
@@ -432,6 +439,9 @@ def _dict_to_config(data: dict) -> Config:
         port=server_data.get("port", 8765),
         ssl=ssl,
         activity_threshold_seconds=server_data.get("activity_threshold_seconds", 3.0),
+        allowed_origins=server_data.get("allowed_origins") or [],
+        # "" (explicit disable) must survive — don't collapse it to None.
+        auth_token=server_data.get("auth_token"),
     )
 
     # Projects

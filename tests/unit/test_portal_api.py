@@ -17,14 +17,39 @@ from agentwire.server import AgentWireServer
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-async def portal_client(tmp_path):
-    """Create an AgentWireServer and wrap in TestClient."""
+def _make_config(tmp_path, auth_token=None, allowed_origins=None):
     config = load_config(tmp_path / "nonexistent.yaml")
     # Override artifacts dir to use temp path
     config.artifacts = type(config.artifacts)(dir=tmp_path / "artifacts", max_size_mb=10)
-    (tmp_path / "artifacts").mkdir()
-    server = AgentWireServer(config)
+    (tmp_path / "artifacts").mkdir(exist_ok=True)
+    config.server.auth_token = auth_token
+    if allowed_origins:
+        config.server.allowed_origins = allowed_origins
+    return config
+
+
+@pytest.fixture
+async def portal_client(tmp_path):
+    """Create an AgentWireServer and wrap in TestClient."""
+    server = AgentWireServer(_make_config(tmp_path))
+    async with TestClient(TestServer(server.app)) as client:
+        yield client, server
+
+
+@pytest.fixture
+async def portal_client_with_token(tmp_path):
+    """Portal with bearer-token auth enforced."""
+    server = AgentWireServer(_make_config(tmp_path, auth_token="testtoken123"))
+    async with TestClient(TestServer(server.app)) as client:
+        yield client, server
+
+
+@pytest.fixture
+async def portal_client_with_origins(tmp_path):
+    """Portal with an allowed_origins entry (tunnel-domain case)."""
+    server = AgentWireServer(
+        _make_config(tmp_path, allowed_origins=["https://portal.example.com"])
+    )
     async with TestClient(TestServer(server.app)) as client:
         yield client, server
 
@@ -314,6 +339,120 @@ class TestApiNotify:
         client, server = portal_client
         resp = await client.post("/api/notify", json={"session": "test"})
         assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# Security middleware: Origin validation (CSRF guard)
+# ---------------------------------------------------------------------------
+
+
+class TestOriginValidation:
+    async def test_post_without_origin_allowed(self, portal_client):
+        """curl/CLI requests don't send Origin and must keep working."""
+        client, server = portal_client
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/notify", json={"event": "x"})
+        assert resp.status != 403
+
+    async def test_post_own_origin_allowed(self, portal_client):
+        client, server = portal_client
+        own = f"http://{client.host}:{client.port}"
+        server.broadcast_dashboard = AsyncMock()
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            resp = await client.post(
+                "/api/notify", json={"event": "x"}, headers={"Origin": own}
+            )
+        assert resp.status != 403
+
+    async def test_post_evil_origin_rejected(self, portal_client):
+        client, _ = portal_client
+        resp = await client.post(
+            "/api/notify", json={"event": "x"},
+            headers={"Origin": "https://evil.example"},
+        )
+        assert resp.status == 403
+
+    async def test_non_api_mutators_covered(self, portal_client):
+        """Mutating routes outside /api/ (upload, transcribe) are guarded too."""
+        client, _ = portal_client
+        for path in ("/upload", "/transcribe"):
+            resp = await client.post(
+                path, headers={"Origin": "https://evil.example"}
+            )
+            assert resp.status == 403, path
+
+    async def test_get_with_evil_origin_allowed(self, portal_client):
+        """Origin check only applies to state-changing methods."""
+        client, _ = portal_client
+        resp = await client.get(
+            "/health", headers={"Origin": "https://evil.example"}
+        )
+        assert resp.status == 200
+
+    async def test_allowed_origins_entry(self, portal_client_with_origins):
+        client, server = portal_client_with_origins
+        server.broadcast_dashboard = AsyncMock()
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            resp = await client.post(
+                "/api/notify", json={"event": "x"},
+                headers={"Origin": "https://portal.example.com"},
+            )
+        assert resp.status != 403
+
+
+# ---------------------------------------------------------------------------
+# Security middleware: bearer-token auth
+# ---------------------------------------------------------------------------
+
+
+AUTH = {"Authorization": "Bearer testtoken123"}
+
+
+class TestTokenAuth:
+    async def test_missing_token_401(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.get("/api/sessions/local")
+        assert resp.status == 401
+        assert resp.headers["WWW-Authenticate"].startswith("Bearer")
+
+    async def test_wrong_token_401(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.get(
+            "/api/sessions/local", headers={"Authorization": "Bearer nope"}
+        )
+        assert resp.status == 401
+
+    async def test_right_token_ok(self, portal_client_with_token):
+        client, server = portal_client_with_token
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            resp = await client.get("/api/sessions/local", headers=AUTH)
+        assert resp.status == 200
+
+    async def test_mutation_requires_token(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.post("/api/notify", json={"event": "x"})
+        assert resp.status == 401
+
+    async def test_public_surface_open(self, portal_client_with_token):
+        """The page shell + health must load so the token modal can render."""
+        client, _ = portal_client_with_token
+        assert (await client.get("/health")).status == 200
+        assert (await client.get("/")).status == 200
+        resp = await client.get("/static/js/api.js")
+        assert resp.status != 401
+
+    async def test_no_token_configured_open(self, portal_client):
+        """Loopback default: no token configured behaves as before."""
+        client, server = portal_client
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            resp = await client.get("/api/sessions/local")
+        assert resp.status == 200
 
 
 # ---------------------------------------------------------------------------

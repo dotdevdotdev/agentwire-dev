@@ -16,6 +16,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -42,6 +43,20 @@ async def portal_client(tmp_path, monkeypatch):
     # Subprocess shouldn't fire from any WS path we test.
     server.run_agentwire_cmd = AsyncMock(return_value=(True, {"sessions": []}))
 
+    async with TestClient(TestServer(server.app)) as client:
+        yield client, server
+
+
+@pytest.fixture
+async def portal_client_with_token(tmp_path):
+    """Server with bearer-token auth enforced on WS upgrades."""
+    config = load_config(tmp_path / "nonexistent.yaml")
+    config.server.auth_token = "testtoken123"
+    server = AgentWireServer(config)
+    server.agent = MagicMock()
+    server.agent.get_output = MagicMock(return_value="initial scrollback")
+    server.agent.machines = []
+    server.run_agentwire_cmd = AsyncMock(return_value=(True, {"sessions": []}))
     async with TestClient(TestServer(server.app)) as client:
         yield client, server
 
@@ -181,5 +196,84 @@ class TestTerminalWebSocket:
             except asyncio.TimeoutError:
                 pass
         assert "local-session" in server.active_sessions
+
+
+# ---------------------------------------------------------------------------
+# Security: WS upgrade auth (subprotocol bearer) + Origin validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestWebSocketSecurity:
+    async def test_ws_without_token_rejected(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
+            await client.ws_connect("/ws")
+        assert exc.value.status == 401
+
+    async def test_ws_wrong_token_rejected(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
+            await client.ws_connect(
+                "/ws/test-session", protocols=("agentwire.bearer.wrong",)
+            )
+        assert exc.value.status == 401
+
+    async def test_ws_with_token_connects_and_echoes_protocol(
+        self, portal_client_with_token
+    ):
+        client, _ = portal_client_with_token
+        async with client.ws_connect(
+            "/ws/test-session", protocols=("agentwire.bearer.testtoken123",)
+        ) as ws:
+            assert ws.protocol == "agentwire.bearer.testtoken123"
+            msg = await _recv_json(ws)
+            assert msg["type"] == "output"
+
+    async def test_ws_bearer_header_also_accepted(self, portal_client_with_token):
+        """Non-browser WS clients can use a plain Authorization header."""
+        client, _ = portal_client_with_token
+        async with client.ws_connect(
+            "/ws/test-session",
+            headers={"Authorization": "Bearer testtoken123"},
+        ) as ws:
+            msg = await _recv_json(ws)
+            assert msg["type"] == "output"
+
+    async def test_ws_evil_origin_rejected_even_with_token(
+        self, portal_client_with_token
+    ):
+        client, _ = portal_client_with_token
+        with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
+            await client.ws_connect(
+                "/ws/test-session",
+                protocols=("agentwire.bearer.testtoken123",),
+                headers={"Origin": "https://evil.example"},
+            )
+        assert exc.value.status == 403
+
+    async def test_terminal_ws_with_token_and_query_params(
+        self, portal_client_with_token
+    ):
+        client, server = portal_client_with_token
+        # Token via subprotocol coexists with cols/rows query params.
+        async with client.ws_connect(
+            "/ws/terminal/local-session?cols=80&rows=24",
+            protocols=("agentwire.bearer.testtoken123",),
+        ) as ws:
+            try:
+                await asyncio.wait_for(ws.receive(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+        assert "local-session" in server.active_sessions
+
+    async def test_ws_no_token_configured_open(self, portal_client):
+        """Loopback default: no token configured, WS connects as before."""
+        client, _ = portal_client
+        async with client.ws_connect("/ws/test-session") as ws:
+            msg = await _recv_json(ws)
+            assert msg["type"] == "output"
+
+
 
 
