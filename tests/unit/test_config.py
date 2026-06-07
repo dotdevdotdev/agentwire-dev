@@ -191,3 +191,15 @@ class TestVoiceBackends:
         config = load_config(tmp_path / "nonexistent.yaml")
         assert not hasattr(config.tts, "runpod_endpoint_id")
         assert not hasattr(config.tts, "runpod_api_key")
+
+    def test_portal_scheme_follows_ssl_state(self, tmp_path):
+        # No certs → http everywhere
+        config = load_config(tmp_path / "nonexistent.yaml")
+        assert config.portal.url.startswith("http://")
+        assert config.services.portal.scheme == "http"
+
+    def test_explicit_portal_scheme_wins(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"services": {"portal": {"scheme": "https"}}}))
+        config = load_config(path)
+        assert config.services.portal.scheme == "https"

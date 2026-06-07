@@ -218,7 +218,7 @@ class ArtifactsConfig:
 class PortalConfig:
     """Portal connection settings (for remote machines)."""
 
-    url: str = "https://localhost:8765"  # URL to reach the portal
+    url: str = "http://localhost:8765"  # URL to reach the portal (https when SSL certs exist)
 
 
 @dataclass
@@ -279,7 +279,7 @@ class CustomServiceConfig:
 class ServicesConfig:
     """Where each service runs in the network."""
 
-    portal: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8765, scheme="https"))
+    portal: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8765))
     tts: ServiceConfig = field(default_factory=lambda: ServiceConfig(port=8100, scheme="http"))
     custom: list = field(default_factory=list)  # list[CustomServiceConfig]
 
@@ -551,10 +551,12 @@ def _dict_to_config(data: dict) -> Config:
         max_size_mb=artifacts_data.get("max_size_mb", 10),
     )
 
-    # Portal
+    # Portal — scheme follows SSL state unless explicitly configured, so a
+    # fresh no-cert install gets working http URLs out of the box
+    portal_scheme = "https" if ssl.enabled else "http"
     portal_data = data.get("portal", {})
     portal = PortalConfig(
-        url=portal_data.get("url", "https://localhost:8765"),
+        url=portal_data.get("url", f"{portal_scheme}://localhost:8765"),
     )
 
     # Services (network service locations)
@@ -565,7 +567,7 @@ def _dict_to_config(data: dict) -> Config:
         machine=portal_service_data.get("machine"),
         port=portal_service_data.get("port", 8765),
         health_endpoint=portal_service_data.get("health_endpoint", "/health"),
-        scheme=portal_service_data.get("scheme", "https"),  # Portal defaults to HTTPS
+        scheme=portal_service_data.get("scheme", portal_scheme),
     )
     tts_service = ServiceConfig(
         machine=tts_service_data.get("machine"),
