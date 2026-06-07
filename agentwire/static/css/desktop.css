@@ -4698,6 +4698,106 @@ body.sidebar-pinned .sidebar-tab {
     padding: var(--spacing-base) calc(var(--spacing-base) * 1.5);
     border-top: 1px solid var(--chrome-border);
     flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+/* Instant-mode banner (default voice tier upsell) */
+.instant-mode-banner {
+    position: relative;
+    flex-basis: 100%;
+    padding: calc(var(--spacing-base) * 1.25);
+    margin-bottom: var(--spacing-base);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius, 6px);
+    background: var(--chrome);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.instant-mode-banner-title {
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 4px;
+}
+
+.instant-mode-banner-body {
+    color: var(--text-secondary, inherit);
+}
+
+.instant-mode-banner-body a {
+    color: var(--accent);
+}
+
+.instant-mode-banner-dismiss {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    border: none;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 11px;
+    opacity: 0.6;
+}
+
+.instant-mode-banner-dismiss:hover {
+    opacity: 1;
+}
+
+/* Edit-before-send transcript bars (default STT tier) */
+.sidebar-transcript-bar,
+.wb-transcript-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.sidebar-transcript-bar {
+    flex-basis: 100%;
+    margin-bottom: var(--spacing-base);
+}
+
+.wb-transcript-bar {
+    padding: 4px 6px;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--chrome-border);
+}
+
+.sidebar-transcript-input,
+.wb-transcript-input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius, 4px);
+    background: var(--bg, transparent);
+    color: inherit;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+.sidebar-transcript-send,
+.sidebar-transcript-dismiss,
+.wb-transcript-send,
+.wb-transcript-dismiss {
+    border: none;
+    background: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 4px;
+    line-height: 1;
+}
+
+.sidebar-transcript-dismiss,
+.wb-transcript-dismiss {
+    color: inherit;
+    opacity: 0.6;
+}
+
+.sidebar-transcript-dismiss:hover,
+.wb-transcript-dismiss:hover {
+    opacity: 1;
 }
 
 .sidebar-ptt {

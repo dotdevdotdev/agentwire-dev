@@ -33,6 +33,24 @@
             <!-- Phase 3: list panel accordion sections mount here -->
         </div>
         <div class="sidebar-footer">
+            <div class="instant-mode-banner" id="instantModeBanner" hidden>
+                <div class="instant-mode-banner-title">⚡ Instant voice mode</div>
+                <div class="instant-mode-banner-body">
+                    Browser speech in, browser voice out — works now, sounds robotic.
+                    A custom shim adds cloned voices, Whisper accuracy, and
+                    phone-from-anywhere.
+                    <a href="https://github.com/dotdevdotdev/agentwire-dev/blob/main/docs/wiki/voice/shim-contract.md"
+                       target="_blank" rel="noopener">Shim contract →</a>
+                </div>
+                <button class="instant-mode-banner-dismiss" id="instantModeBannerDismiss"
+                        title="Dismiss" aria-label="Dismiss instant mode banner">✕</button>
+            </div>
+            <div class="sidebar-transcript-bar" id="sidebarTranscriptBar" hidden>
+                <input type="text" class="sidebar-transcript-input" id="sidebarTranscriptInput"
+                       aria-label="Voice transcript — edit then press Enter to send" />
+                <button class="sidebar-transcript-send" id="sidebarTranscriptSend" title="Send (Enter)">➤</button>
+                <button class="sidebar-transcript-dismiss" id="sidebarTranscriptDismiss" title="Discard (Esc)">✕</button>
+            </div>
             <button class="sidebar-ptt" id="sidebarGlobalPtt" title="Hold to talk to AgentWire (Ctrl+Space)">
                 <span class="ptt-icon">🎤</span>
             </button>

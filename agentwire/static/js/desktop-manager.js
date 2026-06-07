@@ -11,6 +11,7 @@
  */
 
 import { apiFetch, wsProtocols } from './api.js';
+import * as browserTts from './voice/browser-tts.js';
 
 // Reconnect configuration
 const INITIAL_RECONNECT_DELAY = 1000;
@@ -286,6 +287,12 @@ class DesktopManager {
                 // Lightweight notification that audio is playing (no data)
                 // Used for activity indicators without triggering playback
                 this.emit('audio', { session: msg.session });
+                break;
+
+            case 'speak_text':
+                // Default TTS tier: the server sends text, the browser
+                // synthesizes locally via speechSynthesis
+                this._speakText(msg.text, msg.session);
                 break;
 
             case 'audio_done':
@@ -700,6 +707,49 @@ class DesktopManager {
             console.error('[DesktopManager] Failed to fetch config:', error);
             return this.config;
         }
+    }
+
+    /**
+     * Fetch voice tier/availability — drives PTT path selection (browser
+     * speech vs audio upload) and the instant-mode banner.
+     */
+    async fetchVoiceStatus() {
+        try {
+            const response = await apiFetch('/api/voice-status');
+            this.voiceStatus = await response.json();
+        } catch (error) {
+            console.error('[DesktopManager] Failed to fetch voice status:', error);
+            // Fail toward the zero-dependency tier
+            this.voiceStatus = {
+                stt: { backend: 'default', available: true },
+                tts: { backend: 'default', available: true },
+                corrections: {},
+                instant_mode: true,
+            };
+        }
+        this.emit('voice_status', this.voiceStatus);
+        return this.voiceStatus;
+    }
+
+    /**
+     * Speak text via browser speechSynthesis (default-tier `speak_text`
+     * messages). Emits the same audio/audio_ended events as WAV playback so
+     * voice indicators behave identically in both tiers.
+     */
+    _speakText(text, session) {
+        if (!text) return;
+        // Device-level dedupe (multiple windows, same device) — mirror _playAudio
+        const hash = `st-${text.substring(0, 100)}-${text.length}`;
+        const now = Date.now();
+        if (hash === this._lastAudioHash && (now - this._lastAudioTime) < 2000) return;
+        this._lastAudioHash = hash;
+        this._lastAudioTime = now;
+
+        this.emit('audio', { session });
+        browserTts.speak(text, {
+            voiceName: this.voiceStatus?.tts?.default_voice || null,
+            onEnd: () => this.emit('audio_ended', { session }),
+        });
     }
 
     /**
