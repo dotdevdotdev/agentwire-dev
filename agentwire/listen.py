@@ -28,7 +28,7 @@ def _find_executable(name: str, fallback_paths: list[str] | None = None) -> str:
     Returns:
         Path to executable, or the name itself if not found (will fail at runtime)
     """
-    # Check config first (executables.ffmpeg, executables.whisperkit, etc.)
+    # Check config first (executables.ffmpeg, etc.)
     exe_config = _load_executables_config()
     if name in exe_config:
         configured_path = Path(exe_config[name]).expanduser()
@@ -52,7 +52,6 @@ def _find_executable(name: str, fallback_paths: list[str] | None = None) -> str:
 
 # Find executables - check config, then PATH, then common locations for Hammerspoon
 FFMPEG_PATH = _find_executable("ffmpeg", ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"])
-WHISPERKIT_PATH = _find_executable("whisperkit-cli", ["/opt/homebrew/bin/whisperkit-cli"])
 HS_PATH = _find_executable("hs", ["/opt/homebrew/bin/hs", "/usr/local/bin/hs"])
 AGENTWIRE_PATH = _find_executable("agentwire", [
     str(Path.home() / ".local" / "bin" / "agentwire"),
@@ -269,56 +268,28 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
     log("Transcribing...")
     notify("Transcribing...")
 
-    # Get config
+    # Get config — `agentwire listen` records on the host, so it needs a
+    # custom STT shim (browser-tier recognition isn't reachable from the CLI)
     config = load_config()
     stt_config = config.get("stt", {})
+    if stt_config.get("backend", "default") != "custom":
+        log("ERROR: agentwire listen requires stt.backend: custom")
+        notify("listen requires a custom STT shim")
+        print("Error: `agentwire listen` records on the host and needs a custom STT "
+              "shim (stt.backend: custom). The default tier transcribes in the "
+              "browser portal instead. See docs/wiki/voice/shim-contract.md.")
+        beep("error")
+        return 1
     stt_url = stt_config.get("url", "http://localhost:8101")
 
-    text = ""
-
-    # Try STT server first (instant if running)
     text = transcribe_via_server(AUDIO_FILE, stt_url)
-
     if text:
-        log(f"Used STT server at {stt_url}")
+        log(f"Used STT shim at {stt_url}")
     else:
-        # Fall back to whisperkit-cli (slower cold start)
-        log("STT server unavailable, using whisperkit-cli...")
-        model_path = stt_config.get("model_path") or os.path.expanduser(
-            "~/Library/Application Support/MacWhisper/models/whisperkit/models/"
-            "argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930"
-        )
-
-        try:
-            result = subprocess.run(
-                [
-                    WHISPERKIT_PATH, "transcribe",
-                    "--audio-path", str(AUDIO_FILE),
-                    "--model-path", model_path,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-
-            if result.returncode != 0:
-                log(f"ERROR: whisperkit-cli failed: {result.stderr}")
-                notify("Transcription failed")
-                beep("error")
-                return 1
-
-            text = result.stdout.strip()
-
-        except subprocess.TimeoutExpired:
-            log("ERROR: whisperkit-cli timed out")
-            notify("Transcription timed out")
-            beep("error")
-            return 1
-        except Exception as e:
-            log(f"ERROR: STT failed: {e}")
-            notify(f"Transcription failed: {e}")
-            beep("error")
-            return 1
+        log(f"ERROR: STT shim at {stt_url} unavailable or returned nothing")
+        notify("Transcription failed — STT shim unreachable")
+        beep("error")
+        return 1
 
     if not text:
         log("ERROR: No speech detected")

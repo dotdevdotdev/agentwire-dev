@@ -26,7 +26,7 @@ def minimal_config_yaml():
     return {
         "server": {"host": "0.0.0.0", "port": 8765},
         "projects": {"dir": "~/projects"},
-        "tts": {"backend": "none"},
+        "tts": {"backend": "default"},
     }
 
 

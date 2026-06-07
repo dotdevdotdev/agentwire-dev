@@ -30,15 +30,15 @@ Walk through each service interactively. For each:
 
 TTS converts agent responses to spoken audio that plays in the browser or local speakers.
 
-**Options:**
-- `kokoro` - Local server, CPU-only, no GPU required — recommended for Mac and most users
-- `chatterbox` - Local server, high quality voice cloning, requires GPU for fast inference
-- `runpod` - Cloud API using RunPod serverless, no local GPU needed, costs ~$0.0001/request
-- `none` - Text only, no voice output
+**Two tiers:**
+- `default` — zero setup. Browser speechSynthesis in the portal, OS voice (`say`/`espeak`) when no browser is connected. Robotic but instant. **This is what an empty config gets — most users should start here.**
+- `custom` — any HTTP shim implementing the contract (`docs/wiki/voice/shim-contract.md`). The bundled multi-engine server (kokoro CPU, chatterbox GPU cloning, qwen, zonos) is the reference shim.
 
-**If kokoro (recommended for most users):**
+**If default:** nothing to do — it already works.
+
+**If custom (bundled reference shim):**
 ```bash
-# Start the TTS server (uses Kokoro — CPU, no GPU required)
+# Start the TTS server (kokoro engine — CPU, no GPU required)
 agentwire tts start
 
 # Test it
@@ -48,48 +48,24 @@ curl http://localhost:8100/voices
 Update `~/.agentwire/config.yaml`:
 ```yaml
 tts:
-  backend: "kokoro"
-  default_voice: "af_heart"  # or another voice from /voices
-```
-
-**If chatterbox (GPU required for fast inference):**
-```bash
-agentwire tts start
-curl http://localhost:8100/voices
-```
-
-Update `~/.agentwire/config.yaml`:
-```yaml
-tts:
-  backend: "chatterbox"
-  default_voice: "default"
-```
-
-**If runpod:**
-They'll need a RunPod account and endpoint. Guide them through:
-1. Creating a RunPod serverless endpoint for Chatterbox
-2. Getting their endpoint ID and API key
-3. Setting in config.yaml
-
-Update `~/.agentwire/config.yaml`:
-```yaml
-tts:
-  backend: "runpod"
-  runpod_endpoint_id: "abc123"
-  runpod_api_key: "rp_xxxxx"
-  default_voice: "default"
+  backend: "custom"
+  url: "http://localhost:8100"
+  default_voice: "af_heart"   # or another voice from /voices
+  options:
+    backend: kokoro           # engine for the bundled shim
 ```
 
 ### 2. Speech-to-Text (STT)
 
 STT converts voice input (push-to-talk) to text that gets sent to agents.
 
-**Options:**
-- Local STT server using faster-whisper (recommended)
-- External STT service URL
-- Disabled (type to communicate)
+**Two tiers:**
+- `default` — zero setup. Chrome speech recognition in the portal (Chrome is the blessed browser for this tier). **Empty config gets this.**
+- `custom` — any HTTP shim. The bundled moonshine/faster-whisper server is the reference shim (better accuracy, works from any browser/device).
 
-**Setup local STT:**
+**If default:** nothing to do — it already works in Chrome.
+
+**If custom (bundled reference shim):**
 ```bash
 # Start the STT server (uses Moonshine ONNX by default — fast CPU inference)
 agentwire stt start
@@ -101,9 +77,8 @@ curl http://localhost:8101/health
 Update `~/.agentwire/config.yaml`:
 ```yaml
 stt:
-  url: "http://localhost:8101"   # or empty to disable
-  backend: "auto"                # auto (moonshine → faster-whisper fallback), moonshine, whisper
-  moonshine_model: "moonshine/base"  # or moonshine/tiny for maximum speed
+  backend: "custom"
+  url: "http://localhost:8101"
 ```
 
 ### 3. SSL Certificates
@@ -201,14 +176,14 @@ When done:
 ## Example Flow
 
 ```
-You: "Let's set up text-to-speech so I can talk back to you. Do you have a GPU on this machine, or would you prefer using RunPod's cloud API?"
+You: "Voice already works out of the box — browser speech in, browser voice out. Want to upgrade to a real TTS engine with cloned voices? The bundled server runs on CPU."
 
-User: "I have an M1 Mac"
+User: "Sure, let's do it"
 
-You: "Perfect, the local Chatterbox server runs great on Apple Silicon. Let me start it up and test it..."
+You: "Starting the bundled TTS shim with the kokoro engine..."
 [runs agentwire tts start]
 [tests curl localhost:8100/voices]
-"TTS is working. I'll update your config. Want to pick a default voice, or stick with 'default' for now?"
+"TTS is working. I'll set tts.backend: custom in your config. Want to pick a default voice, or stick with 'af_heart' for now?"
 ```
 
 Remember: You're helping someone get set up, not interrogating them. Be helpful and move efficiently through the setup.

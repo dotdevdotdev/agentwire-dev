@@ -656,7 +656,8 @@ def say(text: str, session: str | None = None, voice: str | None = None) -> str:
     Returns:
         Success message or error description.
     """
-    # Quick TTS health check — fail fast if server is unreachable
+    # Quick TTS health check — fail fast if a custom shim is unreachable.
+    # Default tier has no server dependency (browser/OS voice), nothing to probe.
     try:
         import urllib.request
 
@@ -664,7 +665,7 @@ def say(text: str, session: str | None = None, voice: str | None = None) -> str:
         from .network import NetworkContext
 
         cfg = load_typed_config()
-        if cfg.tts.backend not in ("runpod", "none"):
+        if cfg.tts.backend == "custom":
             ctx = NetworkContext.from_config()
             tts_url = ctx.get_service_url("tts", use_tunnel=True)
             urllib.request.urlopen(f"{tts_url}/health", timeout=3)

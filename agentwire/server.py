@@ -288,9 +288,6 @@ class AgentWireServer:
                 "url": self.config.tts.url,
                 "exaggeration": self.config.tts.exaggeration,
                 "cfg_weight": self.config.tts.cfg_weight,
-                "runpod_endpoint_id": self.config.tts.runpod_endpoint_id,
-                "runpod_api_key": self.config.tts.runpod_api_key,
-                "runpod_timeout": self.config.tts.runpod_timeout,
             },
             "stt": {
                 "url": self.config.stt.url,
@@ -311,13 +308,7 @@ class AgentWireServer:
         from .agents import get_agent_backend
         from .stt import get_stt_backend
 
-        try:
-            self.stt = get_stt_backend(self.config)
-        except ValueError as e:
-            logger.warning(f"STT backend not available: {e}")
-            from .stt import NoSTT
-
-            self.stt = NoSTT()
+        self.stt = get_stt_backend(self.config)
         self.agent = get_agent_backend(config_dict)
 
         # Create HTTP session for TTS server calls
@@ -3254,25 +3245,28 @@ class AgentWireServer:
             try:
                 content = config_path.read_text()
                 # SECURITY: Redact sensitive fields before returning
-                # Matches patterns like: runpod_api_key: "secret" or auth_token: secret
+                # Matches patterns like: api_key: "secret" or auth_token: secret
                 content = re.sub(
-                    r'((?:runpod_api_key|auth_token)\s*:\s*)["\']?[^"\'\n]+["\']?',
+                    r'((?:api_key|auth_token)\s*:\s*)["\']?[^"\'\n]+["\']?',
                     r'\1"[REDACTED]"',
                     content
                 )
             except IOError as e:
                 return web.json_response({"error": str(e)})
         else:
-            # Return default config template
+            # Return default config template (instant mode: browser voice, loopback)
             content = """# AgentWire Configuration
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8765
 
 tts:
-  backend: "chatterbox"
-  url: "http://localhost:8100"
-  default_voice: "default"
+  backend: "default"  # browser voice — or "custom" with url: pointing at your shim
+  # url: "http://localhost:8100"
+
+stt:
+  backend: "default"  # browser speech recognition — or "custom" with url:
+  # url: "http://localhost:8101"
 
 projects:
   dir: "~/projects"
