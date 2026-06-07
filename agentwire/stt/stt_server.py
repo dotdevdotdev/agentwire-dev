@@ -224,6 +224,22 @@ async def health():
     }
 
 
+@app.get("/capabilities")
+async def capabilities():
+    """Shim contract: capability discovery for agentwire.
+
+    Plain transcription shim — no special input vocabulary, so `tool_prompt`
+    is empty unless the operator sets AGENTWIRE_STT_TOOL_PROMPT.
+    """
+    import os
+
+    return {
+        "tool_prompt": os.environ.get("AGENTWIRE_STT_TOOL_PROMPT", ""),
+        "model": model_info,
+        "languages": ["en"],
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

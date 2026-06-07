@@ -322,27 +322,42 @@ class AgentWireServer:
         if self._http_session:
             await self._http_session.close()
 
+    def _tts_envelope_options(self, exaggeration: float, cfg_weight: float) -> dict:
+        """Session knobs + config pass-through, merged into the shim `options`."""
+        return {
+            "exaggeration": exaggeration,
+            "cfg_weight": cfg_weight,
+            **self.config.tts.options,
+        }
+
     async def _tts_generate(
         self,
         text: str,
-        voice: str,
-        exaggeration: float = 0.5,
-        cfg_weight: float = 0.5,
+        voice: str | None,
+        instructions: str | None = None,
+        options: dict | None = None,
     ) -> bytes | None:
-        """Generate TTS audio via HTTP call to TTS server."""
+        """Generate TTS audio via the custom shim (contract envelope).
+
+        Core fields: text (+ optional voice). `instructions` and `options`
+        pass through verbatim — only the shim interprets them.
+        """
         if not self._http_session:
             return None
+
+        payload: dict = {"text": text}
+        if voice:
+            payload["voice"] = voice
+        if instructions:
+            payload["instructions"] = instructions
+        if options:
+            payload["options"] = options
 
         try:
             async with self._http_session.post(
                 f"{self.config.tts.url}/tts",
-                json={
-                    "text": text,
-                    "voice": voice,
-                    "exaggeration": exaggeration,
-                    "cfg_weight": cfg_weight,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=self.config.tts.timeout),
             ) as resp:
                 if resp.status == 200:
                     return await resp.read()
@@ -3772,12 +3787,12 @@ projects:
 
             logger.info(f"[{name}] Local TTS: {text[:50]}... (voice={voice})")
 
-            # Generate audio via TTS server HTTP call
+            # Generate audio via TTS shim HTTP call
             audio_data = await self._tts_generate(
                 text=text,
                 voice=voice,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
+                instructions=self.config.tts.instructions or None,
+                options=self._tts_envelope_options(exaggeration, cfg_weight),
             )
 
             if not audio_data:
@@ -4973,8 +4988,8 @@ projects:
                 audio_data = await self._tts_generate(
                     text=chunk,
                     voice=voice,
-                    exaggeration=exaggeration,
-                    cfg_weight=cfg_weight,
+                    instructions=self.config.tts.instructions or None,
+                    options=self._tts_envelope_options(exaggeration, cfg_weight),
                 )
 
                 if audio_data:

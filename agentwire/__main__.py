@@ -2149,7 +2149,7 @@ def _local_say_dispatch(
     cfg_weight: float,
     tts_config: dict,
     backend: str | None = None,
-    instruct: str | None = None,
+    instructions: str | None = None,
     language: str = "English",
     stream: bool = False,
 ) -> int:
@@ -2165,7 +2165,7 @@ def _local_say_dispatch(
     tts_url = ctx.get_service_url("tts", use_tunnel=True)
     return _local_say(
         text, voice, exaggeration, cfg_weight, tts_url,
-        backend=backend, instruct=instruct, language=language, stream=stream
+        backend=backend, instructions=instructions, language=language, stream=stream
     )
 
 
@@ -2198,7 +2198,7 @@ def cmd_say(args) -> int:
 
     # New parameters for modular TTS
     backend = getattr(args, 'backend', None)
-    instruct = getattr(args, 'instruct', None)
+    instructions = getattr(args, 'instructions', None)
     language = getattr(args, 'language', "English")
     stream = getattr(args, 'stream', False)
 
@@ -2225,7 +2225,7 @@ def cmd_say(args) -> int:
     for chunk in chunks:
         result = _local_say_dispatch(
             chunk, voice, exaggeration, cfg_weight, tts_config,
-            backend=backend, instruct=instruct, language=language, stream=stream
+            backend=backend, instructions=instructions, language=language, stream=stream
         )
         if result != 0:
             return result
@@ -2533,27 +2533,31 @@ def _local_say(
     cfg_weight: float,
     tts_url: str,
     backend: str | None = None,
-    instruct: str | None = None,
+    instructions: str | None = None,
     language: str = "English",
     stream: bool = False,
     _retry: bool = False,
 ) -> int:
-    """Generate TTS locally and play via system audio."""
+    """Generate TTS via the custom shim and play via system audio.
+
+    Sends the shim contract envelope: text/voice core + opaque
+    instructions/options (knobs and engine selection ride in options).
+    """
 
     try:
-        # Build request payload
-        payload = {
-            "text": text,
-            "voice": voice,
+        # Build contract-envelope payload
+        options: dict = {
             "exaggeration": exaggeration,
             "cfg_weight": cfg_weight,
             "language": language,
             "stream": stream,
+            **load_config().get("tts", {}).get("options", {}),
         }
         if backend:
-            payload["backend"] = backend
-        if instruct:
-            payload["instruct"] = instruct
+            options["backend"] = backend
+        payload: dict = {"text": text, "voice": voice, "options": options}
+        if instructions:
+            payload["instructions"] = instructions
 
         data = json.dumps(payload).encode()
 
@@ -2607,7 +2611,7 @@ def _local_say(
                     print("TTS server restarted. Retrying...")
                     return _local_say(
                         text, voice, exaggeration, cfg_weight, tts_url,
-                        backend=target_backend, instruct=instruct, language=language,
+                        backend=target_backend, instructions=instructions, language=language,
                         stream=stream, _retry=True
                     )
                 else:
@@ -10254,7 +10258,7 @@ def main() -> int:
     say_parser.add_argument("--exaggeration", type=float, help="Voice exaggeration (0-1, Chatterbox)")
     say_parser.add_argument("--cfg", type=float, help="CFG weight (0-1, Chatterbox)")
     say_parser.add_argument("--backend", type=str, help="TTS backend (chatterbox, qwen-base-1.7b, qwen-design, qwen-custom)")
-    say_parser.add_argument("--instruct", type=str, help="Emotion/style instruction (qwen-design, qwen-custom)")
+    say_parser.add_argument("--instructions", type=str, help="Free-text style instructions passed to the TTS shim (e.g. 'speak warmly')")
     say_parser.add_argument("--language", type=str, default="English", help="Language (default: English)")
     say_parser.add_argument("--stream", action="store_true", help="Use streaming mode (if backend supports)")
     say_parser.add_argument("--notify", type=str, metavar="SESSION", help="Also notify this session (sends message as input)")

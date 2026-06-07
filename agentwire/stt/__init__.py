@@ -26,6 +26,11 @@ def get_stt_backend(config: Any) -> STTBackend:
     stt_config = getattr(config, "stt", None)
     if stt_config is not None and getattr(stt_config, "backend", "default") == "custom":
         logger.info(f"Using STT shim at {stt_config.url}")
-        return STTServerBackend(url=stt_config.url, timeout=getattr(stt_config, "timeout", 30))
+        return STTServerBackend(
+            url=stt_config.url,
+            timeout=getattr(stt_config, "timeout", 30),
+            instructions=getattr(stt_config, "instructions", ""),
+            options=getattr(stt_config, "options", None),
+        )
     logger.info("STT backend: default (browser speech recognition)")
     return NoSTT()

@@ -130,3 +130,66 @@ class TestServiceAutostartAndWatchdog:
                   if n["session"] == "service:tracker"]
         assert len(toasts) == 1
         assert toasts[0]["text"] == "recovered"
+
+
+# ---------------------------------------------------------------------------
+# TTS contract envelope
+# ---------------------------------------------------------------------------
+
+
+def _mock_tts_post(status=200, body=b"WAVDATA"):
+    """Mock _http_session whose .post() is an async context manager."""
+    resp = AsyncMock()
+    resp.status = status
+    resp.read = AsyncMock(return_value=body)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.post = MagicMock(return_value=cm)
+    return session
+
+
+class TestTtsEnvelope:
+    async def test_payload_is_contract_shaped(self, server):
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+        server.config.tts.instructions = "speak warmly"
+        server.config.tts.options = {"backend": "kokoro"}
+        server._http_session = _mock_tts_post()
+
+        audio = await server._tts_generate(
+            text="hello",
+            voice="amy",
+            instructions=server.config.tts.instructions,
+            options=server._tts_envelope_options(0.7, 0.3),
+        )
+
+        assert audio == b"WAVDATA"
+        _, kwargs = server._http_session.post.call_args
+        payload = kwargs["json"]
+        assert payload["text"] == "hello"
+        assert payload["voice"] == "amy"
+        assert payload["instructions"] == "speak warmly"
+        assert payload["options"] == {
+            "exaggeration": 0.7, "cfg_weight": 0.3, "backend": "kokoro",
+        }
+        # No legacy top-level knobs
+        assert "exaggeration" not in payload
+        assert "cfg_weight" not in payload
+
+    async def test_minimal_payload_omits_empty_fields(self, server):
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+        server._http_session = _mock_tts_post()
+
+        await server._tts_generate(text="hi", voice=None)
+
+        _, kwargs = server._http_session.post.call_args
+        payload = kwargs["json"]
+        assert payload == {"text": "hi"}
+
+    async def test_config_options_win_over_session_knobs(self, server):
+        server.config.tts.options = {"exaggeration": 0.9}
+        opts = server._tts_envelope_options(0.5, 0.5)
+        assert opts["exaggeration"] == 0.9

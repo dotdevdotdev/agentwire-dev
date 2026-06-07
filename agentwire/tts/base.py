@@ -17,7 +17,7 @@ class TTSCapabilities:
     voice_cloning: bool = False
     voice_design: bool = False  # Generate voice from text description
     preset_voices: list[str] = field(default_factory=list)
-    emotion_control: bool = False  # instruct parameter support
+    emotion_control: bool = False  # instructions parameter support
     paralinguistic_tags: bool = False  # [laugh], [sigh], etc.
     streaming: bool = False
     languages: list[str] = field(default_factory=lambda: ["English"])
@@ -33,8 +33,8 @@ class TTSRequest(BaseModel):
     exaggeration: float = 0.5
     cfg_weight: float = 0.5
 
-    # Qwen-specific
-    instruct: str | None = None  # Emotion/style instruction
+    # Emotion/style instruction (contract envelope field; Qwen engines use it)
+    instructions: str | None = None
     language: str = "English"
 
     # Zonos-specific emotion sliders (0.0–1.0, ignored by other backends)
@@ -56,6 +56,10 @@ class TTSRequest(BaseModel):
 
     # Backend selection (optional override)
     backend: str | None = None
+
+    # Contract envelope: opaque pass-through. Known keys are folded into the
+    # fields above by the server before engine dispatch; unknown keys ignored.
+    options: dict | None = None
 
 
 @dataclass
