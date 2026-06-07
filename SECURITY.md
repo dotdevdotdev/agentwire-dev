@@ -47,7 +47,9 @@ See `docs/wiki/internals/damage-control.md` for details.
 
 ## Trust Model
 
-The portal (HTTPS server bound to `0.0.0.0:8765` by default) **has no built-in authentication or authorization on its API endpoints**. This is by design — agentwire is built for a local-network trust perimeter, typically running on the same machine as the operator's browser or behind a Cloudflare Tunnel + Zero Trust gate (see `docs/wiki/deployment/remote-access.md`).
+The portal **has no built-in authentication or authorization on its API endpoints**. This is by design — agentwire is built for a local-network trust perimeter, typically running on the same machine as the operator's browser or behind a Cloudflare Tunnel + Zero Trust gate (see `docs/wiki/deployment/remote-access.md`).
+
+The portal binds `127.0.0.1:8765` by default — local only. Phone/tablet access requires explicitly opting into LAN exposure with `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`; everything below applies the moment you do.
 
 What this means in practice:
 

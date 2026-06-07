@@ -10,7 +10,7 @@
   <a href="https://pypi.org/project/agentwire-dev/"><img src="https://img.shields.io/pypi/v/agentwire-dev?color=green" alt="PyPI"></a>
   <a href="https://pypi.org/project/agentwire-dev/"><img src="https://img.shields.io/pypi/pyversions/agentwire-dev" alt="Python"></a>
   <a href="https://github.com/dotdevdotdev/agentwire-dev/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dotdevdotdev/agentwire-dev" alt="License"></a>
-  <a href="https://discord.gg/bspFZNTdUr"><img src="https://img.shields.io/discord/1234567890?color=5865F2&label=discord" alt="Discord"></a>
+  <a href="https://discord.gg/bspFZNTdUr"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 ---
@@ -28,10 +28,6 @@ Old way: Get up. Walk to computer. Type.
 ## What It Does
 
 Push-to-talk voice control for [Claude Code](https://github.com/anthropics/claude-code) or any AI coding assistant running in tmux.
-
-<p align="center">
-  <img src="https://agentwire.dev/images/demo.gif" alt="Demo" width="600">
-</p>
 
 ```
 Phone → AgentWire Portal → tmux session → Claude Code
@@ -62,6 +58,10 @@ agentwire portal start
 ```
 
 **Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code
+
+**Honest setup time:** ~15 minutes for the full experience (certs, tmux config, voice). Text-only portal works immediately; TTS needs a GPU or RunPod account.
+
+> **Network & trust model.** The portal binds `127.0.0.1` by default — local only. To use it from your phone, set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml` and understand what that means: **anyone who can reach the port can drive your sessions** (there is no auth yet). Use it on a trusted LAN only. Never port-forward it or run it on a public-facing VPS. Details in [SECURITY.md](SECURITY.md).
 
 <details>
 <summary><strong>Platform-specific instructions</strong></summary>
