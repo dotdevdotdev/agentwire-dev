@@ -59,7 +59,8 @@ class TestSessionTools:
         mock_cmd.return_value = _success()
         session_send(session="worker", message="do task")
         sent_msg = mock_cmd.call_args[0][0][3]  # args[3] = message
-        assert "[From: orchestrator]" in sent_msg
+        assert '[MESSAGE FROM SESSION "orchestrator"' in sent_msg
+        assert 'session_send(session="orchestrator"' in sent_msg
 
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     @patch("agentwire.mcp_server.get_caller_session", return_value=None)
