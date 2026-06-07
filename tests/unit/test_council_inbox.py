@@ -30,6 +30,14 @@ class TestCreatePrompt:
         assert (pdir / "replies").is_dir()
         assert inbox.read_meta(1)["roster"] == ROSTER
 
+    def test_reused_id_clears_stale_replies(self, prompt):
+        """Prompt ids restart per sitting; a reused id must not inherit the
+        previous sitting's reply files."""
+        inbox.write_reply(1, "brain", "pass", "")
+        inbox.create_prompt(1, "New sitting, same id", ROSTER)
+        assert inbox.list_replies(1) == []
+        assert inbox.pending_souls(1, ROSTER) == ROSTER
+
 
 class TestWriteReply:
     def test_filename_per_kind(self, prompt):

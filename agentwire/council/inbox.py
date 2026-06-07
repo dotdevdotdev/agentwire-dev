@@ -57,10 +57,17 @@ def replies_dir(prompt_id: int) -> Path:
 
 
 def create_prompt(prompt_id: int, text: str, roster: list[str]) -> Path:
-    """Create the prompt dir + inbox. Must exist before any fan-out send."""
+    """Create the prompt dir + inbox. Must exist before any fan-out send.
+
+    Prompt ids restart at 1 each sitting while ``prompts/`` history is kept,
+    so a reused id may collide with a previous sitting's dir — stale reply
+    files would corrupt the new round's completion check. Clear them.
+    """
     pdir = prompt_dir(prompt_id)
     replies = pdir / "replies"
     replies.mkdir(parents=True, exist_ok=True)
+    for stale in replies.glob("*.md"):
+        stale.unlink()
     (pdir / "prompt.md").write_text(text)
     meta = {
         "id": prompt_id,
