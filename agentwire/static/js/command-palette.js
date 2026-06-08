@@ -1,22 +1,23 @@
 /**
  * Command Palette — unified Cmd/Ctrl+K launcher for quick create/open actions.
  *
- * Replaces the standalone quicktask modal. The root view surfaces four actions;
- * each drills into a focused mini-form (or runs directly) without leaving the
- * palette:
- *   - New project   → name + clone URL + git-init → create → spawn session → open
+ * Cmd/Ctrl+K opens straight into the idea-first capture (Esc reaches the root
+ * menu). Root view actions:
+ *   - New idea      → idea (typed or dictated) + derived name → create project
+ *                     → spawn session → idea delivered as the agent's first
+ *                     message → open (you watch it land live)
  *   - New session   → pick existing project → spawn session → open
  *   - New worktree  → quicktask flow (project, base, branch, pull-first) → open
  *   - Open session  → pick a running tmux session → attach
  *
  * Keyboard: ↑/↓ navigate, Enter selects, Esc backs out of a drill-in (or closes
- * the palette from the root). Pure frontend reshape — backend endpoints
- * (/api/create, /api/projects/create) are unchanged.
+ * the palette from the root).
  */
 
 import { apiFetch } from './api.js';
 import { normalizeMachine, sameMachine } from './session-id.js';
 import { isService } from './sidebar/sessions-section.js';
+import * as browserStt from './voice/browser-stt.js';
 
 const PILL_TYPES = ['feat', 'fix', 'chore', 'refactor', 'docs'];
 const LS_LAST_PROJECT = 'quicktask:lastProject';
@@ -28,11 +29,11 @@ let projectsCache = null;
 let sessionsCache = null;
 let selectedIndex = 0;
 let currentItems = [];           // filtered, runnable items in the active list view
-let currentView = 'root';        // 'root' | 'new-project' | 'new-session' | 'worktree' | 'open-session'
+let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'worktree' | 'open-session'
 let prefillProject = '';
 
 const COMMANDS = [
-    { id: 'new-project', icon: '✚', label: 'New project', keywords: 'create new project repo clone git init', run: () => setView('new-project') },
+    { id: 'new-idea', icon: '💡', label: 'New idea', keywords: 'idea create new project repo clone git init build start', run: () => setView('new-idea') },
     { id: 'new-session', icon: '▶', label: 'New session', keywords: 'create new session start spawn run project', run: () => setView('new-session') },
     { id: 'worktree', icon: '⎇', label: 'New worktree', keywords: 'worktree branch quicktask task feat fix base', run: () => setView('worktree') },
     { id: 'open-session', icon: '👁', label: 'Open session', keywords: 'open attach connect existing session', run: () => setView('open-session') },
@@ -58,6 +59,24 @@ function slugify(text) {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '')
         .slice(0, 64);
+}
+
+// Filler words stripped when deriving a project name from an idea.
+const NAME_STOPWORDS = new Set([
+    'a', 'an', 'the', 'i', 'we', 'me', 'my', 'us', 'it', 'is', 'in', 'on', 'of',
+    'to', 'for', 'and', 'or', 'that', 'this', 'with', 'some', 'about', 'like',
+    'just', 'really', 'can', 'could', 'should', 'would', 'please', 'want',
+    'wanna', 'need', 'lets', 'let', 'make', 'build', 'create', 'new', 'app',
+    'project', 'tool', 'little', 'simple', 'basic',
+]);
+
+/** Derive an editable kebab-case project name from a free-text idea. */
+function deriveProjectName(idea) {
+    const words = String(idea).toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, ' ')
+        .split(/\s+/).filter(Boolean);
+    const kept = words.filter((w) => !NAME_STOPWORDS.has(w)).slice(0, 4);
+    return slugify((kept.length ? kept : words.slice(0, 3)).join('-')).slice(0, 40).replace(/-+$/, '');
 }
 
 function isSubsequence(needle, haystack) {
@@ -113,8 +132,10 @@ async function openTerminal(name, mode, machine) {
     openSessionTerminal(name, mode, machine);
 }
 
-/** Resume the project's session if one already exists, otherwise create it; then open + focus. */
-async function spawnAndOpen({ name, path, machine }) {
+/** Resume the project's session if one already exists, otherwise create it; then open + focus.
+ * `firstMessage` is delivered to the agent in the background once it boots
+ * (fresh sessions only — a resumed session ignores it). */
+async function spawnAndOpen({ name, path, machine, firstMessage }) {
     if (!name) throw new Error('Missing session name');
     machine = normalizeMachine(machine);
 
@@ -136,7 +157,7 @@ async function spawnAndOpen({ name, path, machine }) {
     const res = await apiFetch('/api/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, machine }),
+        body: JSON.stringify({ name, path, machine, first_message: firstMessage || undefined }),
     });
     const data = await res.json().catch(() => ({}));
     const err = data.error || '';
@@ -190,17 +211,27 @@ function findProject(name) {
     return (projectsCache || []).find((p) => p.name === name) || null;
 }
 
-function newProjectFormHtml() {
+function newIdeaFormHtml() {
     return `
         <div class="quicktask-error" data-error hidden></div>
         <div class="quicktask-progress" data-progress hidden></div>
-        <form class="quicktask-form" data-form="new-project">
+        <form class="quicktask-form" data-form="new-idea">
             <label class="quicktask-field">
-                <span class="quicktask-label">Project name</span>
+                <span class="quicktask-label">Idea</span>
+                <div class="cmdk-idea-wrap">
+                    <textarea name="idea" class="cmdk-idea-input" rows="3"
+                        placeholder="What do you want to build?"
+                        autocomplete="off" spellcheck="false"></textarea>
+                    <button type="button" class="cmdk-idea-mic" data-action="mic"
+                        title="Dictate your idea" aria-label="Dictate your idea" hidden>🎤</button>
+                </div>
+            </label>
+            <label class="quicktask-field">
+                <span class="quicktask-label">Project name <em>(derived — edit if you like)</em></span>
                 <input type="text" name="name" placeholder="my-project" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autocomplete="off" required />
             </label>
             <label class="quicktask-field">
-                <span class="quicktask-label">Clone URL <em>(optional)</em></span>
+                <span class="quicktask-label">Clone URL <em>(optional — start from an existing repo)</em></span>
                 <input type="text" name="clone_url" placeholder="git@github.com:owner/repo.git" autocomplete="off" />
             </label>
             <label class="quicktask-checkbox">
@@ -209,27 +240,79 @@ function newProjectFormHtml() {
             </label>
             <div class="quicktask-footer">
                 <button type="button" class="quicktask-btn-cancel" data-action="back">Back</button>
-                <button type="submit" class="quicktask-btn-submit">Create + Open</button>
+                <button type="submit" class="quicktask-btn-submit">Create &amp; run</button>
             </div>
         </form>`;
 }
 
-function bindNewProjectForm(form) {
+function bindNewIdeaForm(form) {
+    const ideaInput = form.querySelector('textarea[name="idea"]');
     const nameInput = form.querySelector('input[name="name"]');
     const urlInput = form.querySelector('input[name="clone_url"]');
+    const micBtn = form.querySelector('.cmdk-idea-mic');
     let userEditedName = false;
+
     nameInput?.addEventListener('input', () => { userEditedName = true; });
+
+    // Idea drives the project name until the user takes over.
+    ideaInput?.addEventListener('input', () => {
+        if (userEditedName) return;
+        nameInput.value = deriveProjectName(ideaInput.value);
+    });
+
+    // Enter submits (one breath, one keystroke); Shift+Enter for a newline.
+    ideaInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.requestSubmit();
+        }
+    });
+
+    // Clone URL fills the name from the repo (same takeover rule).
     urlInput?.addEventListener('input', () => {
         if (userEditedName) return;
         const m = String(urlInput.value).trim().match(/\/([^/]+?)(?:\.git)?\/?$/);
         if (m) nameInput.value = m[1];
     });
+
+    // Dictation — browser STT (Chrome). Click to start, click again to stop.
+    if (micBtn && browserStt.isSupported()) {
+        micBtn.hidden = false;
+        let recording = false;
+        const baseText = { value: '' };
+        micBtn.addEventListener('click', () => {
+            if (recording) { browserStt.stop(); return; }
+            baseText.value = ideaInput.value ? ideaInput.value.trimEnd() + ' ' : '';
+            const started = browserStt.start({
+                onInterim: (text) => {
+                    ideaInput.value = baseText.value + text;
+                },
+                onFinal: (text) => {
+                    recording = false;
+                    micBtn.classList.remove('cmdk-idea-mic-recording');
+                    ideaInput.value = (baseText.value + text).trim();
+                    ideaInput.dispatchEvent(new Event('input'));
+                    ideaInput.focus();
+                },
+                onError: () => {
+                    recording = false;
+                    micBtn.classList.remove('cmdk-idea-mic-recording');
+                },
+            });
+            if (started) {
+                recording = true;
+                micBtn.classList.add('cmdk-idea-mic-recording');
+            }
+        });
+    }
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const idea = ideaInput.value.trim();
         const name = nameInput.value.trim();
         const cloneUrl = urlInput.value.trim();
         const gitInit = form.querySelector('input[name="git_init"]').checked;
-        if (!name) { showError('Project name is required.'); return; }
+        if (!name) { showError(idea ? 'Could not derive a name — type one.' : 'Type an idea (or a project name).'); return; }
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
             showError("Invalid name (allowed: letters, digits, '.', '_', '-').");
             return;
@@ -247,8 +330,13 @@ function bindNewProjectForm(form) {
                 return;
             }
             projectsCache = null;  // invalidate so the new project shows next time
-            showProgress(`Starting session for ${data.name}…`);
-            await spawnAndOpen({ name: data.name, path: data.path, machine: data.machine });
+            showProgress(idea ? 'Starting the agent with your idea…' : `Starting session for ${data.name}…`);
+            await spawnAndOpen({
+                name: data.name,
+                path: data.path,
+                machine: data.machine,
+                firstMessage: idea || undefined,
+            });
         } catch (err) {
             showError(err?.message || 'Network error');
         }
@@ -469,11 +557,13 @@ function renderView() {
     search.hidden = true;
     currentItems = [];
     footer.textContent = '↵ submit · esc back';
-    if (currentView === 'new-project') body.innerHTML = newProjectFormHtml();
-    else if (currentView === 'new-session') body.innerHTML = newSessionFormHtml();
+    if (currentView === 'new-idea') {
+        footer.textContent = '↵ create & run · ⇧↵ newline · esc back';
+        body.innerHTML = newIdeaFormHtml();
+    } else if (currentView === 'new-session') body.innerHTML = newSessionFormHtml();
     else if (currentView === 'worktree') body.innerHTML = worktreeFormHtml();
     const form = body.querySelector('.quicktask-form');
-    if (currentView === 'new-project') bindNewProjectForm(form);
+    if (currentView === 'new-idea') bindNewIdeaForm(form);
     else if (currentView === 'new-session') bindNewSessionForm(form);
     else if (currentView === 'worktree') bindWorktreeForm(form);
 }
@@ -482,7 +572,7 @@ function focusActiveInput() {
     if (isListView()) {
         paletteEl.querySelector('.cmdk-input')?.focus();
     } else {
-        paletteEl.querySelector('.quicktask-form input')?.focus();
+        paletteEl.querySelector('.quicktask-form textarea, .quicktask-form input')?.focus();
     }
 }
 
@@ -590,6 +680,7 @@ export async function openCommandPalette({ view = 'root', project = '' } = {}) {
 
 export function closeCommandPalette() {
     if (!paletteEl) return;
+    browserStt.stop();  // end any in-flight dictation
     paletteEl.remove();
     paletteEl = null;
     currentView = 'root';

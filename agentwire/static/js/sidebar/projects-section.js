@@ -14,21 +14,15 @@ export const projectsSection = {
 
     async onAction(actionId, body) {
         if (actionId !== 'new') return;
-        const [{ openNewProjectModal }, { sidebar }] = await Promise.all([
-            import('../new-project-modal.js'),
+        const [{ openCommandPalette }, { sidebar }] = await Promise.all([
+            import('../command-palette.js'),
             import('../sidebar.js'),
         ]);
         sidebar.close();
-        openNewProjectModal({
-            onCreated: async (data) => {
-                this.refresh(body);
-                await this._startProjectSession({
-                    name: data.name,
-                    path: data.path,
-                    machine: normalizeMachine(data.machine),
-                });
-            },
-        });
+        // Idea-first capture — the palette flow creates the project, spawns
+        // the session (delivering the idea as the first message), and opens
+        // the window itself.
+        openCommandPalette({ view: 'new-idea' });
     },
 
     async refresh(body) {
