@@ -1,7 +1,19 @@
 {
   "announcements": [
     {
+      "id": "evergreen-feedback-2026-06",
+      "placement": "banner",
+      "emoji": "👋",
+      "title": "You're an early one",
+      "body": "AgentWire is young and shaped by the handful of people running it. Bug, idea, or just hello — open an issue, it's read.",
+      "cta": {
+        "label": "Open an issue",
+        "url": "https://github.com/dotdevdotdev/agentwire-dev/issues/new"
+      }
+    },
+    {
       "id": "2026-06-idea-first-capture",
+      "placement": "modal",
       "emoji": "💡",
       "title": "New idea? Cmd+K and go.",
       "date": "2026-06-08",

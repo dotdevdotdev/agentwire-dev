@@ -4965,6 +4965,59 @@ body.sidebar-pinned .sidebar-tab {
     opacity: 1;
 }
 
+/* Sidebar announcement banner (evergreen userbase note — see announcement-modal.js) */
+.announcement-banner {
+    position: relative;
+    flex-basis: 100%;
+    padding: calc(var(--spacing-base) * 1.25);
+    margin-bottom: var(--spacing-base);
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--chrome-border));
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius, 6px);
+    background: color-mix(in srgb, var(--accent) 6%, var(--chrome));
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.announcement-banner-title {
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 4px;
+    padding-right: 14px;  /* clear the ✕ */
+}
+
+.announcement-banner-body {
+    color: var(--text-secondary, inherit);
+}
+
+.announcement-banner-cta {
+    display: inline-block;
+    margin-top: 6px;
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.announcement-banner-cta:hover {
+    text-decoration: underline;
+}
+
+.announcement-banner-dismiss {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    border: none;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 11px;
+    opacity: 0.6;
+}
+
+.announcement-banner-dismiss:hover {
+    opacity: 1;
+}
+
 /* Edit-before-send transcript bars (default STT tier) */
 .sidebar-transcript-bar,
 .wb-transcript-bar {
