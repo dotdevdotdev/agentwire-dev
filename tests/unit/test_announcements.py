@@ -44,6 +44,12 @@ def test_required_and_typed_fields(data):
             assert isinstance(a["date"], str)
 
 
+def test_placement_valid(data):
+    for a in data["announcements"]:
+        placement = a.get("placement", "modal")
+        assert placement in ("modal", "banner"), f"{a['id']}: placement must be modal|banner"
+
+
 def test_cta_is_safe_https(data):
     for a in data["announcements"]:
         cta = a.get("cta")

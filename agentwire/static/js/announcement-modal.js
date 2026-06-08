@@ -1,5 +1,5 @@
 /**
- * Announcement modal — once-per-announcement welcome card for the userbase.
+ * Announcements — userbase messaging in two channels, one source file.
  *
  * Content is a single JSON file (agentwire/static/announcements.json) edited
  * on `main`. It plays two roles:
@@ -8,13 +8,17 @@
  *   - Bundled fallback: the same file ships in the package and is served at
  *     /static/announcements.json, used when the remote GET fails (offline).
  *
+ * Each entry's `placement` picks the channel:
+ *   - "modal" (default) — big centered splash for the moments that matter.
+ *   - "banner" — a quiet, persistent strip in the sidebar footer for
+ *     evergreen notes (a link, a tip, an ask).
+ * Both show the newest entry whose id isn't in the shared dismissed set
+ * (localStorage `aw-announcements-seen`); dismiss is per-id.
+ *
  * The fetch is a single unauthenticated GET with nothing about the user in
  * it — no telemetry. Content fields are rendered as ESCAPED TEXT (the
  * frontend owns all markup), so even though the body comes from a URL there
  * is no injection surface; the CTA url is validated to http(s).
- *
- * Show logic: the newest announcement whose id isn't in the dismissed set
- * (localStorage). Dismiss via the button, the ✕, Esc, or backdrop click.
  */
 
 const REMOTE_URL = 'https://raw.githubusercontent.com/dotdevdotdev/agentwire-dev/main/agentwire/static/announcements.json';
@@ -74,11 +78,14 @@ function safeUrl(url) {
     }
 }
 
-/** First announcement (in file order — newest first) the user hasn't dismissed. */
-function pickUnseen(data) {
-    const list = Array.isArray(data?.announcements) ? data.announcements : [];
+/** Newest (file order) unseen announcement matching `placement` (default "modal"). */
+function pickUnseen(list, placement) {
     const seen = seenIds();
-    return list.find((a) => a && typeof a.id === 'string' && a.id && !seen.includes(a.id)) || null;
+    return list.find((a) => (
+        a && typeof a.id === 'string' && a.id
+        && (a.placement || 'modal') === placement
+        && !seen.includes(a.id)
+    )) || null;
 }
 
 function renderModal(a) {
@@ -108,14 +115,14 @@ function renderModal(a) {
     </div>`;
 }
 
-function close(id) {
+function closeModal(id) {
     if (id) markSeen(id);
     if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
     modalEl?.remove();
     modalEl = null;
 }
 
-function show(a) {
+function showModal(a) {
     if (modalEl) return;
     const wrapper = document.createElement('div');
     wrapper.innerHTML = renderModal(a);
@@ -124,23 +131,47 @@ function show(a) {
 
     modalEl.addEventListener('click', (e) => {
         if (e.target === modalEl || e.target.closest('[data-action="dismiss"]')) {
-            close(a.id);
+            closeModal(a.id);
         }
     });
-    escHandler = (e) => { if (e.key === 'Escape') close(a.id); };
+    escHandler = (e) => { if (e.key === 'Escape') closeModal(a.id); };
     document.addEventListener('keydown', escHandler);
 }
 
+function renderBanner(a) {
+    const slot = document.getElementById('sidebarAnnouncementBanner');
+    if (!slot) return;
+    const ctaUrl = a.cta && safeUrl(a.cta.url);
+    const title = a.emoji ? `${escapeHtml(a.emoji)} ${escapeHtml(a.title || '')}` : escapeHtml(a.title || '');
+    const cta = ctaUrl
+        ? `<a class="announcement-banner-cta" href="${escapeHtml(ctaUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(a.cta.label || 'Learn more')} →</a>`
+        : '';
+    slot.innerHTML = `<div class="announcement-banner">
+        <button class="announcement-banner-dismiss" data-action="dismiss" title="Dismiss" aria-label="Dismiss announcement">✕</button>
+        ${title ? `<div class="announcement-banner-title">${title}</div>` : ''}
+        ${a.body ? `<div class="announcement-banner-body">${escapeHtml(a.body)}</div>` : ''}
+        ${cta}
+    </div>`;
+    slot.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => {
+        markSeen(a.id);
+        slot.innerHTML = '';
+    });
+}
+
 /**
- * Fetch announcements (remote first, bundled fallback) and show the newest
- * unseen one. Fails silently — an announcement is never worth a broken portal.
+ * Fetch announcements (remote first, bundled fallback) and surface the newest
+ * unseen entry per channel: a centered modal and a sidebar-footer banner.
+ * Fails silently — an announcement is never worth a broken portal.
  */
 export async function initAnnouncements() {
     try {
         const data = (await fetchJson(REMOTE_URL)) || (await fetchJson(LOCAL_URL));
-        if (!data) return;
-        const a = pickUnseen(data);
-        if (a) show(a);
+        const list = Array.isArray(data?.announcements) ? data.announcements : [];
+        if (!list.length) return;
+        const modal = pickUnseen(list, 'modal');
+        if (modal) showModal(modal);
+        const banner = pickUnseen(list, 'banner');
+        if (banner) renderBanner(banner);
     } catch {
         /* never let an announcement break the desktop */
     }
