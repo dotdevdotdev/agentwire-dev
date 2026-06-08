@@ -26,6 +26,12 @@ Both share session data from `sessions-section.js` (single fetch, shared activit
 
 **Files:** `static/js/sidebar.js` (shell + click-toggle), `static/js/sidebar/<name>-section.js` (per-section modules), `static/css/desktop.css` (sidebar-* classes).
 
+## Command Palette & Idea-First Capture
+
+`Cmd/Ctrl+K` opens the command palette (`static/js/command-palette.js`) **straight into the `new-idea` view** — Esc reaches the root menu (New idea / New session / New worktree / Open session / Window collage). The full-width 💡 **New idea** sidebar button (between header and sections) and the Projects section `+` route to the same view.
+
+**New-idea flow (issue #253):** idea textarea (Enter submits, Shift+Enter newline, 🎤 dictation via `voice/browser-stt.js`) → kebab-case project name derived client-side (`deriveProjectName`, stopword-stripped; stops auto-updating once the user edits it) → submit POSTs `/api/projects/create` then `/api/create` with `first_message` → window opens immediately while the idea is delivered to the booting agent in the background (server calls `agentwire send --wait-ready`; failure posts a toast). There is no name-first modal anymore — `new-project-modal.js` was deleted.
+
 ## Session Window Modes
 
 | Mode | Element | Use Case |

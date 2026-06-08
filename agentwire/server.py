@@ -713,7 +713,13 @@ class AgentWireServer:
         """
         cmd = ["agentwire", *args]
         if json_output:
-            cmd.append("--json")
+            # Insert before a `--` separator if present — anything appended
+            # after `--` would be swallowed into positional args (e.g. the
+            # first-message text on `send`).
+            if "--" in cmd:
+                cmd.insert(cmd.index("--"), "--json")
+            else:
+                cmd.append("--json")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,

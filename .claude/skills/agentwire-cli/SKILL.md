@@ -9,7 +9,13 @@ description: Full `agentwire` CLI command reference — session/pane management,
 # Session management
 agentwire new -s name           # not: tmux new-session
 agentwire new -s name --no-soul # skip the always-injected soul personality role
+agentwire new -s name --first-message "idea"  # deliver first prompt once agent boots
+                                #   (verified paste, local only; failure ≠ command failure)
 agentwire send -s name "prompt" # not: tmux send-keys
+agentwire send -s name --wait-ready --timeout 60 -- "prompt"
+                                # wait for agent boot (banner + screen-stable +
+                                #   trust-prompt auto-accept), verified delivery,
+                                #   exit 1 if unverified; local only
 agentwire send-keys -s name key1 key2  # raw keys with pauses
 agentwire output -s name        # not: tmux capture-pane
 agentwire info -s name          # session metadata (cwd, panes) as JSON
