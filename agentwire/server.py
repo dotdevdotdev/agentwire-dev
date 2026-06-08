@@ -148,6 +148,7 @@ class AgentWireServer:
         self.dashboard_clients: set = set()  # WebSocket clients for dashboard updates
         self.session_client_counts: dict[str, int] = {}  # Attached tmux client counts per session
         self.active_notifications: dict[str, dict] = {}  # id -> notification for persistence across refresh
+        self._background_tasks: set[asyncio.Task] = set()  # strong refs so create_task work isn't GC'd
         self.machine_status_checker = CachedStatusChecker(ttl_seconds=30)  # Progressive loading for machines
         self.remote_sessions_checker = CachedStatusChecker(ttl_seconds=20)  # Progressive loading for remote sessions
         self.projects_checker = CachedStatusChecker(ttl_seconds=30)  # Progressive loading for projects
@@ -712,7 +713,13 @@ class AgentWireServer:
         """
         cmd = ["agentwire", *args]
         if json_output:
-            cmd.append("--json")
+            # Insert before a `--` separator if present — anything appended
+            # after `--` would be swallowed into positional args (e.g. the
+            # first-message text on `send`).
+            if "--" in cmd:
+                cmd.insert(cmd.index("--"), "--json")
+            else:
+                cmd.append("--json")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -1583,24 +1590,30 @@ class AgentWireServer:
         except Exception as e:
             logger.warning("[Services] Autostart error: %s", e)
 
-    async def _notify_service_event(self, name: str, text: str, speak: bool):
-        """Toast (+ optional TTS) for a service watchdog event."""
-        notification_id = f"svc-{name}-{str(uuid.uuid4())[:8]}"
-        # Replace any active toast for this service
+    async def _post_toast(self, text: str, session: str, priority: str = "high",
+                          id_prefix: str = "toast") -> None:
+        """Post a dashboard toast notification, replacing any stale toast
+        for the same session key."""
+        notification_id = f"{id_prefix}-{str(uuid.uuid4())[:8]}"
         stale = [nid for nid, n in self.active_notifications.items()
-                 if n.get("session") == f"service:{name}"]
+                 if n.get("session") == session]
         for nid in stale:
             self.active_notifications.pop(nid, None)
             await self.broadcast_dashboard("notification_dismiss", {"id": nid})
         notification = {
             "id": notification_id,
             "text": text,
-            "session": f"service:{name}",
-            "priority": "high",
+            "session": session,
+            "priority": priority,
             "timestamp": time.time(),
         }
         self.active_notifications[notification_id] = notification
         await self.broadcast_dashboard("notification", notification)
+
+    async def _notify_service_event(self, name: str, text: str, speak: bool):
+        """Toast (+ optional TTS) for a service watchdog event."""
+        await self._post_toast(text, session=f"service:{name}", priority="high",
+                               id_prefix=f"svc-{name}")
         if speak:
             await self.run_agentwire_cmd(["say", text], json_output=False)
 
@@ -2811,6 +2824,8 @@ class AgentWireServer:
             machine: Machine ID ('local' or remote machine ID)
             worktree: Whether to create a worktree session
             branch: Branch name for worktree sessions
+            first_message: Deliver this as the agent's first message once it
+                boots (background, verified paste; local sessions only)
 
         Session naming:
             - worktree + branch: project/branch (or project/branch@machine)
@@ -2829,9 +2844,14 @@ class AgentWireServer:
             branch = data.get("branch", "").strip()
             base = (data.get("base") or "main").strip() or "main"
             pull_first = bool(data.get("pull_first", True))
+            first_message = (data.get("first_message") or "").strip()
 
             if not name:
                 return web.json_response({"error": "Session name is required"})
+
+            if first_message and machine and machine != "local":
+                # Explicit reject, not silent skip — readiness capture is local-only
+                return web.json_response({"error": "first_message is only supported on local sessions"})
 
             # Build session name for CLI based on parameters
             if machine and machine != "local":
@@ -2926,11 +2946,35 @@ class AgentWireServer:
             if "@" not in session_name:
                 await self._wait_for_pane_ready(session_name)
 
-            return web.json_response({"success": True, "name": session_name})
+            # First-message delivery happens in the background so the window
+            # can open immediately — the user watches the idea land live.
+            if first_message:
+                task = asyncio.create_task(
+                    self._deliver_first_message(session_name, first_message))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
+            return web.json_response({
+                "success": True,
+                "name": session_name,
+                "first_message": "pending" if first_message else None,
+            })
 
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
             return web.json_response({"error": str(e)})
+
+    async def _deliver_first_message(self, session_name: str, message: str) -> None:
+        """Background: wait for the agent to boot, then deliver the first
+        message with verification (via `agentwire send --wait-ready`)."""
+        success, result = await self.run_agentwire_cmd(
+            ["send", "-s", session_name, "--wait-ready", "--timeout", "60", "--", message]
+        )
+        if not success:
+            logger.warning(f"First message delivery failed for {session_name}: {result.get('error')}")
+            await self._post_toast(
+                f"First message not delivered to {session_name} — paste it manually",
+                session=session_name, priority="high", id_prefix="firstmsg")
 
     async def api_close_session(self, request: web.Request) -> web.Response:
         """Close/kill a session."""

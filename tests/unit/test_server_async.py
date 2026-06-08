@@ -72,6 +72,19 @@ class TestAsyncRunAgentwireCmd:
         assert success is False
         assert "Failed to parse" in result["error"]
 
+    async def test_json_flag_inserted_before_dash_dash(self, server):
+        """--json must land before a `--` separator, not after it — anything
+        after `--` is swallowed into positional args (caught live: the
+        first-message text arrived with ` --json` appended)."""
+        proc = _make_process(stdout=b'{"success": true}')
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await server.run_agentwire_cmd(
+                ["send", "-s", "x", "--wait-ready", "--", "my idea text"])
+        cmd_args = list(mock_exec.call_args[0])
+        sep = cmd_args.index("--")
+        assert "--json" in cmd_args[:sep]
+        assert cmd_args[-1] == "my idea text"
+
     async def test_error_in_stdout_on_failure(self, server):
         error_data = json.dumps({"error": "session locked"}).encode()
         proc = _make_process(returncode=1, stdout=error_data)

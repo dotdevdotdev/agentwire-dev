@@ -1300,6 +1300,82 @@ body {
     color: var(--accent);
 }
 
+/* Full-width "New idea" capture button — sits between header and sections */
+.sidebar-newidea {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: calc(100% - 2 * var(--spacing-base));
+    margin: var(--spacing-base);
+    padding: 9px 12px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.sidebar-newidea:hover {
+    background: var(--accent);
+    color: var(--background);
+}
+
+/* Idea capture (command palette new-idea view) */
+.cmdk-idea-wrap {
+    position: relative;
+    display: flex;
+}
+
+.quicktask-form .cmdk-idea-input {
+    flex: 1;
+    background: var(--background);
+    border: 1px solid var(--chrome-border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 8px 36px 8px 10px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 64px;
+}
+
+.quicktask-form .cmdk-idea-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.cmdk-idea-mic {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 15px;
+    padding: 2px 4px;
+    line-height: 1;
+    opacity: 0.6;
+}
+
+.cmdk-idea-mic:hover {
+    opacity: 1;
+}
+
+.cmdk-idea-mic-recording {
+    opacity: 1;
+    animation: cmdk-mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes cmdk-mic-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.25); }
+}
+
 /* =========================================================================
    Safety sidebar section
    ========================================================================= */

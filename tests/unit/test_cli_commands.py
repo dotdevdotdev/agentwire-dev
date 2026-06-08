@@ -144,3 +144,88 @@ class TestProjectsDiscovery:
         assert "project-a" in projects
         assert "project-b" in projects
         assert "not-a-project" not in projects
+
+
+# --- cmd_send --wait-ready ---
+
+class TestCmdSendWaitReady:
+    def _args(self, **overrides):
+        defaults = dict(
+            session="proj", pane=None, prompt=["my", "idea"],
+            json=True, wait_ready=True, timeout=5.0,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def _payload(self, capsys):
+        return json.loads(capsys.readouterr().out.strip())
+
+    def test_happy_path_verified(self, capsys, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.__main__ import cmd_send
+
+        has_session = MagicMock(returncode=0)
+        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: True)
+
+        assert cmd_send(self._args()) == 0
+        payload = self._payload(capsys)
+        assert payload["success"] is True
+        assert payload["verified"] is True
+
+    def test_not_ready_fails(self, capsys, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.__main__ import cmd_send
+
+        has_session = MagicMock(returncode=0)
+        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: False)
+
+        assert cmd_send(self._args()) == 1
+        payload = self._payload(capsys)
+        assert payload["success"] is False
+        assert "not ready" in payload["error"]
+
+    def test_unverified_fails(self, capsys, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.__main__ import cmd_send
+
+        has_session = MagicMock(returncode=0)
+        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+
+        assert cmd_send(self._args()) == 1
+        payload = self._payload(capsys)
+        assert payload["verified"] is False
+
+    def test_remote_rejected(self, capsys):
+        from agentwire.__main__ import cmd_send
+
+        assert cmd_send(self._args(session="proj@gpu")) == 1
+        payload = self._payload(capsys)
+        assert "local-only" in payload["error"]
+
+    def test_pane_combo_rejected(self, capsys):
+        from agentwire.__main__ import cmd_send
+
+        assert cmd_send(self._args(pane=1)) == 1
+        payload = self._payload(capsys)
+        assert "--pane" in payload["error"]
+
+
+# --- cmd_new --first-message ---
+
+class TestCmdNewFirstMessage:
+    def test_remote_rejected(self, capsys, monkeypatch):
+        from agentwire.__main__ import cmd_new
+
+        monkeypatch.setattr("agentwire.__main__._check_tmux_installed", lambda: True)
+        args = argparse.Namespace(
+            session="proj@gpu", path=None, force=False, json=True,
+            roles=None, no_soul=True, first_message="an idea",
+        )
+        assert cmd_new(args) == 1
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert "local-only" in payload["error"]

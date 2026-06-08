@@ -21,6 +21,7 @@ from datetime import datetime
 from agentwire.locking import LockConflict, session_lock
 from agentwire.missions import eligibility, github, naming, state
 from agentwire.missions.config import MissionsConfig, RepoConfig, load_config
+from agentwire.session_ready import wait_for_session_ready  # noqa: F401 — re-exported for tests/callers
 
 log = logging.getLogger(__name__)
 
@@ -87,52 +88,6 @@ def create_worker_session(session_full_name: str) -> None:
             f"agentwire new failed (rc={result.returncode}): "
             f"{(result.stderr or result.stdout).strip()}"
         )
-
-
-def wait_for_session_ready(session_full_name: str, timeout: float = 30.0) -> bool:
-    """Poll the worker pane until Claude is fully ready to accept input.
-
-    Two-phase wait:
-
-    1. Detect the Claude prompt banner (``❯`` or ``Bypassing Permissions``).
-    2. Wait until the screen is *stable* — two consecutive 500ms snapshots
-       are identical. This catches the case where Claude has rendered its
-       banner but is still wiring its input handler. A premature paste at
-       that point gets fragmented into multiple ``[Pasted text +N]`` chunks
-       and the dispatcher's Enter keys land in a state where Claude can't
-       process them — the prompt sits in the input box, never submitted.
-
-    Returns True once the screen is stable after banner-detection. False on
-    timeout.
-    """
-    from agentwire import pane_manager
-
-    deadline = time.time() + timeout
-    banner_seen = False
-    last_snapshot: str | None = None
-
-    while time.time() < deadline:
-        try:
-            out = pane_manager.capture_pane(session_full_name, 0, lines=20)
-        except Exception:
-            time.sleep(0.5)
-            last_snapshot = None
-            continue
-
-        if not banner_seen:
-            if "❯" in out or "Bypassing Permissions" in out:
-                banner_seen = True
-                last_snapshot = out
-            time.sleep(0.5)
-            continue
-
-        # Banner is up; wait for two consecutive identical snapshots.
-        if last_snapshot is not None and out == last_snapshot:
-            return True
-        last_snapshot = out
-        time.sleep(0.5)
-
-    return False
 
 
 def send_prompt_to_worker(session_full_name: str, prompt: str) -> None:

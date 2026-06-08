@@ -1,0 +1,167 @@
+"""Tests for agentwire.session_ready — readiness detection + verified delivery."""
+
+from agentwire import session_ready
+
+
+BANNER = "❯ \nBypassing Permissions"
+TRUST = "Do you trust this folder?\nPress Enter to confirm"
+
+
+def _scripted_capture(monkeypatch, frames):
+    """Make capture_pane return successive frames (last one repeats)."""
+    state = {"i": 0}
+
+    def fake_capture(session, pane_index, lines=20):
+        frame = frames[min(state["i"], len(frames) - 1)]
+        state["i"] += 1
+        if isinstance(frame, Exception):
+            raise frame
+        return frame
+
+    from agentwire import pane_manager
+    monkeypatch.setattr(pane_manager, "capture_pane", fake_capture)
+
+
+class TestWaitForSessionReady:
+    def setup_method(self):
+        self._sleeps = []
+
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr(session_ready.time, "sleep", lambda s: self._sleeps.append(s))
+
+    def test_banner_then_stable_returns_true(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        _scripted_capture(monkeypatch, ["booting...", BANNER, BANNER])
+        assert session_ready.wait_for_session_ready("s", timeout=10)
+
+    def test_churning_screen_times_out(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        # Banner up but screen never stabilizes: every frame differs
+        frames = [BANNER + f"\nline{i}" for i in range(1000)]
+        _scripted_capture(monkeypatch, frames)
+        # Fake clock: advance time per capture so the deadline passes
+        clock = {"t": 0.0}
+
+        def fake_time():
+            clock["t"] += 0.1
+            return clock["t"]
+
+        monkeypatch.setattr(session_ready.time, "time", fake_time)
+        assert not session_ready.wait_for_session_ready("s", timeout=5)
+
+    def test_trust_prompt_accepted_then_ready(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        pressed = []
+        from agentwire import pane_manager
+        monkeypatch.setattr(
+            pane_manager, "run_command",
+            lambda cmd, timeout=5: pressed.append(cmd))
+        _scripted_capture(monkeypatch, [TRUST, BANNER, BANNER])
+        assert session_ready.wait_for_session_ready("s", timeout=10)
+        assert len(pressed) == 1
+        assert pressed[0][:2] == ["tmux", "send-keys"]
+        assert pressed[0][-1] == "Enter"
+
+    def test_capture_exception_tolerated(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        _scripted_capture(monkeypatch, [RuntimeError("no session"), BANNER, BANNER])
+        assert session_ready.wait_for_session_ready("s", timeout=10)
+
+
+class TestDeriveCheckFragment:
+    def test_first_nonempty_line(self):
+        assert session_ready.derive_check_fragment("\n\n  hello world  \nmore") == "hello world"
+
+    def test_truncates(self):
+        assert session_ready.derive_check_fragment("x" * 100) == "x" * 32
+
+    def test_empty_message(self):
+        assert session_ready.derive_check_fragment("   \n  ") == ""
+
+
+class TestMessageVisible:
+    def test_exact_match(self):
+        msg = "build a voice diary app"
+        assert session_ready.message_visible(f"❯ {msg}\n", msg)
+
+    def test_wrapped_mid_word(self):
+        # tmux wraps at pane width with no regard for word boundaries
+        msg = "build a voice diary app with daily summaries"
+        capture = "❯ build a voice di\nary app with dai\nly summaries"
+        assert session_ready.message_visible(capture, msg)
+
+    def test_pasted_placeholder_fallback(self):
+        msg = "line one\nline two\nline three"
+        assert session_ready.message_visible("❯ [Pasted text #1 +3 lines]", msg)
+
+    def test_miss(self):
+        assert not session_ready.message_visible("❯ \nBypassing Permissions", "my unique idea")
+
+
+class TestSendVerified:
+    def _quiet(self, monkeypatch):
+        monkeypatch.setattr(session_ready.time, "sleep", lambda _: None)
+
+    def test_marker_mode_confirms(self, monkeypatch):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(
+            session_ready, "capture_session",
+            lambda s, lines=60: "...[COUNCIL PROMPT #1]...")
+        assert session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
+
+    def test_marker_mode_retries_then_fails(self, monkeypatch):
+        self._quiet(monkeypatch)
+        sends = []
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: sends.append(s))
+        monkeypatch.setattr(
+            session_ready, "capture_session", lambda s, lines=60: "no marker here")
+        assert not session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
+        assert len(sends) == 2  # initial + one retry
+
+    def test_markerless_uses_message_visible(self, monkeypatch):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(
+            session_ready, "capture_session",
+            lambda s, lines=60: "❯ build a voice diary app")
+        assert session_ready.send_verified("s", "build a voice diary app")
+
+    def test_markerless_confirms_on_retry(self, monkeypatch):
+        self._quiet(monkeypatch)
+        sends = []
+        captures = ["", "❯ my idea text"]
+
+        def fake_capture(s, lines=60):
+            return captures[min(len(sends) - 1, 1)]
+
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: sends.append(s))
+        monkeypatch.setattr(session_ready, "capture_session", fake_capture)
+        assert session_ready.send_verified("s", "my idea text")
+        assert len(sends) == 2
+
+    def test_capture_exception_counts_as_miss(self, monkeypatch):
+        self._quiet(monkeypatch)
+
+        def boom(s, lines=60):
+            raise RuntimeError("gone")
+
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(session_ready, "capture_session", boom)
+        assert not session_ready.send_verified("s", "msg")
+
+
+class TestCouncilDelegation:
+    """council.cli.send_verified / wait_ready now delegate here."""
+
+    def test_council_send_verified_delegates(self, monkeypatch):
+        from agentwire.council import cli
+        calls = {}
+
+        def fake(session, message, marker=None, retries=1, settle=2.0):
+            calls["args"] = (session, message, marker, retries)
+            return True
+
+        monkeypatch.setattr(session_ready, "send_verified", fake)
+        assert cli.send_verified("council-gut", "msg", "[COUNCIL PROMPT #1]")
+        assert calls["args"] == ("council-gut", "msg", "[COUNCIL PROMPT #1]", 1)

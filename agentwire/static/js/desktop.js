@@ -72,6 +72,11 @@ async function init() {
         e.stopPropagation();
         openCommandPalette();
     });
+    document.getElementById('sidebarNewIdea')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        sidebar.close();
+        openCommandPalette({ view: 'new-idea' });
+    });
     sidebar.addSection('sessions', sessionsSection);
     sidebar.addSection('services', servicesSection);
     sidebar.addSection('machines', machinesSection);
@@ -800,11 +805,12 @@ function setupGlobalPtt() {
             e.preventDefault();
             startGlobalRecording();
         }
-        // Cmd/Ctrl + K opens the command palette. xterm.js uses a hidden textarea
-        // for terminal input, so we don't skip on tag — Cmd+K is always intercepted.
+        // Cmd/Ctrl + K opens the command palette straight into idea capture
+        // (Esc reaches the root menu). xterm.js uses a hidden textarea for
+        // terminal input, so we don't skip on tag — Cmd+K is always intercepted.
         if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
             e.preventDefault();
-            if (!isCommandPaletteOpen()) openCommandPalette();
+            if (!isCommandPaletteOpen()) openCommandPalette({ view: 'new-idea' });
         }
     });
     document.addEventListener('keyup', (e) => {

@@ -178,6 +178,75 @@ class TestApiCreateSession:
         data = await resp.json()
         assert data.get("success") is True
 
+    async def test_create_with_first_message_schedules_send(self, portal_client):
+        import asyncio
+
+        client, server = portal_client
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"session": "ideaproj", "path": "/p"})
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/create", json={
+                "name": "ideaproj", "first_message": "build a voice diary app",
+            })
+            data = await resp.json()
+            assert data.get("success") is True
+            assert data.get("first_message") == "pending"
+            # Drain the background delivery task while the mock is active
+            await asyncio.gather(*server._background_tasks)
+        send_calls = [c for c in mock_cmd.call_args_list if c[0][0][0] == "send"]
+        assert len(send_calls) == 1
+        args = send_calls[0][0][0]
+        assert args[:4] == ["send", "-s", "ideaproj", "--wait-ready"]
+        assert "--" in args
+        assert args[-1] == "build a voice diary app"
+
+    async def test_create_first_message_remote_rejected(self, portal_client):
+        client, server = portal_client
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            resp = await client.post("/api/create", json={
+                "name": "app", "machine": "gpu", "first_message": "an idea",
+            })
+        data = await resp.json()
+        assert "error" in data
+        # Rejected before any CLI call
+        new_calls = [c for c in mock_cmd.call_args_list if c[0][0] and c[0][0][0] == "new"]
+        assert new_calls == []
+
+    async def test_create_first_message_failure_posts_toast(self, portal_client):
+        import asyncio
+
+        client, server = portal_client
+
+        async def cmd_router(args, json_output=True):
+            if args[0] == "send":
+                return (False, {"error": "Agent in 'ideaproj' not ready after 60s"})
+            return (True, {"session": "ideaproj", "path": "/p"})
+
+        with patch.object(server, "run_agentwire_cmd", side_effect=cmd_router) as mock_cmd:
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/create", json={
+                "name": "ideaproj", "first_message": "an idea",
+            })
+            assert (await resp.json()).get("success") is True
+            await asyncio.gather(*server._background_tasks)
+            toasts = [n for n in server.active_notifications.values()
+                      if n["session"] == "ideaproj"]
+            assert len(toasts) == 1
+            assert "not delivered" in toasts[0]["text"]
+            notify_calls = [c for c in server.broadcast_dashboard.call_args_list
+                            if c[0][0] == "notification"]
+            assert len(notify_calls) == 1
+
+    async def test_create_without_first_message_no_background_task(self, portal_client):
+        client, server = portal_client
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"session": "plain"})
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/create", json={"name": "plain"})
+        data = await resp.json()
+        assert data.get("first_message") is None
+        assert server._background_tasks == set()
+
 
 # ---------------------------------------------------------------------------
 # Close session API

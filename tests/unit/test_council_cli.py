@@ -187,21 +187,8 @@ class TestAsk:
             f["error"] == "delivery not confirmed in pane" for f in payload["failed"]
         )
 
-    def test_send_verified_retries_then_fails(self, monkeypatch):
-        sends = []
-        monkeypatch.setattr(cli, "send_to_session", lambda s, m: sends.append(s))
-        monkeypatch.setattr(cli, "capture_session", lambda s, lines=60: "no marker here")
-        monkeypatch.setattr(cli.time, "sleep", lambda _: None)
-        assert not cli.send_verified("council-gut", "msg", "[COUNCIL PROMPT #1]")
-        assert len(sends) == 2  # initial + one retry
-
-    def test_send_verified_confirms(self, monkeypatch):
-        monkeypatch.setattr(cli, "send_to_session", lambda s, m: None)
-        monkeypatch.setattr(
-            cli, "capture_session", lambda s, lines=60: "...[COUNCIL PROMPT #1]..."
-        )
-        monkeypatch.setattr(cli.time, "sleep", lambda _: None)
-        assert cli.send_verified("council-gut", "msg", "[COUNCIL PROMPT #1]")
+    # send_verified mechanics (retry/marker) are covered in
+    # tests/unit/test_session_ready.py — the implementation moved there.
 
     def test_no_sitting(self, mocks, capsys):
         assert cli.cmd_council_ask(_args(prompt="x", file=None, json=True)) == 1
