@@ -1,0 +1,19 @@
+{
+  "announcements": [
+    {
+      "id": "2026-06-idea-first-capture",
+      "emoji": "💡",
+      "title": "New idea? Cmd+K and go.",
+      "date": "2026-06-08",
+      "body": "AgentWire can now spin up a whole project from a single sentence. Press Cmd/Ctrl+K (or the New idea button), type — or speak — what you want to build, and it scaffolds the folder, starts an agent, and hands it your idea as the first message. You watch it get to work the moment the window opens.",
+      "highlights": [
+        "Idea-first capture — type an idea, get a running agent",
+        "Instant voice mode — browser speech in and out, zero setup"
+      ],
+      "cta": {
+        "label": "See what's in v1.31",
+        "url": "https://github.com/dotdevdotdev/agentwire-dev/releases/tag/v1.31.0"
+      }
+    }
+  ]
+}

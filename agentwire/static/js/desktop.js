@@ -32,6 +32,7 @@ import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppre
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import * as browserStt from './voice/browser-stt.js';
 import { voicePromptWrap } from './voice/prompt.js';
+import { initAnnouncements } from './announcement-modal.js';
 
 // State - track open windows
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
@@ -251,6 +252,10 @@ async function init() {
 
     // Fetch initial data in the background (will emit events to listeners above)
     desktop.fetchSessions();
+
+    // Show a userbase announcement if there's a new one (non-blocking,
+    // fails silently — never holds up or breaks the desktop).
+    initAnnouncements();
 }
 
 /**
