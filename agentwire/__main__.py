@@ -2799,6 +2799,10 @@ def cmd_send(args) -> int:
     pane_index = getattr(args, 'pane', None)
     prompt = " ".join(args.prompt) if args.prompt else ""
     json_mode = getattr(args, 'json', False)
+    wait_ready = getattr(args, 'wait_ready', False)
+
+    if wait_ready and pane_index is not None:
+        return _output_result(False, json_mode, "--wait-ready targets a session's pane 0; it can't be combined with --pane")
 
     # Handle pane mode (auto-detect session from environment)
     if pane_index is not None:
@@ -2839,6 +2843,8 @@ def cmd_send(args) -> int:
 
     # Parse session@machine format
     session, machine_id = _parse_session_target(session_full)
+    if wait_ready and machine_id:
+        return _output_result(False, json_mode, "--wait-ready is local-only (readiness capture doesn't span SSH)")
     if machine_id:
         # Remote: SSH and run tmux commands
         machine = _get_machine_config(machine_id)
@@ -2897,6 +2903,26 @@ def cmd_send(args) -> int:
         else:
             print(f"Session '{session}' not found", file=sys.stderr)
         return 1
+
+    if wait_ready:
+        # Wait for the agent to be ready, then send with delivery
+        # verification (a paste into a booting Claude vanishes silently).
+        from agentwire.session_ready import send_verified, wait_for_session_ready
+
+        timeout = getattr(args, 'timeout', None) or 30.0
+        if not wait_for_session_ready(session, timeout=timeout):
+            return _output_result(False, json_mode, f"Agent in '{session}' not ready after {timeout:.0f}s")
+        if not send_verified(session, prompt):
+            if json_mode:
+                print(json.dumps({"success": False, "session": session_full, "verified": False, "error": "Delivery not verified"}))
+            else:
+                print(f"Sent to {session} but delivery could not be verified", file=sys.stderr)
+            return 1
+        if json_mode:
+            print(json.dumps({"success": True, "session": session_full, "machine": None, "verified": True, "message": "Prompt sent"}))
+        else:
+            print(f"Sent to {session} (verified)")
+        return 0
 
     # Delegate paste + Enter handling to the shared pane_manager helper so
     # send-to-session and send-to-pane stay in lockstep. The helper handles
@@ -3129,6 +3155,10 @@ def cmd_new(args) -> int:
 
     # Parse session name: project, branch, machine
     project, branch, machine_id = parse_session_name(name)
+
+    first_message = getattr(args, 'first_message', None)
+    if first_message and machine_id:
+        return _output_result(False, json_mode, "--first-message is local-only (readiness capture doesn't span SSH)")
 
     # Build the tmux session name (convert dots to underscores, preserve slashes)
     if branch:
@@ -3481,14 +3511,32 @@ def cmd_new(args) -> int:
             )
         save_project_config(project_config, session_path)
 
+    # Deliver the first message once the agent is ready (verified paste).
+    # Delivery failure doesn't fail the command — the session exists.
+    first_message_delivered = None
+    if first_message and agent_cmd:
+        from agentwire.session_ready import send_verified, wait_for_session_ready
+
+        if not json_mode:
+            print("Waiting for agent to deliver first message...")
+        first_message_delivered = (
+            wait_for_session_ready(session_name, timeout=60)
+            and send_verified(session_name, first_message)
+        )
+        if not first_message_delivered and not json_mode:
+            print(f"Warning: first message not delivered to '{session_name}' — paste it manually", file=sys.stderr)
+
     if json_mode:
-        _output_json({
+        result = {
             "success": True,
             "session": session_name,
             "path": str(session_path),
             "branch": branch,
             "machine": None,
-        })
+        }
+        if first_message:
+            result["first_message_delivered"] = bool(first_message_delivered)
+        _output_json(result)
     else:
         print(f"Created session '{session_name}' in {session_path}")
         print(f"Attach with: tmux attach -t {session_name}")
@@ -3810,47 +3858,12 @@ def cmd_kill(args) -> int:
     return 0
 
 
-def _wait_for_agent_ready(session: str, timeout: int = 30, pane_index: int = 0) -> bool:
-    """Wait for an agent to be ready to accept input.
-
-    Handles the first-time folder trust prompt by auto-accepting it.
-    Returns True if agent became ready, False if timeout.
-    """
-    start = time.time()
-    trust_accepted = False
-
-    while (time.time() - start) < timeout:
-        try:
-            result = subprocess.run(
-                ["tmux", "capture-pane", "-t", f"{session}.{pane_index}", "-p", "-S", "-20"],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                output = result.stdout
-
-                # Handle first-time bypass trust prompt
-                if not trust_accepted and ("trust this folder" in output.lower() or "enter to confirm" in output.lower()):
-                    subprocess.run(
-                        ["tmux", "send-keys", "-t", f"{session}.{pane_index}", "Enter"],
-                        capture_output=True,
-                    )
-                    trust_accepted = True
-                    time.sleep(2)
-                    continue
-
-                # Check for ready prompt
-                if "❯" in output and "bypass" in output.lower():
-                    time.sleep(0.3)
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-
-    return False
-
-
 def _wait_for_worker_ready(session: str, pane_index: int, timeout: int = 30, agent_type: str = "claude") -> bool:
     """Wait for a worker pane to be ready to receive input.
+
+    Pane-scoped with loose indicators ('>', 'Claude Code') to support
+    non-claude worker types — deliberately NOT consolidated into
+    session_ready.wait_for_session_ready, which is claude-banner specific.
 
     Polls the pane output looking for Claude Code's '❯' prompt.
 
@@ -8468,7 +8481,8 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
         # pre-created sessions from scheduler (agent may be mid-startup).
         if not json_mode:
             print("Waiting for agent to be ready...")
-        if not _wait_for_agent_ready(session, timeout=30):
+        from agentwire.session_ready import wait_for_session_ready
+        if not wait_for_session_ready(session, timeout=30):
             # Agent never started — session is dead, bail out
             if not json_mode:
                 print(f"Agent not ready in session '{session}' after 30s")
@@ -10351,6 +10365,10 @@ def main() -> int:
     send_parser.add_argument("-s", "--session", help="Target session (supports session@machine)")
     send_parser.add_argument("--pane", type=int, help="Target pane index (auto-detects session)")
     send_parser.add_argument("prompt", nargs="*", help="Prompt to send")
+    send_parser.add_argument("--wait-ready", dest="wait_ready", action="store_true",
+                             help="Wait for the agent to be ready, then verify delivery (local sessions only)")
+    send_parser.add_argument("--timeout", type=float, default=30.0,
+                             help="Readiness wait timeout in seconds (with --wait-ready, default: 30)")
     send_parser.add_argument("--json", action="store_true", help="Output as JSON")
     send_parser.set_defaults(func=cmd_send)
 
@@ -10389,6 +10407,8 @@ def main() -> int:
     new_parser.add_argument("--base", default="main", help="For worktree sessions: base branch to fork the new branch from (default: main)")
     new_parser.add_argument("--pull-first", dest="pull_first", action="store_true", default=True, help="For worktree sessions: fetch origin/<base> before branching (default)")
     new_parser.add_argument("--no-pull-first", dest="pull_first", action="store_false", help="Skip the fetch — branch from the local copy of <base> as-is")
+    new_parser.add_argument("--first-message", dest="first_message",
+                            help="After the agent boots, deliver this as its first message (verified; local sessions only)")
     new_parser.add_argument("--json", action="store_true", help="Output as JSON")
     new_parser.set_defaults(func=cmd_new)
 

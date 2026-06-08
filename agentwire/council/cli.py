@@ -113,27 +113,15 @@ def capture_session(session: str, lines: int = 60) -> str:
 
 
 def send_verified(session: str, message: str, marker: str, retries: int = 1) -> bool:
-    """Send a message and verify it actually landed in the pane.
+    """Send a message and verify the ``marker`` landed (see session_ready)."""
+    from agentwire import session_ready
 
-    A freshly-booted Claude session renders its banner before its input
-    handler is wired — a paste in that window vanishes silently (same gray
-    zone the mission dispatcher documents). After sending, confirm ``marker``
-    is visible in the pane; retry once if not.
-    """
-    for _ in range(retries + 1):
-        send_to_session(session, message)
-        time.sleep(2.0)
-        try:
-            if marker in capture_session(session):
-                return True
-        except Exception:
-            pass
-    return False
+    return session_ready.send_verified(session, message, marker, retries=retries)
 
 
 def wait_ready(session: str, timeout: float = 45.0) -> bool:
     """Wait until a council session's agent is ready for input."""
-    from agentwire.missions.dispatcher import wait_for_session_ready
+    from agentwire.session_ready import wait_for_session_ready
 
     return wait_for_session_ready(session, timeout=timeout)
 

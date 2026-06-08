@@ -507,7 +507,8 @@ def dispatch_item(item: OvernightItem, config) -> bool:
 
     Returns True if dispatch succeeded.
     """
-    from .__main__ import build_agent_command, _wait_for_agent_ready, _build_tmux_env_flags
+    from .__main__ import build_agent_command, _build_tmux_env_flags
+    from .session_ready import wait_for_session_ready
 
     project = item.project_path
     session = item.session
@@ -559,7 +560,7 @@ def dispatch_item(item: OvernightItem, config) -> bool:
 
     # Wait for agent to be ready
     print(f"[{_ts()}] Waiting for agent in {session}...")
-    if not _wait_for_agent_ready(session, timeout=60):
+    if not wait_for_session_ready(session, timeout=60):
         item.status = "failed"
         item.error = "Agent did not become ready within 60s"
         save_item(item)
