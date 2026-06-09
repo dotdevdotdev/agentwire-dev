@@ -770,6 +770,25 @@ body {
     border-color: var(--accent);
 }
 
+.sidebar-notif-mute {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.sidebar-notif-mute input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.sidebar-display-hint {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 /* Voice Indicator States */
 #sidebarVoiceIndicator {
     display: flex;
