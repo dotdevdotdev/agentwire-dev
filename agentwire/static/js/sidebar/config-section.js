@@ -4,6 +4,9 @@ import {
     setTerminalFontSize, clearTerminalFontSize,
     FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_EVENT,
 } from '../terminal-font-prefs.js';
+import {
+    getPermission, isMuted, setMuted, enableNotifications,
+} from '../notification-prefs.js';
 
 function renderDisplayPrefs() {
     const current = getTerminalFontSize();
@@ -18,6 +21,55 @@ function renderDisplayPrefs() {
             <button class="sidebar-display-reset" data-action="reset" title="Reset to auto">↺</button>
         </div>
     </div>`;
+}
+
+function renderNotificationPrefs() {
+    const perm = getPermission();
+    const muted = isMuted();
+
+    let status, control = '';
+    if (perm === 'unsupported') {
+        status = '<em>not supported</em>';
+    } else if (perm === 'denied') {
+        status = '<em>blocked</em>';
+        control = '<span class="sidebar-display-hint">Allow in browser site settings</span>';
+    } else if (perm === 'default') {
+        status = '<em>off</em>';
+        control = '<button class="sidebar-display-reset" data-action="enable-notifs">Enable</button>';
+    } else { // granted
+        status = muted ? 'muted' : 'on';
+        control = `<label class="sidebar-notif-mute"><input type="checkbox" data-action="mute-notifs"${muted ? ' checked' : ''}/> Mute</label>`;
+    }
+
+    return `<div class="sidebar-display-prefs" data-notif-block>
+        <div class="sidebar-display-row">
+            <label class="sidebar-config-key">Desktop notifications</label>
+            <span class="sidebar-display-value" data-notif="status">${status}</span>
+        </div>
+        ${control ? `<div class="sidebar-display-row">${control}</div>` : ''}
+    </div>`;
+}
+
+function bindNotificationPrefs(body) {
+    const repaint = () => {
+        const block = body.querySelector('[data-notif-block]');
+        if (!block) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = renderNotificationPrefs();
+        block.replaceWith(tmp.firstElementChild);
+        wire();
+    };
+    function wire() {
+        body.querySelector('[data-action="enable-notifs"]')?.addEventListener('click', async () => {
+            await enableNotifications();
+            repaint();
+        });
+        body.querySelector('[data-action="mute-notifs"]')?.addEventListener('change', (e) => {
+            setMuted(e.target.checked);
+            repaint();
+        });
+    }
+    wire();
 }
 
 function bindDisplayPrefs(body) {
@@ -54,11 +106,13 @@ export const configSection = {
                 else if (typeof value === 'object') display = `<code>${JSON.stringify(value)}</code>`;
                 return `<div class="sidebar-config-item"><span class="sidebar-config-key">${key}</span><span class="sidebar-config-val">${display}</span></div>`;
             }).join('');
-            body.innerHTML = renderDisplayPrefs() + itemHtml;
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + itemHtml;
             bindDisplayPrefs(body);
+            bindNotificationPrefs(body);
         } catch (e) {
-            body.innerHTML = renderDisplayPrefs() + '<div class="sidebar-empty">Failed to load config</div>';
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + '<div class="sidebar-empty">Failed to load config</div>';
             bindDisplayPrefs(body);
+            bindNotificationPrefs(body);
         }
     },
 };

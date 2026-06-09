@@ -15,6 +15,7 @@ import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { sidebar } from './sidebar.js';
 import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
+import { notificationsActive } from './notification-prefs.js';
 import { configSection } from './sidebar/config-section.js';
 import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
@@ -315,19 +316,16 @@ function handleSessionRenamed({ old_name, new_name }) {
  * Shows desktop notification for background session activity.
  */
 function handleWindowActivity({ session }) {
-    // Only notify if session window is not focused
-    if (desktop.getActiveWindow() !== session) {
-        // Request notification permission if needed
-        if (Notification.permission === 'granted') {
-            new Notification(`Activity in ${session}`, {
-                body: 'Session has new output',
-                icon: '/static/img/icon-192.png',
-                tag: `activity-${session}`,  // Prevent duplicate notifications
-            });
-        } else if (Notification.permission !== 'denied') {
-            Notification.requestPermission();
-        }
-    }
+    // Only notify if the session window isn't the one you're looking at.
+    if (desktop.getActiveWindow() === session) return;
+    // Respects browser permission + the Config sidebar mute toggle.
+    // Enabling is done explicitly from Config → Desktop notifications, not here.
+    if (!notificationsActive()) return;
+    new Notification(`Activity in ${session}`, {
+        body: 'Session has new output',
+        icon: '/static/img/icon-192.png',
+        tag: `activity-${session}`,  // Prevent duplicate notifications
+    });
 }
 
 // Tab / Shift+Tab to cycle open windows
