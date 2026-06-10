@@ -4165,7 +4165,7 @@ def cmd_jump(args) -> int:
 
 
 def cmd_resize(args) -> int:
-    """Resize tmux window to fit the largest attached client."""
+    """Re-fit tmux window to its attached clients per the window-size policy."""
     json_mode = getattr(args, 'json', False)
     session = getattr(args, 'session', None)
 
@@ -4176,8 +4176,11 @@ def cmd_resize(args) -> int:
             return _output_result(False, json_mode, "Not in a tmux session. Use -s to specify session.")
 
     try:
+        # Unset any window-level window-size override (e.g. manual mode left
+        # by resize-window -x/-y) so the configured policy re-fits the window.
+        # resize-window -A would resize once but leave manual mode set (#258).
         result = subprocess.run(
-            ["tmux", "resize-window", "-A", "-t", session],
+            ["tmux", "set-option", "-w", "-t", session, "-u", "window-size"],
             capture_output=True,
             text=True,
         )
@@ -4188,7 +4191,7 @@ def cmd_resize(args) -> int:
         if json_mode:
             _output_json({"success": True, "session": session})
         else:
-            print(f"Resized {session} to fit largest client")
+            print(f"Re-fit {session} to attached clients per window-size policy")
 
         return 0
 
@@ -10480,7 +10483,7 @@ def main() -> int:
     jump_parser.set_defaults(func=cmd_jump)
 
     # === resize command (top-level) ===
-    resize_parser = subparsers.add_parser("resize", help="Resize window to fit largest client")
+    resize_parser = subparsers.add_parser("resize", help="Re-fit window to attached clients per window-size policy")
     resize_parser.add_argument("-s", "--session", help="Target session (default: auto-detect)")
     resize_parser.add_argument("--json", action="store_true", help="Output as JSON")
     resize_parser.set_defaults(func=cmd_resize)

@@ -57,6 +57,31 @@ PASTE_CHUNK_SIZE = 128  # bytes per write
 PASTE_CHUNK_DELAY = 0.01  # seconds between chunks
 
 
+async def unpin_tmux_window(session_name: str, ssh_target: str | None = None) -> None:
+    """Clear tmux manual size mode so the window-size policy governs again.
+
+    Portal builds before v1.34 pinned windows to manual mode on every
+    browser resize (#258); this heals any window still stuck there.
+    Unsetting the window-level option restores the configured policy and
+    itself triggers a re-fit. (An explicit -A resize would not: it resizes
+    once but leaves manual mode set.)
+    """
+    cmd = ["tmux", "set-option", "-w", "-t", session_name, "-u", "window-size"]
+    if ssh_target:
+        proc = await asyncio.create_subprocess_exec(
+            "ssh", ssh_target, shlex.join(cmd),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    await proc.wait()
+
+
 def _is_allowed_in_restricted_mode(tool_name: str, tool_input: dict) -> bool:
     """Check if command is allowed in restricted mode.
 
@@ -1804,10 +1829,13 @@ class AgentWireServer:
                 os.close(slave_fd)
                 os.set_blocking(master_fd, False)
 
-                # Send initial window size to trigger tmux redraw
-                winsize = struct.pack("HHHH", 24, 80, 0, 0)
+                # Set initial PTY size from browser's reported dimensions
+                winsize = struct.pack("HHHH", init_rows, init_cols, 0, 0)
                 fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-                logger.info(f"[Terminal] Set initial PTY size for SSH to 80x24 (fd={master_fd})")
+                logger.info(f"[Terminal] Set initial PTY size for SSH to {init_cols}x{init_rows} (fd={master_fd})")
+
+                # Heal windows pinned to manual size mode by pre-v1.34 portals
+                await unpin_tmux_window(session_name, ssh_target)
             else:
                 # Local session - use PTY
                 cmd = ["tmux", "attach", "-t", session_name]
@@ -1841,6 +1869,9 @@ class AgentWireServer:
                 winsize = struct.pack("HHHH", init_rows, init_cols, 0, 0)
                 fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
                 logger.info(f"[Terminal] Set initial PTY size to {init_cols}x{init_rows} (fd={master_fd})")
+
+                # Heal windows pinned to manual size mode by pre-v1.34 portals
+                await unpin_tmux_window(session_name)
 
             # Task: Forward tmux stdout → WebSocket
             async def forward_tmux_to_ws():
@@ -1963,40 +1994,22 @@ class AgentWireServer:
                                                         await asyncio.sleep(PASTE_CHUNK_DELAY)
 
                                 elif msg_type == "resize":
-                                    # Terminal resize
+                                    # Terminal resize: update the PTY and notify the
+                                    # tmux/ssh client via SIGWINCH. The window itself
+                                    # is sized by tmux per the window-size policy —
+                                    # never force it with resize-window -x/-y, which
+                                    # pins the window into manual mode (#258).
                                     cols = payload.get("cols", 80)
                                     rows = payload.get("rows", 24)
                                     logger.info(f"[Terminal] Resize {session_name} to {cols}x{rows}")
 
-                                    if master_fd is not None:
-                                        # Local: use TIOCSWINSZ ioctl to resize PTY
-                                        winsize = struct.pack("HHHH", rows, cols, 0, 0)
-                                        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-                                        # Send SIGWINCH to notify tmux of size change
-                                        if proc and proc.pid:
-                                            try:
-                                                os.kill(proc.pid, signal.SIGWINCH)
-                                            except (OSError, ProcessLookupError):
-                                                pass  # Process may have exited
-                                        # Explicitly resize the tmux window to match the browser.
-                                        # Using -x/-y instead of -A avoids the race condition where
-                                        # tmux hasn't yet processed SIGWINCH when resize-window runs.
-                                        resize_proc = await asyncio.create_subprocess_exec(
-                                            "tmux", "resize-window", "-t", session_name,
-                                            "-x", str(cols), "-y", str(rows),
-                                            stdout=asyncio.subprocess.DEVNULL,
-                                            stderr=asyncio.subprocess.DEVNULL,
-                                        )
-                                        await resize_proc.wait()
-                                    else:
-                                        # Remote: send tmux resize-window command
-                                        resize_cmd = f"tmux resize-window -t {session_name} -x {cols} -y {rows}\n"
-                                        resize_proc = await asyncio.create_subprocess_exec(
-                                            "ssh", ssh_target, "sh", "-c", resize_cmd,
-                                            stdout=asyncio.subprocess.DEVNULL,
-                                            stderr=asyncio.subprocess.DEVNULL,
-                                        )
-                                        await resize_proc.wait()
+                                    winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                                    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                                    if proc and proc.pid:
+                                        try:
+                                            os.kill(proc.pid, signal.SIGWINCH)
+                                        except (OSError, ProcessLookupError):
+                                            pass  # Process may have exited
 
                             except json.JSONDecodeError:
                                 logger.warning(f"[Terminal] Invalid JSON from WebSocket: {msg.data}")

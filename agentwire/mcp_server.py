@@ -1266,7 +1266,10 @@ def pane_jump(session: str | None = None, pane: int = 0) -> str:
 
 @mcp.tool()
 def pane_resize(session: str | None = None) -> str:
-    """Resize tmux window to fit the largest client.
+    """Re-fit tmux window to its attached clients per the window-size policy.
+
+    Clears any manual size pin so the configured policy (largest/latest/
+    smallest) governs again.
 
     Args:
         session: Session name (defaults to current session if in tmux)
@@ -1280,7 +1283,7 @@ def pane_resize(session: str | None = None) -> str:
 
     data = run_agentwire_cmd(args)
     if data.get("success"):
-        return "Window resized to fit largest client."
+        return "Window re-fit to attached clients per window-size policy."
     return f"Failed to resize: {data.get('error', 'Unknown error')}"
 
 
