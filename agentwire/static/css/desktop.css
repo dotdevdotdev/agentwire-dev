@@ -684,6 +684,30 @@ body {
     flex-wrap: wrap;
 }
 
+/* Session kill button — hidden until the row is hovered; confirm/killing
+   states stay visible so the second click can't lose its target. */
+.sidebar-session-close {
+    display: none;
+}
+
+.sidebar-session-card:hover .sidebar-session-close,
+.sidebar-session-close.is-confirm,
+.sidebar-session-close.is-killing {
+    display: inline-block;
+}
+
+.sidebar-session-close.is-confirm {
+    border-color: var(--error);
+    color: var(--error);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.sidebar-session-close.is-killing {
+    opacity: 0.6;
+    cursor: default;
+}
+
 .sidebar-session-path {
     font-size: 13px;
     color: var(--text-muted);

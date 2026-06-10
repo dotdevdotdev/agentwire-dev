@@ -35,12 +35,27 @@ loadCustomServices();
 let allSessions = [];
 const listeners = new Set();
 
+// Close-button state: session name → confirm-expiry timer / in-flight kill.
+// Lives at module level so it survives the frequent activity re-renders.
+const pendingClose = new Map();
+const killingSessions = new Set();
+
 export function getAllSessions() { return allSessions; }
 export function onSessionsChanged(fn) { listeners.add(fn); }
 
 function notifyListeners() { for (const fn of listeners) fn(); }
 
-export function renderCard(s) {
+function renderCloseButton(name) {
+    if (killingSessions.has(name)) {
+        return '<button class="sidebar-list-item-btn sidebar-session-close is-killing" data-action="close" title="Shutting down…" disabled>…</button>';
+    }
+    if (pendingClose.has(name)) {
+        return '<button class="sidebar-list-item-btn sidebar-session-close is-confirm" data-action="close" title="Click again to kill the session">sure?</button>';
+    }
+    return '<button class="sidebar-list-item-btn sidebar-list-item-btn-danger sidebar-session-close" data-action="close" title="Kill session (graceful /exit, then tmux kill)">✕</button>';
+}
+
+export function renderCard(s, opts = {}) {
     const name = s.name || '';
     const machine = normalizeMachine(s.machine);
     const id = buildSessionId(name, machine);
@@ -60,6 +75,7 @@ export function renderCard(s) {
             <span class="sidebar-session-name">${name}</span>
             <button class="sidebar-list-item-btn" data-action="connect" title="Connect">▸</button>
             <button class="sidebar-list-item-btn" data-action="monitor" title="Monitor">👁</button>
+            ${opts.closable ? renderCloseButton(name) : ''}
         </div>
         ${path ? `<div class="sidebar-session-row2"><span class="sidebar-session-path">${path}</span></div>` : ''}
         ${tagsHtml ? `<div class="sidebar-session-row3">${tagsHtml}</div>` : ''}
@@ -82,9 +98,46 @@ export async function handleSessionClick(e) {
     const session = item.dataset.session;
     const machine = normalizeMachine(item.dataset.machine);
     const action = btn.dataset.action;
+    if (action === 'close') {
+        handleCloseClick(session);
+        return;
+    }
     const { openSessionTerminal } = await import('../desktop.js');
     if (action === 'connect') openSessionTerminal(session, 'terminal', machine);
     else if (action === 'monitor') openSessionTerminal(session, 'monitor', machine);
+}
+
+// First click arms an inline "sure?" confirm (auto-reverts after 3s);
+// second click does the real teardown: graceful /exit + tmux kill via
+// DELETE /api/sessions/{name} (thin wrapper over `agentwire kill`).
+async function handleCloseClick(session) {
+    if (killingSessions.has(session)) return;
+    const timer = pendingClose.get(session);
+    if (timer === undefined) {
+        pendingClose.set(session, setTimeout(() => {
+            pendingClose.delete(session);
+            notifyListeners();
+        }, 3000));
+        notifyListeners();
+        return;
+    }
+    clearTimeout(timer);
+    pendingClose.delete(session);
+    killingSessions.add(session);
+    notifyListeners();
+    try {
+        const res = await apiFetch(`/api/sessions/${encodeURIComponent(session)}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        // The portal broadcasts sessions_update after the kill; drop the row
+        // locally too so the sidebar doesn't wait on the round-trip.
+        allSessions = allSessions.filter(s => (s.name || '') !== session);
+    } catch (err) {
+        console.error(`Failed to kill session ${session}:`, err);
+    } finally {
+        killingSessions.delete(session);
+        notifyListeners();
+    }
 }
 
 // Data fetching + WebSocket events (registered once by sessionsSection)
@@ -253,7 +306,7 @@ export const sessionsSection = {
         if (!work.length && !this._formType) {
             html += '<div class="sidebar-empty">No sessions</div>';
         } else {
-            html += work.map(s => renderCard(s)).join('');
+            html += work.map(s => renderCard(s, { closable: true })).join('');
         }
         body.innerHTML = html;
         body.onclick = (e) => {

@@ -3760,8 +3760,47 @@ def cmd_info(args) -> int:
     return 0
 
 
+# Shell commands that mean "no agent running" in a pane — kill directly,
+# nothing to /exit.
+_SHELL_COMMANDS = {"zsh", "bash", "fish", "sh", "dash", "tcsh", "ksh", "nu", "login"}
+
+
+def _pane0_state(session: str) -> tuple[str | None, str | None]:
+    """Return (current_command, current_path) for pane 0, or (None, None)."""
+    result = subprocess.run(
+        ["tmux", "display-message", "-t", f"{session}.0", "-p",
+         "#{pane_current_command}\t#{pane_current_path}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None, None
+    parts = result.stdout.strip().split("\t", 1)
+    command = parts[0] if parts and parts[0] else None
+    path = parts[1] if len(parts) > 1 and parts[1] else None
+    return command, path
+
+
+def _wants_graceful_exit(session_type: str | None, pane_command: str | None) -> bool:
+    """Whether a session should get /exit before kill.
+
+    Claude-type sessions (claude-*, claudeglm-*, or no declared type) get a
+    graceful /exit. Bare shells and pi-* sessions don't speak /exit — plain
+    tmux kill. If pane 0 is just sitting at a shell, there's no agent to exit.
+    """
+    if pane_command is None or pane_command in _SHELL_COMMANDS:
+        return False
+    if session_type == "bare" or (session_type or "").startswith("pi-"):
+        return False
+    return True
+
+
 def cmd_kill(args) -> int:
-    """Kill a tmux session or pane (with clean Claude exit).
+    """Kill a tmux session or pane (graceful /exit first, then kill).
+
+    Claude sessions get /exit and we wait for the agent to actually
+    terminate (up to --timeout) before killing tmux. Non-Claude types
+    (bare, pi-*) fall through to a plain tmux kill. --force skips the
+    graceful step entirely.
 
     Supports remote sessions with session@machine format.
     Use --pane N to kill a specific pane in the current session.
@@ -3769,6 +3808,8 @@ def cmd_kill(args) -> int:
     session_full = getattr(args, 'session', None)
     pane_index = getattr(args, 'pane', None)
     json_mode = getattr(args, 'json', False)
+    force = getattr(args, 'force', False)
+    timeout = getattr(args, 'timeout', 10)
 
     # Handle pane mode (auto-detect session from environment)
     if pane_index is not None:
@@ -3814,32 +3855,59 @@ def cmd_kill(args) -> int:
         if machine is None:
             return _output_result(False, json_mode, f"Machine '{machine_id}' not found in machines.json")
 
-        # Check if session exists
-        check_cmd = f"tmux has-session -t {shlex.quote(session)} 2>/dev/null"
-        result = _run_remote(machine_id, check_cmd)
-        if result.returncode != 0:
+        # Check if session exists + grab pane 0 state in one round-trip
+        q = shlex.quote(session)
+        state_cmd = (
+            f"tmux display-message -t {q}.0 -p "
+            "'#{pane_current_command}\t#{pane_current_path}' 2>/dev/null"
+        )
+        result = _run_remote(machine_id, state_cmd)
+        if result.returncode != 0 or not result.stdout.strip():
             return _output_result(False, json_mode, f"Session '{session}' not found on {machine_id}")
 
-        # Send /exit to Claude first for clean shutdown (target pane 0 specifically)
-        exit_cmd = f"tmux send-keys -t {shlex.quote(session)}.0 /exit Enter"
-        _run_remote(machine_id, exit_cmd)
-        if not json_mode:
-            print(f"Sent /exit to {session_full}, waiting 3s...")
-        time.sleep(3)
+        parts = result.stdout.strip().split("\t", 1)
+        pane_command = parts[0] if parts and parts[0] else None
+        pane_path = parts[1] if len(parts) > 1 and parts[1] else None
+        session_type = _get_remote_session_type(machine_id, pane_path) if pane_path else None
+
+        graceful = not force and _wants_graceful_exit(session_type, pane_command)
+        agent_exited = False
+        if graceful:
+            # Send /exit to Claude first for clean shutdown (target pane 0 specifically)
+            _run_remote(machine_id, f"tmux send-keys -t {q}.0 /exit Enter")
+            if not json_mode:
+                print(f"Sent /exit to {session_full}, waiting for agent to exit (up to {timeout}s)...")
+            # Poll over SSH (1s interval — each check is a round-trip)
+            poll_cmd = (
+                f"tmux display-message -t {q}.0 -p '#{{pane_current_command}}' 2>/dev/null"
+                " || echo __GONE__"
+            )
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                time.sleep(1)
+                poll = _run_remote(machine_id, poll_cmd)
+                current = poll.stdout.strip()
+                if current == "__GONE__" or not current or current in _SHELL_COMMANDS:
+                    agent_exited = True
+                    break
 
         # Kill the session
-        kill_cmd = f"tmux kill-session -t {shlex.quote(session)}"
-        _run_remote(machine_id, kill_cmd)
+        _run_remote(machine_id, f"tmux kill-session -t {q} 2>/dev/null")
         if not json_mode:
             print(f"Killed session '{session_full}'")
 
         _notify_portal_sessions_changed()
 
         if json_mode:
-            _output_json({"success": True, "session": session_full})
+            _output_json({
+                "success": True,
+                "session": session_full,
+                "graceful": graceful,
+                "agent_exited": agent_exited,
+            })
         return 0
 
-    # Local: existing logic
+    # Local
     result = subprocess.run(
         ["tmux", "has-session", "-t", session],
         capture_output=True
@@ -3847,17 +3915,33 @@ def cmd_kill(args) -> int:
     if result.returncode != 0:
         return _output_result(False, json_mode, f"Session '{session}' not found")
 
-    # Send /exit to Claude first for clean shutdown
-    # Target pane 0 specifically and capture output to avoid terminal noise
-    subprocess.run(
-        ["tmux", "send-keys", "-t", f"{session}.0", "/exit", "Enter"],
-        capture_output=True
-    )
-    if not json_mode:
-        print(f"Sent /exit to {session}, waiting 3s...")
-    time.sleep(3)
+    pane_command, pane_path = _pane0_state(session)
+    session_type = _get_session_type_from_path(pane_path) if pane_path else None
 
-    # Kill the session
+    graceful = not force and _wants_graceful_exit(session_type, pane_command)
+    agent_exited = False
+    if graceful:
+        # Send /exit to Claude first for clean shutdown
+        # Target pane 0 specifically and capture output to avoid terminal noise
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{session}.0", "/exit", "Enter"],
+            capture_output=True
+        )
+        if not json_mode:
+            print(f"Sent /exit to {session}, waiting for agent to exit (up to {timeout}s)...")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(0.5)
+            if subprocess.run(["tmux", "has-session", "-t", session], capture_output=True).returncode != 0:
+                # Agent exit took the whole session down
+                agent_exited = True
+                break
+            current, _ = _pane0_state(session)
+            if current is None or current in _SHELL_COMMANDS:
+                agent_exited = True
+                break
+
+    # Kill the session (no-op if the agent exit already tore it down)
     subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
     if not json_mode:
         print(f"Killed session '{session}'")
@@ -3865,7 +3949,12 @@ def cmd_kill(args) -> int:
     _notify_portal_sessions_changed()
 
     if json_mode:
-        _output_json({"success": True, "session": session_full})
+        _output_json({
+            "success": True,
+            "session": session_full,
+            "graceful": graceful,
+            "agent_exited": agent_exited,
+        })
     return 0
 
 
@@ -10442,9 +10531,11 @@ def main() -> int:
     info_parser.set_defaults(func=cmd_info)
 
     # === kill command (top-level) ===
-    kill_parser = subparsers.add_parser("kill", help="Kill a session or pane (clean shutdown)")
+    kill_parser = subparsers.add_parser("kill", help="Kill a session or pane (graceful /exit, then tmux kill)")
     kill_parser.add_argument("-s", "--session", help="Session name (supports session@machine)")
     kill_parser.add_argument("--pane", type=int, help="Target pane index (auto-detects session)")
+    kill_parser.add_argument("--force", action="store_true", help="Skip graceful /exit, kill tmux session immediately")
+    kill_parser.add_argument("--timeout", type=int, default=10, help="Seconds to wait for agent to exit after /exit (default: 10)")
     kill_parser.add_argument("--json", action="store_true", help="Output as JSON")
     kill_parser.set_defaults(func=cmd_kill)
 
