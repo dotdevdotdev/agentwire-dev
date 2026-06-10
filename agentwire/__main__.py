@@ -1194,6 +1194,18 @@ def _get_venv_for_backend(backend: str) -> str:
     return "qwen"
 
 
+def _get_tts_engine(args, tts_config: dict) -> str:
+    """Resolve the TTS engine to run: --backend flag, then tts.options.backend.
+
+    The top-level tts.backend is the tier (default|custom), never an engine.
+    """
+    return (
+        getattr(args, "backend", None)
+        or (tts_config.get("options") or {}).get("backend")
+        or "chatterbox"
+    )
+
+
 def _start_tts_local(args, venv_override: str | None = None, attach: bool = True) -> int:
     """Start TTS server locally in tmux.
 
@@ -1216,7 +1228,7 @@ def _start_tts_local(args, venv_override: str | None = None, attach: bool = True
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
     host = args.host or tts_config.get("host", "0.0.0.0")
-    backend = getattr(args, "backend", None) or tts_config.get("backend", "chatterbox")
+    backend = _get_tts_engine(args, tts_config)
 
     # Determine venv family
     venv = venv_override or _get_venv_for_backend(backend)
@@ -1284,7 +1296,7 @@ def _start_tts_remote(ssh_target: str, machine_id: str, args) -> int:
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
     host = args.host or tts_config.get("host", "0.0.0.0")
-    backend = getattr(args, "backend", None) or tts_config.get("backend", "chatterbox")
+    backend = _get_tts_engine(args, tts_config)
 
     # Build backend flag
     backend_flag = f" --backend {backend}" if backend != "chatterbox" else ""
@@ -1392,7 +1404,7 @@ def cmd_tts_serve(args) -> int:
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
     host = args.host or tts_config.get("host", "0.0.0.0")
-    backend = getattr(args, "backend", None) or tts_config.get("backend", "chatterbox")
+    backend = _get_tts_engine(args, tts_config)
 
     # Determine venv family (explicit or auto-detect from backend)
     venv = getattr(args, "venv", None)
@@ -1478,8 +1490,7 @@ def cmd_tts_restart(args) -> int:
 
     # Determine backend and venv
     if not backend:
-        config = load_config()
-        backend = config.get("tts", {}).get("backend", "chatterbox")
+        backend = _get_tts_engine(args, load_config().get("tts", {}))
 
     venv = venv_override or _get_venv_for_backend(backend)
 

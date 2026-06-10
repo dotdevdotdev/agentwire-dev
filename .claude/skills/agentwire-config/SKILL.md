@@ -60,21 +60,25 @@ projects:
                            #  add ".env.local", ".envrc", etc. as needed)
 
 tts:
-  backend: "runpod"  # runpod | kokoro | chatterbox | chatterbox-streaming | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design | zonos-transformer | zonos-hybrid | none
-  runpod_endpoint_id: "your-endpoint-id"
-  runpod_api_key: "your-api-key"
+  backend: "default"  # tier: default (browser/OS voice, zero setup) | custom (self-hosted shim at url)
+  url: "http://localhost:8100"  # custom tier only — shim endpoint
   default_voice: "dotdev"
   voices_dir: "~/.agentwire/voices"  # Custom voice samples for cloning
+  instructions: ""  # free-text prompt passed through to the shim
+  options:  # opaque JSON passed to the shim; the bundled shim reads:
+    backend: kokoro  # engine: kokoro | chatterbox | chatterbox-streaming | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design | zonos-transformer | zonos-hybrid
   exaggeration: 0.5  # Voice expressiveness (0-1, Chatterbox)
   cfg_weight: 0.5  # CFG weight (0-1, Chatterbox)
-  runpod_timeout: 120  # API timeout for RunPod (seconds)
+  timeout: 60
 
 stt:
-  url: "http://localhost:8101"
+  backend: "default"  # tier: default (browser speech recognition) | custom (self-hosted shim at url)
+  url: "http://localhost:8101"  # custom tier only — shim endpoint
   timeout: 30
-  backend: "auto"       # auto (moonshine → faster-whisper fallback), moonshine, whisper
-  model: "base"         # Whisper model size (used when backend=whisper)
-  moonshine_model: "moonshine/base"  # moonshine/tiny (faster) or moonshine/base
+  silence_prepend_ms: 0  # prepend silence if your backend clips the first syllable
+  instructions: ""  # free-text hint passed through to the shim
+  options: {}  # opaque JSON passed to the shim (language hints, vocab biasing, ...)
+  corrections: {}  # post-transcription find/replace, e.g. {"agent wire": "agentwire"}
 
 agent:
   command: "claude --dangerously-skip-permissions"
