@@ -56,7 +56,11 @@ bind -T copy-mode-vi v send -X begin-selection
 bind -T copy-mode-vi y send -X copy-selection-and-cancel
 unbind -T copy-mode-vi MouseDragEnd1Pane
 
-# Multiple clients (portal Monitor + your terminal) without window shrinking
+# Multi-client sizing — pick the policy that fits how you view sessions:
+#   largest  = big clients win; small viewers see a cropped view
+#   smallest = fit the smallest viewer (e.g. portal on a tablet) so the
+#              window is always fully visible everywhere
+#   latest   = whoever resized last wins (tmux default)
 set -g window-size largest
 ```
 
