@@ -1,6 +1,23 @@
 {
   "announcements": [
     {
+      "id": "2026-06-window-sizing-fix",
+      "placement": "modal",
+      "emoji": "🪟",
+      "title": "Terminal sizing now respects your tmux config",
+      "date": "2026-06-09",
+      "body": "Until now, resizing the portal terminal silently forced the whole tmux window to the browser's size — pinning it into manual mode and breaking your window-size setting (largest/smallest/latest) for every connected terminal. Fixed: the portal now behaves like any other tmux client, your policy decides, and previously stuck windows heal automatically when you open them in the portal. If you liked 'the browser always wins', set window-size latest in ~/.tmux.conf. Tip: window-size smallest keeps sessions fully visible even on a phone or tablet.",
+      "highlights": [
+        "Your window-size policy works again — for every client",
+        "Stuck windows self-heal on portal attach (agentwire resize works too)",
+        "On a tablet? Try: set -g window-size smallest"
+      ],
+      "cta": {
+        "label": "How window sizing works now",
+        "url": "https://github.com/dotdevdotdev/agentwire-dev/blob/main/docs/wiki/sessions/window-sizing.md"
+      }
+    },
+    {
       "id": "evergreen-feedback-2026-06",
       "placement": "banner",
       "emoji": "👋",
