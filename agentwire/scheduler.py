@@ -804,10 +804,24 @@ def _parse_ensure_summary(task: SchedulerTask, result, project: str | None = Non
     files_modified: list[str] = []
     blockers: list[str] = []
 
-    # Try parsing JSON stdout from ensure --json
+    # Try parsing JSON stdout from ensure --json. Stdout may contain several
+    # concatenated JSON objects when nested commands (e.g. session creation)
+    # also print JSON — the last object is ensure's own result.
+    data = None
     if hasattr(result, "stdout") and result.stdout:
+        decoder = json.JSONDecoder()
+        text = result.stdout
+        idx = 0
+        while idx < len(text):
+            try:
+                obj, idx = decoder.raw_decode(text, idx)
+            except ValueError:
+                idx += 1
+                continue
+            if isinstance(obj, dict):
+                data = obj
+    if data:
         try:
-            data = json.loads(result.stdout)
             summary = data.get("summary", "")
             summary_file = data.get("summary_file", "")
             if summary_file:
@@ -820,8 +834,12 @@ def _parse_ensure_summary(task: SchedulerTask, result, project: str | None = Non
                     summary = summary or parsed.summary
                     files_modified = parsed.files_modified
                     blockers = parsed.blockers
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             pass
+        # A failed dispatch has no summary file — record ensure's error so
+        # the failure is self-describing in events/state instead of silent.
+        if not summary and data.get("error"):
+            summary = str(data["error"])
 
     # Fallback: glob for summary files if we didn't get one
     if not summary:
