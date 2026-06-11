@@ -512,6 +512,29 @@ def notify_permission_request(session: str, pane_index: int, data: dict) -> "str
         )
         return route_prompt(session, pane_index, info, source="hook")
 
+    # AskUserQuestion fires the hook in prompted sessions too (drill-verified
+    # 2026-06-11) and the payload carries the question + options — mirror the
+    # on-screen dialog. (The screen adds trailing "Type something." / "Chat
+    # about this" options; the marker bridges the hash, kinds match.)
+    if tool_name == "AskUserQuestion":
+        questions = tool_input.get("questions") or []
+        first = questions[0] if isinstance(questions, list) and questions else {}
+        options = [
+            {
+                "number": i + 1,
+                "label": str(o.get("label", "")),
+                "description": str(o.get("description", "")),
+            }
+            for i, o in enumerate(first.get("options") or [])
+            if isinstance(o, dict)
+        ]
+        info = PromptInfo(
+            kind="question",
+            question=str(first.get("question") or "AskUserQuestion dialog"),
+            options=options,
+        )
+        return route_prompt(session, pane_index, info, source="hook")
+
     if tool_name == "Bash":
         detail = str(tool_input.get("command", ""))[:300]
         summary = f"run: {detail}" if detail else "run a command"

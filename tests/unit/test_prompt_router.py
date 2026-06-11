@@ -823,3 +823,22 @@ class TestNotifyPermissionRequest:
         assert info.summary == "Do the thing"
         assert [o["number"] for o in info.options] == [1, 2, 3, 4]
         assert info.options[0]["label"] == "Yes, and use auto mode"
+
+    def test_ask_user_question_maps_to_question_kind(self):
+        # AskUserQuestion fires the hook in prompted sessions (drill-verified
+        # 2026-06-11); the payload carries the question + options.
+        prompt_router.notify_permission_request(
+            "child", 0,
+            {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{
+                "question": "Ship it?",
+                "header": "Ship",
+                "options": [
+                    {"label": "Yes", "description": "ship now"},
+                    {"label": "No", "description": "hold"},
+                ],
+            }]}},
+        )
+        _, _, info, source = self.routed[0]
+        assert info.kind == "question" and source == "hook"
+        assert info.question == "Ship it?"
+        assert [o["label"] for o in info.options] == ["Yes", "No"]
