@@ -825,7 +825,8 @@ function setupGlobalPtt() {
 }
 
 function usesBrowserStt() {
-    return desktop.voiceStatus?.stt?.backend !== 'custom';
+    // cloud and custom tiers upload audio to the portal's /transcribe
+    return !['cloud', 'custom'].includes(desktop.voiceStatus?.stt?.backend);
 }
 
 let globalSttCancelled = false;
@@ -836,10 +837,10 @@ async function startGlobalRecording() {
     // Default tier: browser speech recognition → edit-before-send bar
     if (usesBrowserStt()) {
         if (!browserStt.isSupported()) {
-            console.warn('[GlobalPTT] SpeechRecognition unsupported — use Chrome or set stt.backend: custom');
+            console.warn('[GlobalPTT] SpeechRecognition unsupported — use Chrome or set stt.backend: cloud/custom');
             const icon = elements.globalPtt?.querySelector('.ptt-icon');
             if (icon) icon.textContent = '🚫';
-            elements.globalPtt.title = 'Browser voice input requires Chrome (or set stt.backend: custom)';
+            elements.globalPtt.title = 'Browser voice input requires Chrome (or set stt.backend: cloud/custom)';
             return;
         }
         globalSttCancelled = false;

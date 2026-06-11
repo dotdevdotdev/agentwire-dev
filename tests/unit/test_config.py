@@ -1,19 +1,16 @@
 """Tests for agentwire/config.py — Config loading, env overrides, merge."""
 
-import os
-from pathlib import Path
 
 import pytest
 import yaml
 
 from agentwire.config import (
     Config,
-    _parse_env_value,
-    _merge_dict,
     _apply_env_overrides,
+    _merge_dict,
+    _parse_env_value,
     load_config,
 )
-
 
 # --- _parse_env_value ---
 
@@ -155,6 +152,31 @@ class TestVoiceBackends:
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump({"stt": {"backend": "custom"}}))
         with pytest.raises(ValueError, match="stt.backend 'custom' requires stt.url"):
+            load_config(path)
+
+    def test_cloud_stt_parses_with_settings(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "stt": {"backend": "cloud",
+                    "cloud": {"base_url": "https://api.groq.com/openai/v1",
+                              "model": "whisper-large-v3-turbo",
+                              "api_key_env": "GROQ_API_KEY"}},
+        }))
+        config = load_config(path)
+        assert config.stt.backend == "cloud"
+        assert config.stt.cloud["api_key_env"] == "GROQ_API_KEY"
+
+    def test_cloud_stt_without_settings_parses(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"stt": {"backend": "cloud"}}))
+        config = load_config(path)
+        assert config.stt.backend == "cloud"
+        assert config.stt.cloud == {}
+
+    def test_cloud_tts_is_invalid(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"tts": {"backend": "cloud"}}))
+        with pytest.raises(ValueError, match="is not valid"):
             load_config(path)
 
     def test_old_tts_vocabulary_raises(self, tmp_path):
