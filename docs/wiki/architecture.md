@@ -90,6 +90,8 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 
 Lives at the project root. Defines the session type, roles, voice, parent (for cross-session notifications), and named tasks. See `agentwire-project-config` skill for the full schema.
 
+**Gitignore it.** It's personal/live config (voices, schedules, notification addresses) — not project code. Tracking it also breaks worktree dispatch subtly: worktree runs check out HEAD, so uncommitted live edits to a tracked file are silently ignored. Gitignored, it's seeded into worktrees via `projects.worktrees.copy_files` (default includes it), so the live file always wins. AgentWire adds it to `.gitignore` automatically whenever it writes the file into a git repo.
+
 ```yaml
 type: claude-auto
 roles: [task-runner]

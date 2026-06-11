@@ -8,6 +8,7 @@ from agentwire.project_config import (
     SessionType,
     ProjectConfig,
     SafetyConfig,
+    ensure_gitignored,
     normalize_session_type,
     find_project_config,
     load_project_config,
@@ -295,3 +296,53 @@ class TestProjectConfigSafety:
         assert loaded is not None
         assert len(loaded.safety.allowed_paths) == 1
         assert loaded.safety.allowed_paths[0]["path"] == "dist/*"
+
+
+# --- ensure_gitignored ---
+
+def _git(repo, *args):
+    import subprocess
+    return subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=repo, capture_output=True, text=True, check=True,
+    )
+
+
+class TestEnsureGitignored:
+    def test_non_git_dir_is_noop(self, tmp_path):
+        assert ensure_gitignored(tmp_path) is False
+        assert not (tmp_path / ".gitignore").exists()
+
+    def test_adds_entry_in_git_repo(self, tmp_path):
+        _git(tmp_path, "init")
+        assert ensure_gitignored(tmp_path) is True
+        assert ".agentwire.yml" in (tmp_path / ".gitignore").read_text()
+
+    def test_idempotent_when_already_ignored(self, tmp_path):
+        _git(tmp_path, "init")
+        assert ensure_gitignored(tmp_path) is True
+        before = (tmp_path / ".gitignore").read_text()
+        assert ensure_gitignored(tmp_path) is False
+        assert (tmp_path / ".gitignore").read_text() == before
+
+    def test_respects_tracked_file(self, tmp_path):
+        _git(tmp_path, "init")
+        (tmp_path / ".agentwire.yml").write_text("type: claude-bypass\n")
+        _git(tmp_path, "add", ".agentwire.yml")
+        _git(tmp_path, "commit", "-m", "track config")
+        assert ensure_gitignored(tmp_path) is False
+        assert not (tmp_path / ".gitignore").exists()
+
+    def test_appends_after_missing_trailing_newline(self, tmp_path):
+        _git(tmp_path, "init")
+        (tmp_path / ".gitignore").write_text("*.log")  # no trailing newline
+        assert ensure_gitignored(tmp_path) is True
+        lines = (tmp_path / ".gitignore").read_text().splitlines()
+        assert "*.log" in lines
+        assert ".agentwire.yml" in lines
+
+    def test_save_project_config_gitignores(self, tmp_path):
+        _git(tmp_path, "init")
+        config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
+        assert save_project_config(config, tmp_path) is True
+        assert ".agentwire.yml" in (tmp_path / ".gitignore").read_text()

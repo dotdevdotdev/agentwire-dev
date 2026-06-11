@@ -19,7 +19,7 @@ Both are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire schedul
 
 ## Task Definition Schema
 
-Define tasks in `.agentwire.yml`:
+Define tasks in `.agentwire.yml` — **keep that file gitignored**. Worktree-dispatched runs check out HEAD, so if the file is tracked, uncommitted live edits to a task prompt are silently ignored and the run executes the stale committed version. Gitignored, the live file is seeded into every worktree via `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml"]`) and always wins. See the `agentwire-project-config` skill.
 
 ```yaml
 type: claude-auto    # Recommended for overnight work — see claude-auto below

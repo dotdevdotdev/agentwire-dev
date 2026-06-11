@@ -660,6 +660,8 @@ class AgentWireServer:
             try:
                 with open(yaml_path, "w") as f:
                     yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+                from .project_config import ensure_gitignored
+                ensure_gitignored(Path(cwd))
                 return True
             except Exception as e:
                 logger.warning(f"Failed to write {yaml_path}: {e}")

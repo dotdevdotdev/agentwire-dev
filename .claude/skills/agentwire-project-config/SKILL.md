@@ -7,6 +7,17 @@ description: Reference for per-project `.agentwire.yml` — session type, roles,
 
 Each project can have a `.agentwire.yml` in its root directory. This configures session type, roles, voice, and parent for that project.
 
+## Gitignore it (don't commit it)
+
+**`.agentwire.yml` should be gitignored, not committed.** Two reasons:
+
+1. **A tracked copy breaks worktree dispatch subtly.** Worktree-dispatched runs (scheduler tasks, missions) check out HEAD — if the file is tracked, uncommitted live edits are invisible to the run, which silently executes the stale committed version. The failure mode is confusing: the live file looks right, the run behaves wrong.
+2. **It's personal/live config, not project code.** Voice choices, email recipients, schedules, machine-specific roles — none of that belongs in a repo, especially a public one.
+
+Worktree runs still get the file: `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml"]`) copies gitignored configs from the main checkout into every new worktree as live files — the live file always wins, no drift.
+
+AgentWire enforces this automatically: whenever it writes `.agentwire.yml` into a git repo (`agentwire projects create`, `agentwire new --persist`, portal project settings), it appends the file to the project's `.gitignore` unless it's already ignored — or already *tracked*. A tracked file is left alone: committing is a valid choice for teams that want shared, versioned task definitions, but they're opting into the HEAD-checkout behavior above — worktree runs use the committed version, never live edits. To switch an existing project to the recommended setup: `git rm --cached .agentwire.yml`, add it to `.gitignore`, commit.
+
 **Format is FLAT (no nesting):**
 
 ```yaml

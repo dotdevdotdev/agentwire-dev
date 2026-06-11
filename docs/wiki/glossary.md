@@ -62,7 +62,7 @@ The agentwire web UI + REST/WebSocket API at `https://localhost:8765`. Wraps CLI
 
 ## P — Project Config
 
-`.agentwire.yml` at a project root. Defines `type:` (session type), `roles:`, `voice:`, `parent:`, and named `tasks:`. Picked up automatically when `agentwire new` targets a path that contains it. → `agentwire-project-config` skill in `.claude/skills/`.
+`.agentwire.yml` at a project root. Defines `type:` (session type), `roles:`, `voice:`, `parent:`, and named `tasks:`. Picked up automatically when `agentwire new` targets a path that contains it. **Keep it gitignored** — it's personal config, and a tracked copy makes worktree-dispatched runs use the stale committed version instead of live edits (`projects.worktrees.copy_files` seeds the live file into worktrees). → `agentwire-project-config` skill in `.claude/skills/`.
 
 ## R — Role
 

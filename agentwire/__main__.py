@@ -7465,7 +7465,7 @@ _VALID_PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 def cmd_projects_create(args) -> int:
     """Create a new local project: make the directory, optionally git-init or clone, and write .agentwire.yml."""
     from .config import get_config
-    from .project_config import ProjectConfig, SessionType, save_project_config
+    from .project_config import ProjectConfig, SessionType, ensure_gitignored, save_project_config
 
     name = (args.name or "").strip()
     clone_url = (getattr(args, "from_url", None) or "").strip() or None
@@ -7518,6 +7518,7 @@ def cmd_projects_create(args) -> int:
     except OSError as e:
         return _fail(f"Failed to create directory: {e}")
 
+    gitignore_updated = ensure_gitignored(project_path)
     config = ProjectConfig(type=SessionType.from_str("claude-bypass"), roles=[], voice=None)
     if not save_project_config(config, project_path):
         return _fail("Created project directory but failed to write .agentwire.yml")
@@ -7538,6 +7539,8 @@ def cmd_projects_create(args) -> int:
             print(f"  Cloned from: {clone_url}")
         elif do_git_init:
             print("  Initialized empty git repository")
+        if gitignore_updated:
+            print("  Added .agentwire.yml to .gitignore (personal config — keep it untracked)")
     return 0
 
 
