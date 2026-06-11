@@ -34,6 +34,7 @@ import jinja2
 import yaml
 from aiohttp import web
 
+from . import prompt_router
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
 from .security import (
@@ -2180,51 +2181,15 @@ class AgentWireServer:
     # Patterns for say command detection
     # Matches: say "text", agentwire say "text", agentwire say -s session "text"
     SAY_PATTERN = re.compile(r'(?:agentwire\s+)?say\s+(?:-s\s+\S+\s+)?(?:"([^"]+)"|\'([^\']+)\')', re.IGNORECASE)
-    ANSI_PATTERN = re.compile(r'\x1b\[[0-9;]*m|\x1b\].*?\x07')
-
-    # Pattern to detect AskUserQuestion UI blocks
-    # Format: ☐ Header\n\nQuestion?\n\n❯ 1. Label\n     Description\n  2. Label...
-    # Multi-tab format: ←  ☐ Tab1  ☐ Tab2  ✔ Submit  →\n\nQuestion?...
-    ASK_PATTERN = re.compile(
-        r'☐\s+(\S+)'              # ☐ followed by first word only (active tab name)
-        r'.*?\n\s*\n'             # Rest of header line + blank line
-        r'((?:.+\n)+?)'           # Question text (one or more lines, non-greedy)
-        r'\s*\n'                  # Blank line before options
-        r'((?:[❯\s]+\d+\.\s+.+\n(?:\s{3,}.+\n)?)+)',  # Options block
-        re.MULTILINE | re.DOTALL
-    )
-
-    # Simple format without ☐ header (e.g., "Ready to submit?\n\n❯ 1. Submit\n  2. Cancel")
-    ASK_PATTERN_SIMPLE = re.compile(
-        r'\n([^\n☐❯]+\?)\s*\n'    # Question ending with ? (not containing ☐ or ❯)
-        r'\s*\n'                   # Blank line
-        r'((?:[❯\s]+\d+\.\s+.+\n(?:\s{3,}.+\n)?)+)',  # Options block
-        re.MULTILINE
-    )
+    # Dialog/ANSI patterns live in prompt_router (single source of truth,
+    # shared with the pane-sweep prompt detector).
+    ANSI_PATTERN = prompt_router.ANSI_PATTERN
+    ASK_PATTERN = prompt_router.ASK_PATTERN
+    ASK_PATTERN_SIMPLE = prompt_router.ASK_PATTERN_SIMPLE
 
     def _parse_ask_options(self, options_block: str) -> list[dict]:
         """Parse numbered options from AskUserQuestion block."""
-        options = []
-        current_option = None
-
-        for line in options_block.split('\n'):
-            line = self.ANSI_PATTERN.sub('', line)
-            option_match = re.match(r'[❯\s]*(\d+)\.\s+(.+)', line)
-            if option_match:
-                if current_option:
-                    options.append(current_option)
-                current_option = {
-                    'number': int(option_match.group(1)),
-                    'label': option_match.group(2).strip(),
-                    'description': '',
-                }
-            elif current_option and line.strip():
-                current_option['description'] = line.strip()
-
-        if current_option:
-            options.append(current_option)
-
-        return options
+        return prompt_router.parse_ask_options(options_block)
 
     async def _poll_output(self, session: Session):
         """Poll agent output and broadcast to session clients."""
