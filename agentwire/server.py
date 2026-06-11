@@ -432,7 +432,7 @@ class AgentWireServer:
         try:
             async with self._http_session.get(
                 f"{self.config.tts.url}/voices",
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=2),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -693,9 +693,18 @@ class AgentWireServer:
 
     async def _get_voices(self) -> list[str]:
         """Available TTS voices: Kokoro presets on the default tier (once
-        the engine is ready), the shim's list on the custom tier."""
+        the engine is ready), the shim's list on the custom tier.
+
+        Custom-tier results are cached for 30s so an unreachable shim
+        can't stall every page load (handle_index awaits this)."""
         if self.config.tts.backend == "custom":
-            return await self._tts_get_voices()
+            now = time.time()
+            cached = getattr(self, "_voices_cache", None)
+            if cached and now - cached[0] < 30:
+                return cached[1]
+            voices = await self._tts_get_voices()
+            self._voices_cache = (now, voices)
+            return voices
         if self.config.tts.backend == "default" and self.kokoro.ready:
             from .tts.engines.kokoro import PRESET_VOICES
 
