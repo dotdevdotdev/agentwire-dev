@@ -57,12 +57,14 @@ Running AgentWire across machines and exposing the portal.
 
 ## Voice (TTS & STT)
 
-Two-tier model: `default` (in-process Kokoro-82M, zero setup — what a fresh
-install gets; browser speechSynthesis covers the one-time model download)
+Tiered model: `default` (in-process Kokoro-82M, zero setup — what a fresh
+install gets; browser speechSynthesis covers the one-time model download),
+`cloud` (STT only — any OpenAI-compatible transcription API, key from env),
 and `custom` (any model behind a small HTTP shim).
 
-- **[Shim contract](voice/shim-contract.md)** — the two tiers, the envelope (instructions/options pass-through), capabilities + tool_prompt injection, a from-scratch shim example
+- **[Shim contract](voice/shim-contract.md)** — the tiers, the envelope (instructions/options pass-through), capabilities + tool_prompt injection, a from-scratch shim example
 - **[Self-hosted TTS](voice/tts-self-hosted.md)** — the bundled reference shim's engines (Kokoro, Chatterbox, Qwen, Zonos)
+- **[Cloud STT](voice/stt-cloud.md)** — `stt.backend: cloud`, portal → any OpenAI-compatible transcription API, no shim daemon
 - **[Self-hosted STT](voice/stt-self-hosted.md)** — moonshine / faster-whisper reference shim, push-to-talk latency knobs
 
 ## Internals
