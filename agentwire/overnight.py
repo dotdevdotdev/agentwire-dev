@@ -619,6 +619,11 @@ def check_completion(item: OvernightItem, config) -> str:
     if not _tmux_session_exists(session):
         return "complete"
 
+    # Parked on a usage limit — waiting out the reset, never "stuck"
+    from .usage_limit import is_parked
+    if is_parked(session):
+        return "running"
+
     # Agent still running?
     if _session_has_agent(session):
         # Check timeout

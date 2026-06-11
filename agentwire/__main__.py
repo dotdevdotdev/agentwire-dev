@@ -3114,6 +3114,8 @@ def cmd_list(args) -> int:
         return 0
 
     # Show sessions (original behavior)
+    from .usage_limit import is_parked as usage_limit_parked
+
     all_sessions = []
 
     # Get local sessions (skip if remote_only)
@@ -3140,6 +3142,8 @@ def cmd_list(args) -> int:
                             "type": cfg.get("type"),
                             "roles": cfg.get("roles", []),
                         }
+                        if usage_limit_parked(parts[0]):
+                            session_info["usage_limit"] = True
                         local_sessions.append(session_info)
                         all_sessions.append(session_info)
 
@@ -3216,7 +3220,8 @@ def cmd_list(args) -> int:
             for s in sessions:
                 # Remove @machine suffix for display within machine group
                 display_name = s['name'].rsplit('@', 1)[0] if '@' in s['name'] else s['name']
-                print(f"  {display_name}: {s['windows']} window(s) ({s['path']})")
+                parked_marker = " [parked: usage limit]" if s.get("usage_limit") else ""
+                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}")
         else:
             print("  (no sessions)")
         print()

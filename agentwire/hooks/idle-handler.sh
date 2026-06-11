@@ -25,6 +25,13 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
     tmux_session=$(tmux display -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null)
   fi
 
+  # Usage-limit park guard: a parked session is waiting out a limit reset —
+  # no summary prompts, no /exit, no kill. The watchdog resumes it (#274).
+  if [[ -n "$tmux_session" && -f "$HOME/.agentwire/usage-limit/${tmux_session}.json" ]]; then
+    log "Session $tmux_session parked on usage limit — skipping idle handling"
+    exit 0
+  fi
+
   # Try to get config from .agentwire.yml
   session_name=""
   is_chatbot=false
