@@ -87,14 +87,18 @@ jobs:
       - name: Install base package
         run: pip install .
       - name: Synthesize a sentence
-        run: >
-          python -c "
-          from agentwire.tts.engines.kokoro import KokoroEngine;
-          from agentwire.tts.base import TTSRequest;
-          from agentwire.tts.audio import pcm_float_to_wav_bytes;
-          KokoroEngine.download_models();
-          engine = KokoroEngine();
-          result = engine.generate(TTSRequest(text='AgentWire speaks with Kokoro out of the box.', voice='af_heart'));
-          wav = pcm_float_to_wav_bytes(result.audio, result.sample_rate);
-          assert wav[:4] == b'RIFF' and len(wav) > 50_000, f'suspicious WAV ({len(wav)} bytes)';
-          print(f'synthesized {len(wav)} bytes of WAV at {result.sample_rate}Hz')"
+        run: |
+          python - <<'EOF'
+          from agentwire.tts.engines.kokoro import KokoroEngine
+          from agentwire.tts.base import TTSRequest
+          from agentwire.tts.audio import pcm_float_to_wav_bytes
+
+          KokoroEngine.download_models()
+          engine = KokoroEngine()
+          result = engine.generate(
+              TTSRequest(text="AgentWire speaks with Kokoro out of the box.", voice="af_heart")
+          )
+          wav = pcm_float_to_wav_bytes(result.audio, result.sample_rate)
+          assert wav[:4] == b"RIFF" and len(wav) > 50_000, f"suspicious WAV ({len(wav)} bytes)"
+          print(f"synthesized {len(wav)} bytes of WAV at {result.sample_rate}Hz")
+          EOF
