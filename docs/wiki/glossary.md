@@ -74,7 +74,7 @@ An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `a
 
 ## S — Session
 
-A tmux session running an AI agent (claude-*, claudeglm-*, pi-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
+A tmux session running an AI agent (claude-*, pi-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
 
 ## S — Soul
 

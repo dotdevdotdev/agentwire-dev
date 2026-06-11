@@ -96,7 +96,6 @@ include = [
     "agentwire/roles/*.md",
     "agentwire/commands/*.md",
     "agentwire/prompts/*.md",
-    "agentwire/glm_system_prompt.md",
     # Hooks and auxiliary scripts/configs
     "agentwire/hooks/**/*.py",
     "agentwire/hooks/**/*.yaml",

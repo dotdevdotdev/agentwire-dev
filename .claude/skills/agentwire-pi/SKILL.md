@@ -1,6 +1,6 @@
 ---
 name: agentwire-pi
-description: Pi coding agent (multi-provider) integration — `pi-<provider>` / `pi-<provider>-restricted` / `pi-<provider>-readonly` session types for any pi provider (zai, deepseek, openai, openrouter, etc.). Install (`npm install -g @mariozechner/pi-coding-agent`), config (`pi.binary`, `pi.system_prompt`, `pi.extra_env`, `pi.providers.<name>.{env_var,api_key,default_model}`), custom providers via `~/.pi/agent/models.json`, tool translation (Claude CamelCase → pi lowercase), system-prompt injection (global + role merged), built-in helpers (`agentwire brave`, `agentwire fetch`), limitations vs Claude Code (no MCP client, no `--disallowedTools`, no `--resume --fork-session`, no hook integration). Use when setting up pi sessions for any provider, debugging pi tool execution, or explaining when to pick pi-* vs claude-*.
+description: Pi coding agent (multi-provider) integration — `pi-<provider>` / `pi-<provider>-restricted` / `pi-<provider>-readonly` session types for any pi provider (zai, deepseek, openai, openrouter, etc.). Install (`npm install -g @mariozechner/pi-coding-agent`), config (`pi.binary`, `pi.system_prompt`, `pi.extra_env`, `pi.providers.<name>.{env_var,api_key,default_model}`), custom providers via `~/.pi/agent/models.json`, tool translation (Claude CamelCase → pi lowercase), system-prompt injection (global + role merged), built-in helper (`agentwire fetch`), limitations vs Claude Code (no MCP client, no web search, no `--disallowedTools`, no `--resume --fork-session`, no hook integration). Use when setting up pi sessions for any provider, debugging pi tool execution, or explaining when to pick pi-* vs claude-*.
 ---
 
 # pi — Pi Coding Agent (multi-provider)
@@ -67,17 +67,14 @@ pi:
   binary: "pi"  # path override if not on PATH (e.g., nvm-installed)
 
   # Appended via --append-system-prompt to every non-restricted pi-* session.
-  # Use to teach pi about local helpers — agentwire brave, agentwire fetch, etc.
+  # Use to teach pi about local helpers — agentwire fetch, etc.
   system_prompt: |
-    ## Web Search
-    Use `agentwire brave "<query>"` for web search via the Brave Search API.
-
     ## Fetching URLs
     Use `agentwire fetch <url>` to fetch a page as clean markdown.
 
   # Env vars injected into every pi-* session (in addition to the provider key)
   extra_env:
-    BRAVE_SEARCH_API_KEY: "BSA..."
+    MY_SERVICE_API_KEY: "..."
 
   providers:
     zai:
@@ -128,14 +125,13 @@ Same pattern works for OpenRouter, Together AI, Groq, or any other OpenAI-compat
 
 ## Built-in Helpers in pi Sessions
 
-Two CLI helpers are automatically taught to pi via `pi.system_prompt`:
+One CLI helper is automatically taught to pi via `pi.system_prompt`:
 
 | Helper | Purpose |
 |--------|---------|
-| `agentwire brave "<query>"` | Brave Search wrapper (output: `title \| url \| age \| description`, one per line) |
 | `agentwire fetch <url>` | Fetches a URL via Jina Reader — handles JS-rendered pages, returns clean markdown |
 
-These work in any pi session because `pi.extra_env.BRAVE_SEARCH_API_KEY` and the system-prompt instructions are injected globally. Add new helpers by extending `pi.system_prompt`.
+Add new helpers by extending `pi.system_prompt`. Note: pi sessions have **no web search** — WebSearch is Anthropic-server-side and the old CLI search helper was removed in #268. `agentwire fetch` covers direct page pulls only.
 
 ## System Prompt Composition
 
