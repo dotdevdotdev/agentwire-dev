@@ -5157,6 +5157,26 @@ body.sidebar-pinned .sidebar-tab {
     justify-content: center;
 }
 
+.sidebar-mobile-link {
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--chrome-border);
+    border-radius: 8px;
+    text-decoration: none;
+    font-size: 15px;
+    opacity: 0.8;
+}
+
+.sidebar-mobile-link:hover {
+    border-color: var(--accent);
+    background: var(--hover);
+    opacity: 1;
+}
+
 .sidebar-voice-indicator .stop-icon,
 .sidebar-voice-indicator .spinner,
 .sidebar-voice-indicator .generating-dots,

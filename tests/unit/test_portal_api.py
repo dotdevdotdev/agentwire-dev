@@ -508,10 +508,11 @@ class TestTokenAuth:
         assert resp.status == 401
 
     async def test_public_surface_open(self, portal_client_with_token):
-        """The page shell + health must load so the token modal can render."""
+        """The page shells + health must load so the token modal can render."""
         client, _ = portal_client_with_token
         assert (await client.get("/health")).status == 200
         assert (await client.get("/")).status == 200
+        assert (await client.get("/mobile")).status == 200
         resp = await client.get("/static/js/api.js")
         assert resp.status != 401
 
@@ -522,6 +523,39 @@ class TestTokenAuth:
             mock_cmd.return_value = (True, {"sessions": []})
             resp = await client.get("/api/sessions/local")
         assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /mobile page (#279 — phone PTT surface)
+# ---------------------------------------------------------------------------
+
+
+class TestMobilePage:
+    async def test_mobile_serves_shell(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/mobile")
+        assert resp.status == 200
+        body = await resp.text()
+        assert "/static/js/mobile.js" in body
+        assert "pttButton" in body
+
+    async def test_mobile_no_cache(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/mobile")
+        assert "no-store" in resp.headers.get("Cache-Control", "")
+
+    async def test_mobile_public_with_token(self, portal_client_with_token):
+        """Same exposure class as `/` — the shell loads without a token so
+        the token modal can render; the APIs it calls stay guarded."""
+        client, _ = portal_client_with_token
+        resp = await client.get("/mobile")
+        assert resp.status == 200
+
+    async def test_mobile_only_get_is_public(self, portal_client_with_token):
+        """_is_public_path is GET-only — a POST to /mobile still needs auth."""
+        client, _ = portal_client_with_token
+        resp = await client.post("/mobile")
+        assert resp.status == 401
 
 
 # ---------------------------------------------------------------------------

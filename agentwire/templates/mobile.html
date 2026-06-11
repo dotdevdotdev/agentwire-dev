@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+
+{% block title %}AgentWire Mobile{% endblock %}
+
+{% block styles %}
+<link rel="stylesheet" href="/static/css/mobile.css">
+{% endblock %}
+
+{% block content %}
+<div class="mobile-app">
+    <header class="mobile-header">
+        <img src="/static/favicon.png" alt="" class="mobile-logo">
+        <span class="mobile-title">AgentWire</span>
+        <span class="mobile-voice-indicator" id="voiceIndicator" title="Idle"></span>
+        <a href="/" class="mobile-desktop-link">Desktop</a>
+    </header>
+
+    <section class="mobile-sessions">
+        <div class="mobile-sessions-head">
+            <span>Sessions</span>
+            <button class="mobile-refresh" id="refreshSessions" title="Refresh sessions" aria-label="Refresh sessions">↻</button>
+        </div>
+        <div class="mobile-session-list" id="sessionList">
+            <div class="mobile-empty">Loading sessions…</div>
+        </div>
+    </section>
+
+    <section class="mobile-transcript" id="transcript" aria-live="polite"></section>
+
+    <div class="mobile-edit-bar" id="editBar" hidden>
+        <input type="text" class="mobile-edit-input" id="editInput"
+               aria-label="Voice transcript — edit then send" autocomplete="off">
+        <button class="mobile-edit-send" id="editSend" title="Send">➤</button>
+        <button class="mobile-edit-dismiss" id="editDismiss" title="Discard">✕</button>
+    </div>
+
+    <footer class="mobile-footer">
+        <div class="mobile-status" id="statusLine">Connecting…</div>
+        <button class="mobile-ptt" id="pttButton" disabled>
+            <span class="mobile-ptt-icon">🎤</span>
+            <span class="mobile-ptt-label">Hold to talk</span>
+        </button>
+    </footer>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="/static/js/mobile.js"></script>
+{% endblock %}
