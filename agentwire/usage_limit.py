@@ -29,6 +29,7 @@ archived to ``usage-limit/done/`` on resume.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -532,7 +533,10 @@ def _log_unmatched(session: str, pane_index: int, visible: str) -> None:
     if not isinstance(seen, dict):
         seen = {}
     key = f"{session}.{pane_index}"
-    digest = str(hash(excerpt))
+    # sha256, NOT hash(): str hashing is randomized per process, and every
+    # launchd tick is a fresh process — hash() never matched, so the dedupe
+    # was a no-op and unmatched dialogs re-logged every 60s.
+    digest = hashlib.sha256(excerpt.encode()).hexdigest()[:16]
     if seen.get(key) == digest:
         return
     seen[key] = digest

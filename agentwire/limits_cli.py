@@ -90,22 +90,38 @@ def _fmt_local(iso: str) -> str:
 
 
 def cmd_limits_tick(args) -> int:
-    """One watchdog pass (called by launchd every minute)."""
+    """One watchdog pass (called by launchd every minute).
+
+    Runs the usage-limit sweep FIRST, then prompt routing (#276) — the
+    ordering guarantees a usage-limit dialog is parked before the prompt
+    sweep ever looks at the pane.
+    """
+    from agentwire import prompt_router
+
     result = usage_limit.tick()
+    prompts = prompt_router.tick()
     if getattr(args, "json", False):
-        print(json.dumps(result))
+        print(json.dumps({**result, "prompts": prompts}))
         return 0
     if result.get("skipped"):
         print(result["skipped"])
-        return 0
-    if result["parked"]:
-        print(f"parked: {', '.join(result['parked'])}")
-    if result["resumed"]:
-        print(f"resumed: {', '.join(result['resumed'])}")
-    if result["waiting"]:
-        print(f"waiting on reset: {', '.join(result['waiting'])}")
-    if not (result["parked"] or result["resumed"] or result["waiting"]):
-        print("no usage-limit activity")
+    else:
+        if result["parked"]:
+            print(f"parked: {', '.join(result['parked'])}")
+        if result["resumed"]:
+            print(f"resumed: {', '.join(result['resumed'])}")
+        if result["waiting"]:
+            print(f"waiting on reset: {', '.join(result['waiting'])}")
+        if not (result["parked"] or result["resumed"] or result["waiting"]):
+            print("no usage-limit activity")
+    routed = prompts.get("routed") or []
+    deferred = prompts.get("deferred") or []
+    if routed:
+        print("prompts routed: " + ", ".join(
+            f"{e['session']}.{e['pane']}→{e['parent']}" for e in routed))
+    if deferred:
+        print("prompts deferred: " + ", ".join(
+            f"{e['session']}.{e['pane']}" for e in deferred))
     return 0
 
 

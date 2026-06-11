@@ -394,6 +394,14 @@ class UsageLimitConfig:
 
 
 @dataclass
+class PromptRouterConfig:
+    """Interactive-prompt routing (worker prompts → parent session) knobs."""
+
+    enabled: bool = True  # master switch for the sweep + hook-path routing
+    exclude_sessions: list[str] = field(default_factory=list)  # never route these
+
+
+@dataclass
 class Config:
     """Root configuration for AgentWire."""
 
@@ -413,6 +421,7 @@ class Config:
     overnight: OvernightConfig = field(default_factory=OvernightConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
+    prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
     channels: dict = field(default_factory=dict)
 
 
@@ -697,6 +706,18 @@ def _dict_to_config(data: dict) -> Config:
         exclude_sessions=[str(s) for s in exclude_sessions_raw if s],
     )
 
+    # Prompt routing (worker prompts → parent session)
+    prompt_router_data = data.get("prompt_router", {}) or {}
+    if not isinstance(prompt_router_data, dict):
+        prompt_router_data = {}
+    pr_exclude_raw = prompt_router_data.get("exclude_sessions", []) or []
+    if not isinstance(pr_exclude_raw, list):
+        pr_exclude_raw = []
+    prompt_router = PromptRouterConfig(
+        enabled=bool(prompt_router_data.get("enabled", True)),
+        exclude_sessions=[str(s) for s in pr_exclude_raw if s],
+    )
+
     # Session defaults
     session_data = data.get("session", {}) or {}
     session = SessionConfig(
@@ -722,6 +743,7 @@ def _dict_to_config(data: dict) -> Config:
         repl=repl,
         safety=safety,
         usage_limit=usage_limit,
+        prompt_router=prompt_router,
     )
 
 

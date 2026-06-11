@@ -21,15 +21,18 @@ State:
   ~/.agentwire/prompt-router-events.jsonl            audit log
 """
 
+import fcntl
 import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .usage_limit import (
     PARK_OPTION,
+    _atomic_write,
     _capture,
     _normalize,
     _now,
@@ -333,3 +336,327 @@ def detect_prompt(visible: str) -> "PromptInfo | None":
         if info:
             return info
     return None
+
+
+# =============================================================================
+# Markers (presence-based dedupe) + events
+# =============================================================================
+
+
+def _log_event(event: str, **fields) -> None:
+    record = {"ts": _now().isoformat(), "event": event, **fields}
+    try:
+        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(EVENTS_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def marker_path(session: str, pane_index: int) -> Path:
+    # Worktree session names contain "/" and nest a directory level, same as
+    # usage_limit.state_path. The bash idle-handler guard tests the literal
+    # "$HOME/.agentwire/prompt-router/${session}.${pane}.json" string — keep
+    # these in lockstep.
+    return STATE_DIR / f"{session}.{pane_index}.json"
+
+
+def read_marker(session: str, pane_index: int) -> "dict | None":
+    try:
+        return json.loads(marker_path(session, pane_index).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def write_marker(session: str, pane_index: int, **fields) -> dict:
+    marker = {"session": session, "pane": pane_index, **fields}
+    _atomic_write(marker_path(session, pane_index), marker)
+    return marker
+
+
+def clear_marker(session: str, pane_index: int) -> None:
+    try:
+        marker_path(session, pane_index).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _marker_age(marker: dict, field_name: str = "detected_at") -> "timedelta | None":
+    try:
+        return _now() - datetime.fromisoformat(marker[field_name])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def list_markers() -> list[dict]:
+    if not STATE_DIR.exists():
+        return []
+    markers = []
+    for path in sorted(STATE_DIR.rglob("*.json")):
+        if path.name.startswith("."):
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("session") is not None:
+            markers.append(data)
+    return markers
+
+
+# =============================================================================
+# Routing
+# =============================================================================
+
+
+def build_message(session: str, pane_index: int, info: PromptInfo) -> str:
+    """The notification a parent receives. Deliberately paraphrased: no `❯`,
+    no menu-style option block, no dialog footer text — a delivered message
+    must never look like a live dialog to the sweep (see MESSAGE_PREFIX
+    poison + screen_shows_live_menu)."""
+    labels = ", ".join(
+        f"{o['number']}={o['label']}" for o in info.options if o.get("label")
+    )
+    deadline = (
+        "~5 minutes (portal permission timeout)"
+        if info.kind == "permission"
+        else "none — blocks until answered"
+    )
+    summary = f" Context: {info.summary}" if info.summary else ""
+    return (
+        f"{MESSAGE_PREFIX}{session} pane {pane_index}] kind={info.kind} — "
+        f"a session you are responsible for is blocked on an interactive prompt. "
+        f"Question: {info.question}{summary} "
+        f"Option keys: {labels}. Deadline: {deadline}. "
+        f"Inspect FIRST: agentwire output -s '{session}' (MCP: pane_output/session_output). "
+        f"Answer ONLY via: agentwire prompts answer -s '{session}' --pane {pane_index} "
+        f"--expect {info.content_hash()} <key> — it verifies the same prompt is still "
+        f"live before sending the key. Do not blanket-approve; if unsure, do nothing "
+        f"(the human was also notified)."
+    )
+
+
+def route_prompt(
+    session: str,
+    pane_index: int,
+    info: PromptInfo,
+    source: str = "sweep",
+    project_path: "str | None" = None,
+) -> "str | None":
+    """Resolve the parent and deliver the notification. Never raises.
+
+    Writes a marker either way: delivered markers dedupe future sweeps,
+    deferred/no-parent markers make retries cheap and keep the idle-handler
+    reap guard active while the pane is blocked. Returns the parent session
+    name when delivery succeeded, else None.
+    """
+    try:
+        content_hash = info.content_hash()
+        parent = resolve_parent(session, pane_index, project_path)
+        if parent is None:
+            write_marker(
+                session, pane_index,
+                kind=info.kind, hash=content_hash, source=source,
+                parent=None, status="no_parent",
+                detected_at=_now().isoformat(), notified_at=None,
+            )
+            _log_event("no_parent", session=session, pane=pane_index, kind=info.kind)
+            return None
+
+        target_session, target_pane = parent
+        delivered, reason = safe_deliver(
+            target_session, target_pane, build_message(session, pane_index, info)
+        )
+        write_marker(
+            session, pane_index,
+            kind=info.kind, hash=content_hash, source=source,
+            parent=target_session, status=reason,
+            detected_at=_now().isoformat(),
+            notified_at=_now().isoformat() if delivered else None,
+        )
+        _log_event(
+            "prompt_routed" if delivered else "route_deferred",
+            session=session, pane=pane_index, kind=info.kind,
+            parent=target_session, status=reason,
+        )
+        return target_session if delivered else None
+    except Exception as exc:  # routing must never break a caller
+        _log_event("route_failed", session=session, pane=pane_index, error=str(exc))
+        return None
+
+
+def notify_permission_request(session: str, pane_index: int, data: dict) -> "str | None":
+    """Hook-path entry: the portal received a PermissionRequest POST.
+
+    Builds the PromptInfo from the hook payload (no pane parsing needed) and
+    routes it. Sync + best-effort; the server calls this in an executor.
+    """
+    tool_name = data.get("tool_name", "unknown")
+    tool_input = data.get("tool_input") or {}
+    if tool_name == "Bash":
+        detail = str(tool_input.get("command", ""))[:300]
+        summary = f"run: {detail}" if detail else "run a command"
+    elif tool_name in ("Edit", "Write"):
+        summary = f"{tool_name.lower()} {tool_input.get('file_path', 'a file')}"
+    else:
+        detail = json.dumps(tool_input, sort_keys=True)[:300]
+        summary = f"use {tool_name} {detail}".strip()
+    info = PromptInfo(
+        kind="permission",
+        question=f"Claude wants to {summary}",
+        options=[
+            {"number": 1, "label": "allow", "description": ""},
+            {"number": 2, "label": "allow always", "description": ""},
+            {"number": 3, "label": "deny (Escape also denies)", "description": ""},
+        ],
+    )
+    return route_prompt(session, pane_index, info, source="hook")
+
+
+# =============================================================================
+# Guarded answer (compare-and-send)
+# =============================================================================
+
+
+def answer(
+    session: str, pane_index: int, expect_hash: str, keys: list[str]
+) -> "tuple[bool, str]":
+    """Send *keys* to the pane only if the expected prompt is still live.
+
+    This is the race guard: a human may have answered via the portal (or the
+    prompt may have expired) between notification and the parent's answer —
+    a stray keystroke would land in the child's input box, and a stray
+    Escape would abort its in-flight turn. First answer wins; the loser
+    no-ops here.
+    """
+    visible = _capture(f"{session}.{pane_index}")
+    info = detect_prompt(visible)
+    if info is None:
+        clear_marker(session, pane_index)
+        return False, "no live prompt on the pane (already answered or gone)"
+    if info.content_hash() != expect_hash:
+        return False, (
+            f"a DIFFERENT prompt is live (kind={info.kind}, "
+            f"hash={info.content_hash()}) — inspect before answering"
+        )
+    for key in keys:
+        _tmux(["send-keys", "-t", f"{session}.{pane_index}", key])
+    clear_marker(session, pane_index)
+    _log_event(
+        "prompt_answered", session=session, pane=pane_index,
+        kind=info.kind, keys=keys,
+    )
+    return True, f"sent {' '.join(keys)} to {session}.{pane_index}"
+
+
+# =============================================================================
+# Sweep + tick
+# =============================================================================
+
+
+def _router_config() -> "tuple[bool, set[str]]":
+    """(enabled, excluded session names) from config.yaml."""
+    try:
+        from .config import get_config
+
+        cfg = get_config().prompt_router
+        return bool(cfg.enabled), set(cfg.exclude_sessions)
+    except Exception:
+        return True, set()
+
+
+def sweep() -> dict:
+    """Scan all agent panes for live interactive prompts and route them.
+
+    Marker lifecycle per pane:
+      no prompt on screen      -> clear any marker (answered/gone; identical
+                                  future prompts will re-notify)
+      same prompt, delivered   -> silent until RENOTIFY_TTL, then re-deliver
+      same prompt, deferred    -> retry delivery
+      different prompt         -> route fresh
+      hook-source permission   -> sweep stays out while the marker is fresh
+                                  (the portal owns that prompt's lifecycle)
+    """
+    enabled, excluded = _router_config()
+    if not enabled:
+        return {"routed": [], "deferred": [], "active": []}
+    try:
+        result = _tmux(
+            ["list-panes", "-a", "-F",
+             "#{session_name}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}"]
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {"routed": [], "deferred": [], "active": []}
+    if result.returncode != 0:
+        return {"routed": [], "deferred": [], "active": []}
+
+    routed, deferred, active = [], [], []
+    seen_panes = set()
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        session, pane_s, command, pane_path = parts
+        try:
+            pane_index = int(pane_s)
+        except ValueError:
+            continue
+        seen_panes.add((session, pane_index))
+
+        # Only Claude Code panes produce these dialogs; a vim/less pane
+        # *displaying* dialog text must never match.
+        if not _AGENT_COMMAND_RE.match(command.strip()):
+            continue
+        if session in excluded or _is_parked(session):
+            continue
+
+        info = detect_prompt(_capture(f"{session}.{pane_index}"))
+        marker = read_marker(session, pane_index)
+
+        if info is None:
+            if marker:
+                clear_marker(session, pane_index)
+            continue
+
+        if marker and marker.get("hash") == info.content_hash():
+            if (
+                marker.get("source") == "hook"
+                and info.kind == "permission"
+                and (_marker_age(marker) or timedelta(0)) < HOOK_MARKER_TTL
+            ):
+                active.append({"session": session, "pane": pane_index, "kind": info.kind})
+                continue
+            if marker.get("notified_at"):
+                age = _marker_age(marker, "notified_at")
+                if age is not None and age < RENOTIFY_TTL:
+                    active.append({"session": session, "pane": pane_index, "kind": info.kind})
+                    continue
+            # deferred (or TTL-expired) -> try again
+
+        parent = route_prompt(session, pane_index, info, project_path=pane_path)
+        entry = {"session": session, "pane": pane_index, "kind": info.kind, "parent": parent}
+        (routed if parent else deferred).append(entry)
+
+    # GC markers whose pane no longer exists.
+    for marker in list_markers():
+        key = (marker.get("session"), marker.get("pane"))
+        if key in seen_panes:
+            continue
+        age = _marker_age(marker)
+        if age is None or age > MARKER_GC_TTL:
+            clear_marker(*key)
+
+    return {"routed": routed, "deferred": deferred, "active": active}
+
+
+def tick() -> dict:
+    """One watchdog pass; rides `agentwire limits tick` (after the
+    usage-limit sweep, so its dialog is parked before we ever look)."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = STATE_DIR / ".tick.lock"
+    with open(lock_file, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return {"skipped": "tick already running"}
+        return sweep()

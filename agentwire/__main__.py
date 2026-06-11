@@ -11532,6 +11532,10 @@ def main() -> int:
     )
     l_uninstall.set_defaults(func=limits_cli.cmd_limits_uninstall)
 
+    # === prompts command group (prompt routing, rides the limits watchdog) ===
+    from . import prompts_cli
+    prompts_cli.register_prompts_parser(subparsers)
+
     # === council command group ===
     council_parser = subparsers.add_parser(
         "council",

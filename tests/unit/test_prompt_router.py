@@ -474,6 +474,257 @@ class TestHookScriptsUseRealCommands:
         assert ".agentwire/prompt-router/" in source
 
 
+@pytest.fixture
+def router_home(tmp_path, monkeypatch):
+    """Isolate marker state + events under a temp dir."""
+    monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
+    monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "events.jsonl")
+    return tmp_path
+
+
+def _events(tmp_path):
+    path = tmp_path / "events.jsonl"
+    if not path.exists():
+        return []
+    import json
+
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+class TestMarkers:
+    def test_roundtrip(self, router_home):
+        prompt_router.write_marker("sess", 1, kind="plan", hash="abc")
+        marker = prompt_router.read_marker("sess", 1)
+        assert marker["kind"] == "plan" and marker["hash"] == "abc"
+        prompt_router.clear_marker("sess", 1)
+        assert prompt_router.read_marker("sess", 1) is None
+
+    def test_worktree_session_names_nest(self, router_home):
+        prompt_router.write_marker("proj/branch", 0, kind="question", hash="x")
+        assert prompt_router.read_marker("proj/branch", 0)["hash"] == "x"
+        assert (prompt_router.STATE_DIR / "proj" / "branch.0.json").exists()
+
+    def test_list_markers_skips_dotfiles(self, router_home):
+        prompt_router.write_marker("a", 0, kind="plan", hash="h1")
+        prompt_router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (prompt_router.STATE_DIR / ".tick.lock").write_text("")
+        assert len(prompt_router.list_markers()) == 1
+
+
+class TestBuildMessage:
+    def test_message_is_not_detectable_as_dialog(self, router_home):
+        info = detect_prompt(PERMISSION_BASH)
+        message = prompt_router.build_message("worker", 0, info)
+        # The notification must never look like a live dialog to the sweep
+        # (self-trigger loop) or to the pre-paste safety check.
+        assert "❯" not in message
+        assert "Esc to cancel" not in message
+        assert "Enter to confirm" not in message
+        assert detect_prompt(message) is None
+        assert message.startswith("[PROMPT from worker pane 0] kind=permission")
+
+    def test_message_carries_answer_contract(self, router_home):
+        info = detect_prompt(PLAN_APPROVAL)
+        message = prompt_router.build_message("child", 0, info)
+        assert f"--expect {info.content_hash()}" in message
+        assert "agentwire prompts answer -s 'child' --pane 0" in message
+        assert "1=Yes, and use auto mode" in message
+
+
+class TestRoutePrompt:
+    @pytest.fixture(autouse=True)
+    def _wire(self, router_home, monkeypatch):
+        self.home = router_home
+        self.delivered = []
+        monkeypatch.setattr(
+            prompt_router, "resolve_parent", lambda s, p, pp=None: ("orch", 0)
+        )
+        monkeypatch.setattr(
+            prompt_router,
+            "safe_deliver",
+            lambda ts, tp, text: self.delivered.append((ts, text)) or (True, "delivered"),
+        )
+
+    def test_routes_and_marks(self):
+        info = detect_prompt(PLAN_APPROVAL)
+        parent = prompt_router.route_prompt("child", 0, info)
+        assert parent == "orch"
+        assert self.delivered[0][0] == "orch"
+        marker = prompt_router.read_marker("child", 0)
+        assert marker["status"] == "delivered" and marker["notified_at"]
+        assert _events(self.home)[0]["event"] == "prompt_routed"
+
+    def test_no_parent_marks_without_delivery(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
+        info = detect_prompt(PLAN_APPROVAL)
+        assert prompt_router.route_prompt("solo", 0, info) is None
+        assert self.delivered == []
+        assert prompt_router.read_marker("solo", 0)["status"] == "no_parent"
+        assert _events(self.home)[0]["event"] == "no_parent"
+
+    def test_deferred_delivery_marks_unnotified(self, monkeypatch):
+        monkeypatch.setattr(
+            prompt_router, "safe_deliver", lambda *a: (False, "target_dialog")
+        )
+        info = detect_prompt(PLAN_APPROVAL)
+        assert prompt_router.route_prompt("child", 0, info) is None
+        marker = prompt_router.read_marker("child", 0)
+        assert marker["status"] == "target_dialog" and marker["notified_at"] is None
+
+    def test_never_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            prompt_router, "resolve_parent",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        info = detect_prompt(PLAN_APPROVAL)
+        assert prompt_router.route_prompt("child", 0, info) is None
+        assert _events(self.home)[0]["event"] == "route_failed"
+
+
+class TestAnswer:
+    @pytest.fixture(autouse=True)
+    def _wire(self, router_home, monkeypatch):
+        self.sent_keys = []
+
+        def fake_tmux(args, timeout=5):
+            self.sent_keys.append(args)
+
+            class R:
+                returncode = 0
+                stdout = ""
+
+            return R()
+
+        monkeypatch.setattr(prompt_router, "_tmux", fake_tmux)
+
+    def test_answers_live_matching_prompt(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PLAN_APPROVAL)
+        expected = detect_prompt(PLAN_APPROVAL).content_hash()
+        ok, msg = prompt_router.answer("child", 0, expected, ["2"])
+        assert ok
+        assert self.sent_keys == [["send-keys", "-t", "child.0", "2"]]
+
+    def test_refuses_when_prompt_gone(self, monkeypatch):
+        # Human answered first via portal → no-op, no stray keystroke.
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PLAIN_OUTPUT)
+        ok, msg = prompt_router.answer("child", 0, "whatever", ["2"])
+        assert not ok and "no live prompt" in msg
+        assert self.sent_keys == []
+
+    def test_refuses_when_prompt_changed(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PERMISSION_BASH)
+        plan_hash = detect_prompt(PLAN_APPROVAL).content_hash()
+        ok, msg = prompt_router.answer("child", 0, plan_hash, ["1"])
+        assert not ok and "DIFFERENT prompt" in msg
+        assert self.sent_keys == []
+
+    def test_clears_marker_on_answer(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PLAN_APPROVAL)
+        prompt_router.write_marker("child", 0, kind="plan", hash="h")
+        expected = detect_prompt(PLAN_APPROVAL).content_hash()
+        prompt_router.answer("child", 0, expected, ["2"])
+        assert prompt_router.read_marker("child", 0) is None
+
+
+class TestSweep:
+    PANES = "orch\t0\t2.1.170\t/p/orch\nchild\t0\t2.1.170\t/p/child\nshelly\t0\tzsh\t/p/x"
+
+    @pytest.fixture(autouse=True)
+    def _wire(self, router_home, monkeypatch):
+        self.home = router_home
+        self.screens = {"orch.0": PLAIN_OUTPUT, "child.0": PLAN_APPROVAL,
+                        "shelly.0": PLAN_APPROVAL}
+        self.routed = []
+
+        def fake_tmux(args, timeout=5):
+            class R:
+                returncode = 0
+                stdout = self.PANES
+
+            return R()
+
+        monkeypatch.setattr(prompt_router, "_tmux", fake_tmux)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: self.screens.get(t, ""))
+        monkeypatch.setattr(prompt_router, "_router_config", lambda: (True, set()))
+        monkeypatch.setattr(prompt_router, "_is_parked", lambda s: False)
+        monkeypatch.setattr(
+            prompt_router, "resolve_parent", lambda s, p, pp=None: ("orch", 0)
+        )
+        monkeypatch.setattr(
+            prompt_router,
+            "safe_deliver",
+            lambda ts, tp, text: self.routed.append(ts) or (True, "delivered"),
+        )
+
+    def test_routes_dialog_and_skips_shell_pane(self):
+        result = prompt_router.sweep()
+        assert [e["session"] for e in result["routed"]] == ["child"]
+        # zsh pane shows the same dialog text but is not an agent pane.
+        assert all(e["session"] != "shelly" for e in result["routed"])
+
+    def test_second_sweep_is_silent(self):
+        prompt_router.sweep()
+        result = prompt_router.sweep()
+        assert result["routed"] == []
+        assert [e["session"] for e in result["active"]] == ["child"]
+        assert len(self.routed) == 1
+
+    def test_marker_cleared_when_prompt_gone(self):
+        prompt_router.sweep()
+        assert prompt_router.read_marker("child", 0)
+        self.screens["child.0"] = PLAIN_OUTPUT
+        prompt_router.sweep()
+        assert prompt_router.read_marker("child", 0) is None
+
+    def test_renotifies_after_ttl(self, monkeypatch):
+        prompt_router.sweep()
+        marker = prompt_router.read_marker("child", 0)
+        # Backdate the notification past the TTL.
+        from datetime import timedelta as td
+
+        old = (prompt_router._now() - prompt_router.RENOTIFY_TTL - td(minutes=1)).isoformat()
+        marker["notified_at"] = old
+        prompt_router.write_marker("child", 0, **{k: v for k, v in marker.items()
+                                                  if k not in ("session", "pane")})
+        result = prompt_router.sweep()
+        assert [e["session"] for e in result["routed"]] == ["child"]
+        assert len(self.routed) == 2
+
+    def test_hook_marker_suppresses_permission_sweep(self):
+        self.screens["child.0"] = PERMISSION_BASH
+        info = detect_prompt(PERMISSION_BASH)
+        prompt_router.write_marker(
+            "child", 0, kind="permission", hash=info.content_hash(),
+            source="hook", detected_at=prompt_router._now().isoformat(),
+            notified_at=None, parent="orch", status="delivered",
+        )
+        result = prompt_router.sweep()
+        assert result["routed"] == []
+        assert self.routed == []
+
+    def test_excluded_session_skipped(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_router_config", lambda: (True, {"child"}))
+        result = prompt_router.sweep()
+        assert result["routed"] == []
+
+    def test_disabled_config(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_router_config", lambda: (False, set()))
+        assert prompt_router.sweep() == {"routed": [], "deferred": [], "active": []}
+
+    def test_parked_session_skipped(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_is_parked", lambda s: s == "child")
+        result = prompt_router.sweep()
+        assert result["routed"] == []
+
+    def test_gc_drops_orphaned_old_markers(self):
+        from datetime import timedelta as td
+
+        old = (prompt_router._now() - prompt_router.MARKER_GC_TTL - td(minutes=1)).isoformat()
+        prompt_router.write_marker("dead-sess", 2, kind="plan", hash="h", detected_at=old)
+        prompt_router.sweep()
+        assert prompt_router.read_marker("dead-sess", 2) is None
+
+
 class TestContentHash:
     def test_stable_across_calls(self):
         a = detect_prompt(PERMISSION_BASH).content_hash()
