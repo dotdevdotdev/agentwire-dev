@@ -5507,3 +5507,22 @@ body.sidebar-pinned .sidebar-tab {
     background: var(--accent);
     color: var(--background);
 }
+
+/* ── Mobile (≤768px): sidebar tab gets a real tap target, and the open
+   sidebar leaves a tap-outside strip so it can always be closed
+   (close tab would otherwise sit off-screen past a 400px sidebar).
+   Derived from the wang2yn84 fork (654b7f3). ── */
+@media (max-width: 768px) {
+    :root {
+        --sidebar-width: min(400px, 85vw);
+        --sidebar-tab-width: 32px;
+        --sidebar-tab-height: 64px;
+    }
+
+    .sidebar-tab {
+        opacity: 0.9;
+        font-size: 20px;
+        background: var(--accent);
+        color: var(--background);
+    }
+}

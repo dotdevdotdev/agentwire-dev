@@ -649,3 +649,56 @@ class TestVoiceStatus:
         resp = await client.get("/api/voices")
         assert resp.status == 200
         assert await resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Custom-tier voices cache (#271 — unreachable shim must not stall page load)
+# ---------------------------------------------------------------------------
+
+
+class TestVoicesCache:
+    async def test_custom_tier_voices_cached(self, portal_client):
+        client, server = portal_client
+        calls = []
+
+        async def fake_fetch():
+            calls.append(1)
+            return ["alpha", "beta"]
+
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+        server._tts_get_voices = fake_fetch
+
+        resp = await client.get("/api/voices")
+        assert await resp.json() == ["alpha", "beta"]
+        resp = await client.get("/api/voices")
+        assert await resp.json() == ["alpha", "beta"]
+        assert len(calls) == 1  # second hit served from cache
+
+    async def test_cache_expires(self, portal_client):
+        client, server = portal_client
+        calls = []
+
+        async def fake_fetch():
+            calls.append(1)
+            return ["alpha"]
+
+        server.config.tts.backend = "custom"
+        server.config.tts.url = "http://localhost:8100"
+        server._tts_get_voices = fake_fetch
+
+        await client.get("/api/voices")
+        ts, voices = server._voices_cache
+        server._voices_cache = (ts - 31, voices)  # age past the 30s TTL
+        await client.get("/api/voices")
+        assert len(calls) == 2
+
+    async def test_default_tier_never_fetches(self, portal_client):
+        client, server = portal_client
+
+        async def fail_fetch():
+            raise AssertionError("default tier must not hit the shim")
+
+        server._tts_get_voices = fail_fetch
+        resp = await client.get("/api/voices")
+        assert resp.status == 200
