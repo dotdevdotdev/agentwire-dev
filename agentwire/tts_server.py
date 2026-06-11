@@ -33,17 +33,24 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-import torch
-import torchaudio
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from faster_whisper import WhisperModel
 
 from .tts import TTSRequest, registry
 
-# GPU Optimizations
-torch.backends.cudnn.benchmark = True
-torch.set_float32_matmul_precision("high")
+# torch is optional: the kokoro venv is torch-free (pure ONNX). Tensor and
+# voice-upload paths are guarded at use; everything else runs without it.
+try:
+    import torch
+    import torchaudio
+
+    # GPU Optimizations
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
+except ImportError:
+    torch = None
+    torchaudio = None
 
 # Configuration via environment
 DEFAULT_BACKEND = os.environ.get("DEFAULT_BACKEND", "chatterbox")
@@ -67,17 +74,22 @@ BACKEND_FAMILIES = {
 whisper_model = None
 
 
-def _tensor_to_wav_bytes(audio: "torch.Tensor", sample_rate: int) -> bytes:
-    """Serialize a torch tensor to WAV bytes.
+def _tensor_to_wav_bytes(audio, sample_rate: int) -> bytes:
+    """Serialize engine audio (torch.Tensor or np.ndarray) to WAV bytes.
 
-    Falls back to stdlib wave module if torchaudio.save fails to write to
-    BytesIO (e.g. when torchcodec is the backend and doesn't support in-memory
-    writes — happens with CPU-only torch builds).
+    Kokoro returns numpy (torch-free engine) — serialize directly via stdlib
+    wave. Torch tensors go through torchaudio.save, falling back to stdlib
+    wave if it can't write to BytesIO (e.g. when torchcodec is the backend
+    and doesn't support in-memory writes — happens with CPU-only builds).
     """
     import io
-    import wave
 
     import numpy as np
+
+    from .tts.audio import pcm_float_to_wav_bytes
+
+    if isinstance(audio, np.ndarray):
+        return pcm_float_to_wav_bytes(audio, sample_rate)
 
     buf = io.BytesIO()
     try:
@@ -88,16 +100,7 @@ def _tensor_to_wav_bytes(audio: "torch.Tensor", sample_rate: int) -> bytes:
         return buf.read()
     except Exception:
         # Fallback: stdlib wave (PCM int16)
-        buf = io.BytesIO()
-        samples = audio.squeeze().numpy()
-        pcm = (samples * 32767).clip(-32768, 32767).astype(np.int16)
-        with wave.open(buf, "w") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(pcm.tobytes())
-        buf.seek(0)
-        return buf.read()
+        return pcm_float_to_wav_bytes(audio.squeeze().numpy(), sample_rate)
 
 
 def get_required_venv(backend: str) -> str:
@@ -184,8 +187,11 @@ async def lifespan(app: FastAPI):
     VOICES_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"Default Backend: {DEFAULT_BACKEND}")
-    print(f"  cuDNN benchmark: {torch.backends.cudnn.benchmark}")
-    print(f"  TF32 matmul: {torch.get_float32_matmul_precision()}")
+    if torch is not None:
+        print(f"  cuDNN benchmark: {torch.backends.cudnn.benchmark}")
+        print(f"  TF32 matmul: {torch.get_float32_matmul_precision()}")
+    else:
+        print("  torch: not installed (kokoro venv — pure ONNX)")
 
     # Register all engine factories
     register_engines()
@@ -354,9 +360,12 @@ async def list_voices():
     """List all available voice profiles."""
     voices = []
     for f in VOICES_DIR.glob("*.wav"):
-        waveform, sr = torchaudio.load(str(f))
-        duration = waveform.shape[1] / sr
-        voices.append({"name": f.stem, "duration": round(duration, 2)})
+        if torchaudio is not None:
+            waveform, sr = torchaudio.load(str(f))
+            duration = waveform.shape[1] / sr
+            voices.append({"name": f.stem, "duration": round(duration, 2)})
+        else:
+            voices.append({"name": f.stem})
     return {"voices": voices}
 
 
@@ -369,6 +378,13 @@ async def upload_voice(name: str, file: UploadFile = File(...)):
         raise HTTPException(
             status_code=400,
             detail="Voice name must contain only alphanumeric characters, underscores, and hyphens"
+        )
+
+    if torchaudio is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Voice upload requires torchaudio (chatterbox/qwen/zonos venvs); "
+                   "the torch-free kokoro venv uses preset voices only",
         )
 
     voice_path = VOICES_DIR / f"{name}.wav"

@@ -3,9 +3,19 @@
 from pathlib import Path
 from typing import Callable
 
-import torch
-
 from .base import TTSCapabilities, TTSEngine
+
+
+def _clear_cuda_cache() -> None:
+    """Free CUDA memory after an engine unload. No-op without torch/CUDA —
+    the torch-free kokoro path must be able to import this module."""
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 class EngineRegistry:
@@ -77,11 +87,7 @@ class EngineRegistry:
             self._current.unload()
             self._current = None
             self._current_name = None
-
-            # Clear CUDA cache
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+            _clear_cuda_cache()
 
         # Load new engine if not already loaded
         if self._current_name != name:
@@ -112,10 +118,7 @@ class EngineRegistry:
             self._current.unload()
             self._current = None
             self._current_name = None
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+            _clear_cuda_cache()
 
     def get_voice_path(self, voice_name: str) -> Path | None:
         """Get path to voice reference file.

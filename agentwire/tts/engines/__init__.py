@@ -1,18 +1,27 @@
-"""TTS Engine Implementations"""
+"""TTS Engine Implementations.
 
-from .chatterbox import ChatterboxEngine
-from .kokoro import KokoroEngine
-from .qwen_base import QwenBaseEngine
-from .qwen_custom import QwenCustomEngine
-from .qwen_design import QwenDesignEngine
-from .zonos import ZonosHybridEngine, ZonosTransformerEngine
+Engines resolve lazily (PEP 562) so importing one engine never pulls in the
+others' dependencies — the torch-free kokoro path must stay importable in the
+base install, where torch (chatterbox/qwen/zonos) is absent.
+"""
 
-__all__ = [
-    "ChatterboxEngine",
-    "KokoroEngine",
-    "QwenBaseEngine",
-    "QwenCustomEngine",
-    "QwenDesignEngine",
-    "ZonosHybridEngine",
-    "ZonosTransformerEngine",
-]
+_ENGINES = {
+    "ChatterboxEngine": ".chatterbox",
+    "KokoroEngine": ".kokoro",
+    "QwenBaseEngine": ".qwen_base",
+    "QwenCustomEngine": ".qwen_custom",
+    "QwenDesignEngine": ".qwen_design",
+    "ZonosHybridEngine": ".zonos",
+    "ZonosTransformerEngine": ".zonos",
+}
+
+__all__ = list(_ENGINES)
+
+
+def __getattr__(name: str):
+    if name in _ENGINES:
+        import importlib
+
+        module = importlib.import_module(_ENGINES[name], __name__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -4,7 +4,7 @@
 
 The bundled TTS server is the **reference implementation of the [shim contract](shim-contract.md)** — multiple engines, each with different capabilities and hardware requirements, all behind one server (`agentwire tts start`) with runtime hot-swap.
 
-> **Zero-setup alternative:** `tts.backend: default` needs none of this — the browser speaks via speechSynthesis (robotic but instant). This page is the `custom` tier upgrade.
+> **You don't need this page for a good voice.** `tts.backend: default` already speaks via **Kokoro-82M in-process** — bundled with the base install, CPU-only, auto-downloaded (~200 MB) on first portal start (`agentwire tts warm` pre-downloads it). This page is the `custom` tier: voice cloning, GPU engines, emotion control, or any other model behind the shim contract.
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ curl -X POST http://localhost:8100/engines/zonos-transformer/load
 
 ### Choosing a Backend
 
-- **No GPU / CPU only** → `kokoro` (170 MB, near real-time, 30+ voices — use `af_heart` voice for best quality)
+- **No GPU / CPU only** → you likely don't need the server at all: the `default` tier runs kokoro in-process. Run `kokoro` behind the shim only when serving TTS to other machines.
 - **Best voice quality + emotion control** → `zonos-transformer`
 - **Mid-sentence sounds** (laugh, sigh, cough) → `chatterbox` or `chatterbox-streaming`
 - **Multilingual** (10 languages) → `qwen-base-1.7b` or `qwen-custom`
@@ -60,23 +60,23 @@ Each backend family runs in its own Python venv to avoid dependency conflicts.
 
 ### Creating the Kokoro venv
 
-CPU-only. Uses CPU-only PyTorch (much smaller than CUDA builds — ~250 MB vs 2 GB+). The ONNX model (~170 MB) is auto-downloaded from HuggingFace on first use.
+CPU-only, torch-free (the engine is pure ONNX). The model (~170 MB) is auto-downloaded on first use to `~/.cache/kokoro_onnx/`.
 
 ```bash
 cd ~/projects/agentwire-dev
 uv venv .venv-kokoro
 source .venv-kokoro/bin/activate
-pip install kokoro-onnx
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-pip install fastapi uvicorn faster-whisper pydantic python-multipart
+pip install kokoro-onnx fastapi uvicorn faster-whisper pydantic python-multipart
 pip install -e /path/to/agentwire-dev  # installs agentwire + remaining deps
 ```
 
 ### Creating the Chatterbox venv
 
+**Requires Python 3.13+** — chatterbox-tts pins `numpy<2` on older Pythons, which conflicts with the base install's kokoro-onnx (`numpy>=2`).
+
 ```bash
 cd ~/projects/agentwire-dev
-uv venv .venv-chatterbox
+uv venv .venv-chatterbox --python 3.13
 source .venv-chatterbox/bin/activate
 pip install chatterbox-tts torch torchaudio fastapi uvicorn faster-whisper pydantic
 ```

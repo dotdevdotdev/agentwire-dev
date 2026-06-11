@@ -264,7 +264,7 @@ def run_onboarding(skip_session: bool = False) -> int:
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Standalone = instant mode: loopback HTTP, browser voice, zero ceremony.
+    # Standalone = instant mode: loopback HTTP, in-process Kokoro voice, zero ceremony.
     # Multi-machine = LAN exposure: 0.0.0.0 + SSL certs + mandatory token.
     if is_multi_machine:
         server_block = """server:
@@ -301,13 +301,16 @@ projects:
 agent:
   command: "{agent_command}"
 
-# Voice — instant mode out of the box (Chrome speech in, browser voice out).
+# Voice — instant mode out of the box: Chrome speech in, Kokoro-82M out
+# (CPU neural voice, ~200MB model auto-downloads on first portal start;
+# browser speechSynthesis covers the wait). default_voice picks the Kokoro
+# preset (af_heart, af_bella, am_adam, ... — `agentwire voiceclone list`).
 # Upgrade either side to a custom shim: docs/wiki/voice/shim-contract.md
 tts:
   backend: "default"
+  # default_voice: "af_heart"
   # backend: "custom"
   # url: "http://localhost:8100"
-  # default_voice: "af_heart"
   # options:
   #   backend: kokoro
 
@@ -378,7 +381,8 @@ services:
     else:
         print()
         print_info("Standalone instant mode: http://127.0.0.1:8765 — no certs, no token needed.")
-        print_info("Voice works in Chrome immediately (browser speech in, browser voice out).")
+        print_info("Voice works in Chrome immediately (browser speech in, Kokoro voice out — "
+                   "the model downloads in the background on first portal start).")
 
     # ─────────────────────────────────────────────────────────────
     # tmux Configuration

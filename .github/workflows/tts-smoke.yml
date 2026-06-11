@@ -1,0 +1,104 @@
+# Kokoro default-tier TTS smoke tests (#269).
+#
+# Guards the three packaging promises behind "one-click good voice":
+#   1. the kokoro import path stays torch-free on every OS
+#   2. the dependency set resolves to wheels for Intel macs (onnxruntime
+#      publishes arm64-only current wheels; pip must fall back cleanly)
+#   3. a fresh install can actually synthesize audio
+name: tts-smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "agentwire/tts/**"
+      - ".github/workflows/tts-smoke.yml"
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "agentwire/tts/**"
+      - ".github/workflows/tts-smoke.yml"
+
+jobs:
+  torchless-import:
+    name: torch-less import (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install base package
+        run: pip install .
+      - name: Import kokoro engine without torch
+        # Windows is scoped to this import only — the portal/CLI use
+        # fcntl/pty and don't support Windows; the kokoro path must still
+        # install and import there.
+        run: >
+          python -c "import sys;
+          import agentwire.tts.engines.kokoro;
+          import agentwire.tts.local;
+          assert 'torch' not in sys.modules, 'torch leaked into the kokoro import path';
+          assert 'agentwire.tts.engines.chatterbox' not in sys.modules, 'chatterbox eagerly imported';
+          print('torch-free kokoro import OK')"
+
+  intel-mac-wheels:
+    name: Intel-mac wheel resolution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve kokoro-onnx wheels for macosx x86_64
+        # Verifies pip can resolve the full kokoro-onnx dependency tree to
+        # binary wheels for Intel macs (macOS 13+). Current onnxruntime
+        # releases are arm64-only; resolution must fall back to an older
+        # x86_64 wheel (kokoro-onnx allows >=1.20.1).
+        run: |
+          pip download kokoro-onnx \
+            --platform macosx_13_0_x86_64 \
+            --only-binary=:all: \
+            --python-version 3.12 \
+            -d /tmp/intel-mac-wheels
+          ls /tmp/intel-mac-wheels
+
+  synthesis:
+    name: synthesis smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache Kokoro model files
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/kokoro_onnx
+          key: kokoro-model-files-v1.0-fp16
+      - name: Install base package
+        run: pip install .
+      - name: Synthesize a sentence
+        run: |
+          python - <<'EOF'
+          from agentwire.tts.engines.kokoro import KokoroEngine
+          from agentwire.tts.base import TTSRequest
+          from agentwire.tts.audio import pcm_float_to_wav_bytes
+
+          KokoroEngine.download_models()
+          engine = KokoroEngine()
+          result = engine.generate(
+              TTSRequest(text="AgentWire speaks with Kokoro out of the box.", voice="af_heart")
+          )
+          wav = pcm_float_to_wav_bytes(result.audio, result.sample_rate)
+          assert wav[:4] == b"RIFF" and len(wav) > 50_000, f"suspicious WAV ({len(wav)} bytes)"
+          print(f"synthesized {len(wav)} bytes of WAV at {result.sample_rate}Hz")
+          EOF
