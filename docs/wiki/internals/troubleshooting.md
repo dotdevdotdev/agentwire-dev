@@ -159,13 +159,23 @@ agentwire say "Hello world"
 ```yaml
 # ~/.agentwire/config.yaml
 tts:
-  backend: "custom"          # default = browser/OS voice (no service to debug)
+  backend: "custom"          # default = in-process Kokoro (no service to debug;
+                             # check `agentwire tts status` for model state)
   url: "http://localhost:8100"
   default_voice: "default"
   options:
     backend: kokoro          # bundled-shim engine: kokoro | chatterbox |
                              # chatterbox-streaming | qwen-* | zonos-*
 ```
+
+**Default tier (Kokoro) quirks:** the model lives in `~/.cache/kokoro_onnx/`
+(`agentwire tts warm` pre-downloads it; delete the directory to force a fresh
+download). If you hear the robotic browser voice, the model is still
+downloading or failed — check the portal toast or `/api/voice-status`.
+Python 3.14+ has no kokoro-onnx wheels yet; the portal logs a warning and
+stays on speechSynthesis. If another package installed the real `phonemizer`,
+it can clobber kokoro-onnx's `phonemizer-fork` (same module name) —
+reinstall in a clean venv.
 
 See `../voice/shim-contract.md` for the contract and `../voice/tts-self-hosted.md` for the full engine matrix.
 

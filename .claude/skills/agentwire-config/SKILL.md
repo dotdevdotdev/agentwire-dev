@@ -60,7 +60,9 @@ projects:
                            #  add ".env.local", ".envrc", etc. as needed)
 
 tts:
-  backend: "default"  # tier: default (browser/OS voice, zero setup) | custom (self-hosted shim at url)
+  backend: "default"  # tier: default (in-process Kokoro, zero setup — ~180MB model
+                      # auto-downloads on first portal start; speechSynthesis covers
+                      # the wait) | custom (self-hosted shim at url)
   url: "http://localhost:8100"  # custom tier only — shim endpoint
   default_voice: "dotdev"
   voices_dir: "~/.agentwire/voices"  # Custom voice samples for cloning

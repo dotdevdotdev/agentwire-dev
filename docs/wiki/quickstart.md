@@ -94,7 +94,7 @@ To kill it: `agentwire kill -s hello`.
 
 ## 3. Voice in / voice out
 
-Voice works out of the box — no certs, no GPU, no model downloads:
+Voice works out of the box — no certs, no GPU, no commands:
 
 ```bash
 agentwire portal start                # serves on http://127.0.0.1:8765
@@ -105,9 +105,13 @@ mode). To **send your voice into a session**, hold the PTT button (or
 Ctrl+Space), speak, release — Chrome's built-in speech recognition
 transcribes, the transcript lands in an edit-before-send bar, Enter sends it.
 
-To **hear the agent talk back**, the agent calls the `say` MCP tool. In
-instant mode the browser speaks it (speechSynthesis — robotic but immediate);
-with no browser open, the OS voice (`say`/`espeak`) plays it. Test it:
+To **hear the agent talk back**, the agent calls the `say` MCP tool. The
+default voice is **Kokoro-82M** — a genuinely good neural voice running on
+CPU, identical on every OS. The first portal start downloads the model
+(~180 MB, one-time) in the background with progress in the portal; until
+it's ready the browser speaks via speechSynthesis (robotic but immediate),
+then upgrades automatically. With no browser open, speech plays on local
+speakers. Test it:
 
 ```bash
 agentwire say "Hello, this is your agent speaking."

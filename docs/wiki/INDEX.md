@@ -56,8 +56,9 @@ Running AgentWire across machines and exposing the portal.
 
 ## Voice (TTS & STT)
 
-Two-tier model: `default` (browser voice, zero setup — what a fresh install
-gets) and `custom` (any model behind a small HTTP shim).
+Two-tier model: `default` (in-process Kokoro-82M, zero setup — what a fresh
+install gets; browser speechSynthesis covers the one-time model download)
+and `custom` (any model behind a small HTTP shim).
 
 - **[Shim contract](voice/shim-contract.md)** — the two tiers, the envelope (instructions/options pass-through), capabilities + tool_prompt injection, a from-scratch shim example
 - **[Self-hosted TTS](voice/tts-self-hosted.md)** — the bundled reference shim's engines (Kokoro, Chatterbox, Qwen, Zonos)
