@@ -11,8 +11,31 @@ AgentWire ships a local STT server (`agentwire stt start`) that the portal calls
 | `moonshine` (default on Mac) | `moonshine/tiny` or `moonshine/base` (ONNX) | CPU | Fastest on Apple Silicon — no torch, no GPU. |
 | `faster-whisper` | `tiny` → `large-v3` | CPU or CUDA | Higher accuracy, slower cold start. |
 | `openai-whisper` | `tiny` → `large` | CPU or CUDA | Fallback when neither of the above is installed. |
+| `cloud-openai` | `gpt-4o-mini-transcribe` (default) or `whisper-1` | OpenAI API | For hosts that can't run local STT. ~$0.003/min. Needs `OPENAI_API_KEY`. |
 
-Pick a backend via `STT_BACKEND=moonshine|whisper`. Model name via `MOONSHINE_MODEL=...` or `WHISPER_MODEL=...`.
+Pick a backend via `STT_BACKEND=moonshine|whisper|cloud-openai` (or `agentwire stt start --backend ...`). Model name via `MOONSHINE_MODEL=...` or `WHISPER_MODEL=...`. In `auto` mode (the default) the chain is moonshine → faster-whisper → openai-whisper → cloud-openai, where the cloud fallback only engages if no local backend can load **and** `OPENAI_API_KEY` is set.
+
+## Cloud backend (`cloud-openai`)
+
+Same server, same port, same `/transcribe` contract — the only difference is that transcription is proxied server-side to the OpenAI transcription API instead of a local model. Serves the "my server can't run local STT well" case without new daemons or ports (#280).
+
+```bash
+export OPENAI_API_KEY=sk-...        # server environment only
+agentwire stt start --backend cloud-openai
+```
+
+Env knobs (all read by the STT server process, none reach the browser):
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `OPENAI_API_KEY` | — (required) | Auth. Sent only in the server-side `Authorization` header. |
+| `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | Transcription model (`whisper-1` also works). |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Point at a compatible proxy if needed. |
+| `OPENAI_STT_TIMEOUT` | `30` | Request timeout in seconds. |
+
+**Security posture:** the key lives in the server process environment; it is never stored in `model_info` (which `/health` and `/capabilities` echo), never sent to the browser, and there is no runtime backend-switching API — switching backends is config + restart like everything else. For `agentwire stt start` (tmux), export the key where the tmux-spawned shell will inherit it (e.g. your shell profile); `agentwire stt serve` (foreground) inherits your current shell. Note the trade-off vs. local backends: your audio is uploaded to OpenAI.
+
+Backend selection logic lives in `agentwire/stt/engine.py` (FastAPI-free, unit-tested in `tests/unit/test_stt_engine_cloud.py`); `stt_server.py` is the HTTP wrapper.
 
 ## Quick Start
 

@@ -75,6 +75,10 @@ tts:
 
 stt:
   backend: "default"  # tier: default (browser speech recognition) | custom (self-hosted shim at url)
+                      # NOTE: the bundled shim's engine (moonshine | whisper | cloud-openai | auto)
+                      # is picked server-side via `agentwire stt start --backend ...` or the
+                      # STT_BACKEND env var, NOT here. cloud-openai needs OPENAI_API_KEY in the
+                      # STT server's environment (server-side only, never sent to the browser).
   url: "http://localhost:8101"  # custom tier only — shim endpoint
   timeout: 30
   silence_prepend_ms: 0  # prepend silence if your backend clips the first syllable

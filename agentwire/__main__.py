@@ -10472,7 +10472,7 @@ def main() -> int:
     stt_start.add_argument("--port", type=int, help="Server port (default: 8101)")
     stt_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
     stt_start.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
-    stt_start.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper")
+    stt_start.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper, cloud-openai (needs OPENAI_API_KEY in the server env)")
     stt_start.set_defaults(func=cmd_stt_start)
 
     # stt serve
@@ -10480,7 +10480,7 @@ def main() -> int:
     stt_serve.add_argument("--port", type=int, help="Server port (default: 8101)")
     stt_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
     stt_serve.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
-    stt_serve.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper")
+    stt_serve.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper, cloud-openai (needs OPENAI_API_KEY in the server env)")
     stt_serve.set_defaults(func=cmd_stt_serve)
 
     # stt stop

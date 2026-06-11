@@ -150,7 +150,7 @@ examples for this contract:
 | Shim | Source | Run | Models |
 |---|---|---|---|
 | TTS | `agentwire/tts_server.py` | `agentwire tts start` (port 8100) | kokoro (CPU), chatterbox (GPU cloning), qwen (emotion via `instructions`), zonos |
-| STT | `agentwire/stt/stt_server.py` | `agentwire stt start` (port 8101) | moonshine ONNX (fast CPU), faster-whisper |
+| STT | `agentwire/stt/stt_server.py` | `agentwire stt start` (port 8101) | moonshine ONNX (fast CPU), faster-whisper, cloud-openai (OpenAI API, key server-side only) |
 
 Smoke-test either with curl:
 
