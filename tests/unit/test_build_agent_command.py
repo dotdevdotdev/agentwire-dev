@@ -200,11 +200,11 @@ class TestBuildAgentCommand:
             self._build("pi-bogus")
 
     def test_pi_extra_env_merged_with_provider_key(self):
-        """pi.extra_env (e.g. BRAVE_SEARCH_API_KEY) merges with the provider key."""
+        """pi.extra_env merges with the provider key."""
         config = {
             "pi": {
                 "binary": "pi",
-                "extra_env": {"BRAVE_SEARCH_API_KEY": "test-brave"},
+                "extra_env": {"MY_EXTRA_VAR": "test-extra"},
                 "providers": {
                     "zai": {
                         "env_var": "ZAI_API_KEY",
@@ -217,7 +217,7 @@ class TestBuildAgentCommand:
         with patch("agentwire.__main__.load_config", return_value=config):
             cmd = self._build("pi-zai")
         assert cmd.env["ZAI_API_KEY"] == "test-key-123"
-        assert cmd.env["BRAVE_SEARCH_API_KEY"] == "test-brave"
+        assert cmd.env["MY_EXTRA_VAR"] == "test-extra"
 
     def test_pi_system_prompt_combined_with_role(self):
         """pi.system_prompt is prepended to role instructions in the temp file."""

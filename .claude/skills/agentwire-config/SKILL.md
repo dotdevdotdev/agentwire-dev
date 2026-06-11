@@ -127,18 +127,15 @@ pi:  # Pi coding agent — drives all `pi-<provider>` session types. See `agentw
   binary: "pi"  # path override if pi isn't on PATH (e.g., nvm-installed)
 
   # Appended via --append-system-prompt to every non-restricted pi-* session.
-  # Use to teach pi about local helpers — agentwire brave, agentwire fetch, etc.
+  # Use to teach pi about local helpers — agentwire fetch, etc.
   system_prompt: |
-    ## Web Search
-    Use `agentwire brave "<query>"` for web search via the Brave Search API.
-
     ## Fetching URLs
     Use `agentwire fetch <url>` to fetch a page as clean markdown (Jina Reader).
 
   # Env vars injected into every pi-* session, in addition to the provider key.
-  # Useful for cross-cutting tools like the Brave Search helper.
+  # Useful for cross-cutting tools that need credentials in every pi session.
   extra_env:
-    BRAVE_SEARCH_API_KEY: "BSA..."
+    MY_SERVICE_API_KEY: "..."
 
   # Per-provider config. Session type `pi-<name>` resolves the provider here.
   # Adding a new provider is config-only — no code changes needed. For non-built-in

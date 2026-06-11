@@ -41,17 +41,14 @@ pi:
   binary: "pi"  # path override if pi isn't on PATH (e.g., nvm-installed)
 
   # Appended via --append-system-prompt to every non-restricted pi-* session.
-  # Use to teach pi about local helpers — agentwire brave, agentwire fetch, etc.
+  # Use to teach pi about local helpers — agentwire fetch, etc.
   system_prompt: |
-    ## Web Search
-    Use `agentwire brave "<query>"` for web search via the Brave Search API.
-
     ## Fetching URLs
     Use `agentwire fetch <url>` to fetch a page as clean markdown.
 
   # Env vars injected into every pi-* session (in addition to the provider key)
   extra_env:
-    BRAVE_SEARCH_API_KEY: "BSA..."
+    MY_SERVICE_API_KEY: "..."
 
   providers:
     zai:
@@ -139,14 +136,13 @@ All existing `.agentwire.yml` fields work identically. Roles inject via `--appen
 
 ## Built-in Helpers
 
-Two CLI helpers are auto-injected into every non-restricted pi session via `pi.system_prompt`:
+One CLI helper is auto-injected into every non-restricted pi session via `pi.system_prompt`:
 
 | Helper | Purpose |
 |--------|---------|
-| `agentwire brave "<query>"` | Brave Search wrapper |
 | `agentwire fetch <url>` | Fetches a URL via Jina Reader (handles JS-rendered pages) |
 
-Both work because `pi.extra_env.BRAVE_SEARCH_API_KEY` is injected at session creation. Add new helpers by extending `pi.system_prompt`.
+Add new helpers by extending `pi.system_prompt`. Note: pi sessions have **no web search** — WebSearch is Anthropic-server-side, and the old CLI search helper was removed in #268. `agentwire fetch` covers direct page pulls only.
 
 ## Model Override
 
@@ -174,7 +170,7 @@ Pi supports fewer tools than Claude Code. Role tool lists are **translated** to 
 | LS | ls |
 | Task, WebFetch, WebSearch, MCP tools, etc. | **not supported** |
 
-Unsupported tools in a role's tool list are silently filtered out. If your role depends on a tool pi doesn't have, the session will still start but that tool won't be available. For web access, lean on the bash-tool helpers `agentwire brave` and `agentwire fetch` documented in [Built-in Helpers](#built-in-helpers) above.
+Unsupported tools in a role's tool list are silently filtered out. If your role depends on a tool pi doesn't have, the session will still start but that tool won't be available. For pulling specific pages, lean on the bash-tool helper `agentwire fetch` documented in [Built-in Helpers](#built-in-helpers) above; there is no web search in pi sessions.
 
 ### Disallowed Tools
 

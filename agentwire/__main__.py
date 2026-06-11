@@ -199,7 +199,7 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
         api_key = provider_cfg.get("api_key", "")
         default_model = provider_cfg.get("default_model", "")
 
-        # Merge provider key + any global pi extra_env (e.g. BRAVE_SEARCH_API_KEY)
+        # Merge provider key + any global pi extra_env
         env: dict[str, str] = {}
         if api_key:
             env[env_var] = api_key
@@ -3783,8 +3783,8 @@ def _pane0_state(session: str) -> tuple[str | None, str | None]:
 def _wants_graceful_exit(session_type: str | None, pane_command: str | None) -> bool:
     """Whether a session should get /exit before kill.
 
-    Claude-type sessions (claude-*, claudeglm-*, or no declared type) get a
-    graceful /exit. Bare shells and pi-* sessions don't speak /exit — plain
+    Claude-type sessions (claude-* or no declared type) get a graceful
+    /exit. Bare shells and pi-* sessions don't speak /exit — plain
     tmux kill. If pane 0 is just sitting at a shell, there's no agent to exit.
     """
     if pane_command is None or pane_command in _SHELL_COMMANDS:
@@ -10418,22 +10418,6 @@ def main() -> int:
     email_parser.add_argument("--plain", action="store_true", help="Send plain text only (no HTML template)")
     email_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress success output")
     email_parser.set_defaults(func=cmd_email)
-
-    # === brave command ===
-    from agentwire.search import cmd_brave
-    brave_parser = subparsers.add_parser(
-        "brave",
-        help="Brave Search helper — run a web search and print results optimized for LLM consumption.",
-    )
-    brave_parser.add_argument("query", nargs="+", help="Search query (all remaining args joined with spaces)")
-    brave_parser.add_argument("--count", "-n", type=int, default=10, help="Max results (1-20, default 10)")
-    brave_parser.add_argument(
-        "--freshness", "-f", type=str, default="pd",
-        choices=["pd", "pw", "pm", "py"],
-        help="Time window: pd=past day (default), pw=past week, pm=past month, py=past year",
-    )
-    brave_parser.add_argument("--json", action="store_true", help="Output raw JSON instead of compact text")
-    brave_parser.set_defaults(func=cmd_brave)
 
     # === fetch command ===
     from agentwire.fetch import cmd_fetch

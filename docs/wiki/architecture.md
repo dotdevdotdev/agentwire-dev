@@ -12,7 +12,7 @@ tmux is the substrate. One agentwire session = one tmux session. Inside that ses
 
 ```
 tmux session "myproject"
-├── pane 0  → orchestrator   (Claude Code, claudeglm, pi)
+├── pane 0  → orchestrator   (Claude Code, pi)
 ├── pane 1  → worker          (spawned via pane_spawn, auto-kills on idle)
 ├── pane 2  → worker
 └── ...
@@ -20,7 +20,7 @@ tmux session "myproject"
 
 The orchestrator coordinates work and dispatches workers via the MCP `pane_spawn` tool. Workers fire an *idle notification* on completion (via `~/.claude/hooks/idle-handler.sh`); the hook routes the alert to pane 0 and kills the worker. Pane 0's own idle notifications route to whatever session is named in `parent:` (typically the human-facing session).
 
-For session types — claude-bypass, claude-auto, claudeglm-*, pi-*, bare — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
+For session types — claude-bypass, claude-auto, pi-*, bare — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
 
 ---
 
