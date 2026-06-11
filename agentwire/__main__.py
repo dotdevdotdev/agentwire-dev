@@ -11412,6 +11412,59 @@ def main() -> int:
     m_init.add_argument("--json", action="store_true", help="Output JSON")
     m_init.set_defaults(func=mission_cli.cmd_mission_init)
 
+    # === limits command group (usage-limit recovery) ===
+    from . import limits_cli
+
+    limits_parser = subparsers.add_parser(
+        "limits",
+        help="Usage-limit recovery: detect the limit dialog, park, auto-resume",
+        description=(
+            "Deterministic recovery from Claude Code usage-limit dialogs: a "
+            "launchd watchdog ticks every minute, parks sessions sitting on "
+            "the dialog (option 1: stop and wait), emails the owner, and "
+            "nudges the session back to work after the limit resets. "
+            "See docs/wiki/usage-limit-recovery.md."
+        ),
+    )
+    limits_subparsers = limits_parser.add_subparsers(dest="limits_command")
+
+    # limits tick
+    l_tick = limits_subparsers.add_parser(
+        "tick", help="One watchdog pass: sweep panes, resume what's due"
+    )
+    l_tick.add_argument("--json", action="store_true", help="Output JSON")
+    l_tick.set_defaults(func=limits_cli.cmd_limits_tick)
+
+    # limits status
+    l_status = limits_subparsers.add_parser("status", help="Show parked sessions")
+    l_status.add_argument("--json", action="store_true", help="Output JSON")
+    l_status.set_defaults(func=limits_cli.cmd_limits_status)
+
+    # limits resume
+    l_resume = limits_subparsers.add_parser(
+        "resume", help="Manually resume a parked session now"
+    )
+    l_resume.add_argument("-s", "--session", required=True, help="Parked session name")
+    l_resume.add_argument(
+        "--force", action="store_true",
+        help="Archive the park state even if nudge delivery can't be verified",
+    )
+    l_resume.set_defaults(func=limits_cli.cmd_limits_resume)
+
+    # limits install / uninstall
+    l_install = limits_subparsers.add_parser(
+        "install", help="Install + load the launchd watchdog (60s tick)"
+    )
+    l_install.add_argument(
+        "--dry-run", action="store_true", help="Print the plist without installing"
+    )
+    l_install.set_defaults(func=limits_cli.cmd_limits_install)
+
+    l_uninstall = limits_subparsers.add_parser(
+        "uninstall", help="Unload + remove the launchd watchdog"
+    )
+    l_uninstall.set_defaults(func=limits_cli.cmd_limits_uninstall)
+
     # === council command group ===
     council_parser = subparsers.add_parser(
         "council",
@@ -11639,6 +11692,10 @@ def main() -> int:
 
     if args.command == "council" and getattr(args, "council_command", None) is None:
         council_parser.print_help()
+        return 0
+
+    if args.command == "limits" and getattr(args, "limits_command", None) is None:
+        limits_parser.print_help()
         return 0
 
     if args.command == "overnight" and getattr(args, "overnight_command", None) is None:
