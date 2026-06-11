@@ -625,6 +625,28 @@ class TestAnswer:
         prompt_router.answer("child", 0, expected, ["2"])
         assert prompt_router.read_marker("child", 0) is None
 
+    def test_marker_bridges_hook_payload_hash(self, monkeypatch):
+        # Hook-routed permission: --expect carries a payload-derived hash the
+        # screen can't reproduce; the marker (same hash, same kind) bridges
+        # it (live-verified failure mode: unanswerable prompt, 2026-06-11).
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PERMISSION_BASH)
+        prompt_router.write_marker(
+            "child", 0, kind="permission", hash="payload-hash", source="hook"
+        )
+        ok, msg = prompt_router.answer("child", 0, "payload-hash", ["1"])
+        assert ok
+        assert self.sent_keys == [["send-keys", "-t", "child.0", "1"]]
+
+    def test_marker_does_not_bridge_kind_mismatch(self, monkeypatch):
+        # A plan dialog live + a stale permission marker must still refuse.
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PLAN_APPROVAL)
+        prompt_router.write_marker(
+            "child", 0, kind="permission", hash="payload-hash", source="hook"
+        )
+        ok, msg = prompt_router.answer("child", 0, "payload-hash", ["1"])
+        assert not ok and "DIFFERENT prompt" in msg
+        assert self.sent_keys == []
+
 
 class TestSweep:
     PANES = "orch\t0\t2.1.170\t/p/orch\nchild\t0\t2.1.170\t/p/child\nshelly\t0\tzsh\t/p/x"
@@ -691,10 +713,12 @@ class TestSweep:
         assert len(self.routed) == 2
 
     def test_hook_marker_suppresses_permission_sweep(self):
+        # The hook's hash derives from the tool payload and NEVER equals the
+        # sweep's screen-derived hash — suppression must not be hash-gated
+        # (live-verified failure mode: double notification, 2026-06-11).
         self.screens["child.0"] = PERMISSION_BASH
-        info = detect_prompt(PERMISSION_BASH)
         prompt_router.write_marker(
-            "child", 0, kind="permission", hash=info.content_hash(),
+            "child", 0, kind="permission", hash="payload-derived-hash",
             source="hook", detected_at=prompt_router._now().isoformat(),
             notified_at=None, parent="orch", status="delivered",
         )
@@ -741,3 +765,61 @@ class TestContentHash:
         wide = PromptInfo(kind="plan", question="Would you like to proceed?")
         wrapped = PromptInfo(kind="plan", question="Would you like\nto   proceed?")
         assert wide.content_hash() == wrapped.content_hash()
+
+
+class TestRecordSessionCreator:
+    def test_records_and_merges(self, tmp_path, monkeypatch):
+        import agentwire.__main__ as cli
+
+        monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+        cli.store_session_metadata("child", {"existing": "kept"})
+        cli._record_session_creator("child", "orch", via="new")
+        meta = cli.load_session_metadata("child")
+        assert meta["created_by"] == "orch"
+        assert meta["created_via"] == "new"
+        assert meta["existing"] == "kept"
+
+    def test_self_and_empty_creator_skipped(self, tmp_path, monkeypatch):
+        import agentwire.__main__ as cli
+
+        monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+        cli._record_session_creator("child", "child", via="new")
+        cli._record_session_creator("child", "", via="new")
+        cli._record_session_creator("child", None, via="new")
+        assert cli.load_session_metadata("child") == {}
+
+
+class TestNotifyPermissionRequest:
+    @pytest.fixture(autouse=True)
+    def _wire(self, router_home, monkeypatch):
+        self.routed = []
+        monkeypatch.setattr(
+            prompt_router,
+            "route_prompt",
+            lambda s, p, info, source="hook", project_path=None: self.routed.append(
+                (s, p, info, source)
+            )
+            or "orch",
+        )
+
+    def test_bash_summary(self):
+        prompt_router.notify_permission_request(
+            "child", 0, {"tool_name": "Bash", "tool_input": {"command": "git push"}}
+        )
+        _, _, info, source = self.routed[0]
+        assert info.kind == "permission" and source == "hook"
+        assert "git push" in info.question
+
+    def test_exit_plan_mode_maps_to_plan_kind(self):
+        # ExitPlanMode fires the hook but renders the plan dialog — the
+        # notification must carry the plan dialog's kind + options or the
+        # sweep/answer kinds disagree (live-verified 2026-06-11).
+        prompt_router.notify_permission_request(
+            "child", 0,
+            {"tool_name": "ExitPlanMode", "tool_input": {"plan": "Do the thing"}},
+        )
+        _, _, info, _ = self.routed[0]
+        assert info.kind == "plan"
+        assert info.summary == "Do the thing"
+        assert [o["number"] for o in info.options] == [1, 2, 3, 4]
+        assert info.options[0]["label"] == "Yes, and use auto mode"

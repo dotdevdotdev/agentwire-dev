@@ -2857,7 +2857,7 @@ def _record_session_creator(session_name: str, created_by: str | None, via: str)
     """
     if not created_by or created_by == session_name.split("@")[0]:
         return
-    metadata = get_session_metadata(session_name)
+    metadata = load_session_metadata(session_name)
     metadata.update({
         "created_by": created_by,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

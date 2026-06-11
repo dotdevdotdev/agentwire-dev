@@ -493,6 +493,25 @@ def notify_permission_request(session: str, pane_index: int, data: dict) -> "str
     """
     tool_name = data.get("tool_name", "unknown")
     tool_input = data.get("tool_input") or {}
+
+    # ExitPlanMode fires the PermissionRequest hook too (live-verified
+    # 2026-06-11) but renders the plan-approval dialog, whose options differ
+    # from a permission dialog's — mirror what's actually on screen.
+    if tool_name == "ExitPlanMode":
+        plan = str(tool_input.get("plan", ""))[:300]
+        info = PromptInfo(
+            kind="plan",
+            question="Plan approval: Would you like to proceed?",
+            options=[
+                {"number": 1, "label": "Yes, and use auto mode", "description": ""},
+                {"number": 2, "label": "Yes, manually approve edits", "description": ""},
+                {"number": 3, "label": "No", "description": ""},
+                {"number": 4, "label": "Tell Claude what to change", "description": ""},
+            ],
+            summary=plan,
+        )
+        return route_prompt(session, pane_index, info, source="hook")
+
     if tool_name == "Bash":
         detail = str(tool_input.get("command", ""))[:300]
         summary = f"run: {detail}" if detail else "run a command"
@@ -535,10 +554,19 @@ def answer(
         clear_marker(session, pane_index)
         return False, "no live prompt on the pane (already answered or gone)"
     if info.content_hash() != expect_hash:
-        return False, (
-            f"a DIFFERENT prompt is live (kind={info.kind}, "
-            f"hash={info.content_hash()}) — inspect before answering"
-        )
+        # Hook-routed permission notifications carry a payload-derived hash
+        # that can't be recomputed from the screen; the marker bridges the
+        # two — same expected hash, same kind, a live prompt of that kind.
+        marker = read_marker(session, pane_index)
+        if not (
+            marker
+            and marker.get("hash") == expect_hash
+            and marker.get("kind") == info.kind
+        ):
+            return False, (
+                f"a DIFFERENT prompt is live (kind={info.kind}, "
+                f"hash={info.content_hash()}) — inspect before answering"
+            )
     for key in keys:
         _tmux(["send-keys", "-t", f"{session}.{pane_index}", key])
     clear_marker(session, pane_index)
@@ -618,14 +646,20 @@ def sweep() -> dict:
                 clear_marker(session, pane_index)
             continue
 
+        # A fresh hook-routed marker keeps the sweep off this pane entirely.
+        # NOT hash- or kind-gated: the hook's hash derives from the tool
+        # payload (never equals the screen hash), and ExitPlanMode arrives
+        # via the hook but renders as a plan dialog. Only one dialog can be
+        # live on a pane — a fresh hook marker means the portal owns it.
+        if (
+            marker
+            and marker.get("source") == "hook"
+            and (_marker_age(marker) or timedelta(0)) < HOOK_MARKER_TTL
+        ):
+            active.append({"session": session, "pane": pane_index, "kind": info.kind})
+            continue
+
         if marker and marker.get("hash") == info.content_hash():
-            if (
-                marker.get("source") == "hook"
-                and info.kind == "permission"
-                and (_marker_age(marker) or timedelta(0)) < HOOK_MARKER_TTL
-            ):
-                active.append({"session": session, "pane": pane_index, "kind": info.kind})
-                continue
             if marker.get("notified_at"):
                 age = _marker_age(marker, "notified_at")
                 if age is not None and age < RENOTIFY_TTL:
