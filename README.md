@@ -8,6 +8,8 @@
 
 <p align="center">
   <a href="https://pypi.org/project/agentwire-dev/"><img src="https://img.shields.io/pypi/v/agentwire-dev?color=green" alt="PyPI"></a>
+  <a href="https://pypistats.org/packages/agentwire-dev"><img src="https://img.shields.io/pypi/dm/agentwire-dev?color=00ff88&label=installs" alt="PyPI Downloads"></a>
+  <a href="https://github.com/dotdevdotdev/agentwire-dev/stargazers"><img src="https://img.shields.io/github/stars/dotdevdotdev/agentwire-dev?style=flat&logo=github&color=00d4ff" alt="GitHub Stars"></a>
   <a href="https://pypi.org/project/agentwire-dev/"><img src="https://img.shields.io/pypi/pyversions/agentwire-dev" alt="Python"></a>
   <a href="https://github.com/dotdevdotdev/agentwire-dev/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dotdevdotdev/agentwire-dev" alt="License"></a>
   <a href="https://discord.gg/bspFZNTdUr"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
