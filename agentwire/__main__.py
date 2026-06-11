@@ -6737,6 +6737,15 @@ def cmd_doctor(args) -> int:
             print("       Fix: agentwire stt start")
             print("       If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'")
             issues_found += 1
+    elif getattr(stt_cfg, "backend", "default") == "cloud":
+        cloud_cfg = getattr(stt_cfg, "cloud", None) or {}
+        key_env = cloud_cfg.get("api_key_env", "OPENAI_API_KEY")
+        if os.environ.get(key_env):
+            print(f"  [ok] Stt: cloud tier ({key_env} is set)")
+        else:
+            print(f"  [!!] Stt: cloud tier but {key_env} is not set")
+            print("       The portal will refuse to start until the key is in its environment.")
+            issues_found += 1
 
     # 9. Validate remote machines
     print("\nChecking remote machines...")
@@ -10472,7 +10481,7 @@ def main() -> int:
     stt_start.add_argument("--port", type=int, help="Server port (default: 8101)")
     stt_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
     stt_start.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
-    stt_start.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper, cloud-openai (needs OPENAI_API_KEY in the server env)")
+    stt_start.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper")
     stt_start.set_defaults(func=cmd_stt_start)
 
     # stt serve
@@ -10480,7 +10489,7 @@ def main() -> int:
     stt_serve.add_argument("--port", type=int, help="Server port (default: 8101)")
     stt_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
     stt_serve.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
-    stt_serve.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper, cloud-openai (needs OPENAI_API_KEY in the server env)")
+    stt_serve.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper")
     stt_serve.set_defaults(func=cmd_stt_serve)
 
     # stt stop

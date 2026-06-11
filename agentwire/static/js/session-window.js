@@ -1045,7 +1045,8 @@ export class SessionWindow {
     }
 
     _usesBrowserStt() {
-        return desktop.voiceStatus?.stt?.backend !== 'custom';
+        // cloud and custom tiers upload audio to the portal's /transcribe
+        return !['cloud', 'custom'].includes(desktop.voiceStatus?.stt?.backend);
     }
 
     async _startRecording() {
@@ -1055,7 +1056,7 @@ export class SessionWindow {
         // transcript lands in an edit-before-send bar — no audio upload.
         if (this._usesBrowserStt()) {
             if (!browserStt.isSupported()) {
-                this._updateStatus('error', 'Browser voice input requires Chrome (or set stt.backend: custom)');
+                this._updateStatus('error', 'Browser voice input requires Chrome (or set stt.backend: cloud/custom)');
                 return;
             }
             this._sttCancelled = false;

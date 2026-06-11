@@ -11,6 +11,7 @@ from typing import Optional
 
 import yaml
 
+
 def _get_default_agent_command() -> str:
     """Get the default agent command.
 
@@ -105,11 +106,14 @@ _VOICE_BACKEND_MIGRATION_HINT = (
 )
 
 
-def _validate_voice_backend(kind: str, backend: str, url: str | None) -> None:
-    """Shared default|custom validation for STT/TTS config sections."""
-    if backend not in _VOICE_BACKENDS:
+def _validate_voice_backend(
+    kind: str, backend: str, url: str | None, allowed: tuple = _VOICE_BACKENDS
+) -> None:
+    """Shared tier validation for STT/TTS config sections."""
+    if backend not in allowed:
         raise ValueError(
-            f"{kind}.backend '{backend}' is not valid. {_VOICE_BACKEND_MIGRATION_HINT}"
+            f"{kind}.backend '{backend}' is not valid (allowed: {', '.join(allowed)}). "
+            f"{_VOICE_BACKEND_MIGRATION_HINT}"
         )
     if backend == "custom" and not url:
         raise ValueError(
@@ -148,14 +152,24 @@ class TTSConfig:
 class STTConfig:
     """Speech-to-text configuration.
 
-    Two tiers: ``default`` transcribes in the browser (Chrome SpeechRecognition);
-    ``custom`` uploads audio to any HTTP shim implementing the contract
-    (docs/wiki/voice/shim-contract.md).
+    Three tiers: ``default`` transcribes in the browser (Chrome
+    SpeechRecognition); ``cloud`` uploads audio to the portal, which POSTs
+    it to any OpenAI-compatible transcription API (no extra daemon, key
+    from env, server-side only); ``custom`` uploads audio to any HTTP shim
+    implementing the contract (docs/wiki/voice/shim-contract.md).
     """
 
-    backend: str = "default"  # default | custom
+    backend: str = "default"  # default | cloud | custom
     url: str | None = None  # shim URL (required for custom backend)
     timeout: int = 30
+    # cloud tier settings — any provider speaking the OpenAI transcription
+    # protocol (OpenAI, Groq, Mistral, self-hosted speaches, ...):
+    #   base_url:    API root (default https://api.openai.com/v1)
+    #   model:       transcription model (default gpt-4o-mini-transcribe)
+    #   api_key_env: NAME of the env var holding the key (default
+    #                OPENAI_API_KEY) — the key itself never lives in config
+    #   language:    optional ISO-639-1 hint, omitted from the request if empty
+    cloud: dict = field(default_factory=dict)
     # Milliseconds of silence to prepend to the decoded audio before sending
     # to the STT shim. Default 0 — moonshine doesn't need it. Set to ~300
     # if your shim (e.g. older faster-whisper builds) clips the first syllable.
@@ -167,7 +181,9 @@ class STTConfig:
     options: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        _validate_voice_backend("stt", self.backend, self.url)
+        _validate_voice_backend(
+            "stt", self.backend, self.url, allowed=("default", "cloud", "custom")
+        )
 
 
 @dataclass
@@ -533,6 +549,7 @@ def _dict_to_config(data: dict) -> Config:
         backend=stt_data.get("backend", "default"),
         url=stt_data.get("url"),
         timeout=stt_data.get("timeout", 30),
+        cloud=stt_data.get("cloud") or {},
         silence_prepend_ms=int(stt_data.get("silence_prepend_ms", 0)),
         corrections=stt_data.get("corrections") or {},
         instructions=stt_data.get("instructions", ""),

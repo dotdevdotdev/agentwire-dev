@@ -74,12 +74,17 @@ tts:
   timeout: 60
 
 stt:
-  backend: "default"  # tier: default (browser speech recognition) | custom (self-hosted shim at url)
-                      # NOTE: the bundled shim's engine (moonshine | whisper | cloud-openai | auto)
-                      # is picked server-side via `agentwire stt start --backend ...` or the
-                      # STT_BACKEND env var, NOT here. cloud-openai needs OPENAI_API_KEY in the
-                      # STT server's environment (server-side only, never sent to the browser).
+  backend: "default"  # tier: default (browser speech recognition) | cloud (portal → hosted
+                      # OpenAI-compatible transcription API, no shim daemon) | custom
+                      # (self-hosted shim at url)
   url: "http://localhost:8101"  # custom tier only — shim endpoint
+  cloud:  # cloud tier only — all fields optional, defaults shown
+    base_url: "https://api.openai.com/v1"  # any OpenAI-compatible endpoint (Groq, Mistral, speaches, ...)
+    model: "gpt-4o-mini-transcribe"
+    api_key_env: "OPENAI_API_KEY"  # NAME of the env var holding the key — the key itself
+                                   # never lives in config and never reaches the browser;
+                                   # portal refuses to start if the var is unset
+    language: ""  # optional ISO-639-1 hint
   timeout: 30
   silence_prepend_ms: 0  # prepend silence if your backend clips the first syllable
   instructions: ""  # free-text hint passed through to the shim

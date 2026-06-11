@@ -2,20 +2,22 @@
 
 > Living document. Update this, don't create new versions.
 
-agentwire's voice backends are a **two-tier model**: `default` (built into the
-portal, zero setup) and `custom` (bring your own model behind a small HTTP
-shim). This page is the contract a custom shim implements. The test of this
-document: you should be able to write a working shim from this page alone,
-without reading agentwire source.
+agentwire's voice backends are a tiered model: `default` (built into the
+portal, zero setup), `custom` (bring your own model behind a small HTTP
+shim), and — for STT — `cloud` (the portal POSTs audio straight to any
+OpenAI-compatible transcription API; see
+[stt-cloud.md](stt-cloud.md), no shim involved). This page is the contract
+a custom shim implements. The test of this document: you should be able to
+write a working shim from this page alone, without reading agentwire source.
 
-## The two tiers
+## The tiers
 
-| | `default` | `custom` |
-|---|---|---|
-| STT | Chrome SpeechRecognition in the portal (Chrome is the blessed browser) + jargon-correction map | audio upload → your shim (`POST /transcribe`) |
-| TTS | in-process Kokoro-82M (CPU, ~200MB auto-download on first portal start); browser `speechSynthesis` while the model warms up or if it can't load | text → your shim (`POST /tts`) → WAV broadcast |
-| Setup | none | run your shim, point config at it |
-| Quality | good neural voice (32 presets, 8 languages), ~90% semantic STT accuracy | whatever your model can do — cloning, emotion control, GPU engines |
+| | `default` | `cloud` (STT only) | `custom` |
+|---|---|---|---|
+| STT | Chrome SpeechRecognition in the portal (Chrome is the blessed browser) + jargon-correction map | audio upload → portal → hosted transcription API (key from env, server-side only) | audio upload → your shim (`POST /transcribe`) |
+| TTS | in-process Kokoro-82M (CPU, ~200MB auto-download on first portal start); browser `speechSynthesis` while the model warms up or if it can't load | — | text → your shim (`POST /tts`) → WAV broadcast |
+| Setup | none | API key in the portal env | run your shim, point config at it |
+| Quality | good neural voice (32 presets, 8 languages), ~90% semantic STT accuracy | provider-grade STT (e.g. `gpt-4o-mini-transcribe`, ~$0.003/min) | whatever your model can do — cloning, emotion control, GPU engines |
 
 ```yaml
 # ~/.agentwire/config.yaml
@@ -150,7 +152,7 @@ examples for this contract:
 | Shim | Source | Run | Models |
 |---|---|---|---|
 | TTS | `agentwire/tts_server.py` | `agentwire tts start` (port 8100) | kokoro (CPU), chatterbox (GPU cloning), qwen (emotion via `instructions`), zonos |
-| STT | `agentwire/stt/stt_server.py` | `agentwire stt start` (port 8101) | moonshine ONNX (fast CPU), faster-whisper, cloud-openai (OpenAI API, key server-side only) |
+| STT | `agentwire/stt/stt_server.py` | `agentwire stt start` (port 8101) | moonshine ONNX (fast CPU), faster-whisper |
 
 Smoke-test either with curl:
 

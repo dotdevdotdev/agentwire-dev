@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""AgentWire STT Server - Persistent transcription endpoint.
+"""AgentWire STT Server - Persistent Whisper for fast transcription.
 
-Keeps the local model loaded in memory to eliminate cold start delays
-(local use avoids audio upload latency), or proxies to the OpenAI
-transcription API when ``STT_BACKEND=cloud-openai`` is selected — for
-hosts that can't run local STT well. The OpenAI key comes from the
-server environment (``OPENAI_API_KEY``) and never reaches the browser.
+Keeps the local model loaded in memory to eliminate cold start delays.
+Designed for local use to avoid audio upload latency. (Hosted
+transcription APIs don't need this server at all — that's the portal's
+``stt.backend: cloud`` tier.)
 
 Run via:
     agentwire stt start                     # Start in tmux (CPU)
     agentwire stt start --model large-v3    # Specific model
-    agentwire stt start --backend cloud-openai  # OpenAI transcription API
     agentwire stt stop                      # Stop the server
     agentwire stt status                    # Check status
 
@@ -36,14 +34,12 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 STT_HOST = os.environ.get("STT_HOST", "0.0.0.0")
 STT_PORT = int(os.environ.get("STT_PORT", "8101"))
-# moonshine | whisper | cloud-openai | auto (moonshine → faster-whisper →
-# openai-whisper → cloud-openai when OPENAI_API_KEY is set)
+# moonshine | whisper | auto (moonshine → faster-whisper → openai-whisper)
 STT_BACKEND = os.environ.get("STT_BACKEND", "auto")
 # Moonshine model: moonshine/tiny (fastest) or moonshine/base (better accuracy)
 MOONSHINE_MODEL = os.environ.get("MOONSHINE_MODEL", "moonshine/base")
 
-# Global backend state: stt_model is None for cloud-openai; a non-empty
-# model_info means the backend is ready.
+# Global backend state: a non-empty model_info means the backend is ready.
 stt_model = None
 model_info = {}
 

@@ -1,41 +1,20 @@
 """Backend loading and transcription for the STT server.
 
-FastAPI-free so backend selection and the cloud path stay unit-testable
-without the ``[stt]`` extras installed. ``stt_server.py`` is the HTTP
-wrapper around this module.
+FastAPI-free so backend selection stays unit-testable without the
+``[stt]`` extras installed. ``stt_server.py`` is the HTTP wrapper
+around this module.
 
-Backends, in ``auto`` fallback order:
-
-- ``moonshine``      — Moonshine ONNX, fast CPU inference
-- ``whisper``        — faster-whisper, then openai-whisper
-- ``cloud-openai``   — OpenAI transcription API (last resort in ``auto``,
-                       only when ``OPENAI_API_KEY`` is set; force with
-                       ``STT_BACKEND=cloud-openai``)
-
-The OpenAI key is read from the server process environment only. It is
-never stored in ``model_info`` (which ``/health`` and ``/capabilities``
-echo back) and never reaches the browser.
+Backends, in ``auto`` fallback order: ``moonshine`` (Moonshine ONNX,
+fast CPU inference), then ``whisper`` (faster-whisper, then
+openai-whisper). Hosted transcription APIs are not a shim concern —
+that's the portal's ``stt.backend: cloud`` tier (``stt/cloud.py``).
 """
 
-import json
 import os
 import tempfile
 import time
-import urllib.request
 
-KNOWN_BACKENDS = ("auto", "moonshine", "whisper", "cloud-openai")
-
-OPENAI_DEFAULT_MODEL = "gpt-4o-mini-transcribe"
-OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
-
-_AUDIO_CONTENT_TYPES = {
-    ".wav": "audio/wav",
-    ".webm": "audio/webm",
-    ".mp3": "audio/mpeg",
-    ".m4a": "audio/m4a",
-    ".ogg": "audio/ogg",
-    ".flac": "audio/flac",
-}
+KNOWN_BACKENDS = ("auto", "moonshine", "whisper")
 
 
 def _load_moonshine(moonshine_model: str) -> tuple[object, dict]:
@@ -96,39 +75,16 @@ def _load_openai_whisper(whisper_model: str, device: str) -> tuple[object, dict]
     }
 
 
-def _init_cloud_openai() -> tuple[None, dict]:
-    """Initialize the cloud-openai backend (no model to load).
-
-    Raises RuntimeError if OPENAI_API_KEY is missing — the key itself is
-    re-read from the environment per request and never stored here.
-    """
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError(
-            "cloud-openai backend requires OPENAI_API_KEY in the server environment"
-        )
-    model = os.environ.get("OPENAI_STT_MODEL", OPENAI_DEFAULT_MODEL)
-    print(f"Using cloud-openai backend: {model} (no local model)")
-    return None, {"backend": "cloud-openai", "model": model}
-
-
 def load_backend(
     backend: str = "auto",
     whisper_model: str = "base",
     whisper_device: str = "cpu",
     moonshine_model: str = "moonshine/base",
-) -> tuple[object | None, dict]:
-    """Load an STT backend, returning ``(model, model_info)``.
-
-    ``model`` is None for cloud-openai (nothing to hold in memory).
-    In ``auto`` mode the local backends are tried first; cloud-openai is
-    the final fallback and only when OPENAI_API_KEY is set.
-    """
+) -> tuple[object, dict]:
+    """Load an STT backend, returning ``(model, model_info)``."""
     if backend not in KNOWN_BACKENDS:
         print(f"Unknown STT_BACKEND '{backend}', falling back to auto")
         backend = "auto"
-
-    if backend == "cloud-openai":
-        return _init_cloud_openai()
 
     if backend in ("auto", "moonshine"):
         try:
@@ -167,79 +123,13 @@ def load_backend(
                 raise
             print(f"openai-whisper failed ({e})...")
 
-    # auto only: cloud fallback when local models can't load
-    if os.environ.get("OPENAI_API_KEY"):
-        print("No local STT backend available, falling back to cloud-openai")
-        return _init_cloud_openai()
-
     raise RuntimeError(
-        "No STT backend available. Install a local backend (useful-moonshine-onnx, "
-        "faster-whisper, or openai-whisper) or set OPENAI_API_KEY to use cloud-openai."
+        "No STT backend available. Install useful-moonshine-onnx, faster-whisper, "
+        "or openai-whisper."
     )
 
 
-def transcribe_cloud_openai(audio_path: str, model: str, timeout: float | None = None) -> dict:
-    """Transcribe via the OpenAI transcription API.
-
-    Builds the multipart request with stdlib urllib (no SDK dependency).
-    The API key is read from the environment at call time, sent only in the
-    Authorization header of this server-side request.
-    """
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in server environment")
-
-    base_url = os.environ.get("OPENAI_BASE_URL", OPENAI_DEFAULT_BASE_URL).rstrip("/")
-    if timeout is None:
-        timeout = float(os.environ.get("OPENAI_STT_TIMEOUT", "30"))
-
-    with open(audio_path, "rb") as f:
-        audio_data = f.read()
-
-    ext = os.path.splitext(audio_path)[1].lower() or ".wav"
-    content_type = _AUDIO_CONTENT_TYPES.get(ext, "application/octet-stream")
-
-    boundary = "----AgentWireBoundary"
-    parts = [
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="model"\r\n\r\n'
-            f"{model}"
-        ).encode(),
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-            f"json"
-        ).encode(),
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="audio{ext}"\r\n'
-            f"Content-Type: {content_type}\r\n\r\n"
-        ).encode() + audio_data,
-    ]
-    body = b"\r\n".join(parts) + f"\r\n--{boundary}--\r\n".encode()
-
-    req = urllib.request.Request(
-        f"{base_url}/audio/transcriptions",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        },
-        method="POST",
-    )
-
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode())
-
-    return {
-        "text": payload.get("text", "").strip(),
-        "language": payload.get("language", "en"),
-        "duration": payload.get("duration"),
-    }
-
-
-def transcribe(model: object | None, model_info: dict, audio_path: str) -> dict:
+def transcribe(model: object, model_info: dict, audio_path: str) -> dict:
     """Transcribe an audio file with the loaded backend."""
     backend = model_info.get("backend")
     if not backend:
@@ -268,8 +158,6 @@ def transcribe(model: object | None, model_info: dict, audio_path: str) -> dict:
             "language": info.language,
             "duration": round(info.duration, 2),
         }
-    elif backend == "cloud-openai":
-        result = transcribe_cloud_openai(audio_path, model_info["model"])
     else:
         # openai-whisper
         raw = model.transcribe(audio_path, language="en")

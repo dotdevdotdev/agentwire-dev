@@ -3448,8 +3448,13 @@ tts:
   # url: "http://localhost:8100"
 
 stt:
-  backend: "default"  # browser speech recognition — or "custom" with url:
+  backend: "default"  # browser speech recognition — or "cloud" (hosted API),
+                      # or "custom" with url:
   # url: "http://localhost:8101"
+  # cloud:  # any OpenAI-compatible transcription API; key from env, never in config
+  #   base_url: "https://api.openai.com/v1"
+  #   model: "gpt-4o-mini-transcribe"
+  #   api_key_env: "OPENAI_API_KEY"
 
 projects:
   dir: "~/projects"
@@ -3625,8 +3630,8 @@ projects:
         shape for Whisper- and Moonshine-class models. Optionally prepends a
         configurable amount of silence (``stt.silence_prepend_ms``, default 0).
 
-        Custom tier only — in the default tier, recognition happens in the
-        browser and this endpoint answers 501.
+        Cloud and custom tiers only — in the default tier, recognition
+        happens in the browser and this endpoint answers 501.
         """
         from .stt import NoSTT
 
@@ -3635,7 +3640,8 @@ projects:
                 {
                     "error": "Server-side STT is not configured (stt.backend: default — "
                     "the portal uses browser speech recognition). Set stt.backend: "
-                    "custom with a url to enable audio-upload transcription."
+                    "cloud (hosted transcription API) or custom with a url to enable "
+                    "audio-upload transcription."
                 },
                 status=501,
             )
