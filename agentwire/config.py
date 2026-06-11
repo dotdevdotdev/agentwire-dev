@@ -382,6 +382,18 @@ class SafetyConfig:
 
 
 @dataclass
+class UsageLimitConfig:
+    """Usage-limit recovery (watchdog) knobs.
+
+    Gates NEW parks only — already-parked sessions are always resumed,
+    regardless of these settings.
+    """
+
+    enabled: bool = True  # master switch for dialog detection/parking
+    exclude_sessions: list[str] = field(default_factory=list)  # never auto-park these
+
+
+@dataclass
 class Config:
     """Root configuration for AgentWire."""
 
@@ -400,6 +412,7 @@ class Config:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     overnight: OvernightConfig = field(default_factory=OvernightConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     channels: dict = field(default_factory=dict)
 
 
@@ -672,6 +685,18 @@ def _dict_to_config(data: dict) -> Config:
         disabled_rules=[str(r) for r in disabled_rules_raw if r],
     )
 
+    # Usage-limit recovery (watchdog enable + session exclusions)
+    usage_limit_data = data.get("usage_limit", {}) or {}
+    if not isinstance(usage_limit_data, dict):
+        usage_limit_data = {}
+    exclude_sessions_raw = usage_limit_data.get("exclude_sessions", []) or []
+    if not isinstance(exclude_sessions_raw, list):
+        exclude_sessions_raw = []
+    usage_limit = UsageLimitConfig(
+        enabled=bool(usage_limit_data.get("enabled", True)),
+        exclude_sessions=[str(s) for s in exclude_sessions_raw if s],
+    )
+
     # Session defaults
     session_data = data.get("session", {}) or {}
     session = SessionConfig(
@@ -696,6 +721,7 @@ def _dict_to_config(data: dict) -> Config:
         channels=channel_configs,
         repl=repl,
         safety=safety,
+        usage_limit=usage_limit,
     )
 
 

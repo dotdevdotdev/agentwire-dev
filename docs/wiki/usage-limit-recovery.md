@@ -91,6 +91,22 @@ The resume nudge is fixed text:
 Delivery is verified by recapturing the pane; up to 5 attempts across ticks,
 then `resume_failed` + an email asking for a human look.
 
+## Configuration
+
+`~/.agentwire/config.yaml`:
+
+```yaml
+usage_limit:
+  enabled: true            # master switch for detection/parking (default true)
+  exclude_sessions:        # sessions never auto-parked (default empty)
+    - jordan
+```
+
+These knobs gate **new parks only** — both the watchdog sweep and ensure's
+in-band detection. Already-parked sessions are always resumed and `agentwire
+limits resume` always works, even for excluded sessions or with the feature
+disabled (you can turn it off without stranding a parked session).
+
 ## CLI
 
 ```bash

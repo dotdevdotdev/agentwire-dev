@@ -223,6 +223,21 @@ def detect_dialog(visible: str) -> bool:
     return not tail.strip()
 
 
+def _recovery_config() -> tuple[bool, set[str]]:
+    """(enabled, excluded session names) from config.yaml.
+
+    Gates NEW parks only — resume always drains existing park states, even
+    for sessions excluded (or the feature disabled) after they were parked.
+    """
+    try:
+        from .config import get_config
+
+        cfg = get_config().usage_limit
+        return bool(cfg.enabled), set(cfg.exclude_sessions)
+    except Exception:
+        return True, set()
+
+
 def check_and_park(session: str, pane_index: int = 0, source: str = "ensure") -> bool:
     """True iff the session is (or just became) parked on a usage limit.
 
@@ -232,6 +247,9 @@ def check_and_park(session: str, pane_index: int = 0, source: str = "ensure") ->
     """
     if is_parked(session):
         return True
+    enabled, excluded = _recovery_config()
+    if not enabled or session in excluded:
+        return False
     if detect_dialog(_capture(f"{session}.{pane_index}")):
         park(session, pane_index, source=source)
         return is_parked(session)
@@ -458,7 +476,14 @@ def _send_notification(state: dict, subject: str, body: str, mark_notified: bool
 
 
 def sweep() -> list[dict]:
-    """Scan all tmux panes for the usage-limit dialog; park what's found."""
+    """Scan all tmux panes for the usage-limit dialog; park what's found.
+
+    Respects the ``usage_limit:`` config knobs: ``enabled: false`` disables
+    new parks entirely; ``exclude_sessions`` names are never auto-parked.
+    """
+    enabled, excluded = _recovery_config()
+    if not enabled:
+        return []
     try:
         result = _tmux(
             ["list-panes", "-a", "-F",
@@ -476,6 +501,8 @@ def sweep() -> list[dict]:
             continue
         session, pane_s, command = parts
         if command.strip().lower() in _BARE_SHELLS:
+            continue
+        if session in excluded:
             continue
         if is_parked(session):
             continue

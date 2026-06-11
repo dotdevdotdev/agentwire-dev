@@ -13,6 +13,9 @@ import pytest
 
 from agentwire import usage_limit
 
+# Original reader, captured before the autouse fixture stubs it per-test.
+_ORIG_RECOVERY_CONFIG = usage_limit._recovery_config
+
 
 # Real capture from the incident (fragmentz/scheduler-fragmentz-leads-daily).
 REAL_DIALOG = """\
@@ -78,6 +81,8 @@ def isolated_state(tmp_path, monkeypatch):
         usage_limit, "_send_notification", lambda *a, **k: False
     )
     monkeypatch.setattr(usage_limit.time, "sleep", lambda s: None)
+    # Default knobs — individual tests override to exercise the config gate.
+    monkeypatch.setattr(usage_limit, "_recovery_config", lambda: (True, set()))
     return state_dir
 
 
@@ -467,6 +472,43 @@ class TestSweep:
         assert len(unmatched) == 1
         assert "Yes, proceed" in unmatched[0]["excerpt"]
 
+    def test_sweep_disabled_by_config(self, monkeypatch):
+        monkeypatch.setattr(usage_limit, "_recovery_config", lambda: (False, set()))
+
+        def boom(*a, **k):
+            raise AssertionError("disabled sweep must not touch tmux")
+
+        monkeypatch.setattr(usage_limit, "_tmux", boom)
+        assert usage_limit.sweep() == []
+
+    def test_sweep_skips_excluded_sessions(self, monkeypatch):
+        monkeypatch.setattr(
+            usage_limit, "_recovery_config", lambda: (True, {"precious"})
+        )
+        panes = "precious\t0\tnode\nother\t0\tnode"
+
+        def fake_tmux(args, timeout=5):
+            if args[0] == "list-panes":
+                return subprocess.CompletedProcess(args, 0, stdout=panes, stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(usage_limit, "_tmux", fake_tmux)
+        captured = []
+        monkeypatch.setattr(
+            usage_limit, "_capture",
+            lambda target, scrollback=None: captured.append(target) or REAL_DIALOG,
+        )
+        parked_calls = []
+        monkeypatch.setattr(
+            usage_limit, "park",
+            lambda session, pane_index=0, source="watchdog": parked_calls.append(session)
+            or {"session": session},
+        )
+
+        usage_limit.sweep()
+        assert parked_calls == ["other"]
+        assert "precious.0" not in captured  # excluded session never captured
+
     def test_sweep_skips_already_parked(self, monkeypatch):
         usage_limit.write_park_state({"session": "work", "status": "parked"})
         panes = "work\t0\tnode"
@@ -512,6 +554,76 @@ class TestCheckAndPark:
             usage_limit, "_capture", lambda target, scrollback=None: "working...\n"
         )
         assert usage_limit.check_and_park("s1") is False
+
+    def test_disabled_gates_new_parks(self, monkeypatch):
+        monkeypatch.setattr(usage_limit, "_recovery_config", lambda: (False, set()))
+        monkeypatch.setattr(
+            usage_limit, "_capture", lambda target, scrollback=None: REAL_DIALOG
+        )
+        assert usage_limit.check_and_park("s1") is False
+        assert not usage_limit.is_parked("s1")
+
+    def test_excluded_session_gates_new_parks(self, monkeypatch):
+        monkeypatch.setattr(usage_limit, "_recovery_config", lambda: (True, {"s1"}))
+        monkeypatch.setattr(
+            usage_limit, "_capture", lambda target, scrollback=None: REAL_DIALOG
+        )
+        assert usage_limit.check_and_park("s1") is False
+        assert not usage_limit.is_parked("s1")
+
+    def test_already_parked_wins_over_exclusion(self, monkeypatch):
+        # Exclusion gates NEW parks only — an existing park is still honored.
+        usage_limit.write_park_state({"session": "s1", "status": "parked"})
+        monkeypatch.setattr(usage_limit, "_recovery_config", lambda: (False, {"s1"}))
+        assert usage_limit.check_and_park("s1") is True
+
+
+# =============================================================================
+# Config knobs (usage_limit: section in config.yaml)
+# =============================================================================
+
+
+class TestRecoveryConfig:
+    def test_defaults_when_section_absent(self):
+        from agentwire.config import _dict_to_config
+
+        cfg = _dict_to_config({})
+        assert cfg.usage_limit.enabled is True
+        assert cfg.usage_limit.exclude_sessions == []
+
+    def test_section_parsed(self):
+        from agentwire.config import _dict_to_config
+
+        cfg = _dict_to_config({
+            "usage_limit": {
+                "enabled": False,
+                "exclude_sessions": ["jordan", "fragmentz"],
+            }
+        })
+        assert cfg.usage_limit.enabled is False
+        assert cfg.usage_limit.exclude_sessions == ["jordan", "fragmentz"]
+
+    def test_malformed_section_falls_back_to_defaults(self):
+        from agentwire.config import _dict_to_config
+
+        cfg = _dict_to_config({"usage_limit": "nonsense"})
+        assert cfg.usage_limit.enabled is True
+        assert cfg.usage_limit.exclude_sessions == []
+
+        cfg = _dict_to_config({"usage_limit": {"exclude_sessions": "not-a-list"}})
+        assert cfg.usage_limit.exclude_sessions == []
+
+    def test_recovery_config_reads_config_object(self, monkeypatch):
+        import agentwire.config as config_mod
+        from agentwire.config import UsageLimitConfig
+
+        class FakeConfig:
+            usage_limit = UsageLimitConfig(enabled=False, exclude_sessions=["a", "b"])
+
+        monkeypatch.setattr(config_mod, "get_config", lambda: FakeConfig())
+        # The autouse fixture stubs usage_limit._recovery_config — call the
+        # original (captured at import, before the fixture patched it).
+        assert _ORIG_RECOVERY_CONFIG() == (False, {"a", "b"})
 
 
 # =============================================================================
