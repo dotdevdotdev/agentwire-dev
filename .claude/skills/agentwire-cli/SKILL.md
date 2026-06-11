@@ -17,6 +17,9 @@ agentwire send -s name --wait-ready --timeout 60 -- "prompt"
                                 #   trust-prompt auto-accept), verified delivery,
                                 #   exit 1 if unverified; local only
 agentwire send-keys -s name key1 key2  # raw keys with pauses
+agentwire send-keys -s name --pane 2 key  # target a specific pane
+agentwire new -s name --created-by orch  # record creator (prompt-routing parent);
+                                #   default: calling tmux session; '' opts out
 agentwire output -s name        # not: tmux capture-pane
 agentwire info -s name          # session metadata (cwd, panes) as JSON
 agentwire kill -s name          # not: tmux kill-session
@@ -78,6 +81,17 @@ agentwire say "text"            # speak (auto-routes to browser or local)
 agentwire say -s name "text"    # speak to specific session
 agentwire notify-parent "text"   # notify parent session (worker→orchestrator)
 agentwire notify-parent --to name "text" # notify specific session
+agentwire notify-parent --raw --to name "text"  # verbatim, no [NOTIFY ...] prefix
+                                # (delivery is safety-gated: refuses targets showing a
+                                #  live dialog / bare shells / parked sessions, verified paste)
+
+# Prompt routing (interactive prompts → parent session; see wiki sessions/prompt-routing.md)
+agentwire prompts status        # pending prompt markers
+agentwire prompts tick          # run one sweep now (watchdog does this every 60s)
+agentwire prompts answer -s name --pane 0 --expect <hash> 2  # guarded answer:
+                                #   re-detects + hash-compares before sending keys —
+                                #   NEVER answer dialogs with raw send-keys
+agentwire prompts clear -s name --pane 1  # drop a marker
 agentwire listen start|stop|cancel  # voice recording
 
 # Voice cloning

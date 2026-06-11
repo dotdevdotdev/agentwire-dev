@@ -95,6 +95,10 @@ tasks:
 
 **Exit codes:** 0=complete, 1=failed, 2=incomplete, 3=lock conflict, 4=pre failure, 5=timeout, 6=session error
 
+## Parent Resolution (prompt routing + notifications)
+
+For prompt routing (#276), a session's parent resolves in this order: **creator recorded at `agentwire new` time** (session metadata, `--created-by` to override) → **`.agentwire.yml` `parent:`** → none. Worker panes always route to pane 0 of their own session. Interactive prompts (permission/plan/AskUserQuestion) hitting a child are texted to that parent; answer only via `agentwire prompts answer` (guarded), never raw send-keys.
+
 ## Hierarchical Idle Notifications
 
 When a session goes idle, it notifies up the hierarchy via `agentwire notify-parent` (text-only, no audio):

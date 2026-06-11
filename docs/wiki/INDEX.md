@@ -25,6 +25,7 @@ How AgentWire runs AI agents — session types, REPLs, and permission models.
 - **[Window sizing](sessions/window-sizing.md)** — how tmux `window-size` policies interact with the portal (v1.33+ behavior change, healing stuck windows, policy picker)
 - **[Custom services](services.md)** — registered long-running sessions: autostart on portal launch, watchdog health checks + restart with backoff, `agentwire services` CLI
 - **[Council](council.md)** — multi-soul orchestrator sitting: fan a prompt out to lens sessions (brain, conscience, gut, critic, …), collect via file inbox, synthesize with attribution
+- **[Prompt routing](sessions/prompt-routing.md)** — permission/plan/AskUserQuestion prompts in a child session route to its parent (hook path + watchdog sweep); guarded `agentwire prompts answer`, no auto-answering
 
 ## Communication
 
