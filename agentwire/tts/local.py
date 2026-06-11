@@ -17,7 +17,6 @@ States:
 import asyncio
 import importlib.util
 import logging
-import random
 from typing import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -112,18 +111,10 @@ class LocalKokoro:
             await self._set_state("failed")
 
     def resolve_voice(self, voice: str | None) -> str:
-        """Map a configured voice name onto a Kokoro preset.
+        """Map a configured voice name onto a Kokoro preset."""
+        from .engines.kokoro import resolve_voice_name
 
-        Known preset → itself; "random" → random preset; anything else
-        (cloned-voice names from other backends, "default") → af_heart.
-        """
-        from .engines.kokoro import DEFAULT_VOICE, PRESET_VOICES
-
-        if voice and voice in PRESET_VOICES:
-            return voice
-        if voice and voice.lower() == "random":
-            return random.choice(PRESET_VOICES)
-        return DEFAULT_VOICE
+        return resolve_voice_name(voice)
 
     async def synthesize(self, text: str, voice: str | None = None) -> tuple[bytes, float]:
         """Generate WAV bytes for text. Returns (wav_bytes, duration_seconds).

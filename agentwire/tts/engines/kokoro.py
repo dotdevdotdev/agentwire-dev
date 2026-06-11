@@ -82,6 +82,21 @@ _LANG_MAP = {
 DEFAULT_VOICE = "af_heart"
 
 
+def resolve_voice_name(voice: str | None) -> str:
+    """Map any configured voice name onto a Kokoro preset.
+
+    Known preset → itself; "random" → random preset; anything else
+    (cloned-voice names from other backends, "default") → af_heart.
+    """
+    if voice and voice in PRESET_VOICES:
+        return voice
+    if voice and voice.lower() == "random":
+        import random
+
+        return random.choice(PRESET_VOICES)
+    return DEFAULT_VOICE
+
+
 class KokoroEngine(TTSEngine):
     """Kokoro TTS engine via kokoro-onnx.
 

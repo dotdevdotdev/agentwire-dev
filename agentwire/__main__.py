@@ -1499,8 +1499,42 @@ def cmd_tts_restart(args) -> int:
     return 0 if success else 1
 
 
+def cmd_tts_warm(args) -> int:
+    """Download the default-tier Kokoro model files and verify the engine loads.
+
+    Blocking pre-download path for headless/CLI-only setups; the portal does
+    the same download in the background on first start.
+    """
+    from .tts.local import kokoro_importable
+
+    if not kokoro_importable():
+        print("kokoro-onnx is not installed (requires Python >=3.10,<3.14).", file=sys.stderr)
+        return 1
+
+    from .tts.engines.kokoro import KokoroEngine
+
+    if KokoroEngine.model_files_cached():
+        print("Kokoro model files already cached (~/.cache/kokoro_onnx/)")
+    else:
+        last_pct: dict = {}
+
+        def progress(filename: str, downloaded: int, total: int) -> None:
+            pct = int(downloaded * 100 / total) if total else 0
+            if pct >= last_pct.get(filename, -10) + 10:
+                last_pct[filename] = pct
+                print(f"  {filename}: {pct}%")
+
+        KokoroEngine.download_models(progress)
+
+    print("Loading engine (verification)...")
+    engine = KokoroEngine()
+    engine.unload()
+    print("Kokoro voice ready.")
+    return 0
+
+
 def cmd_tts_status(args) -> int:
-    """Check TTS server status."""
+    """Check TTS status (default tier: in-process Kokoro; custom: shim server)."""
     from .network import NetworkContext
 
     json_mode = getattr(args, 'json', False)
@@ -1508,6 +1542,40 @@ def cmd_tts_status(args) -> int:
     session_name = get_tts_session_name()
     config = load_config()
     backend = config.get("tts", {}).get("backend", "unknown")
+
+    if backend == "default":
+        # Default tier: Kokoro runs in-process (portal/CLI) — there is no
+        # shim server to probe. Report install + model-cache state.
+        from .tts.local import kokoro_importable
+
+        importable = kokoro_importable()
+        cached = False
+        if importable:
+            from .tts.engines.kokoro import KokoroEngine
+
+            cached = KokoroEngine.model_files_cached()
+        state = (
+            "ready" if cached
+            else "model not downloaded" if importable
+            else "unavailable (kokoro-onnx not installed; requires Python <3.14)"
+        )
+        if json_mode:
+            _output_json({
+                "success": True,
+                "tier": "default",
+                "engine": "kokoro",
+                "kokoro_installed": importable,
+                "model_cached": cached,
+                "state": state,
+                "backend": backend,
+            })
+        else:
+            print("Default voice tier: Kokoro (in-process)")
+            print(f"  State: {state}")
+            if importable and not cached:
+                print("  Download: agentwire tts warm  "
+                      "(or start the portal — it downloads in the background)")
+        return 0
 
     if ctx.is_local("tts"):
         url = ctx.get_service_url("tts", use_tunnel=False)
@@ -2158,6 +2226,68 @@ def _local_say_os(text: str) -> int:
         return 1
 
 
+def _play_wav_bytes(audio_data: bytes) -> bool:
+    """Write WAV bytes to a temp file and play through system audio
+    (afplay / aplay / paplay / play)."""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio_data)
+        temp_path = f.name
+    try:
+        players = ["afplay"] if sys.platform == "darwin" else ["aplay", "paplay", "play"]
+        for player in players:
+            try:
+                subprocess.run([player, temp_path], check=True)
+                return True
+            except FileNotFoundError:
+                continue
+        print(f"No audio player found (tried {', '.join(players)})", file=sys.stderr)
+        return False
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+_kokoro_cli_engine = None
+
+
+def _local_say_kokoro(text: str, voice: str | None) -> int:
+    """Speak via in-process Kokoro (default tier, no portal running).
+
+    Only runs when the model files are already cached — a CLI `say` never
+    triggers the ~180 MB download (`agentwire tts warm` or the portal does
+    that). Non-zero return → caller falls back to the OS voice.
+
+    The engine is cached at module level: cmd_say dispatches once per text
+    chunk and the model must not reload each time.
+    """
+    global _kokoro_cli_engine
+    try:
+        from .tts.local import kokoro_importable
+
+        if not kokoro_importable():
+            return 1
+
+        from .tts.engines.kokoro import KokoroEngine, resolve_voice_name
+
+        if not KokoroEngine.model_files_cached():
+            return 1
+        if _kokoro_cli_engine is None:
+            _kokoro_cli_engine = KokoroEngine()
+
+        from .tts.audio import pcm_float_to_wav_bytes
+        from .tts.base import TTSRequest
+        from .utils.speech import strip_speech_tags
+
+        request = TTSRequest(
+            text=strip_speech_tags(text), voice=resolve_voice_name(voice)
+        )
+        result = _kokoro_cli_engine.generate(request)
+        wav = pcm_float_to_wav_bytes(result.audio, result.sample_rate)
+        return 0 if _play_wav_bytes(wav) else 1
+    except Exception as e:
+        print(f"Kokoro synthesis failed ({e}); falling back to OS voice", file=sys.stderr)
+        return 1
+
+
 def _local_say_dispatch(
     text: str,
     voice: str,
@@ -2171,18 +2301,23 @@ def _local_say_dispatch(
 ) -> int:
     """Local (non-portal) TTS playback, dispatched on the configured tier.
 
-    default → OS voice; custom → HTTP shim + afplay/aplay.
+    default → in-process Kokoro (OS voice until the model is cached);
+    custom → HTTP shim + afplay/aplay; anything else (none) → OS voice.
     """
-    if tts_config.get("backend", "default") != "custom":
-        return _local_say_os(text)
+    tier = tts_config.get("backend", "default")
 
-    from .network import NetworkContext
-    ctx = NetworkContext.from_config()
-    tts_url = ctx.get_service_url("tts", use_tunnel=True)
-    return _local_say(
-        text, voice, exaggeration, cfg_weight, tts_url,
-        backend=backend, instructions=instructions, language=language, stream=stream
-    )
+    if tier == "custom":
+        from .network import NetworkContext
+        ctx = NetworkContext.from_config()
+        tts_url = ctx.get_service_url("tts", use_tunnel=True)
+        return _local_say(
+            text, voice, exaggeration, cfg_weight, tts_url,
+            backend=backend, instructions=instructions, language=language, stream=stream
+        )
+
+    if tier == "default" and _local_say_kokoro(text, voice) == 0:
+        return 0
+    return _local_say_os(text)
 
 
 def cmd_say(args) -> int:
@@ -2586,27 +2721,7 @@ def _local_say(
         with urllib.request.urlopen(req, timeout=60) as response:
             audio_data = response.read()
 
-        # Save to temp file and play
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_data)
-            temp_path = f.name
-
-        # Play audio (cross-platform)
-        if sys.platform == "darwin":
-            subprocess.run(["afplay", temp_path], check=True)
-        elif sys.platform == "linux":
-            # Try various players
-            for player in ["aplay", "paplay", "play"]:
-                try:
-                    subprocess.run([player, temp_path], check=True)
-                    break
-                except FileNotFoundError:
-                    continue
-        else:
-            print(f"Audio saved to: {temp_path}")
-
-        # Clean up
-        Path(temp_path).unlink(missing_ok=True)
+        _play_wav_bytes(audio_data)
         return 0
 
     except urllib.error.HTTPError as e:
@@ -6753,11 +6868,19 @@ def cmd_voiceclone_list(args) -> int:
     from .voiceclone import get_tts_url, is_custom_backend
 
     if not is_custom_backend():
+        # Default tier speaks via Kokoro presets — no cloning, but surface
+        # the preset list so agents/users know what voices exist.
+        try:
+            from .tts.engines.kokoro import PRESET_VOICES
+            presets = list(PRESET_VOICES)
+        except ImportError:
+            presets = []
         if json_mode:
-            _output_json({"success": True, "voices": []})
+            _output_json({"success": True, "voices": [], "preset_voices": presets})
         else:
-            print("No cloned voices in default tier (browser voice). "
-                  "Voice cloning requires tts.backend: custom.")
+            print("No cloned voices — voice cloning requires tts.backend: custom.")
+            if presets:
+                print(f"Default tier speaks via Kokoro. Preset voices: {', '.join(presets)}")
         return 0
 
     tts_url = get_tts_url()
@@ -10309,6 +10432,13 @@ def main() -> int:
     tts_status = tts_subparsers.add_parser("status", help="Check TTS status")
     tts_status.add_argument("--json", action="store_true", help="Output JSON")
     tts_status.set_defaults(func=cmd_tts_status)
+
+    # tts warm
+    tts_warm = tts_subparsers.add_parser(
+        "warm",
+        help="Download the default-tier Kokoro voice model (~180 MB) and verify it loads",
+    )
+    tts_warm.set_defaults(func=cmd_tts_warm)
 
     # === stt command group ===
     stt_parser = subparsers.add_parser("stt", help="Manage STT server (native Whisper)")
