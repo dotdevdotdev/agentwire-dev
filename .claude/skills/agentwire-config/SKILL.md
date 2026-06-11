@@ -185,6 +185,10 @@ scheduler:
   autostart: true        # Start the scheduler daemon when the portal boots (default: true)
   dispatch_cooldown: 60  # Seconds between task dispatches (default: 60)
 
+usage_limit:             # Usage-limit recovery watchdog (docs/wiki/usage-limit-recovery.md)
+  enabled: true          # Master switch for dialog detection/parking (default: true)
+  exclude_sessions: []   # Session names never auto-parked (gates NEW parks only)
+
 worktree:
   worktree_dir: ~/worktrees       # Where worktrees are created
   default_base: main              # Default base branch

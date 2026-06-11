@@ -3114,6 +3114,8 @@ def cmd_list(args) -> int:
         return 0
 
     # Show sessions (original behavior)
+    from .usage_limit import is_parked as usage_limit_parked
+
     all_sessions = []
 
     # Get local sessions (skip if remote_only)
@@ -3140,6 +3142,8 @@ def cmd_list(args) -> int:
                             "type": cfg.get("type"),
                             "roles": cfg.get("roles", []),
                         }
+                        if usage_limit_parked(parts[0]):
+                            session_info["usage_limit"] = True
                         local_sessions.append(session_info)
                         all_sessions.append(session_info)
 
@@ -3216,7 +3220,8 @@ def cmd_list(args) -> int:
             for s in sessions:
                 # Remove @machine suffix for display within machine group
                 display_name = s['name'].rsplit('@', 1)[0] if '@' in s['name'] else s['name']
-                print(f"  {display_name}: {s['windows']} window(s) ({s['path']})")
+                parked_marker = " [parked: usage limit]" if s.get("usage_limit") else ""
+                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}")
         else:
             print("  (no sessions)")
         print()
@@ -8250,6 +8255,7 @@ ENSURE_EXIT_LOCK_CONFLICT = 3
 ENSURE_EXIT_PRE_FAILURE = 4
 ENSURE_EXIT_TIMEOUT = 5
 ENSURE_EXIT_SESSION_ERROR = 6
+ENSURE_EXIT_USAGE_LIMIT = 7
 
 
 def _ensure_remote(args, session: str, machine_id: str, json_mode: bool) -> int:
@@ -8358,6 +8364,16 @@ def cmd_ensure(args) -> int:
 
     if machine_id:
         return _ensure_remote(args, session, machine_id, json_mode)
+
+    # A session parked on a usage limit is waiting out the reset — never
+    # prompt or re-dispatch into it. The watchdog resumes it.
+    from .usage_limit import is_parked
+    if is_parked(session):
+        return _output_result(
+            False, json_mode,
+            f"Session '{session}' is parked on a usage limit (auto-resumes after reset)",
+            exit_code=ENSURE_EXIT_USAGE_LIMIT,
+        )
 
     # Find project path from --project flag, or session's working directory
     if hasattr(args, 'project') and args.project:
@@ -8821,6 +8837,13 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
 
         # Don't clear task context here — hook owns context file lifecycle.
         # ensure waits for hook to delete it (signals cleanup complete).
+
+        if last_status == "usage_limit":
+            # Session parked mid-task — skip on_task_end/post/PR; the watchdog
+            # nudges it after reset and the idle hook finishes the task.
+            if not json_mode:
+                print("Usage limit hit — session parked, auto-resumes after reset")
+            break
 
         if not json_mode:
             print(f"Task status: {last_status}")
@@ -11412,6 +11435,59 @@ def main() -> int:
     m_init.add_argument("--json", action="store_true", help="Output JSON")
     m_init.set_defaults(func=mission_cli.cmd_mission_init)
 
+    # === limits command group (usage-limit recovery) ===
+    from . import limits_cli
+
+    limits_parser = subparsers.add_parser(
+        "limits",
+        help="Usage-limit recovery: detect the limit dialog, park, auto-resume",
+        description=(
+            "Deterministic recovery from Claude Code usage-limit dialogs: a "
+            "launchd watchdog ticks every minute, parks sessions sitting on "
+            "the dialog (option 1: stop and wait), emails the owner, and "
+            "nudges the session back to work after the limit resets. "
+            "See docs/wiki/usage-limit-recovery.md."
+        ),
+    )
+    limits_subparsers = limits_parser.add_subparsers(dest="limits_command")
+
+    # limits tick
+    l_tick = limits_subparsers.add_parser(
+        "tick", help="One watchdog pass: sweep panes, resume what's due"
+    )
+    l_tick.add_argument("--json", action="store_true", help="Output JSON")
+    l_tick.set_defaults(func=limits_cli.cmd_limits_tick)
+
+    # limits status
+    l_status = limits_subparsers.add_parser("status", help="Show parked sessions")
+    l_status.add_argument("--json", action="store_true", help="Output JSON")
+    l_status.set_defaults(func=limits_cli.cmd_limits_status)
+
+    # limits resume
+    l_resume = limits_subparsers.add_parser(
+        "resume", help="Manually resume a parked session now"
+    )
+    l_resume.add_argument("-s", "--session", required=True, help="Parked session name")
+    l_resume.add_argument(
+        "--force", action="store_true",
+        help="Archive the park state even if nudge delivery can't be verified",
+    )
+    l_resume.set_defaults(func=limits_cli.cmd_limits_resume)
+
+    # limits install / uninstall
+    l_install = limits_subparsers.add_parser(
+        "install", help="Install + load the launchd watchdog (60s tick)"
+    )
+    l_install.add_argument(
+        "--dry-run", action="store_true", help="Print the plist without installing"
+    )
+    l_install.set_defaults(func=limits_cli.cmd_limits_install)
+
+    l_uninstall = limits_subparsers.add_parser(
+        "uninstall", help="Unload + remove the launchd watchdog"
+    )
+    l_uninstall.set_defaults(func=limits_cli.cmd_limits_uninstall)
+
     # === council command group ===
     council_parser = subparsers.add_parser(
         "council",
@@ -11639,6 +11715,10 @@ def main() -> int:
 
     if args.command == "council" and getattr(args, "council_command", None) is None:
         council_parser.print_help()
+        return 0
+
+    if args.command == "limits" and getattr(args, "limits_command", None) is None:
+        limits_parser.print_help()
         return 0
 
     if args.command == "overnight" and getattr(args, "overnight_command", None) is None:

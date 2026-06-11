@@ -82,3 +82,24 @@ class TestSecondIdleCleanup:
             "persistent branch must remove $task_context_file — "
             "wait_for_completion_signal blocks until the context file is deleted"
         )
+
+
+class TestUsageLimitParkGuard:
+    """A session parked on a usage limit (#274) must short-circuit the hook —
+    no summary prompts, no /exit, no kill — before ANY idle handling runs."""
+
+    def test_guard_exists_and_exits_zero(self):
+        source = HOOK_PATH.read_text()
+        guard = source.find('usage-limit/${tmux_session}.json')
+        assert guard != -1, "usage-limit park guard missing from idle-handler.sh"
+        following = source[guard:guard + 300]
+        assert "exit 0" in following, "park guard must exit 0, not fall through"
+
+    def test_guard_runs_before_all_idle_handling(self):
+        source = HOOK_PATH.read_text()
+        guard = source.find('usage-limit/${tmux_session}.json')
+        worker_branch = source.find("Worker pane detected")
+        task_branch = source.find("task_context_file=")
+        assert guard != -1 and worker_branch != -1 and task_branch != -1
+        assert guard < worker_branch, "guard must precede worker-pane handling"
+        assert guard < task_branch, "guard must precede scheduled-task handling"

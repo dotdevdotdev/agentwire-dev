@@ -313,6 +313,17 @@ def wait_for_completion_signal(
             except (json.JSONDecodeError, OSError):
                 pass  # File may be partially written, retry
 
+        # Usage-limit dialog: park deterministically (zero-LLM) and report a
+        # distinct status — the watchdog resumes the session after reset.
+        # Also honors a park the watchdog performed first.
+        from .usage_limit import check_and_park
+
+        if check_and_park(session, source="ensure"):
+            return {
+                "status": "usage_limit",
+                "summary": "Session parked on usage limit; auto-resumes after reset",
+            }
+
         # Session gone or agent crashed (fell back to bare shell)
         if not _session_has_agent(session):
             raise CompletionTimeout(
@@ -585,15 +596,17 @@ def status_to_exit_code(status: str) -> int:
     """Convert status string to exit code.
 
     Args:
-        status: Task status (complete, incomplete, failed)
+        status: Task status (complete, incomplete, failed, usage_limit)
 
     Returns:
-        Exit code (0=complete, 1=failed, 2=incomplete)
+        Exit code (0=complete, 1=failed, 2=incomplete, 7=usage_limit)
     """
     if status == "complete":
         return 0
     elif status == "failed":
         return 1
+    elif status == "usage_limit":
+        return 7
     else:
         return 2
 

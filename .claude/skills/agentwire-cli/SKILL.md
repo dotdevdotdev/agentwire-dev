@@ -180,6 +180,13 @@ agentwire scheduler enable|disable task     # enable/disable a task
 agentwire scheduler report [--since 8h] [--artifact]  # generate morning report HTML
 agentwire scheduler dashboard               # open scheduler dashboard
 
+# Usage-limit recovery (deterministic watchdog, see docs/wiki/usage-limit-recovery.md)
+agentwire limits tick           # one watchdog pass: sweep panes, resume what's due
+agentwire limits status         # show sessions parked on usage limits
+agentwire limits resume -s name [--force]  # manually resume a parked session now
+agentwire limits install        # install + load the launchd watchdog (60s tick)
+agentwire limits uninstall      # unload + remove the watchdog
+
 # Overnight session queue
 agentwire overnight prepare --from <session> --task "desc"  # queue session
 agentwire overnight list [--all]            # list queue items

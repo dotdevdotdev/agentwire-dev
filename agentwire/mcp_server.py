@@ -187,7 +187,8 @@ def format_sessions(data: dict) -> str:
         windows = s.get("windows", 1)
         path = s.get("path", "")
         session_type = s.get("type", "unknown")
-        lines.append(f"  - {name} ({machine}): {windows} window(s), type={session_type}, path={path}")
+        parked = " [PARKED: usage limit, auto-resumes after reset]" if s.get("usage_limit") else ""
+        lines.append(f"  - {name} ({machine}): {windows} window(s), type={session_type}, path={path}{parked}")
 
     return "\n".join(lines)
 

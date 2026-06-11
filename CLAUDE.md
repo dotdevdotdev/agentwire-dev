@@ -112,6 +112,10 @@ LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wik
 
 First-class auto-dispatcher subsystem (sibling to Sessions/Tasks/Workflows): stateless launchd orchestrators tick the GitHub issue board, spawn worker sessions in isolated worktrees for `agent-ready` issues, route PR-review feedback back to the worker, and reap on PR close. CLI under `agentwire mission ...`, 8 MCP `mission_*` tools. Full reference: [`docs/wiki/missions.md`](docs/wiki/missions.md).
 
+## Usage-Limit Recovery
+
+Deterministic (zero-LLM) recovery from the Claude Code usage-limit dialog: a launchd watchdog (`agentwire limits tick`, 60s) plus ensure's completion poll detect the dialog, park the session (option 1: stop and wait), parse the reset time, email the owner via Resend, and nudge the session to continue after reset. Park state under `~/.agentwire/usage-limit/` guards every surface — ensure exits 7 (`usage_limit`), the scheduler skips dispatch, the idle hook and overnight never reap a parked session. CLI under `agentwire limits ...`. Full reference: [`docs/wiki/usage-limit-recovery.md`](docs/wiki/usage-limit-recovery.md).
+
 ## Council
 
 Multi-soul orchestrator sitting: `agentwire-council` fans prompts out to lens sessions (`council-brain`, `council-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/prompts/`; the orchestrator collects and synthesizes with attribution. The standard `soul` role self-excludes from any `council-*` session. CLI under `agentwire council ...`, 5 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](docs/wiki/council.md).
