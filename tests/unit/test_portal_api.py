@@ -702,3 +702,126 @@ class TestVoicesCache:
         server._tts_get_voices = fail_fetch
         resp = await client.get("/api/voices")
         assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# Permission endpoints — parent routing + conditional respond (#276)
+# ---------------------------------------------------------------------------
+
+
+class TestPermissionRouting:
+    async def _start_request(self, client, server, session="myproj", pane=2,
+                             tmux_session="real-sess"):
+        import asyncio
+
+        task = asyncio.create_task(client.post(f"/api/permission/{session}", json={
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push"},
+            "pane_index": pane,
+            "tmux_session": tmux_session,
+        }))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            sess = server.active_sessions.get(session)
+            if sess and sess.pending_permission:
+                return task, sess
+        raise AssertionError("pending_permission never appeared")
+
+    async def test_request_routes_to_parent_and_respond_sends_pane_keystroke(
+        self, portal_client
+    ):
+        client, server = portal_client
+        server._say_to_room = AsyncMock()
+        with patch(
+            "agentwire.server.prompt_router.notify_permission_request",
+            return_value="orch",
+        ) as notify, patch(
+            "agentwire.server.prompt_router.clear_marker"
+        ) as clear, patch(
+            "agentwire.server.prompt_router.screen_shows_live_menu",
+            return_value=True,
+        ), patch(
+            "agentwire.server.prompt_router._capture", return_value=""
+        ), patch("subprocess.run") as run:
+            task, sess = await self._start_request(client, server)
+            assert sess.pending_permission.pane_index == 2
+
+            # Routed with the real tmux session name + pane from the hook.
+            notify.assert_called_once()
+            assert notify.call_args[0][0] == "real-sess"
+            assert notify.call_args[0][1] == 2
+
+            resp = await client.post(
+                "/api/permission/myproj/respond", json={"decision": "allow"}
+            )
+            assert resp.status == 200
+            body = await (await task).json()
+            assert body["decision"] == "allow"
+
+            keystroke_calls = [
+                c for c in run.call_args_list
+                if c.args and c.args[0][:2] == ["agentwire", "send-keys"]
+            ]
+            assert keystroke_calls, "no keystroke sent"
+            assert keystroke_calls[0].args[0] == [
+                "agentwire", "send-keys", "-s", "real-sess", "--pane", "2", "1"
+            ]
+            clear.assert_called()
+
+    async def test_respond_skips_keystroke_when_dialog_gone(self, portal_client):
+        client, server = portal_client
+        server._say_to_room = AsyncMock()
+        with patch(
+            "agentwire.server.prompt_router.notify_permission_request",
+            return_value=None,
+        ), patch(
+            "agentwire.server.prompt_router.clear_marker"
+        ), patch(
+            # Parent (or human in the terminal) already answered: no live
+            # menu on the pane — a late keystroke must NOT be sent.
+            "agentwire.server.prompt_router.screen_shows_live_menu",
+            return_value=False,
+        ), patch(
+            "agentwire.server.prompt_router._capture", return_value=""
+        ), patch("subprocess.run") as run:
+            task, sess = await self._start_request(client, server)
+            resp = await client.post(
+                "/api/permission/myproj/respond", json={"decision": "deny"}
+            )
+            assert resp.status == 200
+            body = await (await task).json()
+            assert body["decision"] == "deny"
+
+            keystroke_calls = [
+                c for c in run.call_args_list
+                if c.args and c.args[0][:2] == ["agentwire", "send-keys"]
+            ]
+            assert keystroke_calls == []
+
+    async def test_broadcast_carries_parent_notified(self, portal_client):
+        client, server = portal_client
+        server._say_to_room = AsyncMock()
+        broadcasts = []
+
+        async def fake_broadcast(session, message):
+            broadcasts.append(message)
+
+        server._broadcast = fake_broadcast
+        with patch(
+            "agentwire.server.prompt_router.notify_permission_request",
+            return_value="orch",
+        ), patch(
+            "agentwire.server.prompt_router.clear_marker"
+        ), patch(
+            "agentwire.server.prompt_router.screen_shows_live_menu",
+            return_value=True,
+        ), patch(
+            "agentwire.server.prompt_router._capture", return_value=""
+        ), patch("subprocess.run"):
+            task, sess = await self._start_request(client, server)
+            requests = [m for m in broadcasts if m.get("type") == "permission_request"]
+            assert requests and requests[0]["parent_notified"] == "orch"
+            await client.post(
+                "/api/permission/myproj/respond", json={"decision": "allow"}
+            )
+            await task

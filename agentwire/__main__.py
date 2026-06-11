@@ -4474,6 +4474,10 @@ def cmd_send_keys(args) -> int:
     # Parse session@machine format
     session, machine_id = _parse_session_target(session_full)
 
+    # Optional pane targeting (worker panes); None targets the session.
+    pane = getattr(args, 'pane', None)
+    target = f"{session}.{pane}" if pane is not None else session
+
     if machine_id:
         # Remote: SSH and run tmux commands
         machine = _get_machine_config(machine_id)
@@ -4482,10 +4486,10 @@ def cmd_send_keys(args) -> int:
             return 1
 
         # Build remote command with pauses between keys
-        quoted_session = shlex.quote(session)
+        quoted_target = shlex.quote(target)
         cmd_parts = []
         for i, key in enumerate(keys):
-            cmd_parts.append(f"tmux send-keys -t {quoted_session} {shlex.quote(key)}")
+            cmd_parts.append(f"tmux send-keys -t {quoted_target} {shlex.quote(key)}")
             if i < len(keys) - 1:
                 cmd_parts.append("sleep 0.1")
 
@@ -4512,14 +4516,14 @@ def cmd_send_keys(args) -> int:
     # Send each key group with a pause between
     for i, key in enumerate(keys):
         subprocess.run(
-            ["tmux", "send-keys", "-t", session, key],
+            ["tmux", "send-keys", "-t", target, key],
             check=True
         )
         # Brief pause between key groups (not after last one)
         if i < len(keys) - 1:
             time.sleep(0.1)
 
-    print(f"Sent keys to {session}")
+    print(f"Sent keys to {target}")
     return 0
 
 
@@ -10658,6 +10662,8 @@ def main() -> int:
         "send-keys", help="Send raw keys to a session (with pause between groups)"
     )
     send_keys_parser.add_argument("-s", "--session", required=True, help="Target session (supports session@machine)")
+    send_keys_parser.add_argument("--pane", type=int, default=None,
+                                  help="Target a specific pane index (default: the session's active pane)")
     send_keys_parser.add_argument("keys", nargs="*", help="Key groups to send (e.g., 'hello world' Enter)")
     send_keys_parser.set_defaults(func=cmd_send_keys)
 
