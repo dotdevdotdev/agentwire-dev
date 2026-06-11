@@ -2418,32 +2418,38 @@ def cmd_notify_parent(args) -> int:
         if parent:
             target_session = parent
 
-    # Build notification message
-    source = current_session or "unknown"
-    if current_pane is not None and current_pane > 0:
-        notification = f"[NOTIFY from {source} pane {current_pane}] {text}"
+    # Build notification message (--raw sends verbatim — queued messages
+    # already carry their own [WORKER SUMMARY ...] / [PROMPT ...] headers)
+    if getattr(args, 'raw', False):
+        notification = text
     else:
-        notification = f"[NOTIFY from {source}] {text}"
-
-    try:
-        if target_session:
-            if target_session == current_session and current_pane == 0:
-                print("Cannot notify own pane", file=sys.stderr)
-                return 1
-            pane_manager.send_to_pane(target_session, 0, notification)
-            if not getattr(args, 'quiet', False):
-                print(f"Notified {target_session}")
-        elif current_pane is not None and current_pane > 0 and current_session:
-            pane_manager.send_to_pane(current_session, 0, notification)
-            if not getattr(args, 'quiet', False):
-                print(f"Notified {current_session} pane 0")
+        source = current_session or "unknown"
+        if current_pane is not None and current_pane > 0:
+            notification = f"[NOTIFY from {source} pane {current_pane}] {text}"
         else:
-            print("No target session (set 'parent' in .agentwire.yml or use --to)", file=sys.stderr)
+            notification = f"[NOTIFY from {source}] {text}"
+
+    if target_session:
+        if target_session == current_session and current_pane == 0:
+            print("Cannot notify own pane", file=sys.stderr)
             return 1
-    except Exception as e:
-        print(f"Failed to send notification: {e}", file=sys.stderr)
+    elif current_pane is not None and current_pane > 0 and current_session:
+        target_session = current_session
+    else:
+        print("No target session (set 'parent' in .agentwire.yml or use --to)", file=sys.stderr)
         return 1
 
+    # safe_deliver refuses targets where a paste could do damage (live
+    # dialog on screen, bare shell, parked session) and verifies the paste
+    # actually landed. Callers (queue processor) retry on failure.
+    from agentwire import prompt_router
+
+    delivered, reason = prompt_router.safe_deliver(target_session, 0, notification)
+    if not delivered:
+        print(f"Notification not delivered to {target_session}: {reason}", file=sys.stderr)
+        return 1
+    if not getattr(args, 'quiet', False):
+        print(f"Notified {target_session}")
     return 0
 
 
@@ -10573,6 +10579,8 @@ def main() -> int:
     notify_cmd_parser.add_argument("text", nargs="*", help="Notification message")
     notify_cmd_parser.add_argument("--to", type=str, metavar="SESSION", help="Target session (default: parent from .agentwire.yml)")
     notify_cmd_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
+    notify_cmd_parser.add_argument("--raw", action="store_true",
+                                   help="Send the message verbatim (no [NOTIFY from ...] prefix)")
     notify_cmd_parser.set_defaults(func=cmd_notify_parent)
 
     # === open command (artifact windows) ===

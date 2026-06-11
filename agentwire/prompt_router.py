@@ -30,11 +30,14 @@ from pathlib import Path
 
 from .usage_limit import (
     PARK_OPTION,
+    _capture,
     _normalize,
+    _now,
     _session_exists,
     _tmux,
 )
 from .usage_limit import detect_dialog as _usage_limit_dialog
+from .usage_limit import is_parked as _is_parked
 
 STATE_DIR = Path.home() / ".agentwire" / "prompt-router"
 EVENTS_FILE = Path.home() / ".agentwire" / "prompt-router-events.jsonl"
@@ -254,6 +257,59 @@ def _parent_from_config(project_path: "str | None") -> "str | None":
         return get_parent_from_config(Path(project_path) if project_path else None)
     except Exception:
         return None
+
+
+# =============================================================================
+# Delivery
+# =============================================================================
+
+
+def screen_shows_live_menu(visible: str) -> bool:
+    """True if a live select-menu/dialog appears to be on screen.
+
+    Used as a pre-paste safety check: pasting text + Enter into a pane whose
+    screen ends in a menu would CONFIRM the highlighted option. Deliberately
+    broader than detect_prompt — quoted-dialog subtleties don't matter here,
+    and a screen that merely *looks* like a menu defers delivery one cycle.
+    """
+    clean = ANSI_PATTERN.sub("", visible)
+    norm = _normalize(clean)
+    if not norm:
+        return False
+    if _usage_limit_dialog(visible):
+        return True
+    if norm.rstrip().endswith("Enter to confirm · Esc to cancel"):
+        return True
+    return any(rx.search(norm) for rx in _LIVE_TAIL.values())
+
+
+def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[bool, str]":
+    """Deliver *text* to the target pane, refusing unsafe targets.
+
+    Refusals (returned as (False, reason), retried by the next sweep tick):
+      target_gone       session no longer exists
+      target_parked     usage-limit parked — paste would corrupt the resume
+      target_not_agent  pane runs a shell/editor — pasted text could EXECUTE
+      target_dialog     pane shows its own live menu — Enter would answer it
+
+    Delivery itself is session_ready.send_verified (marker = the message's
+    own [PROMPT ...] prefix line), so a silent tmux paste failure reports
+    as not-delivered instead of being assumed sent.
+    """
+    if not _session_exists(target_session):
+        return False, "target_gone"
+    if _is_parked(target_session):
+        return False, "target_parked"
+    if not is_agent_pane(target_session, target_pane):
+        return False, "target_not_agent"
+    if screen_shows_live_menu(_capture(f"{target_session}.{target_pane}")):
+        return False, "target_dialog"
+
+    from .session_ready import derive_check_fragment, send_verified
+
+    marker = derive_check_fragment(text)
+    ok = send_verified(target_session, text, marker=marker or None)
+    return (ok, "delivered" if ok else "delivery_unverified")
 
 
 def detect_prompt(visible: str) -> "PromptInfo | None":

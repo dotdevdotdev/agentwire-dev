@@ -1,6 +1,6 @@
 #!/bin/bash
 # Handle Claude Code notifications
-# Uses agentwire alert for text-only notifications to parent (no audio)
+# Uses agentwire notify-parent for text-only notifications to parent (no audio)
 # Worker panes queue notifications with summary file path, then auto-kill
 
 DEBUG_LOG="/tmp/claude-hook-debug.log"
@@ -29,6 +29,15 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
   # no summary prompts, no /exit, no kill. The watchdog resumes it (#274).
   if [[ -n "$tmux_session" && -f "$HOME/.agentwire/usage-limit/${tmux_session}.json" ]]; then
     log "Session $tmux_session parked on usage limit — skipping idle handling"
+    exit 0
+  fi
+
+  # Prompt-routing guard (#276): this pane is blocked on an interactive
+  # prompt that was routed to its parent. Pasting the summary instruction
+  # would answer the dialog (paste + Enter), and killing the pane would reap
+  # a worker the parent is about to unblock. Skip until the marker clears.
+  if [[ -n "$tmux_session" && -n "$pane_index" && -f "$HOME/.agentwire/prompt-router/${tmux_session}.${pane_index}.json" ]]; then
+    log "Pane ${tmux_session}.${pane_index} has a routed prompt pending — skipping idle handling"
     exit 0
   fi
 
@@ -125,15 +134,24 @@ List files you modified or created with brief descriptions
 ${summary_content}"
           echo "[$(date -Iseconds)] BG: message built, queuing notification" >> "$dlog"
 
-          # Queue the notification
+          # Queue the notification (same mkdir lock as the queue processor —
+          # an append racing the processor's head-trim would lose a message)
           queue_dir="$HOME/.agentwire/queues"
           queue_file="${queue_dir}/${tmux_session}.jsonl"
+          lock_dir="${queue_dir}/${tmux_session}.lock"
           mkdir -p "$queue_dir"
 
           # Append to queue as JSON line
           escaped_message=$(printf '%s' "$message" | jq -Rs .)
           timestamp=$(date +%s)000
+          lock_tries=0
+          while ! mkdir "$lock_dir" 2>/dev/null; do
+            lock_tries=$((lock_tries + 1))
+            [[ $lock_tries -ge 50 ]] && break
+            sleep 0.1
+          done
           echo "{\"timestamp\":${timestamp},\"message\":${escaped_message}}" >> "$queue_file"
+          rmdir "$lock_dir" 2>/dev/null
           echo "[$(date -Iseconds)] BG: queued notification" >> "$dlog"
 
           # Start queue processor if not running
@@ -355,7 +373,7 @@ complete | incomplete | error
       elif [[ -n "$parent_session" ]]; then
         # Orchestrator pane with parent: notify parent
         message="${session_name} is idle"
-        $AGENTWIRE alert -q --to "$parent_session" "$message" 2>/dev/null &
+        $AGENTWIRE notify-parent -q --to "$parent_session" "$message" 2>/dev/null &
       fi
     fi
   fi

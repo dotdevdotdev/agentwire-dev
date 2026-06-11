@@ -374,6 +374,106 @@ class TestIsAgentPane:
             assert prompt_router.is_agent_pane("s", 0) is expected, command
 
 
+class TestScreenShowsLiveMenu:
+    def test_dialog_screens(self):
+        for screen in (
+            PERMISSION_BASH,
+            PERMISSION_WRITE,
+            PLAN_APPROVAL,
+            QUESTION_SIMPLE,
+            USAGE_LIMIT_DIALOG,
+        ):
+            assert prompt_router.screen_shows_live_menu(screen) is True
+
+    def test_safe_screens(self):
+        assert prompt_router.screen_shows_live_menu(PLAIN_OUTPUT) is False
+        assert prompt_router.screen_shows_live_menu("") is False
+
+    def test_routed_notification_with_dialog_below_is_still_unsafe(self):
+        # The detector's poison-marker rule must NOT weaken the pre-paste
+        # check: a screen with both our prefix AND a live menu stays unsafe.
+        assert prompt_router.screen_shows_live_menu(ROUTED_NOTIFICATION) is True
+
+
+class TestSafeDeliver:
+    @pytest.fixture(autouse=True)
+    def _safe_world(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
+        monkeypatch.setattr(prompt_router, "_is_parked", lambda s: False)
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PLAIN_OUTPUT)
+        self.sent = []
+        import agentwire.session_ready as session_ready
+
+        monkeypatch.setattr(
+            session_ready,
+            "send_verified",
+            lambda session, message, marker=None, **kw: self.sent.append(
+                (session, message)
+            )
+            or True,
+        )
+
+    def test_delivers_to_safe_target(self):
+        ok, reason = prompt_router.safe_deliver("orch", 0, "[PROMPT from w pane 1] hi")
+        assert ok and reason == "delivered"
+        assert self.sent == [("orch", "[PROMPT from w pane 1] hi")]
+
+    def test_refuses_dead_session(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_session_exists", lambda s: False)
+        assert prompt_router.safe_deliver("orch", 0, "x") == (False, "target_gone")
+        assert self.sent == []
+
+    def test_refuses_parked_session(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_is_parked", lambda s: True)
+        assert prompt_router.safe_deliver("orch", 0, "x") == (False, "target_parked")
+        assert self.sent == []
+
+    def test_refuses_shell_pane(self, monkeypatch):
+        # Pasting into a shell would EXECUTE the message text.
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: False)
+        assert prompt_router.safe_deliver("orch", 0, "x") == (False, "target_not_agent")
+        assert self.sent == []
+
+    def test_refuses_target_showing_dialog(self, monkeypatch):
+        # Paste + Enter into a live menu would CONFIRM the highlighted option.
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: PERMISSION_BASH)
+        assert prompt_router.safe_deliver("orch", 0, "x") == (False, "target_dialog")
+        assert self.sent == []
+
+    def test_unverified_send_reported(self, monkeypatch):
+        import agentwire.session_ready as session_ready
+
+        monkeypatch.setattr(
+            session_ready, "send_verified", lambda *a, **kw: False
+        )
+        ok, reason = prompt_router.safe_deliver("orch", 0, "x")
+        assert not ok and reason == "delivery_unverified"
+
+
+class TestHookScriptsUseRealCommands:
+    HOOKS_DIR = (
+        __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+        / "agentwire"
+        / "hooks"
+    )
+
+    def test_no_nonexistent_alert_command(self):
+        # `agentwire alert` never existed — every delivery through it was
+        # silently dropped (#276). Guard against reintroduction.
+        for script in ("idle-handler.sh", "queue-processor.sh"):
+            source = (self.HOOKS_DIR / script).read_text()
+            assert " alert " not in source.replace("alert-activity", ""), script
+
+    def test_queue_processor_uses_notify_parent_raw(self):
+        source = (self.HOOKS_DIR / "queue-processor.sh").read_text()
+        assert "notify-parent -q --raw --to" in source
+
+    def test_idle_handler_has_prompt_router_guard(self):
+        source = (self.HOOKS_DIR / "idle-handler.sh").read_text()
+        assert ".agentwire/prompt-router/" in source
+
+
 class TestContentHash:
     def test_stable_across_calls(self):
         a = detect_prompt(PERMISSION_BASH).content_hash()
