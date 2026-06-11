@@ -180,6 +180,11 @@ class AgentWireServer:
         self.stt = None
         self.agent = None
         self._http_session: aiohttp.ClientSession | None = None  # For TTS HTTP calls
+        # Default-tier in-process Kokoro voice. Constructed unconditionally
+        # (cheap, no I/O); run_server starts the warm-up only when
+        # tts.backend == "default".
+        from .tts.local import LocalKokoro
+        self.kokoro = LocalKokoro()
         # Origin + token enforcement. The middleware is a pure function of
         # config — run_server() resolves the token file into
         # config.server.auth_token before constructing the server.
@@ -348,6 +353,30 @@ class AgentWireServer:
         """Clean up backend resources."""
         if self._http_session:
             await self._http_session.close()
+        await self.kokoro.close()
+
+    async def _on_kokoro_state_change(self, kokoro) -> None:
+        """Kokoro warm-up progress → invalidate voice-status cache + toast.
+
+        The toast is replaced in place (keyed on session "kokoro-voice") so
+        the download reads as one updating notification, not a stream."""
+        self._voice_status_cache = None
+        if kokoro.state == "downloading":
+            await self._post_toast(
+                f"Downloading Kokoro voice model… {kokoro.percent}% (one-time, ~180 MB)",
+                session="kokoro-voice", priority="normal", id_prefix="kokoro")
+        elif kokoro.state == "loading":
+            await self._post_toast(
+                "Loading Kokoro voice model…",
+                session="kokoro-voice", priority="normal", id_prefix="kokoro")
+        elif kokoro.state == "ready":
+            await self._post_toast(
+                "Voice ready — Kokoro is now the portal voice",
+                session="kokoro-voice", priority="normal", id_prefix="kokoro")
+        elif kokoro.state == "failed":
+            await self._post_toast(
+                f"Kokoro voice setup failed ({kokoro.error}) — using browser voice fallback",
+                session="kokoro-voice", priority="high", id_prefix="kokoro")
 
     def _tts_envelope_options(self, exaggeration: float, cfg_weight: float) -> dict:
         """Session knobs + config pass-through, merged into the shim `options`."""
@@ -663,11 +692,15 @@ class AgentWireServer:
                 return False
 
     async def _get_voices(self) -> list[str]:
-        """Get available TTS voices (custom shim only — the default tier's
-        voices live in the browser via speechSynthesis.getVoices())."""
-        if self.config.tts.backend != "custom":
-            return []
-        return await self._tts_get_voices()
+        """Available TTS voices: Kokoro presets on the default tier (once
+        the engine is ready), the shim's list on the custom tier."""
+        if self.config.tts.backend == "custom":
+            return await self._tts_get_voices()
+        if self.config.tts.backend == "default" and self.kokoro.ready:
+            from .tts.engines.kokoro import PRESET_VOICES
+
+            return list(PRESET_VOICES)
+        return []
 
     async def _probe_shim(self, base_url: str, path: str, timeout: float = 1.5):
         """GET a shim endpoint, returning parsed JSON or None (fail-soft)."""
@@ -703,7 +736,17 @@ class AgentWireServer:
             stt["available"] = await self._probe_shim(stt_cfg.url, "/health") is not None
 
         tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
-        if tts_cfg.backend == "custom":
+        if tts_cfg.backend == "default":
+            # In-process Kokoro warm-up state; the cache is invalidated on
+            # every state change so transitions surface immediately.
+            tts["kokoro"] = {"state": self.kokoro.state, "percent": self.kokoro.percent}
+            if self.kokoro.error:
+                tts["kokoro"]["error"] = self.kokoro.error
+            if self.kokoro.ready:
+                from .tts.engines.kokoro import PRESET_VOICES
+
+                tts["voices"] = list(PRESET_VOICES)
+        elif tts_cfg.backend == "custom":
             health = await self._probe_shim(tts_cfg.url, "/health")
             tts["available"] = health is not None
             if tts["available"]:
@@ -3908,11 +3951,25 @@ projects:
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
 
-            # Default tier: play via OS voice — no shim, no WAV round-trip
+            # Default tier: Kokoro on local speakers when ready, OS voice
+            # while warming up — no shim, no HTTP round-trip
             if self.config.tts.backend == "default":
                 from .utils.speech import strip_speech_tags
 
-                ok = await self._os_say(strip_speech_tags(text))
+                clean = strip_speech_tags(text)
+                if self.kokoro.ready:
+                    try:
+                        session_config = self._get_session_config(name)
+                        wav, _ = await self.kokoro.synthesize(
+                            clean, voice or session_config.voice
+                        )
+                        if await self._play_wav_locally(wav):
+                            return web.json_response(
+                                {"success": True, "tier": "default", "engine": "kokoro"}
+                            )
+                    except Exception as e:
+                        logger.error(f"Kokoro local TTS failed: {e}")
+                ok = await self._os_say(clean)
                 if ok:
                     return web.json_response({"success": True, "tier": "default"})
                 return web.json_response(
@@ -3943,58 +4000,12 @@ projects:
                     status=500
                 )
 
-            # Save to temp file
-            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            try:
-                temp_file.write(audio_data)
-                temp_path = temp_file.name
-                temp_file.close()
-
-                # Play audio (platform-specific)
-                import sys
-                if sys.platform == "darwin":
-                    # macOS: use afplay
-                    proc = await asyncio.create_subprocess_exec(
-                        "afplay", temp_path,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL
-                    )
-                    await proc.wait()
-                elif sys.platform == "linux":
-                    # Linux: try aplay, paplay, play in order
-                    players = ["aplay", "paplay", "play"]
-                    played = False
-                    for player in players:
-                        try:
-                            proc = await asyncio.create_subprocess_exec(
-                                player, temp_path,
-                                stdout=asyncio.subprocess.DEVNULL,
-                                stderr=asyncio.subprocess.DEVNULL
-                            )
-                            await proc.wait()
-                            played = True
-                            break
-                        except FileNotFoundError:
-                            continue
-
-                    if not played:
-                        logger.warning("No audio player found (tried aplay, paplay, play)")
-                        return web.json_response(
-                            {"success": False, "error": "No audio player available"},
-                            status=500
-                        )
-                else:
-                    logger.warning(f"Local TTS playback not supported on platform: {sys.platform}")
-                    return web.json_response(
-                        {"success": False, "error": f"Platform not supported: {sys.platform}"},
-                        status=500
-                    )
-
+            if await self._play_wav_locally(audio_data):
                 return web.json_response({"success": True})
-
-            finally:
-                # Clean up temp file
-                Path(temp_path).unlink(missing_ok=True)
+            return web.json_response(
+                {"success": False, "error": "Local audio playback failed"},
+                status=500,
+            )
 
         except asyncio.TimeoutError:
             logger.error(f"TTS generation timeout for: {text[:50]}...")
@@ -5083,14 +5094,48 @@ projects:
             return False
 
     async def _speak_no_clients_fallback(self, text: str) -> bool:
-        """No browser connected: default tier falls back to the OS voice so
+        """No browser connected: default tier plays on this machine's
+        speakers — Kokoro when ready, OS voice while warming up — so
         notifications stay audible; custom tier returns False (the CLI's
         smart routing handles local playback there)."""
-        if self.config.tts.backend == "default":
-            from .utils.speech import strip_speech_tags
+        if self.config.tts.backend != "default":
+            return False
+        from .utils.speech import strip_speech_tags
 
-            return await self._os_say(strip_speech_tags(text))
-        return False
+        clean = strip_speech_tags(text)
+        if self.kokoro.ready:
+            try:
+                wav, _ = await self.kokoro.synthesize(clean, self.config.tts.default_voice)
+                if await self._play_wav_locally(wav):
+                    return True
+            except Exception as e:
+                logger.error(f"Kokoro local playback failed: {e}")
+        return await self._os_say(clean)
+
+    async def _play_wav_locally(self, wav_bytes: bytes) -> bool:
+        """Play WAV bytes on this machine's speakers (afplay / aplay / paplay / play)."""
+        import sys as _sys
+
+        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        try:
+            temp_file.write(wav_bytes)
+            temp_file.close()
+            players = ["afplay"] if _sys.platform == "darwin" else ["aplay", "paplay", "play"]
+            for player in players:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        player, temp_file.name,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
+                    return proc.returncode == 0
+                except FileNotFoundError:
+                    continue
+            logger.warning(f"No local audio player found (tried {', '.join(players)})")
+            return False
+        finally:
+            Path(temp_file.name).unlink(missing_ok=True)
 
     async def speak(self, session_name: str, text: str) -> bool:
         """Generate TTS audio and send to session clients.
@@ -5141,13 +5186,27 @@ projects:
         for target in broadcast_to:
             await self._broadcast(target, tts_start_msg)
 
-        # Default tier: browsers synthesize speech themselves — broadcast the
-        # text (tags stripped) instead of generated audio. No voice resolution,
-        # no chunking (speechSynthesis handles long text in the client).
+        # Default tier: in-process Kokoro once the model is warmed up. Until
+        # then (and if warm-up failed) browsers synthesize the text themselves
+        # via speechSynthesis — broadcast clean text instead of audio.
         if self.config.tts.backend == "default":
             from .utils.speech import strip_speech_tags
 
             clean = strip_speech_tags(text)
+
+            if self.kokoro.ready:
+                voice = session.config.voice or self.config.tts.default_voice
+
+                async def _generate(chunk: str) -> bytes | None:
+                    try:
+                        wav, _ = await self.kokoro.synthesize(chunk, voice)
+                        return wav
+                    except Exception as e:
+                        logger.error(f"[{session_name}] Kokoro synthesis failed: {e}")
+                        return None
+
+                return await self._speak_chunks(session_name, clean, broadcast_to, _generate)
+
             speak_msg = {"type": "speak_text", "session": session_name, "text": clean}
             for target in broadcast_to:
                 await self._broadcast(target, speak_msg)
@@ -5163,6 +5222,24 @@ projects:
             logger.info(f"[{session_name}] Resolved random voice to: {voice}")
         exaggeration = session.config.exaggeration
         cfg_weight = session.config.cfg_weight
+        logger.info(f"[{session_name}] TTS voice: {voice}")
+
+        async def _generate(chunk: str) -> bytes | None:
+            return await self._tts_generate(
+                text=chunk,
+                voice=voice,
+                instructions=self.config.tts.instructions or None,
+                options=self._tts_envelope_options(exaggeration, cfg_weight),
+            )
+
+        return await self._speak_chunks(session_name, text, broadcast_to, _generate)
+
+    async def _speak_chunks(
+        self, session_name: str, text: str, broadcast_to: list, generate
+    ) -> bool:
+        """Chunk text, render WAV per chunk via `generate(chunk)`, broadcast
+        base64 audio messages. Shared by the custom shim tier and the
+        in-process Kokoro default tier."""
         await self.broadcast_dashboard("tts_start", {"session": session_name, "text": text})
 
         try:
@@ -5172,13 +5249,7 @@ projects:
 
             any_sent = False
             for chunk in chunks:
-                logger.info(f"[{session_name}] TTS voice: {voice}")
-                audio_data = await self._tts_generate(
-                    text=chunk,
-                    voice=voice,
-                    instructions=self.config.tts.instructions or None,
-                    options=self._tts_envelope_options(exaggeration, cfg_weight),
-                )
+                audio_data = await generate(chunk)
 
                 if audio_data:
                     audio_data = self._prepend_silence(audio_data, ms=300)
@@ -5190,11 +5261,14 @@ projects:
                         await self._broadcast(target, audio_msg)
                     await self.broadcast_dashboard("audio_playing", {"session": session_name})
 
-                    # Estimate audio duration and schedule audio_done notification
-                    # WAV header: 44 bytes, then 16-bit stereo 24kHz = 96000 bytes/sec
-                    audio_bytes = len(audio_data)
-                    duration_sec = max(0.5, (audio_bytes - 44) / 96000)
-                    asyncio.create_task(self._send_audio_done_delayed(session_name, duration_sec))
+                    # Schedule audio_done after the actual playback duration
+                    # (parsed from the WAV header; fall back to an estimate).
+                    duration_sec = self._wav_duration_seconds(audio_data)
+                    if duration_sec is None:
+                        duration_sec = (len(audio_data) - 44) / 96000
+                    asyncio.create_task(
+                        self._send_audio_done_delayed(session_name, max(0.5, duration_sec))
+                    )
                     any_sent = True
                 else:
                     logger.warning(f"[{session_name}] TTS returned no audio data for chunk")
@@ -5204,6 +5278,26 @@ projects:
         except Exception as e:
             logger.error(f"TTS failed for {session_name}: {e}")
             return False
+
+    @staticmethod
+    def _wav_duration_seconds(wav_data: bytes) -> float | None:
+        """Exact playback duration from the WAV header (data size / byte rate)."""
+        try:
+            if len(wav_data) < 44 or wav_data[:4] != b'RIFF' or wav_data[8:12] != b'WAVE':
+                return None
+            pos = 12
+            byte_rate = None
+            while pos < len(wav_data) - 8:
+                chunk_id = wav_data[pos:pos + 4]
+                chunk_size = struct.unpack('<I', wav_data[pos + 4:pos + 8])[0]
+                if chunk_id == b'fmt ':
+                    byte_rate = struct.unpack('<I', wav_data[pos + 16:pos + 20])[0]
+                elif chunk_id == b'data' and byte_rate:
+                    return chunk_size / byte_rate
+                pos += 8 + chunk_size + (chunk_size % 2)
+            return None
+        except Exception:
+            return None
 
     async def _send_audio_done_delayed(self, session_name: str, delay_sec: float) -> None:
         """Send audio_done to dashboard after estimated playback duration."""
@@ -5226,6 +5320,12 @@ async def run_server(config: Config):
 
     server = AgentWireServer(config)
     await server.init_backends()
+
+    # Warm up the default-tier Kokoro voice: background model download
+    # (one-time ~180 MB) + engine load. speechSynthesis covers speech until
+    # ready. Cleaned up via close_backends().
+    if config.tts.backend == "default":
+        server.kokoro.start(server._on_kokoro_state_change)
 
     # Cleanup old uploads on startup
     await server.cleanup_old_uploads()
