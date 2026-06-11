@@ -163,6 +163,9 @@ def write_task_context(
     }
 
     context_file = TASKS_DIR / f"{session}.json"
+    # Worktree session names contain a slash (e.g. "proj/branch"), which
+    # nests the context file one directory down — create it.
+    context_file.parent.mkdir(parents=True, exist_ok=True)
     context_file.write_text(json.dumps(context, indent=2))
     return context_file
 
