@@ -2253,7 +2253,7 @@ def _local_say_kokoro(text: str, voice: str | None) -> int:
     """Speak via in-process Kokoro (default tier, no portal running).
 
     Only runs when the model files are already cached — a CLI `say` never
-    triggers the ~180 MB download (`agentwire tts warm` or the portal does
+    triggers the ~200 MB download (`agentwire tts warm` or the portal does
     that). Non-zero return → caller falls back to the OS voice.
 
     The engine is cached at module level: cmd_say dispatches once per text
@@ -10436,7 +10436,7 @@ def main() -> int:
     # tts warm
     tts_warm = tts_subparsers.add_parser(
         "warm",
-        help="Download the default-tier Kokoro voice model (~180 MB) and verify it loads",
+        help="Download the default-tier Kokoro voice model (~200 MB) and verify it loads",
     )
     tts_warm.set_defaults(func=cmd_tts_warm)
 

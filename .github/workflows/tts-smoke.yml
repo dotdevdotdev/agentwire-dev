@@ -83,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/kokoro_onnx
-          key: kokoro-model-files-v1.0
+          key: kokoro-model-files-v1.0-fp16
       - name: Install base package
         run: pip install .
       - name: Synthesize a sentence

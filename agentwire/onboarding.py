@@ -302,7 +302,7 @@ agent:
   command: "{agent_command}"
 
 # Voice — instant mode out of the box: Chrome speech in, Kokoro-82M out
-# (CPU neural voice, ~180MB model auto-downloads on first portal start;
+# (CPU neural voice, ~200MB model auto-downloads on first portal start;
 # browser speechSynthesis covers the wait). default_voice picks the Kokoro
 # preset (af_heart, af_bella, am_adam, ... — `agentwire voiceclone list`).
 # Upgrade either side to a custom shim: docs/wiki/voice/shim-contract.md

@@ -33,17 +33,24 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-import torch
-import torchaudio
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from faster_whisper import WhisperModel
 
 from .tts import TTSRequest, registry
 
-# GPU Optimizations
-torch.backends.cudnn.benchmark = True
-torch.set_float32_matmul_precision("high")
+# torch is optional: the kokoro venv is torch-free (pure ONNX). Tensor and
+# voice-upload paths are guarded at use; everything else runs without it.
+try:
+    import torch
+    import torchaudio
+
+    # GPU Optimizations
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
+except ImportError:
+    torch = None
+    torchaudio = None
 
 # Configuration via environment
 DEFAULT_BACKEND = os.environ.get("DEFAULT_BACKEND", "chatterbox")
@@ -180,8 +187,11 @@ async def lifespan(app: FastAPI):
     VOICES_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"Default Backend: {DEFAULT_BACKEND}")
-    print(f"  cuDNN benchmark: {torch.backends.cudnn.benchmark}")
-    print(f"  TF32 matmul: {torch.get_float32_matmul_precision()}")
+    if torch is not None:
+        print(f"  cuDNN benchmark: {torch.backends.cudnn.benchmark}")
+        print(f"  TF32 matmul: {torch.get_float32_matmul_precision()}")
+    else:
+        print("  torch: not installed (kokoro venv — pure ONNX)")
 
     # Register all engine factories
     register_engines()
@@ -350,9 +360,12 @@ async def list_voices():
     """List all available voice profiles."""
     voices = []
     for f in VOICES_DIR.glob("*.wav"):
-        waveform, sr = torchaudio.load(str(f))
-        duration = waveform.shape[1] / sr
-        voices.append({"name": f.stem, "duration": round(duration, 2)})
+        if torchaudio is not None:
+            waveform, sr = torchaudio.load(str(f))
+            duration = waveform.shape[1] / sr
+            voices.append({"name": f.stem, "duration": round(duration, 2)})
+        else:
+            voices.append({"name": f.stem})
     return {"voices": voices}
 
 
@@ -365,6 +378,13 @@ async def upload_voice(name: str, file: UploadFile = File(...)):
         raise HTTPException(
             status_code=400,
             detail="Voice name must contain only alphanumeric characters, underscores, and hyphens"
+        )
+
+    if torchaudio is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Voice upload requires torchaudio (chatterbox/qwen/zonos venvs); "
+                   "the torch-free kokoro venv uses preset voices only",
         )
 
     voice_path = VOICES_DIR / f"{name}.wav"

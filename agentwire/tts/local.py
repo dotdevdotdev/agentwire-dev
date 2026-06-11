@@ -1,7 +1,7 @@
 """In-process Kokoro for the default TTS tier.
 
 The portal owns one LocalKokoro instance. When `tts.backend: default`, a
-background task downloads the model files (~180 MB, one-time) and loads the
+background task downloads the model files (~200 MB, one-time) and loads the
 engine; until it's ready the portal keeps falling back to browser
 speechSynthesis / OS voice. The `custom` shim tier never touches this module.
 
@@ -22,7 +22,7 @@ from typing import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 # Fallback sizes for progress math when the server omits Content-Length.
-_APPROX_SIZES = {"kokoro-v1.0.onnx": 170_000_000, "voices-v1.0.bin": 27_000_000}
+_APPROX_SIZES = {"kokoro-v1.0.fp16.onnx": 178_000_000, "voices-v1.0.bin": 28_000_000}
 
 
 def kokoro_importable() -> bool:
@@ -96,7 +96,7 @@ class LocalKokoro:
 
         try:
             if not KokoroEngine.model_files_cached():
-                logger.info("Kokoro: downloading model files (~180 MB, one-time)...")
+                logger.info("Kokoro: downloading model files (~200 MB, one-time)...")
                 await self._set_state("downloading", 0)
                 await asyncio.to_thread(KokoroEngine.download_models, _progress_cb)
             await self._set_state("loading", 100)

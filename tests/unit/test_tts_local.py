@@ -122,8 +122,8 @@ class TestEnsureFile:
     def test_model_files_cached(self):
         assert KokoroEngine.model_files_cached() is False
         self.cache_dir.mkdir(parents=True)
-        (self.cache_dir / "kokoro-v1.0.onnx").write_bytes(b"m")
-        (self.cache_dir / "voices-v1.0.bin").write_bytes(b"v")
+        (self.cache_dir / KokoroEngine._MODEL_FILE).write_bytes(b"m")
+        (self.cache_dir / KokoroEngine._VOICES_FILE).write_bytes(b"v")
         assert KokoroEngine.model_files_cached() is True
 
 

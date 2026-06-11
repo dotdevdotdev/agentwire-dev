@@ -13,7 +13,7 @@ without reading agentwire source.
 | | `default` | `custom` |
 |---|---|---|
 | STT | Chrome SpeechRecognition in the portal (Chrome is the blessed browser) + jargon-correction map | audio upload → your shim (`POST /transcribe`) |
-| TTS | in-process Kokoro-82M (CPU, ~180MB auto-download on first portal start); browser `speechSynthesis` while the model warms up or if it can't load | text → your shim (`POST /tts`) → WAV broadcast |
+| TTS | in-process Kokoro-82M (CPU, ~200MB auto-download on first portal start); browser `speechSynthesis` while the model warms up or if it can't load | text → your shim (`POST /tts`) → WAV broadcast |
 | Setup | none | run your shim, point config at it |
 | Quality | good neural voice (32 presets, 8 languages), ~90% semantic STT accuracy | whatever your model can do — cloning, emotion control, GPU engines |
 

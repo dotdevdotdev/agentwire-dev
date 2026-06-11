@@ -108,7 +108,7 @@ transcribes, the transcript lands in an edit-before-send bar, Enter sends it.
 To **hear the agent talk back**, the agent calls the `say` MCP tool. The
 default voice is **Kokoro-82M** — a genuinely good neural voice running on
 CPU, identical on every OS. The first portal start downloads the model
-(~180 MB, one-time) in the background with progress in the portal; until
+(~200 MB, one-time) in the background with progress in the portal; until
 it's ready the browser speaks via speechSynthesis (robotic but immediate),
 then upgrades automatically. With no browser open, speech plays on local
 speakers. Test it:

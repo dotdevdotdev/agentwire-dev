@@ -59,7 +59,7 @@ agentwire portal start
 
 **Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code
 
-**Honest setup time:** under a minute to a working voice portal with a genuinely good voice — Kokoro-82M runs on CPU out of the box (one-time ~180 MB model download in the background; the browser voice covers the wait). ~15 minutes for the full experience: cloned voices via a self-hosted TTS shim, Whisper-grade transcription, phone-from-anywhere (certs + token).
+**Honest setup time:** under a minute to a working voice portal with a genuinely good voice — Kokoro-82M runs on CPU out of the box (one-time ~200 MB model download in the background; the browser voice covers the wait). ~15 minutes for the full experience: cloned voices via a self-hosted TTS shim, Whisper-grade transcription, phone-from-anywhere (certs + token).
 
 > **Network & trust model.** The portal binds `127.0.0.1` by default — local only. To use it from your phone, set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`. Non-loopback binds require an auth token (auto-generated on first start; print it with `agentwire portal token`) — your phone prompts for it once, then remembers it. Origin checks reject cross-site browser requests on every bind. Still: keep it on a trusted LAN. Never port-forward it or run it on a public-facing VPS — for internet access use Cloudflare Tunnel + Zero Trust. Details in [SECURITY.md](SECURITY.md).
 
@@ -168,7 +168,7 @@ All decisions logged for audit trails.
 
 Two tiers, both sides:
 
-**`default` (zero setup, what a fresh install gets):** Chrome speech recognition in, **Kokoro-82M out** — a genuinely good neural voice (top of the TTS Arena at 82M params), 32 preset voices across 8 languages, pure CPU, identical on every OS. The model (~180 MB) downloads in the background on first portal start; browser speechSynthesis covers speech until it's ready (and remains the last-resort fallback). No GPU, no certs, no commands.
+**`default` (zero setup, what a fresh install gets):** Chrome speech recognition in, **Kokoro-82M out** — a genuinely good neural voice (top of the TTS Arena at 82M params), 32 preset voices across 8 languages, pure CPU, identical on every OS. The model (~200 MB) downloads in the background on first portal start; browser speechSynthesis covers speech until it's ready (and remains the last-resort fallback). No GPU, no certs, no commands.
 
 **`custom` (bring your own model):** any HTTP shim implementing the [voice shim contract](docs/wiki/voice/shim-contract.md) — ~30 lines wraps anything (Deepgram, whisper.cpp, an expressive emotion-tag model). Voice cloning, GPU engines, emotion control live here. The bundled servers are reference shims:
 

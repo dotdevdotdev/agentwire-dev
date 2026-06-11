@@ -110,15 +110,18 @@ class KokoroEngine(TTSEngine):
     - Torch-free: ships with the base install (kokoro-onnx + onnxruntime)
     """
 
-    # GitHub release URL for model files
-    _MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
-    _VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+    # GitHub release URL for model files. fp16 is half the fp32 download
+    # (~170 MB vs ~325 MB) with no audible difference on CPU inference.
+    _MODEL_FILE = "kokoro-v1.0.fp16.onnx"
+    _MODEL_URL = f"https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/{_MODEL_FILE}"
+    _VOICES_FILE = "voices-v1.0.bin"
+    _VOICES_URL = f"https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/{_VOICES_FILE}"
 
     def __init__(self, voices_dir: Path | None = None):
         from kokoro_onnx import Kokoro
 
-        model_path = self._ensure_file("kokoro-v1.0.onnx", self._MODEL_URL)
-        voices_path = self._ensure_file("voices-v1.0.bin", self._VOICES_URL)
+        model_path = self._ensure_file(self._MODEL_FILE, self._MODEL_URL)
+        voices_path = self._ensure_file(self._VOICES_FILE, self._VOICES_URL)
 
         print("Loading Kokoro ONNX model...")
         self._model = Kokoro(str(model_path), str(voices_path))
@@ -135,15 +138,15 @@ class KokoroEngine(TTSEngine):
         Public entry point for the portal's background warm-up and the
         `agentwire tts warm` CLI command.
         """
-        cls._ensure_file("kokoro-v1.0.onnx", cls._MODEL_URL, progress_cb)
-        cls._ensure_file("voices-v1.0.bin", cls._VOICES_URL, progress_cb)
+        cls._ensure_file(cls._MODEL_FILE, cls._MODEL_URL, progress_cb)
+        cls._ensure_file(cls._VOICES_FILE, cls._VOICES_URL, progress_cb)
 
-    @staticmethod
-    def model_files_cached() -> bool:
+    @classmethod
+    def model_files_cached(cls) -> bool:
         """True if both model files are already downloaded."""
         cache_dir = Path.home() / ".cache" / "kokoro_onnx"
-        return (cache_dir / "kokoro-v1.0.onnx").exists() and (
-            cache_dir / "voices-v1.0.bin"
+        return (cache_dir / cls._MODEL_FILE).exists() and (
+            cache_dir / cls._VOICES_FILE
         ).exists()
 
     @staticmethod

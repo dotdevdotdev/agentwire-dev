@@ -4,7 +4,7 @@
 
 The bundled TTS server is the **reference implementation of the [shim contract](shim-contract.md)** — multiple engines, each with different capabilities and hardware requirements, all behind one server (`agentwire tts start`) with runtime hot-swap.
 
-> **You don't need this page for a good voice.** `tts.backend: default` already speaks via **Kokoro-82M in-process** — bundled with the base install, CPU-only, auto-downloaded (~180 MB) on first portal start (`agentwire tts warm` pre-downloads it). This page is the `custom` tier: voice cloning, GPU engines, emotion control, or any other model behind the shim contract.
+> **You don't need this page for a good voice.** `tts.backend: default` already speaks via **Kokoro-82M in-process** — bundled with the base install, CPU-only, auto-downloaded (~200 MB) on first portal start (`agentwire tts warm` pre-downloads it). This page is the `custom` tier: voice cloning, GPU engines, emotion control, or any other model behind the shim contract.
 
 ## Quick Start
 

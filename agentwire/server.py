@@ -363,7 +363,7 @@ class AgentWireServer:
         self._voice_status_cache = None
         if kokoro.state == "downloading":
             await self._post_toast(
-                f"Downloading Kokoro voice model… {kokoro.percent}% (one-time, ~180 MB)",
+                f"Downloading Kokoro voice model… {kokoro.percent}% (one-time, ~200 MB)",
                 session="kokoro-voice", priority="normal", id_prefix="kokoro")
         elif kokoro.state == "loading":
             await self._post_toast(
@@ -5322,7 +5322,7 @@ async def run_server(config: Config):
     await server.init_backends()
 
     # Warm up the default-tier Kokoro voice: background model download
-    # (one-time ~180 MB) + engine load. speechSynthesis covers speech until
+    # (one-time ~200 MB) + engine load. speechSynthesis covers speech until
     # ready. Cleaned up via close_backends().
     if config.tts.backend == "default":
         server.kokoro.start(server._on_kokoro_state_change)
