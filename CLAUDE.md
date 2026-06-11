@@ -44,7 +44,14 @@ Full CLI command reference lives in the `agentwire-cli` skill.
 
 The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, tasks, outbound channels, scheduler, overnight queue, desktop UI, handoffs). Rule of thumb: MCP for agents, CLI for humans/scripts.
 
-**Note:** MCP tools don't support git worktree creation. For isolated commits with worktrees, use the CLI `agentwire spawn --branch <name>` directly.
+**Note:** MCP tools don't support git worktree creation. For worktree-isolated work, use the CLI directly — and pick the right primitive:
+
+| Term | Command | What you get |
+|------|---------|--------------|
+| **Worktree session** | `agentwire worktree <name> --type claude-bypass -p <repo>` | **Standalone tmux session** named `{project}-<name>`, new branch `<name>` from origin/main, worktree under `~/worktrees/`. Survives independently; report-back via `agentwire notify-parent --to <orchestrator>`. |
+| **Worker pane** | `agentwire spawn --branch <name>` | A **pane inside the current session** (pane 1+), worktree on `<name>`. Inherits the session's dashboard; idle hook reaps it. |
+
+When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Worker panes are for small subtasks watched by the orchestrator; worktree sessions are for parallel autonomous missions. Always pass `--type claude-bypass` for autonomous workers — the default prompted type blocks on the first permission dialog with no one to answer it.
 
 ## Config Layout (`~/.agentwire/`)
 
