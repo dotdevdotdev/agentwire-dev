@@ -2843,6 +2843,23 @@ def store_session_metadata(session_name: str, metadata: dict) -> None:
         pass
 
 
+def _record_session_creator(session_name: str, created_by: str | None, via: str) -> None:
+    """Record which session created this one (merge-preserving).
+
+    The creator becomes the session's parent for prompt routing
+    (prompt_router.resolve_parent), winning over .agentwire.yml `parent:`.
+    """
+    if not created_by or created_by == session_name.split("@")[0]:
+        return
+    metadata = get_session_metadata(session_name)
+    metadata.update({
+        "created_by": created_by,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_via": via,
+    })
+    store_session_metadata(session_name, metadata)
+
+
 def cmd_notify(args) -> int:
     """Send a notification to the portal about session/pane state changes.
 
@@ -3657,6 +3674,13 @@ def cmd_new(args) -> int:
         if not first_message_delivered and not json_mode:
             print(f"Warning: first message not delivered to '{session_name}' — paste it manually", file=sys.stderr)
 
+    # Record the creating session as parent for prompt routing. --created-by
+    # overrides; empty string opts out; default = the calling tmux session.
+    created_by = getattr(args, 'created_by', None)
+    if created_by is None:
+        created_by = pane_manager.get_current_session()
+    _record_session_creator(session_name, created_by, via="new")
+
     if json_mode:
         result = {
             "success": True,
@@ -4065,6 +4089,15 @@ def cmd_kill(args) -> int:
     subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
     if not json_mode:
         print(f"Killed session '{session}'")
+
+    # Drop session metadata (creator record) so a future unrelated session
+    # reusing this name doesn't inherit a stale parent.
+    metadata_file = CONFIG_DIR / "sessions" / session.split("@")[0] / "metadata.json"
+    if metadata_file.exists():
+        try:
+            metadata_file.unlink()
+        except OSError:
+            pass
 
     _notify_portal_sessions_changed()
 
@@ -10649,6 +10682,9 @@ def main() -> int:
     new_parser.add_argument("--no-pull-first", dest="pull_first", action="store_false", help="Skip the fetch — branch from the local copy of <base> as-is")
     new_parser.add_argument("--first-message", dest="first_message",
                             help="After the agent boots, deliver this as its first message (verified; local sessions only)")
+    new_parser.add_argument("--created-by", dest="created_by",
+                            help="Record this session as the creator/parent for prompt routing "
+                                 "(default: the calling tmux session; pass '' to opt out)")
     new_parser.add_argument("--json", action="store_true", help="Output as JSON")
     new_parser.set_defaults(func=cmd_new)
 

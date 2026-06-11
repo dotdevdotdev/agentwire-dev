@@ -303,6 +303,77 @@ class TestParseAskOptions:
         assert [o["label"] for o in options] == ["Yes", "No"]
 
 
+class TestResolveParent:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_SESSIONS_META_DIR", tmp_path / "sessions")
+        monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
+        monkeypatch.setattr(prompt_router, "_parent_from_config", lambda p: None)
+        self.tmp_path = tmp_path
+
+    def _write_creator(self, session, creator):
+        d = self.tmp_path / "sessions" / session
+        d.mkdir(parents=True)
+        (d / "metadata.json").write_text(
+            '{"created_by": "%s", "created_via": "new"}' % creator
+        )
+
+    def test_worker_pane_routes_to_pane_zero(self):
+        assert prompt_router.resolve_parent("orch", 3) == ("orch", 0)
+
+    def test_creator_metadata_wins(self, monkeypatch):
+        self._write_creator("child", "orch")
+        monkeypatch.setattr(prompt_router, "_parent_from_config", lambda p: "yml-parent")
+        assert prompt_router.resolve_parent("child", 0) == ("orch", 0)
+
+    def test_yml_parent_fallback(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_parent_from_config", lambda p: "yml-parent")
+        assert prompt_router.resolve_parent("child", 0) == ("yml-parent", 0)
+
+    def test_no_parent(self):
+        assert prompt_router.resolve_parent("standalone", 0) is None
+
+    def test_self_creator_skipped(self):
+        self._write_creator("child", "child")
+        assert prompt_router.resolve_parent("child", 0) is None
+
+    def test_dead_creator_falls_through(self, monkeypatch):
+        self._write_creator("child", "gone")
+        monkeypatch.setattr(
+            prompt_router, "_session_exists", lambda s: s != "gone"
+        )
+        monkeypatch.setattr(prompt_router, "_parent_from_config", lambda p: "yml-parent")
+        assert prompt_router.resolve_parent("child", 0) == ("yml-parent", 0)
+
+    def test_self_yml_parent_skipped(self, monkeypatch):
+        monkeypatch.setattr(prompt_router, "_parent_from_config", lambda p: "child")
+        assert prompt_router.resolve_parent("child", 0) is None
+
+    def test_machine_suffix_stripped(self):
+        self._write_creator("child", "orch")
+        assert prompt_router.resolve_parent("child@studio", 0) == ("orch", 0)
+
+
+class TestIsAgentPane:
+    def test_command_classification(self, monkeypatch):
+        cases = {
+            "node": True,
+            "claude": True,
+            "2.1.170": True,
+            "zsh": False,
+            "bash": False,
+            "vim": False,
+            "less": False,
+            "python3": False,
+            "": False,
+        }
+        for command, expected in cases.items():
+            monkeypatch.setattr(
+                prompt_router, "pane_command", lambda s, p, c=command: c
+            )
+            assert prompt_router.is_agent_pane("s", 0) is expected, command
+
+
 class TestContentHash:
     def test_stable_across_calls(self):
         a = detect_prompt(PERMISSION_BASH).content_hash()

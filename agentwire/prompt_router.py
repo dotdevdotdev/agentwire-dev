@@ -31,6 +31,8 @@ from pathlib import Path
 from .usage_limit import (
     PARK_OPTION,
     _normalize,
+    _session_exists,
+    _tmux,
 )
 from .usage_limit import detect_dialog as _usage_limit_dialog
 
@@ -174,6 +176,84 @@ def _detect_question(clean: str, norm: str) -> "PromptInfo | None":
     if not options:
         return None
     return PromptInfo(kind="question", question=question, options=options)
+
+
+# =============================================================================
+# Parent resolution
+# =============================================================================
+
+# pane_current_command values that indicate an agent runs in a pane.
+# Claude Code panes report the node binary or a bare version string
+# (e.g. "2.1.170"); pi panes report node.
+_AGENT_COMMAND_RE = re.compile(r"^(node|claude|\d+\.\d+\.\d+\S*)$")
+
+_SESSIONS_META_DIR = Path.home() / ".agentwire" / "sessions"
+
+
+def _read_creator(session: str) -> "str | None":
+    """The session recorded as creator at `agentwire new` time, if any."""
+    metadata_file = _SESSIONS_META_DIR / session.split("@")[0] / "metadata.json"
+    try:
+        metadata = json.loads(metadata_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    creator = metadata.get("created_by")
+    return creator if isinstance(creator, str) and creator else None
+
+
+def pane_command(session: str, pane_index: int) -> str:
+    """The pane's current command ('' on any error)."""
+    try:
+        result = _tmux([
+            "display", "-t", f"{session}.{pane_index}",
+            "-p", "#{pane_current_command}",
+        ])
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def is_agent_pane(session: str, pane_index: int) -> bool:
+    return bool(_AGENT_COMMAND_RE.match(pane_command(session, pane_index)))
+
+
+def resolve_parent(
+    session: str, pane_index: int, project_path: "str | None" = None
+) -> "tuple[str, int] | None":
+    """The (session, pane) that should be told about this pane's prompt.
+
+    Precedence:
+      1. Worker pane (index > 0) -> pane 0 of the same session.
+      2. Creator recorded at `agentwire new` time (session metadata).
+      3. `.agentwire.yml` `parent:` field (project_path's config).
+      4. None -> human-only behavior, unchanged.
+
+    Depth-1 and local-machine only. Never returns the source pane itself or
+    a dead session. (Whether the target pane is safe to paste into is the
+    delivery layer's job — see safe_deliver.)
+    """
+    if pane_index > 0:
+        return (session, 0)
+
+    bare = session.split("@")[0]
+    creator = _read_creator(bare)
+    if creator and creator != bare and _session_exists(creator):
+        return (creator, 0)
+
+    parent = _parent_from_config(project_path)
+    if parent and parent != bare and _session_exists(parent):
+        return (parent, 0)
+
+    return None
+
+
+def _parent_from_config(project_path: "str | None") -> "str | None":
+    try:
+        from .project_config import get_parent_from_config
+
+        return get_parent_from_config(Path(project_path) if project_path else None)
+    except Exception:
+        return None
 
 
 def detect_prompt(visible: str) -> "PromptInfo | None":
