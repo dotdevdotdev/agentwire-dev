@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Iterator
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    import numpy as np
     import torch
 
 
@@ -66,7 +67,7 @@ class TTSRequest(BaseModel):
 class TTSResult:
     """Result of TTS generation."""
 
-    audio: "torch.Tensor"  # Shape: (1, samples)
+    audio: "torch.Tensor | np.ndarray"  # Shape: (1, samples); kokoro returns numpy
     sample_rate: int
 
 

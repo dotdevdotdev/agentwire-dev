@@ -1,11 +1,12 @@
-"""Kokoro TTS Engine (kokoro-onnx) - CPU-only, ultra-lightweight."""
+"""Kokoro TTS Engine (kokoro-onnx) - CPU-only, ultra-lightweight, torch-free."""
 
 import asyncio
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import numpy as np
 
+from ..audio import pcm_float_to_wav_bytes
 from ..base import TTSCapabilities, TTSEngine, TTSRequest, TTSResult
 
 # Preset voices bundled with Kokoro v1.0
@@ -91,10 +92,7 @@ class KokoroEngine(TTSEngine):
     - 30+ preset voices across 8 languages
     - Streaming support
     - Model auto-downloaded from GitHub releases on first use (~170 MB, cached in ~/.cache/kokoro_onnx/)
-
-    Install:
-        pip install kokoro-onnx
-        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    - Torch-free: ships with the base install (kokoro-onnx + onnxruntime)
     """
 
     # GitHub release URL for model files
@@ -113,9 +111,41 @@ class KokoroEngine(TTSEngine):
         self._sample_rate = 24000
         print("Kokoro loaded!")
 
+    @classmethod
+    def download_models(
+        cls, progress_cb: Callable[[str, int, int], None] | None = None
+    ) -> None:
+        """Download the model + voices files if missing (blocking).
+
+        Public entry point for the portal's background warm-up and the
+        `agentwire tts warm` CLI command.
+        """
+        cls._ensure_file("kokoro-v1.0.onnx", cls._MODEL_URL, progress_cb)
+        cls._ensure_file("voices-v1.0.bin", cls._VOICES_URL, progress_cb)
+
     @staticmethod
-    def _ensure_file(filename: str, url: str) -> Path:
-        """Download file to ~/.cache/kokoro_onnx/ if not already present."""
+    def model_files_cached() -> bool:
+        """True if both model files are already downloaded."""
+        cache_dir = Path.home() / ".cache" / "kokoro_onnx"
+        return (cache_dir / "kokoro-v1.0.onnx").exists() and (
+            cache_dir / "voices-v1.0.bin"
+        ).exists()
+
+    @staticmethod
+    def _ensure_file(
+        filename: str,
+        url: str,
+        progress_cb: Callable[[str, int, int], None] | None = None,
+    ) -> Path:
+        """Download file to ~/.cache/kokoro_onnx/ if not already present.
+
+        Downloads to a .part file and renames atomically so an interrupted
+        download never leaves a truncated file that passes the exists() check.
+
+        Args:
+            progress_cb: Optional callback(filename, downloaded_bytes, total_bytes)
+                invoked as the download progresses (total is 0 if unknown).
+        """
         import urllib.request
 
         cache_dir = Path.home() / ".cache" / "kokoro_onnx"
@@ -125,7 +155,26 @@ class KokoroEngine(TTSEngine):
         if not dest.exists():
             size_mb = 170 if "onnx" in filename else 10
             print(f"Downloading {filename} (~{size_mb} MB)...")
-            urllib.request.urlretrieve(url, dest)
+            part = dest.with_suffix(dest.suffix + ".part")
+
+            def _hook(block_num: int, block_size: int, total_size: int) -> None:
+                if progress_cb:
+                    downloaded = min(block_num * block_size, max(total_size, 0)) \
+                        if total_size > 0 else block_num * block_size
+                    progress_cb(filename, downloaded, max(total_size, 0))
+
+            import socket
+
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(60)
+            try:
+                urllib.request.urlretrieve(url, part, reporthook=_hook)
+                part.replace(dest)
+            except BaseException:
+                part.unlink(missing_ok=True)
+                raise
+            finally:
+                socket.setdefaulttimeout(old_timeout)
             print(f"Saved to {dest}")
 
         return dest
@@ -161,8 +210,6 @@ class KokoroEngine(TTSEngine):
         return DEFAULT_VOICE
 
     def generate(self, request: TTSRequest) -> TTSResult:
-        import torch
-
         voice = self._resolve_voice(request)
         lang = _LANG_MAP.get(request.language, "en-us")
 
@@ -173,9 +220,9 @@ class KokoroEngine(TTSEngine):
             lang=lang,
         )
 
-        # Convert numpy (N,) → torch (1, N) to match TTSResult interface
-        tensor = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0)
-        return TTSResult(audio=tensor, sample_rate=sample_rate)
+        # numpy (N,) → (1, N) to match the TTSResult audio shape convention
+        audio = np.asarray(samples, dtype=np.float32)[None, :]
+        return TTSResult(audio=audio, sample_rate=sample_rate)
 
     def generate_stream(self, request: TTSRequest) -> Iterator[bytes]:
         """Yield WAV chunks from Kokoro's async streaming generator.
@@ -187,9 +234,6 @@ class KokoroEngine(TTSEngine):
         Uses stdlib wave for WAV serialization (avoids torchaudio's BytesIO
         incompatibility with the torchcodec backend in CPU-only builds).
         """
-        import io
-        import wave
-
         voice = self._resolve_voice(request)
         lang = _LANG_MAP.get(request.language, "en-us")
 
@@ -208,16 +252,7 @@ class KokoroEngine(TTSEngine):
                 except StopAsyncIteration:
                     break
 
-                pcm = np.asarray(samples, dtype=np.float32)
-                pcm_int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
-                buf = io.BytesIO()
-                with wave.open(buf, "w") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(pcm_int16.tobytes())
-                buf.seek(0)
-                yield buf.read()
+                yield pcm_float_to_wav_bytes(samples, sample_rate)
         finally:
             loop.close()
 

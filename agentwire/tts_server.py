@@ -67,17 +67,22 @@ BACKEND_FAMILIES = {
 whisper_model = None
 
 
-def _tensor_to_wav_bytes(audio: "torch.Tensor", sample_rate: int) -> bytes:
-    """Serialize a torch tensor to WAV bytes.
+def _tensor_to_wav_bytes(audio, sample_rate: int) -> bytes:
+    """Serialize engine audio (torch.Tensor or np.ndarray) to WAV bytes.
 
-    Falls back to stdlib wave module if torchaudio.save fails to write to
-    BytesIO (e.g. when torchcodec is the backend and doesn't support in-memory
-    writes — happens with CPU-only torch builds).
+    Kokoro returns numpy (torch-free engine) — serialize directly via stdlib
+    wave. Torch tensors go through torchaudio.save, falling back to stdlib
+    wave if it can't write to BytesIO (e.g. when torchcodec is the backend
+    and doesn't support in-memory writes — happens with CPU-only builds).
     """
     import io
-    import wave
 
     import numpy as np
+
+    from .tts.audio import pcm_float_to_wav_bytes
+
+    if isinstance(audio, np.ndarray):
+        return pcm_float_to_wav_bytes(audio, sample_rate)
 
     buf = io.BytesIO()
     try:
@@ -88,16 +93,7 @@ def _tensor_to_wav_bytes(audio: "torch.Tensor", sample_rate: int) -> bytes:
         return buf.read()
     except Exception:
         # Fallback: stdlib wave (PCM int16)
-        buf = io.BytesIO()
-        samples = audio.squeeze().numpy()
-        pcm = (samples * 32767).clip(-32768, 32767).astype(np.int16)
-        with wave.open(buf, "w") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(pcm.tobytes())
-        buf.seek(0)
-        return buf.read()
+        return pcm_float_to_wav_bytes(audio.squeeze().numpy(), sample_rate)
 
 
 def get_required_venv(backend: str) -> str:

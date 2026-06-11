@@ -35,6 +35,12 @@ dependencies = [
     "markdown>=3.5",
     # In-process WebM/Opus decoding for /transcribe (avoids ffmpeg subprocess startup).
     "av>=12.0.0",
+    # Default TTS tier: Kokoro-82M in-process (CPU ONNX, no torch, espeak bundled
+    # in espeakng-loader wheels). Marker is mandatory — kokoro-onnx pins <3.14;
+    # on 3.14+ the portal falls back to browser speechSynthesis.
+    "kokoro-onnx>=0.4.9; python_version < '3.14'",
+    # Used by agentwire.tts.base (TTSRequest); explicit rather than transitive via mcp.
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -64,7 +70,9 @@ tts = [
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
     "faster-whisper>=1.0.0",
-    "chatterbox-tts>=0.1.6",
+    # chatterbox-tts pins numpy<2 on Python <=3.12, which conflicts with the
+    # base install's kokoro-onnx (numpy>=2.0.2). Chatterbox venvs need py3.13+.
+    "chatterbox-tts>=0.1.6; python_version >= '3.13'",
     "runpod>=1.6.0",
 ]
 
