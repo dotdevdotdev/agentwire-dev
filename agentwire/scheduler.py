@@ -39,6 +39,7 @@ _EXIT_LOCK_CONFLICT = 3
 _EXIT_PRE_FAILURE = 4
 _EXIT_TIMEOUT = 5
 _EXIT_SESSION_ERROR = 6
+_EXIT_USAGE_LIMIT = 7
 
 _EXIT_TO_STATUS = {
     _EXIT_COMPLETE: "complete",
@@ -48,6 +49,7 @@ _EXIT_TO_STATUS = {
     _EXIT_PRE_FAILURE: "failed",
     _EXIT_TIMEOUT: "timeout",
     _EXIT_SESSION_ERROR: "failed",
+    _EXIT_USAGE_LIMIT: "usage_limit",
 }
 
 # In-flight grace period: tasks dispatched less than 2h ago are considered running
@@ -98,7 +100,7 @@ class SchedulerTask:
 @dataclass
 class TaskState:
     last_run: datetime | None = None
-    last_status: str = "never"    # complete, failed, incomplete, timeout, lock_conflict, never
+    last_status: str = "never"    # complete, failed, incomplete, timeout, lock_conflict, usage_limit, never
     last_duration: int = 0
     run_count: int = 0
     last_summary: str = ""
@@ -1268,6 +1270,20 @@ def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: Ta
     only (email, files outside the repo). The repo is never modified."""
     task_name = task.name
 
+    # A session parked on a usage limit is waiting out the reset — never
+    # kill it or dispatch into it. Skip without consuming last_run so the
+    # task stays eligible once the park clears.
+    from .usage_limit import is_parked
+    if is_parked(task.session):
+        _log_event("task_skipped", task=task_name, session=task.session,
+                   reason="usage_limit_parked")
+        return TaskState(
+            last_run=existing_state.last_run,
+            last_status="usage_limit",
+            last_duration=0,
+            run_count=existing_state.run_count,
+        )
+
     # Clean stale lock for this session before dispatching.
     from .locking import remove_stale_lock
     remove_stale_lock(task.session)
@@ -1403,6 +1419,22 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
                status=status, duration=duration, summary=summary,
                files_modified=files_modified, blockers=blockers_list)
     _notify_portal(task_name, status, duration, summary)
+
+    if status == "usage_limit":
+        # Session parked mid-task — committing/pushing half-done work would be
+        # wrong, and the session must stay alive for the watchdog to resume.
+        # The worktree is left in place; the session finishes via the idle
+        # hook after resume (PR must then be opened manually — see docs).
+        print(f"[{_ts()}] {task_name}: parked on usage limit — worktree + session left in place")
+        new_run_count = existing_state.run_count + 1
+        return TaskState(
+            last_run=datetime.now(timezone.utc),
+            last_status="usage_limit",
+            last_duration=duration,
+            run_count=new_run_count,
+            last_summary=summary,
+            last_gate_commit=_capture_head(task.project),
+        )
 
     pr = _finalize_worktree_pr(task, task_name, status, worktree_path, branch, summary)
 

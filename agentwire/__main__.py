@@ -8250,6 +8250,7 @@ ENSURE_EXIT_LOCK_CONFLICT = 3
 ENSURE_EXIT_PRE_FAILURE = 4
 ENSURE_EXIT_TIMEOUT = 5
 ENSURE_EXIT_SESSION_ERROR = 6
+ENSURE_EXIT_USAGE_LIMIT = 7
 
 
 def _ensure_remote(args, session: str, machine_id: str, json_mode: bool) -> int:
@@ -8358,6 +8359,16 @@ def cmd_ensure(args) -> int:
 
     if machine_id:
         return _ensure_remote(args, session, machine_id, json_mode)
+
+    # A session parked on a usage limit is waiting out the reset — never
+    # prompt or re-dispatch into it. The watchdog resumes it.
+    from .usage_limit import is_parked
+    if is_parked(session):
+        return _output_result(
+            False, json_mode,
+            f"Session '{session}' is parked on a usage limit (auto-resumes after reset)",
+            exit_code=ENSURE_EXIT_USAGE_LIMIT,
+        )
 
     # Find project path from --project flag, or session's working directory
     if hasattr(args, 'project') and args.project:
@@ -8821,6 +8832,13 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
 
         # Don't clear task context here — hook owns context file lifecycle.
         # ensure waits for hook to delete it (signals cleanup complete).
+
+        if last_status == "usage_limit":
+            # Session parked mid-task — skip on_task_end/post/PR; the watchdog
+            # nudges it after reset and the idle hook finishes the task.
+            if not json_mode:
+                print("Usage limit hit — session parked, auto-resumes after reset")
+            break
 
         if not json_mode:
             print(f"Task status: {last_status}")

@@ -481,6 +481,61 @@ class TestSweep:
 
 
 # =============================================================================
+# check_and_park (ensure's fast-path probe)
+# =============================================================================
+
+
+class TestCheckAndPark:
+    def test_already_parked_short_circuits(self, monkeypatch):
+        usage_limit.write_park_state({"session": "s1", "status": "parked"})
+
+        def boom(*a, **k):
+            raise AssertionError("must not capture when already parked")
+
+        monkeypatch.setattr(usage_limit, "_capture", boom)
+        assert usage_limit.check_and_park("s1") is True
+
+    def test_dialog_parks(self, monkeypatch):
+        monkeypatch.setattr(
+            usage_limit, "_capture", lambda target, scrollback=None: REAL_DIALOG
+        )
+        monkeypatch.setattr(
+            usage_limit, "park",
+            lambda session, pane_index=0, source="ensure": usage_limit.write_park_state(
+                {"session": session, "status": "parked"}
+            ),
+        )
+        assert usage_limit.check_and_park("s1", source="ensure") is True
+
+    def test_normal_screen_is_false(self, monkeypatch):
+        monkeypatch.setattr(
+            usage_limit, "_capture", lambda target, scrollback=None: "working...\n"
+        )
+        assert usage_limit.check_and_park("s1") is False
+
+
+# =============================================================================
+# Status / exit-code mappings (ensure + scheduler integration)
+# =============================================================================
+
+
+class TestStatusMappings:
+    def test_completion_exit_code(self):
+        from agentwire.completion import status_to_exit_code
+
+        assert status_to_exit_code("usage_limit") == 7
+        assert status_to_exit_code("complete") == 0
+        assert status_to_exit_code("failed") == 1
+        assert status_to_exit_code("incomplete") == 2
+
+    def test_scheduler_status_map(self):
+        from agentwire.scheduler import _EXIT_TO_STATUS, _EXIT_USAGE_LIMIT
+
+        assert _EXIT_USAGE_LIMIT == 7
+        assert _EXIT_TO_STATUS[7] == "usage_limit"
+
+
+# =============================================================================
 # Tick
 # =============================================================================
 

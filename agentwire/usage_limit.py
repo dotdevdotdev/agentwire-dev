@@ -223,6 +223,21 @@ def detect_dialog(visible: str) -> bool:
     return not tail.strip()
 
 
+def check_and_park(session: str, pane_index: int = 0, source: str = "ensure") -> bool:
+    """True iff the session is (or just became) parked on a usage limit.
+
+    The fast-path probe for polling loops (ensure's completion wait): cheap
+    when nothing is wrong, parks deterministically when the dialog is up,
+    and honors a park the watchdog already performed.
+    """
+    if is_parked(session):
+        return True
+    if detect_dialog(_capture(f"{session}.{pane_index}")):
+        park(session, pane_index, source=source)
+        return is_parked(session)
+    return False
+
+
 def detect_dialog_like(visible: str) -> bool:
     """A live select-menu that is NOT the known usage-limit dialog.
 
