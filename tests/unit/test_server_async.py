@@ -263,6 +263,50 @@ class TestSpeakDefaultTier:
         assert ok is False
         server._os_say.assert_not_awaited()
 
+    async def test_kokoro_ready_broadcasts_audio_not_speak_text(self, server):
+        """Once the in-process Kokoro engine is warm, the default tier sends
+        real WAV audio messages instead of delegating to speechSynthesis."""
+        import numpy as np
+
+        from agentwire.tts.audio import pcm_float_to_wav_bytes
+
+        server._broadcast = AsyncMock()
+        server.broadcast_dashboard = AsyncMock()
+        wav = pcm_float_to_wav_bytes(np.zeros(2400, dtype=np.float32), 24000)
+        server.kokoro = MagicMock()
+        server.kokoro.ready = True
+        server.kokoro.synthesize = AsyncMock(return_value=(wav, 0.1))
+        from agentwire.server import Session
+        session = Session(name="dev", config=server._get_session_config("dev"))
+        session.clients.add(_client())
+        server.active_sessions["dev"] = session
+
+        ok = await server.speak("dev", "[laugh] hello world")
+
+        assert ok is True
+        sent = [c.args[1] for c in server._broadcast.await_args_list]
+        assert any(m.get("type") == "audio" for m in sent)
+        assert not any(m.get("type") == "speak_text" for m in sent)
+        # Speech tags stripped before synthesis (kokoro has no tag support)
+        chunk = server.kokoro.synthesize.await_args[0][0]
+        assert "[laugh]" not in chunk
+
+    async def test_kokoro_failure_returns_false_no_speak_text(self, server):
+        """A ready engine that errors mid-synthesis must not crash speak()."""
+        server._broadcast = AsyncMock()
+        server.broadcast_dashboard = AsyncMock()
+        server.kokoro = MagicMock()
+        server.kokoro.ready = True
+        server.kokoro.synthesize = AsyncMock(side_effect=RuntimeError("onnx died"))
+        from agentwire.server import Session
+        session = Session(name="dev", config=server._get_session_config("dev"))
+        session.clients.add(_client())
+        server.active_sessions["dev"] = session
+
+        ok = await server.speak("dev", "hello")
+
+        assert ok is False
+
     async def test_notifications_fanout_speaks_text_to_other_sessions(self, server):
         server._broadcast = AsyncMock()
         server.broadcast_dashboard = AsyncMock()
