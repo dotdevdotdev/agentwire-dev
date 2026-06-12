@@ -29,6 +29,10 @@ agentwire worktree name         # new branch + worktree + STANDALONE session
                                 #   "worktree session" ALWAYS means this command — never
                                 #   `spawn --branch` (that makes a pane); add
                                 #   --type claude-bypass for autonomous workers
+                                #   Auto-injects the worktree-mission briefing role
+                                #   (isolation, no rebuild/restart, verify in-worktree,
+                                #   draft PR + notify-back) — first prompts only need
+                                #   the task itself; --no-mission opts out
 agentwire worktree name -b develop  # from specific base branch
 agentwire worktree name -c      # from repo's current branch
 agentwire worktree name -e      # checkout existing branch (no new branch)

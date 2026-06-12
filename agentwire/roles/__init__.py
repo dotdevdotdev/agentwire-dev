@@ -199,6 +199,47 @@ def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool
     return [*role_names, "soul"]
 
 
+# Bundled role carrying the standing briefing for `agentwire worktree`
+# dispatches (isolation, no live-tool mutation, in-worktree verification,
+# draft-PR + notify-back contract). Auto-applied by cmd_worktree so
+# orchestrators stop hand-writing the same briefing into every first prompt.
+WORKTREE_MISSION_ROLE = "worktree-mission"
+
+
+def inject_worktree_mission(role_names: list[str], no_mission: bool = False) -> list[str]:
+    """Append the bundled worktree-mission briefing role to a session's role list.
+
+    Applied by `agentwire worktree` at session-create time, before
+    inject_soul (so soul still rides last). Skipped when:
+    - no_mission is True (per-dispatch --no-mission flag)
+    - the role is already present (explicit --roles or project override)
+
+    Args:
+        role_names: Resolved role names for the session
+        no_mission: Per-dispatch opt-out
+
+    Returns:
+        role_names with "worktree-mission" appended, or unchanged if excluded
+    """
+    if no_mission:
+        return role_names
+    if WORKTREE_MISSION_ROLE in role_names:
+        return role_names
+    return [*role_names, WORKTREE_MISSION_ROLE]
+
+
+def render_mission_placeholders(text: str, context: dict[str, str]) -> str:
+    """Substitute ``{{key}}`` placeholders in role instructions.
+
+    Only keys present in ``context`` are replaced; unknown placeholders are
+    left intact (so a malformed context fails loudly in the rendered prompt
+    instead of silently dropping the constraint).
+    """
+    for key, value in context.items():
+        text = text.replace("{{" + key + "}}", str(value))
+    return text
+
+
 def discover_role(name: str, project_path: Path | None = None) -> Path | None:
     """Find a role file by name using discovery order.
 

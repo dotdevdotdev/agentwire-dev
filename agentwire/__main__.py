@@ -36,7 +36,15 @@ from .project_config import (
     normalize_session_type,
     save_project_config,
 )
-from .roles import RoleConfig, inject_soul, load_roles, merge_roles
+from .roles import (
+    WORKTREE_MISSION_ROLE,
+    RoleConfig,
+    inject_soul,
+    inject_worktree_mission,
+    load_roles,
+    merge_roles,
+    render_mission_placeholders,
+)
 from .worktree import ensure_worktree, parse_session_name, remove_worktree
 
 # Default config directory
@@ -3295,6 +3303,13 @@ def cmd_new(args) -> int:
             default_role = config.get("session", {}).get("default_role", "agentwire")
             role_names = [default_role] if default_role else []
 
+    # Standing mission briefing for worktree dispatches: cmd_worktree passes
+    # mission_context (branch/cwd/base/creator values) which both opts the
+    # session into the worktree-mission role and templates its placeholders.
+    mission_context = getattr(args, 'mission_context', None)
+    if mission_context:
+        role_names = inject_worktree_mission(role_names)
+
     # Always-inject the soul personality role (rides last for recency weight)
     role_names = inject_soul(role_names, load_config(), no_soul=getattr(args, 'no_soul', False))
 
@@ -3306,6 +3321,11 @@ def cmd_new(args) -> int:
         roles, missing = load_roles(role_names, project_path_for_roles)
         if missing:
             return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
+
+    if mission_context:
+        for role in roles:
+            if role.name == WORKTREE_MISSION_ROLE:
+                role.instructions = render_mission_placeholders(role.instructions, mission_context)
 
     # Parse session name: project, branch, machine
     project, branch, machine_id = parse_session_name(name)
@@ -4769,6 +4789,12 @@ def cmd_worktree(args) -> int:
     - --ref: detached at a ref. `agentwire worktree review-v2 --ref v2.0.0`
 
     If the worktree already exists, reattaches to the existing session.
+
+    Default/--existing dispatches auto-inject the bundled worktree-mission
+    briefing role (isolation, no live-tool mutation, in-worktree
+    verification, draft-PR + notify-back contract) with branch/cwd/base/
+    creator templated in — opt out with --no-mission. --ref dispatches skip
+    it (detached checkout, nothing to push).
     """
     json_mode = getattr(args, 'json', False)
     name = args.name
@@ -4794,13 +4820,42 @@ def cmd_worktree(args) -> int:
     session_name = f"{project_name}-{name}"
     worktree_path = worktree_dir / session_name
 
-    def _launch_session():
+    default_base = getattr(args, 'base', None) or wt_config.get("default_base", "main")
+    no_mission = getattr(args, 'no_mission', False)
+
+    def _mission_context(base_branch: str) -> dict | None:
+        """Values templated into the worktree-mission briefing role.
+
+        None (no briefing) when --no-mission is passed, or for --ref
+        dispatches — a detached review checkout has no branch to push, so
+        the finishing contract doesn't apply.
+        """
+        if no_mission or ref:
+            return None
+        creator = pane_manager.get_current_session()
+        notify_back = (
+            f'agentwire notify-parent --to {creator} "{session_name}: <one-liner + PR URL>"'
+            if creator else
+            f'agentwire notify-parent "{session_name}: <one-liner + PR URL>"'
+        )
+        return {
+            "session": session_name,
+            "branch": name,
+            "worktree_path": str(worktree_path),
+            "main_checkout": str(project_path),
+            "base_branch": base_branch,
+            "creator": creator or "your creator session",
+            "notify_back": notify_back,
+        }
+
+    def _launch_session(mission_context: dict | None = None):
         return cmd_new(type('Args', (), {
             'session': session_name, 'path': str(worktree_path), 'json': json_mode,
             'force': False, 'bare': False, 'restricted': False, 'prompted': False,
             'type': getattr(args, 'type', None), 'roles': getattr(args, 'roles', None),
             'instructions': None, 'persist': False,
             'env': getattr(args, 'env', None),
+            'mission_context': mission_context,
         })())
 
     # If worktree already exists, reattach
@@ -4812,10 +4867,11 @@ def cmd_worktree(args) -> int:
         if tmux_session_exists(session_name):
             subprocess.run(["tmux", "attach-session", "-t", session_name])
         else:
-            return _launch_session()
+            return _launch_session(_mission_context(default_base))
         return 0
 
     # Resolve the git ref to create the worktree from
+    pr_base = default_base
     if ref:
         # --ref mode: detached at a specific ref (tag, commit, branch)
         git_ref = ref
@@ -4837,7 +4893,8 @@ def cmd_worktree(args) -> int:
                 return _output_result(False, json_mode, f"Failed to detect current branch in {project_path}")
             base_branch = result.stdout.strip()
         else:
-            base_branch = getattr(args, 'base', None) or wt_config.get("default_base", "main")
+            base_branch = default_base
+        pr_base = base_branch
         git_ref = f"origin/{base_branch}"
         new_branch = name
         mode_label = f"new branch {name} from {git_ref}"
@@ -4884,7 +4941,7 @@ def cmd_worktree(args) -> int:
         print(f"Created worktree: {worktree_path}")
         print(f"Mode: {mode_label}")
 
-    return _launch_session()
+    return _launch_session(_mission_context(pr_base))
 
 
 def cmd_fork(args) -> int:
@@ -10803,6 +10860,8 @@ def main() -> int:
     wt_parser.add_argument("--project", "-p", help="Path to git repo (default: from config or cwd)")
     wt_parser.add_argument("--type", help="Session type override")
     wt_parser.add_argument("--roles", help="Comma-separated role names")
+    wt_parser.add_argument("--no-mission", dest="no_mission", action="store_true",
+                           help="Skip the auto-injected worktree-mission briefing role")
     wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     wt_parser.add_argument("--json", action="store_true", help="Output as JSON")
     wt_parser.set_defaults(func=cmd_worktree)

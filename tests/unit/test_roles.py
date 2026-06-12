@@ -5,12 +5,16 @@ from pathlib import Path
 import pytest
 
 from agentwire.roles import (
+    WORKTREE_MISSION_ROLE,
     RoleConfig,
     MergedRole,
     parse_role_file,
     merge_roles,
     discover_role,
     inject_soul,
+    inject_worktree_mission,
+    load_roles,
+    render_mission_placeholders,
 )
 
 
@@ -203,6 +207,100 @@ class TestInjectSoul:
         assert role.tools == []
         assert role.disallowed_tools == []
         assert role.instructions
+
+
+# --- worktree-mission (#291) ---
+
+MISSION_CONTEXT = {
+    "session": "agentwire-dev-fix-bug",
+    "branch": "fix-bug",
+    "worktree_path": "/Users/x/worktrees/agentwire-dev-fix-bug",
+    "main_checkout": "/Users/x/projects/agentwire-dev",
+    "base_branch": "main",
+    "creator": "agentwire",
+    "notify_back": 'agentwire notify-parent --to agentwire "agentwire-dev-fix-bug: <one-liner + PR URL>"',
+}
+
+
+class TestInjectWorktreeMission:
+    def test_appended(self):
+        assert inject_worktree_mission(["agentwire"]) == ["agentwire", "worktree-mission"]
+
+    def test_empty_list(self):
+        assert inject_worktree_mission([]) == ["worktree-mission"]
+
+    def test_no_double_add(self):
+        assert inject_worktree_mission(["worktree-mission"]) == ["worktree-mission"]
+        assert inject_worktree_mission(["agentwire", "worktree-mission"]) == [
+            "agentwire",
+            "worktree-mission",
+        ]
+
+    def test_no_mission_flag(self):
+        assert inject_worktree_mission(["agentwire"], no_mission=True) == ["agentwire"]
+
+    def test_input_not_mutated(self):
+        names = ["agentwire"]
+        inject_worktree_mission(names)
+        assert names == ["agentwire"]
+
+    def test_soul_still_rides_last(self):
+        # cmd_new injects mission first, then soul — soul keeps recency weight
+        names = inject_soul(inject_worktree_mission(["agentwire"]))
+        assert names == ["agentwire", "worktree-mission", "soul"]
+
+
+class TestRenderMissionPlaceholders:
+    def test_substitutes_known_keys(self):
+        text = "Branch `{{branch}}` from `{{base_branch}}`."
+        out = render_mission_placeholders(text, MISSION_CONTEXT)
+        assert out == "Branch `fix-bug` from `main`."
+
+    def test_unknown_placeholder_left_intact(self):
+        out = render_mission_placeholders("Hello {{mystery}}", MISSION_CONTEXT)
+        assert out == "Hello {{mystery}}"
+
+    def test_non_string_values_coerced(self):
+        out = render_mission_placeholders("PR #{{n}}", {"n": 42})
+        assert out == "PR #42"
+
+
+class TestBundledWorktreeMissionRole:
+    def test_discoverable_and_pure(self):
+        """worktree-mission must parse and not widen or narrow tool permissions."""
+        path = discover_role(WORKTREE_MISSION_ROLE)
+        assert path is not None
+        role = parse_role_file(path)
+        assert role is not None
+        assert role.name == WORKTREE_MISSION_ROLE
+        assert role.tools == []
+        assert role.disallowed_tools == []
+        assert role.instructions
+
+    def test_briefing_covers_the_standing_rules(self):
+        role = parse_role_file(discover_role(WORKTREE_MISSION_ROLE))
+        for needle in [
+            "{{worktree_path}}",
+            "{{main_checkout}}",
+            "{{branch}}",
+            "{{base_branch}}",
+            "{{notify_back}}",
+            "agentwire rebuild",
+            "portal restart",
+            "DRAFT",
+            "Closes #",
+        ]:
+            assert needle in role.instructions, f"briefing missing: {needle}"
+
+    def test_renders_fully_with_mission_context(self):
+        """All placeholders in the bundled role resolve from cmd_worktree's context."""
+        roles, missing = load_roles([WORKTREE_MISSION_ROLE])
+        assert missing == []
+        rendered = render_mission_placeholders(roles[0].instructions, MISSION_CONTEXT)
+        assert "{{" not in rendered
+        assert "/Users/x/worktrees/agentwire-dev-fix-bug" in rendered
+        assert "git push -u origin fix-bug" in rendered
+        assert 'agentwire notify-parent --to agentwire' in rendered
 
 
 # --- council roles (#213) ---
