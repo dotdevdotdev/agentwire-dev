@@ -8496,8 +8496,6 @@ def cmd_ensure(args) -> int:
                 print(f"  {preview_template(cmd, ctx)}")
             print()
 
-        if task.output.notify:
-            print(f"Notification: {task.output.notify}")
         if task.output.save:
             print(f"Save output to: {preview_template(task.output.save, ctx)}")
 
@@ -9068,7 +9066,7 @@ def cmd_task_show(args) -> int:
             "pre": [{"name": p.name, "cmd": p.cmd, "required": p.required, "validate": p.validate, "timeout": p.timeout} for p in task.pre],
             "on_task_end": task.on_task_end,
             "post": task.post,
-            "output": {"capture": task.output.capture, "save": task.output.save, "notify": task.output.notify},
+            "output": {"capture": task.output.capture, "save": task.output.save},
             "validation_issues": issues,
         })
         return 0
@@ -9107,12 +9105,9 @@ def cmd_task_show(args) -> int:
             print(f"  {cmd}")
         print()
 
-    if task.output.notify or task.output.save:
+    if task.output.save:
         print("Output:")
-        if task.output.save:
-            print(f"  Save to: {task.output.save}")
-        if task.output.notify:
-            print(f"  Notify: {task.output.notify}")
+        print(f"  Save to: {task.output.save}")
 
     if issues:
         print(f"\nValidation issues: {', '.join(issues)}")
