@@ -52,7 +52,9 @@ tasks:
 
 **Lifecycle:** branch `scheduler-<task>-<timestamp>` → run in worktree → if it produced changes, `git add -A` + commit (`scheduler: <task> — <summary>`) + push + draft PR; if it produced **nothing**, the empty worktree is removed and no PR is opened. The worktree **persists while the PR is open** (so you can spawn a session there during review) and is **reaped automatically when the PR merges or closes** (worktree + branch + session torn down). `worktree: false` tasks run in place and never commit.
 
-**Seeded files:** `git worktree add` only checks out *tracked* files, so gitignored secrets/config (`.env` etc.) won't be in a fresh worktree — an agent that needs them to authenticate would fail. The files listed in `projects.worktrees.copy_files` (default `[".env"]`) are copied from the main repo into every new worktree. They stay gitignored there, so they're never committed.
+**Seeded files:** `git worktree add` only checks out *tracked* files, so gitignored secrets/config (`.env`, `.agentwire.yml`) won't be in a fresh worktree — an agent that needs them to authenticate would fail. The files listed in `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml"]`) are copied from the main repo into every new worktree. They stay gitignored there, so they're never committed.
+
+**Keep `.agentwire.yml` gitignored, not tracked.** Worktree runs check out HEAD — if the project *tracks* `.agentwire.yml`, uncommitted live edits to it are silently invisible to the run, which executes the stale committed version (and `copy_files` won't overwrite a tracked checkout). Gitignored + seeded via `copy_files` means the live file always wins. See the `agentwire-project-config` skill.
 
 ## Scheduler Task Scheduling
 

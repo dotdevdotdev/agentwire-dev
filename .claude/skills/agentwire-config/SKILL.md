@@ -54,10 +54,13 @@ projects:
     enabled: true
     suffix: "-worktrees"
     auto_create_branch: true
-    copy_files: [".env"]   # gitignored files seeded into each new worktree
+    copy_files: [".env", ".agentwire.yml"]   # gitignored files seeded into each new worktree
                            # (git worktree add only checks out tracked files,
                            #  so .env/secrets/local config don't carry over —
-                           #  add ".env.local", ".envrc", etc. as needed)
+                           #  add ".env.local", ".envrc", etc. as needed).
+                           # Keep .agentwire.yml gitignored: a TRACKED copy means
+                           # worktree runs use the committed version (HEAD) and
+                           # silently ignore live edits — see agentwire-project-config skill.
 
 tts:
   backend: "default"  # tier: default (in-process Kokoro, zero setup — ~200MB model

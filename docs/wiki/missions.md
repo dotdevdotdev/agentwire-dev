@@ -81,6 +81,8 @@ missions:
 
 Unknown repo shorts in the project override are silently ignored — the global config is the source of truth for which repos are mission-eligible.
 
+Keep `.agentwire.yml` gitignored (the standard recommendation — see the `agentwire-project-config` skill): mission workers run in worktrees checked out from a git ref, so a *tracked* copy means uncommitted live edits to it are invisible to the worker; gitignored, the live file is seeded in via `projects.worktrees.copy_files`.
+
 ## CLI
 
 All commands print human-readable output by default; pass `--json` for structured output that the portal / MCP tools consume.

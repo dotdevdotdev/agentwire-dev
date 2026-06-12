@@ -4,6 +4,7 @@ Project-level configuration (.agentwire.yml).
 This file lives in project directories and is the source of truth for session config.
 """
 
+import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -269,6 +270,57 @@ def save_project_config(config: ProjectConfig, project_dir: Path) -> bool:
     try:
         with open(config_file, "w") as f:
             yaml.safe_dump(config.to_dict(), f, default_flow_style=False, sort_keys=False)
+        ensure_gitignored(project_dir)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_gitignored(project_dir: Path) -> bool:
+    """Ensure .agentwire.yml is gitignored in the project's repo.
+
+    .agentwire.yml is personal/live config (voices, schedules, email
+    recipients), and a tracked copy breaks worktree dispatch: worktree runs
+    check out HEAD, so uncommitted live edits to a tracked file are silently
+    ignored. Worktree runs get the live file via projects.worktrees.copy_files
+    instead. A file that is already tracked is left alone — that's a
+    deliberate choice to share versioned config.
+
+    Args:
+        project_dir: Project root (the directory containing .agentwire.yml)
+
+    Returns:
+        True if .gitignore was modified, False otherwise.
+    """
+    project_dir = Path(project_dir).resolve()
+    try:
+        in_repo = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=project_dir, capture_output=True, timeout=10,
+        )
+        if in_repo.returncode != 0:
+            return False
+
+        # Already tracked = deliberate team choice; don't fight it
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", ".agentwire.yml"],
+            cwd=project_dir, capture_output=True, timeout=10,
+        )
+        if tracked.returncode == 0:
+            return False
+
+        ignored = subprocess.run(
+            ["git", "check-ignore", "-q", ".agentwire.yml"],
+            cwd=project_dir, capture_output=True, timeout=10,
+        )
+        if ignored.returncode == 0:
+            return False
+
+        gitignore = project_dir / ".gitignore"
+        existing = gitignore.read_text() if gitignore.exists() else ""
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        with open(gitignore, "a") as f:
+            f.write(f"{prefix}# AgentWire personal config — keep untracked (worktree dispatch + privacy)\n.agentwire.yml\n")
         return True
     except Exception:
         return False
