@@ -176,11 +176,15 @@ def validate_config(
     if port_error:
         errors.append(port_error)
 
-    # Validate TTS URL
-    warnings.extend(_validate_url(config.tts.url, "tts", config_path))
+    # Validate TTS URL — only the custom tier has one; the default tier's
+    # url is None and must not warn (doctor showed false "URL missing
+    # scheme in tts" on every default-tier install).
+    if config.tts.url:
+        warnings.extend(_validate_url(config.tts.url, "tts", config_path))
 
     # Validate portal URL
-    warnings.extend(_validate_url(config.portal.url, "portal", config_path))
+    if config.portal.url:
+        warnings.extend(_validate_url(config.portal.url, "portal", config_path))
 
     # Check if machines.json exists when expected
     if not machines_file.exists():
