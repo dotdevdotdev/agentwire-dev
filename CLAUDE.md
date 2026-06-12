@@ -123,6 +123,10 @@ First-class auto-dispatcher subsystem (sibling to Sessions/Tasks/Workflows): sta
 
 Deterministic (zero-LLM) recovery from the Claude Code usage-limit dialog: a launchd watchdog (`agentwire limits tick`, 60s) plus ensure's completion poll detect the dialog, park the session (option 1: stop and wait), parse the reset time, email the owner via Resend, and nudge the session to continue after reset. Park state under `~/.agentwire/usage-limit/` guards every surface — ensure exits 7 (`usage_limit`), the scheduler skips dispatch, the idle hook and overnight never reap a parked session. CLI under `agentwire limits ...`. Full reference: [`docs/wiki/usage-limit-recovery.md`](docs/wiki/usage-limit-recovery.md).
 
+## Prompt Routing
+
+Interactive prompts (permission, plan-approval, AskUserQuestion) hitting a child session are routed as text to its parent/orchestrator — hook path for permissions (seconds), pane-sweep riding the limits watchdog for the rest (≤60s). Parent resolution: worker pane → pane 0; else creator recorded at `agentwire new`; else `.agentwire.yml` `parent:`. Answer ONLY with `agentwire prompts answer -s <session> --expect <hash> <key>` (compare-and-send; raw send-keys races the portal). Deliveries are safety-gated (never paste into a live menu, a bare shell, or a parked session). CLI under `agentwire prompts ...`. Full reference: [`docs/wiki/sessions/prompt-routing.md`](docs/wiki/sessions/prompt-routing.md).
+
 ## Council
 
 Multi-soul orchestrator sitting: `agentwire-council` fans prompts out to lens sessions (`council-brain`, `council-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/prompts/`; the orchestrator collects and synthesizes with attribution. The standard `soul` role self-excludes from any `council-*` session. CLI under `agentwire council ...`, 5 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](docs/wiki/council.md).

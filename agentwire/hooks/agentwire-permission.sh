@@ -89,6 +89,23 @@ if [ -z "$session" ]; then
     exit 1
 fi
 
+# Enrich the payload with pane context (#276: lets the portal route the
+# prompt to a parent session and answer the right pane). Best-effort —
+# any failure leaves the original payload untouched.
+pane_index="0"
+tmux_session=""
+if [ -n "$TMUX_PANE" ]; then
+    pane_index=$(tmux display -t "$TMUX_PANE" -p '#{pane_index}' 2>/dev/null || echo "0")
+    tmux_session=$(tmux display -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null || echo "")
+fi
+enriched=$(printf '%s' "$input" | PANE_INDEX="$pane_index" TMUX_SESSION="$tmux_session" python3 -c "
+import json, os, sys
+d = json.load(sys.stdin)
+d['pane_index'] = int(os.environ.get('PANE_INDEX') or 0)
+d['tmux_session'] = os.environ.get('TMUX_SESSION', '')
+print(json.dumps(d))" 2>/dev/null)
+[ -n "$enriched" ] && input="$enriched"
+
 # Get portal URL from global config
 # Priority: 1. ~/.agentwire/portal_url file, 2. config.yaml server section, 3. default
 get_portal_url() {
@@ -135,12 +152,13 @@ token=$(get_portal_token)
 auth_args=()
 [ -n "$token" ] && auth_args=(-H "Authorization: Bearer $token")
 
-# POST to portal and wait for response (5 minute timeout)
+# POST to portal and wait for response. 310s: must outlive the server's own
+# 300s wait so its timeout-deny JSON reaches us instead of a curl abort.
 response=$(curl -s -X POST "${base_url}/api/permission/${session}" \
     -H "Content-Type: application/json" \
     "${auth_args[@]}" \
     -d "$input" \
-    --max-time 300 \
+    --max-time 310 \
     --insecure 2>/dev/null)
 
 # Check if curl succeeded

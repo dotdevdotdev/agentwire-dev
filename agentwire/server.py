@@ -34,6 +34,7 @@ import jinja2
 import yaml
 from aiohttp import web
 
+from . import prompt_router
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
 from .security import (
@@ -144,6 +145,7 @@ class PendingPermission:
     request: dict  # The permission request from Claude Code
     event: asyncio.Event = field(default_factory=asyncio.Event)  # Signals when user responds
     decision: dict | None = None  # The user's decision
+    pane_index: int = 0  # Pane the dialog is on (worker panes > 0)
 
 
 @dataclass
@@ -2180,51 +2182,15 @@ class AgentWireServer:
     # Patterns for say command detection
     # Matches: say "text", agentwire say "text", agentwire say -s session "text"
     SAY_PATTERN = re.compile(r'(?:agentwire\s+)?say\s+(?:-s\s+\S+\s+)?(?:"([^"]+)"|\'([^\']+)\')', re.IGNORECASE)
-    ANSI_PATTERN = re.compile(r'\x1b\[[0-9;]*m|\x1b\].*?\x07')
-
-    # Pattern to detect AskUserQuestion UI blocks
-    # Format: ☐ Header\n\nQuestion?\n\n❯ 1. Label\n     Description\n  2. Label...
-    # Multi-tab format: ←  ☐ Tab1  ☐ Tab2  ✔ Submit  →\n\nQuestion?...
-    ASK_PATTERN = re.compile(
-        r'☐\s+(\S+)'              # ☐ followed by first word only (active tab name)
-        r'.*?\n\s*\n'             # Rest of header line + blank line
-        r'((?:.+\n)+?)'           # Question text (one or more lines, non-greedy)
-        r'\s*\n'                  # Blank line before options
-        r'((?:[❯\s]+\d+\.\s+.+\n(?:\s{3,}.+\n)?)+)',  # Options block
-        re.MULTILINE | re.DOTALL
-    )
-
-    # Simple format without ☐ header (e.g., "Ready to submit?\n\n❯ 1. Submit\n  2. Cancel")
-    ASK_PATTERN_SIMPLE = re.compile(
-        r'\n([^\n☐❯]+\?)\s*\n'    # Question ending with ? (not containing ☐ or ❯)
-        r'\s*\n'                   # Blank line
-        r'((?:[❯\s]+\d+\.\s+.+\n(?:\s{3,}.+\n)?)+)',  # Options block
-        re.MULTILINE
-    )
+    # Dialog/ANSI patterns live in prompt_router (single source of truth,
+    # shared with the pane-sweep prompt detector).
+    ANSI_PATTERN = prompt_router.ANSI_PATTERN
+    ASK_PATTERN = prompt_router.ASK_PATTERN
+    ASK_PATTERN_SIMPLE = prompt_router.ASK_PATTERN_SIMPLE
 
     def _parse_ask_options(self, options_block: str) -> list[dict]:
         """Parse numbered options from AskUserQuestion block."""
-        options = []
-        current_option = None
-
-        for line in options_block.split('\n'):
-            line = self.ANSI_PATTERN.sub('', line)
-            option_match = re.match(r'[❯\s]*(\d+)\.\s+(.+)', line)
-            if option_match:
-                if current_option:
-                    options.append(current_option)
-                current_option = {
-                    'number': int(option_match.group(1)),
-                    'label': option_match.group(2).strip(),
-                    'description': '',
-                }
-            elif current_option and line.strip():
-                current_option['description'] = line.strip()
-
-        if current_option:
-            options.append(current_option)
-
-        return options
+        return prompt_router.parse_ask_options(options_block)
 
     async def _poll_output(self, session: Session):
         """Poll agent output and broadcast to session clients."""
@@ -4145,7 +4111,22 @@ projects:
                     })
 
             # Create pending permission request (normal/prompted mode)
-            session.pending_permission = PendingPermission(request=data)
+            try:
+                pane_index = int(data.get("pane_index") or 0)
+            except (TypeError, ValueError):
+                pane_index = 0
+            session.pending_permission = PendingPermission(request=data, pane_index=pane_index)
+
+            # Route to the parent/orchestrator session, if one resolves
+            # (#276). Best-effort and non-blocking for the dialog itself;
+            # placed AFTER the restricted-mode branch so auto-denied tools
+            # never spam a parent. The hook payload's tmux_session (the real
+            # tmux name) beats the URL name, which may be a project alias.
+            tmux_name = str(data.get("tmux_session") or "") or name
+            parent_notified = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: prompt_router.notify_permission_request(tmux_name, pane_index, data),
+            )
 
             # Broadcast permission request to all clients (Task 3.1)
             await self._broadcast(session, {
@@ -4153,10 +4134,13 @@ projects:
                 "tool_name": tool_name,
                 "tool_input": tool_input,
                 "message": message,
+                "parent_notified": parent_notified,
             })
 
             # Generate TTS announcement (Task 3.6)
-            await self._announce_permission_request(name, tool_name, tool_input)
+            await self._announce_permission_request(
+                name, tool_name, tool_input, parent_notified=parent_notified
+            )
 
             # Wait for user decision with 5 minute timeout
             try:
@@ -4165,6 +4149,9 @@ projects:
                 logger.warning(f"[{name}] Permission request timed out")
                 session.pending_permission = None
                 await self._broadcast(session, {"type": "permission_timeout"})
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
+                )
                 return web.json_response({
                     "decision": "deny",
                     "message": "Permission request timed out (5 minutes)"
@@ -4173,6 +4160,9 @@ projects:
             # Return the decision to the hook script
             decision = session.pending_permission.decision
             session.pending_permission = None
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
+            )
 
             logger.info(f"[{name}] Permission decision: {decision}")
             return web.json_response(decision)
@@ -4204,24 +4194,44 @@ projects:
             if not session.pending_permission:
                 return web.json_response({"error": "No pending permission request"}, status=400)
 
+            # Capture pane/session context BEFORE signaling — the waiting
+            # request handler nulls pending_permission as soon as it wakes.
+            pane_index = session.pending_permission.pane_index
+            pending_request = session.pending_permission.request
+            tmux_name = str(pending_request.get("tmux_session") or "") or name
+
             # Store decision and signal the waiting request
             session.pending_permission.decision = {"decision": decision}
             if decision == "deny":
                 session.pending_permission.decision["message"] = data.get("message", "User denied permission")
             session.pending_permission.event.set()
 
-            # Send keystroke to session to respond to Claude's interactive prompt
-            # Use CLI for consistent behavior (handles local and remote via session@machine format)
+            # Send keystroke to the pane the dialog is on — CONDITIONALLY.
+            # The parent session may have answered via `agentwire prompts
+            # answer` moments earlier: a late '1' would type into the freed
+            # input box, and a late Escape would abort the child's next turn.
+            # Re-capture and only send if a live menu is still on screen.
             try:
                 import subprocess
 
-                if decision == "custom":
+                dialog_live = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: prompt_router.screen_shows_live_menu(
+                        prompt_router._capture(f"{tmux_name}.{pane_index}")
+                    ),
+                )
+                if not dialog_live:
+                    logger.info(
+                        f"[{name}] Dialog already gone (answered elsewhere) — skipping keystroke"
+                    )
+                elif decision == "custom":
                     # Custom feedback: send "3", then message, then Enter
                     custom_message = data.get("message", "")
                     if custom_message:
                         # send-keys handles pauses between key groups
                         subprocess.run(
-                            ["agentwire", "send-keys", "-s", name, "3", custom_message, "Enter"],
+                            ["agentwire", "send-keys", "-s", tmux_name,
+                             "--pane", str(pane_index), "3", custom_message, "Enter"],
                             check=True, capture_output=True
                         )
                         logger.info(f"[{name}] Sent custom feedback: {custom_message[:50]}...")
@@ -4234,12 +4244,17 @@ projects:
                     }
                     keystroke = keystroke_map.get(decision, "Escape")
                     subprocess.run(
-                        ["agentwire", "send-keys", "-s", name, keystroke],
+                        ["agentwire", "send-keys", "-s", tmux_name,
+                         "--pane", str(pane_index), keystroke],
                         check=True, capture_output=True
                     )
-                    logger.info(f"[{name}] Sent keystroke '{keystroke}' to session")
+                    logger.info(f"[{name}] Sent keystroke '{keystroke}' to {tmux_name}.{pane_index}")
             except Exception as e:
                 logger.error(f"[{name}] Failed to send keystroke: {e}")
+
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
+            )
 
             # Broadcast permission_resolved to all clients (Task 3.7)
             await self._broadcast(session, {
@@ -4253,7 +4268,10 @@ projects:
             logger.error(f"Permission respond failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
-    async def _announce_permission_request(self, session_name: str, tool_name: str, tool_input: dict):
+    async def _announce_permission_request(
+        self, session_name: str, tool_name: str, tool_input: dict,
+        parent_notified: "str | None" = None,
+    ):
         """Generate TTS announcement for permission request (Task 3.6)."""
         # Build a natural announcement message
         if tool_name == "Edit":
@@ -4273,6 +4291,10 @@ projects:
             text = f"Claude wants to run a command: {command}"
         else:
             text = f"Claude wants to use {tool_name}"
+
+        if parent_notified:
+            # The human knows an agent may handle it before they get there.
+            text += f". Also routed to {parent_notified}"
 
         await self._say_to_room(session_name, text)
 

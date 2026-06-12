@@ -22,6 +22,8 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire fork -s name -t project/branch` | `session_fork(session="...", target="...")` |
 | `agentwire fork -s name -t project/branch --commit abc` | `session_fork(session="...", target="...", commit="abc")` |
 
+**Note:** `session_create` (via `agentwire new`) records the calling session as the new session's creator — interactive prompts (permission/plan/AskUserQuestion) in the child then route back to you as `[PROMPT from ...]` messages. Answer them with `agentwire prompts answer -s <session> --expect <hash> <key>` via Bash (guarded compare-and-send), NEVER with raw `session_send_keys` — a late keystroke races the portal and can type into the child's input or abort its turn.
+
 ## Pane Management (9 tools)
 
 | CLI Command | MCP Tool |

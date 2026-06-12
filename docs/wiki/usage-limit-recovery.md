@@ -124,6 +124,11 @@ Events: `~/.agentwire/usage-limit-events.jsonl` (`session_parked`,
 `notify_sent`, `session_resumed`, `unmatched_dialog`, `reset_parse_failed`,
 `park_orphaned`, …).
 
+Since #276 the tick is the general pane watchdog: after the usage-limit
+sweep it also runs the [prompt-routing sweep](sessions/prompt-routing.md)
+(`prompt_router.tick()`) — ordering guarantees a usage-limit dialog is parked
+before prompt routing ever looks at the pane.
+
 ## Notifications
 
 Park and resume each send one email through the existing Resend channel

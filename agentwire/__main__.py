@@ -2418,32 +2418,38 @@ def cmd_notify_parent(args) -> int:
         if parent:
             target_session = parent
 
-    # Build notification message
-    source = current_session or "unknown"
-    if current_pane is not None and current_pane > 0:
-        notification = f"[NOTIFY from {source} pane {current_pane}] {text}"
+    # Build notification message (--raw sends verbatim — queued messages
+    # already carry their own [WORKER SUMMARY ...] / [PROMPT ...] headers)
+    if getattr(args, 'raw', False):
+        notification = text
     else:
-        notification = f"[NOTIFY from {source}] {text}"
-
-    try:
-        if target_session:
-            if target_session == current_session and current_pane == 0:
-                print("Cannot notify own pane", file=sys.stderr)
-                return 1
-            pane_manager.send_to_pane(target_session, 0, notification)
-            if not getattr(args, 'quiet', False):
-                print(f"Notified {target_session}")
-        elif current_pane is not None and current_pane > 0 and current_session:
-            pane_manager.send_to_pane(current_session, 0, notification)
-            if not getattr(args, 'quiet', False):
-                print(f"Notified {current_session} pane 0")
+        source = current_session or "unknown"
+        if current_pane is not None and current_pane > 0:
+            notification = f"[NOTIFY from {source} pane {current_pane}] {text}"
         else:
-            print("No target session (set 'parent' in .agentwire.yml or use --to)", file=sys.stderr)
+            notification = f"[NOTIFY from {source}] {text}"
+
+    if target_session:
+        if target_session == current_session and current_pane == 0:
+            print("Cannot notify own pane", file=sys.stderr)
             return 1
-    except Exception as e:
-        print(f"Failed to send notification: {e}", file=sys.stderr)
+    elif current_pane is not None and current_pane > 0 and current_session:
+        target_session = current_session
+    else:
+        print("No target session (set 'parent' in .agentwire.yml or use --to)", file=sys.stderr)
         return 1
 
+    # safe_deliver refuses targets where a paste could do damage (live
+    # dialog on screen, bare shell, parked session) and verifies the paste
+    # actually landed. Callers (queue processor) retry on failure.
+    from agentwire import prompt_router
+
+    delivered, reason = prompt_router.safe_deliver(target_session, 0, notification)
+    if not delivered:
+        print(f"Notification not delivered to {target_session}: {reason}", file=sys.stderr)
+        return 1
+    if not getattr(args, 'quiet', False):
+        print(f"Notified {target_session}")
     return 0
 
 
@@ -2841,6 +2847,23 @@ def store_session_metadata(session_name: str, metadata: dict) -> None:
             json.dump(metadata, f, indent=2)
     except (IOError, TypeError):
         pass
+
+
+def _record_session_creator(session_name: str, created_by: str | None, via: str) -> None:
+    """Record which session created this one (merge-preserving).
+
+    The creator becomes the session's parent for prompt routing
+    (prompt_router.resolve_parent), winning over .agentwire.yml `parent:`.
+    """
+    if not created_by or created_by == session_name.split("@")[0]:
+        return
+    metadata = load_session_metadata(session_name)
+    metadata.update({
+        "created_by": created_by,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_via": via,
+    })
+    store_session_metadata(session_name, metadata)
 
 
 def cmd_notify(args) -> int:
@@ -3657,6 +3680,13 @@ def cmd_new(args) -> int:
         if not first_message_delivered and not json_mode:
             print(f"Warning: first message not delivered to '{session_name}' — paste it manually", file=sys.stderr)
 
+    # Record the creating session as parent for prompt routing. --created-by
+    # overrides; empty string opts out; default = the calling tmux session.
+    created_by = getattr(args, 'created_by', None)
+    if created_by is None:
+        created_by = pane_manager.get_current_session()
+    _record_session_creator(session_name, created_by, via="new")
+
     if json_mode:
         result = {
             "success": True,
@@ -4066,6 +4096,15 @@ def cmd_kill(args) -> int:
     if not json_mode:
         print(f"Killed session '{session}'")
 
+    # Drop session metadata (creator record) so a future unrelated session
+    # reusing this name doesn't inherit a stale parent.
+    metadata_file = CONFIG_DIR / "sessions" / session.split("@")[0] / "metadata.json"
+    if metadata_file.exists():
+        try:
+            metadata_file.unlink()
+        except OSError:
+            pass
+
     _notify_portal_sessions_changed()
 
     if json_mode:
@@ -4435,6 +4474,10 @@ def cmd_send_keys(args) -> int:
     # Parse session@machine format
     session, machine_id = _parse_session_target(session_full)
 
+    # Optional pane targeting (worker panes); None targets the session.
+    pane = getattr(args, 'pane', None)
+    target = f"{session}.{pane}" if pane is not None else session
+
     if machine_id:
         # Remote: SSH and run tmux commands
         machine = _get_machine_config(machine_id)
@@ -4443,10 +4486,10 @@ def cmd_send_keys(args) -> int:
             return 1
 
         # Build remote command with pauses between keys
-        quoted_session = shlex.quote(session)
+        quoted_target = shlex.quote(target)
         cmd_parts = []
         for i, key in enumerate(keys):
-            cmd_parts.append(f"tmux send-keys -t {quoted_session} {shlex.quote(key)}")
+            cmd_parts.append(f"tmux send-keys -t {quoted_target} {shlex.quote(key)}")
             if i < len(keys) - 1:
                 cmd_parts.append("sleep 0.1")
 
@@ -4473,14 +4516,14 @@ def cmd_send_keys(args) -> int:
     # Send each key group with a pause between
     for i, key in enumerate(keys):
         subprocess.run(
-            ["tmux", "send-keys", "-t", session, key],
+            ["tmux", "send-keys", "-t", target, key],
             check=True
         )
         # Brief pause between key groups (not after last one)
         if i < len(keys) - 1:
             time.sleep(0.1)
 
-    print(f"Sent keys to {session}")
+    print(f"Sent keys to {target}")
     return 0
 
 
@@ -10549,6 +10592,8 @@ def main() -> int:
     notify_cmd_parser.add_argument("text", nargs="*", help="Notification message")
     notify_cmd_parser.add_argument("--to", type=str, metavar="SESSION", help="Target session (default: parent from .agentwire.yml)")
     notify_cmd_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
+    notify_cmd_parser.add_argument("--raw", action="store_true",
+                                   help="Send the message verbatim (no [NOTIFY from ...] prefix)")
     notify_cmd_parser.set_defaults(func=cmd_notify_parent)
 
     # === open command (artifact windows) ===
@@ -10626,6 +10671,8 @@ def main() -> int:
         "send-keys", help="Send raw keys to a session (with pause between groups)"
     )
     send_keys_parser.add_argument("-s", "--session", required=True, help="Target session (supports session@machine)")
+    send_keys_parser.add_argument("--pane", type=int, default=None,
+                                  help="Target a specific pane index (default: the session's active pane)")
     send_keys_parser.add_argument("keys", nargs="*", help="Key groups to send (e.g., 'hello world' Enter)")
     send_keys_parser.set_defaults(func=cmd_send_keys)
 
@@ -10658,6 +10705,9 @@ def main() -> int:
     new_parser.add_argument("--no-pull-first", dest="pull_first", action="store_false", help="Skip the fetch — branch from the local copy of <base> as-is")
     new_parser.add_argument("--first-message", dest="first_message",
                             help="After the agent boots, deliver this as its first message (verified; local sessions only)")
+    new_parser.add_argument("--created-by", dest="created_by",
+                            help="Record this session as the creator/parent for prompt routing "
+                                 "(default: the calling tmux session; pass '' to opt out)")
     new_parser.add_argument("--json", action="store_true", help="Output as JSON")
     new_parser.set_defaults(func=cmd_new)
 
@@ -11496,6 +11546,10 @@ def main() -> int:
         "uninstall", help="Unload + remove the launchd watchdog"
     )
     l_uninstall.set_defaults(func=limits_cli.cmd_limits_uninstall)
+
+    # === prompts command group (prompt routing, rides the limits watchdog) ===
+    from . import prompts_cli
+    prompts_cli.register_prompts_parser(subparsers)
 
     # === council command group ===
     council_parser = subparsers.add_parser(
