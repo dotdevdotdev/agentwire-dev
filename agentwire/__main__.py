@@ -193,10 +193,20 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
             raise ValueError(
                 f"No config for pi provider '{provider}'. "
                 f"Add pi.providers.{provider} to ~/.agentwire/config.yaml "
-                f"with at least env_var, api_key, and default_model."
+                f"with at least env_var and default_model, and put the key "
+                f"itself in ~/.agentwire/.env (docs/wiki/security/secrets.md)."
             )
         env_var = provider_cfg.get("env_var", f"{provider.upper().replace('-', '_')}_API_KEY")
-        api_key = provider_cfg.get("api_key", "")
+        if provider_cfg.get("api_key"):
+            print(
+                f"Warning: pi.providers.{provider}.api_key in config.yaml is "
+                f"ignored — put {env_var}=... in ~/.agentwire/.env instead "
+                f"(docs/wiki/security/secrets.md)",
+                file=sys.stderr,
+            )
+        # The key comes from the process environment — ~/.agentwire/.env is
+        # loaded on every entry point, so one line there is all it takes.
+        api_key = os.environ.get(env_var, "")
         default_model = provider_cfg.get("default_model", "")
 
         # Merge provider key + any global pi extra_env
@@ -6788,7 +6798,37 @@ def cmd_doctor(args) -> int:
         else:
             print(f"  [!!] Stt: cloud tier but {key_env} is not set")
             print("       The portal will refuse to start until the key is in its environment.")
+            print("       Fix: add the key to ~/.agentwire/.env (docs/wiki/security/secrets.md)")
             issues_found += 1
+
+    # 8c. Secrets — for each configured feature that needs a key, report
+    # whether its env var is present. Names only, never values. Keys live in
+    # ~/.agentwire/.env (docs/wiki/security/secrets.md), loaded on every
+    # entry point, so os.environ is the authoritative view here.
+    raw_cfg = load_config()
+    expected_keys: list[tuple[str, list[str]]] = []
+    channels_cfg = raw_cfg.get("channels", {}) or {}
+    if channels_cfg.get("email"):
+        expected_keys.append(("channels.email (Resend)", ["RESEND_API_KEY"]))
+    if channels_cfg.get("quo"):
+        expected_keys.append(
+            ("channels.quo (OpenPhone)", ["QUO_API_KEY", "OPENPHONE_API_KEY"])
+        )
+    for pname, pcfg in (raw_cfg.get("pi", {}).get("providers", {}) or {}).items():
+        p_env_var = (pcfg or {}).get(
+            "env_var", f"{pname.upper().replace('-', '_')}_API_KEY"
+        )
+        expected_keys.append((f"pi.providers.{pname}", [p_env_var]))
+    if expected_keys:
+        print("\nChecking secrets (~/.agentwire/.env)...")
+        for feature, candidates in expected_keys:
+            found = next((v for v in candidates if os.environ.get(v)), None)
+            if found:
+                print(f"  [ok] {feature}: {found} is set")
+            else:
+                print(f"  [!!] {feature}: {' / '.join(candidates)} not set")
+                print(f"       Fix: add {candidates[0]}=... to ~/.agentwire/.env")
+                issues_found += 1
 
     # 9. Validate remote machines
     print("\nChecking remote machines...")

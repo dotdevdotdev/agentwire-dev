@@ -90,17 +90,33 @@ class TestBaseChannel:
 
 
 class TestEmailChannel:
-    def test_email_config_env_fallback(self, monkeypatch):
+    def test_email_config_key_from_env(self, monkeypatch):
         monkeypatch.setenv("RESEND_API_KEY", "env-key-123")
         from agentwire.channels.email import EmailConfig
         config = EmailConfig()
         assert config.api_key == "env-key-123"
 
-    def test_email_config_explicit_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("RESEND_API_KEY", "env-key")
+    def test_email_config_rejects_explicit_key(self):
+        """Keys are env-only (~/.agentwire/.env) — not a config field."""
         from agentwire.channels.email import EmailConfig
-        config = EmailConfig(api_key="explicit-key")
-        assert config.api_key == "explicit-key"
+        with pytest.raises(TypeError):
+            EmailConfig(api_key="explicit-key")
+
+    def test_config_yaml_api_key_ignored(self, tmp_path, monkeypatch, capsys):
+        """A stale api_key in config.yaml warns and is ignored — env wins."""
+        monkeypatch.setenv("RESEND_API_KEY", "env-key")
+        config_data = {"channels": {"email": {
+            "api_key": "stale-yaml-key",
+            "from_address": "x@y.com",
+        }}}
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(config_data))
+
+        from agentwire.config import load_config
+        config = load_config(config_path)
+        assert config.channels["email"].api_key == "env-key"
+        assert config.channels["email"].from_address == "x@y.com"
+        assert "api_key" in capsys.readouterr().err
 
     def test_is_html_content(self):
         from agentwire.channels.email import _is_html_content
@@ -122,7 +138,7 @@ class TestEmailChannel:
 
     def test_send_email_no_api_key(self, tmp_path, monkeypatch):
         monkeypatch.delenv("RESEND_API_KEY", raising=False)
-        config_data = {"channels": {"email": {"api_key": "", "from_address": "x@y.com"}}}
+        config_data = {"channels": {"email": {"from_address": "x@y.com"}}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config_data))
 
@@ -158,7 +174,7 @@ class TestEmailChannel:
 
 
 class TestQuoChannel:
-    def test_quo_config_env_fallback(self, monkeypatch):
+    def test_quo_config_key_from_env(self, monkeypatch):
         monkeypatch.setenv("QUO_API_KEY", "quo-key-123")
         from agentwire.channels.quo import QuoConfig
         config = QuoConfig()
@@ -169,19 +185,25 @@ class TestQuoChannel:
         monkeypatch.delenv("QUO_API_KEY", raising=False)
         monkeypatch.setenv("OPENPHONE_API_KEY", "op-key-456")
         from agentwire.channels.quo import QuoConfig
-        config = QuoConfig(api_key="")
+        config = QuoConfig()
         assert config.api_key == "op-key-456"
+
+    def test_quo_config_rejects_explicit_key(self):
+        """Keys are env-only (~/.agentwire/.env) — not a config field."""
+        from agentwire.channels.quo import QuoConfig
+        with pytest.raises(TypeError):
+            QuoConfig(api_key="k")
 
     def test_quo_config_defaults(self):
         from agentwire.channels.quo import QuoConfig
-        config = QuoConfig(api_key="k")
+        config = QuoConfig()
         assert config.from_number == ""
         assert config.default_to == ""
 
     def test_send_quo_no_api_key(self, tmp_path, monkeypatch):
         monkeypatch.delenv("QUO_API_KEY", raising=False)
         monkeypatch.delenv("OPENPHONE_API_KEY", raising=False)
-        config_data = {"channels": {"quo": {"api_key": ""}}}
+        config_data = {"channels": {"quo": {}}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config_data))
 
@@ -218,9 +240,9 @@ def _mock_config():
 
 
 class TestSendEmailSuccess:
-    def test_send_email_success(self, tmp_path, _mock_config):
+    def test_send_email_success(self, tmp_path, _mock_config, monkeypatch):
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
         _mock_config({"channels": {"email": {
-            "api_key": "re_test_key",
             "from_address": "test@example.com",
             "default_to": "user@example.com",
         }}}, tmp_path)
@@ -236,9 +258,9 @@ class TestSendEmailSuccess:
         assert result.error is None
         mock_resend.Emails.send.assert_called_once()
 
-    def test_send_email_with_to_override(self, tmp_path, _mock_config):
+    def test_send_email_with_to_override(self, tmp_path, _mock_config, monkeypatch):
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
         _mock_config({"channels": {"email": {
-            "api_key": "re_test_key",
             "from_address": "test@example.com",
             "default_to": "default@example.com",
         }}}, tmp_path)
@@ -257,8 +279,8 @@ class TestSendEmailSuccess:
 class TestSendQuoSuccess:
     def test_send_quo_success(self, tmp_path, _mock_config, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("QUO_API_KEY", "test-quo-key")
         _mock_config({"channels": {"quo": {
-            "api_key": "test-quo-key",
             "from_number": "+15551234567",
             "default_to": "+15559876543",
         }}}, tmp_path)

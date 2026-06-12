@@ -9,7 +9,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .base import (
@@ -28,15 +28,19 @@ class QuoConfigError(NotificationError):
 
 @dataclass
 class QuoConfig:
-    """Quo (OpenPhone) SMS configuration."""
+    """Quo (OpenPhone) SMS configuration.
 
-    api_key: str = ""
+    The API key is env-only: QUO_API_KEY (or legacy OPENPHONE_API_KEY),
+    normally a line in ~/.agentwire/.env (docs/wiki/security/secrets.md).
+    It is never read from config.yaml.
+    """
+
     from_number: str = ""  # E.164 format (+1...) or phone number ID (PNxxx)
     default_to: str = ""
+    api_key: str = field(init=False, default="")
 
     def __post_init__(self):
-        if not self.api_key:
-            self.api_key = os.environ.get("QUO_API_KEY", "") or os.environ.get("OPENPHONE_API_KEY", "")
+        self.api_key = os.environ.get("QUO_API_KEY", "") or os.environ.get("OPENPHONE_API_KEY", "")
 
 
 API_URL = "https://api.openphone.com/v1/messages"
@@ -72,8 +76,9 @@ def send_quo_sms(
 
     if not quo_config.api_key:
         raise QuoConfigError(
-            "Quo API key not configured. Set QUO_API_KEY env var "
-            "or channels.quo.api_key in ~/.agentwire/config.yaml"
+            "Quo API key not configured. "
+            "Add QUO_API_KEY=... to ~/.agentwire/.env "
+            "(see docs/wiki/security/secrets.md)"
         )
 
     recipient = to or quo_config.default_to

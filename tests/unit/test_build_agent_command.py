@@ -9,18 +9,17 @@ from agentwire.roles import RoleConfig
 
 
 # Mock for load_config() in __main__ used by the pi-* branch.
+# Keys are env-only (~/.agentwire/.env) — config holds the env var NAME.
 FAKE_CONFIG = {
     "pi": {
         "binary": "pi",
         "providers": {
             "zai": {
                 "env_var": "ZAI_API_KEY",
-                "api_key": "test-key-123",
                 "default_model": "glm-5.1",
             },
             "deepseek": {
                 "env_var": "DEEPSEEK_API_KEY",
-                "api_key": "test-deepseek-key",
                 "default_model": "deepseek-chat",
             },
         },
@@ -32,6 +31,13 @@ FAKE_CONFIG = {
 def mock_main_load_config():
     with patch("agentwire.__main__.load_config", return_value=FAKE_CONFIG):
         yield
+
+
+@pytest.fixture(autouse=True)
+def provider_keys_in_env(monkeypatch):
+    """Provider keys come from the process env (loaded from ~/.agentwire/.env)."""
+    monkeypatch.setenv("ZAI_API_KEY", "test-key-123")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
 
 
 class TestBuildAgentCommand:
@@ -199,6 +205,34 @@ class TestBuildAgentCommand:
         with pytest.raises(ValueError, match="pi provider 'bogus'"):
             self._build("pi-bogus")
 
+    def test_pi_yaml_api_key_ignored(self, monkeypatch, capsys):
+        """api_key in config.yaml is ignored with a warning — env is the source."""
+        config = {
+            "pi": {
+                "binary": "pi",
+                "providers": {
+                    "zai": {
+                        "env_var": "ZAI_API_KEY",
+                        "api_key": "stale-yaml-key",
+                        "default_model": "glm-5.1",
+                    },
+                },
+            },
+        }
+        monkeypatch.setenv("ZAI_API_KEY", "env-key")
+        with patch("agentwire.__main__.load_config", return_value=config):
+            cmd = self._build("pi-zai")
+        assert cmd.env == {"ZAI_API_KEY": "env-key"}
+        assert "stale-yaml-key" not in str(cmd.env)
+        assert "ignored" in capsys.readouterr().err
+
+    def test_pi_missing_env_key_skips_injection(self, monkeypatch):
+        """No key in the environment → nothing injected (pi may have its own
+        key in ~/.pi/agent/models.json)."""
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        cmd = self._build("pi-zai")
+        assert cmd.env == {}
+
     def test_pi_extra_env_merged_with_provider_key(self):
         """pi.extra_env merges with the provider key."""
         config = {
@@ -208,7 +242,6 @@ class TestBuildAgentCommand:
                 "providers": {
                     "zai": {
                         "env_var": "ZAI_API_KEY",
-                        "api_key": "test-key-123",
                         "default_model": "glm-5.1",
                     },
                 },
@@ -228,7 +261,6 @@ class TestBuildAgentCommand:
                 "providers": {
                     "zai": {
                         "env_var": "ZAI_API_KEY",
-                        "api_key": "test-key-123",
                         "default_model": "glm-5.1",
                     },
                 },
@@ -255,7 +287,6 @@ class TestBuildAgentCommand:
                 "providers": {
                     "zai": {
                         "env_var": "ZAI_API_KEY",
-                        "api_key": "test-key-123",
                         "default_model": "glm-5.1",
                     },
                 },
@@ -277,7 +308,6 @@ class TestBuildAgentCommand:
                 "providers": {
                     "zai": {
                         "env_var": "ZAI_API_KEY",
-                        "api_key": "test-key-123",
                         "default_model": "glm-5.1",
                     },
                 },

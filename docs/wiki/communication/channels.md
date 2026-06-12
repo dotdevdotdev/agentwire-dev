@@ -24,28 +24,31 @@ class MyChannel(SendOnlyChannel):
 
 ## Config
 
-Each channel defines its own dataclass and reads from `channels.{config_key}:` in `~/.agentwire/config.yaml`. Secrets fall back to env vars in `__post_init__`.
+Each channel defines its own dataclass and reads from `channels.{config_key}:` in `~/.agentwire/config.yaml`. **Secrets are env-only** — the key comes from an env var (one line in `~/.agentwire/.env`, see [Secrets & API keys](../security/secrets.md)), never from config.yaml. Declare it as a non-init field so yaml can't supply it:
 
 ```python
 @dataclass
 class MyConfig:
-    api_key: str = ""
     default_to: str = ""
+    api_key: str = field(init=False, default="")
 
     def __post_init__(self):
-        if not self.api_key:
-            self.api_key = os.environ.get("MY_API_KEY", "")
+        self.api_key = os.environ.get("MY_API_KEY", "")
 ```
 
 ```yaml
 # ~/.agentwire/config.yaml
 channels:
   my_channel:
-    api_key: "your-key"
     default_to: "user@example.com"
 ```
 
-The channel registry resolves config from YAML automatically — no `config.py` changes needed.
+```bash
+# ~/.agentwire/.env
+MY_API_KEY=your-key
+```
+
+The channel registry resolves config from YAML automatically — no `config.py` changes needed. Unknown yaml fields (e.g. a stale `api_key:`) are ignored with a warning rather than crashing config load.
 
 ## CLI integration
 
@@ -83,7 +86,7 @@ def my_channel_send(text: str, to: str | None = None) -> str:
 
 - [ ] `agentwire channels list` shows your channel
 - [ ] Config loads correctly from YAML
-- [ ] Env var fallback works
+- [ ] Key is read from its env var (`~/.agentwire/.env`)
 - [ ] `send()` returns success with valid config
 - [ ] `send()` returns a clear error with missing/invalid config
 - [ ] CLI command works (`agentwire my_channel --body "test"`)
@@ -104,5 +107,6 @@ except ImportError:
 
 ## Security
 
+- API keys live in `~/.agentwire/.env` only ([Secrets & API keys](../security/secrets.md)) — `RESEND_API_KEY` for email, `QUO_API_KEY` for quo. Config never holds a key, so the portal's config editor never round-trips one.
 - Each channel only reads from its own `channels.{config_key}:` slot — no cross-channel config peeking.
 - Outbound-only means there's no public webhook endpoint on the portal for a channel to attack. The portal's `/ws/{session}` is the only WS surface; channels never expose HTTP.

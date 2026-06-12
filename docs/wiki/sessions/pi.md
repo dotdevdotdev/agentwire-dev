@@ -34,7 +34,15 @@ agentwire doctor  # Should show: [ok] pi: /path/to/pi (vX.Y.Z)
 
 ### Configure Providers
 
-Add a `pi:` block to `~/.agentwire/config.yaml`:
+Put each provider's key in `~/.agentwire/.env` — the one place all keys live ([Secrets & API keys](../security/secrets.md)):
+
+```bash
+# ~/.agentwire/.env
+ZAI_API_KEY=...
+DEEPSEEK_API_KEY=...
+```
+
+Then add a `pi:` block to `~/.agentwire/config.yaml`. Config holds the env var **name** per provider, never the key:
 
 ```yaml
 pi:
@@ -46,18 +54,18 @@ pi:
     ## Fetching URLs
     Use `agentwire fetch <url>` to fetch a page as clean markdown.
 
-  # Env vars injected into every pi-* session (in addition to the provider key)
+  # Env vars injected into every pi-* session (in addition to the provider key).
+  # Values are stored in plaintext here — non-secrets only. Secrets belong in
+  # ~/.agentwire/.env (docs/wiki/security/secrets.md).
   extra_env:
-    MY_SERVICE_API_KEY: "..."
+    MY_SERVICE_URL: "https://internal.example.com"
 
   providers:
     zai:
-      env_var: ZAI_API_KEY
-      api_key: "..."
+      env_var: ZAI_API_KEY          # NAME of the env var holding the key
       default_model: glm-5.1
     deepseek:
       env_var: DEEPSEEK_API_KEY
-      api_key: "..."
       default_model: deepseek-chat
     # add more as needed: openai, openrouter, anthropic, ...
 ```
@@ -204,7 +212,7 @@ Order matters — global comes first so role-specific instructions can build on 
 
 ### Provider Key Injection
 
-Provider keys flow via `tmux set-environment` so they never appear in `ps auxwww` or shell history. Each provider entry's `env_var` is set on the session at creation time. Worker panes inherit automatically.
+The key is read from the process environment at session creation — `~/.agentwire/.env` is loaded on every agentwire entry point, so a `ZAI_API_KEY=...` line there is all it takes ([Secrets & API keys](../security/secrets.md)). It flows to the session via `tmux set-environment`, so it never appears in `ps auxwww` or shell history (it *is* visible to anything on the box via `tmux show-environment` — see the secrets page for the trade-off). Worker panes inherit automatically.
 
 If you spawn pi manually (outside of `agentwire new`), you'll need to `export <ENV_VAR>=...` yourself first.
 
@@ -237,11 +245,11 @@ pi:
 
 ### `ValueError: No config for pi provider 'X'`
 
-You requested `pi-X` but `pi.providers.X` isn't defined in `~/.agentwire/config.yaml`. Add the entry with at least `env_var`, `api_key`, and `default_model`. For non-built-in providers, also register them in `~/.pi/agent/models.json` (see "Adding a New Provider" above).
+You requested `pi-X` but `pi.providers.X` isn't defined in `~/.agentwire/config.yaml`. Add the entry with at least `env_var` and `default_model`, and put the key itself in `~/.agentwire/.env`. For non-built-in providers, also register them in `~/.pi/agent/models.json` (see "Adding a New Provider" above).
 
 ### "No models available. Set API keys in environment variables."
 
-The provider's env var (e.g. `ZAI_API_KEY`, `DEEPSEEK_API_KEY`) isn't set on the tmux session. Check `pi.providers.<provider>.api_key` is filled in. AgentWire injects the key via `tmux set-environment -t <session>` at creation time.
+The provider's env var (e.g. `ZAI_API_KEY`, `DEEPSEEK_API_KEY`) isn't set on the tmux session. Check the var has a line in `~/.agentwire/.env` and its name matches `pi.providers.<provider>.env_var`. AgentWire injects the key via `tmux set-environment -t <session>` at creation time.
 
 ### Pi shows changelog on startup
 

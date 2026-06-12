@@ -47,9 +47,10 @@ def get_stt_backend(config: Any) -> STTBackend:
         api_key = os.environ.get(api_key_env)
         if not api_key:
             raise ValueError(
-                f"stt.backend 'cloud' requires the {api_key_env} environment variable "
-                f"in the portal's environment (set stt.cloud.api_key_env to use a "
-                f"different variable). The key is used server-side only."
+                f"stt.backend 'cloud' requires the {api_key_env} environment "
+                f"variable — add {api_key_env}=... to ~/.agentwire/.env "
+                f"(docs/wiki/security/secrets.md; set stt.cloud.api_key_env to "
+                f"use a different variable). The key is used server-side only."
             )
         base_url = cloud.get("base_url", DEFAULT_BASE_URL)
         model = cloud.get("model", DEFAULT_MODEL)
