@@ -25,7 +25,10 @@ agentwire info -s name          # session metadata (cwd, panes) as JSON
 agentwire kill -s name          # not: tmux kill-session
 agentwire list                  # not: tmux list-sessions
 agentwire recreate -s name      # destroy and recreate with fresh worktree
-agentwire worktree name         # new branch + worktree + session
+agentwire worktree name         # new branch + worktree + STANDALONE session
+                                #   "worktree session" ALWAYS means this command — never
+                                #   `spawn --branch` (that makes a pane); add
+                                #   --type claude-bypass for autonomous workers
 agentwire worktree name -b develop  # from specific base branch
 agentwire worktree name -c      # from repo's current branch
 agentwire worktree name -e      # checkout existing branch (no new branch)
@@ -33,8 +36,10 @@ agentwire worktree name --ref v2.0  # detached at tag/commit
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
-# Pane commands (for workers within same session)
+# Pane commands (worker PANES inside the current session — NOT worktree
+# sessions; for parallel autonomous missions use `agentwire worktree` above)
 agentwire spawn --roles worker  # spawn worker pane
+agentwire spawn --branch name   # worker pane on an isolated worktree (still a pane)
 agentwire send --pane 1 "task"  # send to pane
 agentwire output --pane 1       # read pane output
 agentwire kill --pane 1         # kill pane
