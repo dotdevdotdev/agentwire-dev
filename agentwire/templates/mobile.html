@@ -17,7 +17,10 @@
 
     <section class="mobile-sessions">
         <div class="mobile-sessions-head">
-            <span>Sessions</span>
+            <div class="mobile-tabs" role="tablist" aria-label="Session groups">
+                <button class="mobile-tab selected" id="tabSessions" role="tab" aria-selected="true" data-tab="sessions">Sessions</button>
+                <button class="mobile-tab" id="tabServices" role="tab" aria-selected="false" data-tab="services">Services</button>
+            </div>
             <button class="mobile-refresh" id="refreshSessions" title="Refresh sessions" aria-label="Refresh sessions">↻</button>
         </div>
         <div class="mobile-session-list" id="sessionList">

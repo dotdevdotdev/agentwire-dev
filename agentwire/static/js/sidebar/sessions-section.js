@@ -1,36 +1,14 @@
 import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
 import { buildSessionId, normalizeMachine } from '../session-id.js';
+import { isService, loadCustomServices } from '../service-classification.js';
 
 // Shared state across sessions and services sections
 export const activityStates = new Map();
 
-const SERVICE_SESSIONS = new Set([
-    'agentwire-portal',
-    'agentwire-tts',
-    'agentwire-stt',
-    'agentwire-scheduler',
-    'agentwire-notifications',
-]);
-export function isService(name) { return SERVICE_SESSIONS.has(name); }
-
 // Merge config-defined custom services into the Services column. Fire-and-forget
 // on load; re-render once they arrive so flagged sessions hop to the right group.
-async function loadCustomServices() {
-    try {
-        const res = await apiFetch('/api/services/custom');
-        if (!res.ok) return;
-        const { names } = await res.json();
-        let changed = false;
-        for (const n of names || []) {
-            if (!SERVICE_SESSIONS.has(n)) { SERVICE_SESSIONS.add(n); changed = true; }
-        }
-        if (changed) notifyListeners();
-    } catch {
-        // Portal offline / endpoint missing — built-in services still group fine.
-    }
-}
-loadCustomServices();
+loadCustomServices().then((changed) => { if (changed) notifyListeners(); });
 
 let allSessions = [];
 const listeners = new Set();

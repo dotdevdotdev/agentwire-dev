@@ -456,7 +456,8 @@ def route_prompt(
         if parent is None:
             write_marker(
                 session, pane_index,
-                kind=info.kind, hash=content_hash, source=source,
+                kind=info.kind, question=info.question,
+                hash=content_hash, source=source,
                 parent=None, status="no_parent",
                 detected_at=_now().isoformat(), notified_at=None,
             )
@@ -469,7 +470,8 @@ def route_prompt(
         )
         write_marker(
             session, pane_index,
-            kind=info.kind, hash=content_hash, source=source,
+            kind=info.kind, question=info.question,
+            hash=content_hash, source=source,
             parent=target_session, status=reason,
             detected_at=_now().isoformat(),
             notified_at=_now().isoformat() if delivered else None,

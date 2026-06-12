@@ -1434,6 +1434,55 @@ class AgentWireServer:
 
         return "active" if time_since_last_output <= threshold else "idle"
 
+    def _compute_session_states(self, sessions: list[dict]) -> None:
+        """Glanceable per-session state for the mobile page (#290).
+
+        Annotates each session dict with `state` (and `state_kind` /
+        `state_hint` when blocked on a prompt). Precedence:
+
+          off         pane 0 runs no agent (Claude exited → bare shell);
+                      also the fallback for anything unrecognized/errored —
+                      when in doubt show off, never a false working/idle
+          needs_input prompt-router marker or live pending_permission
+          working     recent output (activity_threshold_seconds)
+          idle        agent present, nothing pending, no recent output
+        """
+        from . import prompt_router
+
+        try:
+            markers: dict[str, dict] = {}
+            for m in prompt_router.list_markers():
+                markers.setdefault(str(m.get("session", "")).split("@")[0], m)
+        except Exception:
+            markers = {}
+
+        for s in sessions:
+            name = s.get("name", "")
+            state, kind, hint = "off", None, None
+            try:
+                if name and prompt_router.is_agent_pane(name, 0):
+                    marker = markers.get(name.split("@")[0])
+                    session_obj = self.active_sessions.get(name)
+                    pending = session_obj.pending_permission if session_obj else None
+                    if marker:
+                        state = "needs_input"
+                        kind = marker.get("kind")
+                        hint = marker.get("question") or None
+                    elif pending:
+                        state = "needs_input"
+                        kind = "permission"
+                        tool = pending.request.get("tool_name", "")
+                        hint = f"Claude wants to use {tool}" if tool else "Permission requested"
+                    elif self._get_global_session_activity(name) == "active":
+                        state = "working"
+                    else:
+                        state = "idle"
+            except Exception:
+                state, kind, hint = "off", None, None
+            s["state"] = state
+            s["state_kind"] = kind
+            s["state_hint"] = hint
+
     async def monitor_all_sessions(self):
         """Background task to monitor all session activity for dashboard indicators.
 
@@ -2367,6 +2416,10 @@ class AgentWireServer:
             # Add activity status
             for s in sessions:
                 s["activity"] = self._get_global_session_activity(s.get("name", ""))
+
+            # Computed state (off/needs_input/working/idle) — shells out to
+            # tmux per session, so keep it off the event loop.
+            await asyncio.to_thread(self._compute_session_states, sessions)
 
             return web.json_response({"sessions": sessions})
         except Exception as e:

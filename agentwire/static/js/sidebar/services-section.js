@@ -1,4 +1,5 @@
-import { getAllSessions, isService, renderCard, handleSessionClick, onSessionsChanged } from './sessions-section.js';
+import { getAllSessions, renderCard, handleSessionClick, onSessionsChanged } from './sessions-section.js';
+import { isService } from '../service-classification.js';
 
 export const servicesSection = {
     title: 'Services',
