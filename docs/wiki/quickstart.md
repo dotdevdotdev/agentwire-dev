@@ -78,7 +78,7 @@ That creates:
 - a tmux session named `hello`
 - a Claude Code agent in pane 0 (the *orchestrator*)
 
-If `~/projects/hello/.agentwire.yml` exists, its session type / roles / voice are picked up automatically. Want one written for you? Add `--roles agentwire,voice` or `--type claude-bypass --persist` and AgentWire saves the config — and, in a git repo, adds `.agentwire.yml` to `.gitignore`. **Keep it gitignored**: it's personal config (voices, schedules, notification addresses), and a tracked copy makes worktree-dispatched runs silently use the stale committed version instead of your live edits.
+If `~/projects/hello/.agentwire.yml` exists, its session type / roles / voice are picked up automatically. Want one written for you? Add `--persist` (e.g. `--roles agentwire,voice --persist` or `--type claude-bypass --persist`) and AgentWire saves the config — and, in a git repo, adds `.agentwire.yml` to `.gitignore`. Without `--persist`, flags are session-level overrides only. **Keep it gitignored**: it's personal config (voices, schedules, notification addresses), and a tracked copy makes worktree-dispatched runs silently use the stale committed version instead of your live edits.
 
 Talk to it from another terminal:
 

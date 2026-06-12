@@ -151,11 +151,11 @@ roles:
 
 agentwire new -s myproject -p ~/projects/myproject
 
-# Option 2: Specify roles on command line (saves to .agentwire.yml)
-agentwire new -s myproject -p ~/projects/myproject --roles agentwire,voice
+# Option 2: Specify roles on command line, --persist saves to .agentwire.yml
+agentwire new -s myproject -p ~/projects/myproject --roles agentwire,voice --persist
 ```
 
-By default, `agentwire new --type X` is a session-level override only and never saves to `.agentwire.yml`. Use `--persist` to opt in to saving.
+By default, `agentwire new` flags (`--type`, `--roles`) are session-level overrides only and never save to `.agentwire.yml`. Use `--persist` to opt in to saving.
 
 ## Role System
 
