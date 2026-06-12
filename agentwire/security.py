@@ -168,11 +168,11 @@ def origin_allowed(origin: str, request: web.Request, allowed_origins: list) -> 
 
 
 def _is_public_path(request: web.Request) -> bool:
-    """The unauthenticated bootstrap surface: the page shell + health check."""
+    """The unauthenticated bootstrap surface: the page shells + health check."""
     if request.method != "GET":
         return False
     path = request.path
-    return path in ("/", "/health") or path.startswith("/static/")
+    return path in ("/", "/mobile", "/health") or path.startswith("/static/")
 
 
 def _extract_token(request: web.Request, is_ws: bool) -> Optional[str]:

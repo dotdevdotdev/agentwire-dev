@@ -213,6 +213,7 @@ class AgentWireServer:
         """Configure HTTP and WebSocket routes."""
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/", self.handle_index)
+        self.app.router.add_get("/mobile", self.handle_mobile)
         self.app.router.add_get("/ws", self.handle_dashboard_ws)
         self.app.router.add_get("/ws/{name:.+}", self.handle_websocket)
         self.app.router.add_get("/ws/terminal/{name:.+}", self.handle_terminal_ws)
@@ -884,6 +885,17 @@ class AgentWireServer:
             "default_voice": self.config.tts.default_voice,
         }
         response = aiohttp_jinja2.render_template("desktop.html", request, context)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+    async def handle_mobile(self, request: web.Request) -> web.Response:
+        """Serve the mobile PTT page — minimal phone surface (#279).
+
+        Static shell on the public bootstrap surface (same exposure class as
+        `/`); every API/WS call the page makes carries the bearer token. No
+        voices fetch here — the page bootstraps via authenticated API calls.
+        """
+        response = aiohttp_jinja2.render_template("mobile.html", request, {})
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
