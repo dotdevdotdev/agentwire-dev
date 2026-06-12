@@ -151,19 +151,47 @@ function renderSessions() {
         return;
     }
     for (const s of visible) {
+        const state = s.state || 'off';
         const btn = document.createElement('button');
-        btn.className = 'mobile-session' + (s.name === selectedSession ? ' selected' : '');
+        btn.className = `mobile-session state-${state}` + (s.name === selectedSession ? ' selected' : '');
         btn.dataset.name = s.name;
 
+        const row = document.createElement('span');
+        row.className = 'mobile-session-row';
         const dot = document.createElement('span');
-        dot.className = 'mobile-session-activity' + (s.activity ? ' active' : '');
+        dot.className = 'mobile-session-state';
         const name = document.createElement('span');
         name.className = 'mobile-session-name';
         name.textContent = s.name;
-        btn.append(dot, name);
+        row.append(dot, name);
+        btn.append(row);
+
+        // One-line hint: what a blocked session is waiting on; off cards
+        // stay tappable but say why they're muted.
+        const hint = state === 'needs_input' ? (s.state_hint || 'Waiting on you')
+            : state === 'off' ? 'no agent running'
+            : null;
+        if (hint) {
+            const hintEl = document.createElement('span');
+            hintEl.className = 'mobile-session-hint';
+            hintEl.textContent = hint;
+            btn.append(hintEl);
+        }
 
         btn.addEventListener('click', () => selectSession(s.name));
         els.sessionList.appendChild(btn);
+    }
+    updateHeaderState();
+}
+
+// Mirror the selected session's state on the "Talking to X" status line (#290)
+const SESSION_STATES = ['working', 'idle', 'needs_input', 'off'];
+
+function updateHeaderState() {
+    const s = sessions.find(x => x.name === selectedSession);
+    const state = s ? (s.state || 'off') : 'off';
+    for (const st of SESSION_STATES) {
+        els.status.classList.toggle(`state-${st}`, st === state);
     }
 }
 
@@ -180,6 +208,7 @@ function selectSession(name) {
     }
     els.ptt.disabled = false;
     setStatus(`Talking to ${name}`);
+    updateHeaderState();
     renderTranscript();
     connectSessionWs(name);
 }
@@ -535,6 +564,12 @@ async function init() {
     // services land on the Services tab (same allowlist as the desktop sidebar).
     await loadCustomServices();
     await loadSessions();
+
+    // Keep the state visuals (#290) live — poll-based v1, paused while the
+    // page is backgrounded so it stays battery-friendly.
+    setInterval(() => {
+        if (document.visibilityState === 'visible') loadSessions();
+    }, 5000);
 }
 
 init();

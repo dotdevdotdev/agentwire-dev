@@ -563,6 +563,94 @@ class TestMobilePage:
 
 
 # ---------------------------------------------------------------------------
+# Session state computation (#290 — mobile state visuals)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStateComputation:
+    """Precedence: off → needs_input → working → idle; off on any doubt."""
+
+    def _compute(self, tmp_path, monkeypatch, sessions, *, agent=True, markers=None):
+        from agentwire import prompt_router
+
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: agent)
+        monkeypatch.setattr(prompt_router, "list_markers", lambda: markers or [])
+        server = AgentWireServer(_make_config(tmp_path))
+        server._compute_session_states(sessions)
+        return server
+
+    def test_off_when_no_agent_in_pane0(self, tmp_path, monkeypatch):
+        sessions = [{"name": "foo"}]
+        self._compute(tmp_path, monkeypatch, sessions, agent=False)
+        assert sessions[0]["state"] == "off"
+
+    def test_off_beats_marker(self, tmp_path, monkeypatch):
+        """A stale marker on an agent-less session must not show needs_input."""
+        sessions = [{"name": "foo"}]
+        self._compute(
+            tmp_path, monkeypatch, sessions, agent=False,
+            markers=[{"session": "foo", "pane": 0, "kind": "permission"}],
+        )
+        assert sessions[0]["state"] == "off"
+
+    def test_off_on_classification_error(self, tmp_path, monkeypatch):
+        """When in doubt show off — never a false working/idle."""
+        from agentwire import prompt_router
+
+        def boom(s, p):
+            raise RuntimeError("tmux exploded")
+
+        monkeypatch.setattr(prompt_router, "is_agent_pane", boom)
+        monkeypatch.setattr(prompt_router, "list_markers", lambda: [])
+        server = AgentWireServer(_make_config(tmp_path))
+        sessions = [{"name": "foo"}]
+        server._compute_session_states(sessions)
+        assert sessions[0]["state"] == "off"
+
+    def test_needs_input_from_marker_with_hint(self, tmp_path, monkeypatch):
+        sessions = [{"name": "foo"}]
+        self._compute(
+            tmp_path, monkeypatch, sessions,
+            markers=[{
+                "session": "foo", "pane": 0, "kind": "permission",
+                "question": "Claude wants to run: rm build/",
+            }],
+        )
+        assert sessions[0]["state"] == "needs_input"
+        assert sessions[0]["state_kind"] == "permission"
+        assert sessions[0]["state_hint"] == "Claude wants to run: rm build/"
+
+    def test_needs_input_from_pending_permission(self, tmp_path, monkeypatch):
+        from agentwire.server import PendingPermission, Session, SessionConfig
+
+        sessions = [{"name": "foo"}]
+        server = self._compute(tmp_path, monkeypatch, [])
+        session = Session(name="foo", config=SessionConfig())
+        session.pending_permission = PendingPermission(request={"tool_name": "Bash"})
+        server.active_sessions["foo"] = session
+        server._compute_session_states(sessions)
+        assert sessions[0]["state"] == "needs_input"
+        assert sessions[0]["state_kind"] == "permission"
+        assert "Bash" in sessions[0]["state_hint"]
+
+    def test_working_from_recent_output(self, tmp_path, monkeypatch):
+        import time
+
+        sessions = [{"name": "foo"}]
+        server = self._compute(tmp_path, monkeypatch, [])
+        server.session_activity["foo"] = {"last_output_timestamp": time.time()}
+        server._compute_session_states(sessions)
+        assert sessions[0]["state"] == "working"
+
+    def test_idle_when_agent_quiet(self, tmp_path, monkeypatch):
+        sessions = [{"name": "foo"}]
+        self._compute(tmp_path, monkeypatch, sessions)
+        assert sessions[0]["state"] == "idle"
+        assert sessions[0]["state_kind"] is None
+        assert sessions[0]["state_hint"] is None
+
+
+# ---------------------------------------------------------------------------
 # Restricted mode (permission API)
 # ---------------------------------------------------------------------------
 
