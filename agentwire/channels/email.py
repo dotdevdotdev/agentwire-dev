@@ -9,7 +9,7 @@ import os
 import random
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -34,19 +34,23 @@ class EmailConfigError(NotificationError):
 
 @dataclass
 class EmailConfig:
-    """Email notification configuration (Resend)."""
+    """Email notification configuration (Resend).
 
-    api_key: str = ""
+    The API key is env-only: RESEND_API_KEY, normally a line in
+    ~/.agentwire/.env (docs/wiki/security/secrets.md). It is never read
+    from config.yaml.
+    """
+
     from_address: str = ""
     default_to: str = ""
     banner_image_url: str = ""
     echo_image_url: str = ""
     echo_small_url: str = ""
     logo_image_url: str = ""
+    api_key: str = field(init=False, default="")
 
     def __post_init__(self):
-        if not self.api_key:
-            self.api_key = os.environ.get("RESEND_API_KEY", "")
+        self.api_key = os.environ.get("RESEND_API_KEY", "")
 
 
 # Playful greetings from Echo
@@ -225,8 +229,8 @@ def send_email(
     if not email_config.api_key:
         raise EmailConfigError(
             "Email API key not configured. "
-            "Set RESEND_API_KEY in ~/.agentwire/.env "
-            "or set channels.email.api_key in ~/.agentwire/config.yaml"
+            "Add RESEND_API_KEY=re_... to ~/.agentwire/.env "
+            "(see docs/wiki/security/secrets.md)"
         )
 
     # Determine recipients (list form — Resend's `to` field accepts an array)

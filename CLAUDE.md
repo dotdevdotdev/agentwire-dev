@@ -58,6 +58,7 @@ When the owner says "worktree session", they mean the standalone session (`agent
 | File | Purpose |
 |------|---------|
 | `config.yaml` | Main config (see `agentwire-config` skill) |
+| `.env` | **All API keys/secrets** — the one blessed spot, loaded on every entry point. `chmod 600`. See [`docs/wiki/security/secrets.md`](docs/wiki/security/secrets.md) |
 | `machines.json` | Remote machines registry |
 | `scripts/` | Machine-specific helper scripts (TTS, startup, service wrappers). Local only, not version controlled. `~/bin/` entries should symlink here. |
 | `voices/` | Custom TTS voice samples |

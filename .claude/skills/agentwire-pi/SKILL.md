@@ -1,6 +1,6 @@
 ---
 name: agentwire-pi
-description: Pi coding agent (multi-provider) integration — `pi-<provider>` / `pi-<provider>-restricted` / `pi-<provider>-readonly` session types for any pi provider (zai, deepseek, openai, openrouter, etc.). Install (`npm install -g @mariozechner/pi-coding-agent`), config (`pi.binary`, `pi.system_prompt`, `pi.extra_env`, `pi.providers.<name>.{env_var,api_key,default_model}`), custom providers via `~/.pi/agent/models.json`, tool translation (Claude CamelCase → pi lowercase), system-prompt injection (global + role merged), built-in helper (`agentwire fetch`), limitations vs Claude Code (no MCP client, no web search, no `--disallowedTools`, no `--resume --fork-session`, no hook integration). Use when setting up pi sessions for any provider, debugging pi tool execution, or explaining when to pick pi-* vs claude-*.
+description: Pi coding agent (multi-provider) integration — `pi-<provider>` / `pi-<provider>-restricted` / `pi-<provider>-readonly` session types for any pi provider (zai, deepseek, openai, openrouter, etc.). Install (`npm install -g @mariozechner/pi-coding-agent`), config (`pi.binary`, `pi.system_prompt`, `pi.extra_env`, `pi.providers.<name>.{env_var,default_model}`; keys env-only via `~/.agentwire/.env`), custom providers via `~/.pi/agent/models.json`, tool translation (Claude CamelCase → pi lowercase), system-prompt injection (global + role merged), built-in helper (`agentwire fetch`), limitations vs Claude Code (no MCP client, no web search, no `--disallowedTools`, no `--resume --fork-session`, no hook integration). Use when setting up pi sessions for any provider, debugging pi tool execution, or explaining when to pick pi-* vs claude-*.
 ---
 
 # pi — Pi Coding Agent (multi-provider)
@@ -60,6 +60,14 @@ Pi has no permission system to bypass — variants translate directly to pi's `-
 
 ## Config
 
+Provider keys live in `~/.agentwire/.env` (docs/wiki/security/secrets.md) — config holds the env var NAME:
+
+```bash
+# ~/.agentwire/.env
+ZAI_API_KEY=...
+DEEPSEEK_API_KEY=...
+```
+
 In `~/.agentwire/config.yaml`:
 
 ```yaml
@@ -72,23 +80,22 @@ pi:
     ## Fetching URLs
     Use `agentwire fetch <url>` to fetch a page as clean markdown.
 
-  # Env vars injected into every pi-* session (in addition to the provider key)
+  # Env vars injected into every pi-* session (in addition to the provider key).
+  # Plaintext in config — non-secrets only; secrets go in ~/.agentwire/.env.
   extra_env:
-    MY_SERVICE_API_KEY: "..."
+    MY_SERVICE_URL: "https://internal.example.com"
 
   providers:
     zai:
-      env_var: ZAI_API_KEY
-      api_key: "..."
+      env_var: ZAI_API_KEY          # NAME of the env var holding the key
       default_model: glm-5.1
     deepseek:
       env_var: DEEPSEEK_API_KEY
-      api_key: "..."
       default_model: deepseek-chat
     # add more as needed: openai, openrouter, anthropic, ...
 ```
 
-Provider key flows via `tmux set-environment` so it never appears in `ps auxwww` or shell history.
+The key is read from the process environment (loaded from `~/.agentwire/.env` on every entry point) and flows to the session via `tmux set-environment`, so it never appears in `ps auxwww` or shell history.
 
 ## Custom Providers via `~/.pi/agent/models.json`
 
@@ -110,14 +117,13 @@ For providers pi doesn't ship with built-in (e.g. DeepSeek), register them as Op
 }
 ```
 
-Then in `~/.agentwire/config.yaml`:
+Then in `~/.agentwire/config.yaml` (key goes in `~/.agentwire/.env` as `DEEPSEEK_API_KEY=sk-...`):
 
 ```yaml
 pi:
   providers:
     deepseek:
       env_var: DEEPSEEK_API_KEY
-      api_key: "sk-..."
       default_model: deepseek-chat
 ```
 

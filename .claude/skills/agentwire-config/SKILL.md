@@ -147,21 +147,22 @@ pi:  # Pi coding agent — drives all `pi-<provider>` session types. See `agentw
     Use `agentwire fetch <url>` to fetch a page as clean markdown (Jina Reader).
 
   # Env vars injected into every pi-* session, in addition to the provider key.
-  # Useful for cross-cutting tools that need credentials in every pi session.
+  # Values are stored in plaintext here — non-secrets only. Secrets belong in
+  # ~/.agentwire/.env (docs/wiki/security/secrets.md).
   extra_env:
-    MY_SERVICE_API_KEY: "..."
+    MY_SERVICE_URL: "https://internal.example.com"
 
   # Per-provider config. Session type `pi-<name>` resolves the provider here.
   # Adding a new provider is config-only — no code changes needed. For non-built-in
   # providers (e.g. DeepSeek), also register them in `~/.pi/agent/models.json`.
+  # env_var is the NAME of the env var holding the key — the key itself lives
+  # in ~/.agentwire/.env (e.g. ZAI_API_KEY=...), never here.
   providers:
     zai:
       env_var: ZAI_API_KEY
-      api_key: "..."
       default_model: glm-5.1
     deepseek:
       env_var: DEEPSEEK_API_KEY
-      api_key: "..."
       default_model: deepseek-chat
 
 uploads:
@@ -180,8 +181,9 @@ portal:
   url: "https://localhost:8765"
 
 channels:  # Outbound-only notifications. Only email + quo ship.
+  # Keys are env-only: RESEND_API_KEY / QUO_API_KEY in ~/.agentwire/.env
+  # (docs/wiki/security/secrets.md) — never in config.yaml.
   email:
-    api_key: ""  # Resend API key (or set RESEND_API_KEY env var)
     from_address: "Echo <echo@yourdomain.com>"
     default_to: "user@example.com"
     banner_image_url: "https://yourdomain.com/images/banner.png"
@@ -189,7 +191,6 @@ channels:  # Outbound-only notifications. Only email + quo ship.
     echo_small_url: "https://yourdomain.com/images/echo-small.png"
     logo_image_url: "https://yourdomain.com/images/logo.png"
   quo:
-    api_key: ""              # or QUO_API_KEY / OPENPHONE_API_KEY env var
     from_number: "+1234567890"  # E.164 or phone number ID (PNxxx)
     default_to: "+0987654321"
 

@@ -5,7 +5,8 @@ Loads config from YAML file with sensible defaults and env var overrides.
 """
 
 import os
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Optional
 
@@ -651,10 +652,23 @@ def _dict_to_config(data: dict) -> Config:
         for name, channel_cls in ChannelRegistry._channels.items():
             if channel_cls.config_class:
                 resolved = ChannelRegistry.resolve_config(name, data)
-                if resolved:
-                    channel_configs[name] = channel_cls.config_class(**resolved)
-                else:
-                    channel_configs[name] = channel_cls.config_class()
+                # Only pass fields the dataclass accepts. Secrets (api_key)
+                # are env-only — ~/.agentwire/.env — so a stale key in yaml
+                # gets a warning, not a config-load crash.
+                allowed = {
+                    f.name for f in dataclass_fields(channel_cls.config_class) if f.init
+                }
+                unknown = sorted(set(resolved) - allowed)
+                if unknown:
+                    print(
+                        f"Warning: ignoring channels.{name} field(s) "
+                        f"{', '.join(unknown)} — secrets belong in "
+                        f"~/.agentwire/.env, never config.yaml "
+                        f"(docs/wiki/security/secrets.md)",
+                        file=sys.stderr,
+                    )
+                kwargs = {k: v for k, v in resolved.items() if k in allowed}
+                channel_configs[name] = channel_cls.config_class(**kwargs)
     except ImportError:
         pass
 

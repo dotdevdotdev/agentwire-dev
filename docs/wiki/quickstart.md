@@ -172,17 +172,22 @@ The scheduler runs the prompt headless in a fresh tmux session, captures the age
 
 Channels are outbound-only — a session sends you an email or SMS without exposing any inbound surface. Two ship today: **email** (Resend) and **quo** (OpenPhone SMS).
 
-1. Add to `~/.agentwire/config.yaml`:
+1. Put your Resend key in `~/.agentwire/.env` — the one place all keys live ([Secrets & API keys](security/secrets.md)):
+
+   ```bash
+   echo 'RESEND_API_KEY=re_...' >> ~/.agentwire/.env
+   ```
+
+2. Add to `~/.agentwire/config.yaml` (no key here — config never holds secrets):
 
    ```yaml
    channels:
      email:
        from_address: "you@example.com"   # verified Resend sender
        default_to: "you@example.com"
-       # api_key falls back to RESEND_API_KEY env var
    ```
 
-2. From a session, send yourself a note:
+3. From a session, send yourself a note:
 
    ```bash
    agentwire email --subject "Task done" --body "Build green on main."

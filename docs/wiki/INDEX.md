@@ -43,6 +43,11 @@ Headless and scheduled execution.
 - **[Missions](missions.md)** — issue → branch → draft PR → review → merge orchestration; launchd-driven dispatcher + feedback router + worktree janitor
 - **[Usage-limit recovery](usage-limit-recovery.md)** — deterministic detect → park → email → auto-resume for the Claude Code usage-limit dialog; launchd watchdog, zero LLM involvement
 
+## Security
+
+- **[Secrets & API keys](security/secrets.md)** — `~/.agentwire/.env` is the one place every key lives; which vars each feature reads; the `api_key_env` pattern for new integrations
+- **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
+
 ## Integrations
 
 External tools wired into AgentWire.
