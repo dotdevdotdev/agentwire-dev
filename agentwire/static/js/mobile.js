@@ -14,6 +14,7 @@
  */
 
 import { apiFetch, wsProtocols } from './api.js';
+import { isService, loadCustomServices } from './service-classification.js';
 import * as browserStt from './voice/browser-stt.js';
 import * as browserTts from './voice/browser-tts.js';
 import { voicePromptWrap } from './voice/prompt.js';
@@ -22,6 +23,8 @@ const SESSION_KEY = 'agentwire_mobile_session';
 
 const els = {
     sessionList: document.getElementById('sessionList'),
+    tabSessions: document.getElementById('tabSessions'),
+    tabServices: document.getElementById('tabServices'),
     refresh: document.getElementById('refreshSessions'),
     transcript: document.getElementById('transcript'),
     editBar: document.getElementById('editBar'),
@@ -38,6 +41,7 @@ const els = {
 let voiceStatus = null;
 let sessions = [];
 let selectedSession = null;
+let activeTab = 'sessions'; // 'sessions' | 'services' — classification shared with the desktop sidebar
 let pttState = 'idle'; // idle | recording | processing
 let sttCancelled = false;
 let mediaRecorder = null;
@@ -52,7 +56,18 @@ function setStatus(text, isError = false) {
     els.status.classList.toggle('error', isError);
 }
 
-function addEntry(kind, text, label = null) {
+// Per-session conversations (#289): entries are keyed by session and the
+// visible transcript follows the selection. In-memory only — survives session
+// switches, not reloads.
+const transcripts = new Map(); // session name → [{kind, text, label}]
+
+function addEntry(session, kind, text, label = null) {
+    if (!transcripts.has(session)) transcripts.set(session, []);
+    transcripts.get(session).push({ kind, text, label });
+    if (session === selectedSession) appendEntryEl(kind, text, label);
+}
+
+function appendEntryEl(kind, text, label) {
     const entry = document.createElement('div');
     entry.className = `mobile-entry mobile-entry-${kind}`;
     if (label) {
@@ -66,6 +81,13 @@ function addEntry(kind, text, label = null) {
     els.transcript.scrollTop = els.transcript.scrollHeight;
 }
 
+function renderTranscript() {
+    els.transcript.innerHTML = '';
+    for (const e of transcripts.get(selectedSession) || []) {
+        appendEntryEl(e.kind, e.text, e.label);
+    }
+}
+
 function setSpeaking(speaking) {
     els.voiceIndicator.classList.toggle('speaking', speaking);
     els.voiceIndicator.title = speaking ? 'Speaking' : 'Idle';
@@ -76,6 +98,7 @@ function setSpeaking(speaking) {
 // ---------------------------------------------------------------------------
 
 async function loadSessions() {
+    const firstLoad = selectedSession === null;
     try {
         const res = await apiFetch('/api/sessions/local');
         const data = await res.json();
@@ -98,21 +121,36 @@ async function loadSessions() {
         : names.includes('agentwire') ? 'agentwire'
         : names[0] || null;
 
+    // On first load, open the tab holding the restored selection so the
+    // highlighted card is visible (e.g. last talked to a service session).
+    if (firstLoad && pick) setTab(isService(pick) ? 'services' : 'sessions', { render: false });
+
     renderSessions();
     if (pick && pick !== selectedSession) selectSession(pick);
     else if (!pick) setStatus('No sessions running — start one from the desktop', true);
 }
 
+function setTab(tab, { render = true } = {}) {
+    activeTab = tab;
+    for (const btn of [els.tabSessions, els.tabServices]) {
+        const selected = btn.dataset.tab === tab;
+        btn.classList.toggle('selected', selected);
+        btn.setAttribute('aria-selected', String(selected));
+    }
+    if (render) renderSessions();
+}
+
 function renderSessions() {
     els.sessionList.innerHTML = '';
-    if (sessions.length === 0) {
+    const visible = sessions.filter(s => isService(s.name || '') === (activeTab === 'services'));
+    if (visible.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'mobile-empty';
-        empty.textContent = 'No local sessions.';
+        empty.textContent = activeTab === 'services' ? 'No services.' : 'No local sessions.';
         els.sessionList.appendChild(empty);
         return;
     }
-    for (const s of sessions) {
+    for (const s of visible) {
         const btn = document.createElement('button');
         btn.className = 'mobile-session' + (s.name === selectedSession ? ' selected' : '');
         btn.dataset.name = s.name;
@@ -130,6 +168,11 @@ function renderSessions() {
 }
 
 function selectSession(name) {
+    if (name !== selectedSession) {
+        // Pending audio belongs to the previous session — drop it.
+        audioQueue.length = 0;
+        setSpeaking(false);
+    }
     selectedSession = name;
     try { localStorage.setItem(SESSION_KEY, name); } catch {}
     for (const btn of els.sessionList.querySelectorAll('.mobile-session')) {
@@ -137,6 +180,7 @@ function selectSession(name) {
     }
     els.ptt.disabled = false;
     setStatus(`Talking to ${name}`);
+    renderTranscript();
     connectSessionWs(name);
 }
 
@@ -175,20 +219,23 @@ function connectSessionWs(name) {
     socket.onmessage = (event) => {
         let msg;
         try { msg = JSON.parse(event.data); } catch { return; }
+        // Messages land in the transcript of the session they belong to —
+        // never blindly into whatever view is open (#289).
+        const from = msg.session || name;
         switch (msg.type) {
             case 'tts_start':
                 // The reply text — show it whether playback is audio or speech
-                if (msg.text) addEntry('session', msg.text, msg.session || name);
-                setSpeaking(true);
+                if (msg.text) addEntry(from, 'session', msg.text, from);
+                if (from === selectedSession) setSpeaking(true);
                 break;
             case 'speak_text':
-                if (msg.text) {
+                if (msg.text && from === selectedSession) {
                     setSpeaking(true);
                     browserTts.speak(msg.text, { onEnd: () => setSpeaking(false) });
                 }
                 break;
             case 'audio':
-                if (msg.data) queueAudio(msg.data);
+                if (msg.data && from === selectedSession) queueAudio(msg.data);
                 break;
             // `output` (terminal polling) and lock messages are irrelevant here
         }
@@ -421,10 +468,13 @@ function hideEditBar() {
 
 async function sendText(text) {
     if (!selectedSession) return;
-    addEntry('you', text, 'You');
-    setStatus(`Sending to ${selectedSession}…`);
+    // Pin the target: if the user switches sessions while the send is in
+    // flight, the entry (and any error) stays with the session it went to.
+    const target = selectedSession;
+    addEntry(target, 'you', text, 'You');
+    setStatus(`Sending to ${target}…`);
     try {
-        const res = await apiFetch(`/send/${selectedSession}`, {
+        const res = await apiFetch(`/send/${target}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: voicePromptWrap(text) }),
@@ -434,7 +484,7 @@ async function sendText(text) {
         setStatus(`Talking to ${selectedSession}`);
     } catch (err) {
         console.error('[Mobile] Send failed:', err);
-        addEntry('error', err.message || 'Send failed');
+        addEntry(target, 'error', err.message || 'Send failed');
         setStatus(`Talking to ${selectedSession}`);
     }
 }
@@ -475,10 +525,15 @@ async function init() {
     setupPtt();
     setupEditBar();
     els.refresh.addEventListener('click', loadSessions);
+    els.tabSessions.addEventListener('click', () => setTab('sessions'));
+    els.tabServices.addEventListener('click', () => setTab('services'));
 
     // voice-status first: on a fresh device this 401s and raises the token
     // modal; after entry the page reloads with credentials.
     await loadVoiceStatus();
+    // Custom services must be merged before the first render so config-defined
+    // services land on the Services tab (same allowlist as the desktop sidebar).
+    await loadCustomServices();
     await loadSessions();
 }
 

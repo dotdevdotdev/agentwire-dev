@@ -16,7 +16,7 @@
 
 import { apiFetch } from './api.js';
 import { normalizeMachine, sameMachine } from './session-id.js';
-import { isService } from './sidebar/sessions-section.js';
+import { isService } from './service-classification.js';
 import * as browserStt from './voice/browser-stt.js';
 
 const PILL_TYPES = ['feat', 'fix', 'chore', 'refactor', 'docs'];

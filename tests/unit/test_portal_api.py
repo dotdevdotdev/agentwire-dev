@@ -538,6 +538,10 @@ class TestMobilePage:
         body = await resp.text()
         assert "/static/js/mobile.js" in body
         assert "pttButton" in body
+        # Sessions | Services tabs (#288) — Sessions selected by default
+        assert 'id="tabSessions"' in body
+        assert 'id="tabServices"' in body
+        assert '<button class="mobile-tab selected" id="tabSessions"' in body
 
     async def test_mobile_no_cache(self, portal_client):
         client, _ = portal_client

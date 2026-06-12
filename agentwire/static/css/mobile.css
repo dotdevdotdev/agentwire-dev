@@ -105,11 +105,37 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--spacing-base);
     padding: var(--spacing-base) calc(var(--spacing-base) * 1.5) 0;
-    font-size: 12px;
+}
+
+/* Sessions | Services tabs (#288) */
+
+.mobile-tabs {
+    display: flex;
+    gap: 6px;
+    flex: 1;
+}
+
+.mobile-tab {
+    flex: 1;
+    max-width: 160px;
+    min-height: 40px;
+    padding: 8px 14px;
+    border: 1px solid var(--chrome-border);
+    border-radius: 8px;
+    background: var(--chrome);
+    color: var(--text-muted);
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.mobile-tab.selected {
+    border-color: var(--accent);
+    background: var(--hover);
+    color: var(--text);
 }
 
 .mobile-refresh {
