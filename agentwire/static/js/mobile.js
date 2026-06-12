@@ -8,7 +8,7 @@
  *
  * Voice tiers mirror the desktop session window:
  *   - default STT: browser SpeechRecognition (Chrome) — no audio upload
- *   - custom STT: MediaRecorder → POST /transcribe
+ *   - cloud/custom STT: MediaRecorder → POST /transcribe
  * TTS replies arrive over the per-session WS (smart routing treats this page
  * as a connected client): `speak_text` (browser synthesis) or `audio` (WAV).
  */
@@ -294,7 +294,7 @@ function setupPtt() {
 }
 
 function usesBrowserStt() {
-    return voiceStatus?.stt?.backend !== 'custom';
+    return !['cloud', 'custom'].includes(voiceStatus?.stt?.backend);
 }
 
 function setPttState(state) {
@@ -320,7 +320,7 @@ async function startRecording() {
 
     if (usesBrowserStt()) {
         if (!browserStt.isSupported()) {
-            setStatus('No speech recognition in this browser — set stt.backend: custom for phone STT', true);
+            setStatus('No speech recognition in this browser — set stt.backend: cloud or custom for phone STT', true);
             return;
         }
         sttCancelled = false;
