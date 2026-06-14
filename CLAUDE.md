@@ -157,10 +157,10 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 
 ## Mission tracking — GitHub Issues only
 
-**Issues are the single source of truth for plans, status, and history.** The project board is the kanban (Proposed → Accepted → Active → Shipped → Stalled → Declined); the issue body holds the plan; comments hold the phase breadcrumbs + verification notes; PRs reference the issue and close it on merge.
+**The GitHub issue is the single — and only — source of truth for plans, status, and history (alongside git history / merges themselves). No project board, no kanban, no status labels.** The issue body holds the plan; **issue comments hold the breadcrumbs** (what we built, decisions locked in, surprises, verification results); labels categorize; open/closed state + a linked PR tell you where the work stands.
 
 Don't write parallel mission specs into the repo. If a plan is long, expand it inside the issue body or as comments. Post-ship reference content (concepts, architecture, troubleshooting) lives in `docs/wiki/`, never as mission files.
 
-Per-mission convention: branch `mission/{slug}`, push after every commit, PR back to `main` and close the issue. The PR description is the breadcrumb — what was built, decisions locked in, schemas, surprises, verification results.
+Per-mission convention: branch `mission/{slug}`, push after every commit, PR back to `main`. **The breadcrumb is a comment on the issue, posted when you open the PR — not buried in the PR description, because the issue is the SSOT and you (the working agent) are still alive at PR-open but gone by merge.** Every PR that tracks an issue MUST carry `Closes #N` in its body so the merge auto-closes the issue (the only issue-side action that fires post-merge — nothing else runs then). Mirror the breadcrumb into the PR description too if it helps reviewers, but the issue comment is the one that must exist.
 
 Full conventions (columns, `feature:*` / `area:*` labels, importing historical work): `~/.claude/rules/project-tracking.md`.

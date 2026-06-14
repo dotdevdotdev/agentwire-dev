@@ -23,8 +23,9 @@ When the task is done:
 
 1. Commit with a clear message, following any commit-footer conventions from your global instructions.
 2. Push the branch: `git push -u origin {{branch}}`.
-3. Open a DRAFT pull request to `{{base_branch}}`. If the work tracks a GitHub issue, include `Closes #<issue>` in the PR body. The PR description is the breadcrumb: what was built, decisions locked in, surprises, verification results.
-4. Report back to your creator with a **polite, non-interrupting** message — so you never clobber a draft they're half-way through typing:
+3. Open a DRAFT pull request to `{{base_branch}}`. If the work tracks a GitHub issue, the PR body **MUST** include `Closes #<issue>` — that line is what auto-closes the issue on merge, and it's the *only* issue-side action that fires post-merge (you'll be long gone by then).
+4. **Leave the breadcrumb as a comment on the issue** now, while you're still alive — `gh issue comment <issue> --body "..."` — covering what was built, decisions locked in vs the plan, surprises, and verification results. The **issue is the single source of truth**; the breadcrumb has to land *there*, at PR-open, because by merge-time no agent is running to write it. Reviewers read the PR description, so mirror the summary into the PR body too — but the issue comment is the one that must exist. Skip only if the task has no tracking issue.
+5. Report back to your creator with a **polite, non-interrupting** message — so you never clobber a draft they're half-way through typing:
 
    ```
    agentwire msg send --to {{creator}} --kind done "{{session}}: <one-liner + PR URL>"

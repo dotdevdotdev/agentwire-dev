@@ -52,7 +52,12 @@ For quick parallel tasks that don't need overnight:
 1. `overnight_report()` — see what completed
 2. Review draft PRs
 3. Read worker summaries in `.agentwire/worker-*.md`
-4. Report results to the user
+4. **Check issue hygiene** — for every PR a worker opened, confirm the tracking issue has (a) a breadcrumb comment and (b) `Closes #N` in the PR body. If a worker missed either, fix it: `gh issue comment <N>` with the rolled-up breadcrumb, and edit the PR body to add `Closes #N`. The GitHub issue is the only SSOT — a merged PR with no breadcrumb on the issue is lost history.
+5. Report results to the user
+
+### When a PR merges
+
+The issue auto-closes via `Closes #N` — that's the *only* thing that fires automatically. There is **no board to move**: the issue's open/closed state plus its linked PR is the entire status model. Your one post-merge job is to sweep sibling issues the work touched (obsolete follow-ups, meta-issues, anything referencing the now-shipped change) and close or comment as needed — scan the merged PR's `closingIssuesReferences` to find them.
 
 ## Task Decomposition Rules
 

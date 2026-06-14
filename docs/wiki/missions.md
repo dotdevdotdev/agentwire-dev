@@ -47,7 +47,7 @@ The dash form (`mission-N-slug`) avoids colliding with `parse_session_name`'s sp
 1. **File an issue.** Body must include an `## Acceptance criteria` section with bullets. Apply the `agent-ready` label.
 2. **Dispatcher tick** picks it up (work hours, eligibility = `agent-ready` AND criteria parsable AND issue OPEN).
 3. **Worker spawns** in `{repo}-worktrees/mission-N-slug/` on branch `mission-N-slug`. Initial prompt = issue body + criteria + "open a draft PR titled `mission #N: ...`".
-4. **Worker opens draft PR.** Worker idles between feedback rounds.
+4. **Worker opens draft PR** — body carries `Closes #N`, and the worker posts a breadcrumb **comment on the issue** (what shipped, decisions, verification) at this moment, since by merge-time the worker is reaped and only `Closes #N` fires automatically. The issue is the SSOT; there is no board. Worker idles between feedback rounds.
 5. **Reviewer comments on PR.** On the next feedback-router tick (15m), the worker receives `/clear` + a refresh prompt pointing at a per-mission summary file with the new review bodies.
 6. **Worker addresses feedback, pushes, idles again.** Repeat 4–6 until reviewer approves and PR is merged.
 7. **Janitor reaps.** Once PR state is MERGED or CLOSED, the next janitor tick kills the worker session, removes the worktree, and clears local state.
