@@ -222,7 +222,9 @@ overnight:
     Begin autonomous execution now. Commit frequently.
 
 session:
-  default_role: "agentwire"  # Default role for new sessions
+  # No global default-role: a session's etiquette is derived from its spawn
+  # verb (new → orchestrator, worktree → worktree-session, spawn → worker),
+  # then any --roles / .agentwire.yml roles: replace it. See resolve_roles.
   inject_soul: true          # Append the bundled 'soul' personality role to every human-facing
                              # session (appended last for recency weight). Headless roles
                              # (worker, task-runner, notifications) and soul/soul-* sessions

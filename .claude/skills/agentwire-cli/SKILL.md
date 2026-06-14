@@ -27,12 +27,12 @@ agentwire list                  # not: tmux list-sessions
 agentwire recreate -s name      # destroy and recreate with fresh worktree
 agentwire worktree name         # new branch + worktree + STANDALONE session
                                 #   "worktree session" ALWAYS means this command — never
-                                #   `spawn --branch` (that makes a pane); add
-                                #   --type claude-bypass for autonomous workers
-                                #   Auto-injects the worktree-mission briefing role
-                                #   (isolation, no rebuild/restart, verify in-worktree,
-                                #   draft PR + notify-back) — first prompts only need
-                                #   the task itself; --no-mission opts out
+                                #   `spawn --branch` (that makes a pane). Defaults to the
+                                #   bypass posture (autonomous); override with --posture.
+                                #   The worktree-session etiquette role is intrinsic to
+                                #   the verb (isolation, no rebuild/restart, verify
+                                #   in-worktree, draft PR + notify-back) — first prompts
+                                #   only need the task itself
 agentwire worktree name -b develop  # from specific base branch
 agentwire worktree name -c      # from repo's current branch
 agentwire worktree name -e      # checkout existing branch (no new branch)
@@ -41,7 +41,7 @@ agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
 # Pane commands (worker PANES inside the current session — NOT worktree
-# sessions; for parallel autonomous missions use `agentwire worktree` above)
+# sessions; for parallel autonomous work use `agentwire worktree` above)
 agentwire spawn --roles worker  # spawn worker pane
 agentwire spawn --branch name   # worker pane on an isolated worktree (still a pane)
 agentwire send --pane 1 "task"  # send to pane

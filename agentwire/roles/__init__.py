@@ -199,45 +199,98 @@ def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool
     return [*role_names, "soul"]
 
 
-# Bundled role carrying the standing briefing for `agentwire worktree`
-# dispatches (isolation, no live-tool mutation, in-worktree verification,
-# draft-PR + notify-back contract). Auto-applied by cmd_worktree so
-# orchestrators stop hand-writing the same briefing into every first prompt.
-WORKTREE_MISSION_ROLE = "worktree-mission"
+# The etiquette intrinsic to each session KIND. The kind is DERIVED from the
+# spawn verb — `agentwire new` → orchestrator, `agentwire worktree` →
+# worktree-session, `agentwire spawn` → worker — never user-configured. The
+# etiquette describes what the session structurally IS (an orchestrator
+# delegates; a worker focuses and reports; a worktree session isolates and
+# opens a draft PR), so it can't get lost: it's derived, not looked up in a
+# defaults table. These are the ONLY roles agentwire injects on its own behalf.
+INTRINSIC_ETIQUETTE: dict[str, str] = {
+    "orchestrator": "orchestrator",
+    "worktree-session": "worktree-session",
+    "worker": "worker",
+}
+
+# SAFETY-RAIL kinds carry a STRUCTURAL contract that must always be present —
+# it describes what the session *is*, and dropping it is a safety regression:
+#   - worker:           focus / report / auto-kill
+#   - worktree-session: isolation / verify / draft-PR / notify
+# For these, the intrinsic etiquette is NON-OVERRIDABLE: user/project roles
+# STACK on top of it, never replace it.
+#
+# Every other kind (orchestrator) is a PERSONA: a sensible zero-config default
+# that explicit roles are free to REPLACE — that's what keeps council /
+# scheduler / task sessions clean when they pass their own roles.
+SAFETY_RAIL_KINDS: set[str] = {"worker", "worktree-session"}
 
 
-def inject_worktree_mission(role_names: list[str], no_mission: bool = False) -> list[str]:
-    """Append the bundled worktree-mission briefing role to a session's role list.
+def derive_session_kind(has_branch: bool, explicit_kind: str | None = None) -> str:
+    """The session KIND for an `agentwire new` (or worktree) dispatch.
 
-    Applied by `agentwire worktree` at session-create time, before
-    inject_soul (so soul still rides last). Skipped when:
-    - no_mission is True (per-dispatch --no-mission flag)
-    - the role is already present (explicit --roles or project override)
+    Kind is derived from what's being created, never user-configured:
+    - An explicit kind wins — ``cmd_worktree`` passes "worktree-session".
+    - Otherwise a worktree (a ``project/branch`` name, which is also how the
+      scheduler and portal dispatch worktrees) IS a worktree-session, so it
+      gets the isolation/verify/draft-PR/notify safety contract regardless of
+      entrypoint. A plain name is an orchestrator.
+    """
+    if explicit_kind:
+        return explicit_kind
+    return "worktree-session" if has_branch else "orchestrator"
+
+
+def resolve_roles(
+    kind: str | None,
+    cli_roles: list[str] | None = None,
+    project_roles: list[str] | None = None,
+) -> list[str]:
+    """Resolve a session's role list — the ONE place role precedence lives.
+
+    Two rules, by kind:
+
+    - **Safety-rail kinds** (``worker``, ``worktree-session``): the intrinsic
+      etiquette is structural and non-overridable. Result = intrinsic +
+      project roles + cli roles, stacked and de-duplicated (etiquette always
+      first/present). ``--roles`` ADDS to the contract, never removes it.
+    - **Persona kind** (``orchestrator``, and ``kind=None``): the intrinsic
+      etiquette is just a zero-config default. Precedence ``--roles`` >
+      ``.agentwire.yml roles:`` > intrinsic — user roles REPLACE it. So a
+      council/task session that passes its own roles never inherits
+      orchestrator etiquette.
+
+    This is the "resolve" phase only. ``soul`` is auto-appended *separately*
+    by :func:`inject_soul` — resolve first, auto-append second, as two
+    visibly distinct phases.
 
     Args:
-        role_names: Resolved role names for the session
-        no_mission: Per-dispatch opt-out
+        kind: Session kind ("orchestrator" | "worktree-session" | "worker"),
+            or None (treated as a persona with no default).
+        cli_roles: Roles from ``--roles`` (highest-precedence user source).
+        project_roles: Roles from ``.agentwire.yml roles:``.
 
     Returns:
-        role_names with "worktree-mission" appended, or unchanged if excluded
+        The resolved role list (before the soul auto-append).
     """
-    if no_mission:
-        return role_names
-    if WORKTREE_MISSION_ROLE in role_names:
-        return role_names
-    return [*role_names, WORKTREE_MISSION_ROLE]
+    intrinsic = INTRINSIC_ETIQUETTE.get(kind) if kind else None
 
+    if kind in SAFETY_RAIL_KINDS:
+        # Non-overridable contract: etiquette always present, user roles stack.
+        roles: list[str] = [intrinsic] if intrinsic else []
+        for r in (project_roles or []):
+            if r not in roles:
+                roles.append(r)
+        for r in (cli_roles or []):
+            if r not in roles:
+                roles.append(r)
+        return roles
 
-def render_mission_placeholders(text: str, context: dict[str, str]) -> str:
-    """Substitute ``{{key}}`` placeholders in role instructions.
-
-    Only keys present in ``context`` are replaced; unknown placeholders are
-    left intact (so a malformed context fails loudly in the rendered prompt
-    instead of silently dropping the constraint).
-    """
-    for key, value in context.items():
-        text = text.replace("{{" + key + "}}", str(value))
-    return text
+    # Persona: replaceable default.
+    if cli_roles:
+        return list(cli_roles)
+    if project_roles:
+        return list(project_roles)
+    return [intrinsic] if intrinsic else []
 
 
 def discover_role(name: str, project_path: Path | None = None) -> Path | None:

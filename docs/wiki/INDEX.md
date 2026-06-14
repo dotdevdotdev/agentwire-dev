@@ -103,6 +103,6 @@ Agent-facing reference lives in `.claude/skills/` and loads automatically inside
 | `agentwire-desktop-ui` | Editing portal static files |
 | `agentwire-pi` | Pi sessions for any provider (zai, deepseek, openai, …) |
 
-## Mission tracking
+## Issue tracking
 
-Plans, status, and history live in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues). Issue body = plan, comments = progress breadcrumbs, PR description = canonical end-of-project summary.
+Plans, status, and history live in [GitHub issues](https://github.com/dotdevdotdev/agentwire-dev/issues). Issue body = plan, comments = progress breadcrumbs, PR body = end-of-task summary. (This is a contributor convention, not something agentwire ships.)

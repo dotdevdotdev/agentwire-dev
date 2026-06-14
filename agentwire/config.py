@@ -326,9 +326,14 @@ class ReplConfig:
 
 @dataclass
 class SessionConfig:
-    """Default session configuration."""
+    """Default session configuration.
 
-    default_role: str = "agentwire"  # Default role for new sessions
+    Note: there is intentionally NO global default-role here. A session's
+    intrinsic etiquette is derived from its spawn verb (see
+    ``roles.resolve_roles``), never from a config default — that scatter is
+    the bug this replaced.
+    """
+
     inject_soul: bool = True  # Append the bundled soul personality role to human-facing sessions
 
 
@@ -752,7 +757,6 @@ def _dict_to_config(data: dict) -> Config:
     # Session defaults
     session_data = data.get("session", {}) or {}
     session = SessionConfig(
-        default_role=session_data.get("default_role", "agentwire"),
         inject_soul=bool(session_data.get("inject_soul", True)),
     )
 

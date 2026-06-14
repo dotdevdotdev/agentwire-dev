@@ -9,12 +9,15 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from unittest.mock import MagicMock
+
 from agentwire.scheduler import (
     Board,
     Schedule,
     SchedulerTask,
     TaskState,
     _compute_next_eligible,
+    _dispatch_worktree_task,
     _in_time_window,
     _is_in_flight,
     format_schedule,
@@ -345,3 +348,40 @@ class TestBoardDisplay:
         for row in rows:
             assert "schedule_str" in row
             assert "interval_str" not in row
+
+
+class TestSchedulerWorktreeDispatchOptsOutOfPR:
+    """The scheduler is the deterministic PR finalizer, so its worktree task
+    agents must NOT open their own PRs. C3 derives 'worktree-session' from the
+    slash session name, so the dispatch must override with --kind orchestrator
+    (making the task's own roles win, dropping the draft-PR/notify etiquette).
+    Regression guard for the orphan-PR leak."""
+
+    def test_dispatch_passes_kind_orchestrator(self, board_env):
+        calls = []
+
+        def fake_run(cmd, *a, **k):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="{}", stderr="")
+
+        task = SchedulerTask(
+            name="nightly-thing",
+            project="/tmp/does-not-matter",
+            task="nightly-thing",
+            roles=["task-runner"],
+            base="main",
+        )
+        with patch("agentwire.scheduler._kill_session"), \
+             patch("agentwire.locking.remove_stale_lock"), \
+             patch("agentwire.scheduler.subprocess.run", side_effect=fake_run):
+            # Worktree path is empty in our fake → dispatch bails after the
+            # `new` command, which is all we need to inspect.
+            _dispatch_worktree_task(MagicMock(), task, TaskState())
+
+        new_cmds = [c for c in calls if isinstance(c, list) and c[:2] == ["agentwire", "new"]]
+        assert new_cmds, "scheduler never issued an `agentwire new` worktree dispatch"
+        cmd = new_cmds[0]
+        # The opt-out: explicit orchestrator kind so task-runner replaces it.
+        assert "--kind" in cmd and cmd[cmd.index("--kind") + 1] == "orchestrator"
+        # And it still passes the task role, which now wins outright.
+        assert "--roles" in cmd and "task-runner" in cmd[cmd.index("--roles") + 1]

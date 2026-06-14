@@ -27,8 +27,11 @@ load_dotenv(Path.home() / ".agentwire" / ".env")  # Global config
 
 from . import __version__, cli_safety, pane_manager
 from .project_config import (
+    DEFAULT_HARNESS,
+    POSTURES,
     ProjectConfig,
     SessionType,
+    compose_session_type,
     detect_default_agent_type,
     get_parent_from_config,
     get_voice_from_config,
@@ -37,13 +40,12 @@ from .project_config import (
     save_project_config,
 )
 from .roles import (
-    WORKTREE_MISSION_ROLE,
     RoleConfig,
+    derive_session_kind,
     inject_soul,
-    inject_worktree_mission,
     load_roles,
     merge_roles,
-    render_mission_placeholders,
+    resolve_roles,
 )
 from .worktree import ensure_worktree, parse_session_name, remove_worktree
 
@@ -121,7 +123,7 @@ def _set_session_name_env(agent: "AgentCommand", session_name: str) -> None:
 
     Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
     / ``cmd_fork`` / scheduler-spawn paths gets this so downstream tooling
-    (notably the mission-worker damage-control rules in ``safety/_core.py``)
+    (notably the worker damage-control rules in ``safety/_core.py``)
     can identify which agentwire session the running tool is part of.
     """
     agent.env["AGENTWIRE_SESSION_NAME"] = session_name
@@ -3270,6 +3272,91 @@ def cmd_list(args) -> int:
     return 0
 
 
+# Default POSTURE per session KIND (the spawn verb). Harness defaults to
+# claude. These are the floor when no --posture/--harness/--type is given.
+KIND_DEFAULT_POSTURE = {
+    "orchestrator": "bypass",      # agentwire new — you drive it, full access
+    "worktree-session": "bypass",  # agentwire worktree — autonomous, full access
+    "worker": "restricted",        # agentwire spawn — locked-down executor
+}
+
+
+def _resolve_session_type_from_args(args, kind: str) -> tuple[str | None, str | None]:
+    """Resolve the internal fused session type from the shared flag core.
+
+    Posture × harness are the canonical axes; legacy --type (fused strings or
+    intent presets) and the internal --bare/--restricted/--prompted booleans
+    are accepted on input but never the primary surface.
+
+    Precedence: explicit --posture/--harness compose first; else legacy
+    --type; else legacy booleans; else the kind's default posture × claude.
+
+    Returns ``(session_type, error)`` — error is a message string when an
+    invalid posture was given, session_type is None in that case.
+    """
+    posture = getattr(args, 'posture', None)
+    harness = getattr(args, 'harness', None)
+    type_arg = getattr(args, 'type', None)
+    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
+
+    if posture or harness:
+        try:
+            return compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture), None
+        except ValueError as e:
+            return None, str(e)
+    if type_arg:
+        return normalize_session_type(type_arg, detect_default_agent_type()), None
+    # Internal legacy booleans (set by cmd_worktree / cmd_recreate callers).
+    if getattr(args, 'bare', False):
+        return "bare", None
+    if getattr(args, 'restricted', False):
+        return f"{detect_default_agent_type()}-restricted", None
+    if getattr(args, 'prompted', False):
+        return f"{detect_default_agent_type()}-prompted", None
+    return compose_session_type(DEFAULT_HARNESS, default_posture), None
+
+
+def _add_posture_harness_flags(parser) -> None:
+    """Register the shared posture × harness axes on a spawn-verb parser.
+
+    These are the canonical session-type surface across new/worktree/spawn;
+    legacy --type (fused strings, intent presets) stays accepted but secondary.
+    """
+    parser.add_argument("--posture", choices=list(POSTURES),
+                        help="How much the agent may do unprompted: bypass/prompted/restricted/readonly "
+                             "(default depends on the verb: new/worktree → bypass, spawn → restricted)")
+    parser.add_argument("--harness",
+                        help="Agent backend: claude (default), pi-<provider> (e.g. pi-zai, pi-deepseek), or bare")
+
+
+def cmd_session_defaults(args) -> int:
+    """Resolve what a new session would get — backs the portal resolver endpoint.
+
+    Given a spawn verb's KIND (default: orchestrator, i.e. `agentwire new`)
+    and optional posture/harness, returns the composed session type and the
+    intrinsic etiquette roles. The portal reads this instead of hardcoding —
+    one resolver, one source of truth.
+    """
+    kind = getattr(args, 'kind', None) or 'orchestrator'
+    posture = getattr(args, 'posture', None)
+    harness = getattr(args, 'harness', None)
+    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
+    try:
+        session_type = compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture)
+    except ValueError as e:
+        return _output_result(False, True, str(e))
+    _output_json({
+        "success": True,
+        "kind": kind,
+        "posture": posture or default_posture,
+        "harness": harness or DEFAULT_HARNESS,
+        "session_type": session_type,
+        "roles": resolve_roles(kind),  # intrinsic etiquette (chips); user roles layer on top
+        "postures": list(POSTURES),
+    })
+    return 0
+
+
 def cmd_new(args) -> int:
     """Create a new agent session.
 
@@ -3290,55 +3377,51 @@ def cmd_new(args) -> int:
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire new -s <name> [-p path] [-f]")
 
-    # Parse roles from CLI or existing .agentwire.yml
+    # Parse session name: project, branch, machine. Done early so the session
+    # KIND can be derived from whether a worktree is being created.
+    project, branch, machine_id = parse_session_name(name)
+
+    # --- Role resolution (two distinct phases) -----------------------------
+    # Phase 1 — resolve. The session KIND is derived from the spawn verb:
+    # cmd_worktree passes kind="worktree-session" explicitly; for `new` we
+    # derive it — a project/branch name (or any worktree dispatch from the
+    # scheduler / portal) IS a worktree-session, a plain name is an
+    # orchestrator. Safety-rail kinds (worker, worktree-session) STACK their
+    # intrinsic etiquette under user roles; orchestrator is a replaceable
+    # persona. All precedence lives in resolve_roles — one greppable function.
+    kind = derive_session_kind(bool(branch), getattr(args, 'kind', None))
     roles_arg = getattr(args, 'roles', None)
-    role_names: list[str] = []
-    if roles_arg:
-        role_names = [r.strip() for r in roles_arg.split(",") if r.strip()]
-    else:
-        # Check existing .agentwire.yml in the project
-        project_path_for_config = Path(path).expanduser().resolve() if path else None
-        if project_path_for_config:
-            existing = load_project_config(project_path_for_config)
-            if existing and existing.roles:
-                role_names = existing.roles
-            else:
-                # Use configured default role for new projects
-                config = load_config()
-                default_role = config.get("session", {}).get("default_role", "agentwire")
-                role_names = [default_role] if default_role else []
-        else:
-            # Use configured default role when no path specified
-            config = load_config()
-            default_role = config.get("session", {}).get("default_role", "agentwire")
-            role_names = [default_role] if default_role else []
+    cli_roles = [r.strip() for r in roles_arg.split(",") if r.strip()] if roles_arg else None
 
-    # Standing mission briefing for worktree dispatches: cmd_worktree passes
-    # mission_context (branch/cwd/base/creator values) which both opts the
-    # session into the worktree-mission role and templates its placeholders.
-    mission_context = getattr(args, 'mission_context', None)
-    if mission_context:
-        role_names = inject_worktree_mission(role_names)
+    project_path_for_config = Path(path).expanduser().resolve() if path else None
+    project_roles = None
+    if project_path_for_config:
+        existing = load_project_config(project_path_for_config)
+        if existing and existing.roles:
+            project_roles = existing.roles
 
-    # Always-inject the soul personality role (rides last for recency weight)
+    role_names = resolve_roles(kind, cli_roles=cli_roles, project_roles=project_roles)
+
+    # Phase 2 — auto-append: the soul personality role rides last (recency
+    # weight). Kept visibly separate from resolution above.
     role_names = inject_soul(role_names, load_config(), no_soul=getattr(args, 'no_soul', False))
 
     # Load and validate roles
     roles: list[RoleConfig] = []
     if role_names:
-        # Determine project path for role discovery
-        project_path_for_roles = Path(path).expanduser().resolve() if path else None
-        roles, missing = load_roles(role_names, project_path_for_roles)
+        roles, missing = load_roles(role_names, project_path_for_config)
         if missing:
             return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
 
-    if mission_context:
-        for role in roles:
-            if role.name == WORKTREE_MISSION_ROLE:
-                role.instructions = render_mission_placeholders(role.instructions, mission_context)
-
-    # Parse session name: project, branch, machine
-    project, branch, machine_id = parse_session_name(name)
+    # Flag-relevance guard: --base / --pull-first only mean something when
+    # `new` is creating a worktree (a project/branch name). Error loudly
+    # rather than silently ignoring them on a plain session. For a custom
+    # base on a standalone branch, use the `worktree` verb.
+    if not branch:
+        if getattr(args, 'base', None) is not None:
+            return _output_result(False, json_mode, "--base only applies to worktree sessions (use a project/branch name, or the `worktree` verb)")
+        if getattr(args, 'pull_first', None) is not None:
+            return _output_result(False, json_mode, "--pull-first/--no-pull-first only apply to worktree sessions (a project/branch name)")
 
     first_message = getattr(args, 'first_message', None)
     if first_message and machine_id:
@@ -3414,24 +3497,13 @@ def cmd_new(args) -> int:
             else:
                 return _output_result(False, json_mode, f"Session '{session_name}' already exists on {machine_id}. Use -f to replace.")
 
-        # Create remote tmux session
-        # Determine agent type and session type from CLI --type flag or boolean flags
-        agent_type = detect_default_agent_type()
-
-        # Check explicit --type flag first (from portal UI or CLI)
-        if getattr(args, 'type', None):
-            session_type = args.type
-        elif getattr(args, 'bare', False):
-            session_type = "bare"
-        elif getattr(args, 'restricted', False):
-            session_type = f"{agent_type}-restricted"
-        elif getattr(args, 'prompted', False):
-            session_type = f"{agent_type}-prompted"
-        else:
-            session_type = f"{agent_type}-bypass"
+        # Create remote tmux session — resolve posture × harness (shared core)
+        session_type, st_err = _resolve_session_type_from_args(args, kind)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
 
         # Build agent command
-        agent = build_agent_command(session_type, roles if roles else None)
+        agent = build_agent_command(session_type, roles if roles else None, model=getattr(args, 'model', None))
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
         agent_cmd = agent.command
@@ -3493,8 +3565,9 @@ def cmd_new(args) -> int:
 
     # Local session
     # Resolve path
-    base_branch = getattr(args, 'base', 'main') or 'main'
-    pull_first = getattr(args, 'pull_first', True)
+    base_branch = getattr(args, 'base', None) or 'main'
+    _pull_first = getattr(args, 'pull_first', None)
+    pull_first = True if _pull_first is None else _pull_first
 
     def _spawn_worktree(project_path: Path, session_path: Path) -> tuple[bool, str | None]:
         """Fetch origin/<base> if requested, then create worktree starting at that ref."""
@@ -3614,33 +3687,29 @@ def cmd_new(args) -> int:
     # `tmux set-environment` only affects shells spawned AFTER the call).
     agent_type = detect_default_agent_type()
 
-    # Determine session type from CLI --type flag or existing config
+    # Determine session type. Precedence: explicit posture/harness/type/legacy
+    # booleans (shared core) → existing .agentwire.yml type → kind default.
     persist = getattr(args, 'persist', False)
     type_arg = getattr(args, 'type', None)
-    if type_arg:
-        # CLI flag specified - use it directly and normalize
-        session_type = normalize_session_type(type_arg, agent_type)
-        # Only save to .agentwire.yml if --persist is given
-        if session_path and persist:
-            existing_config = load_project_config(session_path)
-            project_config = ProjectConfig(
-                type=SessionType.from_str(session_type),
-                roles=role_names if role_names else (existing_config.roles if existing_config else []),
-                voice=existing_config.voice if existing_config else None,
-                parent=existing_config.parent if existing_config else None,
-                shell=existing_config.shell if existing_config else None,
-                tasks=existing_config.tasks if existing_config else {},
-            )
-            save_project_config(project_config, session_path)
+    type_explicit = bool(
+        type_arg
+        or getattr(args, 'posture', None)
+        or getattr(args, 'harness', None)
+        or getattr(args, 'bare', False)
+        or getattr(args, 'restricted', False)
+        or getattr(args, 'prompted', False)
+    )
+    if type_explicit:
+        session_type, st_err = _resolve_session_type_from_args(args, kind)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
     else:
-        # Check existing .agentwire.yml for type
         existing_config = load_project_config(session_path)
         if existing_config and existing_config.type:
-            # Normalize in case it's a universal type
             session_type = normalize_session_type(existing_config.type.value, agent_type)
         else:
-            # Default to standard
-            session_type = f"{agent_type}-bypass"
+            # Kind default posture × claude (no global default-role lookup).
+            session_type, _ = _resolve_session_type_from_args(args, kind)
 
     # Build agent command
     model_override = getattr(args, 'model', None)
@@ -3673,14 +3742,16 @@ def cmd_new(args) -> int:
             check=True
         )
 
-    # Update project config (.agentwire.yml) - only if --persist is given
+    # Update project config (.agentwire.yml) - only if --persist is given.
+    # Persist USER roles (--roles) only — the intrinsic etiquette and soul are
+    # derived/auto-appended each run, never written into project config.
     if persist:
         existing_config = load_project_config(session_path)
         if existing_config:
             # Preserve existing settings if not overridden by CLI
             project_config = ProjectConfig(
                 type=SessionType.from_str(session_type),
-                roles=role_names if type_arg else existing_config.roles,
+                roles=cli_roles if cli_roles else existing_config.roles,
                 voice=existing_config.voice,
                 parent=existing_config.parent,
                 shell=existing_config.shell,
@@ -3690,7 +3761,7 @@ def cmd_new(args) -> int:
             # Create new config
             project_config = ProjectConfig(
                 type=SessionType.from_str(session_type),
-                roles=role_names if role_names else [],
+                roles=cli_roles if cli_roles else [],
                 voice=None,
             )
         save_project_config(project_config, session_path)
@@ -4202,7 +4273,7 @@ def cmd_spawn(args) -> int:
     """
     json_mode = getattr(args, 'json', False)
     cwd = getattr(args, 'cwd', None)
-    roles_arg = getattr(args, 'roles', 'worker')
+    roles_arg = getattr(args, 'roles', None)
     session = getattr(args, 'session', None)
     branch = getattr(args, 'branch', None)
     no_wait = getattr(args, 'no_wait', False)
@@ -4233,24 +4304,29 @@ def cmd_spawn(args) -> int:
         except RuntimeError as e:
             return _output_result(False, json_mode, f"Failed to create worktree: {e}")
 
-    # Parse roles
-    role_names = [r.strip() for r in roles_arg.split(",") if r.strip()]
+    # Resolve roles via the shared resolver: kind="worker" is a SAFETY-RAIL
+    # kind — the worker etiquette (focus / report / auto-kill) is always
+    # present and non-overridable; --roles and .agentwire.yml roles: STACK on
+    # top of it. soul is a no-op for workers (headless) but kept for parity.
+    cli_roles = [r.strip() for r in roles_arg.split(",") if r.strip()] if roles_arg else None
+    project_cfg = load_project_config(Path(cwd))
+    project_roles = project_cfg.roles if (project_cfg and project_cfg.roles) else None
+    role_names = resolve_roles("worker", cli_roles=cli_roles, project_roles=project_roles)
+    role_names = inject_soul(role_names, load_config(), no_soul=getattr(args, 'no_soul', False))
 
     # Load and validate roles
     roles, missing = load_roles(role_names, Path(cwd))
     if missing:
         return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
 
-    # Use provided type or default to {agent_type}-restricted
-    session_type_arg = getattr(args, 'type', None)
-    if session_type_arg:
-        session_type_str = session_type_arg
-    else:
-        agent_type = detect_default_agent_type()
-        session_type_str = f"{agent_type}-restricted"
+    # Resolve session type via the shared posture × harness core (kind=worker
+    # defaults to the restricted posture).
+    session_type_str, st_err = _resolve_session_type_from_args(args, "worker")
+    if st_err:
+        return _output_result(False, json_mode, st_err)
 
     # Build agent command
-    agent = build_agent_command(session_type_str, roles if roles else None)
+    agent = build_agent_command(session_type_str, roles if roles else None, model=getattr(args, 'model', None))
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
     agent_cmd = agent.command
@@ -4800,11 +4876,12 @@ def cmd_worktree(args) -> int:
 
     If the worktree already exists, reattaches to the existing session.
 
-    Default/--existing dispatches auto-inject the bundled worktree-mission
-    briefing role (isolation, no live-tool mutation, in-worktree
-    verification, draft-PR + notify-back contract) with branch/cwd/base/
-    creator templated in — opt out with --no-mission. --ref dispatches skip
-    it (detached checkout, nothing to push).
+    The session's KIND is "worktree-session" — a safety-rail kind. Its
+    intrinsic etiquette (isolation, no live-tool mutation, in-worktree
+    verification, draft-PR + notify-back) is auto-injected by resolve_roles
+    for every dispatch and is non-overridable: it's always present, no
+    opt-out, no templating. `--roles` / `.agentwire.yml roles:` ADD to it,
+    they never replace it.
     """
     json_mode = getattr(args, 'json', False)
     name = args.name
@@ -4831,41 +4908,22 @@ def cmd_worktree(args) -> int:
     worktree_path = worktree_dir / session_name
 
     default_base = getattr(args, 'base', None) or wt_config.get("default_base", "main")
-    no_mission = getattr(args, 'no_mission', False)
 
-    def _mission_context(base_branch: str) -> dict | None:
-        """Values templated into the worktree-mission briefing role.
-
-        None (no briefing) when --no-mission is passed, or for --ref
-        dispatches — a detached review checkout has no branch to push, so
-        the finishing contract doesn't apply.
-        """
-        if no_mission or ref:
-            return None
-        creator = pane_manager.get_current_session()
-        notify_back = (
-            f'agentwire notify-parent --to {creator} "{session_name}: <one-liner + PR URL>"'
-            if creator else
-            f'agentwire notify-parent "{session_name}: <one-liner + PR URL>"'
-        )
-        return {
-            "session": session_name,
-            "branch": name,
-            "worktree_path": str(worktree_path),
-            "main_checkout": str(project_path),
-            "base_branch": base_branch,
-            "creator": creator or "your creator session",
-            "notify_back": notify_back,
-        }
-
-    def _launch_session(mission_context: dict | None = None):
+    def _launch_session():
+        # kind="worktree-session" → worktree-session etiquette is injected
+        # intrinsically by cmd_new's resolver. Posture/harness/model/roles
+        # forward through the shared flag core.
         return cmd_new(type('Args', (), {
             'session': session_name, 'path': str(worktree_path), 'json': json_mode,
             'force': False, 'bare': False, 'restricted': False, 'prompted': False,
-            'type': getattr(args, 'type', None), 'roles': getattr(args, 'roles', None),
+            'kind': 'worktree-session',
+            'type': getattr(args, 'type', None),
+            'posture': getattr(args, 'posture', None),
+            'harness': getattr(args, 'harness', None),
+            'model': getattr(args, 'model', None),
+            'roles': getattr(args, 'roles', None),
             'instructions': None, 'persist': False,
             'env': getattr(args, 'env', None),
-            'mission_context': mission_context,
         })())
 
     # If worktree already exists, reattach
@@ -4877,11 +4935,10 @@ def cmd_worktree(args) -> int:
         if tmux_session_exists(session_name):
             subprocess.run(["tmux", "attach-session", "-t", session_name])
         else:
-            return _launch_session(_mission_context(default_base))
+            return _launch_session()
         return 0
 
     # Resolve the git ref to create the worktree from
-    pr_base = default_base
     if ref:
         # --ref mode: detached at a specific ref (tag, commit, branch)
         git_ref = ref
@@ -4904,7 +4961,6 @@ def cmd_worktree(args) -> int:
             base_branch = result.stdout.strip()
         else:
             base_branch = default_base
-        pr_base = base_branch
         git_ref = f"origin/{base_branch}"
         new_branch = name
         mode_label = f"new branch {name} from {git_ref}"
@@ -4951,7 +5007,7 @@ def cmd_worktree(args) -> int:
         print(f"Created worktree: {worktree_path}")
         print(f"Mode: {mode_label}")
 
-    return _launch_session(_mission_context(pr_base))
+    return _launch_session()
 
 
 def cmd_fork(args) -> int:
@@ -10787,16 +10843,26 @@ def main() -> int:
     new_parser.add_argument("--allow-shared-dir", action="store_true",
                             help="Allow attaching to a directory that already has active sessions "
                                  "(unlike --force, never replaces an existing same-name session)")
-    # Session type
-    new_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
+    # Session type — posture × harness are canonical; --type is a legacy alias.
+    _add_posture_harness_flags(new_parser)
+    new_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not the primary surface): "
+                                           "bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>[-restricted|-readonly], standard, worker, voice")
     # Roles
-    new_parser.add_argument("--roles", help="Comma-separated list of roles (preserves existing config, defaults to agentwire for new projects)")
+    new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
+    new_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"],
+                            help="Override the derived session kind (advanced). A project/branch name "
+                                 "normally derives 'worktree-session' (draft-PR + notify etiquette). Pass "
+                                 "'orchestrator' for a worktree that is finalized externally — e.g. the "
+                                 "scheduler, which opens/reaps the PR itself, so the task agent must NOT "
+                                 "open its own.")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
-    new_parser.add_argument("--persist", action="store_true", help="Write --type/--roles to .agentwire.yml (default: session-level override only)")
+    new_parser.add_argument("--persist", action="store_true", help="Write the resolved type/--roles to .agentwire.yml (default: session-level override only)")
     new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
-    new_parser.add_argument("--base", default="main", help="For worktree sessions: base branch to fork the new branch from (default: main)")
-    new_parser.add_argument("--pull-first", dest="pull_first", action="store_true", default=True, help="For worktree sessions: fetch origin/<base> before branching (default)")
+    # Worktree-only flags (default None so they can be rejected unless the
+    # session name is a project/branch worktree).
+    new_parser.add_argument("--base", default=None, help="Worktree sessions only (project/branch name): base branch to fork from (default: main)")
+    new_parser.add_argument("--pull-first", dest="pull_first", action="store_true", default=None, help="Worktree sessions only: fetch origin/<base> before branching (default)")
     new_parser.add_argument("--no-pull-first", dest="pull_first", action="store_false", help="Skip the fetch — branch from the local copy of <base> as-is")
     new_parser.add_argument("--first-message", dest="first_message",
                             help="After the agent boots, deliver this as its first message (verified; local sessions only)")
@@ -10805,6 +10871,14 @@ def main() -> int:
                                  "(default: the calling tmux session; pass '' to opt out)")
     new_parser.add_argument("--json", action="store_true", help="Output as JSON")
     new_parser.set_defaults(func=cmd_new)
+
+    # === session-defaults command (resolver — backs the portal endpoint) ===
+    sd_parser = subparsers.add_parser("session-defaults", help="Resolve a new session's composed type + intrinsic roles (JSON)")
+    sd_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"], default="orchestrator",
+                           help="Spawn-verb kind (default: orchestrator = `agentwire new`)")
+    _add_posture_harness_flags(sd_parser)
+    sd_parser.add_argument("--json", action="store_true", default=True, help="Output as JSON (default)")
+    sd_parser.set_defaults(func=cmd_session_defaults)
 
     # === output command (top-level) ===
     output_parser = subparsers.add_parser("output", help="Read session or pane output")
@@ -10835,8 +10909,11 @@ def main() -> int:
     spawn_parser.add_argument("-s", "--session", help="Target session (default: auto-detect)")
     spawn_parser.add_argument("--cwd", help="Working directory (default: current)")
     spawn_parser.add_argument("--branch", "-b", help="Create worktree on this branch for isolated commits")
-    spawn_parser.add_argument("--type", help="Session type (claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly) — e.g. pi-zai, pi-deepseek")
-    spawn_parser.add_argument("--roles", default="worker", help="Comma-separated roles (default: worker)")
+    _add_posture_harness_flags(spawn_parser)
+    spawn_parser.add_argument("--type", help="Legacy fused session type (accepted, not primary): claude-bypass, claude-restricted, pi-<provider>[-restricted|-readonly]")
+    spawn_parser.add_argument("--roles", default=None, help="Comma-separated roles, STACKED on top of the always-present worker etiquette")
+    spawn_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
+    spawn_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection (no-op for the headless worker role)")
     spawn_parser.add_argument("--no-wait", action="store_true", help="Don't wait for worker to be ready (default: wait up to 30s)")
     spawn_parser.add_argument("--timeout", type=int, default=30, help="Seconds to wait for worker ready (default: 30)")
     spawn_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var onto parent session (repeatable)")
@@ -10898,10 +10975,10 @@ def main() -> int:
     wt_parser.add_argument("--existing", "-e", action="store_true", help="Checkout an existing branch (no new branch created)")
     wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
     wt_parser.add_argument("--project", "-p", help="Path to git repo (default: from config or cwd)")
-    wt_parser.add_argument("--type", help="Session type override")
-    wt_parser.add_argument("--roles", help="Comma-separated role names")
-    wt_parser.add_argument("--no-mission", dest="no_mission", action="store_true",
-                           help="Skip the auto-injected worktree-mission briefing role")
+    _add_posture_harness_flags(wt_parser)
+    wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
+    wt_parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worktree-session etiquette")
+    wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     wt_parser.add_argument("--json", action="store_true", help="Output as JSON")
     wt_parser.set_defaults(func=cmd_worktree)
