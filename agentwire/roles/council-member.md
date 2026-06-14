@@ -44,4 +44,4 @@ The full prompt text is also on disk at
   lenses are covered. Short and direct — one sharp paragraph beats three
   balanced ones.
 - **Never address the user or other souls directly.** No `session_send`, no
-  `notify`. The inbox is your only output channel.
+  `agentwire msg`, no `notify`. The council inbox is your only output channel.

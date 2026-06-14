@@ -24,6 +24,12 @@ When the task is done:
 1. Commit with a clear message, following any commit-footer conventions from your global instructions.
 2. Push the branch: `git push -u origin {{branch}}`.
 3. Open a DRAFT pull request to `{{base_branch}}`. If the work tracks a GitHub issue, include `Closes #<issue>` in the PR body. The PR description is the breadcrumb: what was built, decisions locked in, surprises, verification results.
-4. Report back to your creator: `{{notify_back}}`
+4. Report back to your creator with a **polite, non-interrupting** message — so you never clobber a draft they're half-way through typing:
+
+   ```
+   agentwire msg send --to {{creator}} --kind done "{{session}}: <one-liner + PR URL>"
+   ```
+
+   `agentwire msg` queues the message and delivers it only when your creator's input box is empty; `notify-parent` / `session_send` paste + Enter **immediately** and overwrite any uncommitted draft. Reserve the forceful path (`{{notify_back}}`) for something that genuinely can't wait.
 
 Do not merge the PR yourself — your creator or a reviewer handles merge and worktree cleanup.

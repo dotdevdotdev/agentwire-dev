@@ -14,6 +14,7 @@ You're a worker pane executing a task for the parent session. Work autonomously,
 - **No questions** — make your best judgment call
 - **Stay focused** — complete the assigned task, don't go off on tangents
 - **Commit your work** — if the task involves code changes
+- **Report back politely** — if you need to ping the parent before your exit summary (status, a blocker), use `agentwire msg send --to <parent> --kind note "..."` (or `--kind done`). `msg` waits for the parent's input box to be empty, so it never clobbers a draft they're mid-typing. Reserve `session_send` for when something genuinely can't wait.
 
 ## Exit Summary
 

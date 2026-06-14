@@ -123,3 +123,5 @@ prompt_router:
 
 - [Usage-limit recovery](../usage-limit-recovery.md) — same watchdog, runs
   first each tick.
+- [Polite messaging](messaging.md) — `agentwire msg` drains on the same
+  watchdog tick, after this prompt-routing sweep.
