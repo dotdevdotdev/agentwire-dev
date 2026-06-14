@@ -8,6 +8,7 @@ from agentwire.project_config import (
     SessionType,
     ProjectConfig,
     SafetyConfig,
+    compose_session_type,
     ensure_gitignored,
     normalize_session_type,
     find_project_config,
@@ -86,6 +87,32 @@ class TestNormalizeSessionType:
 
     def test_unknown_defaults_to_bypass(self):
         assert normalize_session_type("foobar", "claude") == "claude-bypass"
+
+
+# --- compose_session_type: the posture × harness axes (#309) ---
+
+class TestComposeSessionType:
+    @pytest.mark.parametrize("harness,posture,expected", [
+        ("claude", "bypass", "claude-bypass"),
+        ("claude", "prompted", "claude-prompted"),
+        ("claude", "restricted", "claude-restricted"),
+        ("claude", "readonly", "claude-restricted"),   # claude's most-locked tier
+        ("pi-zai", "bypass", "pi-zai"),
+        ("pi-zai", "restricted", "pi-zai-restricted"),
+        ("pi-zai", "readonly", "pi-zai-readonly"),
+        ("pi-zai", "prompted", "pi-zai"),              # pi has no prompt mode
+        ("bare", "bypass", "bare"),
+        ("bare", "restricted", "bare"),                # posture ignored, no agent
+    ])
+    def test_compositions(self, harness, posture, expected):
+        assert compose_session_type(harness, posture) == expected
+
+    def test_defaults(self):
+        assert compose_session_type("", "") == "claude-bypass"
+
+    def test_unknown_posture_raises(self):
+        with pytest.raises(ValueError):
+            compose_session_type("claude", "nonsense")
 
 
 # --- ProjectConfig ---

@@ -174,7 +174,7 @@ Roles define agent behavior and are composable. Mix and match roles in `.agentwi
 | `voice` | Voice communication (speak/listen) |
 | `worker` | Receive tasks, execute autonomously, report back |
 | `task-runner` | Scheduled task execution |
-| `worktree-mission` | Standing briefing for `agentwire worktree` dispatches (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) — auto-injected by `agentwire worktree`, opt out with `--no-mission` |
+| `worktree-session` | Intrinsic etiquette for `agentwire worktree` sessions (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) — auto-injected by the verb's kind, not configurable |
 | `chatbot` | Conversational personality |
 | `init` | Setup wizard behavior |
 

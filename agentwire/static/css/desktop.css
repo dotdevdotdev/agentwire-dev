@@ -1283,6 +1283,30 @@ body {
     border-color: var(--accent);
 }
 
+/* New-session: resolved role chips (removable) + advanced posture/harness fold */
+.cmdk-chip {
+    color: var(--text);
+    border-color: var(--accent);
+}
+.cmdk-advanced {
+    margin-top: 4px;
+    font-size: 12px;
+}
+.cmdk-advanced > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 4px 0;
+}
+.cmdk-advanced[open] > summary {
+    color: var(--accent);
+}
+.cmdk-resolved {
+    color: var(--text-muted);
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+    padding-top: 2px;
+}
+
 .quicktask-checkbox {
     display: flex;
     align-items: center;

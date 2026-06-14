@@ -225,6 +225,7 @@ class AgentWireServer:
         self.app.router.add_post("/api/projects/create", self.api_projects_create)
         self.app.router.add_post("/api/projects/delete", self.api_projects_delete)
         self.app.router.add_get("/api/roles", self.api_roles)
+        self.app.router.add_get("/api/session/defaults", self.api_session_defaults)
         self.app.router.add_get("/api/machine/{machine_id}/status", self.api_machine_status)
         self.app.router.add_get("/api/check-path", self.api_check_path)
         self.app.router.add_get("/api/check-branches", self.api_check_branches)
@@ -2731,6 +2732,27 @@ class AgentWireServer:
             logger.error(f"Failed to delete project: {e}")
             return web.json_response({"success": False, "error": str(e)})
 
+    async def api_session_defaults(self, request: web.Request) -> web.Response:
+        """Resolve a new session's defaults via the CLI (the single resolver).
+
+        Query params: kind (default orchestrator), posture, harness.
+        Response: {kind, posture, harness, session_type, roles, postures}.
+        The new-session UI reads this instead of hardcoding posture/harness or
+        the intrinsic role chips.
+        """
+        kind = request.query.get("kind", "orchestrator")
+        posture = request.query.get("posture")
+        harness = request.query.get("harness")
+        args = ["session-defaults", "--kind", kind]
+        if posture:
+            args += ["--posture", posture]
+        if harness:
+            args += ["--harness", harness]
+        success, result = await self.run_agentwire_cmd(args)
+        if not success:
+            return web.json_response({"error": result.get("error", "Failed to resolve defaults")}, status=400)
+        return web.json_response(result)
+
     async def api_roles(self, request: web.Request) -> web.Response:
         """List available roles.
 
@@ -2931,7 +2953,11 @@ class AgentWireServer:
             name = data.get("name", "").strip()
             custom_path = data.get("path")
             voice = data.get("voice", self.config.tts.default_voice)
-            session_type = data.get("type", "claude-bypass")
+            # Posture × harness are the canonical axes; a legacy fused `type`
+            # is still accepted. When posture/harness are present they win.
+            posture = (data.get("posture") or "").strip()
+            harness = (data.get("harness") or "").strip()
+            session_type = data.get("type") if not (posture or harness) else None
             roles = data.get("roles")
             machine = data.get("machine", "local")
             worktree = data.get("worktree", False)
@@ -2966,8 +2992,13 @@ class AgentWireServer:
             # Pass -p when provided (CLI uses it to locate repo for worktree creation)
             if custom_path:
                 args.extend(["-p", custom_path])
-            # Set session type via --type flag
-            args.extend(["--type", session_type])
+            # Session type: posture × harness when given, else legacy --type.
+            if posture:
+                args.extend(["--posture", posture])
+            if harness:
+                args.extend(["--harness", harness])
+            if session_type:
+                args.extend(["--type", session_type])
             # Worktree-only flags: base branch + pull-first behaviour
             if worktree and branch:
                 args.extend(["--base", base])
@@ -2987,15 +3018,12 @@ class AgentWireServer:
                     for role in result.get("roles", []):
                         available_roles.add(role.get("name"))
 
-                # Filter to only valid roles
+                # Filter to only valid roles. If none survive, pass nothing —
+                # the CLI injects the verb's intrinsic etiquette (orchestrator)
+                # on its own; there is no global default-role to fall back to.
                 valid_roles = [r for r in roles_list if r in available_roles]
-
-                # Fall back to default role if none are valid
                 if not valid_roles and roles_list:
-                    logger.warning(f"No valid roles found in {roles_list}, using default role")
-                    default_role = self.config.session.default_role
-                    if default_role:
-                        valid_roles = [default_role]
+                    logger.warning(f"No valid roles found in {roles_list}, deferring to intrinsic etiquette")
 
                 if valid_roles:
                     args.extend(["--roles", ",".join(valid_roles)])

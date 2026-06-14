@@ -48,10 +48,10 @@ The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, 
 
 | Term | Command | What you get |
 |------|---------|--------------|
-| **Worktree session** | `agentwire worktree <name> --type claude-bypass -p <repo>` | **Standalone tmux session** named `{project}-<name>`, new branch `<name>` from origin/main, worktree under `~/worktrees/`. Survives independently; report-back via `agentwire notify-parent --to <orchestrator>`. The standing mission briefing (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) is auto-injected via the bundled `worktree-mission` role — first prompts only need the task; `--no-mission` opts out. |
+| **Worktree session** | `agentwire worktree <name> -p <repo>` | **Standalone tmux session** named `{project}-<name>`, new branch `<name>` from origin/main, worktree under `~/worktrees/`. Survives independently; report-back via `agentwire notify-parent --to <orchestrator>`. Etiquette (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) is intrinsic — the `worktree-session` role is auto-injected by the verb, so first prompts only need the task. |
 | **Worker pane** | `agentwire spawn --branch <name>` | A **pane inside the current session** (pane 1+), worktree on `<name>`. Inherits the session's dashboard; idle hook reaps it. |
 
-When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Worker panes are for small subtasks watched by the orchestrator; worktree sessions are for parallel autonomous missions. Always pass `--type claude-bypass` for autonomous workers — the default prompted type blocks on the first permission dialog with no one to answer it.
+When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Worker panes are for small subtasks watched by the orchestrator; worktree sessions are for parallel autonomous work. The verb sets the posture: `worktree`/`new` default to the bypass posture (full access), `spawn` to restricted — no `--type` needed for the common case.
 
 ## Config Layout (`~/.agentwire/`)
 
@@ -151,12 +151,6 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 - CLI: `agentwire --help` or `agentwire <cmd> --help`
 - **[`docs/wiki/INDEX.md`](docs/wiki/INDEX.md)** — feature reference manual (sessions, communication, scheduling, integrations, deployment, TTS, internals)
 
-## Mission tracking — GitHub Issues only
+## Issue tracking
 
-**The GitHub issue is the single — and only — source of truth for plans, status, and history (alongside git history / merges themselves). No project board, no kanban, no status labels.** The issue body holds the plan; **issue comments hold the breadcrumbs** (what we built, decisions locked in, surprises, verification results); labels categorize; open/closed state + a linked PR tell you where the work stands.
-
-Don't write parallel mission specs into the repo. If a plan is long, expand it inside the issue body or as comments. Post-ship reference content (concepts, architecture, troubleshooting) lives in `docs/wiki/`, never as mission files.
-
-Per-mission convention: branch `mission/{slug}`, push after every commit, PR back to `main`. **The breadcrumb is a comment on the issue, posted when you open the PR — not buried in the PR description, because the issue is the SSOT and you (the working agent) are still alive at PR-open but gone by merge.** Every PR that tracks an issue MUST carry `Closes #N` in its body so the merge auto-closes the issue (the only issue-side action that fires post-merge — nothing else runs then). Mirror the breadcrumb into the PR description too if it helps reviewers, but the issue comment is the one that must exist.
-
-Full conventions (columns, `feature:*` / `area:*` labels, importing historical work): `~/.claude/rules/project-tracking.md`.
+How work on this repo is tracked is a contributor preference, not something agentwire ships — the convention lives outside the codebase in `~/.claude/rules/project-tracking.md` (GitHub issues as source of truth, breadcrumb-as-issue-comment at PR-open, `Closes #N` in the PR body). Post-ship reference content (concepts, architecture, troubleshooting) belongs in `docs/wiki/`.

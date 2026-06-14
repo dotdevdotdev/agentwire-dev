@@ -135,7 +135,7 @@ async function openTerminal(name, mode, machine) {
 /** Resume the project's session if one already exists, otherwise create it; then open + focus.
  * `firstMessage` is delivered to the agent in the background once it boots
  * (fresh sessions only — a resumed session ignores it). */
-async function spawnAndOpen({ name, path, machine, firstMessage }) {
+async function spawnAndOpen({ name, path, machine, firstMessage, roles, posture, harness }) {
     if (!name) throw new Error('Missing session name');
     machine = normalizeMachine(machine);
 
@@ -157,7 +157,13 @@ async function spawnAndOpen({ name, path, machine, firstMessage }) {
     const res = await apiFetch('/api/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, machine, first_message: firstMessage || undefined }),
+        body: JSON.stringify({
+            name, path, machine,
+            first_message: firstMessage || undefined,
+            roles: (roles && roles.length) ? roles : undefined,
+            posture: posture || undefined,
+            harness: harness || undefined,
+        }),
     });
     const data = await res.json().catch(() => ({}));
     const err = data.error || '';
@@ -343,7 +349,13 @@ function bindNewIdeaForm(form) {
     });
 }
 
+// Posture options for the advanced fold (the resolver hands us the default).
+const POSTURE_OPTIONS = ['bypass', 'prompted', 'restricted', 'readonly'];
+
 function newSessionFormHtml() {
+    // One-click default: just a project. Roles (resolved chips) and the
+    // posture/harness fold are populated/wired in bindNewSessionForm — the
+    // form reads /api/session/defaults, never hardcoding the resolver.
     return `
         <div class="quicktask-error" data-error hidden></div>
         <div class="quicktask-progress" data-progress hidden></div>
@@ -353,6 +365,23 @@ function newSessionFormHtml() {
                 <input type="text" name="project" list="cmdkProjects" value="${escapeHtml(prefillProject)}" autocomplete="off" required />
                 <datalist id="cmdkProjects">${projectOptionsHtml()}</datalist>
             </label>
+            <div class="quicktask-field">
+                <span class="quicktask-label">Roles <em>(intrinsic etiquette — add your own, remove any)</em></span>
+                <div class="quicktask-pills" data-roles-chips></div>
+                <input type="text" data-role-add placeholder="add a role + Enter" autocomplete="off" />
+            </div>
+            <details class="cmdk-advanced">
+                <summary>Advanced</summary>
+                <label class="quicktask-field">
+                    <span class="quicktask-label">Posture</span>
+                    <select name="posture" data-posture></select>
+                </label>
+                <label class="quicktask-field">
+                    <span class="quicktask-label">Harness</span>
+                    <input type="text" name="harness" data-harness placeholder="claude" autocomplete="off" />
+                </label>
+                <div class="cmdk-resolved" data-resolved></div>
+            </details>
             <div class="quicktask-footer">
                 <button type="button" class="quicktask-btn-cancel" data-action="back">Back</button>
                 <button type="submit" class="quicktask-btn-submit">Start + Open</button>
@@ -361,6 +390,63 @@ function newSessionFormHtml() {
 }
 
 function bindNewSessionForm(form) {
+    const chipsEl = form.querySelector('[data-roles-chips]');
+    const addInput = form.querySelector('[data-role-add]');
+    const postureSel = form.querySelector('[data-posture]');
+    const harnessInput = form.querySelector('[data-harness]');
+    const resolvedEl = form.querySelector('[data-resolved]');
+
+    // Roles split into intrinsic (from the resolver, shown but the user can
+    // still drop them) and user-added. We submit the full remaining set.
+    let roles = [];
+
+    function renderChips() {
+        chipsEl.innerHTML = roles.map((r, i) =>
+            `<button type="button" class="quicktask-pill cmdk-chip" data-i="${i}">${escapeHtml(r)} ✕</button>`
+        ).join('');
+        chipsEl.querySelectorAll('.cmdk-chip').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                roles.splice(Number(btn.dataset.i), 1);
+                renderChips();
+            });
+        });
+    }
+
+    async function refreshDefaults() {
+        const posture = postureSel.value || '';
+        const harness = (harnessInput.value || '').trim();
+        const qs = new URLSearchParams({ kind: 'orchestrator' });
+        if (posture) qs.set('posture', posture);
+        if (harness) qs.set('harness', harness);
+        try {
+            const res = await apiFetch(`/api/session/defaults?${qs}`);
+            const d = await res.json().catch(() => ({}));
+            if (!res.ok || d.error) return;
+            // Seed posture options once from the resolver.
+            if (!postureSel.options.length) {
+                const opts = (d.postures || POSTURE_OPTIONS);
+                postureSel.innerHTML = opts.map((p) =>
+                    `<option value="${p}"${p === d.posture ? ' selected' : ''}>${p}</option>`).join('');
+            }
+            if (!harnessInput.value) harnessInput.placeholder = d.harness || 'claude';
+            // Seed intrinsic role chips on first load only (don't stomp edits).
+            if (roles.length === 0) { roles = [...(d.roles || [])]; renderChips(); }
+            resolvedEl.textContent = `→ ${d.session_type}`;
+        } catch (e) { /* leave defaults as-is */ }
+    }
+
+    addInput?.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const v = addInput.value.trim();
+        if (v && !roles.includes(v)) { roles.push(v); renderChips(); }
+        addInput.value = '';
+    });
+    postureSel?.addEventListener('change', refreshDefaults);
+    harnessInput?.addEventListener('change', refreshDefaults);
+
+    refreshDefaults();
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const name = form.querySelector('input[name="project"]').value.trim();
@@ -368,7 +454,11 @@ function bindNewSessionForm(form) {
         const proj = findProject(name);
         showProgress(`Starting session for ${name}…`);
         try {
-            await spawnAndOpen({ name, path: proj?.path, machine: proj?.machine });
+            await spawnAndOpen({
+                name, path: proj?.path, machine: proj?.machine,
+                roles, posture: postureSel.value || undefined,
+                harness: (harnessInput.value || '').trim() || undefined,
+            });
         } catch (err) {
             showError(err?.message || 'Network error');
         }
