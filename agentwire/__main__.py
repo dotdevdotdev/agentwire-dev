@@ -10849,6 +10849,12 @@ def main() -> int:
                                            "bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>[-restricted|-readonly], standard, worker, voice")
     # Roles
     new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
+    new_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"],
+                            help="Override the derived session kind (advanced). A project/branch name "
+                                 "normally derives 'worktree-session' (draft-PR + notify etiquette). Pass "
+                                 "'orchestrator' for a worktree that is finalized externally — e.g. the "
+                                 "scheduler, which opens/reaps the PR itself, so the task agent must NOT "
+                                 "open its own.")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     new_parser.add_argument("--persist", action="store_true", help="Write the resolved type/--roles to .agentwire.yml (default: session-level override only)")

@@ -288,13 +288,40 @@ class TestDeriveSessionKind:
     def test_explicit_kind_wins(self):
         assert derive_session_kind(True, "worktree-session") == "worktree-session"
         assert derive_session_kind(False, "worktree-session") == "worktree-session"
+        # The scheduler overrides the derived worktree-session with a
+        # replaceable orchestrator so its task-runner roles win (no agent PR).
+        assert derive_session_kind(True, "orchestrator") == "orchestrator"
 
     def test_branch_means_worktree_session(self):
-        # `new project/branch`, scheduler + portal worktree dispatches (C3).
+        # `new project/branch`, portal worktree dispatch (C3) — no explicit kind.
         assert derive_session_kind(True) == "worktree-session"
 
     def test_plain_name_means_orchestrator(self):
         assert derive_session_kind(False) == "orchestrator"
+
+
+class TestSchedulerWorktreeOptsOutOfPrEtiquette:
+    """The scheduler is the deterministic PR finalizer; its task agents must
+    NOT open their own PRs (they'd escape reap_worktree_prs and leak). It
+    dispatches `new -s proj/branch --kind orchestrator --roles task-runner`."""
+
+    def test_scheduler_task_has_no_worktree_session_role(self):
+        kind = derive_session_kind(has_branch=True, explicit_kind="orchestrator")
+        roles = resolve_roles(kind, cli_roles=["task-runner"])
+        assert "worktree-session" not in roles  # the PR-opening contract
+        assert roles == ["task-runner"]
+
+    def test_scheduler_task_without_roles_still_no_pr_etiquette(self):
+        # Even a role-less scheduler task gets the orchestrator persona, which
+        # carries no draft-PR instruction.
+        kind = derive_session_kind(has_branch=True, explicit_kind="orchestrator")
+        assert "worktree-session" not in resolve_roles(kind)
+
+    def test_human_worktree_keeps_full_pr_etiquette(self):
+        # `agentwire worktree foo` → cmd_worktree passes kind="worktree-session"
+        # (no slash name, explicit kind). The draft-PR/notify contract stays.
+        kind = derive_session_kind(has_branch=False, explicit_kind="worktree-session")
+        assert "worktree-session" in resolve_roles(kind, cli_roles=["domain"])
 
 
 class TestIntrinsicEtiquette:
