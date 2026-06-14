@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from .config import get_config
+from .ssh import ssh_base_opts
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
@@ -77,7 +78,7 @@ def _run_ssh_command(machine: dict, command: str, timeout: int = 10) -> tuple[bo
         ssh_target = host
 
     # Build SSH command with connection timeout
-    ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+    ssh_cmd = ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
     if port:
         ssh_cmd.extend(["-p", str(port)])
     ssh_cmd.extend([ssh_target, command])

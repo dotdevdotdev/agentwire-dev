@@ -11,6 +11,7 @@ Supports both local and remote machines via SSH for distributed setups.
 import json
 from pathlib import Path
 
+from .ssh import ssh_base_opts
 from .utils.file_io import load_json
 from .utils.paths import agentwire_dir
 from .utils.subprocess import run_command
@@ -124,7 +125,7 @@ def _run_ssh_command(machine: dict, command: str, timeout: int = 10) -> tuple[bo
         ssh_target = host
 
     # Build SSH command with connection timeout
-    ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+    ssh_cmd = ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
     if port:
         ssh_cmd.extend(["-p", str(port)])
     ssh_cmd.extend([ssh_target, command])

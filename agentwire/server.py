@@ -45,6 +45,7 @@ from .security import (
     resolve_auth_token,
     validate_startup_security,
 )
+from .ssh import ssh_base_opts
 from .worktree import parse_session_name
 
 __version__ = "1.3.0"
@@ -70,7 +71,7 @@ async def unpin_tmux_window(session_name: str, ssh_target: str | None = None) ->
     cmd = ["tmux", "set-option", "-w", "-t", session_name, "-u", "window-size"]
     if ssh_target:
         proc = await asyncio.create_subprocess_exec(
-            "ssh", ssh_target, shlex.join(cmd),
+            "ssh", *ssh_base_opts(), ssh_target, shlex.join(cmd),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -571,7 +572,7 @@ class AgentWireServer:
             try:
                 cmd = f"tmux display-message -t {shlex.quote(session_name)} -p '#{{pane_current_path}}'"
                 result = subprocess.run(
-                    ["ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
+                    ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -629,7 +630,7 @@ class AgentWireServer:
             try:
                 yaml_path = f"{cwd}/.agentwire.yml"
                 result = subprocess.run(
-                    ["ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, f"cat {shlex.quote(yaml_path)}"],
+                    ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, f"cat {shlex.quote(yaml_path)}"],
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -686,7 +687,7 @@ class AgentWireServer:
                 encoded = base64.b64encode(yaml_content.encode()).decode()
                 cmd = f"echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(yaml_path)}"
                 result = subprocess.run(
-                    ["ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
+                    ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -860,7 +861,7 @@ class AgentWireServer:
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+                "ssh", *ssh_base_opts(), "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
                 ssh_target, command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1929,7 +1930,7 @@ class AgentWireServer:
 
                 # Remote session via SSH with PTY allocation
                 # Use accept-new to accept new host keys but reject changed ones (MITM protection)
-                cmd = ["ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", ssh_target, "tmux", "attach", "-t", session_name]
+                cmd = ["ssh", "-t", *ssh_base_opts(), "-o", "StrictHostKeyChecking=accept-new", ssh_target, "tmux", "attach", "-t", session_name]
                 logger.info(f"[Terminal] Attaching to {session_name}: {' '.join(cmd)}")
 
                 # Create PTY for SSH too (ssh -t needs local PTY)
@@ -2707,7 +2708,7 @@ class AgentWireServer:
                 remote_cmd = " ".join(shlex.quote(a) for a in local_argv)
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    ["ssh", machine, remote_cmd],
+                    ["ssh", *ssh_base_opts(), machine, remote_cmd],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -3283,7 +3284,7 @@ class AgentWireServer:
                 # DNS failed, try connecting via SSH to get the remote IP
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        "ssh", "-o", "ConnectTimeout=2", "-o", "StrictHostKeyChecking=no",
+                        "ssh", *ssh_base_opts(), "-o", "ConnectTimeout=2", "-o", "StrictHostKeyChecking=no",
                         hostname, "hostname -I 2>/dev/null || ip addr show | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | cut -d/ -f1",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL
@@ -3318,7 +3319,7 @@ class AgentWireServer:
         try:
             proc = await asyncio.wait_for(
                 asyncio.create_subprocess_exec(
-                    "ssh", "-o", f"ConnectTimeout={connect_timeout}", "-o", "BatchMode=yes",
+                    "ssh", *ssh_base_opts(), "-o", f"ConnectTimeout={connect_timeout}", "-o", "BatchMode=yes",
                     ssh_target, "echo ok",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
