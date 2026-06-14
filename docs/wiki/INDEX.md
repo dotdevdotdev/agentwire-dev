@@ -41,7 +41,6 @@ How sessions talk to humans and external platforms.
 Headless and scheduled execution.
 
 - **[Scheduled workloads](scheduling/scheduled-workloads.md)** — `agentwire ensure`, `.agentwire.yml` task schema, overnight queue
-- **[Missions](missions.md)** — issue → branch → draft PR → review → merge orchestration; launchd-driven dispatcher + feedback router + worktree janitor
 - **[Usage-limit recovery](usage-limit-recovery.md)** — deterministic detect → park → email → auto-resume for the Claude Code usage-limit dialog; launchd watchdog, zero LLM involvement
 
 ## Security

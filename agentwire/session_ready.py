@@ -1,10 +1,10 @@
 """Agent readiness detection and verified message delivery.
 
 Consolidates the readiness/verification primitives that grew up separately
-in missions (wait_for_session_ready) and council (send_verified): a
+in worktree dispatch (wait_for_session_ready) and council (send_verified): a
 freshly-booted Claude session renders its banner before its input handler
 is wired, so a paste in that window vanishes silently. Every subsystem
-that injects a first prompt into a new session — missions, council,
+that injects a first prompt into a new session — council,
 `agentwire send --wait-ready`, `agentwire new --first-message` — routes
 through here.
 """

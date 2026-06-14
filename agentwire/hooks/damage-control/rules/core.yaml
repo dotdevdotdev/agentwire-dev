@@ -258,11 +258,9 @@ noDeletePaths:
   # ---------------------------------------------------------------------------
   - ~/.agentwire/
   - ~/.agentwire/sessions/
-  - ~/.agentwire/missions/
   - ~/.agentwire/hooks/
   - ~/.agentwire/settings.json
   - .agentwire/
-  - .agentwire/mission.md
   - .agentwire/session.json
 
   # ---------------------------------------------------------------------------

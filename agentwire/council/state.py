@@ -3,7 +3,7 @@
 A *sitting* is one ``council start`` → ``council stop`` span: the orchestrator
 session, the roster of lens souls, and a monotonic prompt counter. State is
 small JSON at ``~/.agentwire/council/sitting.json``, written atomically
-(tempfile + ``os.replace``) like ``missions/state.py``.
+(tempfile + ``os.replace``).
 """
 
 from __future__ import annotations
