@@ -135,6 +135,46 @@ class TestLoadConfig:
         assert config.session.inject_soul is False
 
 
+# --- WorktreeConfig (worktree: orchestration key) ---
+
+class TestWorktreeConfig:
+    def test_defaults(self, tmp_path):
+        config = load_config(tmp_path / "nonexistent.yaml")
+        # No hardcoded 'main' — None means "ask the repo" (origin/HEAD).
+        assert config.worktree.default_base is None
+        assert config.worktree.default_project is None
+        assert config.worktree.naming is None
+        assert config.worktree.worktree_dir.name == "worktrees"
+
+    def test_from_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"worktree": {
+            "default_base": "develop",
+            "naming": "{user}/{slug}",
+            "worktree_dir": "~/wt",
+        }}))
+        config = load_config(path)
+        assert config.worktree.default_base == "develop"
+        assert config.worktree.naming == "{user}/{slug}"
+        assert config.worktree.worktree_dir.name == "wt"
+
+    def test_quicktask_alias(self, tmp_path):
+        # `quicktask:` is the documented legacy alias for `worktree:`.
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"quicktask": {"default_base": "trunk"}}))
+        config = load_config(path)
+        assert config.worktree.default_base == "trunk"
+
+    def test_worktree_key_wins_over_alias(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "worktree": {"default_base": "main"},
+            "quicktask": {"default_base": "old"},
+        }))
+        config = load_config(path)
+        assert config.worktree.default_base == "main"
+
+
 # --- two-tier voice backends ---
 
 class TestVoiceBackends:
