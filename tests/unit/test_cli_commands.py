@@ -229,3 +229,199 @@ class TestCmdNewFirstMessage:
         assert cmd_new(args) == 1
         payload = json.loads(capsys.readouterr().out.strip())
         assert "local-only" in payload["error"]
+
+
+# --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
+#
+# Both commands used to copy `project_config.roles` raw, bypassing
+# resolve_roles + the #309/#310 kind-derivation — so a recreated worktree
+# session silently lost its non-overridable worktree-session etiquette
+# (isolation / verify / draft-PR / notify). These capture the role list each
+# command hands to load_roles and assert the kind's intrinsic etiquette is
+# present (or, for the orchestrator persona, replaceable).
+
+class _RoleCapture:
+    """Holds the role_names captured from a mocked load_roles call."""
+
+    def __init__(self):
+        self.role_names = None
+
+
+def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
+    """Mock out tmux/git/worktree side effects and capture resolved roles.
+
+    Returns the capture object whose .role_names is the list cmd_recreate /
+    cmd_fork pass to load_roles (i.e. resolve_roles + inject_soul output).
+    """
+    from types import SimpleNamespace
+    import agentwire.__main__ as mod
+
+    cap = _RoleCapture()
+
+    cfg = None
+    if project_config_roles is not None:
+        cfg = SimpleNamespace(
+            type=SimpleNamespace(value="claude-bypass"),
+            roles=project_config_roles,
+        )
+
+    monkeypatch.setattr(mod, "load_config", lambda: {
+        "projects": {"dir": str(projects_dir), "worktrees": {"suffix": "-worktrees"}},
+    })
+    monkeypatch.setattr(mod, "load_project_config", lambda p: cfg)
+    monkeypatch.setattr(mod, "detect_default_agent_type", lambda: "claude")
+    monkeypatch.setattr(mod, "build_agent_command", lambda *a, **k: mod.AgentCommand(command=""))
+
+    def fake_ensure_worktree(base, branch, wt, **kw):
+        Path(wt).mkdir(parents=True, exist_ok=True)
+        return True
+
+    monkeypatch.setattr(mod, "ensure_worktree", fake_ensure_worktree)
+
+    def fake_load_roles(role_names, path):
+        cap.role_names = list(role_names)
+        return [], []
+
+    monkeypatch.setattr(mod, "load_roles", fake_load_roles)
+    monkeypatch.setattr(mod.time, "sleep", lambda *a, **k: None)
+    return cap
+
+
+def _fake_run(source_session=None, cwd=None):
+    """Command-aware tmux/git stub.
+
+    has-session: source exists (rc 0), everything else absent (rc 1) so
+    recreate skips its kill path and a non-worktree fork sees its target free.
+    """
+    def run(cmd, *a, **k):
+        joined = " ".join(str(x) for x in (cmd if isinstance(cmd, list) else [cmd]))
+        if "has-session" in joined:
+            if source_session and source_session in joined:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
+        if "display-message" in joined:
+            if "pane_current_path" in joined:
+                return MagicMock(returncode=0, stdout=f"{cwd or ''}\n", stderr="")
+            return MagicMock(returncode=0, stdout="0\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+    return run
+
+
+class TestRecreateRoutesThroughResolveRoles:
+    def test_worktree_recreate_reinjects_etiquette_even_without_saved_roles(
+        self, monkeypatch, tmp_path
+    ):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        (projects / "proj").mkdir(parents=True)
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=None)
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
+
+        args = argparse.Namespace(
+            session="proj/feature", json=True, type="claude-bypass", env=None,
+        )
+        assert mod.cmd_recreate(args) == 0
+        # The whole point: a project/branch recreate is a worktree-session, so
+        # the safety contract is present even though nothing was saved.
+        assert cap.role_names[0] == "worktree-session"
+        assert "soul" in cap.role_names
+
+    def test_worktree_recreate_stacks_saved_roles_under_etiquette(
+        self, monkeypatch, tmp_path
+    ):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        (projects / "proj").mkdir(parents=True)
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["domain"])
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
+
+        args = argparse.Namespace(
+            session="proj/feature", json=True, type="claude-bypass", env=None,
+        )
+        assert mod.cmd_recreate(args) == 0
+        # Non-overridable: etiquette first, saved role stacks, never replaces.
+        assert cap.role_names[0] == "worktree-session"
+        assert "domain" in cap.role_names
+
+    def test_plain_recreate_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        (projects / "proj").mkdir(parents=True)
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["custom"])
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
+
+        args = argparse.Namespace(session="proj", json=True, type="claude-bypass", env=None)
+        assert mod.cmd_recreate(args) == 0
+        # Persona kind: saved roles REPLACE the orchestrator default.
+        assert "orchestrator" not in cap.role_names
+        assert "custom" in cap.role_names
+
+    def test_plain_recreate_zero_config_is_orchestrator(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        (projects / "proj").mkdir(parents=True)
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=None)
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
+
+        args = argparse.Namespace(session="proj", json=True, type="claude-bypass", env=None)
+        assert mod.cmd_recreate(args) == 0
+        assert cap.role_names[0] == "orchestrator"
+
+
+class TestForkRoutesThroughResolveRoles:
+    def test_worktree_fork_injects_worktree_session_etiquette(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        (projects / "proj").mkdir(parents=True)  # source_path (no source branch)
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=None)
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
+
+        args = argparse.Namespace(
+            source="proj", target="proj/feat", json=True, type="claude-bypass",
+            env=None, commit=None,
+        )
+        assert mod.cmd_fork(args) == 0
+        # Fork target is a worktree → worktree-session etiquette, intrinsic.
+        assert cap.role_names[0] == "worktree-session"
+
+    def test_worktree_fork_stacks_source_roles_under_etiquette(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        (projects / "proj").mkdir(parents=True)
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["domain"])
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
+
+        args = argparse.Namespace(
+            source="proj", target="proj/feat", json=True, type="claude-bypass",
+            env=None, commit=None,
+        )
+        assert mod.cmd_fork(args) == 0
+        assert cap.role_names[0] == "worktree-session"
+        assert "domain" in cap.role_names
+
+    def test_non_worktree_fork_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        projects = tmp_path / "projects"
+        projects.mkdir(parents=True)
+        src_cwd = tmp_path / "src_cwd"
+        src_cwd.mkdir()
+        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["custom"])
+        monkeypatch.setattr(
+            mod.subprocess, "run", _fake_run(source_session="ctxa", cwd=src_cwd)
+        )
+
+        args = argparse.Namespace(
+            source="ctxa", target="ctxb", json=True, type="claude-bypass",
+            env=None, commit=None,
+        )
+        assert mod.cmd_fork(args) == 0
+        # Same-dir fork has no branch → orchestrator persona; source roles win.
+        assert "orchestrator" not in cap.role_names
+        assert "custom" in cap.role_names

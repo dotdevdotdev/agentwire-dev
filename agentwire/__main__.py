@@ -4728,8 +4728,20 @@ def cmd_recreate(args) -> int:
             # Fall back to agent-bypass
             session_type_str = f"{agent_type}-bypass"
 
+        # Inject the kind's intrinsic etiquette — a remote project/branch
+        # recreate is still a worktree-session and must carry the safety
+        # contract. The remote project_config isn't readable here, so we
+        # resolve from the derived kind alone; the bundled etiquette roles
+        # resolve locally and are baked into the agent command.
+        kind = derive_session_kind(bool(branch))
+        role_names = resolve_roles(kind)
+        role_names = inject_soul(role_names, load_config())
+        roles = None
+        if role_names:
+            roles, _ = load_roles(role_names)
+
         # Build agent command using the standard function
-        agent = build_agent_command(session_type_str)
+        agent = build_agent_command(session_type_str, roles)
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
         agent_cmd = agent.command
         env_flags = _build_tmux_env_flags_shell(agent.env)
@@ -4825,7 +4837,14 @@ def cmd_recreate(args) -> int:
         # Default to agent-bypass based on detected agent
         session_type_str = f"{agent_type}-bypass"
 
-    role_names = list(project_config.roles) if project_config and project_config.roles else []
+    # Route through resolve_roles with a derived kind so the recreated session
+    # carries its kind's intrinsic etiquette — recreating a project/branch
+    # (worktree) session re-injects the worktree-session safety contract
+    # (isolation / verify / draft-PR / notify), which a raw project_config.roles
+    # copy would silently drop. Same contract as cmd_new/cmd_worktree.
+    kind = derive_session_kind(bool(branch))
+    project_roles = list(project_config.roles) if project_config and project_config.roles else None
+    role_names = resolve_roles(kind, project_roles=project_roles)
     role_names = inject_soul(role_names, load_config())
     roles = None
     if role_names:
@@ -5289,7 +5308,13 @@ def cmd_fork(args) -> int:
             # Default to agent-bypass based on detected agent
             session_type_str = f"{agent_type}-bypass"
 
-        role_names = list(source_config.roles) if source_config and source_config.roles else []
+        # The fork target is a worktree (project/branch) → worktree-session
+        # kind, so resolve_roles stacks the non-overridable safety etiquette
+        # under the source's roles instead of copying them raw (which dropped
+        # the kind's intrinsic contract). Kind derived from the target name.
+        kind = derive_session_kind(bool(target_branch))
+        project_roles = list(source_config.roles) if source_config and source_config.roles else None
+        role_names = resolve_roles(kind, project_roles=project_roles)
         role_names = inject_soul(role_names, load_config())
         roles = None
         if role_names:
@@ -5381,7 +5406,12 @@ def cmd_fork(args) -> int:
             # Default to agent-bypass based on detected agent
             session_type_str = f"{agent_type}-bypass"
 
-        role_names = list(source_project_config.roles) if source_project_config and source_project_config.roles else []
+        # Non-worktree fork: target has no branch → orchestrator kind (a
+        # replaceable persona), so source roles take precedence as usual.
+        # Routed through resolve_roles for one consistent precedence path.
+        kind = derive_session_kind(bool(target_branch))
+        project_roles = list(source_project_config.roles) if source_project_config and source_project_config.roles else None
+        role_names = resolve_roles(kind, project_roles=project_roles)
         role_names = inject_soul(role_names, load_config())
         roles = None
         if role_names:
@@ -5547,7 +5577,12 @@ def cmd_fork(args) -> int:
         # Default to agent-bypass based on detected agent
         session_type_str = f"{agent_type}-bypass"
 
-    role_names = list(source_config.roles) if source_config and source_config.roles else []
+    # Worktree fork: target is project/branch → worktree-session kind, so
+    # resolve_roles stacks the non-overridable isolation/verify/draft-PR/notify
+    # etiquette under the source's roles. Kind derived from the target name.
+    kind = derive_session_kind(bool(target_branch))
+    project_roles = list(source_config.roles) if source_config and source_config.roles else None
+    role_names = resolve_roles(kind, project_roles=project_roles)
     role_names = inject_soul(role_names, load_config())
     roles = None
     if role_names:
