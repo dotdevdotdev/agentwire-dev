@@ -112,6 +112,36 @@ def test_base_flag_overrides(tmp_path, monkeypatch, wt_env):
     assert reg.entries(clone.resolve())[0]["base"] == "release"
 
 
+def test_invalid_branch_name_fails_clean_no_orphan(tmp_path, monkeypatch, wt_env):
+    """A name with spaces is rejected BEFORE any worktree lands on disk."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+
+    rc = _run(monkeypatch, _config(wt_dir), name="Auth V2", project=str(clone))
+    assert rc != 0
+    # No orphaned worktree, nothing registered, nothing launched.
+    assert not (wt_dir / "clone-repo-Auth-V2").exists()
+    assert reg.entries(clone.resolve()) == []
+    # git agrees there's only the main worktree.
+    wt_list = _git(clone, "worktree", "list").stdout
+    assert "clone-repo-Auth-V2" not in wt_list
+
+
+def test_base_flag_wins_over_current(tmp_path, monkeypatch, wt_env):
+    """--base X --current → --base wins (least-surprising)."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    origin = tmp_path / "origin"
+    _git(origin, "branch", "release")
+    _git(clone, "fetch", "-q", "origin")
+    # Put the clone's current branch somewhere else entirely.
+    _git(clone, "checkout", "-q", "-b", "scratch")
+
+    rc = _run(monkeypatch, _config(wt_dir := tmp_path / "worktrees"),
+              name="hot", base="release", current=True, project=str(clone))
+    assert rc == 0
+    assert reg.entries(clone.resolve())[0]["base"] == "release"
+
+
 def test_naming_template_applied_to_branch(tmp_path, monkeypatch, wt_env):
     _, clone = _origin_and_clone(tmp_path, default_branch="develop")
     wt_dir = tmp_path / "worktrees"

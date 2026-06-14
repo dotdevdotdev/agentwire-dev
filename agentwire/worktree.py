@@ -60,6 +60,25 @@ def default_base_branch(project_path: Path) -> str:
     return "main"
 
 
+def is_valid_branch_name(name: str, project_path: Path | None = None) -> bool:
+    """True if ``name`` is a valid git branch name.
+
+    Uses ``git check-ref-format --branch`` (the authority) plus cheap
+    guards for cases git would mis-parse (leading dash → looks like a flag)
+    or that aren't usable as a worktree branch. Guards against a templated
+    or verbatim name with spaces / ``..`` / leading ``-`` reaching
+    ``git checkout -b`` and failing *after* the worktree is already on disk.
+    """
+    if not name or name.startswith("-") or name.endswith("/") or name.endswith(".lock"):
+        return False
+    cwd = str(project_path) if project_path else None
+    result = subprocess.run(
+        ["git", "check-ref-format", "--branch", name],
+        capture_output=True, text=True, cwd=cwd,
+    )
+    return result.returncode == 0
+
+
 def slugify(name: str) -> str:
     """Lowercase, hyphen-separated, filesystem/branch-safe slug of ``name``."""
     s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")

@@ -23,8 +23,12 @@ or run ``agentwire worktree --prune`` to drop entries whose worktree path
 no longer exists.
 """
 
+import contextlib
 import datetime
+import fcntl
 import json
+import os
+import tempfile
 from pathlib import Path
 
 REGISTRY_DIR = Path.home() / ".agentwire" / "worktrees"
@@ -39,6 +43,28 @@ def _repo_key(project_path: Path) -> str:
 def registry_file(project_path: Path) -> Path:
     """Path to the registry JSON for a given repo."""
     return REGISTRY_DIR / f"{_repo_key(project_path)}.json"
+
+
+@contextlib.contextmanager
+def _locked(path: Path):
+    """Serialize read-modify-write across processes via an flock sidecar.
+
+    Concurrent ``agentwire worktree`` PROCESSES race on the same registry
+    file (load → mutate → save). Without this, parallel dispatch of 4–5
+    worktree sessions would lose all-but-one update. We flock a ``.lock``
+    sibling (held for the whole RMW, not just the write) so writers
+    serialize; pair it with the atomic replace in ``_save`` so a reader
+    never sees a half-written file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _load(path: Path) -> dict:
@@ -57,8 +83,20 @@ def _load(path: Path) -> dict:
 
 
 def _save(path: Path, data: dict) -> None:
+    """Atomically write the registry (temp file in same dir + os.replace)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    payload = json.dumps(data, indent=2) + "\n"
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # atomic on POSIX
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def register(
@@ -70,10 +108,12 @@ def register(
     worktree_path: Path,
     created_at: str | None = None,
 ) -> dict:
-    """Record (or replace) a worktree session. Idempotent per session/path."""
+    """Record (or replace) a worktree session. Idempotent per session/path.
+
+    The full read-modify-write is held under an exclusive flock so
+    concurrent registration processes serialize instead of clobbering.
+    """
     path = registry_file(project_path)
-    data = _load(path)
-    data["project"] = str(Path(project_path).expanduser().resolve())
     if created_at is None:
         created_at = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     entry = {
@@ -83,14 +123,17 @@ def register(
         "worktree_path": str(worktree_path),
         "created_at": created_at,
     }
-    # Drop any prior entry for the same session or worktree path, then append.
-    data["entries"] = [
-        e for e in data["entries"]
-        if e.get("session") != session
-        and e.get("worktree_path") != str(worktree_path)
-    ]
-    data["entries"].append(entry)
-    _save(path, data)
+    with _locked(path):
+        data = _load(path)
+        data["project"] = str(Path(project_path).expanduser().resolve())
+        # Drop any prior entry for the same session or worktree path, then append.
+        data["entries"] = [
+            e for e in data["entries"]
+            if e.get("session") != session
+            and e.get("worktree_path") != str(worktree_path)
+        ]
+        data["entries"].append(entry)
+        _save(path, data)
     return entry
 
 
@@ -108,9 +151,7 @@ def unregister(
 ) -> int:
     """Remove matching entries. Returns the number removed."""
     path = registry_file(project_path)
-    data = _load(path)
     wt = str(worktree_path) if worktree_path is not None else None
-    before = len(data["entries"])
 
     def matches(e: dict) -> bool:
         return (
@@ -119,9 +160,12 @@ def unregister(
             or (wt is not None and e.get("worktree_path") == wt)
         )
 
-    data["entries"] = [e for e in data["entries"] if not matches(e)]
-    _save(path, data)
-    return before - len(data["entries"])
+    with _locked(path):
+        data = _load(path)
+        before = len(data["entries"])
+        data["entries"] = [e for e in data["entries"] if not matches(e)]
+        _save(path, data)
+        return before - len(data["entries"])
 
 
 def all_entries() -> list[dict]:

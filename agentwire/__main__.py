@@ -54,6 +54,7 @@ from .worktree import (
     git_root,
     default_base_branch,
     apply_naming,
+    is_valid_branch_name,
 )
 from . import worktree_registry
 
@@ -4962,8 +4963,16 @@ def cmd_worktree(args) -> int:
 
     # If worktree already exists, reattach (and heal the registry entry).
     if worktree_path.exists():
+        # --ref is a detached ref, not a branch → record null. --existing
+        # checks out a real branch (name). Default mode → the templated branch.
+        if ref:
+            reattach_branch = None
+        elif use_existing:
+            reattach_branch = name
+        else:
+            reattach_branch = templated_branch
         worktree_registry.register(
-            project_path, branch=templated_branch if not (ref or use_existing) else name,
+            project_path, branch=reattach_branch,
             session=session_name, base=default_base,
             worktree_path=worktree_path,
         )
@@ -4990,8 +4999,12 @@ def cmd_worktree(args) -> int:
         new_branch = None
         mode_label = f"existing branch {name}"
     else:
-        # Default mode: new branch from base
-        if getattr(args, 'current', False):
+        # Default mode: new branch from base.
+        # Precedence: explicit --base > --current > config default > repo-derived.
+        explicit_base = getattr(args, 'base', None)
+        if explicit_base:
+            base_branch = explicit_base
+        elif getattr(args, 'current', False):
             result = subprocess.run(
                 ["git", "-C", str(project_path), "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True, text=True,
@@ -4999,10 +5012,24 @@ def cmd_worktree(args) -> int:
             if result.returncode != 0 or not result.stdout.strip():
                 return _output_result(False, json_mode, f"Failed to detect current branch in {project_path}")
             base_branch = result.stdout.strip()
+        elif wt_config.default_base:
+            base_branch = wt_config.default_base
         else:
-            base_branch = default_base or default_base_branch(project_path)
+            base_branch = default_base_branch(project_path)
         git_ref = f"origin/{base_branch}"
         new_branch = templated_branch
+
+        # Validate the generated branch name BEFORE touching the working tree,
+        # so a bad name (spaces, '..', leading '-', from the verbatim default
+        # or a naming template) fails cleanly instead of leaving an orphaned
+        # detached worktree on disk after `git worktree add` succeeds.
+        if not is_valid_branch_name(new_branch, project_path):
+            via = f" (from naming template '{wt_config.naming}')" if wt_config.naming else ""
+            return _output_result(
+                False, json_mode,
+                f"Invalid git branch name '{new_branch}'{via}: not a valid ref. "
+                f"Use a name without spaces, '..', or a leading '-', or set worktree.naming.",
+            )
         mode_label = f"new branch {new_branch} from {git_ref}"
 
         # Fetch the base branch
@@ -5036,6 +5063,14 @@ def cmd_worktree(args) -> int:
             capture_output=True, text=True,
         )
         if branch_result.returncode != 0:
+            # Don't leave an orphaned detached worktree behind (belt-and-braces;
+            # is_valid_branch_name above should already have caught bad names).
+            remove_worktree(project_path, worktree_path)
+            if worktree_path.exists():
+                subprocess.run(
+                    ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
+                    capture_output=True,
+                )
             return _output_result(False, json_mode, f"Failed to create branch '{new_branch}': {branch_result.stderr.strip()}")
 
     # Record the branch↔session association in the local registry.
@@ -11118,7 +11153,7 @@ def main() -> int:
     wt_parser = subparsers.add_parser("worktree", help="Create a git worktree + session in one command")
     wt_parser.add_argument("name", nargs="?", help="Name (becomes branch name in default mode, session suffix always)")
     wt_parser.add_argument("--base", "-b", help="Base branch to fork from (default: config worktree.default_base, else the repo's origin/HEAD default branch)")
-    wt_parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch instead of --base")
+    wt_parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch (used when --base is not given)")
     wt_parser.add_argument("--existing", "-e", action="store_true", help="Checkout an existing branch (no new branch created)")
     wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
     wt_parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")

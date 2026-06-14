@@ -15,6 +15,7 @@ from agentwire.worktree import (
     default_base_branch,
     slugify,
     apply_naming,
+    is_valid_branch_name,
 )
 
 
@@ -134,6 +135,27 @@ class TestNaming:
     def test_apply_naming_unknown_placeholder_left_literal(self):
         # Hand-edited config shouldn't crash on an unsupported placeholder.
         assert apply_naming("{bogus}-{slug}", "x") == "{bogus}-x"
+
+
+# --- is_valid_branch_name ---
+
+class TestValidBranchName:
+    @pytest.mark.parametrize("name", ["fix-bug", "feature/auth", "jordan/fix-bug", "v2.0-rc1"])
+    def test_valid(self, name):
+        assert is_valid_branch_name(name) is True
+
+    @pytest.mark.parametrize("name", [
+        "",            # empty
+        "Auth V2",     # spaces
+        "a..b",        # double dot
+        "-foo",        # leading dash (git would read it as a flag)
+        "foo/",        # trailing slash
+        "foo.lock",    # reserved suffix
+        "foo~bar",     # tilde
+        "foo:bar",     # colon
+    ])
+    def test_invalid(self, name):
+        assert is_valid_branch_name(name) is False
 
 
 # --- git_root ---

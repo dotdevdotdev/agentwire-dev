@@ -80,6 +80,61 @@ def test_corrupt_file_is_tolerated(tmp_path):
     assert reg.entries(repo) == []  # degrades, doesn't raise
 
 
+def test_concurrent_registration_threads_all_survive(tmp_path):
+    """N threads registering distinct sessions must not clobber each other."""
+    import threading
+
+    repo = tmp_path / "monorepo"
+    n = 20
+    barrier = threading.Barrier(n)
+
+    def worker(i):
+        barrier.wait()  # maximize contention on the read-modify-write
+        reg.register(repo, branch=f"b{i}", session=f"monorepo-{i}", base="develop",
+                     worktree_path=tmp_path / "wt" / f"monorepo-{i}")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    sessions = {e["session"] for e in reg.entries(repo)}
+    assert sessions == {f"monorepo-{i}" for i in range(n)}
+
+
+def test_concurrent_registration_processes_all_survive(tmp_path, monkeypatch):
+    """Cross-PROCESS contention (the real dispatch case) — flock must serialize."""
+    import sys
+    import subprocess as sp
+
+    registry_dir = tmp_path / "wt-registry"
+    repo = tmp_path / "monorepo"
+    wt = tmp_path / "wt"
+    n = 8
+
+    # Each child registers one entry, pointing REGISTRY_DIR at the shared dir.
+    prog = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from agentwire import worktree_registry as reg\n"
+        "reg.REGISTRY_DIR = Path(sys.argv[1])\n"
+        "i = sys.argv[2]\n"
+        "reg.register(Path(sys.argv[3]), branch='b'+i, session='monorepo-'+i, "
+        "base='develop', worktree_path=Path(sys.argv[4])/('monorepo-'+i))\n"
+    )
+    procs = [
+        sp.Popen([sys.executable, "-c", prog, str(registry_dir), str(i), str(repo), str(wt)])
+        for i in range(n)
+    ]
+    for p in procs:
+        assert p.wait() == 0
+
+    monkeypatch.setattr(reg, "REGISTRY_DIR", registry_dir)
+    sessions = {e["session"] for e in reg.entries(repo)}
+    assert sessions == {f"monorepo-{i}" for i in range(n)}
+
+
 def test_file_is_hand_editable_json(tmp_path):
     repo = tmp_path / "repo"
     reg.register(repo, branch="a", session="repo-a", base="main",
