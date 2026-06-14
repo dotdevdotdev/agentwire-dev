@@ -33,10 +33,19 @@ agentwire worktree name         # new branch + worktree + STANDALONE session
                                 #   the verb (isolation, no rebuild/restart, verify
                                 #   in-worktree, draft PR + notify-back) — first prompts
                                 #   only need the task itself
+                                #   Base branch (default mode): --base wins, else config
+                                #   worktree.default_base, else the repo's actual default
+                                #   branch (origin/HEAD, fallback current) — no hardcoded 'main'.
+                                #   --project defaults to the git root of cwd (monorepo-safe:
+                                #   many sessions can target one repo from different branches).
+                                #   config worktree.naming can template the NEW branch name.
 agentwire worktree name -b develop  # from specific base branch
 agentwire worktree name -c      # from repo's current branch
 agentwire worktree name -e      # checkout existing branch (no new branch)
 agentwire worktree name --ref v2.0  # detached at tag/commit
+agentwire worktree --list       # list this repo's worktree sessions (registry); --all = every repo
+agentwire worktree --remove name  # kill session + remove worktree + unregister (cleanup/recovery)
+agentwire worktree --prune      # drop registry entries whose worktree is gone + git worktree prune
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 

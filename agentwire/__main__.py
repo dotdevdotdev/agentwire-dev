@@ -47,7 +47,16 @@ from .roles import (
     merge_roles,
     resolve_roles,
 )
-from .worktree import ensure_worktree, parse_session_name, remove_worktree
+from .worktree import (
+    ensure_worktree,
+    parse_session_name,
+    remove_worktree,
+    git_root,
+    default_base_branch,
+    apply_naming,
+    is_valid_branch_name,
+)
+from . import worktree_registry
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
@@ -4884,30 +4893,56 @@ def cmd_worktree(args) -> int:
     they never replace it.
     """
     json_mode = getattr(args, 'json', False)
-    name = args.name
+    name = getattr(args, 'name', None)
     use_existing = getattr(args, 'existing', False)
     ref = getattr(args, 'ref', None)
+
+    from .config import load_config as load_config_typed
+    wt_config = load_config_typed().worktree
+
+    # Resolve the repo: explicit --project → config default → git root of cwd
+    # (so a worktree session can be spawned from any subdir of a monorepo).
+    project_arg = getattr(args, 'project', None)
+    if project_arg:
+        project_base = Path(project_arg).expanduser().resolve()
+    elif wt_config.default_project:
+        project_base = Path(wt_config.default_project).expanduser().resolve()
+    else:
+        project_base = Path(os.getcwd())
+    project_path = git_root(project_base) or project_base
+
+    worktree_dir = wt_config.worktree_dir
+
+    # Registry management flags (name is optional for these).
+    if getattr(args, 'list', False):
+        return _worktree_list(args, project_path, json_mode)
+    if getattr(args, 'prune', False):
+        return _worktree_prune(args, project_path, json_mode)
+    if getattr(args, 'remove', False):
+        return _worktree_remove(args, project_path, worktree_dir, json_mode)
+
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree <name> (or --list / --remove <name> / --prune)")
 
     if not _check_tmux_installed():
         return _output_result(False, json_mode, "tmux is required but not installed")
 
-    config = load_config()
-    wt_config = config.get("worktree", config.get("quicktask", {}))
-
-    # Resolve project repo path
-    project_arg = getattr(args, 'project', None)
-    project_path = Path(
-        project_arg or wt_config.get("default_project") or os.getcwd()
-    ).expanduser().resolve()
     if not (project_path / ".git").exists():
         return _output_result(False, json_mode, f"Not a git repo: {project_path}")
 
-    worktree_dir = Path(wt_config.get("worktree_dir", "~/worktrees")).expanduser().resolve()
     project_name = project_path.name
-    session_name = f"{project_name}-{name}"
+    # Session/worktree-dir key stays the raw CLI name made tmux-safe; the git
+    # branch may be templated separately via worktree.naming.
+    safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+    session_name = f"{project_name}-{safe_name}"
     worktree_path = worktree_dir / session_name
 
-    default_base = getattr(args, 'base', None) or wt_config.get("default_base", "main")
+    # --base wins; else config default; else the repo's actual default branch
+    # (origin/HEAD, not a hardcoded 'main'). --current handled per-mode below.
+    default_base = getattr(args, 'base', None) or wt_config.default_base
+
+    # The branch created in default mode honors the naming template.
+    templated_branch = apply_naming(wt_config.naming, name)
 
     def _launch_session():
         # kind="worktree-session" → worktree-session etiquette is injected
@@ -4926,8 +4961,21 @@ def cmd_worktree(args) -> int:
             'env': getattr(args, 'env', None),
         })())
 
-    # If worktree already exists, reattach
+    # If worktree already exists, reattach (and heal the registry entry).
     if worktree_path.exists():
+        # --ref is a detached ref, not a branch → record null. --existing
+        # checks out a real branch (name). Default mode → the templated branch.
+        if ref:
+            reattach_branch = None
+        elif use_existing:
+            reattach_branch = name
+        else:
+            reattach_branch = templated_branch
+        worktree_registry.register(
+            project_path, branch=reattach_branch,
+            session=session_name, base=default_base,
+            worktree_path=worktree_path,
+        )
         if json_mode:
             _output_json({"success": True, "session": session_name, "path": str(worktree_path), "reattached": True})
         else:
@@ -4939,6 +4987,7 @@ def cmd_worktree(args) -> int:
         return 0
 
     # Resolve the git ref to create the worktree from
+    base_branch = None
     if ref:
         # --ref mode: detached at a specific ref (tag, commit, branch)
         git_ref = ref
@@ -4950,8 +4999,12 @@ def cmd_worktree(args) -> int:
         new_branch = None
         mode_label = f"existing branch {name}"
     else:
-        # Default mode: new branch from base
-        if getattr(args, 'current', False):
+        # Default mode: new branch from base.
+        # Precedence: explicit --base > --current > config default > repo-derived.
+        explicit_base = getattr(args, 'base', None)
+        if explicit_base:
+            base_branch = explicit_base
+        elif getattr(args, 'current', False):
             result = subprocess.run(
                 ["git", "-C", str(project_path), "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True, text=True,
@@ -4959,11 +5012,25 @@ def cmd_worktree(args) -> int:
             if result.returncode != 0 or not result.stdout.strip():
                 return _output_result(False, json_mode, f"Failed to detect current branch in {project_path}")
             base_branch = result.stdout.strip()
+        elif wt_config.default_base:
+            base_branch = wt_config.default_base
         else:
-            base_branch = default_base
+            base_branch = default_base_branch(project_path)
         git_ref = f"origin/{base_branch}"
-        new_branch = name
-        mode_label = f"new branch {name} from {git_ref}"
+        new_branch = templated_branch
+
+        # Validate the generated branch name BEFORE touching the working tree,
+        # so a bad name (spaces, '..', leading '-', from the verbatim default
+        # or a naming template) fails cleanly instead of leaving an orphaned
+        # detached worktree on disk after `git worktree add` succeeds.
+        if not is_valid_branch_name(new_branch, project_path):
+            via = f" (from naming template '{wt_config.naming}')" if wt_config.naming else ""
+            return _output_result(
+                False, json_mode,
+                f"Invalid git branch name '{new_branch}'{via}: not a valid ref. "
+                f"Use a name without spaces, '..', or a leading '-', or set worktree.naming.",
+            )
+        mode_label = f"new branch {new_branch} from {git_ref}"
 
         # Fetch the base branch
         if not json_mode:
@@ -4996,7 +5063,24 @@ def cmd_worktree(args) -> int:
             capture_output=True, text=True,
         )
         if branch_result.returncode != 0:
+            # Don't leave an orphaned detached worktree behind (belt-and-braces;
+            # is_valid_branch_name above should already have caught bad names).
+            remove_worktree(project_path, worktree_path)
+            if worktree_path.exists():
+                subprocess.run(
+                    ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
+                    capture_output=True,
+                )
             return _output_result(False, json_mode, f"Failed to create branch '{new_branch}': {branch_result.stderr.strip()}")
+
+    # Record the branch↔session association in the local registry.
+    worktree_registry.register(
+        project_path,
+        branch=new_branch if new_branch else (name if use_existing else None),
+        session=session_name,
+        base=base_branch,
+        worktree_path=worktree_path,
+    )
 
     if json_mode:
         _output_json({
@@ -5008,6 +5092,104 @@ def cmd_worktree(args) -> int:
         print(f"Mode: {mode_label}")
 
     return _launch_session()
+
+
+def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
+    """List worktree-session registry entries (--list)."""
+    show_all = getattr(args, 'all', False)
+    if show_all:
+        rows = worktree_registry.all_entries()
+    else:
+        rows = [dict(e, project=str(project_path)) for e in worktree_registry.entries(project_path)]
+
+    for r in rows:
+        r["alive"] = tmux_session_exists(r.get("session", ""))
+        r["exists"] = Path(r.get("worktree_path", "")).exists()
+
+    if json_mode:
+        _output_json({"success": True, "entries": rows})
+        return 0
+
+    if not rows:
+        scope = "any repo" if show_all else str(project_path)
+        print(f"No worktree sessions registered for {scope}.")
+        return 0
+
+    for r in rows:
+        live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
+        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}")
+        print(f"      {r.get('worktree_path')}")
+    return 0
+
+
+def _worktree_prune(args, project_path: Path, json_mode: bool) -> int:
+    """Drop registry entries whose worktree path is gone; git worktree prune."""
+    removed = []
+    for e in worktree_registry.entries(project_path):
+        if not Path(e.get("worktree_path", "")).exists():
+            worktree_registry.unregister(project_path, session=e.get("session"))
+            removed.append(e.get("session"))
+    subprocess.run(["git", "-C", str(project_path), "worktree", "prune"],
+                   capture_output=True)
+    if json_mode:
+        _output_json({"success": True, "pruned": removed})
+    else:
+        if removed:
+            print(f"Pruned {len(removed)} stale registry entr{'y' if len(removed) == 1 else 'ies'}: {', '.join(removed)}")
+        else:
+            print("Nothing to prune.")
+    return 0
+
+
+def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
+    """Cleanup/recovery: kill the session, remove the worktree, unregister."""
+    name = getattr(args, 'name', None)
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree --remove <name|session>")
+
+    project_name = project_path.name
+    candidates = {name, f"{project_name}-{name}"}
+    entry = None
+    for e in worktree_registry.entries(project_path):
+        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
+            entry = e
+            break
+
+    if entry:
+        session_name = entry.get("session")
+        worktree_path = Path(entry.get("worktree_path"))
+    else:
+        # Not in registry — fall back to the conventional layout so recovery
+        # still works on hand-created or pre-registry worktrees.
+        safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+        session_name = name if name.startswith(f"{project_name}-") else f"{project_name}-{safe_name}"
+        worktree_path = worktree_dir / session_name
+
+    # Kill the tmux session if it's alive.
+    killed = False
+    if tmux_session_exists(session_name):
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+        killed = True
+
+    # Remove the git worktree (force), then sweep any leftover dir.
+    removed = remove_worktree(project_path, worktree_path)
+    if not removed and worktree_path.exists():
+        subprocess.run(
+            ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
+            capture_output=True,
+        )
+        removed = not worktree_path.exists()
+
+    worktree_registry.unregister(project_path, session=session_name, worktree_path=worktree_path)
+
+    if json_mode:
+        _output_json({"success": True, "session": session_name, "path": str(worktree_path),
+                      "killed": killed, "worktree_removed": removed})
+    else:
+        print(f"Removed worktree session '{session_name}'"
+              + (" (killed live session)" if killed else "")
+              + (f"; worktree {worktree_path} removed" if removed else f"; worktree {worktree_path} left in place"))
+    return 0
 
 
 def cmd_fork(args) -> int:
@@ -10969,12 +11151,16 @@ def main() -> int:
 
     # === worktree command ===
     wt_parser = subparsers.add_parser("worktree", help="Create a git worktree + session in one command")
-    wt_parser.add_argument("name", help="Name (becomes branch name in default mode, session suffix always)")
-    wt_parser.add_argument("--base", "-b", help="Base branch to fork from (default: from config or 'main')")
-    wt_parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch instead of --base")
+    wt_parser.add_argument("name", nargs="?", help="Name (becomes branch name in default mode, session suffix always)")
+    wt_parser.add_argument("--base", "-b", help="Base branch to fork from (default: config worktree.default_base, else the repo's origin/HEAD default branch)")
+    wt_parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch (used when --base is not given)")
     wt_parser.add_argument("--existing", "-e", action="store_true", help="Checkout an existing branch (no new branch created)")
     wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
-    wt_parser.add_argument("--project", "-p", help="Path to git repo (default: from config or cwd)")
+    wt_parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")
+    wt_parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
+    wt_parser.add_argument("--remove", action="store_true", help="Kill the session, remove the worktree, and unregister (cleanup/recovery)")
+    wt_parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
+    wt_parser.add_argument("--all", action="store_true", help="With --list: include worktree sessions across every repo")
     _add_posture_harness_flags(wt_parser)
     wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
     wt_parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worktree-session etiquette")

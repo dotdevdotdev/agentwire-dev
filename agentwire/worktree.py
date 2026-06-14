@@ -7,8 +7,103 @@ Session naming convention:
 - "project/branch@machine" -> remote worktree session
 """
 
+import getpass
+import re
 import subprocess
 from pathlib import Path
+
+
+def git_root(path: Path) -> Path | None:
+    """Return the top-level git directory containing ``path``, or None.
+
+    Walks up via ``git rev-parse --show-toplevel`` so a worktree session can
+    be spawned from any subdirectory of a (mono)repo and still target the
+    repo root. Returns the main repo root, not a linked-worktree root.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    out = result.stdout.strip()
+    if result.returncode == 0 and out:
+        return Path(out)
+    return None
+
+
+def default_base_branch(project_path: Path) -> str:
+    """Resolve a repo's default base branch (no hardcoded 'main').
+
+    Order:
+        1. ``origin/HEAD`` symbolic ref (the remote's default branch) —
+           e.g. a monorepo defaulting to ``develop``.
+        2. The repo's current branch (when origin/HEAD isn't set locally;
+           run ``git remote set-head origin -a`` to populate it).
+        3. ``"main"`` as a last resort.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(project_path), "symbolic-ref", "--quiet",
+         "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True,
+    )
+    ref = result.stdout.strip()
+    if result.returncode == 0 and ref:
+        return ref.rsplit("/", 1)[-1]
+
+    result = subprocess.run(
+        ["git", "-C", str(project_path), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    )
+    cur = result.stdout.strip()
+    if result.returncode == 0 and cur and cur != "HEAD":
+        return cur
+
+    return "main"
+
+
+def is_valid_branch_name(name: str, project_path: Path | None = None) -> bool:
+    """True if ``name`` is a valid git branch name.
+
+    Uses ``git check-ref-format --branch`` (the authority) plus cheap
+    guards for cases git would mis-parse (leading dash → looks like a flag)
+    or that aren't usable as a worktree branch. Guards against a templated
+    or verbatim name with spaces / ``..`` / leading ``-`` reaching
+    ``git checkout -b`` and failing *after* the worktree is already on disk.
+    """
+    if not name or name.startswith("-") or name.endswith("/") or name.endswith(".lock"):
+        return False
+    cwd = str(project_path) if project_path else None
+    result = subprocess.run(
+        ["git", "check-ref-format", "--branch", name],
+        capture_output=True, text=True, cwd=cwd,
+    )
+    return result.returncode == 0
+
+
+def slugify(name: str) -> str:
+    """Lowercase, hyphen-separated, filesystem/branch-safe slug of ``name``."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return s or "wt"
+
+
+class _SafeFormatDict(dict):
+    """format_map helper: leave unknown ``{placeholders}`` literal."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def apply_naming(template: str | None, name: str) -> str:
+    """Apply a branch-naming template to a CLI name.
+
+    Placeholders: ``{name}`` (verbatim), ``{slug}`` (slugified),
+    ``{user}`` (OS login). ``None``/empty template → ``name`` verbatim.
+    Unknown placeholders are left literal rather than raising.
+    """
+    if not template:
+        return name
+    return template.format_map(_SafeFormatDict(
+        name=name, slug=slugify(name), user=getpass.getuser(),
+    ))
 
 
 def parse_session_name(name: str) -> tuple[str, str | None, str | None]:

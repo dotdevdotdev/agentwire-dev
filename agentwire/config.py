@@ -98,6 +98,43 @@ class ProjectsConfig:
         self.dir = _expand_path(self.dir) or Path.home() / "projects"
 
 
+@dataclass
+class WorktreeConfig:
+    """Standalone worktree-session orchestration (`worktree:` config key).
+
+    Governs `agentwire worktree <name>` — the first-class primitive for
+    spawning an isolated branch+worktree+session for one unit of work.
+
+    Distinct from ``projects.worktrees`` (:class:`WorktreesConfig`), which
+    governs the legacy ``project/branch`` session layout under
+    ``~/projects/<project>-worktrees/``. This one drives the dedicated
+    ``agentwire worktree`` command and its branch↔session registry.
+
+    Fields:
+        default_base: Base branch new worktrees fork from. ``None`` means
+            "ask the repo" — resolved from ``origin/HEAD`` (falling back to
+            the current branch). ``--base`` always overrides.
+        default_project: Repo path used when ``--project`` is omitted and
+            cwd is not inside a git repo. ``None`` → infer from cwd's git
+            root, else cwd.
+        worktree_dir: Where worktrees live (one dir per session).
+        naming: Optional branch-name template applied in default (new-branch)
+            mode, e.g. ``"{user}/{slug}"`` or ``"feature-{slug}"``.
+            Placeholders: ``{name}`` (raw), ``{slug}`` (slugified),
+            ``{user}`` (OS user). ``None`` → branch == name verbatim.
+    """
+
+    default_base: str | None = None
+    default_project: str | None = None
+    worktree_dir: Path = field(default_factory=lambda: Path.home() / "worktrees")
+    naming: str | None = None
+
+    def __post_init__(self):
+        self.worktree_dir = _expand_path(self.worktree_dir) or Path.home() / "worktrees"
+        if self.default_project:
+            self.default_project = str(_expand_path(self.default_project))
+
+
 _VOICE_BACKENDS = ("default", "custom")
 
 _VOICE_BACKEND_MIGRATION_HINT = (
@@ -429,6 +466,7 @@ class Config:
 
     server: ServerConfig = field(default_factory=ServerConfig)
     projects: ProjectsConfig = field(default_factory=ProjectsConfig)
+    worktree: WorktreeConfig = field(default_factory=WorktreeConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     stt: STTConfig = field(default_factory=STTConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
@@ -542,6 +580,16 @@ def _dict_to_config(data: dict) -> Config:
         dir=projects_data.get("dir", "~/projects"),
         worktrees=worktrees,
         extra=projects_data.get("extra", []),
+    )
+
+    # Worktree-session orchestration (`worktree:` key). `quicktask:` is a
+    # documented legacy alias — the canonical key is `worktree:`.
+    worktree_data = data.get("worktree", data.get("quicktask", {})) or {}
+    worktree = WorktreeConfig(
+        default_base=worktree_data.get("default_base"),
+        default_project=worktree_data.get("default_project"),
+        worktree_dir=worktree_data.get("worktree_dir", "~/worktrees"),
+        naming=worktree_data.get("naming"),
     )
 
     # TTS
@@ -764,6 +812,7 @@ def _dict_to_config(data: dict) -> Config:
         server=server,
         session=session,
         projects=projects,
+        worktree=worktree,
         tts=tts,
         stt=stt,
         agent=agent,

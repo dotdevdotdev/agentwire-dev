@@ -202,10 +202,20 @@ usage_limit:             # Usage-limit recovery watchdog (docs/wiki/usage-limit-
   enabled: true          # Master switch for dialog detection/parking (default: true)
   exclude_sessions: []   # Session names never auto-parked (gates NEW parks only)
 
-worktree:
-  worktree_dir: ~/worktrees       # Where worktrees are created
-  default_base: main              # Default base branch
-  default_project: ~/projects/my-repo  # Default git repo
+worktree:                         # `agentwire worktree <name>` orchestration (WorktreeConfig).
+                                  # Distinct from projects.worktrees above (the legacy
+                                  # project/branch layout). `quicktask:` is a legacy alias for
+                                  # this key — prefer `worktree:`.
+  worktree_dir: ~/worktrees       # Where worktrees are created (one dir per session)
+  default_base: develop           # Base branch new worktrees fork from. OMIT to derive from
+                                  # the repo's actual default branch (origin/HEAD, fallback to
+                                  # current branch) — no hardcoded 'main'. --base always wins.
+  default_project: ~/projects/my-repo  # Repo used when --project is omitted AND cwd isn't in a
+                                  # git repo. Otherwise --project / the git root of cwd is used.
+  naming: "{user}/{slug}"         # Optional branch-name template for NEW branches. Placeholders:
+                                  # {name} (verbatim), {slug} (slugified), {user} (OS login).
+                                  # Omit → branch == name verbatim. Only the git branch is
+                                  # templated; the tmux session name stays {project}-{name}.
 
 overnight:
   window_start: "22:00"        # Start of overnight work window
