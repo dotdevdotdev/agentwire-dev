@@ -21,6 +21,15 @@ function pickTerminalFontSize() {
     return getTerminalFontSize();
 }
 
+// Terminal WS reconnect tuning. A transient drop (portal restart, an
+// over-broad bg-process kill, a network blip) should heal silently rather than
+// dump the user onto the manual "Reconnect" wall — the tmux session almost
+// always outlives the WS. Mirrors the dashboard WS backoff in desktop-manager.js.
+const TERM_RECONNECT_INITIAL = 500;     // ms before first silent retry
+const TERM_RECONNECT_MAX = 10000;       // ms backoff ceiling
+const TERM_RECONNECT_MULTIPLIER = 1.6;
+const TERM_RECONNECT_OVERLAY_AFTER = 4; // show the manual wall only after N silent retries fail
+
 export class SessionWindow {
     /**
      * @param {Object} options
@@ -46,6 +55,13 @@ export class SessionWindow {
         this.ws = null;
         this.resizeObserver = null;
         this.isOpen = false;
+
+        // Silent reconnect state for the terminal/monitor WS.
+        this._autoReconnectAttempts = 0;
+        this._autoReconnectTimer = null;
+        this._destroyed = false;       // set in close() so a stray onclose can't re-dial
+        this._sessionEnded = false;    // true only when the tmux session truly ended (window closes)
+        this._overlayKeyHandler = null;
 
         // PTT (Push-to-talk) state
         this.pttButton = null;
@@ -113,6 +129,17 @@ export class SessionWindow {
     close() {
         if (!this.isOpen) return;
 
+        // Stop any silent reconnect from re-dialing a window we're tearing down.
+        this._destroyed = true;
+        if (this._autoReconnectTimer) {
+            clearTimeout(this._autoReconnectTimer);
+            this._autoReconnectTimer = null;
+        }
+        if (this._overlayKeyHandler) {
+            document.removeEventListener('keydown', this._overlayKeyHandler, true);
+            this._overlayKeyHandler = null;
+        }
+
         // Clean up resize observer
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
@@ -166,6 +193,7 @@ export class SessionWindow {
 
         // Close WebSocket
         if (this.ws) {
+            this.ws.onclose = null; // _destroyed already guards, but don't even fire
             this.ws.close();
             this.ws = null;
         }
@@ -261,6 +289,7 @@ export class SessionWindow {
                     <div class="disconnect-content">
                         <div class="disconnect-message">Session Disconnected</div>
                         <button class="btn btn-primary reconnect-btn">Reconnect</button>
+                        <div class="disconnect-hint">or press any key</div>
                     </div>
                 </div>
                 <div class="session-status-bar">
@@ -277,6 +306,7 @@ export class SessionWindow {
                     <div class="disconnect-content">
                         <div class="disconnect-message">Session Disconnected</div>
                         <button class="btn btn-primary reconnect-btn">Reconnect</button>
+                        <div class="disconnect-hint">or press any key</div>
                     </div>
                 </div>
                 <div class="session-status-bar">
@@ -652,6 +682,13 @@ export class SessionWindow {
             this._updateStatus('connected', 'Connected');
             this._hideDisconnectOverlay();
 
+            // Healed — clear any pending silent-retry state.
+            this._autoReconnectAttempts = 0;
+            if (this._autoReconnectTimer) {
+                clearTimeout(this._autoReconnectTimer);
+                this._autoReconnectTimer = null;
+            }
+
             // Re-fit terminal before sending size — the maximize animation may have
             // completed while the socket was connecting, so fit now to get current dims
             if (this.mode === 'terminal' && this.fitAddon && this.terminal) {
@@ -692,10 +729,10 @@ export class SessionWindow {
                                 return;
                             } else if (msg.type === 'remote_disconnected' || msg.type === 'local_disconnected') {
                                 // Transient drop (bg process side effect, portal restart, etc) -
-                                // show overlay so user can reconnect instead of losing the window
-                                this._sessionEnded = true; // suppress the onclose fallback close
-                                this._updateStatus('disconnected', 'Connection lost');
-                                this._showDisconnectOverlay();
+                                // retry silently with backoff instead of dropping the user onto
+                                // the manual wall. The onclose that follows is deduped by the
+                                // scheduler's timer guard.
+                                this._scheduleAutoReconnect();
                                 return;
                             }
                             // Other JSON messages - don't write to terminal
@@ -743,20 +780,16 @@ export class SessionWindow {
         };
 
         this.ws.onclose = (event) => {
-            if (event.code === 1000) {
-                this._updateStatus('disconnected', 'Disconnected');
-            } else {
-                this._updateStatus('error', 'Connection lost');
-            }
+            // The session truly ended (window already closing) or we're tearing down —
+            // nothing to recover.
+            if (this._sessionEnded || this._destroyed) return;
 
-            // The server sends a typed message (*_session_ended / *_disconnected) before
-            // closing the WS so we can distinguish "session truly ended" from "transient
-            // drop". If we already saw one of those, _sessionEnded is set and there's
-            // nothing more to do here. If we get here without one, fall back to showing
-            // the reconnect overlay rather than destroying the window — a bg-process kill
-            // or portal hot-reload should never cause the user to lose their session UI.
-            if (this._sessionEnded) return;
-            this._showDisconnectOverlay();
+            // Any other close — clean (1000) or abrupt — is treated as a transient drop:
+            // a bg-process kill, portal hot-reload, or network blip. Retry silently with
+            // backoff rather than destroying the session UI or throwing up the manual
+            // wall; the overlay only appears once several silent retries have failed.
+            // (Deduped against the *_disconnected branch by the scheduler's timer guard.)
+            this._scheduleAutoReconnect();
         };
 
         // For terminal mode, send input to WebSocket. Only attach once — xterm.js
@@ -911,7 +944,49 @@ export class SessionWindow {
         }
     }
 
+    /**
+     * Schedule a silent reconnect with exponential backoff. The terminal heals
+     * itself when the WS comes back (portal restart, transient kill side-effect)
+     * instead of forcing a manual click. The manual "Reconnect" overlay surfaces
+     * only after TERM_RECONNECT_OVERLAY_AFTER silent attempts have failed, so a
+     * brief blip never throws up the wall. Re-entrant calls (e.g. a *_disconnected
+     * message immediately followed by onclose) are coalesced by the timer guard.
+     */
+    _scheduleAutoReconnect() {
+        if (this._destroyed || this._sessionEnded) return;
+        if (this._autoReconnectTimer) return; // already pending — dedupe
+
+        const delay = Math.min(
+            TERM_RECONNECT_INITIAL * Math.pow(TERM_RECONNECT_MULTIPLIER, this._autoReconnectAttempts),
+            TERM_RECONNECT_MAX
+        );
+        this._autoReconnectAttempts++;
+
+        // Keep it quiet for the first few tries; only raise the wall once the drop
+        // looks persistent. Background retries continue either way, so it self-heals.
+        if (this._autoReconnectAttempts > TERM_RECONNECT_OVERLAY_AFTER) {
+            this._updateStatus('disconnected', 'Connection lost');
+            this._showDisconnectOverlay();
+        } else {
+            this._updateStatus('connecting', 'Reconnecting…');
+        }
+
+        this._autoReconnectTimer = setTimeout(() => {
+            this._autoReconnectTimer = null;
+            if (this._destroyed || this._sessionEnded) return;
+            this._connectWebSocket();
+        }, delay);
+    }
+
     async _reconnect() {
+        // Manual reconnect (button or any-keystroke) — cancel any pending silent
+        // retry and reset backoff so this fires immediately.
+        if (this._autoReconnectTimer) {
+            clearTimeout(this._autoReconnectTimer);
+            this._autoReconnectTimer = null;
+        }
+        this._autoReconnectAttempts = 0;
+
         this._updateStatus('connecting', 'Checking session...');
 
         // For remote sessions, check if the session still exists before reconnecting
@@ -979,6 +1054,29 @@ export class SessionWindow {
         if (reconnectBtn) {
             reconnectBtn.addEventListener('click', () => this._reconnect());
         }
+
+        // Any-keystroke fallback: while the disconnect overlay is up, any key
+        // reconnects — no need to aim for the small button. Capture phase so
+        // xterm.js (still focused under the overlay) can't swallow the keydown.
+        // Scoped to the focused window so a keypress can't reconnect a background
+        // session window the user didn't mean to touch.
+        this._overlayKeyHandler = (e) => {
+            if (!this.winbox) return;
+            const body = this.winbox.body;
+            const overlay = body && body.querySelector('.session-disconnect-overlay');
+            if (!overlay || overlay.classList.contains('hidden')) return;
+            // Bare modifier presses (Shift/Ctrl/Alt/Meta) and OS shortcuts like
+            // Cmd-Tab shouldn't count as the "any key".
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+            // Only the focused window responds; ignore if a different winbox is focused.
+            const focusedWin = document.activeElement && document.activeElement.closest('.winbox');
+            if (focusedWin && focusedWin !== this.winbox.window) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this._reconnect();
+        };
+        document.addEventListener('keydown', this._overlayKeyHandler, true);
     }
 
     // PTT (Push-to-talk) Methods

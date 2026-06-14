@@ -3073,6 +3073,13 @@ body .winbox.max {
     font-size: 1rem;
 }
 
+.disconnect-hint {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--muted-foreground);
+    opacity: 0.7;
+}
+
 .session-terminal {
     flex: 1;
     min-height: 0;
