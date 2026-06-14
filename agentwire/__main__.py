@@ -11648,6 +11648,10 @@ def main() -> int:
     from . import prompts_cli
     prompts_cli.register_prompts_parser(subparsers)
 
+    # === msg command group (polite agent-to-agent inbox, rides the watchdog) ===
+    from . import msg_cli
+    msg_cli.register_msg_parser(subparsers)
+
     # === council command group ===
     council_parser = subparsers.add_parser(
         "council",

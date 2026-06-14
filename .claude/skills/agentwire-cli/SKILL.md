@@ -101,6 +101,16 @@ agentwire prompts answer -s name --pane 0 --expect <hash> 2  # guarded answer:
                                 #   re-detects + hash-compares before sending keys —
                                 #   NEVER answer dialogs with raw send-keys
 agentwire prompts clear -s name --pane 1  # drop a marker
+
+# Polite messaging (non-interrupting agent-to-agent inbox; see wiki sessions/messaging.md)
+agentwire msg send --to name "text"          # queue a message (delivers when their box is clear)
+agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation
+agentwire msg send --to @all "team update"   # broadcast to live agent sessions except sender
+agentwire msg inbox -s name                  # peek pending (does not drain)
+agentwire msg flush -s name                  # attempt a drain now (still gated on empty box + safe target)
+                                # `msg` NEVER clobbers a human's draft — unlike `send`, which
+                                # pastes + Enter immediately. Use `send` only to forcibly drive a session now.
+
 agentwire listen start|stop|cancel  # voice recording
 
 # Voice cloning

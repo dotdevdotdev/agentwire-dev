@@ -381,6 +381,67 @@ def session_send(session: str, message: str) -> str:
 
 
 @mcp.tool()
+def msg_send(to: str, text: str, kind: str = "note") -> str:
+    """Send a POLITE, non-interrupting message to another session's inbox.
+
+    Use this for routine peer updates that should NOT interrupt — a worker
+    reporting "PR drafted", an orchestrator nudging a sibling. The message
+    drops into a durable inbox and only injects when the recipient's input box
+    is empty and the pane is safe, so it can never clobber a human who is
+    mid-typing. Delivery is at the next safe boundary (≤60s), not instant.
+
+    Prefer `session_send` ONLY when you must forcibly drive a session right
+    now (it pastes + Enter immediately, overwriting any uncommitted draft).
+
+    Args:
+        to: Recipient session name, or "@all" to broadcast to every live
+            agent session except yourself.
+        text: The message body.
+        kind: One of note (default), done, request, escalation.
+
+    Returns:
+        Confirmation of which sessions were queued, or an error.
+    """
+    caller = get_caller_session()
+    args = ["msg", "send", "--to", to, "--kind", kind]
+    if caller:
+        args += ["--from", caller]
+    args.append(text)
+    data = run_agentwire_cmd(args)
+    if data.get("success"):
+        recipients = data.get("recipients") or []
+        if not recipients:
+            return f"No live recipients for '{to}'."
+        return f"Queued {kind} → {', '.join(recipients)} (delivers when their box is clear)."
+    return f"Failed to queue message: {data.get('error', 'Unknown error')}"
+
+
+@mcp.tool()
+def msg_inbox(session: str | None = None) -> str:
+    """Peek a session's pending polite messages (does not drain them).
+
+    Args:
+        session: Session name (default: the calling session).
+
+    Returns:
+        The pending messages, or a note that the inbox is empty.
+    """
+    args = ["msg", "inbox"]
+    if session:
+        args += ["-s", session]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to read inbox: {data.get('error', 'Unknown error')}"
+    pending = data.get("pending") or []
+    if not pending:
+        return f"Inbox empty for {data.get('session', session or 'this session')}."
+    lines = [f"{len(pending)} pending for {data.get('session')}:"]
+    for m in pending:
+        lines.append(f"  [{m.get('kind')}] from {m.get('from')}: {m.get('text')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def session_output(session: str, lines: int = 50) -> str:
     """Capture output from a session.
 

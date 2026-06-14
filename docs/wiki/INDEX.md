@@ -26,6 +26,7 @@ How AgentWire runs AI agents — session types, REPLs, and permission models.
 - **[Custom services](services.md)** — registered long-running sessions: autostart on portal launch, watchdog health checks + restart with backoff, `agentwire services` CLI
 - **[Council](council.md)** — multi-soul orchestrator sitting: fan a prompt out to lens sessions (brain, conscience, gut, critic, …), collect via file inbox, synthesize with attribution
 - **[Prompt routing](sessions/prompt-routing.md)** — permission/plan/AskUserQuestion prompts in a child session route to its parent (hook path + watchdog sweep); guarded `agentwire prompts answer`, no auto-answering
+- **[Polite messaging](sessions/messaging.md)** — `agentwire msg` drops typed messages into a per-session file inbox and injects them only when the input box is empty (`prompt_is_empty`) and the pane is safe; never clobbers a human draft, the way `agentwire send` does. `@all` broadcast, MCP `msg_send`/`msg_inbox`
 
 ## Communication
 
