@@ -192,7 +192,15 @@ class TestTerminalWebSocket:
                 # Either an error JSON frame or a close — both valid.
                 if msg.type.name == "TEXT":
                     payload = json.loads(msg.data)
-                    assert payload.get("type") in {"error", "remote_disconnected", "remote_session_ended"}
+                    # "local-session" has no machine, so the local PTY path emits the
+                    # local_* frames; the remote_* variants are the SSH path's equivalents.
+                    assert payload.get("type") in {
+                        "error",
+                        "local_disconnected",
+                        "local_session_ended",
+                        "remote_disconnected",
+                        "remote_session_ended",
+                    }
             except asyncio.TimeoutError:
                 pass
         assert "local-session" in server.active_sessions
