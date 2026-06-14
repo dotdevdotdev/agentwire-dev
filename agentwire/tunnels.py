@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from .network import NetworkContext, TunnelSpec
+from .ssh import ssh_base_opts, ssh_control_exit
 from .utils.paths import agentwire_dir
 from .utils.subprocess import run_command
 
@@ -129,20 +130,17 @@ class TunnelManager:
             )
 
         # Build SSH command
-        # -L local_port:localhost:remote_port - Port forwarding
-        # -N - Don't execute remote command
-        # -f - Go to background
-        # -o ExitOnForwardFailure=yes - Exit if port forward fails
-        # -o ServerAliveInterval=60 - Keep connection alive
-        # -o ServerAliveCountMax=3 - Max missed keepalives
+        # ssh_base_opts() supplies ControlMaster multiplexing + keepalives
+        # (ServerAliveInterval/CountMax). -L local_port:localhost:remote_port
+        # port-forwards; -N runs no remote command; -f backgrounds;
+        # -o ExitOnForwardFailure=yes exits if the forward can't bind.
         cmd = [
             "ssh",
+            *ssh_base_opts(),
             "-L", f"{spec.local_port}:localhost:{spec.remote_port}",
             "-N",
             "-f",
             "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=60",
-            "-o", "ServerAliveCountMax=3",
             ssh_target,
         ]
 
@@ -235,6 +233,16 @@ class TunnelManager:
         # Clean up state file
         self._get_state_file(spec).unlink(missing_ok=True)
 
+        # Best-effort: close the multiplexing master for this target so it
+        # doesn't linger past an explicit teardown. A no-op if no master
+        # exists; the next command just re-handshakes if it was shared.
+        try:
+            ssh_target = self._get_ssh_target(spec.remote_machine)
+            if ssh_target:
+                ssh_control_exit(ssh_target)
+        except Exception:
+            pass
+
         return TunnelStatus(spec=spec, status="down")
 
     def ensure_tunnels(self, ctx: Optional[NetworkContext] = None) -> list[TunnelStatus]:
@@ -324,6 +332,7 @@ def test_ssh_connectivity(host: str, user: Optional[str] = None, timeout: int = 
         result = run_command(
             [
                 "ssh",
+                *ssh_base_opts(),
                 "-o", f"ConnectTimeout={timeout}",
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "BatchMode=yes",

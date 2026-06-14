@@ -136,7 +136,16 @@ Host gpu-server
     IdentityFile ~/.ssh/id_ed25519
 ```
 
-**Tip:** Enable SSH ControlMaster for faster remote operations (reuses connections instead of opening new ones each time). Add to `~/.ssh/config`:
+**SSH ControlMaster connection multiplexing (built in).** AgentWire applies
+ControlMaster flags to **every** `ssh` it spawns (see `agentwire/ssh.py` —
+`ssh_base_opts()`), so the first remote op to a host opens a master connection
+and parks its socket under `~/.ssh/sockets/`; subsequent ops ride that socket
+and skip the handshake (~90–140ms saved on loopback, 300–500ms over a VPN). The
+socket dir is created on demand; if it can't be created the flags are dropped
+and ssh just re-handshakes (no command is lost). Nothing to configure.
+
+To get the same speedup for **your own** interactive `ssh`/`scp`/`rsync` from
+the shell, add the equivalent to `~/.ssh/config`:
 
 ```
 Host *
@@ -144,6 +153,88 @@ Host *
     ControlPath ~/.ssh/sockets/%r@%h-%p
     ControlPersist 600
 ```
+
+Inspect or tear down a master by hand: `ssh -O check <host>` /
+`ssh -O exit <host>`.
+
+---
+
+## Tailscale Mesh Underlay (no inbound port 22)
+
+> Optional. SSH stays the transport — Tailscale is just the network it rides.
+> This buys the "no public inbound port / identity-based / NAT-traversal"
+> security story with **zero application-code change** (see research in
+> `docs/wiki/research/orchestration-transport-alternatives.md`).
+
+Today every managed machine needs reachable SSH — typically public port 22 or a
+hole-punched forward. [Tailscale](https://tailscale.com) (a managed WireGuard
+mesh) gives every machine a stable private `100.x` address on your *tailnet*,
+reachable from any other enrolled machine regardless of NAT, with **no inbound
+port open to the public internet**. Point `machines.json` at the tailnet
+addresses and SSH rides the encrypted mesh.
+
+### Setup (per machine)
+
+1. **Install Tailscale** on the orchestrator and every managed machine:
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up            # opens a browser/device-auth link
+   ```
+   macOS: `brew install --cask tailscale` (or the App Store app), then `tailscale up`.
+
+2. **Grab each machine's tailnet address** (stable, survives reboots/IP changes):
+   ```bash
+   tailscale ip -4              # e.g. 100.101.102.103
+   tailscale status            # also shows MagicDNS names like gpu-server.tail-scale.ts.net
+   ```
+
+3. **Point `machines.json` at the tailnet address** (or MagicDNS name) instead
+   of the public IP:
+   ```json
+   {
+     "id": "gpu-server",
+     "host": "100.101.102.103",
+     "user": "ubuntu",
+     "projects_dir": "~/projects"
+   }
+   ```
+   MagicDNS names work too (`"host": "gpu-server.tail-scale.ts.net"`) and read
+   better. Verify: `ssh ubuntu@100.101.102.103 echo ok`.
+
+4. **Close public port 22.** Once every machine reaches the others over the
+   tailnet, drop inbound 22 from the public internet at the firewall / cloud
+   security group / `ufw`:
+   ```bash
+   sudo ufw allow in on tailscale0 to any port 22   # SSH only over the tailnet
+   sudo ufw deny  in            to any port 22       # block public 22
+   ```
+   (Cloud hosts: remove the `0.0.0.0/0 :22` rule from the security group; keep a
+   console/out-of-band path so you can't lock yourself out.)
+
+ControlMaster multiplexing (above) stacks on top — the per-command handshake the
+mesh adds (a few ms WireGuard overhead) is paid once per host, then reused.
+
+### Pairing with the public portal (Cloudflare Tunnel)
+
+These solve two different exposure problems and compose cleanly:
+
+| Concern | Mechanism |
+|---|---|
+| Machine-to-machine SSH (orchestrator ↔ managed boxes) | **Tailscale mesh** — private `100.x`, no public port |
+| Public access to the **portal** (your phone, anywhere) | **Cloudflare Tunnel** — outbound-only, no inbound port (see [`remote-access.md`](remote-access.md)) |
+
+Neither opens an inbound port on a managed machine. The portal is reachable from
+the open internet via the tunnel; SSH between machines never leaves the tailnet.
+
+### Optional later step: Tailscale SSH
+
+[Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) can terminate the
+SSH connection itself using **tailnet device identity / your SSO**, dropping
+`authorized_keys` management entirely — access is governed by tailnet ACLs
+instead of per-host key files. Enable per node with `tailscale up --ssh` and an
+ACL `ssh` rule. **Not required** for the mesh underlay above (plain `sshd` over
+the tailnet works fine); it's a follow-up if you want to retire key
+distribution.
 
 ---
 

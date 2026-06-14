@@ -42,9 +42,12 @@ class TestUnpinTmuxWindow:
             await unpin_tmux_window("myproject/branch", ssh_target="user@host")
 
         args = exec_mock.call_args.args
+        # ssh_base_opts() (ControlMaster multiplexing) is spliced between the
+        # "ssh" token and the target, so assert on the stable head/tail.
         assert args[0] == "ssh"
-        assert args[1] == "user@host"
-        assert args[2] == "tmux set-option -w -t myproject/branch -u window-size"
+        assert "ControlMaster=auto" in args
+        assert args[-2] == "user@host"
+        assert args[-1] == "tmux set-option -w -t myproject/branch -u window-size"
         proc.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -53,7 +56,7 @@ class TestUnpinTmuxWindow:
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as exec_mock:
             await unpin_tmux_window("my project", ssh_target="user@host")
 
-        remote_cmd = exec_mock.call_args.args[2]
+        remote_cmd = exec_mock.call_args.args[-1]
         assert "'my project'" in remote_cmd
 
 

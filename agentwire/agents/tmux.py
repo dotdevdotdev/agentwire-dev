@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .base import AgentBackend
+from ..ssh import ssh_base_opts
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ class TmuxAgent(AgentBackend):
         port = machine.get("port")
         ssh_cmd = [
             "ssh",
+            *ssh_base_opts(),
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
         ]
