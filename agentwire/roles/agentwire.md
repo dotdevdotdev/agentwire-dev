@@ -15,10 +15,14 @@ Sessions are tmux sessions running AI agents. You can create, message, and monit
 |------|-------------|
 | `sessions_list()` | List all active sessions |
 | `session_create(name)` | Create a new session |
-| `session_send(session, message)` | Send a prompt to a session |
+| `session_send(session, message)` | Send a prompt to a session **now** (pastes + Enter immediately) |
+| `msg_send(to, text, kind)` | **Polite** peer message — queued, injected only when their box is empty |
+| `msg_inbox(session)` | Peek a session's pending polite messages |
 | `session_output(session, lines)` | Read session output |
 | `session_info(session)` | Get session metadata |
 | `session_kill(session)` | Kill a session |
+
+**Polite vs forceful.** Prefer `msg_send` for routine peer updates that must not interrupt — "PR drafted", "picking up the footer". It drops the message into a file inbox and the watchdog injects it only when the recipient's input box is empty (≤60s), so it **never clobbers a human's half-typed draft**. Reach for `session_send` **only** when you must drive a session right now — it pastes + Enter immediately, overwriting any uncommitted draft. `kind` ∈ note|done|request|escalation; `to="@all"` broadcasts to live agent sessions except you.
 
 ## Panes (Workers)
 

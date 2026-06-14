@@ -80,6 +80,7 @@ Make email better.
 
 - **Speak updates** via `say()` if voice is enabled
 - **Notify parent** via `notify()` if you have a parent session
+- **Ping siblings/workers politely** via `msg_send(to, text, kind)` for routine peer updates — it queues into a file inbox and injects only when their box is empty (≤60s), so it never clobbers a draft. Reserve `session_send` for when you must drive a session right now. Workers may also report back this way, so check `msg_inbox()` for anything pending.
 - **Escalate to user** via `email_send()` / `quo_send()` for cross-device push when voice isn't enough
 - **Be concise** — status updates, not novels
 
