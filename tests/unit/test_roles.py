@@ -6,10 +6,12 @@ import pytest
 
 from agentwire.roles import (
     INTRINSIC_ETIQUETTE,
+    SAFETY_RAIL_KINDS,
     RoleConfig,
     MergedRole,
     parse_role_file,
     merge_roles,
+    derive_session_kind,
     discover_role,
     inject_soul,
     load_roles,
@@ -210,29 +212,30 @@ class TestInjectSoul:
 
 # --- resolve_roles: the one greppable resolver (#309) ---
 
-class TestResolveRoles:
+class TestResolveRolesZeroConfig:
     def test_intrinsic_etiquette_is_the_zero_config_default(self):
         # Zero-config: each verb's kind yields exactly its intrinsic etiquette.
         assert resolve_roles("orchestrator") == ["orchestrator"]
         assert resolve_roles("worktree-session") == ["worktree-session"]
         assert resolve_roles("worker") == ["worker"]
 
+
+class TestResolveRolesPersona:
+    """orchestrator (and kind=None) — replaceable persona: --roles > project > intrinsic."""
+
     def test_cli_roles_replace_intrinsic(self):
-        # User owns the list — orchestrator etiquette is NOT forced on top.
+        # User owns the list — orchestrator persona is NOT forced on top.
         assert resolve_roles("orchestrator", cli_roles=["gh-issues"]) == ["gh-issues"]
 
     def test_project_roles_replace_intrinsic(self):
-        assert resolve_roles("worktree-session", project_roles=["domain"]) == ["domain"]
+        assert resolve_roles("orchestrator", project_roles=["domain"]) == ["domain"]
 
     def test_cli_wins_over_project(self):
-        # --roles takes precedence over .agentwire.yml roles.
         assert resolve_roles("orchestrator", cli_roles=["a"], project_roles=["b"]) == ["a"]
 
-    def test_internal_callers_never_inherit_etiquette(self):
-        # council/scheduler/services pass roles → kind is not consulted, so a
-        # council session never picks up orchestrator etiquette.
+    def test_internal_callers_never_inherit_orchestrator(self):
+        # council/scheduler/task sessions pass roles → orchestrator persona is replaced.
         assert resolve_roles("orchestrator", cli_roles=["council-orchestrator"]) == ["council-orchestrator"]
-        assert resolve_roles("worker", cli_roles=["task-runner"]) == ["task-runner"]
 
     def test_kind_none_no_default(self):
         assert resolve_roles(None) == []
@@ -246,10 +249,52 @@ class TestResolveRoles:
         names = inject_soul(resolve_roles("orchestrator"))
         assert names == ["orchestrator", "soul"]
 
+
+class TestResolveRolesSafetyRail:
+    """worker / worktree-session — non-overridable contract: etiquette always present, user roles STACK."""
+
+    def test_worker_etiquette_always_present_cli_stacks(self):
+        # C1: a worker pane in a configured project keeps worker etiquette.
+        assert resolve_roles("worker", cli_roles=["domain"]) == ["worker", "domain"]
+
+    def test_worker_etiquette_always_present_project_stacks(self):
+        assert resolve_roles("worker", project_roles=["domain"]) == ["worker", "domain"]
+
+    def test_worktree_session_etiquette_always_present_cli_stacks(self):
+        # C2: `worktree foo --roles domain` keeps the worktree-session contract.
+        assert resolve_roles("worktree-session", cli_roles=["domain"]) == ["worktree-session", "domain"]
+
+    def test_worktree_session_etiquette_always_present_project_stacks(self):
+        # A repo with roles: in .agentwire.yml still gets the safety contract.
+        assert resolve_roles("worktree-session", project_roles=["domain"]) == ["worktree-session", "domain"]
+
+    def test_project_and_cli_both_stack(self):
+        assert resolve_roles("worker", cli_roles=["b"], project_roles=["a"]) == ["worker", "a", "b"]
+
+    def test_intrinsic_not_duplicated(self):
+        assert resolve_roles("worker", cli_roles=["worker", "extra"]) == ["worker", "extra"]
+        assert resolve_roles("worktree-session", project_roles=["worktree-session"]) == ["worktree-session"]
+
+    def test_etiquette_survives_even_a_task_runner_role(self):
+        # Scheduler worktree dispatch: task-runner stacks ON worktree-session.
+        assert resolve_roles("worktree-session", cli_roles=["task-runner"]) == ["worktree-session", "task-runner"]
+
     def test_worker_etiquette_stays_voiceless(self):
-        # worker is headless → soul is NOT appended.
-        names = inject_soul(resolve_roles("worker"))
-        assert names == ["worker"]
+        # worker is headless → soul is NOT appended even after stacking.
+        assert inject_soul(resolve_roles("worker", cli_roles=["x"])) == ["worker", "x"]
+
+
+class TestDeriveSessionKind:
+    def test_explicit_kind_wins(self):
+        assert derive_session_kind(True, "worktree-session") == "worktree-session"
+        assert derive_session_kind(False, "worktree-session") == "worktree-session"
+
+    def test_branch_means_worktree_session(self):
+        # `new project/branch`, scheduler + portal worktree dispatches (C3).
+        assert derive_session_kind(True) == "worktree-session"
+
+    def test_plain_name_means_orchestrator(self):
+        assert derive_session_kind(False) == "orchestrator"
 
 
 class TestIntrinsicEtiquette:
@@ -259,6 +304,9 @@ class TestIntrinsicEtiquette:
             "worktree-session": "worktree-session",
             "worker": "worker",
         }
+
+    def test_safety_rail_kinds(self):
+        assert SAFETY_RAIL_KINDS == {"worker", "worktree-session"}
 
     def test_every_intrinsic_role_is_discoverable(self):
         for role_name in INTRINSIC_ETIQUETTE.values():

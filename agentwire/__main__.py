@@ -41,6 +41,7 @@ from .project_config import (
 )
 from .roles import (
     RoleConfig,
+    derive_session_kind,
     inject_soul,
     load_roles,
     merge_roles,
@@ -122,7 +123,7 @@ def _set_session_name_env(agent: "AgentCommand", session_name: str) -> None:
 
     Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
     / ``cmd_fork`` / scheduler-spawn paths gets this so downstream tooling
-    (notably the mission-worker damage-control rules in ``safety/_core.py``)
+    (notably the worker damage-control rules in ``safety/_core.py``)
     can identify which agentwire session the running tool is part of.
     """
     agent.env["AGENTWIRE_SESSION_NAME"] = session_name
@@ -3376,19 +3377,25 @@ def cmd_new(args) -> int:
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire new -s <name> [-p path] [-f]")
 
+    # Parse session name: project, branch, machine. Done early so the session
+    # KIND can be derived from whether a worktree is being created.
+    project, branch, machine_id = parse_session_name(name)
+
     # --- Role resolution (two distinct phases) -----------------------------
-    # Phase 1 — resolve: the session KIND is derived from the spawn verb
-    # (`agentwire new` → orchestrator; cmd_worktree passes kind explicitly).
-    # Precedence: --roles, else .agentwire.yml roles:, else the kind's
-    # intrinsic etiquette (zero-config default). All of it lives in
-    # resolve_roles — one greppable function.
-    kind = getattr(args, 'kind', 'orchestrator')
+    # Phase 1 — resolve. The session KIND is derived from the spawn verb:
+    # cmd_worktree passes kind="worktree-session" explicitly; for `new` we
+    # derive it — a project/branch name (or any worktree dispatch from the
+    # scheduler / portal) IS a worktree-session, a plain name is an
+    # orchestrator. Safety-rail kinds (worker, worktree-session) STACK their
+    # intrinsic etiquette under user roles; orchestrator is a replaceable
+    # persona. All precedence lives in resolve_roles — one greppable function.
+    kind = derive_session_kind(bool(branch), getattr(args, 'kind', None))
     roles_arg = getattr(args, 'roles', None)
     cli_roles = [r.strip() for r in roles_arg.split(",") if r.strip()] if roles_arg else None
 
     project_path_for_config = Path(path).expanduser().resolve() if path else None
     project_roles = None
-    if not cli_roles and project_path_for_config:
+    if project_path_for_config:
         existing = load_project_config(project_path_for_config)
         if existing and existing.roles:
             project_roles = existing.roles
@@ -3405,9 +3412,6 @@ def cmd_new(args) -> int:
         roles, missing = load_roles(role_names, project_path_for_config)
         if missing:
             return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
-
-    # Parse session name: project, branch, machine
-    project, branch, machine_id = parse_session_name(name)
 
     # Flag-relevance guard: --base / --pull-first only mean something when
     # `new` is creating a worktree (a project/branch name). Error loudly
@@ -4300,10 +4304,10 @@ def cmd_spawn(args) -> int:
         except RuntimeError as e:
             return _output_result(False, json_mode, f"Failed to create worktree: {e}")
 
-    # Resolve roles via the shared resolver: kind="worker" gives the worker
-    # etiquette (focus / report) as the zero-config default; --roles (or
-    # .agentwire.yml roles:) replace it. soul is a no-op for workers
-    # (headless) but kept for parity.
+    # Resolve roles via the shared resolver: kind="worker" is a SAFETY-RAIL
+    # kind — the worker etiquette (focus / report / auto-kill) is always
+    # present and non-overridable; --roles and .agentwire.yml roles: STACK on
+    # top of it. soul is a no-op for workers (headless) but kept for parity.
     cli_roles = [r.strip() for r in roles_arg.split(",") if r.strip()] if roles_arg else None
     project_cfg = load_project_config(Path(cwd))
     project_roles = project_cfg.roles if (project_cfg and project_cfg.roles) else None
@@ -4872,10 +4876,12 @@ def cmd_worktree(args) -> int:
 
     If the worktree already exists, reattaches to the existing session.
 
-    The session's KIND is "worktree-session" — its intrinsic etiquette
-    (isolation, no live-tool mutation, in-worktree verification, draft-PR +
-    notify-back) is auto-injected by resolve_roles for every dispatch. It's
-    structural, not configurable: there's no opt-out, and no templating.
+    The session's KIND is "worktree-session" — a safety-rail kind. Its
+    intrinsic etiquette (isolation, no live-tool mutation, in-worktree
+    verification, draft-PR + notify-back) is auto-injected by resolve_roles
+    for every dispatch and is non-overridable: it's always present, no
+    opt-out, no templating. `--roles` / `.agentwire.yml roles:` ADD to it,
+    they never replace it.
     """
     json_mode = getattr(args, 'json', False)
     name = args.name
@@ -10842,7 +10848,7 @@ def main() -> int:
     new_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not the primary surface): "
                                            "bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>[-restricted|-readonly], standard, worker, voice")
     # Roles
-    new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator etiquette)")
+    new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     new_parser.add_argument("--persist", action="store_true", help="Write the resolved type/--roles to .agentwire.yml (default: session-level override only)")
@@ -10899,7 +10905,7 @@ def main() -> int:
     spawn_parser.add_argument("--branch", "-b", help="Create worktree on this branch for isolated commits")
     _add_posture_harness_flags(spawn_parser)
     spawn_parser.add_argument("--type", help="Legacy fused session type (accepted, not primary): claude-bypass, claude-restricted, pi-<provider>[-restricted|-readonly]")
-    spawn_parser.add_argument("--roles", default=None, help="Comma-separated roles (replaces the default worker etiquette)")
+    spawn_parser.add_argument("--roles", default=None, help="Comma-separated roles, STACKED on top of the always-present worker etiquette")
     spawn_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     spawn_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection (no-op for the headless worker role)")
     spawn_parser.add_argument("--no-wait", action="store_true", help="Don't wait for worker to be ready (default: wait up to 30s)")
@@ -10965,7 +10971,7 @@ def main() -> int:
     wt_parser.add_argument("--project", "-p", help="Path to git repo (default: from config or cwd)")
     _add_posture_harness_flags(wt_parser)
     wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
-    wt_parser.add_argument("--roles", help="Comma-separated roles (replaces the default worktree-session etiquette)")
+    wt_parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worktree-session etiquette")
     wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     wt_parser.add_argument("--json", action="store_true", help="Output as JSON")

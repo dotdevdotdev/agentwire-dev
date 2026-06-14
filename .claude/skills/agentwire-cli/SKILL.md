@@ -41,7 +41,7 @@ agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
 # Pane commands (worker PANES inside the current session — NOT worktree
-# sessions; for parallel autonomous missions use `agentwire worktree` above)
+# sessions; for parallel autonomous work use `agentwire worktree` above)
 agentwire spawn --roles worker  # spawn worker pane
 agentwire spawn --branch name   # worker pane on an isolated worktree (still a pane)
 agentwire send --pane 1 "task"  # send to pane

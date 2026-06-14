@@ -212,6 +212,33 @@ INTRINSIC_ETIQUETTE: dict[str, str] = {
     "worker": "worker",
 }
 
+# SAFETY-RAIL kinds carry a STRUCTURAL contract that must always be present —
+# it describes what the session *is*, and dropping it is a safety regression:
+#   - worker:           focus / report / auto-kill
+#   - worktree-session: isolation / verify / draft-PR / notify
+# For these, the intrinsic etiquette is NON-OVERRIDABLE: user/project roles
+# STACK on top of it, never replace it.
+#
+# Every other kind (orchestrator) is a PERSONA: a sensible zero-config default
+# that explicit roles are free to REPLACE — that's what keeps council /
+# scheduler / task sessions clean when they pass their own roles.
+SAFETY_RAIL_KINDS: set[str] = {"worker", "worktree-session"}
+
+
+def derive_session_kind(has_branch: bool, explicit_kind: str | None = None) -> str:
+    """The session KIND for an `agentwire new` (or worktree) dispatch.
+
+    Kind is derived from what's being created, never user-configured:
+    - An explicit kind wins — ``cmd_worktree`` passes "worktree-session".
+    - Otherwise a worktree (a ``project/branch`` name, which is also how the
+      scheduler and portal dispatch worktrees) IS a worktree-session, so it
+      gets the isolation/verify/draft-PR/notify safety contract regardless of
+      entrypoint. A plain name is an orchestrator.
+    """
+    if explicit_kind:
+        return explicit_kind
+    return "worktree-session" if has_branch else "orchestrator"
+
 
 def resolve_roles(
     kind: str | None,
@@ -220,17 +247,17 @@ def resolve_roles(
 ) -> list[str]:
     """Resolve a session's role list — the ONE place role precedence lives.
 
-    One sentence: a session's roles are ``--roles``, else ``.agentwire.yml
-    roles:``, else the etiquette intrinsic to the spawn verb's KIND.
+    Two rules, by kind:
 
-    The intrinsic etiquette is the *zero-config default* — it kicks in only
-    when the user supplied no roles, replacing the old global default-role
-    scatter (a config lookup) with a value derived from the verb. When the
-    user (or an internal caller like council/scheduler/services) DOES pass
-    roles, those are the role list, verbatim — so a council session never
-    inherits orchestrator etiquette, a task-runner never inherits worker
-    etiquette, etc. No threading of ``kind`` is needed at those call sites:
-    because they pass roles, ``kind`` is simply not consulted.
+    - **Safety-rail kinds** (``worker``, ``worktree-session``): the intrinsic
+      etiquette is structural and non-overridable. Result = intrinsic +
+      project roles + cli roles, stacked and de-duplicated (etiquette always
+      first/present). ``--roles`` ADDS to the contract, never removes it.
+    - **Persona kind** (``orchestrator``, and ``kind=None``): the intrinsic
+      etiquette is just a zero-config default. Precedence ``--roles`` >
+      ``.agentwire.yml roles:`` > intrinsic — user roles REPLACE it. So a
+      council/task session that passes its own roles never inherits
+      orchestrator etiquette.
 
     This is the "resolve" phase only. ``soul`` is auto-appended *separately*
     by :func:`inject_soul` — resolve first, auto-append second, as two
@@ -238,18 +265,31 @@ def resolve_roles(
 
     Args:
         kind: Session kind ("orchestrator" | "worktree-session" | "worker"),
-            consulted only when no user roles are given. None → no default.
+            or None (treated as a persona with no default).
         cli_roles: Roles from ``--roles`` (highest-precedence user source).
         project_roles: Roles from ``.agentwire.yml roles:``.
 
     Returns:
         The resolved role list (before the soul auto-append).
     """
+    intrinsic = INTRINSIC_ETIQUETTE.get(kind) if kind else None
+
+    if kind in SAFETY_RAIL_KINDS:
+        # Non-overridable contract: etiquette always present, user roles stack.
+        roles: list[str] = [intrinsic] if intrinsic else []
+        for r in (project_roles or []):
+            if r not in roles:
+                roles.append(r)
+        for r in (cli_roles or []):
+            if r not in roles:
+                roles.append(r)
+        return roles
+
+    # Persona: replaceable default.
     if cli_roles:
         return list(cli_roles)
     if project_roles:
         return list(project_roles)
-    intrinsic = INTRINSIC_ETIQUETTE.get(kind) if kind else None
     return [intrinsic] if intrinsic else []
 
 
