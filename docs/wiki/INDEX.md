@@ -61,6 +61,12 @@ Running AgentWire across machines and exposing the portal.
 - **[Remote machines](deployment/remote-machines.md)** — SSH-based multi-machine orchestration, WSL2 setup
 - **[Remote access](deployment/remote-access.md)** — Cloudflare Tunnel + Zero Trust auth for the portal
 
+## Research
+
+Recon notes and evaluations that inform direction (not yet implemented).
+
+- **[Orchestration transport alternatives](research/orchestration-transport-alternatives.md)** — the "we don't use SSH" competitor pitch, evaluated: claims-vs-reality on faster/more-secure, and why the cheap wins are SSH `ControlMaster` multiplexing + a Tailscale mesh underlay rather than a new transport ([#297](https://github.com/dotdevdotdev/agentwire-dev/issues/297))
+
 ## Voice (TTS & STT)
 
 Tiered model: `default` (in-process Kokoro-82M, zero setup — what a fresh
