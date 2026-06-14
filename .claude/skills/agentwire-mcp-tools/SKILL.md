@@ -7,13 +7,15 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 
 **Agents running in agentwire sessions should use MCP tools instead of CLI commands.** The agentwire MCP server provides tools that wrap CLI functionality. Use these instead of `Bash: agentwire <cmd>`.
 
-## Session Management (9 tools)
+## Session Management (11 tools)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
 | `agentwire list` | `sessions_list()` |
 | `agentwire new -s name` | `session_create(name="...")` |
 | `agentwire send -s name "msg"` | `session_send(session="...", message="...")` |
+| `agentwire msg send --to name "msg"` | `msg_send(to="...", text="...", kind="note")` |
+| `agentwire msg inbox -s name` | `msg_inbox(session="...")` |
 | `agentwire output -s name` | `session_output(session="...")` |
 | `agentwire info -s name` | `session_info(session="...")` |
 | `agentwire kill -s name` | `session_kill(session="...")` |
@@ -21,6 +23,8 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire recreate -s name` | `session_recreate(session="...")` |
 | `agentwire fork -s name -t project/branch` | `session_fork(session="...", target="...")` |
 | `agentwire fork -s name -t project/branch --commit abc` | `session_fork(session="...", target="...", commit="abc")` |
+
+**`session_send` vs `msg_send`:** `session_send` pastes + Enter **immediately** — and clobbers a human's half-typed draft if the box is occupied. Use it only when you must forcibly drive a session *now*. `msg_send` is the polite path: it queues a typed message into a file inbox and the watchdog injects it only when the recipient's box is empty and the pane is safe (≤60s). For routine peer updates ("PR drafted", "picking up the footer"), prefer `msg_send`. `kind` ∈ note|done|request|escalation; `to="@all"` broadcasts to live agent sessions except you. See wiki sessions/messaging.md.
 
 **Note:** `session_create` (via `agentwire new`) records the calling session as the new session's creator — interactive prompts (permission/plan/AskUserQuestion) in the child then route back to you as `[PROMPT from ...]` messages. Answer them with `agentwire prompts answer -s <session> --expect <hash> <key>` via Bash (guarded compare-and-send), NEVER with raw `session_send_keys` — a late keystroke races the portal and can type into the child's input or abort its turn.
 

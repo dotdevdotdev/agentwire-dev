@@ -286,6 +286,53 @@ def screen_shows_live_menu(visible: str) -> bool:
     return any(rx.search(norm) for rx in _LIVE_TAIL.values())
 
 
+# A Claude Code input box is bordered by horizontal-rule lines (runs of the
+# U+2500 box-drawing char); the typed text sits between the last two rules.
+_RULE_CHAR = "─"
+_PROMPT_GLYPHS = "❯>"
+
+
+def _is_rule_line(line: str) -> bool:
+    s = line.strip()
+    return len(s) >= 10 and set(s) == {_RULE_CHAR}
+
+
+def input_box_content(visible: str) -> "str | None":
+    """The text in the Claude Code input box, or None if it can't be located.
+
+    The box is the region between the last two horizontal-rule lines; an empty
+    box holds just the prompt glyph (``❯``). Returns the content with the glyph
+    and surrounding whitespace stripped (``""`` for an empty box), or None when
+    the screen has no parseable box (busy render, a live dialog replacing the
+    box, a non-agent pane) — the conservative "defer" signal.
+    """
+    clean = ANSI_PATTERN.sub("", visible)
+    lines = clean.split("\n")
+    rules = [i for i, ln in enumerate(lines) if _is_rule_line(ln)]
+    if len(rules) < 2:
+        return None
+    box = lines[rules[-2] + 1:rules[-1]]
+    if not box:
+        return None
+    text = "\n".join(box).lstrip()
+    if text[:1] not in _PROMPT_GLYPHS:
+        return None  # no prompt glyph between the rules — not the input box
+    return text[1:].strip()
+
+
+def prompt_is_empty(target_session: str, target_pane: int = 0) -> bool:
+    """True iff the target's input box holds no uncommitted text.
+
+    The one new building block for polite messaging: detects whether a human
+    is mid-typing. Conservative by design — any non-empty content (a draft OR
+    a busy-state placeholder like "Press up to edit queued messages") and any
+    screen we can't parse as a clean empty box returns False (defer). A delayed
+    message is fine; a clobbered human draft is not.
+    """
+    content = input_box_content(_capture(f"{target_session}.{target_pane}"))
+    return content == ""
+
+
 def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[bool, str]":
     """Deliver *text* to the target pane, refusing unsafe targets.
 

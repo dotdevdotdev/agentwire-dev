@@ -92,16 +92,18 @@ def _fmt_local(iso: str) -> str:
 def cmd_limits_tick(args) -> int:
     """One watchdog pass (called by launchd every minute).
 
-    Runs the usage-limit sweep FIRST, then prompt routing (#276) — the
-    ordering guarantees a usage-limit dialog is parked before the prompt
-    sweep ever looks at the pane.
+    Runs the usage-limit sweep FIRST, then prompt routing (#276), then the
+    polite-message inbox drain (#296) — the ordering guarantees a usage-limit
+    dialog is parked before either sweep looks at the pane, and that the
+    inbox only ever delivers to panes the prompt sweep already cleared.
     """
-    from agentwire import prompt_router
+    from agentwire import inbox, prompt_router
 
     result = usage_limit.tick()
     prompts = prompt_router.tick()
+    messages = inbox.tick()
     if getattr(args, "json", False):
-        print(json.dumps({**result, "prompts": prompts}))
+        print(json.dumps({**result, "prompts": prompts, "messages": messages}))
         return 0
     if result.get("skipped"):
         print(result["skipped"])
@@ -122,6 +124,14 @@ def cmd_limits_tick(args) -> int:
     if deferred:
         print("prompts deferred: " + ", ".join(
             f"{e['session']}.{e['pane']}" for e in deferred))
+    flushed = messages.get("flushed") or []
+    msg_deferred = messages.get("deferred") or []
+    if flushed:
+        print("messages delivered: " + ", ".join(
+            f"{e['session']}×{e['delivered']}" for e in flushed))
+    if msg_deferred:
+        print("messages deferred: " + ", ".join(
+            f"{e['session']}({e['reason']})" for e in msg_deferred))
     return 0
 
 
