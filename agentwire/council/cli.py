@@ -100,7 +100,7 @@ def kill_session(name: str) -> bool:
 
 
 def send_to_session(session: str, message: str) -> None:
-    """Inject a message into a session's pane 0 (same primitive as missions)."""
+    """Inject a message into a session's pane 0."""
     from agentwire import pane_manager
 
     pane_manager.send_to_target(f"{session}.0", message, enter=True)

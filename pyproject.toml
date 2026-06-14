@@ -148,8 +148,7 @@ exclude = [
     "CLAUDE.md",
     # Build artifacts
     "dist/",
-    # Dev docs and missions
-    "docs/missions/",
+    # Dev docs
     "docs/research/",
     "docs/testing/",
     # Dev examples and scripts

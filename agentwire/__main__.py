@@ -11501,95 +11501,7 @@ def main() -> int:
     sched_report.add_argument("--json", action="store_true", help="Output JSON")
     sched_report.set_defaults(func=cmd_scheduler_report)
 
-    # === mission command group ===
-    from .missions import cli as mission_cli
     from .council import cli as council_cli
-
-    mission_parser = subparsers.add_parser(
-        "mission",
-        help="Manage agent-driven missions (issue→branch→draft PR cycles)",
-        description=(
-            "First-class auto-dispatcher: stateless orchestrators tick the GitHub "
-            "issue board, spawn worker sessions in isolated worktrees, route PR "
-            "feedback back, and gc when the PR closes. See docs/MISSIONS.md."
-        ),
-    )
-    mission_subparsers = mission_parser.add_subparsers(dest="mission_command")
-
-    # mission list
-    m_list = mission_subparsers.add_parser("list", help="List active workers + eligible issues")
-    m_list.add_argument("--json", action="store_true", help="Output JSON")
-    m_list.set_defaults(func=mission_cli.cmd_mission_list)
-
-    # mission show <N>
-    m_show = mission_subparsers.add_parser("show", help="Show one issue + dispatch + PR state")
-    m_show.add_argument("number", type=int, help="GitHub issue number")
-    m_show.add_argument("--repo", required=True, help="Repo short name (from missions config)")
-    m_show.add_argument("--json", action="store_true", help="Output JSON")
-    m_show.set_defaults(func=mission_cli.cmd_mission_show)
-
-    # mission status
-    m_status = mission_subparsers.add_parser("status", help="Per-repo summary of active + eligible")
-    m_status.add_argument("--json", action="store_true", help="Output JSON")
-    m_status.set_defaults(func=mission_cli.cmd_mission_status)
-
-    # mission spawn <N>
-    m_spawn = mission_subparsers.add_parser(
-        "spawn", help="Force-dispatch an issue, bypassing eligibility"
-    )
-    m_spawn.add_argument("number", type=int, help="GitHub issue number")
-    m_spawn.add_argument("--repo", required=True, help="Repo short name")
-    m_spawn.add_argument("--json", action="store_true", help="Output JSON")
-    m_spawn.set_defaults(func=mission_cli.cmd_mission_spawn)
-
-    # mission stall <N>
-    m_stall = mission_subparsers.add_parser("stall", help="Stop dispatch for an issue with a reason")
-    m_stall.add_argument("number", type=int, help="GitHub issue number")
-    m_stall.add_argument("--repo", required=True, help="Repo short name")
-    m_stall.add_argument("--reason", required=True, help="Reason (posted as comment)")
-    m_stall.add_argument("--json", action="store_true", help="Output JSON")
-    m_stall.set_defaults(func=mission_cli.cmd_mission_stall)
-
-    # mission resume <N>
-    m_resume = mission_subparsers.add_parser("resume", help="Re-enable an issue for dispatch")
-    m_resume.add_argument("number", type=int, help="GitHub issue number")
-    m_resume.add_argument("--repo", required=True, help="Repo short name")
-    m_resume.add_argument("--json", action="store_true", help="Output JSON")
-    m_resume.set_defaults(func=mission_cli.cmd_mission_resume)
-
-    # mission kill <N>
-    m_kill = mission_subparsers.add_parser(
-        "kill", help="Kill worker session + worktree (does NOT close the PR)"
-    )
-    m_kill.add_argument("number", type=int, help="GitHub issue number")
-    m_kill.add_argument("--repo", required=True, help="Repo short name")
-    m_kill.add_argument("--json", action="store_true", help="Output JSON")
-    m_kill.set_defaults(func=mission_cli.cmd_mission_kill)
-
-    # mission gc
-    m_gc = mission_subparsers.add_parser("gc", help="Reap sessions whose PR is merged/closed")
-    m_gc.add_argument("--json", action="store_true", help="Output JSON")
-    m_gc.set_defaults(func=mission_cli.cmd_mission_gc)
-
-    # mission tick
-    m_tick = mission_subparsers.add_parser("tick", help="Run one dispatcher tick now")
-    m_tick.add_argument("--json", action="store_true", help="Output JSON")
-    m_tick.set_defaults(func=mission_cli.cmd_mission_tick)
-
-    # mission route-feedback
-    m_route = mission_subparsers.add_parser(
-        "route-feedback", help="Run one PR-feedback router tick now"
-    )
-    m_route.add_argument("--json", action="store_true", help="Output JSON")
-    m_route.set_defaults(func=mission_cli.cmd_mission_route_feedback)
-
-    # mission init <repo>
-    m_init = mission_subparsers.add_parser(
-        "init", help="Create the agent-ready label on a repo (idempotent)"
-    )
-    m_init.add_argument("repo", help="Repo short name (from config) or owner/repo form")
-    m_init.add_argument("--json", action="store_true", help="Output JSON")
-    m_init.set_defaults(func=mission_cli.cmd_mission_init)
 
     # === limits command group (usage-limit recovery) ===
     from . import limits_cli
@@ -11871,10 +11783,6 @@ def main() -> int:
 
     if args.command == "scheduler" and getattr(args, "scheduler_command", None) is None:
         scheduler_parser.print_help()
-        return 0
-
-    if args.command == "mission" and getattr(args, "mission_command", None) is None:
-        mission_parser.print_help()
         return 0
 
     if args.command == "council" and getattr(args, "council_command", None) is None:

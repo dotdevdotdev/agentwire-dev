@@ -301,11 +301,6 @@ class AgentWireServer:
         self.app.router.add_post("/api/scheduler/start", self.api_scheduler_start)
         self.app.router.add_post("/api/scheduler/stop", self.api_scheduler_stop)
         self.app.router.add_get("/api/scheduler/output", self.api_scheduler_session_output)
-        # Mission endpoints — first-class auto-dispatcher subsystem
-        self.app.router.add_get("/api/missions/list", self.api_missions_list)
-        self.app.router.add_get("/api/missions/status", self.api_missions_status)
-        self.app.router.add_post("/api/missions/tick", self.api_missions_tick)
-        self.app.router.add_post("/api/missions/gc", self.api_missions_gc)
         # Artifact windows: upload and serve agent-generated HTML
         self.app.router.add_post("/api/artifacts/upload", self.api_artifacts_upload)
         self.app.router.add_get("/api/artifacts", self.api_artifacts_list)
@@ -4998,41 +4993,6 @@ projects:
             return web.json_response({"session": session, "output": output})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-
-    # ------------------------------------------------------------------
-    # Missions endpoints (delegate to `agentwire mission ...` CLI)
-    # ------------------------------------------------------------------
-
-    async def api_missions_list(self, request: web.Request) -> web.Response:
-        """GET /api/missions/list - active workers + eligible issues per repo."""
-        success, result = await self.run_agentwire_cmd(["mission", "list"])
-        if not success:
-            return web.json_response(result, status=500)
-        return web.json_response(result)
-
-    async def api_missions_status(self, request: web.Request) -> web.Response:
-        """GET /api/missions/status - per-repo summary + last-tick heartbeats."""
-        success, result = await self.run_agentwire_cmd(["mission", "status"])
-        if not success:
-            return web.json_response(result, status=500)
-        return web.json_response(result)
-
-    async def api_missions_tick(self, request: web.Request) -> web.Response:
-        """POST /api/missions/tick - run one dispatcher tick now.
-
-        Synchronous in the request path so the caller gets the dispatch report
-        back. Broadcasts ``mission_changed`` to all WS clients on completion
-        so other sidebar consumers can refresh.
-        """
-        success, result = await self.run_agentwire_cmd(["mission", "tick"])
-        await self.broadcast_dashboard("mission_changed", {"source": "tick"})
-        return web.json_response(result, status=200 if success else 500)
-
-    async def api_missions_gc(self, request: web.Request) -> web.Response:
-        """POST /api/missions/gc - run the worktree-janitor now."""
-        success, result = await self.run_agentwire_cmd(["mission", "gc"])
-        await self.broadcast_dashboard("mission_changed", {"source": "gc"})
-        return web.json_response(result, status=200 if success else 500)
 
     async def api_notify(self, request: web.Request) -> web.Response:
         """POST /api/notify - Receive tmux hook notifications.

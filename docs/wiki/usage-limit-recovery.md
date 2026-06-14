@@ -6,7 +6,7 @@ Deterministic recovery from the Claude Code usage-limit dialog. When a
 session hits its usage limit mid-task, Claude Code presents an interactive
 menu (`/rate-limit-options`) and the session blocks forever waiting for a
 human — a silent deadlock for any unattended surface (scheduled tasks,
-overnight queue, missions, worker panes). This subsystem detects the dialog,
+overnight queue, worker panes). This subsystem detects the dialog,
 parks the session, emails the owner, and nudges the session back to work
 after the limit resets.
 
@@ -38,7 +38,7 @@ Detection runs in two places:
 | Where | Latency | Covers |
 |-------|---------|--------|
 | ensure's completion poll (`completion.wait_for_completion_signal`) | ≤10s | scheduler + overnight dispatched tasks |
-| `agentwire limits tick` watchdog sweep over **all** tmux panes | ≤60s | everything else: missions, workers (panes 1+), interactive sessions |
+| `agentwire limits tick` watchdog sweep over **all** tmux panes | ≤60s | everything else: workers (panes 1+), interactive sessions |
 
 Both call the same module: `agentwire/usage_limit.py`.
 

@@ -8,7 +8,7 @@
 
 Damage Control is a security firewall system that protects AgentWire from dangerous operations during parallel agent execution. It intercepts tool calls (Bash, Edit, Write) via PreToolUse hooks and blocks operations matching security patterns.
 
-**Why Critical for AgentWire**: Parallel remote agent execution multiplies risk. A single `rm -rf /` in a remote session is unrecoverable. Multi-agent missions amplify the chance of catastrophic mistakes.
+**Why Critical for AgentWire**: Parallel remote agent execution multiplies risk. A single `rm -rf /` in a remote session is unrecoverable. Multi-agent execution amplifies the chance of catastrophic mistakes.
 
 ### Protection Layers
 
@@ -144,8 +144,6 @@ Paths that can be modified but not deleted:
 ```yaml
 noDeletePaths:
   - ~/.agentwire/sessions/
-  - ~/.agentwire/missions/
-  - .agentwire/mission.md
 ```
 
 Blocks: `rm`, `unlink`, `rmdir`, `shred`
@@ -224,14 +222,11 @@ zeroAccessPaths:
 
 noDeletePaths:
   - ~/.agentwire/sessions/
-  - ~/.agentwire/missions/
-  - .agentwire/mission.md
 ```
 
 Protects:
 - Credentials and API keys from any access
 - Session state from deletion
-- Mission files from accidental removal
 
 ### Remote Execution Safeguards
 
@@ -287,7 +282,7 @@ agentwire safety logs --tail 20
 agentwire safety logs --today
 
 # Show blocks for specific session
-agentwire safety logs --session mission/auth-refactor
+agentwire safety logs --session agentwire-dev/auth-refactor
 
 # Search for specific pattern
 agentwire safety logs --pattern "rm -rf"
@@ -297,7 +292,7 @@ agentwire safety logs --pattern "rm -rf"
 ```json
 {
   "timestamp": "2026-04-30T13:45:22Z",
-  "session_id": "mission/damage-control",
+  "session_id": "agentwire-dev/damage-control",
   "agent_id": "wave-2-task-1",
   "tool": "Bash",
   "command": "rm -rf /tmp/test",

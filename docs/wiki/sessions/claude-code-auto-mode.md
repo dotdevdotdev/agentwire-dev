@@ -7,8 +7,6 @@ Released March 24, 2026. Auto mode is a permission level between
 Before each tool call, a separate Claude Sonnet 4.6 classifier reviews the transcript
 and decides whether to approve or block the action automatically.
 
-See also: `../../missions/completed/feature-claude-auto-session-type.md` — original feature spec (shipped).
-
 ---
 
 ## How It Works
@@ -237,4 +235,3 @@ combination is invalid.
 - [Anthropic Engineering: Claude Code Auto Mode](https://www.anthropic.com/engineering/claude-code-auto-mode)
 - [Claude Blog: Auto Mode Announcement](https://claude.com/blog/auto-mode)
 - [Simon Willison write-up](https://simonwillison.net/2026/Mar/24/auto-mode-for-claude-code/)
-- `../../missions/completed/feature-claude-auto-session-type.md` — original feature request (archived)
