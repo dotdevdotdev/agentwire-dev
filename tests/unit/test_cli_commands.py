@@ -425,3 +425,87 @@ class TestForkRoutesThroughResolveRoles:
         # Same-dir fork has no branch → orchestrator persona; source roles win.
         assert "orchestrator" not in cap.role_names
         assert "custom" in cap.role_names
+
+
+# --- cmd_history_resume routes through resolve_roles (#316) ---
+#
+# history-resume used to copy `project_config.roles` raw, bypassing
+# resolve_roles + kind-derivation — so a zero-config resume got an empty role
+# list instead of the orchestrator etiquette a fresh `agentwire new` would.
+# A history-resume has no branch, so its kind is always "orchestrator".
+
+def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
+    """Mock tmux/history side effects and capture the resolved roles.
+
+    Returns (cap, project_dir). cap.role_names is the list cmd_history_resume
+    passes to load_roles (resolve_roles + inject_soul output).
+    """
+    from types import SimpleNamespace
+    import agentwire.__main__ as mod
+    import agentwire.history as hist
+
+    cap = _RoleCapture()
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    cfg = None
+    if project_config_roles is not None:
+        cfg = SimpleNamespace(
+            type=SimpleNamespace(value="claude-bypass", to_cli_flags=lambda: []),
+            roles=project_config_roles,
+        )
+
+    monkeypatch.setattr(mod, "load_config", lambda: {})
+    monkeypatch.setattr(mod, "load_project_config", lambda p: cfg)
+    monkeypatch.setattr(hist, "resolve_session_id", lambda sid, mid: sid)
+
+    def fake_load_roles(role_names, path):
+        cap.role_names = list(role_names)
+        return [], []
+
+    monkeypatch.setattr(mod, "load_roles", fake_load_roles)
+    monkeypatch.setattr(mod, "_notify_portal_sessions_changed", lambda *a, **k: None)
+    monkeypatch.setattr(mod.time, "sleep", lambda *a, **k: None)
+
+    def fake_run(cmd, *a, **k):
+        joined = " ".join(str(x) for x in (cmd if isinstance(cmd, list) else [cmd]))
+        if "has-session" in joined:
+            return MagicMock(returncode=1, stdout="", stderr="")  # absent → create
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    return cap, project_dir
+
+
+class TestHistoryResumeRoutesThroughResolveRoles:
+    def test_zero_config_resume_is_orchestrator(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        cap, project_dir = _patch_history_resume(
+            monkeypatch, tmp_path, project_config_roles=None
+        )
+        args = argparse.Namespace(
+            session_id="abc123", name="resumed", machine="local",
+            project=str(project_dir), json=True,
+        )
+        assert mod.cmd_history_resume(args) == 0
+        # A resume with no saved roles now gets the orchestrator default,
+        # not an empty list. Soul is auto-appended.
+        assert cap.role_names[0] == "orchestrator"
+        assert "soul" in cap.role_names
+
+    def test_saved_roles_replace_orchestrator_persona(self, monkeypatch, tmp_path):
+        import agentwire.__main__ as mod
+
+        cap, project_dir = _patch_history_resume(
+            monkeypatch, tmp_path, project_config_roles=["custom"]
+        )
+        args = argparse.Namespace(
+            session_id="abc123", name="resumed", machine="local",
+            project=str(project_dir), json=True,
+        )
+        assert mod.cmd_history_resume(args) == 0
+        # Orchestrator is a persona kind → saved roles REPLACE the default.
+        assert "orchestrator" not in cap.role_names
+        assert "custom" in cap.role_names

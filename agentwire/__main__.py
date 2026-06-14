@@ -5835,8 +5835,15 @@ def cmd_history_resume(args) -> int:
     cmd_parts = ["claude", "--resume", session_id, "--fork-session"]
     cmd_parts.extend(project_config.type.to_cli_flags())
 
-    # Load and apply roles (soul always injected for human-facing sessions)
-    role_names = inject_soul(list(project_config.roles or []), load_config())
+    # Route through resolve_roles with the derived kind so a resumed session
+    # carries its kind's intrinsic etiquette. A history-resume has no branch, so
+    # it's always an orchestrator — a zero-config resume now gets the same
+    # orchestrator etiquette a fresh `agentwire new` would, instead of an empty
+    # role list. Same contract as cmd_session_recreate/fork (#311/#315).
+    kind = derive_session_kind(False)
+    project_roles = list(project_config.roles) if project_config.roles else None
+    role_names = resolve_roles(kind, project_roles=project_roles)
+    role_names = inject_soul(role_names, load_config())
     if role_names:
         roles, missing = load_roles(role_names, project_path)
         if not missing and roles:
