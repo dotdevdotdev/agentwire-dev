@@ -153,4 +153,4 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 
 ## Issue tracking
 
-How work on this repo is tracked is a contributor preference, not something agentwire ships — the convention lives outside the codebase in `~/.claude/rules/project-tracking.md` (GitHub issues as source of truth, breadcrumb-as-issue-comment at PR-open, `Closes #N` in the PR body). Post-ship reference content (concepts, architecture, troubleshooting) belongs in `docs/wiki/`.
+How work is tracked is a contributor preference, not something agentwire ships — the product imposes no PM mandate. For *this* repo, the convention is GitHub issues as the source of truth, with `Closes #N` in the PR body to link and auto-close. If you keep cross-repo tracking preferences in `~/.claude/rules/project-tracking.md`, those govern your own workflow and override this. Post-ship reference content (concepts, architecture, troubleshooting) belongs in `docs/wiki/`.
