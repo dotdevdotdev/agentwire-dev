@@ -84,7 +84,7 @@ Homepage = "https://agentwire.dev"
 Repository = "https://github.com/dotdevdotdev/agentwire-dev"
 Documentation = "https://agentwire.dev"
 Issues = "https://github.com/dotdevdotdev/agentwire-dev/issues"
-Changelog = "https://github.com/dotdevdotdev/agentwire-dev/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/dotdevdotdev/agentwire-dev/releases"
 
 [build-system]
 requires = ["hatchling"]
@@ -113,7 +113,6 @@ include = [
     # Top-level docs to ship in wheel
     "LICENSE",
     "README.md",
-    "CHANGELOG.md",
 ]
 artifacts = [
     "agentwire/hooks/**/*.py",

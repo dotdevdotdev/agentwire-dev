@@ -2,18 +2,18 @@
 
 This project publishes the CLI and web app to PyPI as `agentwire-dev`. Packaging uses Hatchling via `pyproject.toml`.
 
-Every release does **both** a PyPI publish and a GitHub release.
+Every release does **both** a PyPI publish and a GitHub release. The **GitHub release is the changelog** — there is no `CHANGELOG.md`; release notes are built from the commits since the last tag (step 5).
 
 ## Steps
 
 ### 1. Bump version
 
-Edit `agentwire/__init__.py` and update `__version__`. Add an entry to `CHANGELOG.md`.
+Edit `agentwire/__init__.py` and update `__version__`.
 
 ### 2. Commit and push
 
 ```bash
-git add agentwire/__init__.py CHANGELOG.md
+git add agentwire/__init__.py
 git commit -m "chore: bump version to {VERSION}"
 git push
 ```
