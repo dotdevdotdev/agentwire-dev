@@ -233,7 +233,7 @@ agentwire kill --pane 1           # Kill worker
 
 ```bash
 agentwire say "Hello"             # TTS (auto-routes to browser)
-agentwire alert "Done"            # Text notification (no audio)
+agentwire send -s NAME "Done"     # Inject text into a session
 agentwire listen start/stop       # Voice recording
 agentwire voiceclone list         # Custom voices
 ```

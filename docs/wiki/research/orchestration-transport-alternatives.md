@@ -1,6 +1,8 @@
 # Orchestration transport alternatives: do we need a non-SSH transport?
 
 > Research note for [#297](https://github.com/dotdevdotdev/agentwire-dev/issues/297). Investigates the "we don't use SSH — we use something faster/more secure" pitch from competing agent-orchestration tools, separates real engineering from marketing, and recommends what (if anything) AgentWire should adopt. **This is a recon report, not a transport rewrite.**
+>
+> **Update (shipped):** cheap win #1 below is now implemented — `agentwire/ssh.py::ssh_base_opts()` supplies `ControlMaster`/`ControlPersist` multiplexing and is wired into every remote call site (`agents/tmux.py`, `tunnels.py`, `server.py`, `projects.py`). The present-tense "no `ControlMaster` anywhere / fresh process per command" baseline below describes the pre-#297 state and is kept for historical context.
 
 ## TL;DR — Recommendation (b): cheap hardening, no transport change
 

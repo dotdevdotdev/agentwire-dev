@@ -13,11 +13,11 @@ The portal uses a left sidebar with a floating tab handle instead of hover hotzo
 - **Tab handle**: floating 20×40px button on left edge, rides sidebar when open, chevron flips direction
 - **Header**: connection status dot, session count, clock, pin toggle
 - **Open Windows section**: lists currently-open windows (drag to reorder, click to focus, × to close). Persisted in `localStorage['taskbar-state']` — restores on refresh.
-- **Accordion sections**: Sessions, Services, Machines, Projects, Artifacts, Scheduler, Workflows, Safety, Config. Click header to expand/collapse. Data fetched on first expand.
+- **Accordion sections**: Sessions, Services, Machines, Projects, Artifacts, Scheduler, Safety, Config. Click header to expand/collapse. Data fetched on first expand.
 - **Footer**: global PTT button, voice indicator
 
 **Session grouping:** Sessions are split into two accordion sections based on the name:
-- **Services**: infrastructure sessions. The built-in allowlist in `sessions-section.js` (`agentwire-portal`, `agentwire-tts`, `agentwire-stt`, `agentwire-scheduler`, `agentwire-notifications`) is merged at load time with config-defined custom services fetched from `/api/services/custom` (driven by `services.custom` in `config.yaml`). When the fetch resolves, `notifyListeners()` re-renders so flagged sessions hop into this column.
+- **Services**: infrastructure sessions. The built-in allowlist in `service-classification.js` (`agentwire-portal`, `agentwire-tts`, `agentwire-stt`, `agentwire-scheduler`, `agentwire-notifications`) is merged at load time with config-defined custom services fetched from `/api/services/custom` (driven by `services.custom` in `config.yaml`). When the fetch resolves, `notifyListeners()` re-renders so flagged sessions hop into this column.
 - **Sessions**: everything else (working sessions, worktrees, remote sessions)
 
 Both share session data from `sessions-section.js` (single fetch, shared activity state, pub-sub via `onSessionsChanged`).

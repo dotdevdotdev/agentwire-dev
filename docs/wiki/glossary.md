@@ -86,7 +86,7 @@ An SSH or Cloudflare Tunnel that exposes a local agentwire service (TTS server, 
 
 ## V — Voice
 
-A TTS reference WAV (10–30 s) stored in `~/.agentwire/voices/`. Selected per-session via `voice:` in project config or per-call via `--voice`. The `default` voice is used when nothing is specified. → [Self-hosted TTS](tts/tts-self-hosted.md#voices).
+A TTS reference WAV (10–30 s) stored in `~/.agentwire/voices/`. Selected per-session via `voice:` in project config or per-call via `--voice`. The `default` voice is used when nothing is specified. → [Self-hosted TTS](voice/tts-self-hosted.md#voices).
 
 ## W — Worker
 
