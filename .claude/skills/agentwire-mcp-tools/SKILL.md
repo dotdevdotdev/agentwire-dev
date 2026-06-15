@@ -162,11 +162,12 @@ up|down`) — the MCP surface is read-only introspection.
 | `agentwire overnight priority id n` | `overnight_priority(item_id="...", priority=N)` |
 | `agentwire overnight report` | `overnight_report()` |
 
-## Desktop/Portal UI (10 tools)
+## Desktop/Portal UI (12 tools)
 
 | Action | MCP Tool |
 |--------|----------|
 | List open windows | `desktop_windows_list()` |
+| Preview windows in a collage overlay | `desktop_collage()` |
 | Open session window | `desktop_open_session(session="...", mode="monitor")` |
 | Open panel | `desktop_open_panel(panel_type="sessions")` |
 | Open artifact window (URL/file) | `desktop_open_artifact(url="...", title="...")` |
@@ -178,7 +179,7 @@ up|down`) — the MCP surface is read-only introspection.
 | Minimize all | `desktop_minimize_all()` |
 | Multi-window layout | `desktop_layout(windows=[{id: "...", zone: "left"}])` |
 
-**~85 tools total** (sessions, panes, voice, tasks, channels, scheduler, overnight queue, desktop UI, handoffs). When to use CLI vs MCP:
+**~98 tools total** (sessions, panes, voice, tasks, channels, scheduler, overnight queue, desktop UI, handoffs). When to use CLI vs MCP:
 - **MCP tools** — Agents in sessions (orchestrators, workers)
 - **CLI commands** — Humans, shell scripts, automation outside of agent sessions
 

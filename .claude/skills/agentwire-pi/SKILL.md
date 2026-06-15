@@ -162,9 +162,9 @@ Role tool names are translated Claude CamelCase → pi lowercase, then filtered 
 | `Edit` | `edit` |
 | `Write` | `write` |
 | `Grep` | `grep` |
-| `Glob` / `LS` | `find` / `ls` |
+| `LS` | `ls` |
 
-Unsupported Claude tools (`WebFetch`, `Task`, `TodoWrite`, MCP tools, etc.) are silently filtered. Roles with a `disallowed` list have no effect on pi (only whitelist supported).
+Translation is lowercase-then-filter against pi's supported set `{read, bash, edit, write, grep, find, ls}` (`__main__.py:252`) — there is no name remapping. So `Glob` lowercases to `glob`, which isn't in the set, and is **dropped** (not remapped to `find`). Other unsupported Claude tools (`WebFetch`, `Task`, `TodoWrite`, MCP tools, etc.) are silently filtered the same way. Roles with a `disallowed` list have no effect on pi (only whitelist supported).
 
 ## Limitations vs Claude Code
 

@@ -186,6 +186,7 @@ Environment variables use `${ENV_VAR}` syntax (expanded at runtime).
 | 4 | Pre-phase failure (command failed, `required` empty, `validate` failed, `starting_ref` not found) |
 | 5 | Timeout (hard timeout exceeded) |
 | 6 | Session error (couldn't create or connect) |
+| 7 | Usage limit (`usage_limit` — session parked awaiting reset; scheduler skips dispatch) |
 
 ---
 

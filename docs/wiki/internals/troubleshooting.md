@@ -421,14 +421,15 @@ ls ~/.agentwire/tasks/
 rm ~/.agentwire/tasks/session-name.json
 ```
 
-### `agentwire alert` vs `agentwire say`
+### Text vs voice notifications
 
 | Command | Audio | Use Case |
 |---------|-------|----------|
 | `agentwire say` | Yes (TTS) | User-facing messages, completion announcements |
-| `agentwire alert` | No (text only) | Background notifications, idle status updates |
+| `agentwire msg send` | No (text only) | Polite peer report-back, dropped into the recipient's inbox |
+| `agentwire notify-parent --to` | No (text only) | Worker → orchestrator status, injected as text |
 
-Idle hooks use `alert` to avoid audio spam when multiple panes go idle.
+Idle hooks route text alerts to the orchestrator (no audio) to avoid spam when multiple panes go idle.
 
 ---
 

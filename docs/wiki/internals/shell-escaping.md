@@ -90,19 +90,20 @@ cmd = f'claude --append-system-prompt "$(<{prompt_file.name})"'
 
 ## Implementation Details
 
-Current implementation in `_build_agent_command_env()` (line 154-162 of `__main__.py`):
+Current implementation in `build_agent_command()` (`__main__.py`, e.g. the Claude path around line 309):
 
 ```python
 if merged.instructions:
-    # Write prompt to temp file and read via $(<file) to handle long prompts
-    # This avoids issues with command line length limits and escaping
-    import tempfile
-    prompt_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-    prompt_file.write(merged.instructions)
-    prompt_file.close()
-    env["AGENT_SYSTEM_PROMPT_FILE"] = prompt_file.name
-    env["AGENT_SYSTEM_PROMPT_FLAG"] = f'--append-system-prompt "$(<{prompt_file.name})"'
+    # Write to temp file to avoid shell escaping issues
+    # MUST be last flag — multiline content can break subsequent args
+    f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    f.write(merged.instructions)
+    f.close()
+    temp_file = f.name
+    parts.append(f'--append-system-prompt "$(<{temp_file})"')
 ```
+
+The temp file path is returned on `AgentCommand.temp_file` so the caller can clean it up after the agent starts. The pi path (around line 264) uses the same `$(<file)` technique with the combined global + role prompt.
 
 ---
 

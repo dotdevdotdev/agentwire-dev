@@ -43,7 +43,6 @@ agentwire machine remove <id>
 This:
 - Removes from `machines.json`
 - Kills active SSH tunnel
-- Cleans entries from `rooms.json`
 - Prints reminders for manual cleanup (SSH config, deploy keys, etc.)
 
 ### Portal UI
@@ -282,8 +281,8 @@ ssh my-server
 cd ~/.agentwire/machine
 claude  # gets both global prefs and machine context
 
-# Or spawn via agentwire from the Mac
-agentwire new -s my-server-ops --machine my-server -p ~/.agentwire/machine
+# Or spawn via agentwire from the Mac (remote target is the @machine suffix)
+agentwire new -s my-server-ops@my-server -p ~/.agentwire/machine
 ```
 
 ### What to Put in `~/.agentwire/machine/CLAUDE.md`

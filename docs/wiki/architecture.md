@@ -31,7 +31,7 @@ Three surfaces, one source of truth.
 ```
 ┌──────────────────────────────┐  ┌──────────────────────────────┐
 │  Humans / scripts            │  │  Agents inside sessions      │
-│    agentwire <cmd>           │  │    MCP tools (87 of them)    │
+│    agentwire <cmd>           │  │    MCP tools (~98 of them)   │
 └─────────────┬────────────────┘  └─────────────┬────────────────┘
               │                                 │
               ▼                                 ▼
@@ -75,9 +75,9 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 ├── damage-control/          # OPTIONAL user override for security rules
 ├── apps/, artifacts/        # agent-generated UIs and HTML artifacts
 ├── locks/                   # session mutexes (acquired by `agentwire ensure`)
-├── queues/                  # overnight queue items
-├── sessions/                # SDK session transcripts (REPL persistence)
-├── sdk-sessions/            # SDK conversation forks
+├── overnight/               # overnight queue items
+├── sessions/                # per-session metadata.json
+├── usage-limit/             # usage-limit recovery park state
 ├── tasks/                   # ensure-task summary files
 ├── tooldefs/                # tool definitions for damage-control ask-patterns
 ├── tunnels/                 # SSH tunnel state
@@ -151,7 +151,7 @@ Two execution paths for non-interactive work:
                           agentwire ensure
                           (tmux + Claude)
 
-                ┌── ~/.agentwire/queues/  (overnight prepare) ──┐
+                ┌── ~/.agentwire/overnight/  (overnight prepare) ┐
                 │  human prepares interactively → sessionId     │
                 └──────────────┬────────────────────────────────┘
                                ▼
