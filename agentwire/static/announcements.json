@@ -1,6 +1,24 @@
 {
   "announcements": [
     {
+      "id": "2026-06-worktree-sessions",
+      "placement": "modal",
+      "emoji": "🌳",
+      "title": "Parallel agents, each on their own branch",
+      "date": "2026-06-15",
+      "body": "Worktree sessions are now a first-class primitive. `agentwire worktree <name>` spins up an isolated git worktree on a fresh branch with its own standalone session — so you can fan out several autonomous agents at once without them stepping on each other. The base branch is derived from your repo (no hardcoded main), names follow templates, monorepos work, and a local branch↔session registry lets you list, remove, and prune them. Best part: each session knows its own etiquette. The spawn verb sets the posture, so a worktree agent automatically gets the isolation / verify-in-worktree / draft-PR / notify-back safety contract — your first prompt only needs the task.",
+      "highlights": [
+        "agentwire worktree <name> — isolated branch + worktree + standalone session",
+        "Repo-derived base branch, naming templates, monorepo support",
+        "Etiquette comes from the spawn verb — agents self-isolate and report back",
+        "Branch↔session registry: --list / --remove / --prune"
+      ],
+      "cta": {
+        "label": "What's new in v1.38",
+        "url": "https://github.com/dotdevdotdev/agentwire-dev/releases/tag/v1.38.0"
+      }
+    },
+    {
       "id": "2026-06-window-sizing-fix",
       "placement": "modal",
       "emoji": "🪟",
