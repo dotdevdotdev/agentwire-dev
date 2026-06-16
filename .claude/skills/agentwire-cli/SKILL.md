@@ -92,7 +92,9 @@ agentwire services down <name>  # stop AND keep stopped (watchdog won't respawn)
 
 # TTS/STT servers
 agentwire tts start|stop|status # TTS server management
-agentwire stt start|stop|status # STT server management
+agentwire stt start|stop|status # STT server management (host shim on :8101)
+agentwire stt start             # engine from stt.engine (auto|moonshine|whisper); moonshine = fast CPU
+agentwire stt start --backend moonshine --model moonshine/base --port 8101  # ad-hoc overrides
 
 # Voice
 agentwire say "text"            # speak (auto-routes to browser or local)
@@ -121,7 +123,11 @@ agentwire msg flush -s name                  # attempt a drain now (still gated 
                                 # `msg` NEVER clobbers a human's draft — unlike `send`, which
                                 # pastes + Enter immediately. Use `send` only to forcibly drive a session now.
 
-agentwire listen start|stop|cancel  # voice recording
+agentwire listen start|stop|cancel  # host voice recording (needs stt.backend: custom + the :8101 shim)
+agentwire listen stop -s name   # transcribe + send to a tmux session (default)
+agentwire listen stop --type    # transcribe + type at cursor (Hammerspoon paste)
+agentwire listen stop --stdout  # transcribe + print raw transcript to stdout, no paste/send
+                                #   (scripting hook — Hammerspoon etc. capture $())
 
 # Voice cloning
 agentwire voiceclone start      # start recording voice sample

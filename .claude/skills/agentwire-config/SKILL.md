@@ -83,7 +83,9 @@ stt:
   engine: "auto"      # ENGINE (which model the self-hosted shim loads): auto | moonshine |
                       # whisper. Orthogonal to backend — used only by `agentwire stt start/serve`.
                       # `{backend: custom, engine: whisper}` = boot shim AND run faster-whisper.
-  url: "http://localhost:8101"  # custom tier only — shim endpoint
+  moonshine_model: "moonshine/base"  # moonshine engine only — ONNX model id (moonshine/tiny | moonshine/base)
+  model: "base"       # whisper engine only — faster-whisper/openai-whisper model (tiny → large-v3)
+  url: "http://localhost:8101"  # custom tier only — shim endpoint (also the `agentwire stt` port)
   cloud:  # cloud tier only — all fields optional, defaults shown
     base_url: "https://api.openai.com/v1"  # any OpenAI-compatible endpoint (Groq, Mistral, speaches, ...)
     model: "gpt-4o-mini-transcribe"

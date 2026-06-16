@@ -205,13 +205,16 @@ def start_recording() -> int:
     return 0
 
 
-def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool = False) -> int:
+def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool = False,
+                   transcribe_only: bool = False) -> int:
     """Stop recording, transcribe, and send to session or type at cursor.
 
     Args:
-        session: Target tmux session (ignored if type_at_cursor=True)
-        voice_prompt: Prepend voice prompt hint (ignored if type_at_cursor=True)
+        session: Target tmux session (ignored if type_at_cursor/transcribe_only)
+        voice_prompt: Prepend voice prompt hint (ignored if type_at_cursor/transcribe_only)
         type_at_cursor: If True, type text at cursor instead of sending to session
+        transcribe_only: If True, print the raw transcript to stdout and return,
+            without typing at cursor or sending to a tmux session
     """
     log("stop_recording called")
 
@@ -299,6 +302,16 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
         return 1
 
     log(f"Transcribed: {text}")
+
+    if transcribe_only:
+        # Print the raw transcript to stdout for scripting (e.g. Hammerspoon),
+        # no pasting and no tmux send. stdout carries only the transcript;
+        # log() goes to the debug file and notify()/beep() are out-of-band.
+        beep("done")
+        notify(f"Transcribed: {text[:30]}...")
+        print(text)
+        AUDIO_FILE.unlink(missing_ok=True)
+        return 0
 
     if type_at_cursor:
         # Type at cursor using Hammerspoon
