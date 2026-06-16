@@ -81,6 +81,15 @@ def start_recording() -> int:
     """Start recording audio for voice cloning."""
     log("start_recording called")
 
+    # Voice cloning requires a custom TTS shim — fail before the user talks for 10s.
+    if not is_custom_backend():
+        beep("error")
+        log("ERROR: voice cloning requires tts.backend: custom")
+        notify("Voice cloning requires a custom TTS shim")
+        print("Error: voice cloning requires tts.backend: custom with a shim that "
+              "supports POST /voices/{name}. See docs/wiki/voice/shim-contract.md.")
+        return 1
+
     # Clean up any stale recording
     subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-voiceclone"],
                    capture_output=True)
@@ -214,16 +223,6 @@ def stop_recording(voice_name: str) -> int:
     def cleanup():
         AUDIO_FILE.unlink(missing_ok=True)
         upload_file.unlink(missing_ok=True)
-
-    # Voice cloning requires a custom TTS shim
-    if not is_custom_backend():
-        beep("error")
-        log("ERROR: voice cloning requires tts.backend: custom")
-        notify("Voice cloning requires a custom TTS shim")
-        print("Error: voice cloning requires tts.backend: custom with a shim that "
-              "supports POST /voices/{name}. See docs/wiki/voice/shim-contract.md.")
-        cleanup()
-        return 1
 
     tts_url = get_tts_url()
     try:
