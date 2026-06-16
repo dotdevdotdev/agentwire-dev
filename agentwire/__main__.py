@@ -11727,9 +11727,16 @@ def main() -> int:
     )
     council_subparsers = council_parser.add_subparsers(dest="council_command")
 
+    # Targeting is shared: --name picks the sitting; absent, the cwd-repo-slug
+    # if it matches a live sitting, else the sole live sitting, else error.
+    _name_help = "Sitting name (default: cwd-repo-slug / sole live sitting)"
+
     # council start
     c_start = council_subparsers.add_parser(
         "start", help="Start a sitting: orchestrator + all soul sessions"
+    )
+    c_start.add_argument(
+        "--name", help="Sitting name (default: cwd-repo-slug)"
     )
     c_start.add_argument(
         "--roster", help="Comma-separated lens names (default: full bundled roster)"
@@ -11746,6 +11753,7 @@ def main() -> int:
     c_stop = council_subparsers.add_parser(
         "stop", help="Kill the sitting's sessions (prompt history kept)"
     )
+    c_stop.add_argument("--name", help=_name_help)
     c_stop.add_argument("--json", action="store_true", help="Output JSON")
     c_stop.set_defaults(func=council_cli.cmd_council_stop)
 
@@ -11753,14 +11761,23 @@ def main() -> int:
     c_status = council_subparsers.add_parser(
         "status", help="Sitting state, session liveness, open prompts"
     )
+    c_status.add_argument("--name", help=_name_help)
     c_status.add_argument("--json", action="store_true", help="Output JSON")
     c_status.set_defaults(func=council_cli.cmd_council_status)
+
+    # council list
+    c_list = council_subparsers.add_parser(
+        "list", help="Every known sitting: name, cwd, age, live sessions, prompts"
+    )
+    c_list.add_argument("--json", action="store_true", help="Output JSON")
+    c_list.set_defaults(func=council_cli.cmd_council_list)
 
     # council ask
     c_ask = council_subparsers.add_parser(
         "ask", help="Fan a prompt out to every soul in the sitting"
     )
     c_ask.add_argument("prompt", nargs="?", help="Prompt text (or --file / stdin)")
+    c_ask.add_argument("--name", help=_name_help)
     c_ask.add_argument("--file", help="Read prompt text from a file")
     c_ask.add_argument("--json", action="store_true", help="Output JSON")
     c_ask.set_defaults(func=council_cli.cmd_council_ask)
@@ -11769,6 +11786,7 @@ def main() -> int:
     c_collect = council_subparsers.add_parser(
         "collect", help="Wait for every soul's take/ack/pass (or timeout)"
     )
+    c_collect.add_argument("--name", help=_name_help)
     c_collect.add_argument("--prompt", type=int, help="Prompt id (default: latest)")
     c_collect.add_argument(
         "--timeout", type=float, default=120, help="Soft timeout in seconds (default: 120)"
@@ -11783,6 +11801,7 @@ def main() -> int:
     c_reply = council_subparsers.add_parser(
         "reply", help="File a soul's reply: --take / --ack / --pass"
     )
+    c_reply.add_argument("--name", help=_name_help)
     c_reply.add_argument("--prompt", type=int, help="Prompt id (default: latest)")
     c_reply.add_argument(
         "--take", action="store_true", help="Substantive take (text required)"

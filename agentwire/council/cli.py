@@ -4,6 +4,15 @@ Argparse wiring lives in ``agentwire/__main__.py``; handlers receive an
 ``argparse.Namespace`` and return an exit code. Every handler supports
 ``--json`` so the MCP layer can shell out and parse structured output.
 
+Sittings are **namespaced by ``<name>``** (``agentwire/council/state.py``), so
+independent councils run concurrently. Targeting, every command:
+
+    explicit ``--name`` → else cwd-repo-slug *if it matches a live sitting*
+    → else the sole live sitting → else error + list candidates.
+
+The system auto-picks only when unambiguous; it refuses (never guesses by
+recency) otherwise, and **every command echoes which sitting it acted on**.
+
 Subcommands:
 
 - ``start``   — spin up the orchestrator + lens soul sessions (a *sitting*)
@@ -12,6 +21,7 @@ Subcommands:
 - ``ask``     — fan a prompt out to every soul (creates the inbox first)
 - ``collect`` — block until every soul has filed take/ack/pass, or timeout
 - ``reply``   — file a soul's reply (souls run this via Bash)
+- ``list``    — every live/known sitting, oldest-first
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import time
+from datetime import datetime, timezone
 from typing import Any
 
 from agentwire.council import inbox, state
@@ -27,10 +37,27 @@ from agentwire.council import inbox, state
 # --- output helpers -----------------------------------------------------------
 
 
-def _emit(args, payload: dict[str, Any], human: str = "", exit_code: int = 0) -> int:
+def _emit(
+    args,
+    payload: dict[str, Any],
+    human: str = "",
+    exit_code: int = 0,
+    council: str | None = None,
+    echo_suffix: str = "",
+) -> int:
+    """Emit JSON or human output, echoing which sitting was acted on.
+
+    ``council`` is the resolved sitting name — non-negotiable to surface:
+    targeting you can't see is targeting you can't trust.
+    """
+    if council is not None:
+        payload = {"council": council, **payload}
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, default=str))
     elif human:
+        if council is not None:
+            suffix = f" {echo_suffix}" if echo_suffix else ""
+            print(f"→ council '{council}'{suffix}")
         print(human)
     return exit_code
 
@@ -64,15 +91,16 @@ def list_live_sessions() -> set[str]:
     return {s.get("name", "") for s in sessions if isinstance(s, dict)} - {""}
 
 
-def create_session(name: str, roles: list[str], session_type: str, model: str | None) -> None:
-    """Create one council session via ``agentwire new`` in the shared workspace.
-
-    Raises ``RuntimeError`` on failure.
+def create_session(
+    name: str, roles: list[str], session_type: str, model: str | None, cwd: str
+) -> None:
+    """Create one council session via ``agentwire new`` in the sitting's
+    workspace. Raises ``RuntimeError`` on failure.
     """
     cmd = [
         "agentwire", "new",
         "-s", name,
-        "-p", str(state.WORKSPACE_DIR),
+        "-p", cwd,
         "--roles", ",".join(roles),
         "--type", session_type,
         "--allow-shared-dir",
@@ -132,18 +160,106 @@ def current_session() -> str | None:
     return pane_manager.get_current_session()
 
 
+# --- targeting / resolution -----------------------------------------------------
+
+
+def live_sitting_names(live: set[str]) -> list[str]:
+    """Names whose orchestrator session is alive in ``live``."""
+    out = []
+    for name in state.list_sittings():
+        sitting = state.read_sitting(name)
+        if sitting is not None and sitting.orchestrator in live:
+            out.append(name)
+    return out
+
+
+def resolve_name(args) -> tuple[str | None, str | None]:
+    """Resolve which sitting an operate-on command targets.
+
+    Returns ``(name, error)``; exactly one is non-None. Order: explicit
+    ``--name`` → cwd-slug if it matches a live sitting → the sole live sitting
+    → else error (0 = none here; N = ambiguous, list the names). Never guesses
+    by recency. Liveness of an explicit ``--name`` is the caller's check.
+    """
+    explicit = getattr(args, "name", None)
+    if explicit:
+        if not state.valid_name(explicit):
+            return None, f"invalid council name: {explicit!r}"
+        return explicit, None
+
+    live_names = live_sitting_names(list_live_sessions())
+    cwd_slug = state.default_name()
+    if cwd_slug in live_names:
+        return cwd_slug, None
+    if len(live_names) == 1:
+        return live_names[0], None
+    if not live_names:
+        return None, "no council for this repo — run 'agentwire council start'"
+    return None, (
+        "multiple councils live — disambiguate with --name: "
+        + ", ".join(sorted(live_names))
+    )
+
+
+# --- first-run legacy zombie sweep ----------------------------------------------
+
+
+def _sweep_legacy_once() -> list[str]:
+    """Tear down the pre-namespace global layout, exactly once.
+
+    Pre-namespace, the council was a singleton: orchestrator ``agentwire-council``,
+    lens sessions ``council-<lens>``, a global ``~/.agentwire/council/sitting.json``
+    + ``workspace/``. After upgrade those panes keep burning tokens invisibly —
+    this exact zombie state has been hit live. Kill them and remove the orphaned
+    global state; ``prompts/`` history is kept. Marker-guarded so it runs once.
+    """
+    marker = state.COUNCIL_ROOT / ".namespaced"
+    if marker.exists():
+        return []
+
+    legacy_sitting = state.COUNCIL_ROOT / "sitting.json"
+    targets: set[str] = {"agentwire-council"}
+    targets.update(f"council-{lens}" for lens in state.DEFAULT_ROSTER)
+    if legacy_sitting.exists():
+        try:
+            data = json.loads(legacy_sitting.read_text())
+            if isinstance(data, dict):
+                targets.update(
+                    v for v in data.get("sessions", {}).values() if isinstance(v, str)
+                )
+                orch = data.get("orchestrator")
+                if isinstance(orch, str):
+                    targets.add(orch)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    live = list_live_sessions()
+    killed = [t for t in sorted(targets) if t and t in live and kill_session(t)]
+
+    for orphan in (legacy_sitting, state.COUNCIL_ROOT / "workspace" / ".agentwire.yml"):
+        try:
+            orphan.unlink()
+        except (FileNotFoundError, OSError):
+            pass
+
+    state.COUNCIL_ROOT.mkdir(parents=True, exist_ok=True)
+    marker.write_text(state.now_iso())
+    return killed
+
+
 # --- workspace ------------------------------------------------------------------
 
 
-def _write_workspace(session_type: str) -> None:
-    """Workspace dir all council sessions run in.
+def _write_workspace(name: str, session_type: str) -> None:
+    """Workspace dir the sitting's sessions run in.
 
-    ``parent: agentwire-council`` routes any ``agentwire notify`` from a soul
-    to the orchestrator for free.
+    ``parent: agentwire-council-<name>`` routes any ``agentwire notify`` from a
+    soul to the sitting's own orchestrator for free.
     """
-    state.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    (state.WORKSPACE_DIR / ".agentwire.yml").write_text(
-        f"type: {session_type}\nparent: {state.ORCHESTRATOR_SESSION}\n"
+    ws = state.workspace_dir(name)
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / ".agentwire.yml").write_text(
+        f"type: {session_type}\nparent: {state.orchestrator_for(name)}\n"
     )
 
 
@@ -151,6 +267,13 @@ def _write_workspace(session_type: str) -> None:
 
 
 def cmd_council_start(args) -> int:
+    _sweep_legacy_once()
+
+    explicit = getattr(args, "name", None)
+    name = explicit or state.default_name()
+    if not state.valid_name(name):
+        return _emit_error(args, f"invalid council name: {name!r}")
+
     roster_arg = getattr(args, "roster", None)
     roster = (
         [r.strip() for r in roster_arg.split(",") if r.strip()]
@@ -161,119 +284,141 @@ def cmd_council_start(args) -> int:
         if not state.valid_lens(lens):
             return _emit_error(args, f"invalid lens name: {lens!r}")
 
-    sitting = state.read_sitting()
-    if sitting is not None:
+    orchestrator = state.orchestrator_for(name)
+
+    existing = state.read_sitting(name)
+    if existing is not None:
         live = list_live_sessions()
-        still_up = [s for s in (*sitting.sessions.values(), sitting.orchestrator) if s in live]
+        still_up = [
+            s for s in (*existing.sessions.values(), existing.orchestrator) if s in live
+        ]
         if still_up and not getattr(args, "force", False):
             return _emit_error(
                 args,
-                f"a council sitting is already active ({', '.join(still_up)}) — "
+                f"council '{name}' is already live ({', '.join(still_up)}) — "
                 "use 'agentwire council stop' or --force",
             )
         # Stale or --force: tear down what's left before restarting.
         for s in still_up:
             kill_session(s)
-        state.clear_sitting()
+        state.clear_sitting(name)
 
     session_type = getattr(args, "type", None) or "claude-bypass"
     model = getattr(args, "model", None)
-    _write_workspace(session_type)
+    _write_workspace(name, session_type)
+    workspace = str(state.workspace_dir(name))
+
+    # Advisory: name the live sittings when seating beyond the first.
+    other_live = live_sitting_names(list_live_sessions())
+    advisory = ""
+    if other_live:
+        all_live = sorted({*other_live, name})
+        advisory = f"{len(all_live)} councils live: {', '.join(all_live)}"
 
     sessions: dict[str, str] = {}
     failed: list[dict] = []
 
     try:
-        create_session(
-            state.ORCHESTRATOR_SESSION, ["council-orchestrator"], session_type, model
-        )
+        create_session(orchestrator, ["council-orchestrator"], session_type, model, workspace)
     except RuntimeError as e:
         return _emit_error(args, f"failed to start orchestrator: {e}")
 
     for lens in roster:
-        name = state.session_for(lens)
+        session = state.session_for(name, lens)
         try:
-            create_session(name, ["council-member", f"council-{lens}"], session_type, model)
-            sessions[lens] = name
+            create_session(
+                session, ["council-member", f"council-{lens}"], session_type, model, workspace
+            )
+            sessions[lens] = session
         except RuntimeError as e:
             failed.append({"soul": lens, "error": str(e)})
 
     # Sessions boot concurrently; wait for each to be input-ready so an
     # immediate `council ask` doesn't paste into a half-booted pane.
-    not_ready = [
-        s
-        for s in (state.ORCHESTRATOR_SESSION, *sessions.values())
-        if not wait_ready(s)
-    ]
+    not_ready = [s for s in (orchestrator, *sessions.values()) if not wait_ready(s)]
 
     state.write_sitting(
+        name,
         state.Sitting(
-            orchestrator=state.ORCHESTRATOR_SESSION,
+            orchestrator=orchestrator,
             roster=[lens for lens in roster if lens in sessions],
             sessions=sessions,
             started_at=state.now_iso(),
+            cwd=workspace,
             session_type=session_type,
-        )
+        ),
     )
 
     payload = {
         "success": not failed and not not_ready,
-        "orchestrator": state.ORCHESTRATOR_SESSION,
+        "orchestrator": orchestrator,
         "sessions": sessions,
         "failed": failed,
         "not_ready": not_ready,
+        "advisory": advisory,
     }
     human = (
-        f"Council sitting started: {state.ORCHESTRATOR_SESSION} + "
+        f"Council sitting started: {orchestrator} + "
         f"{len(sessions)} souls ({', '.join(sessions)})"
     )
+    if advisory:
+        human += f"\n{advisory}"
     if failed:
         human += f"\nfailed: {', '.join(f['soul'] for f in failed)}"
     if not_ready:
         human += f"\nnot ready after wait: {', '.join(not_ready)}"
-    return _emit(args, payload, human, exit_code=0 if payload["success"] else 1)
+    return _emit(args, payload, human, exit_code=0 if payload["success"] else 1, council=name)
 
 
 def cmd_council_stop(args) -> int:
-    sitting = state.read_sitting()
+    _sweep_legacy_once()
+    name, err = resolve_name(args)
+    if err:
+        return _emit_error(args, err)
+    sitting = state.read_sitting(name)
     if sitting is None:
-        return _emit_error(args, "no active council sitting")
+        return _emit_error(args, f"no council sitting '{name}'")
 
     live = list_live_sessions()
     killed: list[str] = []
     not_running: list[str] = []
-    for name in (*sitting.sessions.values(), sitting.orchestrator):
-        if name in live and kill_session(name):
-            killed.append(name)
+    for session in (*sitting.sessions.values(), sitting.orchestrator):
+        if session in live and kill_session(session):
+            killed.append(session)
         else:
-            not_running.append(name)
-    state.clear_sitting()
+            not_running.append(session)
+    state.clear_sitting(name)
 
     payload = {"success": True, "killed": killed, "not_running": not_running}
     return _emit(
         args,
         payload,
-        f"Council sitting stopped ({len(killed)} sessions killed). Prompt history kept.",
+        f"Council '{name}' stopped ({len(killed)} sessions killed). Prompt history kept.",
+        council=name,
     )
 
 
 def cmd_council_status(args) -> int:
-    sitting = state.read_sitting()
+    _sweep_legacy_once()
+    name, err = resolve_name(args)
+    if err:
+        return _emit(args, {"success": True, "running": False, "error": err}, err)
+    sitting = state.read_sitting(name)
     if sitting is None:
         return _emit(
             args,
             {"success": True, "running": False},
-            "No active council sitting.",
+            f"No council sitting '{name}'.",
         )
 
     live = list_live_sessions()
     souls = [
-        {"soul": lens, "session": name, "alive": name in live}
-        for lens, name in sitting.sessions.items()
+        {"soul": lens, "session": session, "alive": session in live}
+        for lens, session in sitting.sessions.items()
     ]
     prompts = []
     for pid in range(1, sitting.next_prompt_id):
-        pending = inbox.pending_souls(pid, sitting.roster)
+        pending = inbox.pending_souls(name, pid, sitting.roster)
         prompts.append(
             {
                 "id": pid,
@@ -293,7 +438,7 @@ def cmd_council_status(args) -> int:
         "prompts": prompts,
     }
     lines = [
-        f"Council sitting (started {sitting.started_at})",
+        f"Council '{name}' (started {sitting.started_at})",
         f"  orchestrator: {sitting.orchestrator} "
         f"[{'alive' if payload['orchestrator_alive'] else 'DOWN'}]",
     ]
@@ -302,7 +447,7 @@ def cmd_council_status(args) -> int:
     for p in prompts:
         status = "complete" if p["complete"] else f"pending: {', '.join(p['pending'])}"
         lines.append(f"  prompt #{p['id']}: {status}")
-    return _emit(args, payload, "\n".join(lines))
+    return _emit(args, payload, "\n".join(lines), council=name)
 
 
 def _prompt_text_from(args) -> str | None:
@@ -322,25 +467,31 @@ def _prompt_text_from(args) -> str | None:
 
 
 def cmd_council_ask(args) -> int:
-    sitting = state.read_sitting()
+    _sweep_legacy_once()
+    name, err = resolve_name(args)
+    if err:
+        return _emit_error(args, err)
+    sitting = state.read_sitting(name)
     if sitting is None:
-        return _emit_error(args, "no active council sitting — run 'agentwire council start'")
+        return _emit_error(args, f"no council sitting '{name}'")
 
     prompt_text = getattr(args, "prompt", None) or _prompt_text_from(args)
     if not prompt_text or not prompt_text.strip():
         return _emit_error(args, "no prompt text (positional, --file, or stdin)")
     prompt_text = prompt_text.strip()
 
-    prompt_id = state.allocate_prompt_id()
-    inbox.create_prompt(prompt_id, prompt_text, sitting.roster)  # inbox before any send
+    prompt_id = state.allocate_prompt_id(name)
+    inbox.create_prompt(name, prompt_id, prompt_text, sitting.roster)  # inbox before any send
 
+    prompt_path = inbox.prompt_dir(name, prompt_id) / "prompt.md"
     message = (
         f"[COUNCIL PROMPT #{prompt_id}]\n"
         f"{prompt_text}\n\n"
         f"Reply through your lens with exactly one of:\n"
-        f'  agentwire council reply --prompt {prompt_id} --take --text "<your take>"\n'
-        f"  agentwire council reply --prompt {prompt_id} --ack\n"
-        f"  agentwire council reply --prompt {prompt_id} --pass"
+        f'  agentwire council reply --name {name} --prompt {prompt_id} --take --text "<your take>"\n'
+        f"  agentwire council reply --name {name} --prompt {prompt_id} --ack\n"
+        f"  agentwire council reply --name {name} --prompt {prompt_id} --pass\n"
+        f"Full prompt on disk: {prompt_path}"
     )
 
     marker = f"[COUNCIL PROMPT #{prompt_id}]"
@@ -368,19 +519,31 @@ def cmd_council_ask(args) -> int:
     human = f"Prompt #{prompt_id} fanned out to {len(sent_to)} souls."
     if failed:
         human += f" Failed: {', '.join(f['soul'] for f in failed)}"
-    return _emit(args, payload, human, exit_code=0 if sent_to else 1)
+    return _emit(
+        args,
+        payload,
+        human,
+        exit_code=0 if sent_to else 1,
+        council=name,
+        echo_suffix=f"(prompt #{prompt_id})",
+    )
 
 
 def cmd_council_collect(args) -> int:
-    sitting = state.read_sitting()
+    _sweep_legacy_once()
+    name, err = resolve_name(args)
+    if err:
+        return _emit_error(args, err)
+    sitting = state.read_sitting(name)
     if sitting is None:
-        return _emit_error(args, "no active council sitting")
+        return _emit_error(args, f"no council sitting '{name}'")
 
-    prompt_id = getattr(args, "prompt", None) or state.latest_prompt_id()
+    prompt_id = getattr(args, "prompt", None) or state.latest_prompt_id(name)
     if not prompt_id:
         return _emit_error(args, "no prompts asked yet")
 
     result = inbox.collect(
+        name,
         prompt_id,
         sitting.roster,
         timeout=float(getattr(args, "timeout", 120)),
@@ -394,28 +557,44 @@ def cmd_council_collect(args) -> int:
     lines = [f"Prompt #{prompt_id}: {status}"]
     for r in result["replies"]:
         lines.append(f"\n--- {r['soul']} ({r['kind']}) ---\n{r['text']}")
-    return _emit(args, result, "\n".join(lines))
+    return _emit(
+        args, result, "\n".join(lines), council=name, echo_suffix=f"(prompt #{prompt_id})"
+    )
+
+
+def _infer_soul(sitting: state.Sitting, session: str | None) -> str | None:
+    """Recover the lens for a session via the sitting's SSOT map.
+
+    Never ``.split('-')`` a session string — ``sitting.sessions`` is the only
+    authority for the lens→session mapping.
+    """
+    if not session:
+        return None
+    for lens, sess in sitting.sessions.items():
+        if sess == session:
+            return lens
+    return None
 
 
 def cmd_council_reply(args) -> int:
+    _sweep_legacy_once()
     kinds = [k for k in inbox.KINDS if getattr(args, k.replace("-", "_"), False)]
     if len(kinds) != 1:
         return _emit_error(args, "specify exactly one of --take / --ack / --pass")
     kind = kinds[0]
 
-    sitting = state.read_sitting()
+    name, err = resolve_name(args)
+    if err:
+        return _emit_error(args, err)
+    sitting = state.read_sitting(name)
     if sitting is None:
-        return _emit_error(args, "no active council sitting")
+        return _emit_error(args, f"no council sitting '{name}'")
 
-    prompt_id = getattr(args, "prompt", None) or state.latest_prompt_id()
+    prompt_id = getattr(args, "prompt", None) or state.latest_prompt_id(name)
     if not prompt_id:
         return _emit_error(args, "no prompts asked yet")
 
-    soul = getattr(args, "soul", None)
-    if not soul:
-        session = current_session()
-        if session and session.startswith("council-"):
-            soul = session[len("council-") :]
+    soul = getattr(args, "soul", None) or _infer_soul(sitting, current_session())
     if not soul:
         return _emit_error(args, "could not infer soul — pass --soul <lens>")
 
@@ -427,7 +606,7 @@ def cmd_council_reply(args) -> int:
         return _emit_error(args, "--take requires text (--text, --file, or stdin)")
 
     try:
-        path, is_followup = inbox.write_reply(prompt_id, soul, kind, text)
+        path, is_followup = inbox.write_reply(name, prompt_id, soul, kind, text)
     except (ValueError, FileNotFoundError) as e:
         return _emit_error(args, str(e))
 
@@ -459,4 +638,56 @@ def cmd_council_reply(args) -> int:
         args,
         payload,
         f"Filed {'follow-up ' if is_followup else ''}{kind} from {soul} on prompt #{prompt_id}.",
+        council=name,
     )
+
+
+def _age(iso: str) -> str:
+    """Compact humanized age (``5m`` / ``2h`` / ``3d``) for the list table."""
+    try:
+        started = datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return "?"
+    secs = int((datetime.now(timezone.utc) - started).total_seconds())
+    if secs < 60:
+        return f"{max(secs, 0)}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+def cmd_council_list(args) -> int:
+    _sweep_legacy_once()
+    live = list_live_sessions()
+    rows = []
+    for name in state.list_sittings():
+        sitting = state.read_sitting(name)
+        if sitting is None:
+            continue
+        all_sessions = [*sitting.sessions.values(), sitting.orchestrator]
+        rows.append(
+            {
+                "name": name,
+                "cwd": sitting.cwd,
+                "started_at": sitting.started_at,
+                "live_sessions": sum(1 for s in all_sessions if s in live),
+                "total_sessions": len(all_sessions),
+                "prompts": max(sitting.next_prompt_id - 1, 0),
+            }
+        )
+    rows.sort(key=lambda r: r["started_at"])  # oldest-first
+
+    payload = {"success": True, "councils": rows}
+    if not rows:
+        return _emit(args, payload, "No council sittings.")
+    header = f"{'NAME':<24} {'AGE':>5} {'LIVE':>7} {'PROMPTS':>8}  CWD"
+    lines = [header]
+    for r in rows:
+        live_col = f"{r['live_sessions']}/{r['total_sessions']}"
+        lines.append(
+            f"{r['name']:<24} {_age(r['started_at']):>5} {live_col:>7} "
+            f"{r['prompts']:>8}  {r['cwd']}"
+        )
+    return _emit(args, payload, "\n".join(lines))
