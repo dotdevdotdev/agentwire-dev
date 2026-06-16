@@ -116,6 +116,7 @@ agentwire msg send --to name "text"          # queue a message (delivers when th
 agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation
 agentwire msg send --to @all "team update"   # broadcast to live agent sessions except sender
 agentwire msg inbox -s name                  # peek pending (does not drain)
+agentwire msg dead -s name                   # list dropped (dead-lettered) msgs + reason/timestamp
 agentwire msg flush -s name                  # attempt a drain now (still gated on empty box + safe target)
                                 # `msg` NEVER clobbers a human's draft — unlike `send`, which
                                 # pastes + Enter immediately. Use `send` only to forcibly drive a session now.

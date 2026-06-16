@@ -67,6 +67,8 @@ class Message:
     text: str
     ts: int  # epoch ms
     attempts: int = 0
+    reason: str = ""  # last defer reason (why delivery kept failing)
+    dead_ts: int = 0  # epoch ms when dead-lettered (0 = still live)
     path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -78,6 +80,8 @@ class Message:
             "text": self.text,
             "ts": self.ts,
             "attempts": self.attempts,
+            "reason": self.reason,
+            "dead_ts": self.dead_ts,
         }
 
     def render(self) -> str:
@@ -134,6 +138,8 @@ def _read_message(path: Path) -> "Message | None":
             text=str(data.get("text", "")),
             ts=int(data.get("ts", 0)),
             attempts=int(data.get("attempts", 0)),
+            reason=str(data.get("reason", "")),
+            dead_ts=int(data.get("dead_ts", 0)),
             path=path,
         )
     except (KeyError, ValueError, TypeError):
@@ -158,6 +164,33 @@ def pending_files(session: str) -> list[Path]:
 
 def list_messages(session: str) -> list[Message]:
     return [m for m in (_read_message(f) for f in pending_files(session)) if m]
+
+
+def list_dead(session: str) -> list[Message]:
+    """A session's dead-lettered messages, oldest-died first."""
+    ddir = dead_dir(session)
+    if not ddir.is_dir():
+        return []
+    return [m for m in (_read_message(f) for f in sorted(ddir.glob("*.json"))) if m]
+
+
+def dead_sessions() -> list[str]:
+    """Recipient session names that have any dead-lettered messages.
+
+    Walks the tree so worktree session names (which contain ``/`` and nest a
+    directory level) are reconstructed from the path. The ``dead`` component is
+    always the parent of the message file, so the session is everything before
+    it.
+    """
+    if not INBOX_ROOT.exists():
+        return []
+    found: set[str] = set()
+    for path in INBOX_ROOT.rglob("dead/*.json"):
+        parts = path.relative_to(INBOX_ROOT).parts
+        session = "/".join(parts[:-2])  # drop "<...>/dead/<file>.json"
+        if session:
+            found.add(session)
+    return sorted(found)
 
 
 # =============================================================================
@@ -254,9 +287,11 @@ def _release_lock(lock: "Path | None") -> None:
         pass
 
 
-def _bump_attempts(messages: list[Message]) -> int:
+def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     """Increment attempts on each pending message; dead-letter over the cap.
 
+    ``reason`` is the defer reason that caused this pass; it's stamped onto the
+    message so a dead-lettered one carries *why* it never got delivered.
     Returns the number dead-lettered this pass.
     """
     dead = 0
@@ -264,7 +299,9 @@ def _bump_attempts(messages: list[Message]) -> int:
         if msg.path is None:
             continue
         msg.attempts += 1
+        msg.reason = reason
         if msg.attempts >= MAX_ATTEMPTS:
+            msg.dead_ts = _now_ms()
             target = dead_dir(msg.to or "unknown") / msg.path.name
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -272,7 +309,7 @@ def _bump_attempts(messages: list[Message]) -> int:
                 msg.path.unlink(missing_ok=True)
                 _log_event(
                     "dead_letter", id=msg.id, to=msg.to, kind=msg.kind,
-                    attempts=msg.attempts,
+                    attempts=msg.attempts, reason=reason,
                 )
                 dead += 1
             except OSError:
@@ -304,7 +341,7 @@ def flush_session(session: str) -> dict:
 
         # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
         if not prompt_router.prompt_is_empty(session, 0):
-            dead = _bump_attempts(messages)
+            dead = _bump_attempts(messages, "box_not_empty")
             _log_event("deferred", to=session, count=len(messages), reason="box_not_empty")
             return {
                 "session": session, "delivered": 0, "deferred": True,
@@ -314,7 +351,7 @@ def flush_session(session: str) -> dict:
         rendered = "\n".join(m.render() for m in messages)
         delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
         if not delivered:
-            dead = _bump_attempts(messages)
+            dead = _bump_attempts(messages, reason)
             _log_event("deferred", to=session, count=len(messages), reason=reason)
             return {
                 "session": session, "delivered": 0, "deferred": True,

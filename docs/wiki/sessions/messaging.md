@@ -43,10 +43,13 @@ lands in a durable inbox and is injected only at a safe boundary.
    (`session_ready.send_verified`), each rendered as
    `[MSG from <sender> · <kind>] <text>`.
 
-4. **Defer or drop.** If either gate fails, the messages stay put and their
-   `attempts` counter bumps. After `MAX_ATTEMPTS` (40 ≈ 40 min of a permanently
-   busy session) a message moves to `~/.agentwire/inbox/<session>/dead/` and a
-   `dead_letter` event is logged — no infinite retry.
+4. **Defer or drop.** If either gate fails, the messages stay put, their
+   `attempts` counter bumps, and the defer `reason` (`box_not_empty`,
+   `target_parked`, …) is stamped on each message. After `MAX_ATTEMPTS`
+   (40 ≈ 40 min of a permanently busy session) a message moves to
+   `~/.agentwire/inbox/<session>/dead/` carrying that reason + a `dead_ts`, and a
+   `dead_letter` event is logged — no infinite retry. `msg dead` surfaces these
+   so the drop is never silent.
 
 ### `prompt_is_empty` — the collision detector
 
@@ -83,8 +86,13 @@ skipped automatically because their pane 0 doesn't run an agent.
 agentwire msg send --to <session|@all> [--kind note|done|request|escalation] <text>
 agentwire msg send --to agentwire-dev-fix-nav --kind done "PR #312 drafted"
 agentwire msg inbox [-s <session>]   # peek pending (does not drain)
+agentwire msg dead  [-s <session>]   # list dropped (dead-lettered) msgs + why
 agentwire msg flush [-s <session>]   # attempt a drain now (still gated)
 ```
+
+`msg dead` with `-s` scopes to one session; outside a session it lists every
+session that has dead letters. Each line shows the kind, sender, died-at time,
+attempt count, and the drop reason.
 
 `--from` defaults to the current session. All commands take `--json`. The CLI is
 the single source of truth; the portal and MCP call it.
@@ -94,6 +102,8 @@ the single source of truth; the portal and MCP call it.
 - `msg_send(to, text, kind="note")` — polite peer update; delivers at the next
   safe boundary.
 - `msg_inbox(session=None)` — peek pending messages (does not drain).
+- `msg_dead(session=None)` — list dead-lettered messages with their drop reason
+  + timestamp (omit `session` to list every session that has any).
 
 **Rule of thumb for agents:** use `msg_send` for routine peer updates that
 shouldn't interrupt; use `session_send` only when you need to forcibly drive a

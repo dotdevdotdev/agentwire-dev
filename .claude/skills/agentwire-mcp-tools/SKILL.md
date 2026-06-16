@@ -16,6 +16,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire send -s name "msg"` | `session_send(session="...", message="...")` |
 | `agentwire msg send --to name "msg"` | `msg_send(to="...", text="...", kind="note")` |
 | `agentwire msg inbox -s name` | `msg_inbox(session="...")` |
+| `agentwire msg dead -s name` | `msg_dead(session="...")` |
 | `agentwire output -s name` | `session_output(session="...")` |
 | `agentwire info -s name` | `session_info(session="...")` |
 | `agentwire kill -s name` | `session_kill(session="...")` |

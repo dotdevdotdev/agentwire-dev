@@ -234,6 +234,46 @@ class TestFlush:
         assert sessions == []
 
 
+class TestDead:
+    def test_dead_letter_records_reason_and_ts(self, isolate, monkeypatch):
+        inbox.enqueue("s", "stuck", sender="x")
+        _patch_delivery(monkeypatch, empty=False)  # box_not_empty every pass
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        dead = inbox.list_dead("s")
+        assert len(dead) == 1
+        assert dead[0].reason == "box_not_empty"
+        assert dead[0].dead_ts > 0
+        assert dead[0].attempts == inbox.MAX_ATTEMPTS
+
+    def test_dead_letter_carries_safe_deliver_reason(self, isolate, monkeypatch):
+        inbox.enqueue("s", "stuck", sender="x")
+        _patch_delivery(monkeypatch, empty=True, deliver=(False, "target_parked"))
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        dead = inbox.list_dead("s")
+        assert len(dead) == 1 and dead[0].reason == "target_parked"
+
+    def test_list_dead_empty(self, isolate):
+        assert inbox.list_dead("nobody") == []
+
+    def test_dead_sessions_enumerates(self, isolate, monkeypatch):
+        inbox.enqueue("a", "x", sender="z")
+        inbox.enqueue("proj/feature-x", "y", sender="z")
+        _patch_delivery(monkeypatch, empty=False)
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("a")
+            inbox.flush_session("proj/feature-x")
+        assert inbox.dead_sessions() == ["a", "proj/feature-x"]
+        # a session with only pending (no dead) is not listed
+        inbox.enqueue("b", "live", sender="z")
+        assert "b" not in inbox.dead_sessions()
+
+    def test_dead_sessions_empty_when_no_dead(self, isolate):
+        inbox.enqueue("a", "x", sender="z")
+        assert inbox.dead_sessions() == []
+
+
 class TestTick:
     def test_tick_drains_all(self, isolate, monkeypatch):
         inbox.enqueue("a", "x", sender="z")
