@@ -1387,21 +1387,51 @@ def _stop_tts_remote(ssh_target: str, machine_id: str) -> int:
     return 0
 
 
-def _check_tts_health(url: str, timeout: int = 2) -> tuple[bool, list[str] | None]:
+def _describe_probe_error(exc: Exception) -> str:
+    """Turn a health-probe exception into a concise, human-readable cause.
+
+    Distinguishes the cases that actually matter when a voice service won't
+    come up: connection refused, timeout, bad JSON, DNS failure, HTTP error.
+    """
+    import socket
+
+    if isinstance(exc, socket.timeout) or isinstance(exc, TimeoutError):
+        return "timed out (no response)"
+    if isinstance(exc, json.JSONDecodeError):
+        return "responded but returned invalid JSON"
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code} {exc.reason}"
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, socket.timeout) or isinstance(reason, TimeoutError):
+            return "timed out (no response)"
+        if isinstance(reason, ConnectionRefusedError):
+            return "connection refused (not listening yet)"
+        if isinstance(reason, socket.gaierror):
+            return f"DNS resolution failed ({reason})"
+        return f"unreachable ({reason})"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection refused (not listening yet)"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _check_tts_health(
+    url: str, timeout: int = 2
+) -> tuple[bool, list[str] | None, str | None]:
     """Check if TTS server is responding at URL.
 
     Returns:
-        (is_healthy, voices_list or None)
+        (is_healthy, voices_list or None, error_cause or None)
     """
 
     try:
         req = urllib.request.urlopen(f"{url}/voices", timeout=timeout)
         voices = json.loads(req.read().decode())
         if isinstance(voices, list):
-            return True, voices
-        return True, None
-    except Exception:
-        return False, None
+            return True, voices, None
+        return True, None, None
+    except Exception as e:
+        return False, None, _describe_probe_error(e)
 
 
 def cmd_tts_start(args) -> int:
@@ -1602,14 +1632,16 @@ def cmd_tts_status(args) -> int:
             print("Default voice tier: Kokoro (in-process)")
             print(f"  State: {state}")
             if importable and not cached:
-                print("  Download: agentwire tts warm  "
-                      "(or start the portal — it downloads in the background)")
+                print("  Download: run 'agentwire tts warm' to fetch the ~200 MB "
+                      "model now (one-time, cached to ~/.cache/kokoro_onnx/).")
+                print("            Or just start the portal — it downloads in the "
+                      "background and speaks with the OS voice until ready.")
         return 0
 
     if ctx.is_local("tts"):
         url = ctx.get_service_url("tts", use_tunnel=False)
         if tmux_session_exists(session_name):
-            healthy, voices = _check_tts_health(url)
+            healthy, voices, error = _check_tts_health(url)
             if json_mode:
                 _output_json({
                     "success": True,
@@ -1618,6 +1650,7 @@ def cmd_tts_status(args) -> int:
                     "session": session_name,
                     "healthy": healthy,
                     "voices": voices or [],
+                    "error": error,
                     "backend": backend,
                     "machine": None,
                 })
@@ -1630,11 +1663,11 @@ def cmd_tts_status(args) -> int:
                     else:
                         print(f"  Health: OK ({url})")
                 else:
-                    print("  Status: starting or not responding yet")
+                    print(f"  Status: not responding yet — {error}")
             return 0
         else:
             # No local tmux session, but check if TTS is reachable anyway
-            healthy, voices = _check_tts_health(url)
+            healthy, voices, error = _check_tts_health(url)
             if healthy:
                 if json_mode:
                     _output_json({
@@ -1660,11 +1693,14 @@ def cmd_tts_status(args) -> int:
                     "running": False,
                     "url": url,
                     "healthy": False,
+                    "error": error,
                     "backend": backend,
                     "machine": None,
                 })
             else:
                 print("TTS server is not running.")
+                if error:
+                    print(f"  Probe: {error}")
                 print("  Start:  agentwire tts start")
             return 1
 
@@ -1672,7 +1708,7 @@ def cmd_tts_status(args) -> int:
     machine_id = ctx.get_machine_for_service("tts")
     url = ctx.get_service_url("tts", use_tunnel=True)
 
-    healthy, voices = _check_tts_health(url)
+    healthy, voices, error = _check_tts_health(url)
     if healthy:
         if json_mode:
             _output_json({
@@ -1694,8 +1730,9 @@ def cmd_tts_status(args) -> int:
     else:
         # Try direct connection if tunnel might not exist
         direct_url = ctx.get_service_url("tts", use_tunnel=False)
+        direct_error = None
         if direct_url != url:
-            healthy, voices = _check_tts_health(direct_url)
+            healthy, voices, direct_error = _check_tts_health(direct_url)
             if healthy:
                 if json_mode:
                     _output_json({
@@ -1723,15 +1760,17 @@ def cmd_tts_status(args) -> int:
                 "running": False,
                 "url": url,
                 "healthy": False,
+                "error": error,
+                "direct_error": direct_error,
                 "backend": backend,
                 "machine": machine_id,
             })
         else:
             print(f"TTS server runs on {machine_id}")
             print("  Status: not reachable")
-            print(f"  Checked: {url}")
+            print(f"  Checked: {url} — {error}")
             if direct_url != url:
-                print(f"  Also checked: {direct_url}")
+                print(f"  Also checked: {direct_url} — {direct_error}")
         return 1
 
 
@@ -1830,6 +1869,7 @@ def cmd_stt_status(args) -> int:
     stt_url = config.get("stt", {}).get("url", "http://localhost:8101")
 
     # Check health endpoint
+    probe_error = None
     try:
         req = urllib.request.Request(f"{stt_url}/health")
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -1852,8 +1892,8 @@ def cmd_stt_status(args) -> int:
                 if tmux_session_exists(session_name):
                     print(f"  Attach: tmux attach -t {session_name}")
             return 0
-    except Exception:
-        pass
+    except Exception as e:
+        probe_error = _describe_probe_error(e)
 
     if tmux_session_exists(session_name):
         if json_mode:
@@ -1862,11 +1902,14 @@ def cmd_stt_status(args) -> int:
                 "running": True,
                 "url": stt_url,
                 "healthy": False,
+                "error": probe_error,
                 "session": session_name,
                 "starting": True,
             })
         else:
             print(f"STT server is starting in tmux session '{session_name}'")
+            if probe_error:
+                print(f"  Probe: {probe_error}")
             print(f"  Attach: tmux attach -t {session_name}")
         return 0
 
@@ -1876,9 +1919,12 @@ def cmd_stt_status(args) -> int:
             "running": False,
             "url": stt_url,
             "healthy": False,
+            "error": probe_error,
         })
     else:
         print("STT server is not running.")
+        if probe_error:
+            print(f"  Probe: {probe_error}")
         print("  Start: agentwire stt start")
     return 1
 
