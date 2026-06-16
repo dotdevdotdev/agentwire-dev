@@ -1,5 +1,6 @@
 
 import { apiFetch } from '../api.js';
+import { toastSuccess, toastError, withButtonBusy, errorFromResponse } from '../toast.js';
 export const machinesSection = {
     title: 'Machines',
     autoRefreshMs: 10000,
@@ -37,19 +38,24 @@ export const machinesSection = {
         if (!item) return;
         const machineId = item.dataset.machine;
         if (btn.dataset.action === 'new-session') {
-            try {
-                const machine = machineId === 'local' ? null : machineId;
-                const res = await apiFetch('/api/create', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ machine }),
-                });
-                if (res.ok) {
+            await withButtonBusy(btn, async () => {
+                try {
+                    const machine = machineId === 'local' ? null : machineId;
+                    const res = await apiFetch('/api/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ machine }),
+                    });
+                    if (!res.ok) throw new Error(await errorFromResponse(res));
                     const data = await res.json();
+                    const sessionName = data.session || data.name;
+                    toastSuccess(`Created ${sessionName}`);
                     const { openSessionTerminal } = await import('../desktop.js');
-                    openSessionTerminal(data.session || data.name, 'terminal', machine);
+                    openSessionTerminal(sessionName, 'terminal', machine);
+                } catch (err) {
+                    toastError(`Failed to create session: ${err.message}`);
                 }
-            } catch (e) { console.warn('Failed to create session', e); }
+            });
         }
     },
 };
