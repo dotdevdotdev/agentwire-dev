@@ -24,7 +24,7 @@ The `lint` step is non-negotiable. These decisions stay inside the pattern's swe
 | 1 | Open `~/.agentwire/wiki/` as an Obsidian vault | **YES** | Zero code — point Obsidian at the existing folder for graph view, wikilink autocomplete, and mobile access; pure documentation. |
 | 2 | Per-session MCP attachment so workers share the orchestrator's knowledge | **DEFER** | Workers can already read the wiki via its filesystem path; an MCP attachment is a nice-to-have, not a blocker, and is implementation work out of scope here. |
 | 3 | **Cross-machine wiki sync** ★ | **YES** | Highest-interest thread; backend chosen below (git remote, private repo). |
-| 4 | **`/note` voice-capture → `raw/` → overnight ingest** ★ | **YES** | Highest-interest thread; STT (Moonshine) is already wired and the `wiki-ingest` task already drains `raw/` — capture is the only missing piece. Sub-questions resolved below. |
+| 4 | **`/note` voice-capture → `raw/` → nightly ingest** ★ | **YES** | Highest-interest thread; STT (Moonshine) is already wired and the `wiki-ingest` task already drains `raw/` — capture is the only missing piece. Sub-questions resolved below. |
 | 5 | Graph view inside the portal | **NO** | Medium-high cost to rebuild what Direction 1 already gives us for free via Obsidian; not worth duplicating. |
 | 6 | Single shared vault across agentwire + fragmentz + future projects | **DEFER** | Trivial to symlink, but mixing project scopes risks cross-contaminating retrieval; revisit once cross-machine sync (Direction 3) is proven stable. |
 
@@ -56,7 +56,7 @@ additive, not a move. No relocation.
 |---|---|---|
 | Worker pane vs portal-only | **Portal push-to-talk button → STT → `raw/`** (plus a thin `/note` skill for terminal users that writes the same file) | No pane-spawn overhead, lowest latency, and capture stays a dumb write — the LLM work happens later at ingest. |
 | One file per note vs daily-journal append | **One file per note** | Cleaner provenance, trivial to ingest-then-move, and avoids append conflicts — which matter once Direction 3 sync is live. |
-| Immediate vs batch ingest | **Batch overnight via the existing `wiki-ingest` scheduler task** | Reuses the SSOT drain of `raw/`; no new pipeline. Capture is instant, structuring is deferred. |
+| Immediate vs batch ingest | **Batch nightly via the existing `wiki-ingest` scheduler task** | Reuses the SSOT drain of `raw/`; no new pipeline. Capture is instant, structuring is deferred. |
 | Auto-tag at capture vs defer-to-ingest | **Defer to ingest** | Capture stays fast and offline-safe; the ingest LLM tags with full wiki context, which produces better tags than a capture-time guess. |
 
 Net: a voice note lands as a single timestamped markdown file in `~/.agentwire/wiki/raw/`,

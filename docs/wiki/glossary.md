@@ -44,10 +44,6 @@ A registered remote host in `~/.agentwire/machines.json` (`id`, `host`, `user`, 
 
 The agent in pane 0 of a session. Coordinates work, spawns workers in panes 1+ (`pane_spawn`), receives idle notifications from workers, and routes alerts via `parent:` to the user-facing session.
 
-## O — Overnight Queue
-
-A separate queue from the scheduler: human-prepared sessions captured via `agentwire overnight prepare` are dispatched within a configurable window with forked Claude conversation context. Best for judgment-heavy work that can't be expressed as recurring YAML. → [Scheduled workloads — Overnight Session Queue](scheduling/scheduled-workloads.md#overnight-session-queue).
-
 ## P — Pane
 
 A tmux pane within a session. Convention: pane 0 is the *orchestrator*, panes 1+ are *workers*. Workers auto-kill after sending their final idle notification.

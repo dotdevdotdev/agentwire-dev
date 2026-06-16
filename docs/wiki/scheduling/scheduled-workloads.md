@@ -2,7 +2,7 @@
 
 # Scheduled Workloads
 
-Reliable headless task execution for overnight and automated agent workflows.
+Reliable headless task execution for unattended and automated agent workflows.
 
 ---
 
@@ -22,7 +22,7 @@ Both are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire schedul
 Define tasks in `.agentwire.yml` — **keep that file gitignored**. Worktree-dispatched runs check out HEAD, so if the file is tracked, uncommitted live edits to a task prompt are silently ignored and the run executes the stale committed version. Gitignored, the live file is seeded into every worktree via `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml"]`) and always wins. See the `agentwire-project-config` skill.
 
 ```yaml
-type: claude-auto    # Recommended for overnight work — see claude-auto below
+type: claude-auto    # Recommended for unattended work — see claude-auto below
 roles:
   - task-runner
 shell: /bin/sh       # Default shell for task commands
@@ -38,7 +38,7 @@ tasks:
     exit_on_complete: true   # Exit session after completion (default: true)
     role: piinpoint-test-writer  # Role override for this task (optional)
 
-    # Branch management (for autonomous overnight workflows)
+    # Branch management (for autonomous workflows)
     starting_ref: main       # Git ref to checkout before task runs
     work_branch: agent/task  # Branch for agent's work (default: agent/<task>-<date>)
     pr_target: main          # PR target branch (default: starting_ref)
@@ -283,7 +283,7 @@ tasks:
 
 ## Morning Dashboard
 
-After overnight tasks run, generate a summary report:
+After unattended tasks run, generate a summary report:
 
 ```bash
 agentwire scheduler report --since 8h           # Print summary + artifact path
@@ -296,7 +296,7 @@ The HTML report includes: task name, status badge, branch, PR link, duration, an
 
 ## `claude-auto` — Recommended Session Type
 
-For overnight/unattended work, use `claude-auto` instead of `claude-bypass`:
+For unattended work, use `claude-auto` instead of `claude-bypass`:
 
 ```yaml
 # .agentwire.yml
@@ -305,7 +305,7 @@ type: claude-auto
 
 `claude-auto` uses Claude Code's auto mode: a background Sonnet 4.6 classifier reviews each tool call before execution. Safe actions (file reads, edits, git ops) run immediately with no overhead. Dangerous actions (force push to main, mass deletion, credential exfiltration) are blocked.
 
-`claude-bypass` has no safety checks. `claude-auto` does everything `claude-bypass` does for normal overnight work but prevents catastrophic failures at 3am when nobody's watching.
+`claude-bypass` has no safety checks. `claude-auto` does everything `claude-bypass` does for normal unattended work but prevents catastrophic failures at 3am when nobody's watching.
 
 **Requires:** Team or Enterprise Claude plan. Pro/Max individual plans not supported.
 
@@ -313,7 +313,7 @@ See `../sessions/claude-code-auto-mode.md` for full setup, allow rule configurat
 
 ---
 
-## Full Overnight Workflow Example
+## Full Unattended Workflow Example
 
 ```yaml
 # ~/projects/piinpoint/.agentwire.yml
@@ -341,7 +341,7 @@ tasks:
     exit_on_complete: true
 
   morning-report:
-    prompt: "Summarize what was accomplished overnight. Check the PRs that were opened."
+    prompt: "Summarize what was accomplished. Check the PRs that were opened."
     post:
       - "agentwire scheduler report --since 12h --artifact"
     exit_on_complete: true
@@ -349,72 +349,11 @@ tasks:
 
 ---
 
-## Overnight Session Queue
-
-For tasks that need human-in-the-loop preparation, use the **overnight session queue** instead of the scheduler. The scheduler runs predefined YAML tasks. The overnight queue dispatches dynamically prepared sessions with forked Claude conversation context.
-
-**Key difference:** Autonomous agents fail on judgment-heavy work because they lack micro-decisions humans make. The overnight system front-loads all human judgment into interactive preparation time, then dispatches the fully-prepared sessions overnight.
-
-### Workflow
-
-```
-5:00 PM — Open session, discuss project context with Claude
-5:15 PM — agentwire overnight prepare --from piinpoint --task "refactor payment module"
-           → Session context captured (Claude sessionId, git branch, HEAD commit)
-5:16 PM — Keep preparing more tasks from same or different sessions
-5:43 PM — Go home.
-
-10:00 PM — Orchestrator dispatches session 1 (forks Claude context) → works → PR
-11:00 PM — Dispatches session 2 → works → PR
-12:00 AM — All done. Voice notification sent.
-
-8:00 AM — agentwire overnight report → review draft PRs
-```
-
-### Commands
-
-```bash
-agentwire overnight prepare --from <session> --task "description"  # Queue session
-agentwire overnight list [--all]            # List queue (--all includes done/)
-agentwire overnight status                  # Orchestrator state + queue summary
-agentwire overnight cancel <id>             # Cancel queued/running item
-agentwire overnight priority <id> <n>       # Update priority (lower = higher)
-agentwire overnight start                   # Start orchestrator in tmux
-agentwire overnight serve                   # Run orchestrator in foreground
-agentwire overnight stop                    # Stop orchestrator
-agentwire overnight report                  # Morning report of completed items
-```
-
-### How Dispatch Works
-
-1. `prepare` captures: Claude sessionId (for `--resume --fork-session`), git branch, HEAD commit
-2. Orchestrator creates tmux session, launches agent with forked conversation context
-3. Agent checks out work branch (`overnight/<id>-<slug>`)
-4. Go prompt sent — agent executes with full prior context
-5. On completion: auto-commit, push, draft PR, archive to `done/`, notify
-
-### Configuration
-
-Add to `~/.agentwire/config.yaml`:
-
-```yaml
-overnight:
-  window_start: "22:00"       # Dispatch window start
-  window_end: "07:00"         # Dispatch window end
-  timezone: "America/Toronto" # Empty = local
-  check_interval: 60          # Seconds between queue checks
-  max_concurrent: 1           # Sessions to run at once
-  session_timeout: 7200       # Max seconds per session (2h)
-  session_type: "claude-auto" # Default session type
-  pr_draft: true              # Create draft PRs
-```
-
-### When to Use What
+## When to Use What
 
 | Workflow | Tool | Best For |
 |----------|------|----------|
 | Predefined recurring tasks | **Scheduler** | Nightly tests, lint, reports |
-| Human-prepared one-shot work | **Overnight queue** | Feature work, complex refactors |
 | Quick one-off tasks | **`agentwire ensure`** | Ad-hoc task execution |
 
 ```yaml

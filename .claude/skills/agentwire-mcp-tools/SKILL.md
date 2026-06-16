@@ -1,6 +1,6 @@
 ---
 name: agentwire-mcp-tools
-description: Reference for the `mcp__agentwire__*` MCP tools — session/pane management, voice/TTS, tasks/locks, channels (email + quo, outbound-only), machines/tunnels/network, history/roles/projects, scheduler, overnight queue, desktop UI, notifications. Use when agents inside agentwire sessions need to pick the right MCP tool instead of shelling out to the `agentwire` CLI.
+description: Reference for the `mcp__agentwire__*` MCP tools — session/pane management, voice/TTS, tasks/locks, channels (email + quo, outbound-only), machines/tunnels/network, history/roles/projects, scheduler, desktop UI, notifications. Use when agents inside agentwire sessions need to pick the right MCP tool instead of shelling out to the `agentwire` CLI.
 ---
 
 # AgentWire MCP Tools
@@ -151,17 +151,6 @@ up|down`) — the MCP surface is read-only introspection.
 | `agentwire scheduler disable task` | `scheduler_disable(task="...")` |
 | `agentwire scheduler history` | `scheduler_history(limit=20)` |
 
-## Overnight Session Queue (6 tools)
-
-| CLI Command | MCP Tool |
-|-------------|----------|
-| `agentwire overnight prepare --from s --task d` | `overnight_prepare(session="...", description="...", priority=50)` |
-| `agentwire overnight list` | `overnight_list()` |
-| `agentwire overnight status` | `overnight_status()` |
-| `agentwire overnight cancel id` | `overnight_cancel(item_id="...")` |
-| `agentwire overnight priority id n` | `overnight_priority(item_id="...", priority=N)` |
-| `agentwire overnight report` | `overnight_report()` |
-
 ## Desktop/Portal UI (12 tools)
 
 | Action | MCP Tool |
@@ -179,7 +168,7 @@ up|down`) — the MCP surface is read-only introspection.
 | Minimize all | `desktop_minimize_all()` |
 | Multi-window layout | `desktop_layout(windows=[{id: "...", zone: "left"}])` |
 
-**~98 tools total** (sessions, panes, voice, tasks, channels, scheduler, overnight queue, desktop UI, handoffs). When to use CLI vs MCP:
+**~92 tools total** (sessions, panes, voice, tasks, channels, scheduler, desktop UI, handoffs). When to use CLI vs MCP:
 - **MCP tools** — Agents in sessions (orchestrators, workers)
 - **CLI commands** — Humans, shell scripts, automation outside of agent sessions
 

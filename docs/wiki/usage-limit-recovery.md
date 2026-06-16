@@ -6,7 +6,7 @@ Deterministic recovery from the Claude Code usage-limit dialog. When a
 session hits its usage limit mid-task, Claude Code presents an interactive
 menu (`/rate-limit-options`) and the session blocks forever waiting for a
 human — a silent deadlock for any unattended surface (scheduled tasks,
-overnight queue, worker panes). This subsystem detects the dialog,
+worker panes). This subsystem detects the dialog,
 parks the session, emails the owner, and nudges the session back to work
 after the limit resets.
 
@@ -37,7 +37,7 @@ Detection runs in two places:
 
 | Where | Latency | Covers |
 |-------|---------|--------|
-| ensure's completion poll (`completion.wait_for_completion_signal`) | ≤10s | scheduler + overnight dispatched tasks |
+| ensure's completion poll (`completion.wait_for_completion_signal`) | ≤10s | scheduler-dispatched tasks |
 | `agentwire limits tick` watchdog sweep over **all** tmux panes | ≤60s | everything else: workers (panes 1+), interactive sessions |
 
 Both call the same module: `agentwire/usage_limit.py`.
@@ -76,7 +76,6 @@ the guard the rest of the system checks:
 | scheduler dispatch | skips the task (`task_skipped reason=usage_limit_parked`) without consuming `last_run`; no pre-dispatch session kill |
 | scheduler status | ensure exit 7 → `last_status: usage_limit` on the board/events |
 | idle hook (`idle-handler.sh`) | exits before any idle handling — no summary prompt typed into the dialog, no `/exit`, no kill |
-| overnight `check_completion` | reports `running`, never `stuck` |
 | `agentwire list --sessions` | `usage_limit: true` in JSON, `[parked: usage limit]` in text; flows to MCP `sessions_list` and the portal sessions API |
 
 On resume the file is archived to `~/.agentwire/usage-limit/done/` with a
@@ -162,7 +161,7 @@ file marks the pending retry).
 ## History
 
 Born from the 2026-06-10 incident: two scheduler verification runs hit the
-limit seconds after dispatch and sat on the dialog ~11 hours overnight —
+limit seconds after dispatch and sat on the dialog ~11 hours through the night —
 the supervising worker was polling shells, the shells were waiting on
 sessions, the sessions were waiting on a human. The manual recovery
 (select option 1, nudge after reset) completed both runs green and is

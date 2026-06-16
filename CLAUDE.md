@@ -42,7 +42,7 @@ Full CLI command reference lives in the `agentwire-cli` skill.
 
 **Agents running in agentwire sessions should use MCP tools instead of CLI commands.**
 
-The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, tasks, outbound channels, scheduler, overnight queue, desktop UI, handoffs). Rule of thumb: MCP for agents, CLI for humans/scripts.
+The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, tasks, outbound channels, scheduler, desktop UI, handoffs). Rule of thumb: MCP for agents, CLI for humans/scripts.
 
 **Note:** MCP tools don't support git worktree creation. For worktree-isolated work, use the CLI directly — and pick the right primitive:
 
@@ -118,7 +118,7 @@ LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wik
 
 ## Usage-Limit Recovery
 
-Deterministic (zero-LLM) recovery from the Claude Code usage-limit dialog: a launchd watchdog (`agentwire limits tick`, 60s) plus ensure's completion poll detect the dialog, park the session (option 1: stop and wait), parse the reset time, email the owner via Resend, and nudge the session to continue after reset. Park state under `~/.agentwire/usage-limit/` guards every surface — ensure exits 7 (`usage_limit`), the scheduler skips dispatch, the idle hook and overnight never reap a parked session. CLI under `agentwire limits ...`. Full reference: [`docs/wiki/usage-limit-recovery.md`](docs/wiki/usage-limit-recovery.md).
+Deterministic (zero-LLM) recovery from the Claude Code usage-limit dialog: a launchd watchdog (`agentwire limits tick`, 60s) plus ensure's completion poll detect the dialog, park the session (option 1: stop and wait), parse the reset time, email the owner via Resend, and nudge the session to continue after reset. Park state under `~/.agentwire/usage-limit/` guards every surface — ensure exits 7 (`usage_limit`), the scheduler skips dispatch, the idle hook never reaps a parked session. CLI under `agentwire limits ...`. Full reference: [`docs/wiki/usage-limit-recovery.md`](docs/wiki/usage-limit-recovery.md).
 
 ## Prompt Routing
 
@@ -142,7 +142,7 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 | `agentwire-mcp-tools` | Picking the right MCP tool from inside an agent session |
 | `agentwire-config` | Editing `~/.agentwire/config.yaml` (TTS, channels, services, etc.) |
 | `agentwire-project-config` | Editing `.agentwire.yml`, defining tasks, roles, idle notifications |
-| `agentwire-scheduler` | Scheduled task gates/schedule/priority + overnight queue |
+| `agentwire-scheduler` | Scheduled task gates/schedule/priority |
 | `agentwire-desktop-ui` | Editing portal static files (sidebar, windows, artifacts) |
 | `agentwire-pi` | Setting up pi sessions (zai, deepseek, openai, etc.) via pi coding agent |
 

@@ -164,7 +164,7 @@ agentwire scheduler run hello-nightly         # fire it now (ignores schedule)
 agentwire scheduler events --task hello-nightly --tail 20    # see what happened
 ```
 
-The scheduler runs the prompt headless in a fresh tmux session, captures the agent's output, writes a summary file, and tears the session down. → [Scheduled workloads](scheduling/scheduled-workloads.md) for branch management, gates, and the overnight queue.
+The scheduler runs the prompt headless in a fresh tmux session, captures the agent's output, writes a summary file, and tears the session down. → [Scheduled workloads](scheduling/scheduled-workloads.md) for branch management and gates.
 
 ---
 
