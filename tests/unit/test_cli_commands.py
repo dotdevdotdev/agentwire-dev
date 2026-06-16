@@ -9,6 +9,37 @@ import pytest
 import yaml
 
 
+# --- _recent_activity (scheduler status helper) ---
+
+class TestRecentActivity:
+    def test_keeps_outcome_events_newest_first(self):
+        from agentwire.__main__ import _recent_activity
+
+        events = [
+            {"ts": "2026-06-15T10:00:00+00:00", "event": "scheduler_sleeping"},
+            {"ts": "2026-06-15T10:01:00+00:00", "event": "task_completed",
+             "task": "a", "status": "complete", "summary": "ok"},
+            {"ts": "2026-06-15T10:02:00+00:00", "event": "task_started", "task": "b"},
+            {"ts": "2026-06-15T10:03:00+00:00", "event": "gate_error",
+             "task": "b", "gate_type": "git_commit", "reason": "TimeoutExpired"},
+        ]
+        out = _recent_activity(events, limit=5)
+        # Newest first, non-outcome events dropped.
+        assert [i["task"] for i in out] == ["b", "a"]
+        assert out[0]["detail"].startswith("[gate-error] git_commit")
+        assert "complete" in out[1]["detail"]
+
+    def test_respects_limit(self):
+        from agentwire.__main__ import _recent_activity
+
+        events = [
+            {"ts": f"2026-06-15T10:0{i}:00+00:00", "event": "task_completed",
+             "task": f"t{i}", "status": "complete"}
+            for i in range(6)
+        ]
+        assert len(_recent_activity(events, limit=3)) == 3
+
+
 # --- cmd_roles_list ---
 
 class TestCmdRolesList:

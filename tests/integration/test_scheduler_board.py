@@ -349,6 +349,20 @@ class TestBoardDisplay:
             assert "schedule_str" in row
             assert "interval_str" not in row
 
+    def test_gate_error_round_trips_and_surfaces(self, board_env):
+        board = load_board()
+        board.state["code-quality"] = TaskState(
+            last_status="complete",
+            last_gate_error="git_commit: TimeoutExpired: timed out after 10s",
+        )
+        save_board(board)
+
+        reloaded = load_board()
+        assert reloaded.state["code-quality"].last_gate_error.startswith("git_commit:")
+
+        row = next(r for r in get_board_display(reloaded) if r["name"] == "code-quality")
+        assert row["last_gate_error"].startswith("git_commit:")
+
 
 class TestSchedulerWorktreeDispatchOptsOutOfPR:
     """The scheduler is the deterministic PR finalizer, so its worktree task

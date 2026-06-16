@@ -171,6 +171,78 @@ class TestCheckGate:
         assert _check_gate(board, "t") is False
 
 
+# --- _check_gate: gate-eval errors surface instead of vanishing ---
+
+class TestGateError:
+    """A gate-eval exception (e.g. git timeout) must still fail OPEN, but no
+    longer silently — it's logged to the event stream and recorded on state.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_spam_state(self):
+        import agentwire.scheduler as sched
+        sched._gate_errored.clear()
+        yield
+        sched._gate_errored.clear()
+
+    @pytest.fixture
+    def board(self, tmp_path):
+        from agentwire.scheduler import Board, SchedulerTask, TaskState
+        task = SchedulerTask(name="t", project=str(tmp_path))
+        task.gate = {"git_commit": True}
+        board = Board(tasks={"t": task}, state={"t": TaskState()})
+        board.state["t"].last_gate_commit = "deadbeef"  # force gate to evaluate
+        return board
+
+    def test_timeout_fails_open_and_records(self, board):
+        import subprocess
+        from unittest.mock import patch
+        from agentwire.scheduler import _check_gate
+
+        boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
+        with patch("agentwire.scheduler.subprocess.run", side_effect=boom), \
+             patch("agentwire.scheduler.save_board") as save, \
+             patch("agentwire.scheduler._log_event") as log:
+            assert _check_gate(board, "t") is True  # still fails OPEN
+
+        assert "git_commit" in board.state["t"].last_gate_error
+        assert "TimeoutExpired" in board.state["t"].last_gate_error
+        save.assert_called_once()  # persisted so the board can show it
+        log.assert_called_once()
+        assert log.call_args.args[0] == "gate_error"
+
+    def test_error_logged_once_until_changes(self, board):
+        import subprocess
+        from unittest.mock import patch
+        from agentwire.scheduler import _check_gate
+
+        boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
+        with patch("agentwire.scheduler.subprocess.run", side_effect=boom), \
+             patch("agentwire.scheduler.save_board"), \
+             patch("agentwire.scheduler._log_event") as log:
+            assert _check_gate(board, "t") is True
+            assert _check_gate(board, "t") is True  # same error, no re-log
+        assert log.call_count == 1
+
+    def test_clears_when_gate_recovers(self, board, tmp_path):
+        import subprocess
+        from unittest.mock import patch
+        from agentwire.scheduler import _check_gate
+
+        boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
+        with patch("agentwire.scheduler.subprocess.run", side_effect=boom), \
+             patch("agentwire.scheduler.save_board"), \
+             patch("agentwire.scheduler._log_event"):
+            _check_gate(board, "t")
+        assert board.state["t"].last_gate_error
+
+        # Gate now has no preconditions → clean pass clears the recorded error.
+        board.tasks["t"].gate = {}
+        with patch("agentwire.scheduler.save_board"):
+            assert _check_gate(board, "t") is True
+        assert board.state["t"].last_gate_error == ""
+
+
 # --- _EXIT_TO_STATUS mapping ---
 
 class TestExitCodeMapping:
