@@ -1,5 +1,6 @@
 import { apiFetch } from '../api.js';
 import { normalizeMachine, sameMachine } from '../session-id.js';
+import { toastSuccess, toastError, withButtonBusy } from '../toast.js';
 
 export const projectsSection = {
     title: 'Projects',
@@ -82,7 +83,7 @@ export const projectsSection = {
         }
 
         if (action === 'start' && name) {
-            await this._startProjectSession({ name, path, machine });
+            await withButtonBusy(btn, () => this._startProjectSession({ name, path, machine }));
         }
     },
 
@@ -127,12 +128,13 @@ export const projectsSection = {
             const err = data.error || '';
             // If a race made the session appear, that's fine — just open it.
             if (!res.ok || (err && !/already exists/i.test(err))) {
-                console.warn('Failed to start session from project:', err || `HTTP ${res.status}`);
+                toastError(`Failed to start ${name}: ${err || `HTTP ${res.status}`}`);
                 return;
             }
+            toastSuccess(`Started ${name}`);
             open(data.session || data.name || name);
         } catch (e) {
-            console.warn('Failed to start session from project', e);
+            toastError(`Failed to start ${name}: ${e.message}`);
         }
     },
 };

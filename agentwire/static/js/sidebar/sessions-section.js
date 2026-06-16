@@ -2,6 +2,7 @@ import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
 import { buildSessionId, normalizeMachine } from '../session-id.js';
 import { isService, loadCustomServices } from '../service-classification.js';
+import { toastSuccess, toastError } from '../toast.js';
 
 // Shared state across sessions and services sections
 export const activityStates = new Map();
@@ -110,8 +111,9 @@ async function handleCloseClick(session) {
         // The portal broadcasts sessions_update after the kill; drop the row
         // locally too so the sidebar doesn't wait on the round-trip.
         allSessions = allSessions.filter(s => (s.name || '') !== session);
+        toastSuccess(`Killed ${session}`);
     } catch (err) {
-        console.error(`Failed to kill session ${session}:`, err);
+        toastError(`Failed to kill ${session}: ${err.message}`);
     } finally {
         killingSessions.delete(session);
         notifyListeners();
@@ -265,13 +267,17 @@ export const sessionsSection = {
                     this._render(body);
                     const { openSessionTerminal } = await import('../desktop.js');
                     const sessionName = data.session || data.name || name;
+                    toastSuccess(`Created ${sessionName}`);
                     openSessionTerminal(sessionName, 'terminal');
                 } else {
                     const err = await res.json().catch(() => ({}));
+                    const reason = err.error || `HTTP ${res.status}`;
+                    toastError(`Failed to create ${name}: ${reason}`);
                     btn.textContent = err.error || 'Error';
                     setTimeout(() => { btn.disabled = false; btn.textContent = isWorktree ? 'Create worktree' : 'Create'; }, 2000);
                 }
             } catch (e) {
+                toastError(`Failed to create ${name}: ${e.message}`);
                 btn.textContent = 'Error';
                 setTimeout(() => { btn.disabled = false; btn.textContent = isWorktree ? 'Create worktree' : 'Create'; }, 2000);
             }

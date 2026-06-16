@@ -1,5 +1,6 @@
 import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
+import { toastSuccess, toastError, withButtonBusy, errorFromResponse } from '../toast.js';
 
 const COLLAPSED_KEY = 'scheduler-section-collapsed';
 const DEFAULT_COLLAPSED = ['inactive'];  // first-load: hide the long disabled list
@@ -201,28 +202,48 @@ export const schedulerSection = {
 
         // Daemon start/stop toggle (not tied to a task row).
         if (action === 'scheduler-start' || action === 'scheduler-stop') {
-            btn.disabled = true;
-            try {
-                const path = action === 'scheduler-start' ? '/api/scheduler/start' : '/api/scheduler/stop';
-                await apiFetch(path, { method: 'POST' });
-            } catch (e) { console.warn('Scheduler toggle failed', e); }
-            // Daemon takes a moment to spin up / write its state file.
-            setTimeout(() => this.refresh(body), 1500);
+            const starting = action === 'scheduler-start';
+            await withButtonBusy(btn, async () => {
+                try {
+                    const path = starting ? '/api/scheduler/start' : '/api/scheduler/stop';
+                    const res = await apiFetch(path, { method: 'POST' });
+                    if (!res.ok) throw new Error(await errorFromResponse(res));
+                    toastSuccess(starting ? 'Scheduler started' : 'Scheduler stopped');
+                    // Response-gated refresh — no fixed 1.5s guess. The daemon has
+                    // acknowledged by the time the POST resolves; WS scheduler_state
+                    // events keep it current after that.
+                    await this.refresh(body);
+                } catch (err) {
+                    toastError(`Scheduler ${starting ? 'start' : 'stop'} failed: ${err.message}`);
+                }
+            });
             return;
         }
 
         const item = btn.closest('[data-task]');
         if (!item) return;
         const task = item.dataset.task;
-        try {
-            if (action === 'run') {
-                await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/run`, { method: 'POST' });
-            } else if (action === 'enable') {
-                await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/enable`, { method: 'POST' });
-            } else if (action === 'disable') {
-                await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/disable`, { method: 'POST' });
+        await withButtonBusy(btn, async () => {
+            try {
+                let res, msg;
+                if (action === 'run') {
+                    res = await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/run`, { method: 'POST' });
+                    msg = `Triggered ${task}`;
+                } else if (action === 'enable') {
+                    res = await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/enable`, { method: 'POST' });
+                    msg = `Enabled ${task}`;
+                } else if (action === 'disable') {
+                    res = await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(task)}/disable`, { method: 'POST' });
+                    msg = `Disabled ${task}`;
+                } else {
+                    return;
+                }
+                if (!res.ok) throw new Error(await errorFromResponse(res));
+                toastSuccess(msg);
+                await this.refresh(body);
+            } catch (err) {
+                toastError(`Task ${action} failed: ${err.message}`);
             }
-            await this.refresh(body);
-        } catch (e) { console.warn('Scheduler action failed', e); }
+        });
     },
 };

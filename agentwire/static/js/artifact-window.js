@@ -8,6 +8,12 @@
 import { apiFetch, getToken } from './api.js';
 import { desktop } from './desktop-manager.js';
 
+// If the iframe's `load` event hasn't fired by now, treat it as stuck and flip
+// the spinner to the error state. The native `error` event doesn't fire for
+// many failure shapes (blank response, hung connection), so the spinner would
+// otherwise spin forever (issue #17).
+const ARTIFACT_LOAD_TIMEOUT_MS = 15000;
+
 export class ArtifactWindow {
     /**
      * @param {Object} options
@@ -30,6 +36,7 @@ export class ArtifactWindow {
         this.iframe = null;
         this.isOpen = false;
         this._objectUrl = null; // blob URL for token-authed artifact loads
+        this._loadTimer = null; // stuck-spinner watchdog
     }
 
     /**
@@ -52,6 +59,8 @@ export class ArtifactWindow {
      */
     close() {
         if (!this.isOpen) return;
+
+        this._clearLoadTimeout();
 
         // Remove iframe to stop any running scripts
         if (this.iframe) {
@@ -95,11 +104,52 @@ export class ArtifactWindow {
      */
     reload() {
         if (this.iframe) {
+            this._resetLoadingUI();
+            this._armLoadTimeout();
             this._setIframeSrc();
         }
     }
 
     // Private methods
+
+    _content() {
+        return this.winbox ? this.winbox.body.querySelector('.artifact-window-content') : null;
+    }
+
+    _clearLoadTimeout() {
+        if (this._loadTimer) {
+            clearTimeout(this._loadTimer);
+            this._loadTimer = null;
+        }
+    }
+
+    _armLoadTimeout() {
+        this._clearLoadTimeout();
+        this._loadTimer = setTimeout(() => {
+            this._loadTimer = null;
+            this._showLoadError(`Timed out loading: ${this.url}`);
+        }, ARTIFACT_LOAD_TIMEOUT_MS);
+    }
+
+    _resetLoadingUI() {
+        const content = this._content();
+        if (!content) return;
+        content.querySelector('.artifact-loading')?.classList.remove('hidden');
+        content.querySelector('.artifact-error')?.classList.add('hidden');
+    }
+
+    _showLoadError(message) {
+        this._clearLoadTimeout();
+        const content = this._content();
+        if (!content) return;
+        content.querySelector('.artifact-loading')?.classList.add('hidden');
+        const errorEl = content.querySelector('.artifact-error');
+        if (errorEl) {
+            errorEl.classList.remove('hidden');
+            const msgEl = errorEl.querySelector('.artifact-error-message');
+            if (msgEl) msgEl.textContent = message;
+        }
+    }
 
     _createContainer() {
         const container = document.createElement('div');
@@ -228,19 +278,16 @@ export class ArtifactWindow {
         }
 
         this.iframe.addEventListener('load', () => {
+            this._clearLoadTimeout();
             if (loadingEl) loadingEl.classList.add('hidden');
             if (errorEl) errorEl.classList.add('hidden');
         });
 
         this.iframe.addEventListener('error', () => {
-            if (loadingEl) loadingEl.classList.add('hidden');
-            if (errorEl) {
-                errorEl.classList.remove('hidden');
-                errorEl.querySelector('.artifact-error-message').textContent =
-                    `Failed to load: ${this.url}`;
-            }
+            this._showLoadError(`Failed to load: ${this.url}`);
         });
 
+        this._armLoadTimeout();
         this._setIframeSrc();
         content.insertBefore(this.iframe, content.firstChild);
     }
