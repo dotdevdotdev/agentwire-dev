@@ -2,6 +2,8 @@
 
 Global hotkeys for voice input on macOS using [Hammerspoon](https://www.hammerspoon.org/). Hold a key to record, release to send — works from any app.
 
+> Want a toggle-based variant (tap to start/stop) with a **voice target-picker** that fuzzy-matches a spoken session name? See [`voice/hammerspoon-ptt.md`](../voice/hammerspoon-ptt.md) and the runnable [`examples/hammerspoon-ptt/`](../../../examples/hammerspoon-ptt/).
+
 ## Prerequisites
 
 1. **Hammerspoon** installed (`brew install --cask hammerspoon`)
