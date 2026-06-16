@@ -104,6 +104,7 @@ class TaskState:
     last_duration: int = 0
     run_count: int = 0
     last_summary: str = ""
+    last_gate_error: str = ""     # last gate-eval exception reason (failed open)
     last_gate_commit: str = ""    # HEAD at last dispatch (for gate checks)
     last_dispatch: datetime | None = None  # set BEFORE running (restart safety)
     # Active worktree-PR tracking (set on finalize, cleared by the reaper on
@@ -273,6 +274,7 @@ def load_board() -> Board:
                 last_duration=int(s.get("last_duration", 0)),
                 run_count=int(s.get("run_count", 0)),
                 last_summary=str(s.get("last_summary", "")),
+                last_gate_error=str(s.get("last_gate_error", "")),
                 last_gate_commit=str(s.get("last_gate_commit", "")),
                 last_dispatch=_parse_datetime_field(s.get("last_dispatch")),
                 worktree_branch=str(s.get("worktree_branch", "")),
@@ -305,6 +307,8 @@ def save_board(board: Board) -> None:
         }
         if s.last_summary:
             entry["last_summary"] = s.last_summary
+        if s.last_gate_error:
+            entry["last_gate_error"] = s.last_gate_error
         if s.last_gate_commit:
             entry["last_gate_commit"] = s.last_gate_commit
         if s.last_dispatch:
@@ -507,13 +511,23 @@ Cleared per-task when the task is dispatched (runs) or when
 conditions change (new commits make the gate pass).
 """
 
+_gate_errored: dict[str, str] = {}
+"""Last gate-eval error reason per task (log-spam control + change detection).
+
+Cleared when the gate next evaluates cleanly, so a transient git timeout
+surfaces once rather than on every loop.
+"""
+
 
 def _check_gate(board: Board, task_name: str) -> bool:
     """Return True if task should run, False to skip.
 
     Evaluates gate preconditions defined on the task. Multiple gate keys
-    are AND'd — all must pass. Fails open (returns True) on errors,
-    missing baseline, or no gate defined.
+    are AND'd — all must pass. Fails OPEN (returns True) on errors,
+    missing baseline, or no gate defined — but a gate-eval *exception* is
+    no longer silent: it's logged to the event stream and surfaced on the
+    board as `last_gate_error`, so a git timeout that lets the task run
+    anyway leaves a trail instead of vanishing.
 
     Only logs the first time a task is gated — subsequent checks for the
     same task are silent until the task runs or conditions change.
@@ -522,6 +536,7 @@ def _check_gate(board: Board, task_name: str) -> bool:
     gate = task.gate
     if not gate or not isinstance(gate, dict):
         _gated_tasks.discard(task_name)
+        _clear_gate_error(board, task_name)
         return True
 
     cfg = _sched_config()
@@ -537,6 +552,26 @@ def _check_gate(board: Board, task_name: str) -> bool:
             _gated_tasks.add(task_name)
         return False
 
+    def _gate_error(gate_type: str, exc: Exception):
+        """Record a gate-eval exception, then fail OPEN.
+
+        Deliberately keeps the fail-open behaviour (a closed gate that
+        errored would block every task) but routes the captured reason
+        into the event log + board so the run is no longer UNLOGGED.
+        """
+        reason = " ".join(f"{type(exc).__name__}: {exc}".split())[:200]
+        if _gate_errored.get(task_name) != reason:
+            _gate_errored[task_name] = reason
+            _log_event("gate_error", task=task_name, gate_type=gate_type,
+                       reason=reason)
+            print(f"[{_ts()}] Gate error on {task_name}: {gate_type} "
+                  f"({reason}) — failing open")
+            state.last_gate_error = f"{gate_type}: {reason}"
+            board.state[task_name] = state
+            save_board(board)
+        _gated_tasks.discard(task_name)
+        return True
+
     # git_commit: skip if HEAD unchanged since last run
     if gate.get("git_commit"):
         if not state.last_gate_commit:
@@ -551,9 +586,8 @@ def _check_gate(board: Board, task_name: str) -> bool:
                 current_head = result.stdout.strip()
                 if current_head == state.last_gate_commit:
                     return _gate_skip("git_commit", "no new commits")
-        except Exception:
-            _gated_tasks.discard(task_name)
-            return True  # Fail open
+        except Exception as exc:
+            return _gate_error("git_commit", exc)
 
     # git_diff: skip if no commits touched matching paths
     git_diff_paths = gate.get("git_diff")
@@ -571,9 +605,8 @@ def _check_gate(board: Board, task_name: str) -> bool:
             if result.returncode == 0 and not result.stdout.strip():
                 return _gate_skip("git_diff", f"no changes in {', '.join(git_diff_paths)}",
                                   paths=git_diff_paths)
-        except Exception:
-            _gated_tasks.discard(task_name)
-            return True  # Fail open
+        except Exception as exc:
+            return _gate_error("git_diff", exc)
 
     # command: skip if command exits non-zero
     gate_cmd = gate.get("command")
@@ -586,13 +619,27 @@ def _check_gate(board: Board, task_name: str) -> bool:
             if result.returncode != 0:
                 return _gate_skip("command", f"exit {result.returncode}",
                                   command=gate_cmd)
-        except Exception:
-            _gated_tasks.discard(task_name)
-            return True  # Fail open
+        except Exception as exc:
+            return _gate_error("command", exc)
 
     # Gate passed — clear from gated set so it can be re-reported if gated again later
     _gated_tasks.discard(task_name)
+    _clear_gate_error(board, task_name)
     return True
+
+
+def _clear_gate_error(board: Board, task_name: str) -> None:
+    """Clear a previously-recorded gate error once the gate evaluates cleanly.
+
+    No-op (and no board write) unless this task actually had an error, so
+    the common clean path stays cheap.
+    """
+    state = board.state.get(task_name)
+    had_tracked = _gate_errored.pop(task_name, None) is not None
+    if had_tracked or (state is not None and state.last_gate_error):
+        if state is not None and state.last_gate_error:
+            state.last_gate_error = ""
+            save_board(board)
 
 
 def pick_next_task(board: Board) -> tuple[str | None, float]:
@@ -1595,6 +1642,8 @@ def get_board_display(board: Board) -> list[dict]:
         }
         if state.last_summary:
             row["last_summary"] = state.last_summary
+        if state.last_gate_error:
+            row["last_gate_error"] = state.last_gate_error
         rows.append(row)
 
     # Sort: enabled first, then by overdue (most overdue first)

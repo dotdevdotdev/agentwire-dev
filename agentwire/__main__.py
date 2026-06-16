@@ -9706,6 +9706,7 @@ def cmd_scheduler_status(args) -> int:
         format_interval,
         load_board,
         pick_next_task,
+        read_events,
     )
 
     json_mode = getattr(args, 'json', False)
@@ -9727,6 +9728,7 @@ def cmd_scheduler_status(args) -> int:
     task_count = len(board.tasks)
     enabled_count = sum(1 for t in board.tasks.values() if t.enabled)
     next_task, wait_seconds = pick_next_task(board)
+    recent_activity = _recent_activity(read_events(tail=60), limit=5)
 
     result = {
         "running": running,
@@ -9735,6 +9737,7 @@ def cmd_scheduler_status(args) -> int:
         "enabled_count": enabled_count,
         "next_task": next_task,
         "next_in_seconds": round(wait_seconds, 1),
+        "recent_activity": recent_activity,
     }
 
     if json_mode:
@@ -9754,7 +9757,50 @@ def cmd_scheduler_status(args) -> int:
     else:
         print("Next: nothing due")
 
+    if recent_activity:
+        print("\nRecent activity:")
+        for item in recent_activity:
+            print(f"  {item['when']:<16} {item['task']:<24} {item['detail']}")
+
     return 0
+
+
+def _recent_activity(events: list[dict], limit: int = 5) -> list[dict]:
+    """Distill the event stream into a short 'what just happened' list.
+
+    Keeps the outcome-bearing events (completed/failed/gate-error) so a
+    glance at `scheduler status` shows recent results — including the
+    fail-open gate errors that used to vanish entirely.
+    """
+    keep = {"task_completed", "task_failed", "gate_error"}
+    out: list[dict] = []
+    for evt in reversed(events):
+        etype = evt.get("event")
+        if etype not in keep:
+            continue
+        ts = evt.get("ts", "")
+        try:
+            when = datetime.datetime.fromisoformat(ts).strftime("%m-%d %H:%M")
+        except (ValueError, TypeError):
+            when = ts[:16] if ts else "?"
+        if etype == "task_completed":
+            status = evt.get("status", "?")
+            summary = evt.get("summary", "")
+            detail = f"{status}" + (f" — {summary}" if summary else "")
+        elif etype == "task_failed":
+            detail = "failed — " + (evt.get("summary") or evt.get("reason") or "?")
+        else:  # gate_error
+            detail = f"[gate-error] {evt.get('gate_type', '?')}: {evt.get('reason', '?')}"
+        if len(detail) > 80:
+            detail = detail[:79] + "…"
+        out.append({"when": when, "task": evt.get("task", "?"), "detail": detail})
+        if len(out) >= limit:
+            break
+    return out
+
+
+# Statuses whose last_summary is worth surfacing as a "why" line on the board.
+_BAD_STATUSES = {"failed", "incomplete", "timeout", "lock_conflict", "usage_limit"}
 
 
 def cmd_scheduler_board(args) -> int:
@@ -9830,6 +9876,18 @@ def cmd_scheduler_board(args) -> int:
                 f"{status_str:<12} "
                 f"{r['overdue_str']}"
             )
+
+            # Surface WHY: a gate-eval error (fail-open, would otherwise be
+            # invisible) takes precedence; else the summary behind a bad status.
+            detail = ""
+            if r.get("last_gate_error"):
+                detail = f"[gate-error] {r['last_gate_error']}"
+            elif status_str in _BAD_STATUSES and r.get("last_summary"):
+                detail = r["last_summary"]
+            if detail:
+                if len(detail) > 96:
+                    detail = detail[:95] + "…"
+                print(f"  {'':<30} ↳ {detail}")
 
         print()
 
@@ -10179,6 +10237,10 @@ def cmd_scheduler_events(args) -> int:
         elif event_type == "task_skipped":
             reason = evt.get("reason", "?")
             print(f"{ts_str}  {event_type:<22} {task_name:<24} reason: {reason}")
+        elif event_type == "gate_error":
+            gate_type = evt.get("gate_type", "?")
+            reason = evt.get("reason", "?")
+            print(f"{ts_str}  {event_type:<22} {task_name:<24} {gate_type}: {reason} (failed open)")
         elif event_type == "scheduler_sleeping":
             next_task = evt.get("next_task", "?")
             sleep_s = evt.get("sleep_seconds", 0)
