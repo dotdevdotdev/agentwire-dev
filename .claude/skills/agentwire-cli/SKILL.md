@@ -1,6 +1,6 @@
 ---
 name: agentwire-cli
-description: Full `agentwire` CLI command reference — session/pane management, portal, TTS/STT, voice, channels (email + quo, outbound-only), machine/tunnel/lock management, projects/history/roles, scheduler, overnight queue, web helper (fetch), safety/diagnostics. Use when running or composing `agentwire ...` shell commands, building automation scripts, or answering "how do I X from the CLI".
+description: Full `agentwire` CLI command reference — session/pane management, portal, TTS/STT, voice, channels (email + quo, outbound-only), machine/tunnel/lock management, projects/history/roles, scheduler, web helper (fetch), safety/diagnostics. Use when running or composing `agentwire ...` shell commands, building automation scripts, or answering "how do I X from the CLI".
 ---
 
 # AgentWire CLI Reference
@@ -230,15 +230,6 @@ agentwire limits status         # show sessions parked on usage limits
 agentwire limits resume -s name [--force]  # manually resume a parked session now
 agentwire limits install        # install + load the launchd watchdog (60s tick)
 agentwire limits uninstall      # unload + remove the watchdog
-
-# Overnight session queue
-agentwire overnight prepare --from <session> --task "desc"  # queue session
-agentwire overnight list [--all]            # list queue items
-agentwire overnight status                  # orchestrator state
-agentwire overnight cancel <id>             # cancel item
-agentwire overnight priority <id> <n>       # update priority
-agentwire overnight start|serve|stop        # manage orchestrator daemon
-agentwire overnight report                  # morning report
 
 # Setup & Development
 agentwire init                  # interactive setup wizard

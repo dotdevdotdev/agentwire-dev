@@ -52,19 +52,6 @@ Workers auto-exit when idle. They write summary files before exiting, and you re
 
 Sessions can have parent sessions. When you go idle, your parent is notified. Use `notify(text, to=session)` to send text notifications up the chain.
 
-## Overnight Queue
-
-Queue prepared sessions for autonomous overnight execution with full conversation context.
-
-| Tool | What it does |
-|------|-------------|
-| `overnight_prepare(session, description)` | Queue a session for overnight dispatch |
-| `overnight_list()` | List queued/running items |
-| `overnight_status()` | Orchestrator state and queue summary |
-| `overnight_cancel(item_id)` | Cancel a queued or running item |
-| `overnight_priority(item_id, priority)` | Update item priority |
-| `overnight_report()` | Morning report of completed items |
-
 ## Wiki (Knowledge Base)
 
 When you discover something noteworthy during your work — a technology gotcha, a debugging solution, a useful pattern, an API quirk — write or update a wiki page at `~/.agentwire/wiki/wiki/`. This compounds knowledge across sessions so future agents don't re-research the same things.

@@ -16,12 +16,12 @@ Detection runs in two places:
   sweeping all tmux panes. Also the resume timer: a tick that finds a parked
   session past its reset time sends the resume nudge.
 - ensure's completion poll (``completion.wait_for_completion_signal``) —
-  fast path (≤10s) for scheduler/overnight-dispatched tasks.
+  fast path (≤10s) for scheduler-dispatched tasks.
 
 State: one JSON file per parked session under ``~/.agentwire/usage-limit/``
 (worktree session names contain ``/`` and nest one directory down, same as
 the tasks dir). File presence in the active dir == "parked" — that is the
-guard ensure, the scheduler, the idle hook, and overnight all check so a
+guard ensure, the scheduler, and the idle hook all check so a
 parked session is never prompted, re-dispatched, or reaped. Files are
 archived to ``usage-limit/done/`` on resume.
 """

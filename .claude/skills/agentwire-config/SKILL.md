@@ -1,6 +1,6 @@
 ---
 name: agentwire-config
-description: Reference for `~/.agentwire/config.yaml` — main config structure including server/portal/SSL, projects, TTS/STT, agent, dev, services, executables, pi (binary/system_prompt/extra_env/providers), uploads/artifacts/wiki, channels (email + quo, outbound-only), scheduler, worktree, overnight, session defaults. Use when editing or debugging agentwire config, setting up TTS/STT backends, configuring pi providers, or explaining config fields to the user.
+description: Reference for `~/.agentwire/config.yaml` — main config structure including server/portal/SSL, projects, TTS/STT, agent, dev, services, executables, pi (binary/system_prompt/extra_env/providers), uploads/artifacts/wiki, channels (email + quo, outbound-only), scheduler, worktree, session defaults. Use when editing or debugging agentwire config, setting up TTS/STT backends, configuring pi providers, or explaining config fields to the user.
 ---
 
 # AgentWire Config (`~/.agentwire/config.yaml`)
@@ -216,20 +216,6 @@ worktree:                         # `agentwire worktree <name>` orchestration (W
                                   # {name} (verbatim), {slug} (slugified), {user} (OS login).
                                   # Omit → branch == name verbatim. Only the git branch is
                                   # templated; the tmux session name stays {project}-{name}.
-
-overnight:
-  window_start: "22:00"        # Start of overnight work window
-  window_end: "07:00"          # End of overnight work window
-  timezone: "America/Toronto"  # Empty = local timezone
-  check_interval: 60           # Seconds between queue checks
-  max_concurrent: 1            # Sessions to run at once
-  session_timeout: 7200        # Max seconds per session (2h)
-  branch_prefix: "overnight/"  # Git branch prefix
-  pr_draft: true               # Create draft PRs
-  session_type: "claude-auto"  # Session type for execution
-  go_prompt: |                 # Prompt sent when dispatching
-    You have been prepared with full context for this task.
-    Begin autonomous execution now. Commit frequently.
 
 session:
   # No global default-role: a session's etiquette is derived from its spawn

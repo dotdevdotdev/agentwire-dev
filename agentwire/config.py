@@ -396,42 +396,6 @@ class SchedulerConfig:
         self.live_state_file = _expand_path(self.live_state_file) or self.live_state_file
 
 
-DEFAULT_GO_PROMPT = """\
-You have been prepared with full context for this task during an interactive \
-session. All requirements, clarifications, and decisions are in your \
-conversation history above.
-
-Begin autonomous execution now. Commit frequently. Run tests after significant \
-changes. When complete, summarize what you accomplished."""
-
-
-@dataclass
-class OvernightConfig:
-    """Overnight session queue configuration."""
-
-    window_start: str = "22:00"
-    window_end: str = "07:00"
-    timezone: str = ""  # Empty = local timezone
-    check_interval: int = 60  # Seconds between queue checks
-    max_concurrent: int = 1  # Sequential by default
-    session_timeout: int = 7200  # 2 hours max per session
-    branch_prefix: str = "overnight/"
-    pr_draft: bool = True
-    session_type: str = "claude-auto"
-    session_name: str = "agentwire-overnight"  # Tmux session for daemon
-    events_file: Path = field(
-        default_factory=lambda: Path.home() / ".agentwire" / "overnight-events.jsonl"
-    )
-    live_state_file: Path = field(
-        default_factory=lambda: Path.home() / ".agentwire" / "overnight-live.json"
-    )
-    go_prompt: str = DEFAULT_GO_PROMPT
-
-    def __post_init__(self):
-        self.events_file = _expand_path(self.events_file) or self.events_file
-        self.live_state_file = _expand_path(self.live_state_file) or self.live_state_file
-
-
 @dataclass
 class SafetyConfig:
     """Global damage-control safety knobs."""
@@ -478,7 +442,6 @@ class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     repl: ReplConfig = field(default_factory=ReplConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
-    overnight: OvernightConfig = field(default_factory=OvernightConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
@@ -741,24 +704,6 @@ def _dict_to_config(data: dict) -> Config:
         dispatch_cooldown=scheduler_data.get("dispatch_cooldown", 60),
     )
 
-    # Overnight
-    overnight_data = data.get("overnight", {})
-    overnight = OvernightConfig(
-        window_start=overnight_data.get("window_start", "22:00"),
-        window_end=overnight_data.get("window_end", "07:00"),
-        timezone=overnight_data.get("timezone", ""),
-        check_interval=overnight_data.get("check_interval", 60),
-        max_concurrent=overnight_data.get("max_concurrent", 1),
-        session_timeout=overnight_data.get("session_timeout", 7200),
-        branch_prefix=overnight_data.get("branch_prefix", "overnight/"),
-        pr_draft=overnight_data.get("pr_draft", True),
-        session_type=overnight_data.get("session_type", "claude-auto"),
-        session_name=overnight_data.get("session_name", "agentwire-overnight"),
-        events_file=overnight_data.get("events_file", "~/.agentwire/overnight-events.jsonl"),
-        live_state_file=overnight_data.get("live_state_file", "~/.agentwire/overnight-live.json"),
-        go_prompt=overnight_data.get("go_prompt", DEFAULT_GO_PROMPT),
-    )
-
     # REPL (Textual TUI) — theme overrides
     repl_data = data.get("repl", {}) or {}
     theme_overrides = repl_data.get("theme", {}) or {}
@@ -822,7 +767,6 @@ def _dict_to_config(data: dict) -> Config:
         portal=portal,
         services=services,
         scheduler=scheduler,
-        overnight=overnight,
         channels=channel_configs,
         repl=repl,
         safety=safety,

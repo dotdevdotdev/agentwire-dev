@@ -39,7 +39,7 @@ session:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `pi-<provider>` (e.g. `pi-zai`, `pi-deepseek`), `pi-<provider>-restricted`, `pi-<provider>-readonly` | Session permission level. **Use `claude-auto` for overnight/unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. **`pi-*` types** resolve `<provider>` against `pi.providers.<name>` in `~/.agentwire/config.yaml` — see the `agentwire-pi` skill. |
+| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `pi-<provider>` (e.g. `pi-zai`, `pi-deepseek`), `pi-<provider>-restricted`, `pi-<provider>-readonly` | Session permission level. **Use `claude-auto` for unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. **`pi-*` types** resolve `<provider>` against `pi.providers.<name>` in `~/.agentwire/config.yaml` — see the `agentwire-pi` skill. |
 | `roles` | List of role names | Roles to load (from bundled or `~/.agentwire/roles/`) |
 | `voice` | Voice name | TTS voice for this project |
 | `parent` | Session name | Parent session for hierarchical notifications |
@@ -85,7 +85,7 @@ tasks:
       capture: 50              # Lines to capture
       save: ~/logs/{{ task }}.log
 
-    # Branch management (for overnight/async agent workflows)
+    # Branch management (for async agent workflows)
     starting_ref: main         # Git ref to checkout before task runs
     work_branch: agent/task    # Branch for agent's work (default: agent/<task>-<date>)
     pr_target: main            # PR target branch (default: starting_ref)
@@ -170,7 +170,7 @@ Roles define agent behavior and are composable. Mix and match roles in `.agentwi
 | Role | Purpose |
 |------|---------|
 | `agentwire` | Core session/pane/MCP tools awareness |
-| `orchestrator` | Long-lived project orchestrator — plans, delegates, manages overnight queue |
+| `orchestrator` | Long-lived project orchestrator — plans, delegates, reviews results |
 | `voice` | Voice communication (speak/listen) |
 | `worker` | Receive tasks, execute autonomously, report back |
 | `task-runner` | Scheduled task execution |

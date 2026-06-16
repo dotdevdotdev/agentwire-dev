@@ -16,7 +16,7 @@ Session types follow `pi-<provider>[-restricted|-readonly]`. Adding a new provid
 | Anything OpenAI-compatible | **`pi-<provider>`** | Add to `pi.providers` (+ optionally `~/.pi/agent/models.json`) |
 | Worker panes doing bounded tasks | **`pi-<provider>-restricted`** | Read + search + bash, no edits |
 | Read-only audit / inspection sessions | **`pi-<provider>-readonly`** | No bash, pure file inspection |
-| Anthropic subscription overnight work | `claude-auto` | Classifier safety net |
+| Anthropic subscription unattended work | `claude-auto` | Classifier safety net |
 
 ## Prerequisites
 

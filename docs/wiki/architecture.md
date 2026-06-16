@@ -69,13 +69,11 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 ├── machines.json            # remote machines registry
 ├── scheduler.yaml           # scheduled tasks
 ├── scheduler-events.jsonl   # scheduler audit log
-├── overnight-events.jsonl   # overnight queue audit log
 ├── roles/                   # role files (system-prompt personas)
 ├── voices/                  # TTS reference WAVs
 ├── damage-control/          # OPTIONAL user override for security rules
 ├── apps/, artifacts/        # agent-generated UIs and HTML artifacts
 ├── locks/                   # session mutexes (acquired by `agentwire ensure`)
-├── overnight/               # overnight queue items
 ├── sessions/                # per-session metadata.json
 ├── usage-limit/             # usage-limit recovery park state
 ├── tasks/                   # ensure-task summary files
@@ -133,14 +131,13 @@ tasks:
 
 ---
 
-## Scheduling / Overnight
+## Scheduling
 
-Two execution paths for non-interactive work:
+Non-interactive work runs through the scheduler:
 
 | Path | Field | Dispatch | Best for |
 |---|---|---|---|
 | **Ensure task** | `task: <name>` in scheduler.yaml + `tasks: <name>:` in .agentwire.yml | `agentwire ensure` → tmux session → Claude Code | Recurring agent work |
-| **Overnight queue** | `agentwire overnight prepare …` | Orchestrator dispatches forked Claude sessions during a configured window | Human-prepared one-shot work |
 
 ```
                 ┌──────── ~/.agentwire/scheduler.yaml ─────────┐
@@ -150,18 +147,10 @@ Two execution paths for non-interactive work:
                                    ▼
                           agentwire ensure
                           (tmux + Claude)
-
-                ┌── ~/.agentwire/overnight/  (overnight prepare) ┐
-                │  human prepares interactively → sessionId     │
-                └──────────────┬────────────────────────────────┘
-                               ▼
-                    overnight orchestrator dispatches inside window
-                    (forks Claude context, runs to completion, opens PR)
 ```
 
 Decision shortcut:
 - Recurring + autonomous → scheduler with `task:`.
-- One-shot, judgment-heavy → overnight queue.
 - Ad-hoc → `agentwire ensure` or just open a session.
 
 → [Scheduled workloads](scheduling/scheduled-workloads.md).

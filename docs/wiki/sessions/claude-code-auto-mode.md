@@ -171,7 +171,7 @@ Allowed actions execute immediately, zero classifier cost. Everything else: clas
 | Token overhead | None | ~20% for command-heavy tasks |
 | Headless stall on block | N/A | idle_timeout catches it |
 
-**Bottom line:** `claude-auto` does everything `claude-bypass` does for normal overnight
+**Bottom line:** `claude-auto` does everything `claude-bypass` does for normal unattended
 work, but prevents catastrophic failures at 3am when nobody's watching.
 
 ---
