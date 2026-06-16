@@ -7,6 +7,7 @@ import {
 import {
     getPermission, isMuted, setMuted, enableNotifications,
 } from '../notification-prefs.js';
+import { isAutoSend, setAutoSend, AUTOSEND_EVENT } from '../voice/autosend-prefs.js';
 
 function renderDisplayPrefs() {
     const current = getTerminalFontSize();
@@ -72,6 +73,38 @@ function bindNotificationPrefs(body) {
     wire();
 }
 
+function renderAutoSendPref() {
+    const on = isAutoSend();
+    return `<div class="sidebar-display-prefs" data-autosend-block>
+        <div class="sidebar-display-row">
+            <label class="sidebar-config-key">Voice auto-send</label>
+            <label class="sidebar-notif-mute"><input type="checkbox" data-action="voice-autosend"${on ? ' checked' : ''}/> ${on ? 'on' : 'off'}</label>
+        </div>
+        <div class="sidebar-display-row">
+            <span class="sidebar-display-hint">Skip transcript review — send on release</span>
+        </div>
+    </div>`;
+}
+
+function bindAutoSendPref(body) {
+    const repaint = () => {
+        const block = body.querySelector('[data-autosend-block]');
+        if (!block) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = renderAutoSendPref();
+        block.replaceWith(tmp.firstElementChild);
+        wire();
+    };
+    function wire() {
+        body.querySelector('[data-action="voice-autosend"]')?.addEventListener('change', (e) => {
+            setAutoSend(e.target.checked);
+        });
+    }
+    wire();
+    window.addEventListener(AUTOSEND_EVENT, repaint);
+    body._autoSendRepaint = repaint;
+}
+
 function bindDisplayPrefs(body) {
     const slider = body.querySelector('#termFontSize');
     const valueEl = body.querySelector('[data-display="size"]');
@@ -106,13 +139,15 @@ export const configSection = {
                 else if (typeof value === 'object') display = `<code>${JSON.stringify(value)}</code>`;
                 return `<div class="sidebar-config-item"><span class="sidebar-config-key">${key}</span><span class="sidebar-config-val">${display}</span></div>`;
             }).join('');
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + itemHtml;
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + itemHtml;
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
+            bindAutoSendPref(body);
         } catch (e) {
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + '<div class="sidebar-empty">Failed to load config</div>';
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + '<div class="sidebar-empty">Failed to load config</div>';
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
+            bindAutoSendPref(body);
         }
     },
 };

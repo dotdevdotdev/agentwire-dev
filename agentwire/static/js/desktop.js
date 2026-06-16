@@ -30,6 +30,7 @@ import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppre
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import * as browserStt from './voice/browser-stt.js';
 import { voicePromptWrap } from './voice/prompt.js';
+import { isAutoSend } from './voice/autosend-prefs.js';
 import { initAnnouncements } from './announcement-modal.js';
 
 // State - track open windows
@@ -843,7 +844,9 @@ async function startGlobalRecording() {
         const ok = browserStt.start({
             onFinal: (text) => {
                 updateGlobalPttState('idle');
-                if (!globalSttCancelled && text) showGlobalTranscript(text);
+                if (globalSttCancelled || !text) return;
+                if (isAutoSend()) sendGlobalVoiceText(text);
+                else showGlobalTranscript(text);
             },
             onError: () => updateGlobalPttState('idle'),
         }, desktop.voiceStatus?.corrections || {});
