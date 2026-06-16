@@ -15,6 +15,7 @@ import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
 import { ansiToHtml } from './utils/ansi.js';
 import * as browserStt from './voice/browser-stt.js';
 import { voicePromptWrap } from './voice/prompt.js';
+import { isAutoSend } from './voice/autosend-prefs.js';
 
 const NARROW_VIEWPORT = '(max-width: 768px)';
 function pickTerminalFontSize() {
@@ -1161,7 +1162,9 @@ export class SessionWindow {
             const ok = browserStt.start({
                 onFinal: (text) => {
                     this._setPTTState('idle');
-                    if (!this._sttCancelled && text) this._showTranscriptBar(text);
+                    if (this._sttCancelled || !text) return;
+                    if (isAutoSend()) this._sendVoiceText(text);
+                    else this._showTranscriptBar(text);
                 },
                 onError: (err) => {
                     this._updateStatus('error', `Speech recognition failed: ${err}`);

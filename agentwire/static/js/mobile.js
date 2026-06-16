@@ -18,6 +18,7 @@ import { isService, loadCustomServices } from './service-classification.js';
 import * as browserStt from './voice/browser-stt.js';
 import * as browserTts from './voice/browser-tts.js';
 import { voicePromptWrap } from './voice/prompt.js';
+import { isAutoSend } from './voice/autosend-prefs.js';
 
 const SESSION_KEY = 'agentwire_mobile_session';
 
@@ -403,7 +404,9 @@ async function startRecording() {
         const ok = browserStt.start({
             onFinal: (text) => {
                 setPttState('idle');
-                if (!sttCancelled && text) showEditBar(text);
+                if (sttCancelled || !text) return;
+                if (isAutoSend()) sendText(text);
+                else showEditBar(text);
             },
             onError: (err) => {
                 setStatus(`Speech recognition failed: ${err}`, true);
@@ -469,8 +472,10 @@ async function transcribeUpload(blob) {
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         const text = data.text?.trim();
-        if (text) showEditBar(text);
-        else setStatus('No speech detected', true);
+        if (text) {
+            if (isAutoSend()) sendText(text);
+            else showEditBar(text);
+        } else setStatus('No speech detected', true);
     } catch (err) {
         console.error('[Mobile] Transcription failed:', err);
         setStatus(err.message || 'Transcription failed', true);
