@@ -12,7 +12,7 @@ AgentWire ships a local STT server (`agentwire stt start`) that the portal calls
 | `faster-whisper` | `tiny` → `large-v3` | CPU or CUDA | Higher accuracy, slower cold start. |
 | `openai-whisper` | `tiny` → `large` | CPU or CUDA | Fallback when neither of the above is installed. |
 
-Pick a backend via `STT_BACKEND=moonshine|whisper` (or `agentwire stt start --backend ...`). Model name via `MOONSHINE_MODEL=...` or `WHISPER_MODEL=...`.
+Pick an engine via the config key `stt.engine: auto|moonshine|whisper` (default `auto` — moonshine first, whisper fallback). This is **orthogonal to `stt.backend`**, which is the portal *tier* (`default|cloud|custom`): the tier decides *where* transcription happens, the engine decides *which model* the self-hosted shim loads. So `stt: {backend: custom, engine: whisper}` boots the shim **and** runs faster-whisper. Equivalent overrides for ad-hoc use: `STT_BACKEND=moonshine|whisper` env or `agentwire stt start --backend ...`. Model name via `MOONSHINE_MODEL=...` or `WHISPER_MODEL=...`.
 
 Don't want to run local models at all? That's not a shim concern — use the
 portal's [`stt.backend: cloud` tier](stt-cloud.md) (hosted transcription API,

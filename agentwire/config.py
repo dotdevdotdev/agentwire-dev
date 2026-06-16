@@ -197,7 +197,11 @@ class STTConfig:
     implementing the contract (docs/wiki/voice/shim-contract.md).
     """
 
-    backend: str = "default"  # default | cloud | custom
+    backend: str = "default"  # TIER: default | cloud | custom (portal/host selector)
+    # ENGINE: auto | moonshine | whisper — which model the self-hosted STT
+    # shim loads (engine.py). Orthogonal to `backend`: the tier picks *where*
+    # transcription happens, the engine picks *which model* the custom shim runs.
+    engine: str = "auto"
     url: str | None = None  # shim URL (required for custom backend)
     timeout: int = 30
     # cloud tier settings — any provider speaking the OpenAI transcription
@@ -222,6 +226,11 @@ class STTConfig:
         _validate_voice_backend(
             "stt", self.backend, self.url, allowed=("default", "cloud", "custom")
         )
+        allowed_engines = ("auto", "moonshine", "whisper")
+        if self.engine not in allowed_engines:
+            raise ValueError(
+                f"stt.engine must be one of {allowed_engines}, got '{self.engine}'"
+            )
 
 
 @dataclass
@@ -573,6 +582,7 @@ def _dict_to_config(data: dict) -> Config:
     stt_data = data.get("stt", {})
     stt = STTConfig(
         backend=stt_data.get("backend", "default"),
+        engine=stt_data.get("engine", "auto"),
         url=stt_data.get("url"),
         timeout=stt_data.get("timeout", 30),
         cloud=stt_data.get("cloud") or {},
