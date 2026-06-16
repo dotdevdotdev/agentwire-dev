@@ -1,0 +1,35 @@
+# Pytest CI gate (#323).
+#
+# 1,191+ test functions exist in the repo; before this workflow none ran in CI,
+# so `main` could (and did, #249) go red unnoticed. This runs the suite on every
+# PR and every push to main and is the whole win: a trustworthy green/red signal.
+#
+# Hermetic by design — the runner has no live tmux session or portal, so tests
+# that spawn a real tmux binary (the WS-connect and speak-fanout PTY paths) are
+# marked `requires_tmux` and deselected here. They still run locally where tmux
+# is on PATH. Per the council guardrail we do NOT chase coverage % or block PRs
+# on flaky/tmux-dependent tests.
+name: pytest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    name: pytest (hermetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run test suite (tmux-dependent tests deselected)
+        run: uv run --no-sync pytest -q -m "not requires_tmux"
