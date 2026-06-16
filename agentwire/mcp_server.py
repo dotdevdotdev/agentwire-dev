@@ -442,6 +442,45 @@ def msg_inbox(session: str | None = None) -> str:
 
 
 @mcp.tool()
+def msg_dead(session: str | None = None) -> str:
+    """List dead-lettered polite messages — ones dropped after retrying out.
+
+    A `msg` whose recipient never cleared its input box (or stayed parked /
+    non-agent) is retried for ~40 minutes, then dead-lettered rather than lost
+    silently. Use this to see what never reached someone, and why.
+
+    Args:
+        session: Session name (default: the calling session; omit to list
+            every session that has dead-lettered messages).
+
+    Returns:
+        The dead-lettered messages with their drop reason + timestamp, or a
+        note that there are none.
+    """
+    args = ["msg", "dead"]
+    if session:
+        args += ["-s", session]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to read dead letters: {data.get('error', 'Unknown error')}"
+    groups = data.get("sessions") or []
+    total = data.get("total", 0)
+    if not total:
+        scope = f" for {session}" if session else ""
+        return f"No dead-lettered messages{scope}."
+    lines = [f"{total} dead-lettered message(s):"]
+    for g in groups:
+        lines.append(f"{g.get('session')} ({len(g.get('dead') or [])}):")
+        for m in g.get("dead") or []:
+            lines.append(
+                f"  [{m.get('kind')}] from {m.get('from')} — "
+                f"{m.get('attempts')} attempts ({m.get('reason') or 'unknown'}): "
+                f"{m.get('text')}"
+            )
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def session_output(session: str, lines: int = 50) -> str:
     """Capture output from a session.
 
