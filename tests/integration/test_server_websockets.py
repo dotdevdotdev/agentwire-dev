@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -22,7 +22,6 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from agentwire.config import load_config
 from agentwire.server import AgentWireServer
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -204,6 +203,143 @@ class TestTerminalWebSocket:
             except asyncio.TimeoutError:
                 pass
         assert "local-session" in server.active_sessions
+
+
+# ---------------------------------------------------------------------------
+# Reconnect + per-session transcript resumption (the #312 failure class)
+# ---------------------------------------------------------------------------
+#
+# #312: the portal dropped to a 'Reconnect' state when an agent killed
+# background processes — the tmux child churned, but the *session* and its
+# transcript were still alive. These tests pin the server-side contract that
+# makes a silent client reconnect possible:
+#
+#   - the Session object (and its last_output transcript) outlives the last
+#     client disconnect, so a returning client resumes the same session;
+#   - reconnecting re-sends the *current* scrollback via a fresh get_output,
+#     so a client that churned picks up where the transcript actually is
+#     rather than starting blank or stuck;
+#   - repeated connect/disconnect cycles don't leak client refs.
+
+
+@pytest.mark.integration
+class TestReconnectAndTranscriptResumption:
+    async def test_reconnect_resends_transcript(self, portal_client):
+        client, server = portal_client
+        server.agent.get_output.return_value = "transcript so far"
+
+        # First connection receives the transcript.
+        async with client.ws_connect("/ws/resume") as ws1:
+            msg = await _recv_json(ws1)
+            assert msg["type"] == "output"
+            assert msg["data"] == "transcript so far"
+        await asyncio.sleep(0.05)  # let the finally block run
+
+        # Reconnect to the SAME session — transcript is re-sent on connect.
+        async with client.ws_connect("/ws/resume") as ws2:
+            msg = await _recv_json(ws2)
+            assert msg["type"] == "output"
+            assert msg["data"] == "transcript so far"
+
+    async def test_session_and_transcript_survive_all_clients_disconnect(
+        self, portal_client
+    ):
+        client, server = portal_client
+        server.agent.get_output.return_value = "persisted scrollback"
+        async with client.ws_connect("/ws/persist") as ws:
+            await _recv_json(ws)
+            assert server.active_sessions["persist"].last_output == "persisted scrollback"
+        await asyncio.sleep(0.05)
+        # Last client gone, but the session object and its transcript persist so
+        # a reconnect resumes rather than cold-starts.
+        assert "persist" in server.active_sessions
+        assert len(server.active_sessions["persist"].clients) == 0
+        assert server.active_sessions["persist"].last_output == "persisted scrollback"
+
+    async def test_reconnect_reflects_updated_output(self, portal_client):
+        """The #312 distinction: a churned child means the transcript MOVED, not
+        that the server vanished. Reconnect must surface the newer output."""
+        client, server = portal_client
+        server.agent.get_output.return_value = "before churn"
+        async with client.ws_connect("/ws/churn") as ws1:
+            msg = await _recv_json(ws1)
+            assert msg["data"] == "before churn"
+        await asyncio.sleep(0.05)
+
+        # Underlying tmux output advances while no client is attached.
+        server.agent.get_output.return_value = "after churn"
+        async with client.ws_connect("/ws/churn") as ws2:
+            msg = await _recv_json(ws2)
+            assert msg["type"] == "output"
+            assert msg["data"] == "after churn"
+
+    async def test_repeated_reconnect_no_client_leak(self, portal_client):
+        client, server = portal_client
+        for _ in range(4):
+            async with client.ws_connect("/ws/cycle") as ws:
+                await _recv_json(ws)
+                assert len(server.active_sessions["cycle"].clients) == 1
+            await asyncio.sleep(0.05)
+            assert len(server.active_sessions["cycle"].clients) == 0
+
+    async def test_reconnect_after_lock_owner_left_is_unlocked(self, portal_client):
+        """A churned/disconnected lock owner must not strand the session locked —
+        the returning client connects to a free session and can re-acquire."""
+        client, server = portal_client
+        async with client.ws_connect("/ws/relock") as ws1:
+            await _recv_json(ws1)
+            await ws1.send_json({"type": "recording_started"})
+            await asyncio.sleep(0.05)
+            assert server.active_sessions["relock"].locked_by is not None
+        await asyncio.sleep(0.05)
+        assert server.active_sessions["relock"].locked_by is None
+
+        # Reconnect and re-lock cleanly.
+        async with client.ws_connect("/ws/relock") as ws2:
+            await _recv_json(ws2)
+            await ws2.send_json({"type": "recording_started"})
+            await asyncio.sleep(0.05)
+            assert server.active_sessions["relock"].locked_by is not None
+
+    async def test_distinct_sessions_keep_separate_transcripts(self, portal_client):
+        client, server = portal_client
+        # get_output is keyed on session name — each session has its own transcript.
+        server.agent.get_output.side_effect = (
+            lambda name, lines: f"transcript::{name}"
+        )
+        async with client.ws_connect("/ws/sess-x") as wsx:
+            msg_x = await _recv_json(wsx)
+            async with client.ws_connect("/ws/sess-y") as wsy:
+                msg_y = await _recv_json(wsy)
+                assert msg_x["data"] == "transcript::sess-x"
+                assert msg_y["data"] == "transcript::sess-y"
+                # State stays partitioned per session name.
+                assert server.active_sessions["sess-x"].last_output == "transcript::sess-x"
+                assert server.active_sessions["sess-y"].last_output == "transcript::sess-y"
+
+    async def test_reconnect_restarts_polling_task(self, portal_client):
+        """When the last client leaves, _poll_output exits (its `while clients`
+        loop drains). A reconnect must spin up a fresh poll task, not resume a
+        dead one — otherwise the resumed session would never stream again."""
+        client, server = portal_client
+        async with client.ws_connect("/ws/poll") as ws1:
+            await _recv_json(ws1)
+            first_task = server.active_sessions["poll"].output_task
+            assert first_task is not None
+        # _poll_output sleeps 0.5s between iterations, so it only re-checks the
+        # (now empty) client set at the top of the next loop. Wait it out.
+        for _ in range(20):
+            if first_task.done():
+                break
+            await asyncio.sleep(0.1)
+        assert first_task.done()
+
+        async with client.ws_connect("/ws/poll") as ws2:
+            await _recv_json(ws2)
+            second_task = server.active_sessions["poll"].output_task
+            assert second_task is not None
+            assert second_task is not first_task
+            assert not second_task.done()
 
 
 # ---------------------------------------------------------------------------
