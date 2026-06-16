@@ -12,7 +12,14 @@ AgentWire ships a local STT server (`agentwire stt start`) that the portal calls
 | `faster-whisper` | `tiny` → `large-v3` | CPU or CUDA | Higher accuracy, slower cold start. |
 | `openai-whisper` | `tiny` → `large` | CPU or CUDA | Fallback when neither of the above is installed. |
 
-Pick an engine via the config key `stt.engine: auto|moonshine|whisper` (default `auto` — moonshine first, whisper fallback). This is **orthogonal to `stt.backend`**, which is the portal *tier* (`default|cloud|custom`): the tier decides *where* transcription happens, the engine decides *which model* the self-hosted shim loads. So `stt: {backend: custom, engine: whisper}` boots the shim **and** runs faster-whisper. Equivalent overrides for ad-hoc use: `STT_BACKEND=moonshine|whisper` env or `agentwire stt start --backend ...`. Model name via `MOONSHINE_MODEL=...` or `WHISPER_MODEL=...`.
+Pick an engine via the config key `stt.engine: auto|moonshine|whisper` (default `auto` — moonshine first, whisper fallback). This is **orthogonal to `stt.backend`**, which is the portal *tier* (`default|cloud|custom`): the tier decides *where* transcription happens, the engine decides *which model* the self-hosted shim loads. So `stt: {backend: custom, engine: moonshine}` boots the host shim on `:8101` **and** runs Moonshine ONNX; swap `engine: whisper` to run faster-whisper instead. Equivalent overrides for ad-hoc use: `STT_BACKEND=moonshine|whisper` env or `agentwire stt start --backend ...`.
+
+Model name comes from the engine-specific config key:
+
+- **moonshine** → `stt.moonshine_model` (default `moonshine/base`; `moonshine/tiny` is faster, slightly less accurate). Env/flag override: `MOONSHINE_MODEL=...` or `agentwire stt start --model ...`.
+- **whisper** → `stt.model` (default `base`, `tiny` → `large-v3`). Env override: `WHISPER_MODEL=...`.
+
+`agentwire stt start` reads these and env-passes them to the server, which always listens on `:8101` (`--port` to override). The host shim is what `agentwire listen` records into — see [Host recording](#host-recording-agentwire-listen) below.
 
 Don't want to run local models at all? That's not a shim concern — use the
 portal's [`stt.backend: cloud` tier](stt-cloud.md) (hosted transcription API,
@@ -101,6 +108,35 @@ for i in 1 2 3 4 5; do
   /usr/bin/time -p curl -s -F "audio=@/tmp/tone.webm" http://localhost:8765/transcribe > /dev/null
 done
 ```
+
+## Host recording (`agentwire listen`)
+
+The portal records in the browser, but `agentwire listen` records **on the host**
+(via `ffmpeg`) and POSTs the audio straight to the `:8101` shim — so it requires
+`stt.backend: custom` and a reachable `stt.url` (default `http://localhost:8101`).
+The default tier transcribes in the browser and is unreachable from the CLI, so
+`listen` refuses to run without the custom shim.
+
+```bash
+agentwire listen start        # begin recording (ffmpeg)
+agentwire listen stop         # stop, transcribe, send to a tmux session (default "agentwire")
+agentwire listen cancel       # abandon the recording
+agentwire listen              # no subcommand = toggle (start if idle, stop if recording)
+```
+
+`listen stop` has three mutually exclusive output modes:
+
+| Flag | What it does with the transcript |
+|------|----------------------------------|
+| *(none)* | `agentwire send` it to the target tmux session (`-s`, default `agentwire`). |
+| `--type` | Type it at the cursor via Hammerspoon (clipboard paste + Enter). |
+| `--stdout` | Print the **raw transcript to stdout** and exit `0` — no paste, no tmux send. |
+
+`--stdout` is the scripting hook: stdout carries only the transcript (debug logging
+goes to the listen debug file; beeps/notifications are out-of-band), so a wrapper can
+capture it with `text=$(agentwire listen stop --stdout)`. This is what a Hammerspoon
+binding uses to grab a transcript without committing to paste-at-cursor. It's a
+**stop-only** flag — the no-subcommand toggle always sends to the session.
 
 ## Sidebar: CoreML execution provider is a net loss on moonshine_onnx
 

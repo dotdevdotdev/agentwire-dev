@@ -6609,7 +6609,9 @@ def cmd_listen_stop(args) -> int:
     from .listen import stop_recording
     session = args.session or "agentwire"
     type_at_cursor = getattr(args, 'type', False)
-    return stop_recording(session, voice_prompt=not args.no_prompt, type_at_cursor=type_at_cursor)
+    transcribe_only = getattr(args, 'stdout', False)
+    return stop_recording(session, voice_prompt=not args.no_prompt,
+                          type_at_cursor=type_at_cursor, transcribe_only=transcribe_only)
 
 
 def cmd_listen_cancel(args) -> int:
@@ -11093,6 +11095,7 @@ def main() -> int:
     listen_stop.add_argument("--session", "-s", type=str, help="Target session")
     listen_stop.add_argument("--no-prompt", action="store_true")
     listen_stop.add_argument("--type", action="store_true", help="Type at cursor instead of sending to session")
+    listen_stop.add_argument("--stdout", action="store_true", help="Print the raw transcript to stdout (no paste, no tmux send)")
     listen_stop.set_defaults(func=cmd_listen_stop)
 
     # listen cancel
