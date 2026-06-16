@@ -684,16 +684,11 @@ body {
     flex-wrap: wrap;
 }
 
-/* Session kill button — hidden until the row is hovered; confirm/killing
-   states stay visible so the second click can't lose its target. */
+/* Session kill button — always visible and occupying its flex slot, so the
+   row never reflows on hover. Confirm/killing states restyle in place. */
 .sidebar-session-close {
-    display: none;
-}
-
-.sidebar-session-card:hover .sidebar-session-close,
-.sidebar-session-close.is-confirm,
-.sidebar-session-close.is-killing {
-    display: inline-block;
+    visibility: visible;
+    opacity: 1;
 }
 
 .sidebar-session-close.is-confirm {
@@ -5620,7 +5615,7 @@ body.sidebar-pinned .sidebar-tab {
     .sidebar-tab {
         opacity: 0.9;
         font-size: 20px;
-        background: var(--accent);
-        color: var(--background);
+        background: var(--chrome);
+        color: var(--accent);
     }
 }
