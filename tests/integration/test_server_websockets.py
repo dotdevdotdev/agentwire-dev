@@ -232,6 +232,9 @@ class TestTerminalWebSocket:
 
 
 @pytest.mark.integration
+# Every test here connects a real session WS, which PTY-pipes through a real
+# tmux binary; deselected in the hermetic CI gate via `-m 'not requires_tmux'` (#323).
+@pytest.mark.requires_tmux
 class TestReconnectAndTranscriptResumption:
     async def test_reconnect_resends_transcript(self, portal_client):
         client, server = portal_client
