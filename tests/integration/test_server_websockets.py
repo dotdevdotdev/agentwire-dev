@@ -71,6 +71,7 @@ async def _recv_json(ws, timeout=2.0):
 
 @pytest.mark.integration
 class TestSessionWebSocket:
+    @pytest.mark.requires_tmux
     async def test_connect_sends_initial_output(self, portal_client):
         client, server = portal_client
         server.agent.get_output.return_value = "hello world"
@@ -79,6 +80,7 @@ class TestSessionWebSocket:
             assert msg["type"] == "output"
             assert msg["data"] == "hello world"
 
+    @pytest.mark.requires_tmux
     async def test_connect_registers_client(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/sess-a") as ws:
@@ -86,6 +88,7 @@ class TestSessionWebSocket:
             assert "sess-a" in server.active_sessions
             assert len(server.active_sessions["sess-a"].clients) == 1
 
+    @pytest.mark.requires_tmux
     async def test_disconnect_removes_client(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/sess-b") as ws:
@@ -95,6 +98,7 @@ class TestSessionWebSocket:
         await asyncio.sleep(0.05)
         assert len(server.active_sessions["sess-b"].clients) == 0
 
+    @pytest.mark.requires_tmux
     async def test_multiple_clients_share_session(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/multi") as ws1:
@@ -103,6 +107,7 @@ class TestSessionWebSocket:
                 await _recv_json(ws2)
                 assert len(server.active_sessions["multi"].clients) == 2
 
+    @pytest.mark.requires_tmux
     async def test_recording_started_locks_session(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/locked") as ws1:
@@ -116,6 +121,7 @@ class TestSessionWebSocket:
                 # Session is now locked by ws1's client_id.
                 assert server.active_sessions["locked"].locked_by is not None
 
+    @pytest.mark.requires_tmux
     async def test_lock_released_on_owner_disconnect(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/release") as ws1:
@@ -127,6 +133,7 @@ class TestSessionWebSocket:
         await asyncio.sleep(0.05)
         assert server.active_sessions["release"].locked_by is None
 
+    @pytest.mark.requires_tmux
     async def test_invalid_json_keeps_connection_alive(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/sess-json") as ws:
@@ -137,6 +144,7 @@ class TestSessionWebSocket:
             # No reply expected for resize. Confirm session still tracked.
             assert "sess-json" in server.active_sessions
 
+    @pytest.mark.requires_tmux
     async def test_resize_message_accepted(self, portal_client):
         client, server = portal_client
         async with client.ws_connect("/ws/sess-resize") as ws:
@@ -179,6 +187,7 @@ class TestTerminalWebSocket:
             # Could be CLOSE or CLOSED — both are acceptable termination signals.
             assert msg.type.name in {"CLOSE", "CLOSED", "CLOSING"}
 
+    @pytest.mark.requires_tmux
     async def test_terminal_registers_client_in_session(self, portal_client):
         client, server = portal_client
         # tmux subprocess spawn will fail in test env; we just verify that
@@ -363,6 +372,7 @@ class TestWebSocketSecurity:
             )
         assert exc.value.status == 401
 
+    @pytest.mark.requires_tmux
     async def test_ws_with_token_connects_and_echoes_protocol(
         self, portal_client_with_token
     ):
@@ -374,6 +384,7 @@ class TestWebSocketSecurity:
             msg = await _recv_json(ws)
             assert msg["type"] == "output"
 
+    @pytest.mark.requires_tmux
     async def test_ws_bearer_header_also_accepted(self, portal_client_with_token):
         """Non-browser WS clients can use a plain Authorization header."""
         client, _ = portal_client_with_token
@@ -396,6 +407,7 @@ class TestWebSocketSecurity:
             )
         assert exc.value.status == 403
 
+    @pytest.mark.requires_tmux
     async def test_terminal_ws_with_token_and_query_params(
         self, portal_client_with_token
     ):
@@ -411,6 +423,7 @@ class TestWebSocketSecurity:
                 pass
         assert "local-session" in server.active_sessions
 
+    @pytest.mark.requires_tmux
     async def test_ws_no_token_configured_open(self, portal_client):
         """Loopback default: no token configured, WS connects as before."""
         client, _ = portal_client

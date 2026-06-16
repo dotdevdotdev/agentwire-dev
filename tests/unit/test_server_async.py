@@ -218,6 +218,9 @@ def _client(name="c1"):
     return MagicMock(name=name)
 
 
+# Speak fanout reaches session-notify, which PTY-pipes through a real tmux
+# binary; deselected in the hermetic CI gate via `-m 'not requires_tmux'` (#323).
+@pytest.mark.requires_tmux
 class TestSpeakDefaultTier:
     """server.config defaults to tts.backend == 'default' (empty config)."""
 
