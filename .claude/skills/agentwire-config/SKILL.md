@@ -77,9 +77,12 @@ tts:
   timeout: 60
 
 stt:
-  backend: "default"  # tier: default (browser speech recognition) | cloud (portal → hosted
-                      # OpenAI-compatible transcription API, no shim daemon) | custom
-                      # (self-hosted shim at url)
+  backend: "default"  # TIER (where transcription happens): default (browser speech
+                      # recognition) | cloud (portal → hosted OpenAI-compatible
+                      # transcription API, no shim daemon) | custom (self-hosted shim at url)
+  engine: "auto"      # ENGINE (which model the self-hosted shim loads): auto | moonshine |
+                      # whisper. Orthogonal to backend — used only by `agentwire stt start/serve`.
+                      # `{backend: custom, engine: whisper}` = boot shim AND run faster-whisper.
   url: "http://localhost:8101"  # custom tier only — shim endpoint
   cloud:  # cloud tier only — all fields optional, defaults shown
     base_url: "https://api.openai.com/v1"  # any OpenAI-compatible endpoint (Groq, Mistral, speaches, ...)

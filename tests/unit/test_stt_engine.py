@@ -82,6 +82,54 @@ class TestBackendSelection:
         assert info["backend"] == "moonshine"
 
 
+class TestEngineConfigFlow:
+    """The `stt.engine` tier-orthogonal selector reaches load_backend.
+
+    Regression for the overloaded `stt.backend` (#365): the tier value
+    `custom` must never be what the engine sees — the engine reads
+    `stt.engine`, so `{backend: custom, engine: whisper}` forces whisper.
+    """
+
+    def test_engine_config_forces_whisper(self, monkeypatch):
+        from agentwire.config import _dict_to_config
+
+        cfg = _dict_to_config(
+            {"stt": {"backend": "custom", "url": "http://shim", "engine": "whisper"}}
+        )
+        assert cfg.stt.backend == "custom"  # tier — shim boots
+        assert cfg.stt.engine == "whisper"  # engine — model selector
+
+        # The engine value (not the tier) drives load_backend.
+        sentinel = object()
+        monkeypatch.setattr(
+            engine,
+            "_load_faster_whisper",
+            lambda m, d: (sentinel, {"backend": "faster-whisper", "model": m, "device": d}),
+        )
+
+        # moonshine must NOT be consulted when whisper is forced
+        def fail(*a, **k):
+            raise AssertionError("moonshine should not load when engine=whisper")
+
+        monkeypatch.setattr(engine, "_load_moonshine", fail)
+
+        model, info = engine.load_backend(backend=cfg.stt.engine)
+        assert model is sentinel
+        assert info["backend"] == "faster-whisper"
+
+    def test_engine_defaults_to_auto(self):
+        from agentwire.config import _dict_to_config
+
+        cfg = _dict_to_config({"stt": {"backend": "custom", "url": "http://shim"}})
+        assert cfg.stt.engine == "auto"
+
+    def test_invalid_engine_rejected(self):
+        from agentwire.config import _dict_to_config
+
+        with pytest.raises(ValueError, match="stt.engine"):
+            _dict_to_config({"stt": {"engine": "custom"}})
+
+
 class TestTranscribe:
     def test_transcribe_without_backend_raises(self):
         with pytest.raises(RuntimeError, match="not loaded"):

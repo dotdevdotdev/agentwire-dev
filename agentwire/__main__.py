@@ -1790,7 +1790,7 @@ def cmd_stt_start(args) -> int:
     config = load_config()
     stt_config = config.get("stt", {})
     model = args.model or stt_config.get("model", "base")
-    backend = getattr(args, 'backend', None) or stt_config.get("backend", "auto")
+    backend = getattr(args, 'backend', None) or stt_config.get("engine", "auto")
     moonshine_model = stt_config.get("moonshine_model", "moonshine/base")
 
     # Find agentwire source directory (for running from source venv)
@@ -1830,7 +1830,7 @@ def cmd_stt_serve(args) -> int:
     config = load_config()
     stt_config = config.get("stt", {})
     model = args.model or stt_config.get("model", "base")
-    backend = getattr(args, 'backend', None) or stt_config.get("backend", "auto")
+    backend = getattr(args, 'backend', None) or stt_config.get("engine", "auto")
     moonshine_model = stt_config.get("moonshine_model", "moonshine/base")
 
     os.environ["WHISPER_MODEL"] = model
