@@ -1,6 +1,9 @@
 """Per-prompt reply inbox — the council's fan-out/collect protocol.
 
-Layout under ``~/.agentwire/council/prompts/``::
+Every function is scoped to a sitting ``name``; paths resolve through
+``state.prompts_dir(name)`` so concurrent sittings never share an inbox.
+
+Layout under ``~/.agentwire/council/<name>/prompts/``::
 
     0003/
       prompt.md                 # fanned-out prompt text
@@ -48,22 +51,22 @@ class Reply:
         }
 
 
-def prompt_dir(prompt_id: int) -> Path:
-    return state.PROMPTS_DIR / f"{prompt_id:04d}"
+def prompt_dir(name: str, prompt_id: int) -> Path:
+    return state.prompts_dir(name) / f"{prompt_id:04d}"
 
 
-def replies_dir(prompt_id: int) -> Path:
-    return prompt_dir(prompt_id) / "replies"
+def replies_dir(name: str, prompt_id: int) -> Path:
+    return prompt_dir(name, prompt_id) / "replies"
 
 
-def create_prompt(prompt_id: int, text: str, roster: list[str]) -> Path:
+def create_prompt(name: str, prompt_id: int, text: str, roster: list[str]) -> Path:
     """Create the prompt dir + inbox. Must exist before any fan-out send.
 
     Prompt ids restart at 1 each sitting while ``prompts/`` history is kept,
     so a reused id may collide with a previous sitting's dir — stale reply
     files would corrupt the new round's completion check. Clear them.
     """
-    pdir = prompt_dir(prompt_id)
+    pdir = prompt_dir(name, prompt_id)
     replies = pdir / "replies"
     replies.mkdir(parents=True, exist_ok=True)
     for stale in replies.glob("*.md"):
@@ -78,8 +81,8 @@ def create_prompt(prompt_id: int, text: str, roster: list[str]) -> Path:
     return pdir
 
 
-def read_meta(prompt_id: int) -> dict:
-    meta_path = prompt_dir(prompt_id) / "meta.json"
+def read_meta(name: str, prompt_id: int) -> dict:
+    meta_path = prompt_dir(name, prompt_id) / "meta.json"
     try:
         data = json.loads(meta_path.read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -87,16 +90,18 @@ def read_meta(prompt_id: int) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _initial_reply(prompt_id: int, soul: str) -> Path | None:
+def _initial_reply(name: str, prompt_id: int, soul: str) -> Path | None:
     """The soul's initial take/ack/pass file, or None if not yet filed."""
     for kind in KINDS:
-        path = replies_dir(prompt_id) / f"{soul}.{kind}.md"
+        path = replies_dir(name, prompt_id) / f"{soul}.{kind}.md"
         if path.exists():
             return path
     return None
 
 
-def write_reply(prompt_id: int, soul: str, kind: str, text: str) -> tuple[Path, bool]:
+def write_reply(
+    name: str, prompt_id: int, soul: str, kind: str, text: str
+) -> tuple[Path, bool]:
     """File a reply. Returns ``(path, is_followup)``.
 
     First reply from a soul lands as ``<soul>.<kind>.md``. Once an initial
@@ -105,11 +110,11 @@ def write_reply(prompt_id: int, soul: str, kind: str, text: str) -> tuple[Path, 
     """
     if kind not in KINDS:
         raise ValueError(f"invalid reply kind: {kind!r} (expected one of {KINDS})")
-    rdir = replies_dir(prompt_id)
+    rdir = replies_dir(name, prompt_id)
     if not rdir.is_dir():
         raise FileNotFoundError(f"no inbox for council prompt #{prompt_id}")
 
-    if _initial_reply(prompt_id, soul) is None:
+    if _initial_reply(name, prompt_id, soul) is None:
         path = rdir / f"{soul}.{kind}.md"
         path.write_text(text)
         return path, False
@@ -127,9 +132,9 @@ def write_reply(prompt_id: int, soul: str, kind: str, text: str) -> tuple[Path, 
     return path, True
 
 
-def list_replies(prompt_id: int) -> list[Reply]:
+def list_replies(name: str, prompt_id: int) -> list[Reply]:
     """All filed replies for a prompt, initial rounds first, then follow-ups."""
-    rdir = replies_dir(prompt_id)
+    rdir = replies_dir(name, prompt_id)
     if not rdir.is_dir():
         return []
     out: list[Reply] = []
@@ -151,16 +156,17 @@ def list_replies(prompt_id: int) -> list[Reply]:
     return out
 
 
-def pending_souls(prompt_id: int, roster: list[str]) -> list[str]:
+def pending_souls(name: str, prompt_id: int, roster: list[str]) -> list[str]:
     """Roster souls that haven't filed their initial take/ack/pass yet."""
-    return [s for s in roster if _initial_reply(prompt_id, s) is None]
+    return [s for s in roster if _initial_reply(name, prompt_id, s) is None]
 
 
-def initial_round_complete(prompt_id: int, roster: list[str]) -> bool:
-    return not pending_souls(prompt_id, roster)
+def initial_round_complete(name: str, prompt_id: int, roster: list[str]) -> bool:
+    return not pending_souls(name, prompt_id, roster)
 
 
 def collect(
+    name: str,
     prompt_id: int,
     roster: list[str],
     timeout: float = 120.0,
@@ -176,7 +182,7 @@ def collect(
     deadline = time.monotonic() + timeout
     timed_out = False
     while True:
-        pending = pending_souls(prompt_id, roster)
+        pending = pending_souls(name, prompt_id, roster)
         if not pending or not wait:
             break
         if time.monotonic() >= deadline:
@@ -187,6 +193,6 @@ def collect(
         "prompt_id": prompt_id,
         "complete": not pending,
         "timed_out": timed_out,
-        "replies": [r.to_dict() for r in list_replies(prompt_id)],
+        "replies": [r.to_dict() for r in list_replies(name, prompt_id)],
         "pending": pending,
     }

@@ -12,24 +12,25 @@ through the orchestrator's synthesis.
 
 ## The protocol
 
-You receive prompts as messages tagged `[COUNCIL PROMPT #N]`. For **every**
-prompt, you MUST file exactly one initial reply with the `agentwire council
-reply` CLI (via Bash):
+You receive prompts as messages tagged `[COUNCIL PROMPT #N]`. **Always copy the
+exact `agentwire council reply` command from that message** — it already carries
+the right `--name <council>` and `--prompt N` for your sitting. The shapes are:
 
 ```bash
 # A substantive take through your lens
-agentwire council reply --prompt N --take --text "Your take here"
+agentwire council reply --name <council> --prompt N --take --text "Your take here"
 # (long takes: write a file and use --file path, or pipe via stdin)
 
 # You want to research or think before answering — follow up later
-agentwire council reply --prompt N --ack
+agentwire council reply --name <council> --prompt N --ack
 
 # Nothing valid to add through your lens
-agentwire council reply --prompt N --pass
+agentwire council reply --name <council> --prompt N --pass
 ```
 
-The full prompt text is also on disk at
-`~/.agentwire/council/prompts/<NNNN>/prompt.md` if the message was truncated.
+The full prompt text is also on disk — the `[COUNCIL PROMPT #N]` message gives
+the exact path (under `~/.agentwire/council/<council>/prompts/<NNNN>/prompt.md`)
+if the message was truncated.
 
 ## Rules
 

@@ -130,7 +130,7 @@ Interactive prompts (permission, plan-approval, AskUserQuestion) hitting a child
 
 ## Council
 
-Multi-soul orchestrator sitting: `agentwire-council` fans prompts out to lens sessions (`council-brain`, `council-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/prompts/`; the orchestrator collects and synthesizes with attribution. The standard `soul` role self-excludes from any `council-*` session. CLI under `agentwire council ...`, 5 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](docs/wiki/council.md).
+Multi-soul orchestrator sitting, **namespaced by `<name>`** so independent councils run concurrently: `agentwire-council-<name>` fans prompts out to lens sessions (`council-<name>-brain`, `council-<name>-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/<name>/prompts/`; the orchestrator collects and synthesizes with attribution. Targeting: `--name` → cwd-repo-slug if it matches a live sitting → sole live sitting → else error+list; every command echoes which sitting it hit. The standard `soul` role self-excludes from any `council-*` session. CLI under `agentwire council ...` (incl. `council list`), 6 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](docs/wiki/council.md).
 
 ## Reference Skills
 
