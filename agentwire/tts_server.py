@@ -35,7 +35,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from faster_whisper import WhisperModel
 
 from .tts import TTSRequest, registry
 
@@ -55,6 +54,9 @@ except ImportError:
 # Configuration via environment
 DEFAULT_BACKEND = os.environ.get("DEFAULT_BACKEND", "chatterbox")
 CURRENT_VENV = os.environ.get("CURRENT_VENV", "unknown")
+# Off by default: loading Whisper large-v3 costs ~3GB RAM, and host STT is
+# usually served elsewhere (moonshine on :8101). Opt in with AGENTWIRE_TTS_WHISPER=1.
+ENABLE_WHISPER = os.environ.get("AGENTWIRE_TTS_WHISPER", "").lower() in ("1", "true", "yes", "on")
 VOICES_DIR = Path(os.environ.get("VOICES_DIR", str(Path.home() / ".agentwire" / "voices")))
 
 # Backend family mapping - which venv each backend requires
@@ -206,14 +208,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Failed to load default engine: {e}")
 
-    # Load Whisper for transcription
-    print("Loading Whisper model (large-v3)...")
-    try:
-        whisper_model = WhisperModel("large-v3", device="cuda", compute_type="float16")
-    except (ValueError, RuntimeError):
-        # CUDA unavailable (e.g. CPU-only venv) — fall back to CPU
-        whisper_model = WhisperModel("large-v3", device="cpu", compute_type="int8")
-    print("Whisper model loaded!")
+    # Load Whisper for transcription (opt-in — see ENABLE_WHISPER). Off by
+    # default: ~3GB RAM, and /transcribe already 503s when whisper_model is None.
+    if ENABLE_WHISPER:
+        from faster_whisper import WhisperModel  # lazy: TTS venv needn't ship it when off
+
+        print("Loading Whisper model (large-v3)...")
+        try:
+            whisper_model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+        except (ValueError, RuntimeError):
+            # CUDA unavailable (e.g. CPU-only venv) — fall back to CPU
+            whisper_model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+        print("Whisper model loaded!")
+    else:
+        print("Whisper disabled (set AGENTWIRE_TTS_WHISPER=1 to enable /transcribe)")
 
     print(f"Voices directory: {VOICES_DIR}")
     yield
