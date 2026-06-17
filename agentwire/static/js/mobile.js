@@ -371,7 +371,9 @@ function setupPtt() {
 }
 
 function usesBrowserStt() {
-    return !['cloud', 'custom'].includes(voiceStatus?.stt?.backend);
+    // Server-side tiers (cloud, custom, default-with-Moonshine) upload audio to
+    // /transcribe; otherwise recognition happens in the browser.
+    return !browserStt.serverTranscribes(voiceStatus);
 }
 
 function setPttState(state) {

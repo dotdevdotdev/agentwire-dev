@@ -6,28 +6,33 @@ from typing import Any
 
 from .base import NoSTT, STTBackend
 from .cloud import DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL, CloudSTTBackend
+from .local import LocalMoonshine, LocalMoonshineBackend, moonshine_importable
 from .server_backend import STTServerBackend
 
 __all__ = [
     "CloudSTTBackend",
+    "LocalMoonshine",
+    "LocalMoonshineBackend",
     "NoSTT",
     "STTBackend",
     "STTServerBackend",
     "get_stt_backend",
+    "moonshine_importable",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-def get_stt_backend(config: Any) -> STTBackend:
+def get_stt_backend(config: Any, moonshine: LocalMoonshine | None = None) -> STTBackend:
     """Get STT backend based on configuration.
 
-    Three tiers: ``stt.backend: custom`` → HTTP shim at ``stt.url``;
+    Four resolutions: ``stt.backend: custom`` → HTTP shim at ``stt.url``;
     ``stt.backend: cloud`` → OpenAI-compatible transcription API called
     directly from the portal (settings under ``stt.cloud``, key from the
     env var named by ``stt.cloud.api_key_env``); ``stt.backend: default``
-    → NoSTT sentinel (the portal transcribes in the browser, so the
-    server has no transcription role).
+    → in-process Moonshine when the portal owns a ``LocalMoonshine`` and the
+    package is importable (host transcription via ``/transcribe``), else the
+    NoSTT sentinel (browser SpeechRecognition, no server transcription role).
     """
     stt_config = getattr(config, "stt", None)
     backend = getattr(stt_config, "backend", "default") if stt_config is not None else "default"
@@ -62,6 +67,10 @@ def get_stt_backend(config: Any) -> STTBackend:
             timeout=getattr(stt_config, "timeout", 30),
             language=cloud.get("language", ""),
         )
+
+    if moonshine is not None and moonshine_importable():
+        logger.info("STT backend: in-process moonshine (default tier, host transcription)")
+        return LocalMoonshineBackend(moonshine)
 
     logger.info("STT backend: default (browser speech recognition)")
     return NoSTT()

@@ -39,6 +39,10 @@ dependencies = [
     # in espeakng-loader wheels). Marker is mandatory — kokoro-onnx pins <3.14;
     # on 3.14+ the portal falls back to browser speechSynthesis.
     "kokoro-onnx>=0.4.9; python_version < '3.14'",
+    # Default STT engine: Moonshine ONNX in-process (CPU ONNX, no torch, models
+    # pulled from HuggingFace on first boot). Marker mirrors kokoro — onnxruntime
+    # pins <3.14; on 3.14+ the portal falls back to browser speech recognition.
+    "useful-moonshine-onnx>=20250101; python_version < '3.14'",
     # Used by agentwire.tts.base (TTSRequest); explicit rather than transitive via mcp.
     "pydantic>=2.0.0",
 ]
@@ -49,15 +53,14 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.1.0",
 ]
-# STT server dependencies. Moonshine ONNX is the default backend on Mac
-# (small, fast, CPU-only, no torch) — it MUST be declared here or a fresh venv
-# silently loses the default backend and the portal falls back to a model-less
-# WhisperKit. faster-whisper is the higher-accuracy fallback for `STT_BACKEND=whisper`.
+# STT shim server dependencies. Moonshine (the default engine) ships in the
+# base install — see dependencies[] above — so the standalone `agentwire stt
+# start` shim only needs the FastAPI wrapper plus soundfile for its warm-up.
+# faster-whisper is the higher-accuracy fallback for `stt.engine: whisper`.
 stt = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "python-multipart>=0.0.6",
-    "useful-moonshine-onnx>=20250101",
     "soundfile>=0.12.0",
     "faster-whisper>=1.0.0",
 ]

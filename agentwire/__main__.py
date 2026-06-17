@@ -6544,7 +6544,8 @@ def cmd_up(args) -> int:
         stt_args = Namespace(port=None, host=None, model=None, backend=None)
         cmd_stt_start(stt_args)
     else:
-        print("  STT skipped (default tier — browser speech recognition).")
+        print("  STT skipped (default tier — portal-owned Moonshine, "
+              "auto-downloads on first boot; no service needed).")
 
     # Custom services (same shared path as portal-launch autostart)
     from . import services as services_mod

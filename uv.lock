@@ -25,6 +25,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "resend" },
+    { name = "useful-moonshine-onnx", marker = "python_full_version < '3.14'" },
 ]
 
 [package.optional-dependencies]
@@ -38,7 +39,6 @@ stt = [
     { name = "faster-whisper" },
     { name = "python-multipart" },
     { name = "soundfile" },
-    { name = "useful-moonshine-onnx" },
     { name = "uvicorn" },
 ]
 tts = [
@@ -83,7 +83,7 @@ requires-dist = [
     { name = "soundfile", marker = "extra == 'stt'", specifier = ">=0.12.0" },
     { name = "torch", marker = "extra == 'tts'", specifier = ">=2.0.0" },
     { name = "torchaudio", marker = "extra == 'tts'", specifier = ">=2.0.0" },
-    { name = "useful-moonshine-onnx", marker = "extra == 'stt'", specifier = ">=20250101" },
+    { name = "useful-moonshine-onnx", marker = "python_full_version < '3.14'", specifier = ">=20250101" },
     { name = "uvicorn", marker = "extra == 'stt'", specifier = ">=0.24.0" },
     { name = "uvicorn", marker = "extra == 'tts'", specifier = ">=0.24.0" },
 ]
@@ -5794,13 +5794,13 @@ name = "useful-moonshine-onnx"
 version = "20251121"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub", version = "0.36.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.13.*'" },
+    { name = "huggingface-hub", version = "0.36.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "huggingface-hub", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.13.*'" },
-    { name = "librosa" },
-    { name = "numba", version = "0.63.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or python_full_version >= '3.14'" },
+    { name = "librosa", marker = "python_full_version < '3.14'" },
+    { name = "numba", version = "0.63.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numba", version = "0.65.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and python_full_version < '3.14'" },
-    { name = "onnxruntime" },
-    { name = "tokenizers", version = "0.20.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.13.*'" },
+    { name = "onnxruntime", marker = "python_full_version < '3.14'" },
+    { name = "tokenizers", version = "0.20.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "tokenizers", version = "0.22.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.13.*'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/30/0260a3e61ddf944c7ce0f65fc94e5d7e846bc061e2c255f016093baec8cf/useful_moonshine_onnx-20251121.tar.gz", hash = "sha256:b1fabd5b7b5cd9f4ff22fdacc3cc8f6cee26232032a1ee24b85064070a9784bc", size = 721446, upload-time = "2025-11-21T22:57:11.917Z" }
