@@ -4,8 +4,6 @@ Voice interface for AI coding agents. Push-to-talk from any device to tmux sessi
 
 **No Backwards Compatibility** - Pre-launch, no customers. Change things completely, no legacy fallbacks.
 
-**Hierarchical Delegation** - Before editing files in OTHER projects (e.g., `~/projects/agentwire-website/`), check `agentwire_sessions_list()`. If a session exists for that project, use `agentwire_session_send()` instead of editing directly. See `~/.claude/rules/delegation.md`.
-
 ## Dev Workflow
 
 `uv tool install` caches builds and ignores source changes.
