@@ -249,6 +249,42 @@ class TestApiCreateSession:
 
 
 # ---------------------------------------------------------------------------
+# Active-session shadow file API
+# ---------------------------------------------------------------------------
+
+
+class TestApiActiveSession:
+    async def test_writes_shadow_file(self, portal_client, monkeypatch, tmp_path):
+        client, server = portal_client
+        monkeypatch.setenv("HOME", str(tmp_path))
+        resp = await client.post("/api/active-session", json={"session": "agentwire-dev"})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data.get("success") is True
+        assert data.get("session") == "agentwire-dev"
+        shadow = tmp_path / ".agentwire" / "active-session"
+        assert shadow.read_text().strip() == "agentwire-dev"
+
+    async def test_missing_session(self, portal_client, monkeypatch, tmp_path):
+        client, server = portal_client
+        monkeypatch.setenv("HOME", str(tmp_path))
+        resp = await client.post("/api/active-session", json={"session": ""})
+        assert resp.status == 400
+        data = await resp.json()
+        assert data.get("success") is False
+
+    async def test_overwrite_atomic(self, portal_client, monkeypatch, tmp_path):
+        client, server = portal_client
+        monkeypatch.setenv("HOME", str(tmp_path))
+        await client.post("/api/active-session", json={"session": "first"})
+        await client.post("/api/active-session", json={"session": "second"})
+        shadow = tmp_path / ".agentwire" / "active-session"
+        assert shadow.read_text().strip() == "second"
+        # No leftover temp file from the atomic write.
+        assert not (tmp_path / ".agentwire" / "active-session.tmp").exists()
+
+
+# ---------------------------------------------------------------------------
 # Close session API
 # ---------------------------------------------------------------------------
 

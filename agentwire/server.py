@@ -235,6 +235,7 @@ class AgentWireServer:
         self.app.router.add_get("/api/check-path", self.api_check_path)
         self.app.router.add_get("/api/check-branches", self.api_check_branches)
         self.app.router.add_post("/api/create", self.api_create_session)
+        self.app.router.add_post("/api/active-session", self.api_active_session)
         self.app.router.add_post("/api/session/{name:.+}/config", self.api_session_config)
         self.app.router.add_post("/transcribe", self.handle_transcribe)
         self.app.router.add_post("/upload", self.handle_upload)
@@ -2970,6 +2971,43 @@ class AgentWireServer:
         branches = [b for b in branches if b]
 
         return web.json_response({"existing": branches})
+
+    async def api_active_session(self, request: web.Request) -> web.Response:
+        """Record which session the portal desktop is currently focused on.
+
+        The frontend POSTs the focused session name whenever a session window
+        gains focus. We mirror it to ``~/.agentwire/active-session`` so external
+        tools (e.g. the Hammerspoon ⌥Space "tab target" hotkey) can read which
+        session voice input should land in — "voice follows the focused tab".
+
+        Body:
+            {"session": "agentwire-dev"}
+
+        Response:
+            {"success": true, "session": "..."}
+            {"success": false, "error": "..."}
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        session = (data.get("session") or "").strip()
+        if not session:
+            return web.json_response({"success": False, "error": "session is required"}, status=400)
+
+        try:
+            target = Path.home() / ".agentwire" / "active-session"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic write: temp file in the same dir + os.replace so a reader
+            # never sees a half-written or empty file.
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(session + "\n", encoding="utf-8")
+            os.replace(tmp, target)
+        except OSError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+        return web.json_response({"success": True, "session": session})
 
     async def api_create_session(self, request: web.Request) -> web.Response:
         """Create a new agent session via CLI.
