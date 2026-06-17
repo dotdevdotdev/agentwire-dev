@@ -12,16 +12,16 @@
 
     /* Theme colors */
     --background: #000000;
-    --accent: #4ade80;
+    --accent: #39ff14;
     --text: #e2e8f0;
     --text-muted: #94a3b8;
     --chrome: #1a1a1a;
     --chrome-border: #2a2a2a;
-    --hover: rgba(74, 222, 128, 0.1);
+    --hover: rgba(57, 255, 20, 0.1);
     --error: #f87171;
 
     /* Orb state colors */
-    --orb-idle: #4ade80;
+    --orb-idle: #39ff14;
     --orb-idle-dark: #166534;
     --orb-listening: #f59e0b;
     --orb-listening-dark: #92400e;
@@ -33,8 +33,13 @@
     --orb-speaking-dark: #115e59;
     --orb-awaiting: #fbbf24;
     --orb-awaiting-dark: #92400e;
-    --primary-subtle: rgba(74, 222, 128, 0.3);
-    --primary-glow: rgba(74, 222, 128, 0.4);
+    --primary-subtle: rgba(57, 255, 20, 0.3);
+    --primary-glow: rgba(57, 255, 20, 0.4);
+    /* Brand secondary — neon blue (dotdev/agentwire #00bfff). Pairs with the
+       green primary; used for the right-edge scratchpad handle. */
+    --neon-blue: #00bfff;
+    --neon-blue-subtle: rgba(0, 191, 255, 0.3);
+    --neon-blue-hover: rgba(0, 191, 255, 0.1);
 }
 
 * {
@@ -180,7 +185,7 @@ body {
 
 @keyframes tree-glow {
     0%, 100% {
-        filter: hue-rotate(0deg) drop-shadow(0 0 30px rgba(74, 222, 128, 0.3)) brightness(1);
+        filter: hue-rotate(0deg) drop-shadow(0 0 30px rgba(57, 255, 20, 0.3)) brightness(1);
         opacity: 0.6;
     }
     33% {
@@ -188,7 +193,7 @@ body {
         opacity: 0.7;
     }
     66% {
-        filter: hue-rotate(-20deg) drop-shadow(0 0 35px rgba(74, 222, 128, 0.35)) brightness(1.05);
+        filter: hue-rotate(-20deg) drop-shadow(0 0 35px rgba(57, 255, 20, 0.35)) brightness(1.05);
         opacity: 0.65;
     }
 }
@@ -226,7 +231,7 @@ body {
 
 @keyframes owl-glow {
     0%, 100% {
-        filter: hue-rotate(0deg) drop-shadow(0 0 20px rgba(74, 222, 128, 0.4)) brightness(1.1);
+        filter: hue-rotate(0deg) drop-shadow(0 0 20px rgba(57, 255, 20, 0.4)) brightness(1.1);
         opacity: 0.65;
     }
     33% {
@@ -2173,7 +2178,7 @@ body {
 }
 
 .new-session-options-modal .role-checkbox:has(input:checked) {
-    background: rgba(74, 222, 128, 0.15);
+    background: rgba(57, 255, 20, 0.15);
     border-color: var(--accent);
 }
 
@@ -2433,8 +2438,8 @@ body .winbox.max {
 /* Tile preview highlight — shows where window will land */
 .tile-preview {
     position: absolute;
-    background: rgba(74, 222, 128, 0.12);
-    border: 2px solid rgba(74, 222, 128, 0.4);
+    background: rgba(57, 255, 20, 0.12);
+    border: 2px solid rgba(57, 255, 20, 0.4);
     border-radius: 8px;
     transition: all 0.15s ease;
     pointer-events: none;
@@ -2757,7 +2762,7 @@ body .winbox.max {
 
 /* Claude variants */
 .type-tag.type-claude-bypass {
-    background: rgba(74, 222, 128, 0.15);
+    background: rgba(57, 255, 20, 0.15);
     color: var(--accent);
 }
 
@@ -2778,7 +2783,7 @@ body .winbox.max {
 }
 
 .type-tag.type-local {
-    background: rgba(74, 222, 128, 0.15);
+    background: rgba(57, 255, 20, 0.15);
     color: var(--accent);
 }
 
@@ -3941,7 +3946,7 @@ body .winbox.max {
 }
 
 .sched-status-dot.running {
-    background: #4ade80;
+    background: #39ff14;
     animation: sched-pulse 2s ease-in-out infinite;
 }
 
@@ -4053,7 +4058,7 @@ body .winbox.max {
     font-weight: 600;
 }
 
-.sched-stat-value.sched-completed { color: #4ade80; }
+.sched-stat-value.sched-completed { color: #39ff14; }
 .sched-stat-value.sched-failed { color: #f87171; }
 
 /* Tabs */
@@ -4119,12 +4124,12 @@ body .winbox.max {
 }
 
 .sched-power-start {
-    border-color: #4ade80;
-    color: #4ade80;
+    border-color: #39ff14;
+    color: #39ff14;
 }
 
 .sched-power-start:hover {
-    background: rgba(74, 222, 128, 0.15);
+    background: rgba(57, 255, 20, 0.15);
 }
 
 .sched-power-stop {
@@ -4210,7 +4215,7 @@ body .winbox.max {
 }
 
 .sched-row:hover {
-    background: rgba(74, 222, 128, 0.04);
+    background: rgba(57, 255, 20, 0.04);
 }
 
 .sched-row-disabled {
@@ -4267,7 +4272,7 @@ body .winbox.max {
 }
 
 .sched-toggle-dot.enabled {
-    background: #4ade80;
+    background: #39ff14;
 }
 
 .sched-toggle-dot.disabled {
@@ -4275,7 +4280,7 @@ body .winbox.max {
 }
 
 .sched-toggle-dot:hover {
-    box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.3);
+    box-shadow: 0 0 0 2px rgba(57, 255, 20, 0.3);
 }
 
 /* Status Badges */
@@ -4300,8 +4305,8 @@ body .winbox.max {
 }
 
 .sched-badge-complete {
-    background: rgba(74, 222, 128, 0.15);
-    color: #4ade80;
+    background: rgba(57, 255, 20, 0.15);
+    color: #39ff14;
 }
 
 .sched-badge-failed {
@@ -4429,7 +4434,7 @@ body .winbox.max {
 }
 
 .sched-queue-row:hover {
-    background: rgba(74, 222, 128, 0.04);
+    background: rgba(57, 255, 20, 0.04);
 }
 
 .sched-queue-time {
@@ -4518,7 +4523,7 @@ body .winbox.max {
 }
 
 .sched-history-row:hover .sched-history-row-main {
-    background: rgba(74, 222, 128, 0.04);
+    background: rgba(57, 255, 20, 0.04);
 }
 
 .sched-history-ts {
@@ -4666,7 +4671,7 @@ body .winbox.max {
 }
 
 .sched-drilldown-run-header:hover {
-    background: rgba(74, 222, 128, 0.04);
+    background: rgba(57, 255, 20, 0.04);
     margin: 0 -16px;
     padding: 6px 16px;
 }
@@ -4812,8 +4817,8 @@ body .winbox.max {
 }
 
 .sched-agent-idle {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.15);
+    color: #39ff14;
+    background: rgba(57, 255, 20, 0.15);
 }
 
 .sched-agent-retry {
@@ -4884,8 +4889,8 @@ body .winbox.max {
     width: var(--sidebar-tab-width);
     height: var(--sidebar-tab-height);
     z-index: 9002;
-    background: var(--chrome);
-    border: 1px solid var(--chrome-border);
+    background: transparent;
+    border: 1px solid var(--primary-subtle);
     border-left: none;
     border-radius: 0 6px 6px 0;
     cursor: pointer;
@@ -4893,7 +4898,7 @@ body .winbox.max {
     align-items: center;
     justify-content: center;
     padding: 0;
-    color: var(--text-muted);
+    color: var(--accent);
     font-size: 16px;
     line-height: 1;
     opacity: 0.5;
@@ -5359,7 +5364,7 @@ body.sidebar-pinned .sidebar-tab {
 .notification-session-badge {
     font-size: 13px;
     color: var(--accent);
-    background: rgba(74, 222, 128, 0.1);
+    background: rgba(57, 255, 20, 0.1);
     padding: 1px 6px;
     border-radius: 4px;
     white-space: nowrap;
@@ -5547,26 +5552,32 @@ body.sidebar-pinned .sidebar-tab {
 /* Edge handle — right-side twin of the sidebar tab */
 .scratchpad-handle {
     position: fixed;
-    top: calc(50% - 60px);
+    top: 50%;
     right: 0;
     transform: translateY(-50%);
     width: var(--sidebar-tab-width);
     height: var(--sidebar-tab-height);
     z-index: 9002;
-    background: var(--chrome);
-    border: 1px solid var(--chrome-border);
+    background: transparent;
+    border: 1px solid var(--neon-blue-subtle);
     border-right: none;
     border-radius: 6px 0 0 6px;
-    color: var(--text-muted);
-    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--neon-blue);
+    font-size: 13px;
+    line-height: 1;
+    opacity: 0.5;
     cursor: pointer;
-    transition: right var(--sidebar-transition);
+    transition: opacity 150ms ease, right var(--sidebar-transition), background 150ms ease;
     padding: 0;
 }
 
 .scratchpad-handle:hover {
-    color: var(--text);
-    background: var(--hover);
+    opacity: 1;
+    color: var(--neon-blue);
+    background: var(--neon-blue-hover);
 }
 
 .scratchpad-handle.drawer-open {
@@ -5578,7 +5589,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 @keyframes scratchpad-pulse {
-    0% { box-shadow: 0 0 0 0 var(--accent); }
+    0% { box-shadow: 0 0 0 0 var(--neon-blue); }
     100% { box-shadow: 0 0 0 12px transparent; }
 }
 
@@ -5615,7 +5626,7 @@ body.sidebar-pinned .sidebar-tab {
     .sidebar-tab {
         opacity: 0.9;
         font-size: 20px;
-        background: var(--chrome);
+        background: transparent;
         color: var(--accent);
     }
 }

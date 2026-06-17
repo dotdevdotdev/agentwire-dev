@@ -5,6 +5,8 @@
  * click again to close. No hover behavior — purely intentional.
  */
 
+import { scratchpad } from './scratchpad.js';
+
 const PIN_KEY = 'sidebar-pinned';
 
 export const sidebar = {
@@ -56,6 +58,10 @@ export const sidebar = {
         if (!this.el) return;
         this.el.classList.add('open');
         document.body.classList.add('sidebar-open');
+        // Mutually exclusive with the right-edge scratchpad drawer — opening
+        // the sidebar closes the pad (mirrors how clicking the pad's handle
+        // closes the sidebar via the click-away handler below).
+        if (scratchpad.open) scratchpad.toggle(false);
     },
 
     close() {

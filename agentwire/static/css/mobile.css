@@ -7,15 +7,15 @@
     --spacing-base: 8px;
 
     --background: #000000;
-    --accent: #4ade80;
+    --accent: #39ff14;
     --text: #e2e8f0;
     --text-muted: #94a3b8;
     --chrome: #1a1a1a;
     --chrome-border: #2a2a2a;
-    --hover: rgba(74, 222, 128, 0.1);
+    --hover: rgba(57, 255, 20, 0.1);
     --error: #f87171;
-    --primary-subtle: rgba(74, 222, 128, 0.3);
-    --primary-glow: rgba(74, 222, 128, 0.4);
+    --primary-subtle: rgba(57, 255, 20, 0.3);
+    --primary-glow: rgba(57, 255, 20, 0.4);
     --attention: #fbbf24;
     --attention-subtle: rgba(251, 191, 36, 0.12);
     --attention-glow: rgba(251, 191, 36, 0.25);
