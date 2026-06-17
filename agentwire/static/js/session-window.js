@@ -1144,8 +1144,9 @@ export class SessionWindow {
     }
 
     _usesBrowserStt() {
-        // cloud and custom tiers upload audio to the portal's /transcribe
-        return !['cloud', 'custom'].includes(desktop.voiceStatus?.stt?.backend);
+        // Server-side tiers (cloud, custom, default-with-Moonshine) upload audio
+        // to /transcribe; otherwise recognition happens in the browser.
+        return !browserStt.serverTranscribes(desktop.voiceStatus);
     }
 
     async _startRecording() {

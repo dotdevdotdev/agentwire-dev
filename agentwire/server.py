@@ -188,6 +188,11 @@ class AgentWireServer:
         # tts.backend == "default".
         from .tts.local import LocalKokoro
         self.kokoro = LocalKokoro()
+        # Default-tier in-process Moonshine STT — the STT mirror of kokoro.
+        # Constructed unconditionally (cheap, no I/O); run_server starts the
+        # warm-up only when stt.backend == "default".
+        from .stt import LocalMoonshine
+        self.moonshine = LocalMoonshine()
         # Origin + token enforcement. The middleware is a pure function of
         # config — run_server() resolves the token file into
         # config.server.auth_token before constructing the server.
@@ -340,7 +345,7 @@ class AgentWireServer:
         from .agents import get_agent_backend
         from .stt import get_stt_backend
 
-        self.stt = get_stt_backend(self.config)
+        self.stt = get_stt_backend(self.config, moonshine=self.moonshine)
         self.agent = get_agent_backend(config_dict)
 
         # Create HTTP session for TTS server calls
@@ -354,6 +359,31 @@ class AgentWireServer:
         if self._http_session:
             await self._http_session.close()
         await self.kokoro.close()
+        await self.moonshine.close()
+
+    async def _on_moonshine_state_change(self, moonshine) -> None:
+        """Moonshine warm-up progress → invalidate voice-status cache + toast.
+
+        Mirrors ``_on_kokoro_state_change``. The toast is replaced in place
+        (keyed on session "moonshine-stt") so the download reads as one
+        updating notification, not a stream."""
+        self._voice_status_cache = None
+        if moonshine.state == "downloading":
+            await self._post_toast(
+                "Downloading Moonshine STT model… (one-time, ~200 MB)",
+                session="moonshine-stt", priority="normal", id_prefix="moonshine")
+        elif moonshine.state == "loading":
+            await self._post_toast(
+                "Loading Moonshine STT model…",
+                session="moonshine-stt", priority="normal", id_prefix="moonshine")
+        elif moonshine.state == "ready":
+            await self._post_toast(
+                "Host STT ready — Moonshine now transcribes your voice",
+                session="moonshine-stt", priority="normal", id_prefix="moonshine")
+        elif moonshine.state == "failed":
+            await self._post_toast(
+                f"Moonshine STT setup failed ({moonshine.error}) — using browser speech fallback",
+                session="moonshine-stt", priority="high", id_prefix="moonshine")
 
     async def _on_kokoro_state_change(self, kokoro) -> None:
         """Kokoro warm-up progress → invalidate voice-status cache + toast.
@@ -743,8 +773,19 @@ class AgentWireServer:
         stt_cfg, tts_cfg = self.config.stt, self.config.tts
 
         stt: dict = {"backend": stt_cfg.backend, "url": stt_cfg.url, "available": True}
+        # server_transcribe drives the frontend's browser-vs-upload choice: true
+        # → MediaRecorder POST /transcribe, false → browser SpeechRecognition.
+        stt["server_transcribe"] = stt_cfg.backend in ("cloud", "custom")
         if stt_cfg.backend == "custom":
             stt["available"] = await self._probe_shim(stt_cfg.url, "/health") is not None
+        elif stt_cfg.backend == "default":
+            # In-process Moonshine warm-up state (mirror of kokoro). The client
+            # only uploads once the host model is ready; until then it keeps
+            # using browser speech recognition.
+            stt["moonshine"] = {"state": self.moonshine.state, "percent": self.moonshine.percent}
+            if self.moonshine.error:
+                stt["moonshine"]["error"] = self.moonshine.error
+            stt["server_transcribe"] = self.moonshine.ready
 
         tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
         if tts_cfg.backend == "default":
@@ -772,7 +813,9 @@ class AgentWireServer:
             "stt": stt,
             "tts": tts,
             "corrections": stt_cfg.corrections,
-            "instant_mode": stt_cfg.backend == "default" and tts_cfg.backend == "default",
+            # Instant (zero-round-trip browser) mode only holds while STT stays
+            # browser-side; once host Moonshine takes over, audio uploads.
+            "instant_mode": not stt["server_transcribe"] and tts_cfg.backend == "default",
         }
         self._voice_status_cache = (now, status)
         return web.json_response(status)
@@ -5419,6 +5462,12 @@ async def run_server(config: Config):
     # ready. Cleaned up via close_backends().
     if config.tts.backend == "default":
         server.kokoro.start(server._on_kokoro_state_change)
+
+    # Warm up the default-tier Moonshine STT: background model download
+    # (one-time ~200 MB) + ONNX load. Browser SpeechRecognition covers input
+    # until ready; on py3.14+ (no package) it stays the browser path.
+    if config.stt.backend == "default":
+        server.moonshine.start(server._on_moonshine_state_change)
 
     # Cleanup old uploads on startup
     await server.cleanup_old_uploads()

@@ -190,11 +190,14 @@ class TTSConfig:
 class STTConfig:
     """Speech-to-text configuration.
 
-    Three tiers: ``default`` transcribes in the browser (Chrome
-    SpeechRecognition); ``cloud`` uploads audio to the portal, which POSTs
-    it to any OpenAI-compatible transcription API (no extra daemon, key
-    from env, server-side only); ``custom`` uploads audio to any HTTP shim
-    implementing the contract (docs/wiki/voice/shim-contract.md).
+    Three tiers: ``default`` transcribes on the host via the portal-owned
+    in-process Moonshine engine (bundled, auto-downloads on first boot — the
+    STT mirror of the default-tier Kokoro voice), falling back to browser
+    SpeechRecognition while the model warms up or when it can't load (py3.14+);
+    ``cloud`` uploads audio to the portal, which POSTs it to any
+    OpenAI-compatible transcription API (no extra daemon, key from env,
+    server-side only); ``custom`` uploads audio to any HTTP shim implementing
+    the contract (docs/wiki/voice/shim-contract.md).
     """
 
     backend: str = "default"  # TIER: default | cloud | custom (portal/host selector)

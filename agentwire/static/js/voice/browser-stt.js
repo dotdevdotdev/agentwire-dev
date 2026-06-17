@@ -14,6 +14,17 @@ export function isSupported() {
     return Boolean(SR);
 }
 
+/**
+ * Whether the server transcribes (upload audio to /transcribe) vs. the browser
+ * (SpeechRecognition). The portal decides per /api/voice-status: true for the
+ * cloud/custom tiers, and for the default tier once in-process Moonshine is
+ * ready. Until then the default tier stays browser-side.
+ * @param {Object} voiceStatus - parsed /api/voice-status payload
+ */
+export function serverTranscribes(voiceStatus) {
+    return Boolean(voiceStatus?.stt?.server_transcribe);
+}
+
 let activeRecognition = null;
 
 /**

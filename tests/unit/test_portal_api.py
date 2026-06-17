@@ -707,7 +707,16 @@ class TestVoiceStatus:
         resp = await client.get("/api/voice-status")
         assert resp.status == 200
         body = await resp.json()
-        assert body["stt"] == {"backend": "default", "url": None, "available": True}
+        # Default tier: in-process Moonshine (mirror of kokoro). Until the
+        # model warms up, server_transcribe is False so the client stays on
+        # browser speech recognition and instant mode holds.
+        assert body["stt"] == {
+            "backend": "default",
+            "url": None,
+            "available": True,
+            "server_transcribe": False,
+            "moonshine": {"state": "absent", "percent": 0},
+        }
         assert body["tts"]["backend"] == "default"
         assert body["tts"]["available"] is True
         assert body["instant_mode"] is True

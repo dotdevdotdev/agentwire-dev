@@ -77,9 +77,12 @@ tts:
   timeout: 60
 
 stt:
-  backend: "default"  # TIER (where transcription happens): default (browser speech
-                      # recognition) | cloud (portal → hosted OpenAI-compatible
-                      # transcription API, no shim daemon) | custom (self-hosted shim at url)
+  backend: "default"  # TIER (where transcription happens): default (portal-owned
+                      # in-process Moonshine — bundled, auto-downloads on first boot,
+                      # no setup; falls back to browser SpeechRecognition while it
+                      # warms up or on py3.14+) | cloud (portal → hosted OpenAI-
+                      # compatible transcription API, no shim daemon) | custom
+                      # (self-hosted shim at url)
   engine: "auto"      # ENGINE (which model the self-hosted shim loads): auto | moonshine |
                       # whisper. Orthogonal to backend — used only by `agentwire stt start/serve`.
                       # `{backend: custom, engine: whisper}` = boot shim AND run faster-whisper.
