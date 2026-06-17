@@ -5630,3 +5630,305 @@ body.sidebar-pinned .sidebar-tab {
         color: var(--accent);
     }
 }
+
+/* ============================================================
+   Council seating board (issue #403, Phases 0–2 — CORE)
+   Functional, roster-driven grid. Every tile state keys off a
+   status-enum class (council-tile--{pending,acked,answered,
+   passed,stalled}) so the designer pass can restyle by class
+   without touching council-window.js. Status colors are scoped
+   vars — override these to re-skin.
+   ============================================================ */
+.council-window .wb-body {
+    background: var(--background);
+    color: var(--text);
+}
+.council-window-mount {
+    height: 100%;
+    position: relative;
+    --council-pending: var(--text-muted);
+    --council-acked: var(--orb-generating);
+    --council-answered: var(--accent);
+    --council-passed: #64748b;
+    --council-stalled: var(--error);
+}
+.council-board {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 16px;
+    gap: 14px;
+    overflow: hidden;
+}
+.council-board--empty {
+    align-items: center;
+    justify-content: center;
+}
+.council-empty {
+    color: var(--text-muted);
+    font-size: 14px;
+}
+.council-empty-picker {
+    margin-bottom: 12px;
+}
+
+/* Header: sitting + counter + selectors */
+.council-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.council-header-left,
+.council-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.council-sitting-name {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--accent);
+}
+.council-counter {
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.council-round-select,
+.council-sitting-select {
+    background: var(--chrome);
+    color: var(--text);
+    border: 1px solid var(--chrome-border);
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+
+/* Centered question */
+.council-question {
+    text-align: center;
+    font-size: 16px;
+    line-height: 1.4;
+    color: var(--text);
+    padding: 4px 8px;
+    max-width: 760px;
+    margin: 0 auto;
+}
+.council-question-empty {
+    color: var(--text-muted);
+    font-style: italic;
+}
+.council-history-badge {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--neon-blue);
+    border: 1px solid var(--neon-blue-subtle);
+    border-radius: 4px;
+    padding: 1px 5px;
+    vertical-align: middle;
+}
+
+/* Roster-driven responsive grid — reflows to roster size, never hardcoded */
+.council-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-auto-rows: minmax(120px, auto);
+    gap: 12px;
+    overflow-y: auto;
+    align-content: start;
+}
+
+/* Tile */
+.council-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border-radius: 10px;
+    background: var(--chrome);
+    border: 1px solid var(--chrome-border);
+    border-left: 3px solid var(--council-pending);
+    transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+    overflow: hidden;
+}
+.council-tile[data-expandable="1"] {
+    cursor: pointer;
+}
+.council-tile[data-expandable="1"]:hover {
+    background: var(--hover);
+}
+.council-tile-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.council-soul {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+}
+.council-chip {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+}
+.council-verdict {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text);
+    /* clamp ~3 lines; full text via click-to-expand */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.council-tile-placeholder {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+.council-timer {
+    font-variant-numeric: tabular-nums;
+    font-style: normal;
+    opacity: 0.8;
+}
+
+/* Status-enum styling — designer restyles by these classes */
+.council-tile--pending {
+    border-left-color: var(--council-pending);
+    animation: council-breathe 2.4s ease-in-out infinite;
+}
+.council-tile--pending .council-chip { color: var(--council-pending); }
+
+.council-tile--acked {
+    border-left-color: var(--council-acked);
+}
+.council-tile--acked .council-chip { color: var(--council-acked); }
+
+.council-tile--answered {
+    border-left-color: var(--council-answered);
+}
+.council-tile--answered .council-chip { color: var(--council-answered); }
+
+.council-tile--passed {
+    border-left-color: var(--council-passed);
+    opacity: 0.82;
+}
+.council-tile--passed .council-chip { color: var(--council-passed); }
+
+.council-tile--stalled {
+    border-left-color: var(--council-stalled);
+    border-style: dashed;
+}
+.council-tile--stalled .council-chip { color: var(--council-stalled); }
+
+@keyframes council-breathe {
+    0%, 100% { opacity: 0.62; }
+    50%      { opacity: 1; }
+}
+
+/* The swap settle — a single ~250ms scale/glow when a tile resolves */
+.council-tile--settle {
+    animation: council-settle 260ms ease-out;
+}
+@keyframes council-settle {
+    0%   { transform: scale(0.97); box-shadow: 0 0 0 0 var(--primary-glow); }
+    60%  { transform: scale(1.012); box-shadow: 0 0 18px 2px var(--primary-glow); }
+    100% { transform: scale(1); box-shadow: none; }
+}
+
+/* Sitting-complete flourish */
+.council-board--flourish .council-counter {
+    color: var(--accent);
+    text-shadow: 0 0 8px var(--primary-glow);
+}
+
+/* Reader overlay — full verdict, click-to-expand */
+.council-reader-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 10;
+}
+.council-reader {
+    background: var(--chrome);
+    border: 1px solid var(--chrome-border);
+    border-radius: 12px;
+    max-width: 640px;
+    width: 100%;
+    max-height: 80%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.council-reader-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--chrome-border);
+}
+.council-reader-head .council-soul { flex: 0 0 auto; }
+.council-reader-close {
+    margin-left: auto;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+.council-reader-close:hover { color: var(--text); }
+.council-reader-body {
+    padding: 16px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--text);
+}
+
+/* Sidebar section launcher */
+.council-section-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.council-section-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: var(--chrome);
+    border: 1px solid var(--chrome-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: var(--text);
+    cursor: pointer;
+}
+.council-section-item:hover { background: var(--hover); }
+.council-section-name { font-weight: 600; font-size: 13px; }
+.council-section-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
