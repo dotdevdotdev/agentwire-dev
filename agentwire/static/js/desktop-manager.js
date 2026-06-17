@@ -357,6 +357,10 @@ class DesktopManager {
                 this.emit('scheduler_state', msg);
                 break;
 
+            case 'council_update':
+                this.emit('council_update', msg);
+                break;
+
             case 'agent_progress':
                 this.emit('agent_progress', msg);
                 break;

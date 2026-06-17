@@ -23,6 +23,8 @@ frontmatter parsing. A soul's initial round is complete once it has any of
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +33,29 @@ from pathlib import Path
 from agentwire.council import state
 
 KINDS = ("take", "ack", "pass")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically: temp file in the same dir, then ``os.replace``.
+
+    The council board polls ``replies/`` from the portal; a plain ``write_text``
+    leaves a window where a reader can see a half-written verdict. ``os.replace``
+    is atomic on the same filesystem, so a reader sees either the old file (or
+    nothing) or the complete new one — never a partial. This is the real
+    anti-flicker guarantee for the UI.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 @dataclass
@@ -71,13 +96,13 @@ def create_prompt(name: str, prompt_id: int, text: str, roster: list[str]) -> Pa
     replies.mkdir(parents=True, exist_ok=True)
     for stale in replies.glob("*.md"):
         stale.unlink()
-    (pdir / "prompt.md").write_text(text)
+    _atomic_write_text(pdir / "prompt.md", text)
     meta = {
         "id": prompt_id,
         "created_at": state.now_iso(),
         "roster": list(roster),
     }
-    (pdir / "meta.json").write_text(json.dumps(meta, indent=2))
+    _atomic_write_text(pdir / "meta.json", json.dumps(meta, indent=2))
     return pdir
 
 
@@ -116,7 +141,7 @@ def write_reply(
 
     if _initial_reply(name, prompt_id, soul) is None:
         path = rdir / f"{soul}.{kind}.md"
-        path.write_text(text)
+        _atomic_write_text(path, text)
         return path, False
 
     if kind != "take":
@@ -128,7 +153,7 @@ def write_reply(
     while (rdir / f"{soul}.followup-{n}.md").exists():
         n += 1
     path = rdir / f"{soul}.followup-{n}.md"
-    path.write_text(text)
+    _atomic_write_text(path, text)
     return path, True
 
 

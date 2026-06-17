@@ -23,6 +23,7 @@ import { machinesSection } from './sidebar/machines-section.js';
 import { sessionsSection } from './sidebar/sessions-section.js';
 import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
+import { councilSection } from './sidebar/council-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
@@ -83,6 +84,7 @@ async function init() {
     sidebar.addSection('projects', projectsSection);
     sidebar.addSection('artifacts', artifactsSection);
     sidebar.addSection('scheduler', schedulerSection);
+    sidebar.addSection('council', councilSection);
     sidebar.addSection('safety', safetySection);
     sidebar.addSection('config', configSection);
     setupClock();

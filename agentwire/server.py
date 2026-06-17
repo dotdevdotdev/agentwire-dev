@@ -306,6 +306,9 @@ class AgentWireServer:
         self.app.router.add_post("/api/scheduler/start", self.api_scheduler_start)
         self.app.router.add_post("/api/scheduler/stop", self.api_scheduler_stop)
         self.app.router.add_get("/api/scheduler/output", self.api_scheduler_session_output)
+        # Council seating board: live sittings + per-prompt snapshot
+        self.app.router.add_get("/api/council/sittings", self.api_council_sittings)
+        self.app.router.add_get("/api/council/live", self.api_council_live)
         # Artifact windows: upload and serve agent-generated HTML
         self.app.router.add_post("/api/artifacts/upload", self.api_artifacts_upload)
         self.app.router.add_get("/api/artifacts", self.api_artifacts_list)
@@ -4972,6 +4975,141 @@ projects:
         await proc.wait()
         return proc.returncode == 0
 
+    async def _council_dead_souls(self, sitting) -> set:
+        """Roster souls whose lens tmux session is gone (→ stalled, not pending).
+
+        One ``tmux list-sessions`` off the event loop; council sessions are
+        local so the ``@machine`` suffix is stripped before matching.
+        """
+        if not sitting or not sitting.sessions:
+            return set()
+        try:
+            loop = asyncio.get_event_loop()
+            live_raw = await loop.run_in_executor(None, self.agent.list_sessions)
+        except Exception:
+            return set()
+        live = {s.split("@")[0] for s in live_raw}
+        return {
+            soul
+            for soul, sess in sitting.sessions.items()
+            if sess.split("@")[0] not in live
+        }
+
+    async def api_council_sittings(self, request: web.Request) -> web.Response:
+        """GET /api/council/sittings - Names of every live council sitting."""
+        try:
+            from .council import state as council_state
+            return web.json_response({"sittings": council_state.list_sittings()})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_council_live(self, request: web.Request) -> web.Response:
+        """GET /api/council/live - Board snapshot for a sitting (mirrors
+        /api/scheduler/live).
+
+        Query: ``sitting`` (defaults to the sole live sitting), ``prompt_id``
+        (defaults to the latest). 404 when the named sitting has no state.
+        """
+        try:
+            from .council import state as council_state
+            from .council import view as council_view
+
+            name = request.query.get("sitting")
+            if not name:
+                live = council_state.list_sittings()
+                if len(live) == 1:
+                    name = live[0]
+                elif not live:
+                    return web.json_response(
+                        {"running": False, "sittings": []}, status=404
+                    )
+                else:
+                    # Ambiguous — let the client pick from the list.
+                    return web.json_response(
+                        {"running": False, "sittings": live}, status=409
+                    )
+
+            sitting = council_state.read_sitting(name)
+            if sitting is None:
+                return web.json_response(
+                    {"running": False, "sittings": council_state.list_sittings()},
+                    status=404,
+                )
+
+            prompt_id_raw = request.query.get("prompt_id")
+            prompt_id = int(prompt_id_raw) if prompt_id_raw else None
+            dead = await self._council_dead_souls(sitting)
+            snap = council_view.snapshot(name, prompt_id, dead_souls=dead)
+            if snap is None:
+                return web.json_response({"running": False}, status=404)
+            snap["running"] = True
+            snap["sittings"] = council_state.list_sittings()
+            return web.json_response(snap)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def council_watch_loop(self):
+        """Poll live sittings' latest ``replies/`` dir and push ``council_update``
+        deltas over the dashboard WS.
+
+        A filesystem ``rename`` watch would be tighter, but a ~1.5s poll needs no
+        new dependency and the producer-side atomic write (``inbox.py``) is what
+        actually guarantees a reader never sees a half-written verdict. Each delta
+        carries the fully-derived tile for the one soul that changed, so the
+        browser swaps a single tile with no re-fetch and no flicker. A new prompt
+        round emits ``{reset: True}`` so the board refetches its snapshot.
+        """
+        from .council import inbox, state as council_state, view as council_view
+
+        seen: dict[str, dict] = {}  # name -> {prompt_id, files: {name: mtime}}
+        logger.info("[Council] Board watcher started")
+        while True:
+            try:
+                if self.dashboard_clients:
+                    live = set(council_state.list_sittings())
+                    for stale in [n for n in seen if n not in live]:
+                        seen.pop(stale, None)
+                    for name in live:
+                        await self._council_tick(name, seen, inbox, council_state, council_view)
+            except asyncio.CancelledError:
+                logger.info("[Council] Board watcher stopped")
+                raise
+            except Exception as e:
+                logger.debug(f"[Council] watch tick failed: {e}")
+            await asyncio.sleep(1.5)
+
+    async def _council_tick(self, name, seen, inbox, council_state, council_view):
+        pid = council_state.latest_prompt_id(name)
+        if pid is None:
+            return
+        prev = seen.get(name)
+        if prev is None or prev.get("prompt_id") != pid:
+            # New prompt round — clear stale tile state, tell the board to refetch.
+            seen[name] = {"prompt_id": pid, "files": {}}
+            prev = seen[name]
+            await self.broadcast_dashboard(
+                "council_update", {"sitting": name, "prompt_id": pid, "reset": True}
+            )
+        rdir = inbox.replies_dir(name, pid)
+        current: dict[str, float] = {}
+        if rdir.is_dir():
+            for p in rdir.glob("*.md"):
+                try:
+                    current[p.name] = p.stat().st_mtime
+                except OSError:
+                    pass
+        changed_souls = {
+            fname.split(".", 1)[0]
+            for fname, mt in current.items()
+            if prev["files"].get(fname) != mt
+        }
+        for soul in changed_souls:
+            tile = council_view.derive_tile(name, pid, soul)
+            await self.broadcast_dashboard(
+                "council_update", {"sitting": name, "prompt_id": pid, "tile": tile}
+            )
+        seen[name] = {"prompt_id": pid, "files": current}
+
     async def api_scheduler_events(self, request: web.Request) -> web.Response:
         """GET /api/scheduler/events - Recent scheduler events."""
         try:
@@ -5531,6 +5669,9 @@ async def run_server(config: Config):
     # Watchdog: healthcheck registered services, notify + restart per policy
     watchdog_task = asyncio.create_task(server.service_watchdog_loop())
 
+    # Council board: poll live sittings' replies and push council_update deltas
+    council_task = asyncio.create_task(server.council_watch_loop())
+
     # Sessions are now fetched dynamically from tmux + .agentwire.yml
     # No cache to rebuild or periodically refresh
 
@@ -5561,7 +5702,7 @@ async def run_server(config: Config):
         while True:
             await asyncio.sleep(3600)
     finally:
-        for task in (monitor_task, idle_nag_task, autostart_task, watchdog_task):
+        for task in (monitor_task, idle_nag_task, autostart_task, watchdog_task, council_task):
             task.cancel()
             try:
                 await task
