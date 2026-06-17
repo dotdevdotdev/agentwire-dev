@@ -715,48 +715,68 @@ class TestApiRestrictedMode:
 
 
 # ---------------------------------------------------------------------------
-# /transcribe under the default tier
-# ---------------------------------------------------------------------------
-
-
-class TestTranscribeDefaultTier:
-    async def test_transcribe_returns_501_without_custom_stt(self, portal_client):
-        client, server = portal_client
-        # Empty config → stt.backend "default" → NoSTT
-        from agentwire.stt import NoSTT
-        server.stt = NoSTT()
-
-        resp = await client.post("/transcribe", data=b"fakeaudio")
-        assert resp.status == 501
-        body = await resp.json()
-        assert "browser speech recognition" in body["error"]
-
-
-# ---------------------------------------------------------------------------
 # /api/voice-status
 # ---------------------------------------------------------------------------
 
 
 class TestVoiceStatus:
-    async def test_default_tier_shape(self, portal_client):
+    async def test_default_tier_shim_loading(self, portal_client):
         client, server = portal_client
+
+        # Default tier probes the managed shim's /health like custom does.
+        # While the shim loads (or hasn't spawned), /health isn't "ok" →
+        # server_transcribe False, so the client stays on browser speech
+        # recognition and instant mode holds. No `moonshine` key any more.
+        async def fake_probe(base_url, path, timeout=1.5):
+            assert base_url == "http://localhost:8101"
+            return {"status": "loading"}
+
+        server._probe_shim = fake_probe
+
         resp = await client.get("/api/voice-status")
         assert resp.status == 200
         body = await resp.json()
-        # Default tier: in-process Moonshine (mirror of kokoro). Until the
-        # model warms up, server_transcribe is False so the client stays on
-        # browser speech recognition and instant mode holds.
         assert body["stt"] == {
             "backend": "default",
             "url": None,
             "available": True,
             "server_transcribe": False,
-            "moonshine": {"state": "absent", "percent": 0},
         }
         assert body["tts"]["backend"] == "default"
         assert body["tts"]["available"] is True
         assert body["instant_mode"] is True
         assert body["corrections"] == {}
+
+    async def test_default_tier_shim_absent(self, portal_client):
+        client, server = portal_client
+
+        # Shim not spawned / unreachable → probe returns None → fall back.
+        async def fake_probe(base_url, path, timeout=1.5):
+            return None
+
+        server._probe_shim = fake_probe
+
+        resp = await client.get("/api/voice-status")
+        body = await resp.json()
+        assert body["stt"]["server_transcribe"] is False
+        assert body["stt"]["available"] is True
+        assert body["instant_mode"] is True
+
+    async def test_default_tier_shim_ok(self, portal_client):
+        client, server = portal_client
+
+        # Shim /health ok → host transcription takes over: server_transcribe
+        # True and instant mode drops (audio now uploads).
+        async def fake_probe(base_url, path, timeout=1.5):
+            return {"status": "ok"}
+
+        server._probe_shim = fake_probe
+
+        resp = await client.get("/api/voice-status")
+        body = await resp.json()
+        assert body["stt"]["server_transcribe"] is True
+        assert "moonshine" not in body["stt"]
+        assert body["instant_mode"] is False
 
     async def test_custom_tier_probes_shim(self, portal_client):
         client, server = portal_client
@@ -820,6 +840,61 @@ class TestVoiceStatus:
         resp = await client.get("/api/voices")
         assert resp.status == 200
         assert await resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Default-tier managed STT shim lifecycle (ensure_managed_stt)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureManagedStt:
+    async def test_delegates_to_stt_start_cli(self, portal_client, monkeypatch):
+        client, server = portal_client
+        # Skip the post-bind settle delay.
+        monkeypatch.setattr("agentwire.server.asyncio.sleep", AsyncMock())
+
+        calls = []
+
+        async def fake_cmd(args, json_output=True):
+            calls.append((args, json_output))
+            return True, {"output": "STT server starting"}
+
+        server.run_agentwire_cmd = fake_cmd
+        server._voice_status_cache = (12345.0, {"stale": True})
+
+        await server.ensure_managed_stt()
+
+        # Idempotent CLI spawn — reuses cmd_stt_start (early-returns if the
+        # agentwire-stt tmux session already exists).
+        assert calls == [(["stt", "start"], False)]
+        # Cache invalidated so the next voice-status poll re-probes /health.
+        assert server._voice_status_cache is None
+
+    async def test_cli_failure_is_soft(self, portal_client, monkeypatch):
+        client, server = portal_client
+        monkeypatch.setattr("agentwire.server.asyncio.sleep", AsyncMock())
+
+        async def fake_cmd(args, json_output=True):
+            return False, {"error": "boom"}
+
+        server.run_agentwire_cmd = fake_cmd
+        # Must not raise — browser STT keeps working.
+        await server.ensure_managed_stt()
+        assert server._voice_status_cache is None
+
+    def test_spawn_gate_is_moonshine_importable(self):
+        # run_server schedules ensure_managed_stt only when
+        # `config.stt.backend == "default" and moonshine_importable()`. This is
+        # the gate it evaluates — proven importable in this (py<3.14) env.
+        from agentwire.stt import moonshine_importable
+
+        assert moonshine_importable() is True
+
+    def test_spawn_gate_false_when_not_importable(self, monkeypatch):
+        import agentwire.stt as stt_pkg
+
+        monkeypatch.setattr(stt_pkg, "moonshine_importable", lambda: False)
+        assert stt_pkg.moonshine_importable() is False
 
 
 # ---------------------------------------------------------------------------

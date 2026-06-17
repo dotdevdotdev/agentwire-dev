@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentwire.stt import CloudSTTBackend, NoSTT, get_stt_backend
+from agentwire.stt import CloudSTTBackend, STTServerBackend, get_stt_backend
 from agentwire.stt import cloud as cloud_module
 
 
@@ -64,8 +64,10 @@ class TestGetSttBackendCloudTier:
         with pytest.raises(ValueError, match="MY_STT_KEY"):
             get_stt_backend(_cfg("cloud", cloud={"api_key_env": "MY_STT_KEY"}))
 
-    def test_default_tier_still_nostt(self):
-        assert isinstance(get_stt_backend(_cfg("default")), NoSTT)
+    def test_default_tier_is_managed_shim(self):
+        backend = get_stt_backend(_cfg("default"))
+        assert isinstance(backend, STTServerBackend)
+        assert backend.url == "http://localhost:8101"
 
 
 class TestCloudRequest:
