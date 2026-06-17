@@ -197,6 +197,10 @@ async function init() {
 
     desktop.on('desktop_focus_window', ({ window_id }) => {
         desktop.setActiveWindow(window_id);
+        // MCP-driven focus follows the same "voice follows the tab" rule as a
+        // user click: only session windows update the active-session shadow.
+        const sw = sessionWindows.get(window_id);
+        if (sw) postActiveSession(sw.session);
     });
 
     desktop.on('desktop_tile_window', ({ window_id, zone }) => {
@@ -449,6 +453,22 @@ function updateVoiceIndicator(state) {
     }
 }
 
+// "Voice follows the focused tab" — mirror the focused session name to the
+// portal backend, which writes ~/.agentwire/active-session. External tools
+// (Hammerspoon ⌥Space) read that file to know where voice input should land.
+// Session windows only; artifacts/panels never change the voice target.
+// Fire-and-forget + deduped so re-focusing the same window doesn't spam.
+let _lastPostedActiveSession = null;
+function postActiveSession(session) {
+    if (!session || session === _lastPostedActiveSession) return;
+    _lastPostedActiveSession = session;
+    apiFetch('/api/active-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session }),
+    }).catch(() => { _lastPostedActiveSession = null; });  // allow retry on failure
+}
+
 /**
  * Open a session terminal window.
  * Exported for use by sessions-window.js and other modules.
@@ -493,6 +513,9 @@ export function openSessionTerminal(session, mode, machine = null) {
             updateTaskbarActive(id);
             desktop.setActiveWindow(id);
             saveTaskbarState();
+            // Voice follows the focused tab — mirror this session to the
+            // active-session shadow file so ⌥Space (Hammerspoon) targets it.
+            postActiveSession(session);
         }
     });
 

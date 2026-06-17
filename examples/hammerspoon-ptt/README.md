@@ -1,8 +1,11 @@
-# Hammerspoon — toggle PTT + voice target-picker
+# Hammerspoon — two-key push-to-talk
 
-A reference [Hammerspoon](https://www.hammerspoon.org/) config for AgentWire voice input on macOS. Unlike the basic hold-to-record setup ([`docs/wiki/communication/hammerspoon.md`](../../docs/wiki/communication/hammerspoon.md)), this variant is **toggle-based** (tap to start, tap to stop) and adds a **voice target-picker**: say a session name and it fuzzy-matches against your live sessions.
+A reference [Hammerspoon](https://www.hammerspoon.org/) config for AgentWire voice input on macOS. Two keys, both toggle-based (tap to start, tap to stop):
 
-The whole thing is in [`init.lua`](init.lua) — copy it to `~/.hammerspoon/init.lua` (or `require` it) and reload.
+- **⌥Space** — talk to the **tab target**: the session the portal is currently focused on.
+- **⌥⌘Space** — **pick-and-talk**: open a session chooser and start recording at the same time; talk while you pick.
+
+The whole thing is in [`init.lua`](init.lua) — copy it to `~/.hammerspoon/init.lua` (or `require` it) and reload. The canonical write-up lives at [`docs/wiki/communication/hammerspoon.md`](../../docs/wiki/communication/hammerspoon.md).
 
 ## Prerequisites
 
@@ -15,38 +18,28 @@ The whole thing is in [`init.lua`](init.lua) — copy it to `~/.hammerspoon/init
 
 | Chord | Action |
 |-------|--------|
-| **⌃⌥⌘ Space** | Toggle record → send transcript to the target session |
-| **⌃⌥⌘ T** | Toggle record → type transcript at the cursor (dictation, any app) |
-| **⌃⌥⌘ S** | Toggle record → fuzzy-pick the target session by voice |
+| **⌥ Space** | Toggle record → send transcript to the **tab target** (focused portal session) |
+| **⌥⌘ Space** | Toggle record + open chooser → send transcript to the **highlighted session** |
 
-Tap once to start recording, tap the **same** key to stop. The hyper chord (`ctrl+alt+cmd`) is collision-free with normal app shortcuts; change `HYPER` at the top of `init.lua` to taste.
+Tap once to start recording, tap the **same** key to stop. For ⌥⌘Space you can also press **Enter** / click a row to send, or **Esc** to cancel with no send.
 
-## How the voice target-picker works
+## How it works
 
-This is the part that consumes `agentwire listen stop --stdout` — the transcript source merged on `main`:
+- **⌥Space** reads the target from `~/.agentwire/active-session` at *stop* time, so it follows whichever portal tab you last focused. Empty/missing file → falls back to the `DEFAULT_TARGET` at the top of `init.lua` (`agentwire`). The portal keeps that file current — see the active-session contract in the canonical doc.
+- **⌥⌘Space** starts recording and opens an `hs.chooser` populated from `agentwire list --sessions --json`. You pick visually (type to filter / arrow / click), so it can **never misroute** — there's no voice name-matching. Second ⌥⌘Space press reads the highlighted row and sends there.
 
-1. **⌃⌥⌘S** → `agentwire listen start` (alert: "Say a session name…").
-2. **⌃⌥⌘S** again → `agentwire listen stop --stdout`. Unlike `-s <session>` or `--type`, `--stdout` doesn't paste or send anywhere — it prints the raw transcript to stdout, which the script captures.
-3. `agentwire list --sessions --json` → the live session list.
-4. Character-level fuzzy match (below) picks the best-scoring session.
-5. The script opens an `hs.chooser` and **auto-confirms** the winner; if no candidate clears the confidence threshold it leaves the chooser open for you to pick or type.
+## Gotchas (baked into `init.lua`)
 
-## The three gotchas (baked into `init.lua`)
-
-These cost real time to rediscover, so they're called out inline in the code:
-
-1. **`hs.chooser:choices()` is a setter, not a getter.** Calling it with no args *clears* the list. Keep your own `choices` table and fuzzy-match against that — only ever pass the list *into* `chooser:choices(choices)`.
-
-2. **`hs.chooser:select(row)` fires the completion callback AND closes the chooser.** That's the mechanism for auto-confirm: compute the best fuzzy row, call `chooser:select(bestRow)`, and the completion callback sets `targetSession` with no click required.
-
-3. **Character-level fuzzy match (Levenshtein + per-word containment bonus).** STT mangles short jargon names — "agentwire-dev" comes back as "agent wire dev". A prefix/equality test misses that. We score `1 − (editDistance / maxLen)` and add `+0.5` for each spoken word contained in the candidate; highest combined score wins. Verified mappings: `agent wire dev → agentwire-dev`, `my project → myproject`, `web site → website`.
+1. **Stripped PATH.** Hammerspoon launches with `PATH=/usr/bin:/bin`, so the CLI and its children (ffmpeg, etc.) won't resolve. The script prepends `/opt/homebrew/bin:$HOME/.local/bin`.
+2. **`hs.chooser:choices()` is a setter, not a getter.** Calling it with no args *clears* the list. The script only ever passes the list *into* `chooser:choices(choices)`.
+3. **Idempotent finish.** The hotkey-again path and the chooser's completion callback (Enter/click/Esc) can both fire — a `mode` guard ensures only one of them sends.
 
 ## Troubleshooting
 
 | Problem | Check |
 |---------|-------|
 | Alert shows but no transcript | `agentwire stt status`; confirm `stt.backend: custom` |
-| Picker shows "No sessions running" | `agentwire list --sessions` from a normal shell |
-| Wrong session picked | Lower/raise `MATCH_THRESHOLD`; below it the chooser stays open for manual pick |
+| ⌥Space sends to the wrong/default session | `cat ~/.agentwire/active-session`; focus a session window in the portal |
+| Chooser shows "No sessions running" | `agentwire list --sessions` from a normal shell |
 | `agentwire: not found` | Fix the `agentwire` path or `PATH` at the top of `init.lua` |
 | Debug the CLI side | `tail -f /tmp/agentwire-listen.log` |

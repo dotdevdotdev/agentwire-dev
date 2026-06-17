@@ -79,7 +79,6 @@ and `custom` (any model behind a small HTTP shim).
 - **[Self-hosted TTS](voice/tts-self-hosted.md)** — the bundled reference shim's engines (Kokoro, Chatterbox, Qwen, Zonos)
 - **[Cloud STT](voice/stt-cloud.md)** — `stt.backend: cloud`, portal → any OpenAI-compatible transcription API, no shim daemon
 - **[Self-hosted STT](voice/stt-self-hosted.md)** — moonshine / faster-whisper reference shim, push-to-talk latency knobs
-- **[Hammerspoon PTT + voice picker](voice/hammerspoon-ptt.md)** — toggle push-to-talk and a voice target-picker that consumes `listen stop --stdout` (reference example)
 
 ## Internals
 

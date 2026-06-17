@@ -1,183 +1,88 @@
 # Hammerspoon Push-to-Talk
 
-Global hotkeys for voice input on macOS using [Hammerspoon](https://www.hammerspoon.org/). Hold a key to record, release to send — works from any app.
+Global hotkeys for voice input on macOS using [Hammerspoon](https://www.hammerspoon.org/). Two keys, both toggle-based (tap to start recording, tap again to stop + send) — works from any app.
 
-> Want a toggle-based variant (tap to start/stop) with a **voice target-picker** that fuzzy-matches a spoken session name? See [`voice/hammerspoon-ptt.md`](../voice/hammerspoon-ptt.md) and the runnable [`examples/hammerspoon-ptt/`](../../../examples/hammerspoon-ptt/).
+- **⌥Space** — talk to the **tab target**: the session the portal is currently focused on (read from `~/.agentwire/active-session`, with a default fallback).
+- **⌥⌘Space** — **pick-and-talk**: open a live session chooser *and* start recording at the same time; talk while you pick. You pick visually, so it can never misroute — there's no voice name-matching.
+
+The runnable config lives at [`examples/hammerspoon-ptt/`](../../../examples/hammerspoon-ptt/) — [`init.lua`](../../../examples/hammerspoon-ptt/init.lua) + [README](../../../examples/hammerspoon-ptt/README.md). Copy `init.lua` to `~/.hammerspoon/init.lua` (or `require` it) and reload (Hammerspoon menu > Reload Config, or `⌘⇧R`).
 
 ## Prerequisites
 
 1. **Hammerspoon** installed (`brew install --cask hammerspoon`)
 2. **AgentWire** installed and on PATH (`~/.local/bin/agentwire`)
-3. **STT server** running (`agentwire stt start`)
-4. **IPC module** — Hammerspoon needs `hs.ipc` for CLI integration. On first load it may prompt to install the CLI.
-
-## Setup
-
-Copy this to `~/.hammerspoon/init.lua` and reload (Hammerspoon menu > Reload Config or `Cmd+Shift+R`).
-
-```lua
--- Enable IPC for hs CLI commands
-require("hs.ipc")
-
--- AgentWire Push-to-Talk
--- Hold right alt to record, release to send to target session
--- Hold right cmd to record, release to type at cursor
--- Alt+F1 to change target session
-
-local recording = false
-local typeMode = false
-local targetSession = "agentwire-dev"  -- Default session, resets on reload
-local agentwire = os.getenv("HOME") .. "/.local/bin/agentwire"
-local modTap = nil  -- Forward declaration
-
--- Non-blocking command execution, with optional callback when done
-local function run(args, onComplete)
-    local cmd = agentwire .. " " .. table.concat(args, " ")
-    hs.task.new("/bin/bash", function()
-        if onComplete then onComplete() end
-    end, {"-c", cmd}):start()
-end
-
--- Run command with eventtap disabled until complete
-local function runAndWait(args)
-    modTap:stop()
-    run(args, function()
-        modTap:start()
-    end)
-end
-
--- Watch for modifier key changes
-modTap = hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
-    local flags = event:getFlags()
-    local keyCode = event:getKeyCode()
-
-    -- Right alt is keyCode 61 (send to session)
-    if keyCode == 61 then
-        if flags.alt and not recording then
-            recording = true
-            typeMode = false
-            hs.alert.show("Recording → " .. targetSession, 0.5)
-            run({"listen", "start"})
-        elseif not flags.alt and recording and not typeMode then
-            recording = false
-            hs.alert.show("Sending to " .. targetSession, 0.5)
-            runAndWait({"listen", "stop", "-s", targetSession})
-        end
-    end
-
-    -- Right cmd is keyCode 54 (type at cursor)
-    if keyCode == 54 then
-        if flags.cmd and not recording then
-            recording = true
-            typeMode = true
-            hs.alert.show("Recording (type)...", 0.5)
-            run({"listen", "start"})
-        elseif not flags.cmd and recording and typeMode then
-            recording = false
-            typeMode = false
-            hs.alert.show("Typing...", 0.5)
-            runAndWait({"listen", "stop", "--type"})
-        end
-    end
-
-    return false
-end)
-
--- Alt+F1 to change target session
-hs.hotkey.bind({"alt"}, "F1", function()
-    if recording then
-        recording = false
-        typeMode = false
-    end
-
-    local button, text = hs.dialog.textPrompt(
-        "AgentWire Target Session",
-        "Enter session name:",
-        targetSession,
-        "OK",
-        "Cancel"
-    )
-
-    if button == "OK" and text and text ~= "" then
-        targetSession = text
-        hs.alert.show("Target: " .. targetSession, 1)
-    end
-end)
-
-modTap:start()
-hs.alert.show("PTT: " .. targetSession .. " (⌥F1 to change)")
-```
+3. A **custom STT shim** running: `agentwire stt start` with `stt.backend: custom` in `~/.agentwire/config.yaml`. `agentwire listen` records on the host, so it can't use the browser-tier recognizer — see [`voice/stt-self-hosted.md`](../voice/stt-self-hosted.md) and [`voice/shim-contract.md`](../voice/shim-contract.md).
+4. **IPC module** — Hammerspoon needs `hs.ipc` for the `hs` CLI. The config `require`s it; first load may prompt to install the CLI.
 
 ## Hotkeys
 
-| Key | Action |
-|-----|--------|
-| **Hold Right Alt** | Record voice, release sends to target session |
-| **Hold Right Cmd** | Record voice, release types transcription at cursor |
-| **Alt + F1** | Change target session (text prompt) |
+| Chord | Action |
+|-------|--------|
+| **⌥ Space** | Toggle record → send transcript to the **tab target** (focused portal session) |
+| **⌥⌘ Space** | Toggle record + open chooser → send transcript to the **highlighted session** |
 
-## How It Works
+For **⌥⌘Space** you can finish three ways: press ⌥⌘Space again, press **Enter**, or **click** a row to send to the highlighted session; press **Esc** / dismiss to cancel with no send.
 
-### Two modes
+The CLI under the hood:
 
-**Session send** (Right Alt) — transcribes your voice and sends the text as a prompt to the target agentwire session. The agent receives it as if you typed it in the terminal.
+| Step | Command |
+|------|---------|
+| Begin recording | `agentwire listen start` |
+| Stop + transcribe + send | `agentwire listen stop -s <session>` |
+| Stop + discard (no send) | `agentwire listen cancel` |
+| Live session list | `agentwire list --sessions --json` |
 
-**Type at cursor** (Right Cmd) — transcribes your voice and types the text wherever your cursor is. Works in any app (editor, browser, Slack, etc.). Useful for dictation outside of agent sessions.
+## How it works
 
-### Key mechanics
+### ⌥Space — voice follows the tab
 
-- **Hold to record, release to send** — no toggle, no button. Natural push-to-talk.
-- **Modifier keys only** — uses `flagsChanged` eventtap to detect right alt/cmd press and release. No conflict with normal keyboard shortcuts since left modifiers are unaffected.
-- **Non-blocking** — recording starts and stops via `hs.task` (async). The eventtap is disabled during send to prevent double-fires, then re-enabled on completion.
+The target is **re-read from `~/.agentwire/active-session` at stop time**, so it follows whichever portal tab you focused most recently. If the file is missing or empty it falls back to the `DEFAULT_TARGET` at the top of `init.lua` (`agentwire`). See [the active-session contract](#the-active-session-contract) below.
 
-### Session targeting
+### ⌥⌘Space — pick-and-talk
 
-The default target session is set at the top of the config (`targetSession`). Press **Alt+F1** to change it at any time — a dialog prompts for the session name. Reloading the config resets to the default.
+The first press starts recording **and** opens an `hs.chooser` populated from `agentwire list --sessions --json` — so you talk while you scan the list. Filter by typing, move with the arrows, then finish (⌥⌘Space again / Enter / click) to send the utterance to the highlighted row. Because you select the destination visually, there's no fuzzy name-matching and no risk of misrouting.
 
-Session names match `agentwire list` output (e.g., `agentwire-dev`, `myproject`, `myproject/feature-branch`).
+### Single capture, idempotent finish
+
+Only one recording is ever in flight. A small `mode` state machine (`nil` / `"tab"` / `"pick"`) guards it: while ⌥Space owns the capture, ⌥⌘Space is ignored and vice-versa. For the chooser, both the hotkey-again path and the chooser's own completion callback (Enter / click / Esc) can fire — the `mode` guard ensures exactly one of them sends, so you can never double-send.
+
+### Safety auto-stop
+
+A ~120s timer force-stops any capture left running (e.g. you walked away). For ⌥Space it sends to the current tab target; for ⌥⌘Space it cancels (never misroute on a timeout).
+
+## The active-session contract
+
+`~/.agentwire/active-session` is a one-line plain-text file holding the name of the session the portal desktop is currently focused on. It's how "voice follows the tab" works:
+
+- **Writer (portal).** When a **session** window gains focus in the portal desktop, the frontend POSTs the session name to `POST /api/active-session` (auth-gated like every other `/api` route). The server writes the name to `~/.agentwire/active-session` with an atomic write (temp file + `os.replace`), so a reader never sees a half-written file. Only session windows update it — artifacts and panels don't change the voice target.
+- **Reader (Hammerspoon ⌥Space).** Reads the first line, trims whitespace, and uses it as the `listen stop -s` target. Missing/empty → `DEFAULT_TARGET`.
+
+Verify it by hand: focus different session windows in the portal and watch `cat ~/.agentwire/active-session` track the change.
+
+## Gotchas (baked into `init.lua`)
+
+1. **Stripped PATH.** Hammerspoon launches with `PATH=/usr/bin:/bin`, so the agentwire CLI and its child processes (ffmpeg, etc.) won't resolve. The config prepends `/opt/homebrew/bin:$HOME/.local/bin` to `PATH` for every shelled-out command.
+2. **`hs.chooser:choices()` is a setter, not a getter.** Calling it with no args *clears* the list. The config only ever passes the list *into* `chooser:choices(choices)`.
+3. **Idempotent finish.** See "Single capture, idempotent finish" above — the `mode` guard is what stops the hotkey-again and chooser-callback paths from both sending.
 
 ## Customization
 
-### Change default session
-
 ```lua
-local targetSession = "my-project"  -- Change this
+-- top of init.lua
+local DEFAULT_TARGET = "agentwire"   -- fallback when the shadow file is empty
+local SAFETY_SECS = 120              -- force-stop a capture left running this long
+local agentwire = os.getenv("HOME") .. "/.local/bin/agentwire"  -- CLI path
 ```
 
-### Change hotkeys
-
-Modifier key codes for `flagsChanged` events:
-
-| Key | Code |
-|-----|------|
-| Right Alt | 61 |
-| Right Cmd | 54 |
-| Right Shift | 60 |
-| Right Ctrl | 62 |
-
-To use Right Shift instead of Right Alt for session send, change `keyCode == 61` to `keyCode == 60`.
-
-For the session selector, change the `hs.hotkey.bind` call:
-
-```lua
--- Use Ctrl+F1 instead of Alt+F1
-hs.hotkey.bind({"ctrl"}, "F1", function()
-```
-
-### Change agentwire path
-
-If your `agentwire` binary is elsewhere:
-
-```lua
-local agentwire = "/usr/local/bin/agentwire"
-```
+To rebind, edit the two `hs.hotkey.bind` calls at the bottom of `init.lua` (e.g. swap `{"alt"}` / `{"alt", "cmd"}` for another modifier set).
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| No alert on key press | Check Hammerspoon is running and config is loaded. Console: `hs.alert.show("test")` |
-| "Recording" shows but no transcription | Check STT server: `agentwire stt status` |
-| Transcription sent but agent doesn't respond | Check session exists: `agentwire list` |
-| Right alt/cmd conflicts with other apps | Most apps only bind left modifiers. If conflict exists, remap to Right Shift (code 60) |
-| Double-fire on release | The `runAndWait` guard should prevent this. If it happens, check Hammerspoon console for errors |
+| Problem | Check |
+|---------|-------|
+| No alert on key press | Hammerspoon running and config loaded? Console: `hs.alert.show("test")` |
+| "Recording" shows but no transcript | `agentwire stt status`; confirm `stt.backend: custom` |
+| ⌥Space sends to the wrong/default session | `cat ~/.agentwire/active-session`; focus a session window in the portal |
+| Chooser shows "No sessions running" | `agentwire list --sessions` from a normal shell |
+| `agentwire: not found` | Fix the `agentwire` path or `PATH` at the top of `init.lua` |
+| Debug the CLI side | `tail -f /tmp/agentwire-listen.log` |
