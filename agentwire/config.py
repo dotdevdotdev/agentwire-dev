@@ -190,10 +190,14 @@ class TTSConfig:
 class STTConfig:
     """Speech-to-text configuration.
 
-    Three tiers: ``default`` transcribes on the host via the portal-owned
-    in-process Moonshine engine (bundled, auto-downloads on first boot — the
-    STT mirror of the default-tier Kokoro voice), falling back to browser
-    SpeechRecognition while the model warms up or when it can't load (py3.14+);
+    Three tiers: ``default`` transcribes on the host via Moonshine running in
+    the portal-managed shim **subprocess** (tmux ``agentwire-stt``, default
+    ``:8101``) — the portal ensures it's running on startup and talks to it
+    over HTTP, with process isolation keeping the ~19s ONNX warm-up off the
+    event loop. Browser SpeechRecognition is the fallback while the model
+    loads or when Moonshine can't load (py3.14+). For this tier ``url`` is
+    optional and resolves to ``http://localhost:8101``; if an operator
+    overrides the shim port (``STT_PORT``) or ``url``, the two must agree.
     ``cloud`` uploads audio to the portal, which POSTs it to any
     OpenAI-compatible transcription API (no extra daemon, key from env,
     server-side only); ``custom`` uploads audio to any HTTP shim implementing

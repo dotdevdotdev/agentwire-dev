@@ -188,11 +188,9 @@ class AgentWireServer:
         # tts.backend == "default".
         from .tts.local import LocalKokoro
         self.kokoro = LocalKokoro()
-        # Default-tier in-process Moonshine STT — the STT mirror of kokoro.
-        # Constructed unconditionally (cheap, no I/O); run_server starts the
-        # warm-up only when stt.backend == "default".
-        from .stt import LocalMoonshine
-        self.moonshine = LocalMoonshine()
+        # Default-tier Moonshine STT runs in the standalone shim subprocess
+        # (process isolation — see ensure_managed_stt), not in-process. No
+        # object to construct here; run_server ensures the shim post-bind.
         # Origin + token enforcement. The middleware is a pure function of
         # config — run_server() resolves the token file into
         # config.server.auth_token before constructing the server.
@@ -346,7 +344,7 @@ class AgentWireServer:
         from .agents import get_agent_backend
         from .stt import get_stt_backend
 
-        self.stt = get_stt_backend(self.config, moonshine=self.moonshine)
+        self.stt = get_stt_backend(self.config)
         self.agent = get_agent_backend(config_dict)
 
         # Create HTTP session for TTS server calls
@@ -360,31 +358,36 @@ class AgentWireServer:
         if self._http_session:
             await self._http_session.close()
         await self.kokoro.close()
-        await self.moonshine.close()
+        # The default-tier STT shim runs in its own tmux session
+        # (agentwire-stt) — leave it running on portal shutdown; the user may
+        # own it. `agentwire stt stop` is the off switch.
 
-    async def _on_moonshine_state_change(self, moonshine) -> None:
-        """Moonshine warm-up progress → invalidate voice-status cache + toast.
+    async def ensure_managed_stt(self) -> None:
+        """Ensure the default-tier Moonshine shim subprocess is running.
 
-        Mirrors ``_on_kokoro_state_change``. The toast is replaced in place
-        (keyed on session "moonshine-stt") so the download reads as one
-        updating notification, not a stream."""
-        self._voice_status_cache = None
-        if moonshine.state == "downloading":
-            await self._post_toast(
-                "Downloading Moonshine STT model… (one-time, ~200 MB)",
-                session="moonshine-stt", priority="normal", id_prefix="moonshine")
-        elif moonshine.state == "loading":
-            await self._post_toast(
-                "Loading Moonshine STT model…",
-                session="moonshine-stt", priority="normal", id_prefix="moonshine")
-        elif moonshine.state == "ready":
-            await self._post_toast(
-                "Host STT ready — Moonshine now transcribes your voice",
-                session="moonshine-stt", priority="normal", id_prefix="moonshine")
-        elif moonshine.state == "failed":
-            await self._post_toast(
-                f"Moonshine STT setup failed ({moonshine.error}) — using browser speech fallback",
-                session="moonshine-stt", priority="high", id_prefix="moonshine")
+        Delegates to the CLI (single source of truth): ``agentwire stt start``
+        is idempotent — ``cmd_stt_start`` early-returns if the ``agentwire-stt``
+        tmux session already exists, so a user-started shim is reused with no
+        port clash. The ~19s ONNX warm-up happens in that child process, never
+        on the portal's event loop. Mirrors ``autostart_custom_services``."""
+        await asyncio.sleep(5)  # let the portal finish binding first
+        try:
+            success, result = await self.run_agentwire_cmd(["stt", "start"], json_output=False)
+            if success:
+                await self._post_toast(
+                    "Starting host STT (Moonshine) — browser speech until ready",
+                    session="moonshine-stt", priority="normal", id_prefix="moonshine")
+                logger.info("[STT] Ensured managed Moonshine shim")
+            else:
+                logger.warning("[STT] Managed shim start failed: %s", result.get("error"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[STT] Managed shim start error: %s", e)
+        finally:
+            # Flip voice-status off the 30s TTL so the next poll re-probes the
+            # shim's /health and surfaces server_transcribe promptly.
+            self._voice_status_cache = None
 
     async def _on_kokoro_state_change(self, kokoro) -> None:
         """Kokoro warm-up progress → invalidate voice-status cache + toast.
@@ -780,13 +783,15 @@ class AgentWireServer:
         if stt_cfg.backend == "custom":
             stt["available"] = await self._probe_shim(stt_cfg.url, "/health") is not None
         elif stt_cfg.backend == "default":
-            # In-process Moonshine warm-up state (mirror of kokoro). The client
-            # only uploads once the host model is ready; until then it keeps
-            # using browser speech recognition.
-            stt["moonshine"] = {"state": self.moonshine.state, "percent": self.moonshine.percent}
-            if self.moonshine.error:
-                stt["moonshine"]["error"] = self.moonshine.error
-            stt["server_transcribe"] = self.moonshine.ready
+            # Portal-managed Moonshine shim subprocess. The client only uploads
+            # once the shim's /health is "ok" (model loaded); while it loads or
+            # if the spawn failed, server_transcribe stays false and the client
+            # keeps using browser speech recognition. available stays true —
+            # browser fallback is always there.
+            from .stt import _default_stt_url
+
+            health = await self._probe_shim(_default_stt_url(stt_cfg), "/health")
+            stt["server_transcribe"] = bool(health and health.get("status") == "ok")
 
         tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
         if tts_cfg.backend == "default":
@@ -3768,21 +3773,11 @@ projects:
         shape for Whisper- and Moonshine-class models. Optionally prepends a
         configurable amount of silence (``stt.silence_prepend_ms``, default 0).
 
-        Cloud and custom tiers only — in the default tier, recognition
-        happens in the browser and this endpoint answers 501.
+        All three tiers transcribe server-side: default and custom via an HTTP
+        shim, cloud via a hosted API. If the default-tier shim isn't ready yet
+        the backend raises and this endpoint answers 500 (the client is already
+        using browser speech recognition until /api/voice-status flips).
         """
-        from .stt import NoSTT
-
-        if isinstance(self.stt, NoSTT):
-            return web.json_response(
-                {
-                    "error": "Server-side STT is not configured (stt.backend: default — "
-                    "the portal uses browser speech recognition). Set stt.backend: "
-                    "cloud (hosted transcription API) or custom with a url to enable "
-                    "audio-upload transcription."
-                },
-                status=501,
-            )
         try:
             reader = await request.multipart()
             audio_field = await reader.next()
@@ -5501,11 +5496,15 @@ async def run_server(config: Config):
     if config.tts.backend == "default":
         server.kokoro.start(server._on_kokoro_state_change)
 
-    # Warm up the default-tier Moonshine STT: background model download
-    # (one-time ~200 MB) + ONNX load. Browser SpeechRecognition covers input
-    # until ready; on py3.14+ (no package) it stays the browser path.
-    if config.stt.backend == "default":
-        server.moonshine.start(server._on_moonshine_state_change)
+    # Default-tier STT: ensure the Moonshine shim subprocess is running
+    # (process isolation — the ~19s ONNX warm-up happens in that child, never
+    # on this event loop). Browser SpeechRecognition covers input until the
+    # shim's /health is ok; on py3.14+ (no package) the spawn is gated off and
+    # it stays the browser path.
+    from .stt import moonshine_importable
+
+    if config.stt.backend == "default" and moonshine_importable():
+        asyncio.create_task(server.ensure_managed_stt())
 
     # Cleanup old uploads on startup
     await server.cleanup_old_uploads()

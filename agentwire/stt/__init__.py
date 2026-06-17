@@ -4,16 +4,13 @@ import logging
 import os
 from typing import Any
 
-from .base import NoSTT, STTBackend
+from .base import STTBackend
 from .cloud import DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL, CloudSTTBackend
-from .local import LocalMoonshine, LocalMoonshineBackend, moonshine_importable
+from .local import moonshine_importable
 from .server_backend import STTServerBackend
 
 __all__ = [
     "CloudSTTBackend",
-    "LocalMoonshine",
-    "LocalMoonshineBackend",
-    "NoSTT",
     "STTBackend",
     "STTServerBackend",
     "get_stt_backend",
@@ -22,29 +19,32 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_STT_URL = "http://localhost:8101"
 
-def get_stt_backend(config: Any, moonshine: LocalMoonshine | None = None) -> STTBackend:
+
+def _default_stt_url(stt_config: Any) -> str:
+    """Resolve the default-tier shim URL: ``stt.url`` override or :8101.
+
+    Must agree with the shim's ``STT_PORT`` (default 8101) if an operator
+    overrides either side.
+    """
+    return getattr(stt_config, "url", None) or DEFAULT_STT_URL
+
+
+def get_stt_backend(config: Any) -> STTBackend:
     """Get STT backend based on configuration.
 
-    Four resolutions: ``stt.backend: custom`` → HTTP shim at ``stt.url``;
+    Three resolutions: ``stt.backend: custom`` → HTTP shim at ``stt.url``;
     ``stt.backend: cloud`` → OpenAI-compatible transcription API called
     directly from the portal (settings under ``stt.cloud``, key from the
     env var named by ``stt.cloud.api_key_env``); ``stt.backend: default``
-    → in-process Moonshine when the portal owns a ``LocalMoonshine`` and the
-    package is importable (host transcription via ``/transcribe``), else the
-    NoSTT sentinel (browser SpeechRecognition, no server transcription role).
+    → the portal-managed Moonshine shim subprocess at ``_default_stt_url``
+    (same HTTP client as ``custom``; the portal ensures it's running via
+    ``ensure_managed_stt``). Browser SpeechRecognition is the fallback until
+    the shim's ``/health`` reports ``ok``.
     """
     stt_config = getattr(config, "stt", None)
     backend = getattr(stt_config, "backend", "default") if stt_config is not None else "default"
-
-    if backend == "custom":
-        logger.info(f"Using STT shim at {stt_config.url}")
-        return STTServerBackend(
-            url=stt_config.url,
-            timeout=getattr(stt_config, "timeout", 30),
-            instructions=getattr(stt_config, "instructions", ""),
-            options=getattr(stt_config, "options", None),
-        )
 
     if backend == "cloud":
         cloud = getattr(stt_config, "cloud", None) or {}
@@ -68,9 +68,13 @@ def get_stt_backend(config: Any, moonshine: LocalMoonshine | None = None) -> STT
             language=cloud.get("language", ""),
         )
 
-    if moonshine is not None and moonshine_importable():
-        logger.info("STT backend: in-process moonshine (default tier, host transcription)")
-        return LocalMoonshineBackend(moonshine)
-
-    logger.info("STT backend: default (browser speech recognition)")
-    return NoSTT()
+    # default tier → portal-managed shim; custom tier → user/remote-managed
+    # shim. Same HTTP client; only the URL resolution and lifecycle differ.
+    url = _default_stt_url(stt_config) if backend == "default" else stt_config.url
+    logger.info(f"Using STT shim at {url} ({backend} tier)")
+    return STTServerBackend(
+        url=url,
+        timeout=getattr(stt_config, "timeout", 30),
+        instructions=getattr(stt_config, "instructions", ""),
+        options=getattr(stt_config, "options", None),
+    )
