@@ -7,7 +7,6 @@
 
 import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
-import { openCouncilWindow } from '../council-window.js';
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -52,7 +51,18 @@ export const councilSection = {
 
     _render(body, counts) {
         if (!this._sittings.length) {
-            body.innerHTML = '<div class="sidebar-empty">No council sittings.</div>';
+            // No live sitting — still offer the workspace so it can be seated there.
+            body.innerHTML = `
+                <div class="council-section-list">
+                    <button class="council-section-item" data-open-empty="1">
+                        <span class="council-section-name">Open council</span>
+                        <span class="council-section-count">seat &amp; ask</span>
+                    </button>
+                </div>`;
+            body.querySelector('[data-open-empty]')?.addEventListener('click', async () => {
+                const { openCouncilWindow } = await import('../desktop.js');
+                openCouncilWindow(null);
+            });
             return;
         }
         body.innerHTML = `
@@ -70,7 +80,10 @@ export const councilSection = {
                 }).join('')}
             </div>`;
         body.querySelectorAll('.council-section-item').forEach((btn) => {
-            btn.addEventListener('click', () => openCouncilWindow(btn.dataset.sitting));
+            btn.addEventListener('click', async () => {
+                const { openCouncilWindow } = await import('../desktop.js');
+                openCouncilWindow(btn.dataset.sitting);
+            });
         });
     },
 };
