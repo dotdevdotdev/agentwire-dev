@@ -50,6 +50,7 @@ commands:
   - cmd: "gh pr create"
     access: write
     description: Create a pull request
+    id: gh.pr-create
 
   - cmd: "gh pr merge [<pr>]"
     access: write

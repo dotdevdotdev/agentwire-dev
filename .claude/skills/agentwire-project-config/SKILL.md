@@ -93,7 +93,21 @@ tasks:
 
     # Context inheritance
     starting_session: ctx-loaded  # Fork Claude context from this session before running
+
+    # Unattended safety (scheduler, no human present)
+    unattended_allow:             # damage-control rule ids this task may run unattended,
+      - tooldef.terraform-apply-planned-changes-to-infrastructure  # extends the global default
 ```
+
+**`unattended_allow`** (per-task): when the scheduler dispatches a task headless
+(`AGENTWIRE_UNATTENDED=1`), the damage-control hook resolves `ask`-tier commands
+by **failing closed** — block + email the owner — unless the matched rule id is
+on the allowlist. The default allowlist lets a task work and open a PR
+(`git.add`/`git.commit`/`git.push`/`gh.pr-create`); list extra rule ids here to
+permit a normally-gated action (deploy, DB write, outbound email) for **this task
+only**. Blocked actions name the exact rule id (in the email and `agentwire safety
+logs`) so widening is copy-paste. Hard blocks (`rm -rf`, `git push --force`) and
+interactive sessions are unaffected. See `docs/wiki/internals/damage-control.md`.
 
 **Built-in variables:**
 - `{{ date }}`, `{{ time }}`, `{{ datetime }}` - Current date/time

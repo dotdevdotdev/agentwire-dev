@@ -8,6 +8,7 @@ stay in sync.
 """
 
 import json
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -340,6 +341,48 @@ def safety_status_cmd() -> int:
     """CLI command: ``agentwire safety status``."""
     print(format_safety_status(get_safety_status()))
     return 0
+
+
+def safety_notify_unattended_block_cmd(
+    reason: str, rule_id: str, command: str
+) -> int:
+    """CLI command: ``agentwire safety notify-unattended-block``.
+
+    Invoked fire-and-forget by the bash damage-control hook when an
+    unattended (scheduler) run hits an ``ask``-tier command that isn't on the
+    allowlist. Emails the owner via the shared Resend wiring so the blocked
+    action surfaces immediately instead of silently disappearing.
+    """
+    session = os.environ.get("AGENTWIRE_SESSION_NAME") or os.environ.get(
+        "AGENTWIRE_SESSION_ID", "unknown"
+    )
+    cwd = os.environ.get("PWD", "")
+    subject = f"[agentwire] Unattended action blocked: {reason[:80]}"
+    body = (
+        f"An unattended (scheduled) agent attempted an action that requires "
+        f"human confirmation, so it was **blocked** (fail-closed).\n\n"
+        f"- **Session:** {session}\n"
+        f"- **Working dir:** {cwd or 'unknown'}\n"
+        f"- **Rule:** {rule_id or 'unknown'}\n"
+        f"- **Reason:** {reason}\n"
+        f"- **Command:** `{command}`\n"
+        f"- **When:** {datetime.now().isoformat(timespec='seconds')}\n\n"
+        f"Nothing was executed. To permit this specific action for the task in "
+        f"future, add rule id `{rule_id}` to that task's `unattended_allow` in "
+        f"its `.agentwire.yml` (or to `safety.unattended_allow` globally)."
+    )
+    try:
+        from agentwire.channels.email import send_email
+
+        result = send_email(subject=subject, body=body)
+        if getattr(result, "success", False):
+            return 0
+        print(f"notify-unattended-block: email failed: "
+              f"{getattr(result, 'error', 'unknown')}", file=sys.stderr)
+        return 1
+    except Exception as e:  # email not configured, etc. — never crash the notifier
+        print(f"notify-unattended-block: {e}", file=sys.stderr)
+        return 1
 
 
 def safety_logs_cmd(

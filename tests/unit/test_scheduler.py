@@ -519,7 +519,7 @@ class TestPersistentSessionDispatch:
         monkeypatch.setattr(agentwire.locking, "remove_stale_lock", lambda s: None)
         monkeypatch.setattr(scheduler, "_kill_session", lambda s: killed.append(s))
         monkeypatch.setattr(scheduler, "_pre_create_session", lambda t: precreated.append(t.session))
-        monkeypatch.setattr(scheduler, "_run_ensure", lambda cmd: (0, None, 1))
+        monkeypatch.setattr(scheduler, "_run_ensure", lambda cmd, env=None: (0, None, 1))
         monkeypatch.setattr(scheduler, "_parse_ensure_summary", lambda t, r: ("ok", [], []))
         monkeypatch.setattr(scheduler, "_log_event", lambda *a, **k: None)
         monkeypatch.setattr(scheduler, "_notify_portal", lambda *a, **k: None)

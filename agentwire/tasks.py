@@ -105,6 +105,12 @@ class TaskConfig:
     starting_session: str | None = None  # Fork Claude context from this session before running
     role: str | None = None              # Role override for this task
 
+    # Unattended (no-human) safety: damage-control rule ids this scheduled task
+    # is permitted to run when the dispatch is unattended, EXTENDING the global
+    # default allowlist (safety.unattended_allow / DEFAULT_UNATTENDED_ALLOW).
+    # Anything ask-tier and off the merged list is blocked + owner-notified.
+    unattended_allow: list[str] = field(default_factory=list)
+
 
 def parse_pre_command(name: str, config: str | dict) -> PreCommand:
     """Parse a pre-command from config.
@@ -202,6 +208,11 @@ def parse_task_config(name: str, config: dict, default_shell: str | None = None)
         pr_draft=config.get("pr_draft", True),
         starting_session=config.get("starting_session"),
         role=config.get("role"),
+        unattended_allow=(
+            list(config.get("unattended_allow", []))
+            if isinstance(config.get("unattended_allow"), list)
+            else []
+        ),
     )
 
 

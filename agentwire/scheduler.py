@@ -1052,7 +1052,9 @@ def _pre_create_session(task: SchedulerTask) -> None:
     if task.model:
         cmd.extend(["--model", task.model])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=_sched_config().session_create_timeout)
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            timeout=_sched_config().session_create_timeout,
+                            env=_unattended_env(task))
     if result.returncode == 0:
         print(f"[{_ts()}] Pre-created session: {task.session} (type={task.type or 'default'}, model={task.model or 'default'})")
     else:
@@ -1284,14 +1286,39 @@ def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: Tas
     return _dispatch_inplace_task(board, task, existing_state)
 
 
-def _run_ensure(cmd: list[str]) -> tuple[int, "subprocess.CompletedProcess | None", int]:
+def _unattended_env(task: SchedulerTask) -> dict[str, str]:
+    """Env overlay marking a headless dispatch as unattended (no human present).
+
+    THE single chokepoint where the scheduler declares a run unattended. Every
+    dispatch gets ``AGENTWIRE_UNATTENDED=1``; if the project task defines
+    ``unattended_allow`` (its per-task extension to the global allowlist), those
+    rule ids are passed via ``AGENTWIRE_UNATTENDED_ALLOW``. This overlay is the
+    subprocess ``env=`` for the ensure/new dispatch calls; ``agentwire``'s
+    ``_build_tmux_env_flags`` funnels both vars into the new tmux session before
+    the agent launches, where the damage-control hook reads them. Interactive
+    sessions never go through here, so the marker can't leak into them.
+    """
+    env = dict(os.environ)
+    env["AGENTWIRE_UNATTENDED"] = "1"
+    try:
+        from .tasks import load_task
+        tc = load_task(Path(task.project), task.task)
+        extra = getattr(tc, "unattended_allow", None)
+        if extra:
+            env["AGENTWIRE_UNATTENDED_ALLOW"] = ",".join(str(x) for x in extra if x)
+    except Exception:
+        pass
+    return env
+
+
+def _run_ensure(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, "subprocess.CompletedProcess | None", int]:
     """Run an `agentwire ensure` subprocess; return (exit_code, result, duration_s)."""
     start_time = time.time()
     result = None
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            text=True, start_new_session=True, env=env,
         )
         stdout, stderr = proc.communicate()
         exit_code = proc.returncode
@@ -1358,7 +1385,7 @@ def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: Ta
         # No type/role overrides — kill stale session so ensure creates fresh
         _kill_session(task.session)
 
-    exit_code, result, duration = _run_ensure(cmd)
+    exit_code, result, duration = _run_ensure(cmd, env=_unattended_env(task))
     status = _EXIT_TO_STATUS.get(exit_code, "failed")
 
     # On lock conflict, don't update last_run so task remains eligible
@@ -1427,11 +1454,13 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
     if task.model:
         new_cmd += ["--model", task.model]
 
+    unattended_env = _unattended_env(task)
     worktree_path = ""
     new_res = None
     try:
         new_res = subprocess.run(new_cmd, capture_output=True, text=True,
-                                 timeout=cfg.session_create_timeout)
+                                 timeout=cfg.session_create_timeout,
+                                 env=unattended_env)
         if new_res.returncode == 0:
             worktree_path = (json.loads(new_res.stdout) or {}).get("path", "")
     except Exception:
@@ -1454,7 +1483,7 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
         "agentwire", "ensure", "-s", wt_session, "--task", task.task,
         "--project", worktree_path, "--json",
     ]
-    exit_code, result, duration = _run_ensure(cmd)
+    exit_code, result, duration = _run_ensure(cmd, env=unattended_env)
     status = _EXIT_TO_STATUS.get(exit_code, "failed")
 
     if exit_code == _EXIT_LOCK_CONFLICT:

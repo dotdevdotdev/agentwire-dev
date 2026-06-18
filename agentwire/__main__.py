@@ -103,6 +103,31 @@ class AgentCommand:
     env: dict[str, str] = field(default_factory=dict)  # Secrets to inject via tmux set-environment (keeps keys out of `ps`)
 
 
+_UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
+
+
+def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
+    """Propagate the unattended marker into a session being created.
+
+    The scheduler is the single place that decides a dispatch is unattended —
+    it seeds ``AGENTWIRE_UNATTENDED[=1]`` (and any per-task
+    ``AGENTWIRE_UNATTENDED_ALLOW``) into the dispatch subprocess environment.
+    Every session-creation path funnels its env through here on the way to
+    ``tmux new-session -e K=V``, so the marker lands in the new session BEFORE
+    the agent launches and the damage-control hook can read it. A child session
+    an unattended agent spawns inherits the marker too (defense in depth).
+
+    No leak into interactive sessions: a human's ``agentwire new`` has no such
+    var in its environment, so nothing is propagated.
+    """
+    merged = dict(env)
+    for key in _UNATTENDED_ENV_KEYS:
+        val = os.environ.get(key)
+        if val and key not in merged:
+            merged[key] = val
+    return merged
+
+
 def _build_tmux_env_flags(env: dict[str, str]) -> list[str]:
     """Build `-e KEY=VAL` flag pairs for `tmux new-session`.
 
@@ -114,16 +139,17 @@ def _build_tmux_env_flags(env: dict[str, str]) -> list[str]:
     the var — and the agent command runs in that initial shell.
     """
     flags: list[str] = []
-    for key, value in env.items():
+    for key, value in _with_unattended_env(env).items():
         flags.extend(["-e", f"{key}={value}"])
     return flags
 
 
 def _build_tmux_env_flags_shell(env: dict[str, str]) -> str:
     """Shell-quoted `-e 'K=V' …` fragment for inlining via SSH. Trailing space when non-empty."""
-    if not env:
+    merged = _with_unattended_env(env)
+    if not merged:
         return ""
-    parts = [f"-e {shlex.quote(f'{k}={v}')}" for k, v in env.items()]
+    parts = [f"-e {shlex.quote(f'{k}={v}')}" for k, v in merged.items()]
     return " ".join(parts) + " "
 
 
@@ -6978,6 +7004,15 @@ def cmd_safety_status(args) -> int:
     return cli_safety.safety_status_cmd()
 
 
+def cmd_safety_notify_unattended_block(args) -> int:
+    """CLI command: agentwire safety notify-unattended-block (hook-invoked)"""
+    return cli_safety.safety_notify_unattended_block_cmd(
+        getattr(args, "reason", "") or "",
+        getattr(args, "rule_id", "") or "",
+        getattr(args, "command", "") or "",
+    )
+
+
 def cmd_safety_logs(args) -> int:
     """CLI command: agentwire safety logs"""
     tail = getattr(args, 'tail', None)
@@ -11554,6 +11589,16 @@ def main() -> int:
         "status", help="Show safety status and pattern counts"
     )
     safety_status.set_defaults(func=cmd_safety_status)
+
+    # safety notify-unattended-block (hook-invoked, not for humans)
+    safety_notify = safety_subparsers.add_parser(
+        "notify-unattended-block",
+        help="Email the owner that an unattended action was blocked (hook-internal)",
+    )
+    safety_notify.add_argument("--reason", default="", help="Why the command was blocked")
+    safety_notify.add_argument("--rule-id", dest="rule_id", default="", help="Matched rule id")
+    safety_notify.add_argument("--command", default="", help="The blocked command")
+    safety_notify.set_defaults(func=cmd_safety_notify_unattended_block)
 
     # safety logs
     safety_logs = safety_subparsers.add_parser(

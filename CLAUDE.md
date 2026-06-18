@@ -73,6 +73,7 @@ Per-project config lives in `.agentwire.yml` at the project root — **keep it g
 - **worker panes** spawn within the orchestrator's session (visible dashboard)
 - **Pane 0** = orchestrator, **panes 1+** = workers
 - **Damage-control hooks** block dangerous ops (`rm -rf`, `git push --force`, etc.)
+- **Unattended guardrail** — scheduler dispatches are marked `AGENTWIRE_UNATTENDED=1`; the hook resolves `ask`-tier commands by failing closed (block + email owner) unless on the `unattended_allow` list. See [`docs/wiki/internals/damage-control.md`](docs/wiki/internals/damage-control.md).
 - **Smart TTS routing** — audio goes to browser if connected, local speakers if not
 
 ### Worker Pane Lifecycle
