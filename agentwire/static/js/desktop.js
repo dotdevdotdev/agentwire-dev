@@ -93,6 +93,7 @@ async function init() {
     setupPageUnload();
     setupGlobalPtt();
     setupWindowCycling();
+    setupWindowSwipeCycling();
     setupCollage();
 
     // Set up event listeners BEFORE fetching data
@@ -333,30 +334,87 @@ function handleWindowActivity({ session }) {
     });
 }
 
+// Move focus to the next (+1) / previous (-1) open window, wrapping around.
+// Shared by Tab/Shift+Tab and the two-finger swipe gesture.
+function cycleWindow(direction) {
+    const items = Array.from(elements.taskbarWindows.querySelectorAll('.sidebar-open-item'));
+    if (items.length === 0) return;
+    const activeId = desktop.getActiveWindow ? desktop.getActiveWindow() : null;
+    const currentIndex = items.findIndex(el => el.dataset.session === activeId);
+    const nextIndex = (currentIndex + direction + items.length) % items.length;
+    const nextId = items[nextIndex]?.dataset.session;
+    if (!nextId) return;
+    // Focus the window and its terminal directly (don't use click which toggles minimize)
+    const inst = _lookupWindowInstance(nextId);
+    if (inst) {
+        if (inst.isMinimized) inst.restore();
+        inst.focus();
+    }
+    desktop.setActiveWindow(nextId);
+    updateTaskbarActive(nextId);
+    saveTaskbarState();
+}
+
 // Tab / Shift+Tab to cycle open windows
 function setupWindowCycling() {
     window.addEventListener('keydown', (e) => {
         if (e.key !== 'Tab') return;
         e.preventDefault();
         e.stopPropagation();
-        const items = Array.from(elements.taskbarWindows.querySelectorAll('.sidebar-open-item'));
-        if (items.length === 0) return;
-        const activeId = desktop.getActiveWindow ? desktop.getActiveWindow() : null;
-        const currentIndex = items.findIndex(el => el.dataset.session === activeId);
-        const direction = e.shiftKey ? -1 : 1;
-        const nextIndex = (currentIndex + direction + items.length) % items.length;
-        const nextId = items[nextIndex]?.dataset.session;
-        if (!nextId) return;
-        // Focus the window and its terminal directly (don't use click which toggles minimize)
-        const inst = _lookupWindowInstance(nextId);
-        if (inst) {
-            if (inst.isMinimized) inst.restore();
-            inst.focus();
-        }
-        desktop.setActiveWindow(nextId);
-        updateTaskbarActive(nextId);
-        saveTaskbarState();
+        cycleWindow(e.shiftKey ? -1 : 1);
     }, true);  // capture phase — runs before xterm's handlers
+}
+
+// Two-finger horizontal swipe (trackpad) to cycle windows — the gesture analog
+// of Tab/Shift+Tab. A horizontal swipe also fires the browser's back/forward
+// navigation, so we intercept horizontal-dominant wheel events over the desktop
+// (preventing that nav) and translate one deliberate swipe into one cycle.
+function setupWindowSwipeCycling() {
+    let accum = 0;
+    let lastT = 0;
+    let cooldown = false;
+    const SWIPE_THRESHOLD = 60;   // px of horizontal travel for a deliberate swipe
+    const GESTURE_GAP = 200;      // ms gap that starts a fresh gesture
+    const COOLDOWN_MS = 500;      // one cycle per swipe; ride out momentum
+
+    window.addEventListener('wheel', (e) => {
+        // Horizontal-dominant only — vertical scroll is left untouched.
+        if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+        // Let genuinely horizontally-scrollable content (e.g. a wide Monitor
+        // pane) scroll itself instead of cycling.
+        if (isWithinHorizontalScroller(e.target)) return;
+        const items = elements.taskbarWindows.querySelectorAll('.sidebar-open-item');
+        if (items.length < 2) return;
+
+        // We own this gesture: stop the back/forward navigation swipe.
+        e.preventDefault();
+
+        const now = e.timeStamp;
+        if (now - lastT > GESTURE_GAP) accum = 0;  // new gesture
+        lastT = now;
+        if (cooldown) return;
+
+        accum += e.deltaX;
+        if (Math.abs(accum) < SWIPE_THRESHOLD) return;
+        // Swipe left (content/fingers move left → +deltaX) → next; right → prev.
+        cycleWindow(accum > 0 ? 1 : -1);
+        accum = 0;
+        cooldown = true;
+        setTimeout(() => { cooldown = false; }, COOLDOWN_MS);
+    }, { passive: false });
+}
+
+/** True if the target sits inside an element that can actually scroll sideways. */
+function isWithinHorizontalScroller(target) {
+    let el = target instanceof Element ? target : null;
+    while (el && el !== document.body) {
+        if (el.scrollWidth > el.clientWidth + 1) {
+            const ox = getComputedStyle(el).overflowX;
+            if (ox === 'auto' || ox === 'scroll') return true;
+        }
+        el = el.parentElement;
+    }
+    return false;
 }
 
 // Collage — tap F3 (like macOS Mission Control) or Alt/Option+` to grid all
