@@ -44,6 +44,9 @@ html, body {
     max-width: 560px;
     margin: 0 auto;
     padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+    /* Vertical scrolling stays native; horizontal drags are handed to JS for
+       swipe-to-cycle (setupSwipeCycling) instead of becoming scroll/back-nav. */
+    touch-action: pan-y;
 }
 
 /* Header */
