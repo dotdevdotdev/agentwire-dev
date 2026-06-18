@@ -141,6 +141,9 @@ body {
     position: relative;
     overflow: hidden;
     background: var(--background);
+    /* Tablets: keep vertical pan native (terminal scroll) but hand horizontal
+       drags to JS for swipe-to-cycle instead of browser back/forward nav. */
+    touch-action: pan-y;
 }
 
 .desktop-wallpaper {

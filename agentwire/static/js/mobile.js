@@ -14,6 +14,7 @@
  */
 
 import { apiFetch, wsProtocols } from './api.js';
+import { attachHorizontalSwipe } from './utils/swipe.js';
 import { isService, isCouncil, loadCustomServices } from './service-classification.js';
 import * as browserStt from './voice/browser-stt.js';
 import * as browserTts from './voice/browser-tts.js';
@@ -231,64 +232,15 @@ function cycleSession(direction) {
     if (next && next.name !== selectedSession) selectSession(next.name);
 }
 
-// Horizontal swipe to cycle sessions — the mobile analog of Tab/Shift+Tab.
-//
-// Single-finger by design: on a phone a TWO-finger gesture is claimed by the
-// browser as pinch-zoom / a system gesture before JS sees clean move events, so
-// two-finger swipe-cycling can't be made reliable there (no gesture library
-// fixes that — it's the OS/browser, not us). A one-finger horizontal swipe is
-// the standard mobile gesture and, with `touch-action: pan-y` on the surface
-// (mobile.css), the browser hands us horizontal drags while keeping vertical
-// scroll native. The PTT button and edit bar opt out so press-to-talk and
-// typing are untouched.
+// Single-finger horizontal swipe to cycle sessions — the mobile analog of
+// Tab/Shift+Tab. Shared detector (utils/swipe.js); `touch-action: pan-y` on
+// .mobile-app (mobile.css) keeps vertical scroll native. PTT + edit bar opt out
+// so press-to-talk and typing are untouched.
 function setupSwipeCycling() {
-    let active = false;
-    let startX = 0, startY = 0, curX = 0, curY = 0;
-    let lockedVertical = false;
-    const THRESHOLD = 50;  // px of horizontal travel for a deliberate swipe
-
     const surface = document.querySelector('.mobile-app') || document;
-
-    surface.addEventListener('touchstart', (e) => {
-        // Let press-to-talk and the text input own their own touches.
-        const t = e.target;
-        if (t.closest && (t.closest('#pttButton') || t.closest('#editBar'))) {
-            active = false;
-            return;
-        }
-        active = true;
-        lockedVertical = false;
-        const p = e.touches[0];
-        startX = curX = p.clientX;
-        startY = curY = p.clientY;
-    }, { passive: true });
-
-    surface.addEventListener('touchmove', (e) => {
-        if (!active) return;
-        const p = e.touches[0];
-        curX = p.clientX;
-        curY = p.clientY;
-        const dx = curX - startX;
-        const dy = curY - startY;
-        // First decisive axis wins: vertical → release for native scroll;
-        // horizontal → claim the gesture (block scroll/back-nav under it).
-        if (!lockedVertical && Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12) {
-            lockedVertical = true;
-        }
-        if (!lockedVertical && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
-            e.preventDefault();
-        }
-    }, { passive: false });
-
-    surface.addEventListener('touchend', () => {
-        if (!active) return;
-        active = false;
-        if (lockedVertical) return;
-        const dx = curX - startX;
-        const dy = curY - startY;
-        if (Math.abs(dx) < THRESHOLD || Math.abs(dx) <= Math.abs(dy)) return;
-        cycleSession(dx < 0 ? 1 : -1);  // swipe left → next, right → previous
-    }, { passive: true });
+    attachHorizontalSwipe(surface, cycleSession, {
+        ignore: (t) => !!(t.closest && (t.closest('#pttButton') || t.closest('#editBar'))),
+    });
 }
 
 // ---------------------------------------------------------------------------
