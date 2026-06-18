@@ -5649,7 +5649,7 @@ body.sidebar-pinned .sidebar-tab {
 .council-window-mount {
     position: relative;
     height: 100%;
-    overflow-y: auto;
+    overflow: hidden;
     background: var(--background);
     color: var(--text);
     /* status-enum aliases — the designer restyle surface */
@@ -5675,6 +5675,7 @@ body.sidebar-pinned .sidebar-tab {
     position: absolute; inset: 0; pointer-events: none; z-index: 0;
     background: radial-gradient(78% 56% at 50% 40%, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, 0.6) 100%);
 }
+/* Loading / picker fallback (transient, centered). */
 .council-shell {
     position: relative; z-index: 1;
     max-width: 1100px; margin: 0 auto;
@@ -5682,61 +5683,121 @@ body.sidebar-pinned .sidebar-tab {
 }
 .council-shell--empty {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    min-height: 60vh; gap: 14px;
+    min-height: 60vh; gap: 16px;
 }
 .council-empty { color: var(--text-muted); font-size: 14px; }
 
-/* ---------- HEADER ---------- */
-.council-header {
-    display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
-    padding-bottom: 22px; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+/* ============================================================
+   LAYOUT — left rail (~320px) + wide main grid filling the rest.
+   ============================================================ */
+.council-layout {
+    position: relative; z-index: 1; display: flex; height: 100%;
 }
-.council-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.council-rail {
+    flex: 0 0 320px; width: 320px; display: flex; flex-direction: column;
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    background: color-mix(in srgb, #000 26%, var(--background));
+    overflow: hidden;
+}
+.council-rail-brand {
+    padding: 22px 22px 18px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.council-rail-body { flex: 1; overflow-y: auto; padding: 4px 22px 12px; }
+.council-rail-section { padding: 18px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.council-rail-section:last-child { border-bottom: none; }
+.council-rail-label {
+    font-family: var(--council-font-mono); font-size: 10px; letter-spacing: 0.26em;
+    color: #6c7a70; margin-bottom: 13px;
+}
+.council-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .council-led { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 12px rgba(57, 255, 20, 0.8); }
-.council-eyebrow { font-family: var(--council-font-mono); font-size: 12px; letter-spacing: 0.28em; color: #7c8a80; }
-.council-sitting { font-weight: 600; font-size: 20px; color: #eef3ee; letter-spacing: -0.01em; }
+.council-eyebrow { font-family: var(--council-font-mono); font-size: 11px; letter-spacing: 0.26em; color: #7c8a80; }
+.council-sitting { font-weight: 600; font-size: 18px; color: #eef3ee; letter-spacing: -0.01em; word-break: break-word; }
+.council-sitting--link { cursor: pointer; }
+.council-sitting--link:hover { color: var(--accent); }
 
-.council-header-right { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; justify-content: flex-end; }
-.council-counter-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-.council-dots { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; max-width: 220px; justify-content: flex-end; }
-.council-dot-cell { width: 9px; height: 9px; border-radius: 2px; background: rgba(255, 255, 255, 0.13); transition: all 0.4s ease; }
-.council-dot-cell--in { background: var(--accent); box-shadow: 0 0 8px rgba(57, 255, 20, 0.6); }
-.council-dot-cell--work { background: var(--council-acked); box-shadow: 0 0 8px color-mix(in srgb, var(--council-acked) 55%, transparent); }
-.council-dot-cell--bad { background: var(--error); }
-.council-counter { font-family: var(--council-font-mono); font-size: 13px; letter-spacing: 0.1em; color: #9aa69c; transition: color 0.4s; white-space: nowrap; }
+.council-counter { font-family: var(--council-font-mono); font-size: 12px; letter-spacing: 0.1em; color: #9aa69c; transition: color 0.4s; white-space: nowrap; }
 .council-counter--complete { color: var(--accent); text-shadow: 0 0 16px rgba(57, 255, 20, 0.55); }
 .council-counter--pop { animation: councilCounterPop 0.9s ease-out; }
 
-/* ROUND selector */
-.council-selector { position: relative; }
-.council-selector-btn {
-    display: flex; align-items: center; gap: 12px; padding: 9px 13px; border-radius: 10px;
-    background: color-mix(in srgb, var(--neon-blue) 6%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--neon-blue) 30%, transparent);
-    cursor: pointer; user-select: none;
+/* ---------- SEATING block ---------- */
+.council-seat-empty { font-size: 13px; color: var(--text-muted); margin-bottom: 12px; }
+.council-seat-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.council-seat-summary { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #dbe6dc; }
+.council-seat-led { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px rgba(57, 255, 20, 0.7); }
+.council-soul-pills { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.council-soul-pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 500; color: #cdd6ce;
+    background: var(--chrome); border: 1px solid var(--chrome-border);
 }
-.council-selector-btn .council-sel-lbl { font-family: var(--council-font-mono); font-size: 10px; letter-spacing: 0.18em; color: #5fb8d8; }
-.council-selector-btn .council-sel-val { font-weight: 600; font-size: 14px; color: #d7eef7; }
-.council-selector-btn .council-sel-chev { color: #5fb8d8; font-size: 11px; }
-.council-dropdown {
-    position: absolute; top: calc(100% + 8px); right: 0; width: 300px; max-height: 320px; overflow-y: auto;
-    padding: 6px; border-radius: 12px; background: #0c1114;
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--neon-blue) 18%, transparent), 0 24px 60px rgba(0, 0, 0, 0.7);
-    z-index: 30; display: none;
-}
-.council-dropdown--open { display: block; }
-.council-round-opt { padding: 11px 12px; border-radius: 8px; cursor: pointer; }
-.council-round-opt--active, .council-round-opt:hover { background: color-mix(in srgb, var(--neon-blue) 8%, transparent); }
-.council-round-opt .council-round-tag { font-family: var(--council-font-mono); font-size: 10px; letter-spacing: 0.16em; color: #5fb8d8; margin-bottom: 3px; }
-.council-round-opt .council-round-txt { font-size: 13px; color: #cdd6ce; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.council-soul-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+.council-soul-pill--live .council-soul-dot { background: var(--accent); box-shadow: 0 0 7px rgba(57, 255, 20, 0.6); }
+.council-soul-pill--down { color: var(--text-muted); opacity: 0.7; }
+.council-soul-pill--down .council-soul-dot { background: var(--error); }
+.council-seat-err { margin-top: 10px; font-size: 12px; color: var(--error); line-height: 1.4; }
 
-/* ---------- QUESTION ---------- */
-.council-question-wrap { display: flex; justify-content: center; padding: 46px 16px 42px; }
-.council-question { max-width: 860px; text-align: center; }
-.council-kicker { font-family: var(--council-font-mono); font-size: 11px; letter-spacing: 0.3em; color: #4d8aa0; margin-bottom: 18px; }
-.council-q { font-family: var(--council-font-serif); font-weight: 400; font-size: 34px; line-height: 1.32; color: #eaf3f2; text-wrap: pretty; }
+/* ---------- Rail buttons ---------- */
+.council-btn {
+    width: 100%; padding: 10px 14px; border-radius: 10px; cursor: pointer;
+    font-family: var(--council-font-sans); font-size: 13px; font-weight: 600; letter-spacing: 0.01em;
+    border: 1px solid transparent; transition: background 0.2s, box-shadow 0.2s, opacity 0.2s;
+}
+.council-btn:disabled { opacity: 0.55; cursor: default; }
+.council-btn--primary {
+    color: #07140a; background: var(--accent);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.council-btn--primary:hover:not(:disabled) { box-shadow: 0 0 26px color-mix(in srgb, var(--accent) 50%, transparent); }
+.council-btn--ghost {
+    width: auto; padding: 5px 11px; font-size: 12px; font-weight: 500;
+    color: var(--text-muted); background: transparent; border-color: var(--chrome-border);
+}
+.council-btn--ghost:hover:not(:disabled) { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--chrome-border)); }
+
+/* ---------- QUESTION (rail heading — shrunk from the v1 hero) ---------- */
+.council-q { font-family: var(--council-font-serif); font-weight: 400; font-size: 21px; line-height: 1.36; color: #eaf3f2; text-wrap: pretty; }
 .council-quote { color: var(--neon-blue); opacity: 0.85; }
-.council-q--empty { color: var(--text-muted); font-style: italic; font-size: 22px; }
+.council-q--empty { color: var(--text-muted); font-style: italic; font-size: 16px; }
+
+/* ---------- ROUNDS list ---------- */
+.council-rounds-list { display: flex; flex-direction: column; gap: 6px; }
+.council-round-item {
+    display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left;
+    padding: 9px 11px; border-radius: 9px; cursor: pointer;
+    background: transparent; border: 1px solid transparent;
+}
+.council-round-item:hover { background: color-mix(in srgb, var(--neon-blue) 7%, transparent); }
+.council-round-item--active {
+    background: color-mix(in srgb, var(--neon-blue) 9%, transparent);
+    border-color: color-mix(in srgb, var(--neon-blue) 28%, transparent);
+}
+.council-round-tag { font-family: var(--council-font-mono); font-size: 10px; letter-spacing: 0.15em; color: #5fb8d8; }
+.council-round-txt { font-size: 12.5px; color: #cdd6ce; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ---------- ASK block (pinned to the rail foot) ---------- */
+.council-rail-ask {
+    padding: 16px 22px 18px; border-top: 1px solid rgba(255, 255, 255, 0.07);
+    background: color-mix(in srgb, #000 14%, var(--background));
+}
+.council-ask-input {
+    width: 100%; resize: vertical; min-height: 58px; margin-bottom: 10px;
+    padding: 10px 12px; border-radius: 10px;
+    background: var(--background); color: var(--text);
+    border: 1px solid var(--chrome-border); font-family: var(--council-font-sans); font-size: 13px; line-height: 1.45;
+}
+.council-ask-input:focus { outline: none; border-color: color-mix(in srgb, var(--neon-blue) 55%, var(--chrome-border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--neon-blue) 30%, transparent); }
+.council-ask-err { margin-top: 9px; font-size: 12px; color: var(--error); line-height: 1.4; }
+.council-ask-err:empty { display: none; }
+
+/* ---------- MAIN (tile grid fills the freed horizontal space) ---------- */
+.council-main { flex: 1; min-width: 0; overflow-y: auto; padding: 30px 34px 48px; }
+.council-main-empty {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 70%; gap: 10px; text-align: center; padding: 40px 20px;
+}
+.council-main-empty-title { font-family: var(--council-font-serif); font-size: 26px; color: #cdd8cf; }
+.council-main-empty-sub { font-size: 14px; color: var(--text-muted); max-width: 420px; line-height: 1.5; }
 
 /* ---------- PANEL / GRID ---------- */
 .council-panel { position: relative; }
@@ -5747,9 +5808,9 @@ body.sidebar-pinned .sidebar-tab {
 .council-panel-glow--show { animation: councilPanelGlow 1.2s ease-out; }
 .council-grid {
     position: relative; z-index: 1; display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 18px; margin: 0 auto;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px;
 }
-.council-grid--trio { max-width: 920px; }
+.council-grid--trio { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); max-width: 1100px; }
 
 /* ============================================================
    TILE — whole treatment keys off the single status class.
@@ -5763,19 +5824,30 @@ body.sidebar-pinned .sidebar-tab {
 }
 .council-tile-head { display: flex; flex-direction: column; gap: 3px; }
 .council-tile-name { font-weight: 600; font-size: 18px; color: #eef3ee; letter-spacing: -0.01em; }
+.council-tile-name--link { cursor: pointer; align-self: flex-start; }
+.council-tile-name--link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 .council-tile-role { font-family: var(--council-font-mono); font-size: 11px; color: #67756b; letter-spacing: 0.02em; }
 .council-tile-status { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .council-chip { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 6px; font-family: var(--council-font-mono); font-size: 11px; letter-spacing: 0.13em; }
 .council-chip-dot { display: none; width: 6px; height: 6px; border-radius: 50%; margin-right: 7px; background: var(--council-pending); }
 .council-meta { font-family: var(--council-font-mono); font-size: 11px; letter-spacing: 0.04em; color: var(--text-muted); }
 .council-tile-body {
-    flex: 1; font-size: 14.5px; line-height: 1.52; color: var(--text);
-    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-wrap: pretty;
+    flex: 1; font-size: 16.5px; line-height: 1.5; color: var(--text);
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; text-wrap: pretty;
 }
 .council-tile-expand { display: none; align-items: center; gap: 6px; font-family: var(--council-font-mono); font-size: 11px; letter-spacing: 0.06em; color: var(--accent); }
 .council-tile-expand span { font-size: 13px; }
 
-/* PENDING — alive, breathing, never frozen */
+/* PENDING — alive, breathing, never frozen. A faint "cooking" sweep rides on
+   top of the breathing dot: ambient liveness only, never faked token streaming. */
+.council-tile--pending { overflow: hidden; }
+.council-tile--pending > * { position: relative; z-index: 1; }
+.council-tile--pending::before {
+    content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, color-mix(in srgb, var(--council-pending) 13%, transparent) 50%, transparent 65%);
+    background-size: 250% 100%;
+    animation: councilCook 3.4s ease-in-out infinite;
+}
 .council-tile--pending .council-chip { color: var(--council-pending); background: color-mix(in srgb, var(--council-pending) 10%, transparent); }
 .council-tile--pending .council-chip-dot { display: inline-block; animation: councilPulseDot 1.8s ease-in-out infinite; }
 .council-tile--pending .council-tile-body { display: none; }
@@ -5788,7 +5860,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 .council-tile--acked .council-chip { color: var(--council-acked); background: color-mix(in srgb, var(--council-acked) 14%, transparent); }
 .council-tile--acked .council-meta { color: color-mix(in srgb, var(--council-acked) 60%, var(--text-muted)); }
-.council-tile--acked .council-tile-body { color: color-mix(in srgb, var(--council-acked) 55%, var(--text-muted)); font-family: var(--council-font-serif); font-style: italic; font-size: 15px; }
+.council-tile--acked .council-tile-body { color: color-mix(in srgb, var(--council-acked) 55%, var(--text-muted)); font-family: var(--council-font-serif); font-style: italic; font-size: 16.5px; }
 
 /* ANSWERED — the hero / committed state */
 .council-tile--answered {
@@ -5809,7 +5881,7 @@ body.sidebar-pinned .sidebar-tab {
     background: color-mix(in srgb, var(--council-passed) 5%, var(--chrome));
 }
 .council-tile--passed .council-chip { color: var(--council-passed); background: color-mix(in srgb, var(--council-passed) 13%, transparent); }
-.council-tile--passed .council-tile-body { color: var(--council-passed); font-family: var(--council-font-serif); font-style: italic; font-size: 15px; }
+.council-tile--passed .council-tile-body { color: var(--council-passed); font-family: var(--council-font-serif); font-style: italic; font-size: 16.5px; }
 
 /* STALLED — errored, clearly different from a pass */
 .council-tile--stalled {
@@ -5820,7 +5892,7 @@ body.sidebar-pinned .sidebar-tab {
 .council-tile--stalled .council-chip { color: var(--council-stalled); background: color-mix(in srgb, var(--council-stalled) 12%, transparent); }
 .council-tile--stalled .council-chip::before { content: "\26A0"; margin-right: 6px; }
 .council-tile--stalled .council-meta { color: color-mix(in srgb, var(--council-stalled) 55%, var(--text-muted)); }
-.council-tile--stalled .council-tile-body { color: color-mix(in srgb, var(--council-stalled) 50%, var(--text-muted)); font-family: var(--council-font-serif); font-style: italic; font-size: 15px; }
+.council-tile--stalled .council-tile-body { color: color-mix(in srgb, var(--council-stalled) 50%, var(--text-muted)); font-family: var(--council-font-serif); font-style: italic; font-size: 16.5px; }
 
 /* SWAP — the gavel beat: ~250ms scale-punch + glow settle */
 .council-tile--flip { animation: councilSwapIn 0.52s cubic-bezier(0.2, 0.85, 0.25, 1); }
@@ -5863,9 +5935,12 @@ body.sidebar-pinned .sidebar-tab {
 @keyframes councilPanelGlow { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }
 @keyframes councilOverlayIn { 0% { opacity: 0; transform: translateY(10px) scale(0.985); } 100% { opacity: 1; transform: none; } }
 @keyframes councilBackdropIn { 0% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes councilCook { 0% { background-position: 140% 0; } 100% { background-position: -40% 0; } }
 
 @media (prefers-reduced-motion: reduce) {
     .council-window-mount * { animation-duration: 0.001ms !important; }
+    /* Pseudo-elements aren't matched by the `*` rule above — kill the sweep explicitly. */
+    .council-tile--pending::before { animation: none; display: none; }
 }
 
 /* ---------- Sidebar section launcher ---------- */

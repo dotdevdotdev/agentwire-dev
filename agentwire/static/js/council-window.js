@@ -1,26 +1,34 @@
 /**
- * Council seating board — a WinBox window that makes a live sitting legible at
- * a glance: each lens (soul) as a tile, the prompt centered above, every tile
- * showing only its *filed verdict*. Tiles swap once, cleanly, when a reply
- * lands (the `council_update` WS delta) — no token streaming, no flicker.
+ * Council workspace window — a WinBox window that makes a live sitting legible
+ * AND operable: a left rail to seat/dismiss the council, read the question,
+ * switch rounds, and re-prompt; a wide multi-column tile grid filling the rest.
+ * Each lens (soul) is a tile showing only its *filed verdict*; tiles swap once,
+ * cleanly, when a reply lands (the `council_update` WS delta) — no token
+ * streaming, no flicker.
  *
- * Phase 3 applies the approved hi-fi design (council-design-reference.html):
- * the whole tile treatment keys off a single status class
+ * The tile treatment keys off a single status class
  * `council-tile--{pending,acked,answered,passed,stalled}`, styled in
- * desktop.css. This module owns the *real* data path and renders that markup —
- * the mock META/ROSTER/ROUNDS demo harness from the reference is NOT shipped.
+ * desktop.css; state colors flow through the scoped `--council-{state}` alias
+ * vars. This module owns the *real* data path and renders that markup.
+ *
+ * Window behaviour matches a session window: it registers with the desktop
+ * manager (so it opens maximized, joins the open-sessions list, and is
+ * tabbable). The registration wrapper lives in desktop.js (`openCouncilWindow`);
+ * this module exports the `CouncilWindow` class it instantiates.
  *
  * Data flow:
  *   - first paint / round switch / reconnect → GET /api/council/live (snapshot)
+ *   - rail seating/liveness → GET /api/council/status (per-soul session liveness)
  *   - per-reply deltas → desktop 'council_update' { sitting, prompt_id, tile }
- *     (or { reset:true } when a new round starts → refetch); the tile that just
- *     filed gets the `council-tile--flip` swap animation.
+ *     (or { reset:true } on a new round, { seating:true } on seat,
+ *     { stopped:true } on dismiss); the filed tile gets the swap animation.
+ *   - seat/dismiss/ask → POST /api/council/{start,stop,ask}
  */
 
 import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 
-let activeWindow = null;
+export const COUNCIL_WINDOW_ID = 'council-board';
 
 // View state — one board at a time (re-opening focuses the existing window).
 const state = {
@@ -34,9 +42,12 @@ const state = {
     tiles: new Map(),     // soul -> { soul, status, kind, verdict, filed_at }
     sittings: [],         // every live sitting (for the sitting picker)
     roundTexts: {},       // prompt_id -> question text, cached as rounds are visited
+    liveness: {},         // soul -> bool (lens session alive — from /status)
+    seated: false,        // is a sitting present at all
+    busy: false,          // a seat/ask/dismiss POST is in flight
 };
 
-let container = null;
+let container = null;     // the active window's mount (set by CouncilWindow)
 let timerInterval = null;
 
 // chip copy per status (reference CHIP map)
@@ -129,16 +140,23 @@ async function loadSnapshot(sitting, promptId) {
         const body = await res.json().catch(() => ({}));
         state.sittings = body.sittings || [];
         state.sitting = null;
-        renderEmpty(res.status === 409
-            ? 'Multiple council sittings — pick one.'
-            : 'No live council sitting.');
+        state.seated = state.sittings.length > 0;
+        // No sittings at all → the seatable unseated workspace. Ambiguous (409)
+        // or a transient error → a picker / message.
+        if (!state.sittings.length) {
+            render();
+        } else {
+            renderPicker();
+        }
         return;
     }
     applySnapshot(await res.json());
+    loadStatus(state.sitting);  // fire-and-forget — fills the liveness dots
 }
 
 function applySnapshot(snap) {
     state.sitting = snap.sitting;
+    state.seated = true;
     state.promptId = snap.prompt_id;
     state.promptIds = snap.prompt_ids || [];
     state.latestPromptId = state.promptIds.length
@@ -154,10 +172,40 @@ function applySnapshot(snap) {
     render();
 }
 
+/** Per-soul session liveness (the rail's seating dots). Best-effort. */
+async function loadStatus(sitting) {
+    if (!sitting) return;
+    try {
+        const res = await apiFetch(`/api/council/status?sitting=${encodeURIComponent(sitting)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (sitting !== state.sitting) return;  // raced past a round/sitting switch
+        const map = {};
+        for (const s of data.souls || []) map[s.soul] = !!s.alive;
+        state.liveness = map;
+        refreshSeating();
+    } catch { /* ignore */ }
+}
+
 // ── Delta handling (the show) ─────────────────────────────────────────────────
 
 function onCouncilUpdate(msg) {
-    if (!activeWindow) return;
+    if (!container) return;
+
+    // Seat/dismiss events can arrive when we hold no sitting yet (unseated
+    // workspace) — handle them before the per-sitting filter.
+    if (msg.seating) {
+        // A council was just seated; follow it.
+        loadSnapshot(msg.sitting || null, null);
+        return;
+    }
+    if (msg.stopped) {
+        if (!state.sitting || msg.sitting === state.sitting) {
+            loadSnapshot(null, null);  // re-resolve (other sittings may remain)
+        }
+        return;
+    }
+
     if (msg.sitting !== state.sitting) return;
     const viewingLatest = state.promptId === state.latestPromptId;
 
@@ -236,39 +284,52 @@ function counterText() {
     return `${final} of ${state.roster.length} in`;
 }
 
-function dotsHtml() {
+/** Per-soul liveness pills for the rail SEATING block. */
+function soulPillsHtml() {
     return state.roster.map((s) => {
-        const st = state.tiles.get(s)?.status;
-        let cls = 'council-dot-cell';
-        if (st === 'stalled') cls += ' council-dot-cell--bad';
-        else if (isFinal(st)) cls += ' council-dot-cell--in';
-        else if (st === 'acked') cls += ' council-dot-cell--work';
-        return `<div class="${cls}"></div>`;
+        // Liveness is "the session is alive"; default to live until /status
+        // says otherwise (it lands a beat after the snapshot).
+        const alive = state.liveness[s] !== false;
+        const cls = alive ? 'council-soul-pill council-soul-pill--live' : 'council-soul-pill council-soul-pill--down';
+        return `<span class="${cls}"><span class="council-soul-dot"></span>${esc(s)}</span>`;
     }).join('');
 }
 
-function selectorHtml() {
-    if (state.promptIds.length <= 1) return '';
-    const opts = state.promptIds.slice().reverse().map((id) => {
-        const isLatest = id === state.latestPromptId;
-        const tag = `ROUND ${pad2(id)}${isLatest ? ' · LATEST' : ''}`;
-        const txt = state.roundTexts[id] || (isLatest ? 'latest round' : `prompt #${id}`);
-        return `<div class="council-round-opt ${id === state.promptId ? 'council-round-opt--active' : ''}" data-round="${id}">
-            <div class="council-round-tag">${esc(tag)}</div>
-            <div class="council-round-txt">${esc(txt)}</div>
-        </div>`;
-    }).join('');
+function liveCount() {
+    return state.roster.filter((s) => state.liveness[s] !== false).length;
+}
+
+/** The rail SEATING block — seat button (unseated) or roster + dismiss (seated). */
+function seatingHtml() {
+    if (!state.seated || !state.sitting) {
+        return `
+            <div class="council-rail-section">
+                <div class="council-rail-label">SEATING</div>
+                <div class="council-seat-empty">No council seated.</div>
+                <button class="council-btn council-btn--primary" data-action="seat" ${state.busy ? 'disabled' : ''}>
+                    ${state.busy ? 'Seating…' : 'Seat the council'}
+                </button>
+            </div>`;
+    }
+    const total = state.roster.length;
     return `
-        <div class="council-selector">
-            <div class="council-selector-btn" data-action="round-toggle">
-                <div>
-                    <div class="council-sel-lbl">ROUND</div>
-                    <div class="council-sel-val">${esc(pad2(state.promptId))}</div>
-                </div>
-                <div class="council-sel-chev">▼</div>
+        <div class="council-rail-section">
+            <div class="council-rail-label">SEATING</div>
+            <div class="council-seat-head">
+                <span class="council-seat-summary"><span class="council-seat-led"></span>${total} soul${total === 1 ? '' : 's'} seated</span>
+                <button class="council-btn council-btn--ghost" data-action="dismiss" ${state.busy ? 'disabled' : ''}>Dismiss</button>
             </div>
-            <div class="council-dropdown">${opts}</div>
+            <div class="council-soul-pills">${soulPillsHtml()}</div>
+            <div class="council-counter">${esc(counterText())}</div>
         </div>`;
+}
+
+/** Re-render only the seating block (liveness arrives after the snapshot). */
+function refreshSeating() {
+    const slot = container?.querySelector('[data-slot="seating"]');
+    if (!slot) return;
+    slot.innerHTML = seatingHtml();
+    bindSeating();
 }
 
 function questionHtml() {
@@ -278,45 +339,102 @@ function questionHtml() {
     return `<div class="council-q"><span class="council-quote">“</span>${esc(state.promptText)}<span class="council-quote">”</span></div>`;
 }
 
+/** The rail ROUNDS list — clickable, latest first, active highlighted. */
+function roundsHtml() {
+    if (!state.promptIds.length) return '';
+    const items = state.promptIds.slice().reverse().map((id) => {
+        const isLatest = id === state.latestPromptId;
+        const tag = `ROUND ${pad2(id)}${isLatest ? ' · LATEST' : ''}`;
+        const txt = state.roundTexts[id] || (isLatest ? 'latest round' : `prompt #${id}`);
+        return `
+            <button class="council-round-item ${id === state.promptId ? 'council-round-item--active' : ''}" data-round="${id}">
+                <span class="council-round-tag">${esc(tag)}</span>
+                <span class="council-round-txt">${esc(txt)}</span>
+            </button>`;
+    }).join('');
+    return `
+        <div class="council-rail-section">
+            <div class="council-rail-label">ROUNDS</div>
+            <div class="council-rounds-list">${items}</div>
+        </div>`;
+}
+
+/** The rail ASK block — re-prompt the seated sitting without leaving the window. */
+function askHtml() {
+    if (!state.seated || !state.sitting) return '';
+    return `
+        <div class="council-rail-section council-rail-ask">
+            <div class="council-rail-label">ASK</div>
+            <textarea class="council-ask-input" rows="3" placeholder="Ask the council, or add context…" ${state.busy ? 'disabled' : ''}></textarea>
+            <button class="council-btn council-btn--primary" data-action="ask" ${state.busy ? 'disabled' : ''}>
+                ${state.busy ? 'Asking…' : 'Ask the council →'}
+            </button>
+            <div class="council-ask-err" data-slot="ask-err"></div>
+        </div>`;
+}
+
+/** The main-area tile grid (seated + a prompt asked) or a calm empty state. */
+function mainHtml() {
+    if (!state.seated || !state.sitting) {
+        return `
+            <div class="council-main-empty">
+                <div class="council-main-empty-title">The chamber is empty</div>
+                <div class="council-main-empty-sub">Seat the council from the rail to convene the souls.</div>
+            </div>`;
+    }
+    if (!state.promptId || !state.roster.length) {
+        return `
+            <div class="council-main-empty">
+                <div class="council-main-empty-title">The council is seated</div>
+                <div class="council-main-empty-sub">Ask the first question from the rail and the takes will fill in here.</div>
+            </div>`;
+    }
+    const trio = state.roster.length <= 3 ? ' council-grid--trio' : '';
+    return `
+        <div class="council-panel">
+            <div class="council-panel-glow"></div>
+            <div class="council-grid${trio}">
+                ${state.roster.map((s) => tileHtml(s)).join('')}
+            </div>
+        </div>`;
+}
+
+function railHtml() {
+    const live = state.promptId === state.latestPromptId;
+    const sittingLabel = state.sitting || 'No council seated';
+    return `
+        <aside class="council-rail">
+            <div class="council-rail-brand">
+                <div class="council-brand"><div class="council-led"></div><div class="council-eyebrow">AGENTWIRE · COUNCIL</div></div>
+                <div class="council-sitting">${esc(sittingLabel)}</div>
+                ${sittingSelectorInline()}
+            </div>
+            <div class="council-rail-body">
+                <div data-slot="seating">${seatingHtml()}</div>
+                ${state.seated && state.sitting ? `
+                <div class="council-rail-section">
+                    <div class="council-rail-label">${live ? 'THE QUESTION' : 'AN EARLIER ROUND'}</div>
+                    ${questionHtml()}
+                </div>
+                ${roundsHtml()}
+                ` : ''}
+            </div>
+            ${askHtml()}
+        </aside>`;
+}
+
 function render() {
     if (!container) return;
-    if (!state.sitting) { renderEmpty('No live council sitting.'); return; }
-    const trio = state.roster.length <= 3 ? ' council-grid--trio' : '';
-    const live = state.promptId === state.latestPromptId;
     container.innerHTML = `
         <div class="council-glow"></div>
         <div class="council-vignette"></div>
-        <div class="council-shell">
-            <div class="council-header">
-                <div>
-                    <div class="council-brand"><div class="council-led"></div><div class="council-eyebrow">AGENTWIRE · COUNCIL</div></div>
-                    <div class="council-sitting">${esc(state.sitting)}</div>
-                    ${sittingSelectorInline()}
-                </div>
-                <div class="council-header-right">
-                    <div class="council-counter-wrap">
-                        <div class="council-dots">${dotsHtml()}</div>
-                        <div class="council-counter">${esc(counterText())}</div>
-                    </div>
-                    ${selectorHtml()}
-                </div>
-            </div>
-            <div class="council-question-wrap">
-                <div class="council-question">
-                    <div class="council-kicker">${live ? 'THE QUESTION BEFORE THE COUNCIL' : 'AN EARLIER ROUND'}</div>
-                    ${questionHtml()}
-                </div>
-            </div>
-            <div class="council-panel">
-                <div class="council-panel-glow"></div>
-                <div class="council-grid${trio}">
-                    ${state.roster.map((s) => tileHtml(s)).join('')}
-                </div>
-            </div>
+        <div class="council-layout">
+            ${railHtml()}
+            <main class="council-main">${mainHtml()}</main>
         </div>`;
     bindBoard();
     startTimer();
-    if (allFinal()) markCompleteStatic();
+    if (state.seated && allFinal()) markCompleteStatic();
 }
 
 /** A native <select> to switch sittings when more than one is live. */
@@ -325,27 +443,41 @@ function sittingSelectorInline() {
     const opts = state.sittings
         .map((n) => `<option value="${esc(n)}" ${n === state.sitting ? 'selected' : ''}>${esc(n)}</option>`)
         .join('');
-    return `<select class="council-round-select" data-action="sitting" style="margin-top:8px">${opts}</select>`;
+    return `<select class="council-round-select" data-action="sitting" style="margin-top:10px">${opts}</select>`;
 }
 
-function renderEmpty(message) {
+/** Ambiguous (multiple sittings, none picked) or transient — show a picker. */
+function renderPicker() {
     if (!container) return;
     stopTimer();
-    const picker = state.sittings.length > 1
-        ? `<select class="council-round-select" data-action="sitting">${state.sittings.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>`
+    const picker = state.sittings.length
+        ? `<select class="council-round-select" data-action="sitting">
+               <option value="" disabled selected>Choose a sitting…</option>
+               ${state.sittings.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+           </select>`
         : '';
     container.innerHTML = `
         <div class="council-glow"></div>
         <div class="council-shell council-shell--empty">
+            <div class="council-empty">Multiple council sittings are live — pick one.</div>
             ${picker}
+        </div>`;
+    container.querySelector('[data-action="sitting"]')?.addEventListener('change', (e) => {
+        if (e.target.value) loadSnapshot(e.target.value, null);
+    });
+}
+
+function renderLoading(message) {
+    if (!container) return;
+    stopTimer();
+    container.innerHTML = `
+        <div class="council-glow"></div>
+        <div class="council-shell council-shell--empty">
             <div class="council-empty">${esc(message)}</div>
         </div>`;
-    container.querySelector('[data-action="sitting"]')?.addEventListener('change', (e) => loadSnapshot(e.target.value, null));
 }
 
 function updateCounter() {
-    const dots = container?.querySelector('.council-dots');
-    if (dots) dots.innerHTML = dotsHtml();
     const el = container?.querySelector('.council-counter');
     if (el) el.textContent = counterText();
 }
@@ -373,27 +505,71 @@ function flourish() {
 }
 
 function bindBoard() {
-    // Round dropdown
-    const selBtn = container.querySelector('[data-action="round-toggle"]');
-    const dropdown = container.querySelector('.council-dropdown');
-    if (selBtn && dropdown) {
-        selBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            dropdown.classList.toggle('council-dropdown--open');
-        });
-        dropdown.querySelectorAll('.council-round-opt').forEach((opt) => {
-            opt.addEventListener('click', () => {
-                dropdown.classList.remove('council-dropdown--open');
-                loadSnapshot(state.sitting, Number(opt.dataset.round));
-            });
-        });
+    container.querySelector('[data-action="sitting"]')?.addEventListener('change', (e) => {
+        if (e.target.value) loadSnapshot(e.target.value, null);
+    });
+    // Round list
+    container.querySelectorAll('.council-round-item').forEach((btn) => {
+        btn.addEventListener('click', () => loadSnapshot(state.sitting, Number(btn.dataset.round)));
+    });
+    bindSeating();
+    bindAsk();
+    // Sitting name → focus the orchestrator session.
+    const sit = container.querySelector('.council-sitting');
+    if (sit && state.sitting) {
+        sit.classList.add('council-sitting--link');
+        sit.title = 'Open the orchestrator session';
+        sit.addEventListener('click', openOrchestratorSession);
     }
-    container.querySelector('[data-action="sitting"]')?.addEventListener('change', (e) => loadSnapshot(e.target.value, null));
     container.querySelectorAll('.council-tile').forEach(bindTile);
+}
+
+function bindSeating() {
+    container.querySelector('[data-action="seat"]')?.addEventListener('click', seatCouncil);
+    container.querySelector('[data-action="dismiss"]')?.addEventListener('click', dismissCouncil);
+}
+
+function bindAsk() {
+    const btn = container.querySelector('[data-action="ask"]');
+    const input = container.querySelector('.council-ask-input');
+    if (!btn || !input) return;
+    btn.addEventListener('click', () => askCouncil(input));
+    // Cmd/Ctrl+Enter sends; plain Enter keeps newlines (it's a textarea).
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            askCouncil(input);
+        }
+        e.stopPropagation();  // don't leak keystrokes to global shortcuts
+    });
+}
+
+/**
+ * Souls and the orchestrator are real sessions — jump to them from the board.
+ * Opening a session window flips the desktop to single-window mode (it minimizes
+ * the council window), exactly like clicking any session elsewhere.
+ */
+async function openSoulSession(soul) {
+    if (!state.sitting) return;
+    const { openSessionTerminal } = await import('./desktop.js');
+    openSessionTerminal(`council-${state.sitting}-${soul}`, 'terminal');
+}
+
+async function openOrchestratorSession() {
+    if (!state.sitting) return;
+    const { openSessionTerminal } = await import('./desktop.js');
+    openSessionTerminal(`agentwire-council-${state.sitting}`, 'terminal');
 }
 
 function bindTile(el) {
     const soul = el.dataset.soul;
+    // Soul name → open/focus that soul's session window (any status).
+    const nameEl = el.querySelector('.council-tile-name');
+    if (nameEl) {
+        nameEl.classList.add('council-tile-name--link');
+        nameEl.title = `Open ${soul}'s session`;
+        nameEl.addEventListener('click', (e) => { e.stopPropagation(); openSoulSession(soul); });
+    }
     const tile = state.tiles.get(soul);
     if (!tile || tile.status !== 'answered') return;  // only the hero state opens
     const open = () => openReader(soul);
@@ -403,6 +579,101 @@ function bindTile(el) {
     el.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
     });
+}
+
+// ── Seat / dismiss / ask (the operable rail) ──────────────────────────────────
+
+async function seatCouncil() {
+    if (state.busy) return;
+    state.busy = true;
+    refreshSeating();
+    try {
+        const res = await apiFetch('/api/council/start', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            // Surface the CLI's reason in the seating slot, then recover.
+            state.busy = false;
+            refreshSeating();
+            setSeatError(data.error || 'Could not seat the council.');
+            return;
+        }
+        const seated = data.council;
+        state.busy = false;
+        // The WS seating delta will also fire; loading now makes it feel instant.
+        if (seated) loadSnapshot(seated, null);
+        else loadSnapshot(null, null);
+    } catch (e) {
+        state.busy = false;
+        refreshSeating();
+        setSeatError('Could not reach the portal.');
+    }
+}
+
+function setSeatError(message) {
+    const slot = container?.querySelector('[data-slot="seating"]');
+    if (!slot) return;
+    let err = slot.querySelector('.council-seat-err');
+    if (!err) {
+        err = document.createElement('div');
+        err.className = 'council-seat-err';
+        slot.appendChild(err);
+    }
+    err.textContent = message;
+}
+
+async function dismissCouncil() {
+    if (state.busy || !state.sitting) return;
+    state.busy = true;
+    refreshSeating();
+    const sitting = state.sitting;
+    try {
+        await apiFetch('/api/council/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sitting }),
+        });
+    } catch { /* the WS stopped delta / re-resolve handles the rest */ }
+    state.busy = false;
+    loadSnapshot(null, null);
+}
+
+async function askCouncil(input) {
+    if (state.busy || !state.sitting) return;
+    const prompt = input.value.trim();
+    if (!prompt) { input.focus(); return; }
+    state.busy = true;
+    const btn = container?.querySelector('[data-action="ask"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Asking…'; }
+    input.disabled = true;
+    setAskError('');
+    try {
+        const res = await apiFetch('/api/council/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sitting: state.sitting, prompt }),
+        });
+        const data = await res.json().catch(() => ({}));
+        state.busy = false;
+        if (!res.ok) {
+            if (btn) { btn.disabled = false; btn.textContent = 'Ask the council →'; }
+            input.disabled = false;
+            setAskError(data.error || 'Could not send the prompt.');
+            return;
+        }
+        input.value = '';
+        // Switch to the freshly-created round; the WS reset would do this too.
+        loadSnapshot(state.sitting, null);
+    } catch (e) {
+        state.busy = false;
+        if (btn) { btn.disabled = false; btn.textContent = 'Ask the council →'; }
+        input.disabled = false;
+        setAskError('Could not reach the portal.');
+    }
+}
+
+function setAskError(message) {
+    const slot = container?.querySelector('[data-slot="ask-err"]');
+    if (slot) slot.textContent = message;
 }
 
 // ── Reader overlay (click-to-expand full verdict) ─────────────────────────────
@@ -450,47 +721,93 @@ function stopTimer() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 }
 
-// ── Entry point ────────────────────────────────────────────────────────────────
+// ── Window wrapper ───────────────────────────────────────────────────────────
 
 let listenerBound = false;
 
-export function openCouncilWindow(sitting = null) {
-    ensureFonts();
-    if (activeWindow && activeWindow.window) {
-        try {
-            activeWindow.focus();
-            if (sitting && sitting !== state.sitting) loadSnapshot(sitting, null);
-            return;
-        } catch (_) { /* fall through and recreate */ }
-    }
-    container = document.createElement('div');
-    container.className = 'council-window-mount';
-    activeWindow = new WinBox({
-        title: 'Council board',
-        icon: '<span style="font-size:14px">🏛️</span>',
-        mount: container,
-        width: '74%',
-        height: '82%',
-        minwidth: 480,
-        minheight: 380,
-        class: ['council-window'],
-        onclose: () => {
-            stopTimer();
-            activeWindow = null;
-            return false;
-        },
-    });
-
-    if (!listenerBound) {
-        desktop.on('council_update', onCouncilUpdate);
-        listenerBound = true;
+/**
+ * CouncilWindow — mirrors the SessionWindow/ArtifactWindow surface so desktop.js
+ * can register it (open maximized, taskbar tab, single-window mode). The board
+ * is a module-level singleton (only one sitting is shown at a time), so this is
+ * a thin lifecycle wrapper that owns the WinBox and points `container` at it.
+ */
+export class CouncilWindow {
+    constructor(options = {}) {
+        this.id = COUNCIL_WINDOW_ID;
+        this.title = 'Council';
+        this.root = options.root || document.body;
+        this.sitting = options.sitting || null;
+        this.onCloseCallback = options.onClose || null;
+        this.onFocusCallback = options.onFocus || null;
+        this.winbox = null;
+        this.isOpen = false;
     }
 
-    // Close the round dropdown on any outside click.
-    document.addEventListener('click', () => {
-        container?.querySelector('.council-dropdown--open')?.classList.remove('council-dropdown--open');
-    });
+    open() {
+        if (this.isOpen) { this.focus(); return; }
+        ensureFonts();
+        container = document.createElement('div');
+        container.className = 'council-window-mount';
 
-    renderEmpty('Loading…');
-    loadSnapshot(sitting, null);
+        this.winbox = new WinBox({
+            title: this.title,
+            icon: '<span style="font-size:14px">🏛️</span>',
+            mount: container,
+            root: this.root,
+            width: '100%',
+            height: '100%',
+            minwidth: 480,
+            minheight: 380,
+            class: ['council-window', 'no-full', 'no-resize', 'no-move'],
+            onclose: () => {
+                this.winbox = null;
+                this.close();
+                return false;
+            },
+            onfocus: () => { if (this.onFocusCallback) this.onFocusCallback(this); },
+            onminimize: () => { desktop.emit('window_minimized', { id: this.id }); },
+            onrestore: () => {
+                desktop.emit('window_restored', { id: this.id });
+                if (this.onFocusCallback) this.onFocusCallback(this);
+            },
+        });
+
+        // Always open maximized; registering also flips to single-window mode.
+        this.winbox.maximize();
+        desktop.registerWindow(this.id, this.winbox);
+
+        if (!listenerBound) {
+            desktop.on('council_update', onCouncilUpdate);
+            listenerBound = true;
+        }
+
+        this.isOpen = true;
+        renderLoading('Loading…');
+        loadSnapshot(this.sitting, null);
+    }
+
+    close() {
+        if (!this.isOpen) return;
+        stopTimer();
+        closeReader();
+        if (this.winbox) {
+            const wb = this.winbox;
+            this.winbox = null;
+            wb.close();
+        }
+        desktop.unregisterWindow(this.id);
+        container = null;
+        this.isOpen = false;
+        if (this.onCloseCallback) this.onCloseCallback(this);
+    }
+
+    focus() { if (this.winbox) this.winbox.focus(); }
+    minimize() { if (this.winbox) this.winbox.minimize(); }
+    restore() { if (this.winbox) this.winbox.restore(); }
+    get isMinimized() { return this.winbox ? this.winbox.min : false; }
+
+    /** Switch the board to a different sitting without recreating the window. */
+    showSitting(sitting) {
+        if (sitting && sitting !== state.sitting) loadSnapshot(sitting, null);
+    }
 }

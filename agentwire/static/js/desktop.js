@@ -13,6 +13,7 @@ import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
+import { CouncilWindow, COUNCIL_WINDOW_ID } from './council-window.js';
 import { sidebar } from './sidebar.js';
 import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
 import { notificationsActive } from './notification-prefs.js';
@@ -37,6 +38,7 @@ import { initAnnouncements } from './announcement-modal.js';
 // State - track open windows
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
 const artifactWindows = new Map();  // artifactId -> ArtifactWindow instance
+let councilWindow = null;  // single CouncilWindow instance (one board at a time)
 
 // Global PTT state
 let globalPttState = 'idle';  // idle | recording | processing
@@ -577,6 +579,50 @@ export function openArtifactWindow(url, title = 'Artifact', artifactId = null) {
     recordTaskbarEntry({ kind: 'artifact', id, url, title });
 }
 
+/**
+ * Open the council workspace window. Registers through the same desktop path as
+ * a session window (single-window maximize + taskbar tab), so it opens
+ * maximized, appears in the open-sessions area, and is tabbable. Only one board
+ * exists at a time — re-opening focuses (and optionally re-targets) it.
+ *
+ * @param {string|null} sitting - Sitting to show (defaults to the sole live one)
+ */
+export function openCouncilWindow(sitting = null) {
+    const id = COUNCIL_WINDOW_ID;
+    if (councilWindow && councilWindow.isOpen) {
+        if (councilWindow.isMinimized) {
+            if (!desktop.isTiled(id)) desktop.minimizeAllExcept(id);
+            councilWindow.restore();
+        } else {
+            councilWindow.focus();
+        }
+        if (sitting) councilWindow.showSitting(sitting);
+        return;
+    }
+
+    // Minimize all other windows before opening new one
+    desktop.minimizeAllExcept(null);
+
+    councilWindow = new CouncilWindow({
+        sitting,
+        root: elements.desktopArea,
+        onClose: () => {
+            councilWindow = null;
+            removeTaskbarButton(id);
+            unrecordTaskbarEntry(id);
+        },
+        onFocus: () => {
+            updateTaskbarActive(id);
+            desktop.setActiveWindow(id);
+            saveTaskbarState();
+        },
+    });
+
+    councilWindow.open();
+    addTaskbarButton(id, councilWindow);
+    recordTaskbarEntry({ kind: 'council', id, sitting });
+}
+
 // Taskbar management — persist open windows + order across page refresh
 const TASKBAR_STATE_KEY = 'taskbar-state';
 const taskbarRecords = new Map(); // id -> { kind, id, ...args }
@@ -584,6 +630,7 @@ let taskbarDragoverBound = false;
 let restoringTaskbar = false;
 
 function _lookupWindowInstance(id) {
+    if (id === COUNCIL_WINDOW_ID && councilWindow) return councilWindow;
     return sessionWindows.get(id) || artifactWindows.get(id) || null;
 }
 
@@ -635,6 +682,8 @@ function _openByRecord(rec) {
         openSessionTerminal(rec.session, rec.mode || 'monitor', rec.machine || null);
     } else if (rec.kind === 'artifact') {
         openArtifactWindow(rec.url, rec.title || 'Artifact', rec.id);
+    } else if (rec.kind === 'council') {
+        openCouncilWindow(rec.sitting || null);
     }
 }
 

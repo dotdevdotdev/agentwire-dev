@@ -309,6 +309,10 @@ class AgentWireServer:
         # Council seating board: live sittings + per-prompt snapshot
         self.app.router.add_get("/api/council/sittings", self.api_council_sittings)
         self.app.router.add_get("/api/council/live", self.api_council_live)
+        self.app.router.add_get("/api/council/status", self.api_council_status)
+        self.app.router.add_post("/api/council/start", self.api_council_start)
+        self.app.router.add_post("/api/council/stop", self.api_council_stop)
+        self.app.router.add_post("/api/council/ask", self.api_council_ask)
         # Artifact windows: upload and serve agent-generated HTML
         self.app.router.add_post("/api/artifacts/upload", self.api_artifacts_upload)
         self.app.router.add_get("/api/artifacts", self.api_artifacts_list)
@@ -5045,6 +5049,115 @@ projects:
             snap["running"] = True
             snap["sittings"] = council_state.list_sittings()
             return web.json_response(snap)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_council_status(self, request: web.Request) -> web.Response:
+        """GET /api/council/status - Per-soul session liveness for a sitting.
+
+        Thin wrapper over ``council status`` (CLI is the SSOT). ``council status``
+        exits 0 even when no sitting matches (``running: false``), so the JSON
+        passes straight through with a 200.
+        """
+        try:
+            args = ["council", "status"]
+            name = request.query.get("sitting")
+            if name:
+                args += ["--name", name]
+            success, result = await self.run_agentwire_cmd(args)
+            return web.json_response(result, status=200 if success else 400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _council_body(self, request: web.Request) -> dict:
+        """Best-effort JSON body — POSTs from the board may have no body."""
+        if not request.can_read_body:
+            return {}
+        try:
+            data = await request.json()
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    async def api_council_start(self, request: web.Request) -> web.Response:
+        """POST /api/council/start - Seat a council (CLI: ``council start``).
+
+        Body (all optional): ``sitting``/``name`` (default: cwd-repo-slug),
+        ``roster`` (comma-separated lens names). Broadcasts a seating delta so
+        the rail + sidebar go live without a manual refresh.
+        """
+        try:
+            body = await self._council_body(request)
+            args = ["council", "start"]
+            name = body.get("sitting") or body.get("name")
+            roster = body.get("roster")
+            if name:
+                args += ["--name", str(name)]
+            if roster:
+                args += ["--roster", str(roster)]
+            success, result = await self.run_agentwire_cmd(args)
+            if success:
+                seated = result.get("council") or name
+                if seated:
+                    await self.broadcast_dashboard(
+                        "council_update", {"sitting": seated, "seating": True}
+                    )
+                return web.json_response(result)
+            return web.json_response(result, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_council_stop(self, request: web.Request) -> web.Response:
+        """POST /api/council/stop - Dismiss a council (CLI: ``council stop``)."""
+        try:
+            body = await self._council_body(request)
+            args = ["council", "stop"]
+            name = body.get("sitting") or body.get("name")
+            if name:
+                args += ["--name", str(name)]
+            success, result = await self.run_agentwire_cmd(args)
+            if success:
+                stopped = result.get("council") or name
+                if stopped:
+                    await self.broadcast_dashboard(
+                        "council_update", {"sitting": stopped, "stopped": True}
+                    )
+                return web.json_response(result)
+            return web.json_response(result, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_council_ask(self, request: web.Request) -> web.Response:
+        """POST /api/council/ask - Fan a new prompt out (CLI: ``council ask``).
+
+        Body: ``{sitting?, prompt}``. The prompt rides after a ``--`` so leading
+        dashes can't be parsed as flags. Broadcasts a reset so the board switches
+        to the new round (the watch loop would catch it within ~1.5s anyway).
+        """
+        try:
+            body = await self._council_body(request)
+            prompt = body.get("prompt")
+            if not prompt or not str(prompt).strip():
+                return web.json_response({"error": "prompt required"}, status=400)
+            args = ["council", "ask"]
+            name = body.get("sitting") or body.get("name")
+            if name:
+                args += ["--name", str(name)]
+            args += ["--", str(prompt)]
+            success, result = await self.run_agentwire_cmd(args)
+            if success:
+                seated = result.get("council") or name
+                if seated:
+                    await self.broadcast_dashboard(
+                        "council_update",
+                        {
+                            "sitting": seated,
+                            "prompt_id": result.get("prompt_id"),
+                            "reset": True,
+                        },
+                    )
+                return web.json_response(result)
+            return web.json_response(result, status=400)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
