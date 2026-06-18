@@ -17,6 +17,7 @@ import { CouncilWindow, COUNCIL_WINDOW_ID } from './council-window.js';
 import { sidebar } from './sidebar.js';
 import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
 import { notificationsActive } from './notification-prefs.js';
+import { attachHorizontalSwipe } from './utils/swipe.js';
 import { configSection } from './sidebar/config-section.js';
 import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
@@ -402,6 +403,16 @@ function setupWindowSwipeCycling() {
         cooldown = true;
         setTimeout(() => { cooldown = false; }, COOLDOWN_MS);
     }, { passive: false });
+
+    // Touch devices (tablets on the desktop route — `/` always serves the
+    // desktop, there's no mobile redirect) don't fire wheel events, so add the
+    // single-finger swipe equivalent. Capture phase so an xterm terminal can't
+    // swallow the gesture; sidebar and the command palette opt out.
+    const surface = document.getElementById('desktopArea') || document;
+    attachHorizontalSwipe(surface, cycleWindow, {
+        capture: true,
+        ignore: (t) => !!(t.closest && t.closest('.sidebar, .cmdk-overlay')),
+    });
 }
 
 /** True if the target sits inside an element that can actually scroll sideways. */
