@@ -231,47 +231,59 @@ function cycleSession(direction) {
     if (next && next.name !== selectedSession) selectSession(next.name);
 }
 
-// Two-finger horizontal swipe to cycle sessions. Averaging the two touch points
-// distinguishes a swipe (both fingers travel the same way → the midpoint moves)
-// from a pinch (fingers diverge → the midpoint stays put). A single finger is
-// ignored so taps and normal scrolling are untouched.
+// Horizontal swipe to cycle sessions — the mobile analog of Tab/Shift+Tab.
+//
+// Single-finger by design: on a phone a TWO-finger gesture is claimed by the
+// browser as pinch-zoom / a system gesture before JS sees clean move events, so
+// two-finger swipe-cycling can't be made reliable there (no gesture library
+// fixes that — it's the OS/browser, not us). A one-finger horizontal swipe is
+// the standard mobile gesture and, with `touch-action: pan-y` on the surface
+// (mobile.css), the browser hands us horizontal drags while keeping vertical
+// scroll native. The PTT button and edit bar opt out so press-to-talk and
+// typing are untouched.
 function setupSwipeCycling() {
     let active = false;
     let startX = 0, startY = 0, curX = 0, curY = 0;
-    const THRESHOLD = 55;  // px the midpoint must travel horizontally
+    let lockedVertical = false;
+    const THRESHOLD = 50;  // px of horizontal travel for a deliberate swipe
 
-    const mid = (t) => ({
-        x: (t[0].clientX + t[1].clientX) / 2,
-        y: (t[0].clientY + t[1].clientY) / 2,
-    });
+    const surface = document.querySelector('.mobile-app') || document;
 
-    document.addEventListener('touchstart', (e) => {
-        if (e.touches.length === 2) {
-            active = true;
-            const m = mid(e.touches);
-            startX = curX = m.x;
-            startY = curY = m.y;
-        } else {
-            active = false;  // any other finger count cancels the gesture
+    surface.addEventListener('touchstart', (e) => {
+        // Let press-to-talk and the text input own their own touches.
+        const t = e.target;
+        if (t.closest && (t.closest('#pttButton') || t.closest('#editBar'))) {
+            active = false;
+            return;
         }
+        active = true;
+        lockedVertical = false;
+        const p = e.touches[0];
+        startX = curX = p.clientX;
+        startY = curY = p.clientY;
     }, { passive: true });
 
-    document.addEventListener('touchmove', (e) => {
-        if (!active || e.touches.length !== 2) return;
-        const m = mid(e.touches);
-        curX = m.x;
-        curY = m.y;
-        // Once it's clearly a horizontal two-finger drag, stop the page from
-        // scrolling underneath the gesture.
-        if (Math.abs(curX - startX) > Math.abs(curY - startY) &&
-            Math.abs(curX - startX) > 10) {
+    surface.addEventListener('touchmove', (e) => {
+        if (!active) return;
+        const p = e.touches[0];
+        curX = p.clientX;
+        curY = p.clientY;
+        const dx = curX - startX;
+        const dy = curY - startY;
+        // First decisive axis wins: vertical → release for native scroll;
+        // horizontal → claim the gesture (block scroll/back-nav under it).
+        if (!lockedVertical && Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12) {
+            lockedVertical = true;
+        }
+        if (!lockedVertical && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
             e.preventDefault();
         }
     }, { passive: false });
 
-    document.addEventListener('touchend', () => {
+    surface.addEventListener('touchend', () => {
         if (!active) return;
         active = false;
+        if (lockedVertical) return;
         const dx = curX - startX;
         const dy = curY - startY;
         if (Math.abs(dx) < THRESHOLD || Math.abs(dx) <= Math.abs(dy)) return;
