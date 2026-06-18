@@ -265,17 +265,19 @@ function tileHtml(tileOrSoul) {
         }
     }
     const body = bodyFor(tile);
+    const down = state.liveness[tile.soul] === false ? ' council-tile--down' : '';
     return `
-        <div class="council-tile council-tile--${esc(status)}" data-soul="${esc(tile.soul)}">
-            <div class="council-tile-head">
-                <div class="council-tile-name">${esc(tile.soul)}</div>
-            </div>
-            <div class="council-tile-status">
-                <span class="council-chip"><span class="council-chip-dot"></span>${esc(CHIP[status] || status)}</span>
-                ${metaHtml}
+        <div class="council-tile council-tile--${esc(status)}${down}" data-soul="${esc(tile.soul)}">
+            <div class="council-tile-top">
+                <div class="council-tile-headline">
+                    <span class="council-tile-led" title="session liveness"></span>
+                    <span class="council-tile-name">${esc(tile.soul)}</span>
+                    <span class="council-chip"><span class="council-chip-dot"></span>${esc(CHIP[status] || status)}</span>
+                    ${metaHtml}
+                </div>
+                <div class="council-tile-expand">Read full verdict <span>→</span></div>
             </div>
             <div class="council-tile-body">${esc(body)}</div>
-            <div class="council-tile-expand">Read full verdict <span>→</span></div>
         </div>`;
 }
 
@@ -284,52 +286,36 @@ function counterText() {
     return `${final} of ${state.roster.length} in`;
 }
 
-/** Per-soul liveness pills for the rail SEATING block. */
-function soulPillsHtml() {
-    return state.roster.map((s) => {
-        // Liveness is "the session is alive"; default to live until /status
-        // says otherwise (it lands a beat after the snapshot).
-        const alive = state.liveness[s] !== false;
-        const cls = alive ? 'council-soul-pill council-soul-pill--live' : 'council-soul-pill council-soul-pill--down';
-        return `<span class="${cls}"><span class="council-soul-dot"></span>${esc(s)}</span>`;
-    }).join('');
-}
-
-function liveCount() {
-    return state.roster.filter((s) => state.liveness[s] !== false).length;
-}
-
-/** The rail SEATING block — seat button (unseated) or roster + dismiss (seated). */
-function seatingHtml() {
+/** Seat status + control for the header: counter + Dismiss when seated,
+ *  Seat button when not. Per-soul liveness now rides on the tiles. */
+function seatControlHtml() {
     if (!state.seated || !state.sitting) {
         return `
-            <div class="council-rail-section">
-                <div class="council-rail-label">SEATING</div>
-                <div class="council-seat-empty">No council seated.</div>
-                <button class="council-btn council-btn--primary" data-action="seat" ${state.busy ? 'disabled' : ''}>
-                    ${state.busy ? 'Seating…' : 'Seat the council'}
-                </button>
-            </div>`;
+            <button class="council-btn council-btn--primary council-btn--compact" data-action="seat" ${state.busy ? 'disabled' : ''}>
+                ${state.busy ? 'Seating…' : 'Seat the council'}
+            </button>`;
     }
-    const total = state.roster.length;
     return `
-        <div class="council-rail-section">
-            <div class="council-rail-label">SEATING</div>
-            <div class="council-seat-head">
-                <span class="council-seat-summary"><span class="council-seat-led"></span>${total} soul${total === 1 ? '' : 's'} seated</span>
-                <button class="council-btn council-btn--ghost" data-action="dismiss" ${state.busy ? 'disabled' : ''}>Dismiss</button>
-            </div>
-            <div class="council-soul-pills">${soulPillsHtml()}</div>
-            <div class="council-counter">${esc(counterText())}</div>
-        </div>`;
+        <span class="council-seat-summary"><span class="council-seat-led"></span><span class="council-counter">${esc(counterText())}</span></span>
+        <button class="council-btn council-btn--ghost" data-action="dismiss" ${state.busy ? 'disabled' : ''}>Dismiss</button>`;
 }
 
-/** Re-render only the seating block (liveness arrives after the snapshot). */
+/** Re-render only the seat control (liveness/counter arrives after the snapshot). */
 function refreshSeating() {
     const slot = container?.querySelector('[data-slot="seating"]');
-    if (!slot) return;
-    slot.innerHTML = seatingHtml();
-    bindSeating();
+    if (slot) {
+        slot.innerHTML = seatControlHtml();
+        bindSeating();
+    }
+    applyTileLiveness();
+}
+
+/** Toggle the per-tile down state from the latest /status liveness map. */
+function applyTileLiveness() {
+    container?.querySelectorAll('.council-tile').forEach((el) => {
+        const soul = el.dataset.soul;
+        el.classList.toggle('council-tile--down', !!soul && state.liveness[soul] === false);
+    });
 }
 
 function questionHtml() {
@@ -339,36 +325,44 @@ function questionHtml() {
     return `<div class="council-q"><span class="council-quote">“</span>${esc(state.promptText)}<span class="council-quote">”</span></div>`;
 }
 
-/** The rail ROUNDS list — clickable, latest first, active highlighted. */
-function roundsHtml() {
-    if (!state.promptIds.length) return '';
+/** The round breadcrumb at the top-right of the header — a compact dropdown
+ *  that swaps which round's verdicts the board is showing. */
+function roundsCrumbHtml() {
+    if (!state.seated || !state.promptIds.length) return '';
+    const cur = state.promptId;
+    const curLatest = cur === state.latestPromptId;
+    const curTag = `ROUND ${pad2(cur)}${curLatest ? ' · LATEST' : ''}`;
     const items = state.promptIds.slice().reverse().map((id) => {
         const isLatest = id === state.latestPromptId;
         const tag = `ROUND ${pad2(id)}${isLatest ? ' · LATEST' : ''}`;
         const txt = state.roundTexts[id] || (isLatest ? 'latest round' : `prompt #${id}`);
         return `
-            <button class="council-round-item ${id === state.promptId ? 'council-round-item--active' : ''}" data-round="${id}">
+            <button class="council-round-item ${id === cur ? 'council-round-item--active' : ''}" data-round="${id}">
                 <span class="council-round-tag">${esc(tag)}</span>
                 <span class="council-round-txt">${esc(txt)}</span>
             </button>`;
     }).join('');
     return `
-        <div class="council-rail-section">
-            <div class="council-rail-label">ROUNDS</div>
-            <div class="council-rounds-list">${items}</div>
+        <div class="council-crumb" data-slot="rounds-crumb">
+            <button class="council-crumb-btn" data-action="rounds-toggle">
+                <span class="council-crumb-label">${esc(curTag)}</span>
+                <span class="council-crumb-chev">▾</span>
+            </button>
+            <div class="council-crumb-menu">${items}</div>
         </div>`;
 }
 
-/** The rail ASK block — re-prompt the seated sitting without leaving the window. */
+/** The header ASK row — re-prompt the seated sitting; compact input + button. */
 function askHtml() {
     if (!state.seated || !state.sitting) return '';
     return `
-        <div class="council-rail-section council-rail-ask">
-            <div class="council-rail-label">ASK</div>
-            <textarea class="council-ask-input" rows="3" placeholder="Ask the council, or add context…" ${state.busy ? 'disabled' : ''}></textarea>
-            <button class="council-btn council-btn--primary" data-action="ask" ${state.busy ? 'disabled' : ''}>
-                ${state.busy ? 'Asking…' : 'Ask the council →'}
-            </button>
+        <div class="council-ask">
+            <div class="council-ask-row">
+                <textarea class="council-ask-input" rows="1" placeholder="Ask the council, or add context…" ${state.busy ? 'disabled' : ''}></textarea>
+                <button class="council-btn council-btn--primary council-btn--compact" data-action="ask" ${state.busy ? 'disabled' : ''}>
+                    ${state.busy ? 'Asking…' : 'Ask the council →'}
+                </button>
+            </div>
             <div class="council-ask-err" data-slot="ask-err"></div>
         </div>`;
 }
@@ -379,14 +373,14 @@ function mainHtml() {
         return `
             <div class="council-main-empty">
                 <div class="council-main-empty-title">The chamber is empty</div>
-                <div class="council-main-empty-sub">Seat the council from the rail to convene the souls.</div>
+                <div class="council-main-empty-sub">Seat the council from the header to convene the souls.</div>
             </div>`;
     }
     if (!state.promptId || !state.roster.length) {
         return `
             <div class="council-main-empty">
                 <div class="council-main-empty-title">The council is seated</div>
-                <div class="council-main-empty-sub">Ask the first question from the rail and the takes will fill in here.</div>
+                <div class="council-main-empty-sub">Ask the first question from the header and the takes will fill in here.</div>
             </div>`;
     }
     const trio = state.roster.length <= 3 ? ' council-grid--trio' : '';
@@ -399,39 +393,37 @@ function mainHtml() {
         </div>`;
 }
 
-function railHtml() {
-    const live = state.promptId === state.latestPromptId;
-    const sittingLabel = state.sitting || 'No council seated';
-    return `
-        <aside class="council-rail">
-            <div class="council-rail-brand">
-                <div class="council-brand"><div class="council-led"></div><div class="council-eyebrow">AGENTWIRE · COUNCIL</div></div>
-                <div class="council-sitting">${esc(sittingLabel)}</div>
-                ${sittingSelectorInline()}
-            </div>
-            <div class="council-rail-body">
-                <div data-slot="seating">${seatingHtml()}</div>
-                ${state.seated && state.sitting ? `
-                <div class="council-rail-section">
-                    <div class="council-rail-label">${live ? 'THE QUESTION' : 'AN EARLIER ROUND'}</div>
-                    ${questionHtml()}
-                </div>
-                ${roundsHtml()}
-                ` : ''}
-            </div>
-            ${askHtml()}
-        </aside>`;
-}
-
 function render() {
     if (!container) return;
+    const sittingLabel = state.sitting || 'No council seated';
+    const live = state.promptId === state.latestPromptId;
+    const seated = state.seated && state.sitting;
     container.innerHTML = `
         <div class="council-glow"></div>
         <div class="council-vignette"></div>
-        <div class="council-layout">
-            ${railHtml()}
-            <main class="council-main">${mainHtml()}</main>
-        </div>`;
+        <header class="council-header">
+            <div class="council-header-main">
+                <div class="council-topbar-left">
+                    <div class="council-topbar-title">
+                        <div class="council-brand"><div class="council-led"></div><div class="council-eyebrow">AGENTWIRE · COUNCIL</div></div>
+                        <div class="council-sitting">${esc(sittingLabel)}</div>
+                    </div>
+                    ${sittingSelectorInline()}
+                </div>
+                <div class="council-header-controls">
+                    <span class="council-seat-control" data-slot="seating">${seatControlHtml()}</span>
+                    ${roundsCrumbHtml()}
+                </div>
+            </div>
+            ${seated ? `
+            <div class="council-header-q">
+                <span class="council-q-label">${live ? 'QUESTION' : 'EARLIER ROUND'}</span>
+                ${questionHtml()}
+            </div>
+            ${askHtml()}
+            ` : ''}
+        </header>
+        <main class="council-main">${mainHtml()}</main>`;
     bindBoard();
     startTimer();
     if (state.seated && allFinal()) markCompleteStatic();
@@ -504,14 +496,30 @@ function flourish() {
     }
 }
 
+let crumbCloserBound = false;
+/** Close the round breadcrumb dropdown on any outside click (bound once). */
+function bindCrumbCloser() {
+    if (crumbCloserBound) return;
+    crumbCloserBound = true;
+    document.addEventListener('click', () => {
+        container?.querySelector('[data-slot="rounds-crumb"]')?.classList.remove('council-crumb--open');
+    });
+}
+
 function bindBoard() {
     container.querySelector('[data-action="sitting"]')?.addEventListener('change', (e) => {
         if (e.target.value) loadSnapshot(e.target.value, null);
     });
-    // Round list
+    // Round breadcrumb — toggle the dropdown; items swap the viewed round.
+    const crumb = container.querySelector('[data-slot="rounds-crumb"]');
+    crumb?.querySelector('[data-action="rounds-toggle"]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        crumb.classList.toggle('council-crumb--open');
+    });
     container.querySelectorAll('.council-round-item').forEach((btn) => {
         btn.addEventListener('click', () => loadSnapshot(state.sitting, Number(btn.dataset.round)));
     });
+    bindCrumbCloser();
     bindSeating();
     bindAsk();
     // Sitting name → focus the orchestrator session.
