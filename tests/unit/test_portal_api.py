@@ -723,13 +723,13 @@ class TestVoiceStatus:
     async def test_default_tier_shim_loading(self, portal_client):
         client, server = portal_client
 
-        # Default tier probes the managed shim's /health like custom does.
-        # While the shim loads (or hasn't spawned), /health isn't "ok" →
-        # server_transcribe False, so the client stays on browser speech
-        # recognition and instant mode holds. No `moonshine` key any more.
+        # Default tier probes the managed shims' /health like custom does — STT
+        # at :8101, TTS (Kokoro) at :8102. While they load (or haven't spawned),
+        # /health isn't "ok" → server_transcribe False, so the client stays on
+        # browser speech recognition and instant mode holds. No `moonshine` key.
         async def fake_probe(base_url, path, timeout=1.5):
-            assert base_url == "http://localhost:8101"
-            return {"status": "loading"}
+            assert base_url in ("http://localhost:8101", "http://localhost:8102")
+            return {"status": "loading", "percent": 40}
 
         server._probe_shim = fake_probe
 
@@ -744,6 +744,9 @@ class TestVoiceStatus:
         }
         assert body["tts"]["backend"] == "default"
         assert body["tts"]["available"] is True
+        # Kokoro shim warm-up state surfaced from its /health, no `voices` yet.
+        assert body["tts"]["kokoro"] == {"state": "loading", "percent": 40}
+        assert "voices" not in body["tts"]
         assert body["instant_mode"] is True
         assert body["corrections"] == {}
 
@@ -761,6 +764,9 @@ class TestVoiceStatus:
         assert body["stt"]["server_transcribe"] is False
         assert body["stt"]["available"] is True
         assert body["instant_mode"] is True
+        # TTS shim absent too → kokoro state "absent", browser fallback stands.
+        assert body["tts"]["kokoro"]["state"] == "absent"
+        assert body["tts"]["available"] is True
 
     async def test_default_tier_shim_ok(self, portal_client):
         client, server = portal_client
@@ -777,6 +783,9 @@ class TestVoiceStatus:
         assert body["stt"]["server_transcribe"] is True
         assert "moonshine" not in body["stt"]
         assert body["instant_mode"] is False
+        # Kokoro shim ready → its preset voices are surfaced for the picker.
+        assert body["tts"]["kokoro"]["state"] == "ok"
+        assert body["tts"]["voices"]
 
     async def test_custom_tier_probes_shim(self, portal_client):
         client, server = portal_client
@@ -889,6 +898,55 @@ class TestEnsureManagedStt:
         from agentwire.stt import moonshine_importable
 
         assert moonshine_importable() is True
+
+
+# ---------------------------------------------------------------------------
+# Default-tier managed Kokoro TTS shim lifecycle (ensure_managed_tts)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureManagedTts:
+    async def test_delegates_to_kokoro_start_cli(self, portal_client, monkeypatch):
+        client, server = portal_client
+        # Skip the post-bind settle delay.
+        monkeypatch.setattr("agentwire.server.asyncio.sleep", AsyncMock())
+
+        calls = []
+
+        async def fake_cmd(args, json_output=True):
+            calls.append((args, json_output))
+            return True, {"output": "Kokoro TTS shim starting"}
+
+        server.run_agentwire_cmd = fake_cmd
+        server._voice_status_cache = (12345.0, {"stale": True})
+
+        await server.ensure_managed_tts()
+
+        # Idempotent CLI spawn — reuses cmd_kokoro_start (early-returns if the
+        # agentwire-kokoro tmux session already exists).
+        assert calls == [(["kokoro", "start"], False)]
+        # Cache invalidated so the next voice-status poll re-probes /health.
+        assert server._voice_status_cache is None
+
+    async def test_cli_failure_is_soft(self, portal_client, monkeypatch):
+        client, server = portal_client
+        monkeypatch.setattr("agentwire.server.asyncio.sleep", AsyncMock())
+
+        async def fake_cmd(args, json_output=True):
+            return False, {"error": "boom"}
+
+        server.run_agentwire_cmd = fake_cmd
+        # Must not raise — browser speechSynthesis keeps working.
+        await server.ensure_managed_tts()
+        assert server._voice_status_cache is None
+
+    def test_spawn_gate_is_kokoro_importable(self):
+        # run_server schedules ensure_managed_tts only when
+        # `config.tts.backend == "default" and kokoro_importable()`. This is
+        # the gate it evaluates — proven importable in this (py<3.14) env.
+        from agentwire.tts import kokoro_importable
+
+        assert kokoro_importable() is True
 
     def test_spawn_gate_false_when_not_importable(self, monkeypatch):
         import agentwire.stt as stt_pkg

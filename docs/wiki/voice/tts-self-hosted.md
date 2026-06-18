@@ -4,7 +4,7 @@
 
 The bundled TTS server is the **reference implementation of the [shim contract](shim-contract.md)** — multiple engines, each with different capabilities and hardware requirements, all behind one server (`agentwire tts start`) with runtime hot-swap.
 
-> **You don't need this page for a good voice.** `tts.backend: default` already speaks via **Kokoro-82M in-process** — bundled with the base install, CPU-only, auto-downloaded (~200 MB) on first portal start (`agentwire tts warm` pre-downloads it). This page is the `custom` tier: voice cloning, GPU engines, emotion control, or any other model behind the shim contract.
+> **You don't need this page for a good voice.** `tts.backend: default` already speaks via **Kokoro-82M** — bundled with the base install, CPU-only, auto-downloaded (~200 MB) on first portal start (`agentwire tts warm` pre-downloads it). Since #398 the default tier runs Kokoro in a **portal-managed shim subprocess** (tmux `agentwire-kokoro`, `:8102`) rather than in-process — process isolation keeps the GIL-holding ONNX warm-up off the portal event loop, mirroring the STT shim (`:8101`). The portal auto-spawns it on startup; `agentwire kokoro start|stop|status` manage it by hand, and browser speechSynthesis covers speech until its `/health` reports `ok`. This page is the `custom` tier: voice cloning, GPU engines, emotion control, or any other model behind the shim contract.
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ curl -X POST http://localhost:8100/engines/zonos-transformer/load
 
 ### Choosing a Backend
 
-- **No GPU / CPU only** → you likely don't need the server at all: the `default` tier runs kokoro in-process. Run `kokoro` behind the shim only when serving TTS to other machines.
+- **No GPU / CPU only** → you likely don't need this server at all: the `default` tier already runs kokoro in its own portal-managed shim (`agentwire-kokoro`, `:8102`). Run `kokoro` behind *this* multi-engine shim only when serving TTS to other machines or hot-swapping engines.
 - **Best voice quality + emotion control** → `zonos-transformer`
 - **Mid-sentence sounds** (laugh, sigh, cough) → `chatterbox` or `chatterbox-streaming`
 - **Multilingual** (10 languages) → `qwen-base-1.7b` or `qwen-custom`

@@ -164,13 +164,20 @@ def _validate_voice_backend(
 class TTSConfig:
     """Text-to-speech configuration.
 
-    Two tiers: ``default`` speaks via the browser (speechSynthesis) with an
-    OS-voice fallback when no browser is connected; ``custom`` POSTs to any
-    HTTP shim implementing the contract (docs/wiki/voice/shim-contract.md).
+    Two tiers: ``default`` speaks via Kokoro running in the portal-managed shim
+    **subprocess** (tmux ``agentwire-kokoro``, default ``:8102``) — the portal
+    ensures it's running on startup and talks to it over HTTP, with process
+    isolation keeping the ~200 MB download + ONNX warm-up off the event loop
+    (#398, mirroring the STT shim). Browser speechSynthesis (and an OS-voice
+    fallback when no browser is connected) covers speech while the model loads
+    or when Kokoro can't load (py3.14+). For this tier ``url`` is optional and
+    resolves to ``http://localhost:8102``; if an operator overrides the shim
+    port (``KOKORO_PORT``) or ``url``, the two must agree. ``custom`` POSTs to
+    any HTTP shim implementing the contract (docs/wiki/voice/shim-contract.md).
     """
 
     backend: str = "default"  # default | custom
-    url: str | None = None  # shim URL (required for custom backend)
+    url: str | None = None  # shim URL (required for custom; optional override for default :8102)
     default_voice: str = "default"
     voices_dir: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "voices")
     # Session-default knobs; sent to custom shims inside `options`

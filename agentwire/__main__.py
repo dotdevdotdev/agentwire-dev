@@ -543,6 +543,12 @@ def get_stt_session_name() -> str:
     return config.get("services", {}).get("stt", {}).get("session_name", "agentwire-stt")
 
 
+def get_kokoro_session_name() -> str:
+    """Get default-tier Kokoro TTS shim tmux session name from config."""
+    config = load_config()
+    return config.get("services", {}).get("kokoro", {}).get("session_name", "agentwire-kokoro")
+
+
 # === Wave 2: Remote Infrastructure Helpers ===
 
 
@@ -1926,6 +1932,148 @@ def cmd_stt_status(args) -> int:
         if probe_error:
             print(f"  Probe: {probe_error}")
         print("  Start: agentwire stt start")
+    return 1
+
+
+# === Kokoro (default-tier TTS shim) Commands ===
+
+def cmd_kokoro_start(args) -> int:
+    """Start the default-tier Kokoro TTS shim in tmux (idempotent).
+
+    Mirrors ``agentwire stt start``: the portal's ``ensure_managed_tts`` calls
+    this on startup, and the early-return on an existing session means a
+    user-started shim is reused with no port clash."""
+    session_name = get_kokoro_session_name()
+
+    if tmux_session_exists(session_name):
+        print(f"Kokoro TTS shim already running in tmux session '{session_name}'")
+        print(f"  Attach: tmux attach -t {session_name}")
+        return 0
+
+    port = args.port or 8102
+    host = args.host or "0.0.0.0"
+
+    # Find agentwire source directory (for running from source venv)
+    source_dir = get_source_dir()
+    if not (source_dir / ".venv" / "bin" / "python").exists():
+        print("Error: Cannot find agentwire source directory with .venv", file=sys.stderr)
+        print(f"Configure dev.source_dir in ~/.agentwire/config.yaml (current: {source_dir})", file=sys.stderr)
+        return 1
+    agentwire_dir = source_dir
+
+    python_path = agentwire_dir / ".venv" / "bin" / "python"
+    cmd = f"cd {agentwire_dir} && KOKORO_PORT={port} KOKORO_HOST={host} {python_path} -m agentwire.tts.kokoro_server"
+
+    subprocess.run([
+        "tmux", "new-session", "-d", "-s", session_name, "-c", str(agentwire_dir)
+    ], check=True)
+
+    subprocess.run([
+        "tmux", "send-keys", "-t", session_name, cmd, "Enter"
+    ], check=True)
+
+    print(f"Kokoro TTS shim starting in tmux session '{session_name}'")
+    print(f"  Port: {port}")
+    print(f"  Attach: tmux attach -t {session_name}")
+    return 0
+
+
+def cmd_kokoro_serve(args) -> int:
+    """Run the Kokoro TTS shim directly (foreground)."""
+    import uvicorn
+
+    port = args.port or 8102
+    host = args.host or "0.0.0.0"
+
+    os.environ["KOKORO_PORT"] = str(port)
+    os.environ["KOKORO_HOST"] = host
+
+    print(f"Starting Kokoro TTS shim on {host}:{port}...")
+    uvicorn.run(
+        "agentwire.tts.kokoro_server:app",
+        host=host,
+        port=port,
+        log_level="info",
+    )
+    return 0
+
+
+def cmd_kokoro_stop(args) -> int:
+    """Stop the Kokoro TTS shim."""
+    session_name = get_kokoro_session_name()
+
+    if not tmux_session_exists(session_name):
+        print("Kokoro TTS shim is not running.")
+        return 1
+
+    subprocess.run(["tmux", "kill-session", "-t", session_name])
+    print("Kokoro TTS shim stopped.")
+    return 0
+
+
+def cmd_kokoro_status(args) -> int:
+    """Check Kokoro TTS shim status."""
+    json_mode = getattr(args, 'json', False)
+    session_name = get_kokoro_session_name()
+    config = load_config()
+    kokoro_url = config.get("tts", {}).get("url") or "http://localhost:8102"
+
+    probe_error = None
+    try:
+        req = urllib.request.Request(f"{kokoro_url}/health")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            if json_mode:
+                _output_json({
+                    "success": True,
+                    "running": True,
+                    "url": kokoro_url,
+                    "healthy": data.get("status") == "ok",
+                    "status": data.get("status", "unknown"),
+                    "percent": data.get("percent", 0),
+                    "session": session_name if tmux_session_exists(session_name) else None,
+                })
+            else:
+                print("Kokoro TTS shim is running")
+                print(f"  State: {data.get('status', 'unknown')} ({data.get('percent', 0)}%)")
+                print(f"  URL: {kokoro_url}")
+                if tmux_session_exists(session_name):
+                    print(f"  Attach: tmux attach -t {session_name}")
+            return 0
+    except Exception as e:
+        probe_error = _describe_probe_error(e)
+
+    if tmux_session_exists(session_name):
+        if json_mode:
+            _output_json({
+                "success": True,
+                "running": True,
+                "url": kokoro_url,
+                "healthy": False,
+                "error": probe_error,
+                "session": session_name,
+                "starting": True,
+            })
+        else:
+            print(f"Kokoro TTS shim is starting in tmux session '{session_name}'")
+            if probe_error:
+                print(f"  Probe: {probe_error}")
+            print(f"  Attach: tmux attach -t {session_name}")
+        return 0
+
+    if json_mode:
+        _output_json({
+            "success": True,
+            "running": False,
+            "url": kokoro_url,
+            "healthy": False,
+            "error": probe_error,
+        })
+    else:
+        print("Kokoro TTS shim is not running.")
+        if probe_error:
+            print(f"  Probe: {probe_error}")
+        print("  Start: agentwire kokoro start")
     return 1
 
 
@@ -10789,6 +10937,33 @@ def main() -> int:
     stt_status = stt_subparsers.add_parser("status", help="Check STT status")
     stt_status.add_argument("--json", action="store_true", help="Output JSON")
     stt_status.set_defaults(func=cmd_stt_status)
+
+    # === kokoro command group (default-tier TTS shim) ===
+    kokoro_parser = subparsers.add_parser(
+        "kokoro", help="Manage the default-tier Kokoro TTS shim (process-isolated)"
+    )
+    kokoro_subparsers = kokoro_parser.add_subparsers(dest="kokoro_command")
+
+    # kokoro start
+    kokoro_start = kokoro_subparsers.add_parser("start", help="Start Kokoro shim in tmux")
+    kokoro_start.add_argument("--port", type=int, help="Server port (default: 8102)")
+    kokoro_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    kokoro_start.set_defaults(func=cmd_kokoro_start)
+
+    # kokoro serve
+    kokoro_serve = kokoro_subparsers.add_parser("serve", help="Run Kokoro shim in foreground")
+    kokoro_serve.add_argument("--port", type=int, help="Server port (default: 8102)")
+    kokoro_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    kokoro_serve.set_defaults(func=cmd_kokoro_serve)
+
+    # kokoro stop
+    kokoro_stop = kokoro_subparsers.add_parser("stop", help="Stop Kokoro shim")
+    kokoro_stop.set_defaults(func=cmd_kokoro_stop)
+
+    # kokoro status
+    kokoro_status = kokoro_subparsers.add_parser("status", help="Check Kokoro shim status")
+    kokoro_status.add_argument("--json", action="store_true", help="Output JSON")
+    kokoro_status.set_defaults(func=cmd_kokoro_status)
 
     # === quo command ===
     from agentwire.channels.quo import cmd_quo
