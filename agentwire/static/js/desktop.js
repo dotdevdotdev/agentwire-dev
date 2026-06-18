@@ -879,12 +879,13 @@ function setupGlobalPtt() {
             e.preventDefault();
             startGlobalRecording();
         }
-        // Cmd/Ctrl + K opens the command palette straight into idea capture
-        // (Esc reaches the root menu). xterm.js uses a hidden textarea for
-        // terminal input, so we don't skip on tag — Cmd+K is always intercepted.
+        // Cmd/Ctrl + K opens the command palette on the root list, with
+        // "Ask council" as the default selection. xterm.js uses a hidden
+        // textarea for terminal input, so we don't skip on tag — Cmd+K is
+        // always intercepted.
         if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
             e.preventDefault();
-            if (!isCommandPaletteOpen()) openCommandPalette({ view: 'new-idea' });
+            if (!isCommandPaletteOpen()) openCommandPalette();
         }
     });
     document.addEventListener('keyup', (e) => {

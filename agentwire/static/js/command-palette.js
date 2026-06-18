@@ -1,8 +1,9 @@
 /**
  * Command Palette — unified Cmd/Ctrl+K launcher for quick create/open actions.
  *
- * Cmd/Ctrl+K opens straight into the idea-first capture (Esc reaches the root
- * menu). Root view actions:
+ * Cmd/Ctrl+K opens the root list with "Ask council" selected by default (Esc
+ * closes). Root view actions:
+ *   - Ask council   → open the council board to seat/ask a question
  *   - New idea      → idea (typed or dictated) + derived name → create project
  *                     → spawn session → idea delivered as the agent's first
  *                     message → open (you watch it land live)
@@ -16,7 +17,7 @@
 
 import { apiFetch } from './api.js';
 import { normalizeMachine, sameMachine } from './session-id.js';
-import { isService } from './service-classification.js';
+import { isService, isCouncil } from './service-classification.js';
 import * as browserStt from './voice/browser-stt.js';
 
 const PILL_TYPES = ['feat', 'fix', 'chore', 'refactor', 'docs'];
@@ -33,6 +34,11 @@ let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'workt
 let prefillProject = '';
 
 const COMMANDS = [
+    { id: 'ask-council', icon: '🏛', label: 'Ask council', keywords: 'council ask question deliberate lenses brainstorm advice decide soul', run: async () => {
+        closeCommandPalette();
+        const { openCouncilWindow } = await import('./desktop.js');
+        openCouncilWindow(null);
+    } },
     { id: 'new-idea', icon: '💡', label: 'New idea', keywords: 'idea create new project repo clone git init build start', run: () => setView('new-idea') },
     { id: 'new-session', icon: '▶', label: 'New session', keywords: 'create new session start spawn run project', run: () => setView('new-session') },
     { id: 'worktree', icon: '⎇', label: 'New worktree', keywords: 'worktree branch quicktask task feat fix base', run: () => setView('worktree') },
@@ -123,7 +129,7 @@ async function loadSessions() {
             if (!names.has(s.name)) out.push(s);
         }
     } catch (e) { /* ignore */ }
-    sessionsCache = out.filter((s) => !isService(s.name || ''));
+    sessionsCache = out.filter((s) => !isService(s.name || '') && !isCouncil(s.name || ''));
     return sessionsCache;
 }
 
