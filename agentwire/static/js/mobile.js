@@ -141,10 +141,16 @@ function setTab(tab, { render = true } = {}) {
     if (render) renderSessions();
 }
 
+// The sessions shown on the active tab, in display order — the SSOT for both
+// the rendered list and two-finger swipe cycling. Council sessions have no home
+// on mobile yet, so they stay out of both tabs.
+function visibleSessions() {
+    return sessions.filter(s => !isCouncil(s.name || '') && isService(s.name || '') === (activeTab === 'services'));
+}
+
 function renderSessions() {
     els.sessionList.innerHTML = '';
-    // Council sessions have no home on mobile yet — keep them out of both tabs.
-    const visible = sessions.filter(s => !isCouncil(s.name || '') && isService(s.name || '') === (activeTab === 'services'));
+    const visible = visibleSessions();
     if (visible.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'mobile-empty';
@@ -213,6 +219,64 @@ function selectSession(name) {
     updateHeaderState();
     renderTranscript();
     connectSessionWs(name);
+}
+
+// Move to the next (+1) / previous (-1) session on the active tab, wrapping
+// around — the mobile analog of Tab/Shift+Tab on the desktop.
+function cycleSession(direction) {
+    const visible = visibleSessions();
+    if (visible.length < 2) return;
+    const cur = visible.findIndex(s => s.name === selectedSession);
+    const next = visible[(cur + direction + visible.length) % visible.length];
+    if (next && next.name !== selectedSession) selectSession(next.name);
+}
+
+// Two-finger horizontal swipe to cycle sessions. Averaging the two touch points
+// distinguishes a swipe (both fingers travel the same way → the midpoint moves)
+// from a pinch (fingers diverge → the midpoint stays put). A single finger is
+// ignored so taps and normal scrolling are untouched.
+function setupSwipeCycling() {
+    let active = false;
+    let startX = 0, startY = 0, curX = 0, curY = 0;
+    const THRESHOLD = 55;  // px the midpoint must travel horizontally
+
+    const mid = (t) => ({
+        x: (t[0].clientX + t[1].clientX) / 2,
+        y: (t[0].clientY + t[1].clientY) / 2,
+    });
+
+    document.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            active = true;
+            const m = mid(e.touches);
+            startX = curX = m.x;
+            startY = curY = m.y;
+        } else {
+            active = false;  // any other finger count cancels the gesture
+        }
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+        if (!active || e.touches.length !== 2) return;
+        const m = mid(e.touches);
+        curX = m.x;
+        curY = m.y;
+        // Once it's clearly a horizontal two-finger drag, stop the page from
+        // scrolling underneath the gesture.
+        if (Math.abs(curX - startX) > Math.abs(curY - startY) &&
+            Math.abs(curX - startX) > 10) {
+            e.preventDefault();
+        }
+    }, { passive: false });
+
+    document.addEventListener('touchend', () => {
+        if (!active) return;
+        active = false;
+        const dx = curX - startX;
+        const dy = curY - startY;
+        if (Math.abs(dx) < THRESHOLD || Math.abs(dx) <= Math.abs(dy)) return;
+        cycleSession(dx < 0 ? 1 : -1);  // swipe left → next, right → previous
+    }, { passive: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +625,7 @@ async function loadVoiceStatus() {
 async function init() {
     setupPtt();
     setupEditBar();
+    setupSwipeCycling();
     els.refresh.addEventListener('click', loadSessions);
     els.tabSessions.addEventListener('click', () => setTab('sessions'));
     els.tabServices.addEventListener('click', () => setTab('services'));
