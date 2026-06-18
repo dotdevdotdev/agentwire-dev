@@ -598,10 +598,12 @@ function askCouncilFormHtml() {
 
 function bindAskCouncilForm(form) {
     const input = form.querySelector('textarea[name="prompt"]');
-    // Enter submits; Shift+Enter for a newline.
+    // Enter submits; Shift+Enter for a newline. Escape must bubble to the
+    // palette's overlay handler (goBack), so don't swallow it.
     input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') return;
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
-        e.stopPropagation();  // don't leak to global shortcuts
+        e.stopPropagation();  // keep other keystrokes off global shortcuts
     });
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
