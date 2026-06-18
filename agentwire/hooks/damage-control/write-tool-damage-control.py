@@ -395,11 +395,18 @@ def load_write_patterns_from_tooldefs(tooldefs_dir: Optional[Path]) -> List[Dict
                 regex = _cmd_to_regex(cmd_str)
                 if not regex:
                     continue
-                patterns.append({
+                entry = {
                     "pattern": regex,
                     "reason": f"{tool_name}: {cmd_def.get('description', cmd_str)}",
                     "ask": True,
-                })
+                }
+                # An explicit ``id:`` on the tooldef command yields a stable
+                # rule ID (e.g. ``git.push``) that survives description edits —
+                # needed so ``safety.unattended_allow`` can name it reliably.
+                # Without one, ``_assign_rule_id`` derives a slug from the reason.
+                if cmd_def.get("id"):
+                    entry["id"] = str(cmd_def["id"])
+                patterns.append(entry)
         except Exception:
             continue
     return patterns
@@ -475,20 +482,76 @@ def load_config(
     return merged
 
 
+# ============================================================================
+# UNATTENDED (NO-HUMAN-PRESENT) RESOLUTION
+# ============================================================================
+#
+# The damage-control hook classifies commands into allow / block / ask. The
+# ``ask`` tier only means something when a human is present to confirm. Under
+# the scheduler (cron, nobody watching) sessions run with
+# ``--dangerously-skip-permissions``, so historically ``ask`` resolved to a
+# SILENT allow — an unsupervised agent could deploy / drop a table / force-push.
+#
+# When a session is marked unattended (``AGENTWIRE_UNATTENDED=1``, stamped at
+# dispatch by the scheduler), the hook resolves ``ask`` by FAILING CLOSED:
+# block + notify the owner, UNLESS the matched rule's stable ID is on the
+# allowlist. The allowlist is the union of:
+#   1. ``DEFAULT_UNATTENDED_ALLOW`` below (tight — work + open a PR, nothing
+#      irreversible or outward-facing),
+#   2. ``safety.unattended_allow`` from global / project config,
+#   3. ``AGENTWIRE_UNATTENDED_ALLOW`` (comma-separated) — the per-task
+#      extension the scheduler stamps from a task's ``unattended_allow``.
+#
+# Hard ``block`` rules (rm -rf, git push --force, …) are unaffected — they fire
+# regardless. Interactive bypass sessions (no ``AGENTWIRE_UNATTENDED``) are
+# unaffected too — their ``ask`` still resolves the old way.
+
+DEFAULT_UNATTENDED_ALLOW = {
+    "git.add",       # stage files
+    "git.add-u",     # stage tracked changes
+    "git.commit",    # commit
+    "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
+    "gh.pr-create",  # open a PR — the human-reviewed gate
+}
+
+
+def is_unattended() -> bool:
+    """True when this session was dispatched with no human present (scheduler)."""
+    return os.environ.get("AGENTWIRE_UNATTENDED") == "1"
+
+
+def resolve_unattended_allow(config: Dict[str, Any]) -> set:
+    """Effective unattended allowlist: defaults ∪ config ∪ per-task env extension."""
+    allow = set(DEFAULT_UNATTENDED_ALLOW)
+    safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
+    for rid in safety_cfg.get("unattended_allow", []) or []:
+        if rid:
+            allow.add(str(rid))
+    env_allow = os.environ.get("AGENTWIRE_UNATTENDED_ALLOW", "")
+    for rid in env_allow.split(","):
+        rid = rid.strip()
+        if rid:
+            allow.add(rid)
+    return allow
+
+
 def load_safety_config(
     global_config_path: Optional[Path] = None,
     cwd: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve the effective ``safety`` block from global + nearest project config.
 
-    Returns ``{enabled: bool, disabled_rules: list[str]}``. Project ``.agentwire.yml``
-    overrides global; ``disabled_rules`` are merged (set-union).
+    Returns ``{enabled: bool, disabled_rules: list[str], unattended_allow: list[str]}``.
+    Project ``.agentwire.yml`` overrides global ``enabled``; ``disabled_rules`` and
+    ``unattended_allow`` are merged (set-union).
     """
     enabled = True
     disabled_rules: List[str] = []
+    unattended_allow: List[str] = []
     project_enabled: Optional[bool] = None
     if not yaml:
-        return {"enabled": enabled, "disabled_rules": disabled_rules}
+        return {"enabled": enabled, "disabled_rules": disabled_rules,
+                "unattended_allow": unattended_allow}
 
     if global_config_path is None:
         global_config_path = Path.home() / ".agentwire" / "config.yaml"
@@ -503,6 +566,9 @@ def load_safety_config(
                 rules = safety.get("disabled_rules", [])
                 if isinstance(rules, list):
                     disabled_rules.extend(str(r) for r in rules if r)
+                allow = safety.get("unattended_allow", [])
+                if isinstance(allow, list):
+                    unattended_allow.extend(str(a) for a in allow if a)
     except Exception:
         pass
 
@@ -522,6 +588,9 @@ def load_safety_config(
                     prules = psafety.get("disabled_rules", [])
                     if isinstance(prules, list):
                         disabled_rules.extend(str(r) for r in prules if r)
+                    pallow = psafety.get("unattended_allow", [])
+                    if isinstance(pallow, list):
+                        unattended_allow.extend(str(a) for a in pallow if a)
             except Exception:
                 pass
             break
@@ -533,7 +602,11 @@ def load_safety_config(
     if project_enabled is not None:
         enabled = project_enabled
 
-    return {"enabled": enabled, "disabled_rules": sorted(set(disabled_rules))}
+    return {
+        "enabled": enabled,
+        "disabled_rules": sorted(set(disabled_rules)),
+        "unattended_allow": sorted(set(unattended_allow)),
+    }
 
 
 _ESCAPE_HATCH_RE = re.compile(r"#\s*allow:[ \t]*([^\n]+)", re.IGNORECASE)

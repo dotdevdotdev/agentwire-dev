@@ -185,12 +185,76 @@ Per-project paths are relative to the project root and resolved to absolute path
 
 **Precedence**:
 1. Hard-blocked `bashToolPatterns` (no `bypassable` flag) — always blocked, NEVER bypassed
-2. Ask patterns (`ask: true`) — always prompt for confirmation
+2. Ask patterns (`ask: true`) — prompt for confirmation when a human is present; **fail closed when unattended** (see below)
 3. Bypassable `bashToolPatterns` (`bypassable: true`) — check allowlist for required operation
 4. `allowedPaths` (global + per-project merged) — if target matches with correct operation, skip path checks
 5. `zeroAccessPaths` — block (unless allowlisted with `read`)
 6. `readOnlyPaths` — block modifications (unless allowlisted with specific operation)
 7. `noDeletePaths` — block deletions (unless allowlisted with `delete`)
+
+---
+
+## Unattended (no-human-present) guardrail
+
+The `ask` tier only means something when a human is there to confirm. The
+scheduler dispatches agents headless (cron, nobody watching) with
+`--dangerously-skip-permissions`, so historically an `ask`-tier command
+resolved to a **silent allow** — an unsupervised agent could deploy, drop a
+table, or delete a remote branch with no one seeing it until after the fact.
+
+When a session is marked **unattended**, the bash hook resolves `ask` by
+**failing closed**: it **blocks** the command and **emails the owner**, unless
+the matched rule's stable ID is on the unattended allowlist.
+
+**How a session is marked unattended.** The scheduler is the single chokepoint:
+on every headless dispatch it seeds `AGENTWIRE_UNATTENDED=1` (and any per-task
+`AGENTWIRE_UNATTENDED_ALLOW`) into the dispatch subprocess environment
+(`scheduler._unattended_env`). Session creation funnels that marker into the new
+tmux session via `tmux new-session -e K=V` (`__main__._with_unattended_env`), so
+it lands before the agent launches and the hook can read it. Interactive
+sessions never pass through that chokepoint, so the marker can't leak into a
+human's session — even though interactive sessions use the same
+`--dangerously-skip-permissions` posture. A child session an unattended agent
+spawns inherits the marker (defense in depth).
+
+**What's unaffected.** Hard `block` rules (`rm -rf`, `git push --force`, DB
+drops) fire regardless — they never depended on a human. Interactive `bypass`
+sessions resolve `ask` exactly as before. The kill switch still wins: with
+`safety.enabled: false`, nothing is checked, so the unattended gate is inert too
+(enable safety for scheduled projects to engage it).
+
+**The allowlist** (union of three sources):
+
+| Source | Where | Scope |
+|--------|-------|-------|
+| `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create` — work + open a PR, nothing irreversible or outward-facing |
+| `safety.unattended_allow` | `config.yaml` / project `.agentwire.yml` | Global / per-project extension (list of rule ids) |
+| `unattended_allow` | per-task in `.agentwire.yml` | Per-task extension — the pressure-relief valve: widen for one task instead of loosening the global default |
+
+Allowlisting is **by rule ID**, not command text — so `git.push` (plain push)
+is allowed while `git push --force` (hard block) and `git push --delete`
+(distinct `ask` rule `git.deletes-remote-branch`) are not. Tooldef commands the
+allowlist references carry an explicit `id:` so the ID is stable across
+description edits.
+
+When a command is blocked, the owner email and `agentwire safety logs` name the
+exact rule id, so widening is copy-paste: add that id to the task's
+`unattended_allow`.
+
+```yaml
+# project .agentwire.yml — let ONE scheduled task run terraform apply unattended
+tasks:
+  infra-drift:
+    prompt: reconcile infra drift and apply
+    unattended_allow:
+      - tooldef.terraform-apply-planned-changes-to-infrastructure
+```
+
+> **Coverage note:** the guardrail makes the `ask` tier fail closed. A
+> destructive command that isn't classified as `ask`/`block` at all (e.g. some
+> cloud-deploy or outbound-email verbs not yet in the rules) is unaffected and
+> remains a separate rules-coverage task — the moment such a verb is classified
+> `ask`, this guardrail blocks it unattended for free.
 
 ---
 

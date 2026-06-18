@@ -41,14 +41,17 @@ commands:
   - cmd: "git add <file>"
     access: write
     description: Stage file for commit
+    id: git.add
 
   - cmd: "git add -u"
     access: write
     description: Stage all tracked file changes (deletions + modifications)
+    id: git.add-u
 
   - cmd: "git commit -m '<message>'"
     access: write
     description: Create a commit
+    id: git.commit
 
   - cmd: "git stash"
     access: write
@@ -87,6 +90,7 @@ commands:
   - cmd: "git push"
     access: write
     description: Push commits to remote
+    id: git.push
 
   - cmd: "git push --force-with-lease"
     access: write

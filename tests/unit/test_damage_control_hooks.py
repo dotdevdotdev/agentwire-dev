@@ -237,6 +237,95 @@ class TestBashHookSubprocess:
         assert "Invalid JSON" in proc.stderr or "Error" in proc.stderr
 
 
+class TestUnattendedAllowlist:
+    """Pure-function tests for the unattended (no-human) ask resolution (#401)."""
+
+    def test_is_unattended_reads_env(self, bash_hook, monkeypatch):
+        monkeypatch.delenv("AGENTWIRE_UNATTENDED", raising=False)
+        assert bash_hook.is_unattended() is False
+        monkeypatch.setenv("AGENTWIRE_UNATTENDED", "1")
+        assert bash_hook.is_unattended() is True
+        monkeypatch.setenv("AGENTWIRE_UNATTENDED", "0")
+        assert bash_hook.is_unattended() is False
+
+    def test_default_allowlist_covers_work_and_pr(self, bash_hook, monkeypatch):
+        monkeypatch.delenv("AGENTWIRE_UNATTENDED_ALLOW", raising=False)
+        allow = bash_hook.resolve_unattended_allow({"safety": {}})
+        # work + open a PR, nothing irreversible/outward
+        assert {"git.add", "git.commit", "git.push", "gh.pr-create"} <= allow
+        assert "gh.pr-merge" not in allow
+
+    def test_config_extends_default(self, bash_hook, monkeypatch):
+        monkeypatch.delenv("AGENTWIRE_UNATTENDED_ALLOW", raising=False)
+        allow = bash_hook.resolve_unattended_allow(
+            {"safety": {"unattended_allow": ["custom.rule"]}}
+        )
+        assert "custom.rule" in allow
+        assert "git.commit" in allow  # default still present
+
+    def test_env_extension_merges(self, bash_hook, monkeypatch):
+        monkeypatch.setenv("AGENTWIRE_UNATTENDED_ALLOW", "task.rule-a, task.rule-b")
+        allow = bash_hook.resolve_unattended_allow({"safety": {}})
+        assert {"task.rule-a", "task.rule-b"} <= allow
+
+
+class TestUnattendedSubprocess:
+    """End-to-end exit codes for the unattended ask resolution (#401)."""
+
+    HOOK = HOOKS_DIR / "bash-tool-damage-control.py"
+
+    def _run(self, command, unattended, permission_mode="bypassPermissions",
+             allow_env=None):
+        env = {
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "HOME": "/tmp",  # no ~/.agentwire/config.yaml → safety enabled (default)
+        }
+        if unattended:
+            env["AGENTWIRE_UNATTENDED"] = "1"
+        if allow_env:
+            env["AGENTWIRE_UNATTENDED_ALLOW"] = allow_env
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "permission_mode": permission_mode,
+        }
+        return subprocess.run(
+            [sys.executable, str(self.HOOK)],
+            input=json.dumps(payload),
+            capture_output=True, text=True, env=env, timeout=15,
+        )
+
+    def test_ask_tier_blocks_when_unattended(self):
+        # gh pr merge is ask-tier and NOT on the allowlist → fail closed
+        proc = self._run("gh pr merge 5", unattended=True)
+        assert proc.returncode == 2
+        assert "unattended" in proc.stderr.lower()
+
+    def test_allowlisted_proceeds_when_unattended(self):
+        # git commit is on the default allowlist → proceeds
+        proc = self._run("git commit -m 'x'", unattended=True)
+        assert proc.returncode == 0
+
+    def test_hard_block_still_fires_when_unattended(self):
+        # git push --force is hard-block tier → blocked regardless
+        proc = self._run("git push --force", unattended=True)
+        assert proc.returncode == 2
+
+    def test_interactive_bypass_unchanged(self):
+        # Same ask-tier command with no unattended marker → allow (legacy bypass)
+        proc = self._run("gh pr merge 5", unattended=False,
+                         permission_mode="bypassPermissions")
+        assert proc.returncode == 0
+
+    def test_per_task_env_extension_allows(self):
+        # Extending the allowlist via the per-task env var lets it proceed
+        proc = self._run(
+            "gh pr merge 5", unattended=True,
+            allow_env="tooldef.github-cli-merge-a-pull-request",
+        )
+        assert proc.returncode == 0
+
+
 # ---------------------------------------------------------------------------
 # edit-tool-damage-control.py & write-tool-damage-control.py
 # ---------------------------------------------------------------------------
