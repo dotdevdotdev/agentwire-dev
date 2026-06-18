@@ -69,6 +69,11 @@ def sitting_path(name: str) -> Path:
     return council_dir(name) / "sitting.json"
 
 
+def archive_path(name: str) -> Path:
+    """Preserved record of a dismissed sitting (kept so threads stay browsable)."""
+    return council_dir(name) / "archive.json"
+
+
 def workspace_dir(name: str) -> Path:
     return council_dir(name) / "workspace"
 
@@ -195,11 +200,60 @@ def write_sitting(name: str, sitting: Sitting) -> None:
 
 
 def clear_sitting(name: str) -> None:
-    """End the sitting. Prompt history under ``prompts/`` is kept."""
+    """End the sitting. A thread that deliberated something is preserved to
+    ``archive.json`` (so it stays browsable/re-askable from the UI), and the
+    ``prompts/`` history is kept; only the live ``sitting.json`` is removed."""
+    sitting = read_sitting(name)
+    if sitting is not None and prompts_dir(name).is_dir():
+        data = sitting.to_dict()
+        data["dismissed_at"] = now_iso()
+        try:
+            _atomic_write(archive_path(name), data)
+        except OSError:
+            pass
     try:
         sitting_path(name).unlink()
     except FileNotFoundError:
         pass
+
+
+def read_archive_dict(name: str) -> dict | None:
+    """Raw archive record (incl. ``dismissed_at``), or None if not archived."""
+    path = archive_path(name)
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_archived(name: str) -> Sitting | None:
+    """The preserved record of a dismissed sitting as a ``Sitting``, or None."""
+    data = read_archive_dict(name)
+    return Sitting.from_dict(data) if data is not None else None
+
+
+def _has_rounds(name: str) -> bool:
+    pdir = prompts_dir(name)
+    if not pdir.is_dir():
+        return False
+    return any(p.is_dir() and p.name.isdigit() for p in pdir.iterdir())
+
+
+def list_archive() -> list[str]:
+    """Dismissed threads: have prompt history but no live ``sitting.json``."""
+    if not COUNCIL_ROOT.is_dir():
+        return []
+    out = []
+    for child in COUNCIL_ROOT.iterdir():
+        if not child.is_dir() or (child / "sitting.json").exists():
+            continue  # absent or still live
+        if _has_rounds(child.name):
+            out.append(child.name)
+    return out
 
 
 def allocate_prompt_id(name: str) -> int:

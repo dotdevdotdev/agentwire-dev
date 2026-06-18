@@ -34,11 +34,7 @@ let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'workt
 let prefillProject = '';
 
 const COMMANDS = [
-    { id: 'ask-council', icon: '🏛', label: 'Ask council', keywords: 'council ask question deliberate lenses brainstorm advice decide soul', run: async () => {
-        closeCommandPalette();
-        const { openCouncilWindow } = await import('./desktop.js');
-        openCouncilWindow(null);
-    } },
+    { id: 'ask-council', icon: '🏛', label: 'Ask council', keywords: 'council ask question deliberate lenses brainstorm advice decide soul', run: () => setView('ask-council') },
     { id: 'new-idea', icon: '💡', label: 'New idea', keywords: 'idea create new project repo clone git init build start', run: () => setView('new-idea') },
     { id: 'new-session', icon: '▶', label: 'New session', keywords: 'create new session start spawn run project', run: () => setView('new-session') },
     { id: 'worktree', icon: '⎇', label: 'New worktree', keywords: 'worktree branch quicktask task feat fix base', run: () => setView('worktree') },
@@ -578,6 +574,85 @@ function bindWorktreeForm(form) {
 }
 
 // ---------------------------------------------------------------------------
+// Ask council — question-first front door (seat-if-needed → ask → watch board)
+// ---------------------------------------------------------------------------
+
+function askCouncilFormHtml() {
+    return `
+        <div class="quicktask-error" data-error hidden></div>
+        <div class="quicktask-progress" data-progress hidden></div>
+        <form class="quicktask-form" data-form="ask-council">
+            <label class="quicktask-field">
+                <span class="quicktask-label">Ask the council</span>
+                <textarea name="prompt" class="cmdk-idea-input" rows="4"
+                    placeholder="A question or decision to put to the lenses…"
+                    autocomplete="off" spellcheck="false"></textarea>
+            </label>
+            <p class="cmdk-council-note">One model, six lenses — structured self-critique, not a panel of experts. Seats a council if none is live (~6 sessions).</p>
+            <div class="quicktask-footer">
+                <button type="button" class="quicktask-btn-cancel" data-action="back">Back</button>
+                <button type="submit" class="quicktask-btn-submit">Convene &amp; ask</button>
+            </div>
+        </form>`;
+}
+
+function bindAskCouncilForm(form) {
+    const input = form.querySelector('textarea[name="prompt"]');
+    // Enter submits; Shift+Enter for a newline.
+    input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+        e.stopPropagation();  // don't leak to global shortcuts
+    });
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const prompt = input.value.trim();
+        if (!prompt) { input.focus(); return; }
+        await submitAskCouncil(prompt);
+    });
+}
+
+/** Resolve a sitting (seat one if none live), fan the prompt out, open the board.
+ *  Fire-and-forget: we don't wait for the takes — the board fills them live. */
+async function submitAskCouncil(prompt) {
+    showProgress('Convening the council…');
+    try {
+        let sitting = null;
+        const sres = await apiFetch('/api/council/sittings');
+        const live = (sres.ok ? (await sres.json()).sittings : []) || [];
+        if (live.length === 1) {
+            sitting = live[0];
+        } else if (live.length === 0) {
+            showProgress('Seating the council…');
+            const st = await apiFetch('/api/council/start', { method: 'POST' });
+            const sd = await st.json().catch(() => ({}));
+            if (!st.ok) { showError(sd.error || 'Could not seat the council.'); return; }
+            sitting = sd.council || null;
+        } else {
+            // Several live — let the user pick which chamber in the board.
+            closeCommandPalette();
+            const { openCouncilWindow } = await import('./desktop.js');
+            openCouncilWindow(null);
+            return;
+        }
+        showProgress('Asking the council…');
+        const body = { prompt };
+        if (sitting) body.sitting = sitting;
+        const ares = await apiFetch('/api/council/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const adata = await ares.json().catch(() => ({}));
+        if (!ares.ok) { showError(adata.error || 'Could not ask the council.'); return; }
+        closeCommandPalette();
+        const { openCouncilWindow } = await import('./desktop.js');
+        openCouncilWindow(sitting || adata.council || null);
+    } catch (err) {
+        showError(err?.message || 'Network error');
+    }
+}
+
+// ---------------------------------------------------------------------------
 // List views (root + open-session)
 // ---------------------------------------------------------------------------
 
@@ -656,10 +731,14 @@ function renderView() {
     if (currentView === 'new-idea') {
         footer.textContent = '↵ create & run · ⇧↵ newline · esc back';
         body.innerHTML = newIdeaFormHtml();
+    } else if (currentView === 'ask-council') {
+        footer.textContent = '↵ convene & ask · ⇧↵ newline · esc back';
+        body.innerHTML = askCouncilFormHtml();
     } else if (currentView === 'new-session') body.innerHTML = newSessionFormHtml();
     else if (currentView === 'worktree') body.innerHTML = worktreeFormHtml();
     const form = body.querySelector('.quicktask-form');
     if (currentView === 'new-idea') bindNewIdeaForm(form);
+    else if (currentView === 'ask-council') bindAskCouncilForm(form);
     else if (currentView === 'new-session') bindNewSessionForm(form);
     else if (currentView === 'worktree') bindWorktreeForm(form);
 }

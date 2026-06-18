@@ -1608,6 +1608,13 @@ body {
     border-color: var(--accent);
 }
 
+.cmdk-council-note {
+    margin: 8px 2px 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-dim, var(--muted-foreground, #94a3b8));
+}
+
 .cmdk-idea-mic {
     position: absolute;
     top: 6px;
@@ -5961,4 +5968,19 @@ body.sidebar-pinned .sidebar-tab {
 }
 .council-section-item:hover { background: var(--hover); }
 .council-section-name { font-weight: 600; font-size: 13px; }
-.council-section-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.council-section-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.council-section-item--open { border-style: dashed; }
+.council-section-subhead {
+    margin: 10px 2px 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-muted);
+}
+.council-section-item--archived { flex-wrap: wrap; opacity: 0.85; }
+.council-section-item--archived:hover { opacity: 1; }
+.council-section-snip {
+    flex-basis: 100%; font-size: 11px; color: var(--text-muted); font-weight: 400;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.council-archived-tag {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 4px;
+    background: rgba(255,255,255,0.06); color: var(--text-muted); border: 1px solid var(--chrome-border);
+}
