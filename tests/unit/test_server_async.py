@@ -267,8 +267,8 @@ class TestSpeakDefaultTier:
         server._os_say.assert_not_awaited()
 
     async def test_kokoro_ready_broadcasts_audio_not_speak_text(self, server):
-        """Once the in-process Kokoro engine is warm, the default tier sends
-        real WAV audio messages instead of delegating to speechSynthesis."""
+        """Once the managed Kokoro shim is warm (/health ok), the default tier
+        sends real WAV audio messages instead of delegating to speechSynthesis."""
         import numpy as np
 
         from agentwire.tts.audio import pcm_float_to_wav_bytes
@@ -276,9 +276,8 @@ class TestSpeakDefaultTier:
         server._broadcast = AsyncMock()
         server.broadcast_dashboard = AsyncMock()
         wav = pcm_float_to_wav_bytes(np.zeros(2400, dtype=np.float32), 24000)
-        server.kokoro = MagicMock()
-        server.kokoro.ready = True
-        server.kokoro.synthesize = AsyncMock(return_value=(wav, 0.1))
+        server._kokoro_shim_ready = AsyncMock(return_value=True)
+        server._tts_generate = AsyncMock(return_value=wav)
         from agentwire.server import Session
         session = Session(name="dev", config=server._get_session_config("dev"))
         session.clients.add(_client())
@@ -291,16 +290,15 @@ class TestSpeakDefaultTier:
         assert any(m.get("type") == "audio" for m in sent)
         assert not any(m.get("type") == "speak_text" for m in sent)
         # Speech tags stripped before synthesis (kokoro has no tag support)
-        chunk = server.kokoro.synthesize.await_args[0][0]
+        chunk = server._tts_generate.await_args[0][0]
         assert "[laugh]" not in chunk
 
     async def test_kokoro_failure_returns_false_no_speak_text(self, server):
-        """A ready engine that errors mid-synthesis must not crash speak()."""
+        """A ready shim that returns no audio mid-synthesis must not crash speak()."""
         server._broadcast = AsyncMock()
         server.broadcast_dashboard = AsyncMock()
-        server.kokoro = MagicMock()
-        server.kokoro.ready = True
-        server.kokoro.synthesize = AsyncMock(side_effect=RuntimeError("onnx died"))
+        server._kokoro_shim_ready = AsyncMock(return_value=True)
+        server._tts_generate = AsyncMock(return_value=None)
         from agentwire.server import Session
         session = Session(name="dev", config=server._get_session_config("dev"))
         session.clients.add(_client())

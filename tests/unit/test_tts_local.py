@@ -5,11 +5,13 @@ the LocalKokoro state machine, the portal's WAV duration parser, and the CLI
 tier dispatch. No real model files or network involved.
 """
 
+import importlib.util
 import subprocess
 import sys
 import wave
+from contextlib import contextmanager
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -274,6 +276,104 @@ class TestLocalSayDispatch:
         shim.assert_called_once()
         kokoro.assert_not_called()
         os_say.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Process-isolated Kokoro shim server (kokoro_server.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("fastapi") is None,
+    reason="fastapi only ships in the stt/tts extras (the shim runs from the source venv)",
+)
+class TestKokoroServer:
+    """The shim wraps one LocalKokoro and serves the contract envelope.
+
+    The portal talks to this over HTTP so the GIL-holding warm-up runs in a
+    child process, never on the portal event loop (#398)."""
+
+    @contextmanager
+    def _client(self, fake):
+        from fastapi.testclient import TestClient
+
+        from agentwire.tts import kokoro_server
+
+        # Replace the module-level engine with a controllable fake for the whole
+        # test (the patch must outlive lifespan startup, which calls start(),
+        # and every request, which reads the module global). start()/close()
+        # become no-ops on the fake — no real ONNX load.
+        with patch.object(kokoro_server, "kokoro", fake):
+            with TestClient(kokoro_server.app) as client:
+                yield client
+
+    def _fake_kokoro(self, *, ready=False, state="loading", percent=0, error=None):
+        fake = MagicMock()
+        fake.ready = ready
+        fake.state = state
+        fake.percent = percent
+        fake.error = error
+        fake.start = MagicMock()
+        fake.close = AsyncMock()
+        return fake
+
+    def test_health_reports_loading_state(self):
+        fake = self._fake_kokoro(state="downloading", percent=42)
+        with self._client(fake) as c:
+            body = c.get("/health").json()
+        assert body == {"status": "downloading", "engine": "kokoro", "percent": 42}
+
+    def test_health_ok_when_ready(self):
+        fake = self._fake_kokoro(ready=True, state="ready", percent=100)
+        with self._client(fake) as c:
+            body = c.get("/health").json()
+        assert body["status"] == "ok"
+        assert body["percent"] == 100
+
+    def test_health_surfaces_error(self):
+        fake = self._fake_kokoro(state="failed", error="network down")
+        with self._client(fake) as c:
+            body = c.get("/health").json()
+        assert body["status"] == "failed"
+        assert body["error"] == "network down"
+
+    def test_tts_503_until_ready(self):
+        fake = self._fake_kokoro(ready=False, state="loading")
+        with self._client(fake) as c:
+            resp = c.post("/tts", json={"text": "hello"})
+        assert resp.status_code == 503
+
+    def test_tts_400_on_empty_text(self):
+        fake = self._fake_kokoro(ready=True)
+        with self._client(fake) as c:
+            resp = c.post("/tts", json={"text": "   "})
+        assert resp.status_code == 400
+
+    def test_tts_returns_wav_when_ready(self):
+        wav = pcm_float_to_wav_bytes(np.zeros(2400, dtype=np.float32), 24000)
+        fake = self._fake_kokoro(ready=True)
+        fake.synthesize = AsyncMock(return_value=(wav, 0.1))
+        with self._client(fake) as c:
+            resp = c.post("/tts", json={"text": "hello", "voice": "af_bella"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        assert resp.content[:4] == b"RIFF"
+        # Voice passed through to the engine.
+        assert fake.synthesize.await_args[0] == ("hello", "af_bella")
+
+    def test_voices_empty_until_ready_then_presets(self):
+        with self._client(self._fake_kokoro(ready=False)) as c:
+            assert c.get("/voices").json() == {"voices": []}
+        with self._client(self._fake_kokoro(ready=True)) as c:
+            assert c.get("/voices").json()["voices"] == list(PRESET_VOICES)
+
+    def test_capabilities_shape(self):
+        with self._client(self._fake_kokoro(ready=True)) as c:
+            caps = c.get("/capabilities").json()
+        assert caps["engine"] == "kokoro"
+        assert caps["emotion_control"] is False
+        assert caps["voice_cloning"] is False
+        assert caps["voices"] == list(PRESET_VOICES)
 
 
 # ---------------------------------------------------------------------------

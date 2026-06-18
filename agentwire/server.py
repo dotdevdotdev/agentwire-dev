@@ -183,14 +183,11 @@ class AgentWireServer:
         self.stt = None
         self.agent = None
         self._http_session: aiohttp.ClientSession | None = None  # For TTS HTTP calls
-        # Default-tier in-process Kokoro voice. Constructed unconditionally
-        # (cheap, no I/O); run_server starts the warm-up only when
-        # tts.backend == "default".
-        from .tts.local import LocalKokoro
-        self.kokoro = LocalKokoro()
-        # Default-tier Moonshine STT runs in the standalone shim subprocess
-        # (process isolation — see ensure_managed_stt), not in-process. No
-        # object to construct here; run_server ensures the shim post-bind.
+        # Default-tier Kokoro TTS and Moonshine STT both run in standalone shim
+        # subprocesses (process isolation — see ensure_managed_tts /
+        # ensure_managed_stt), not in-process: the GIL-holding warm-up would
+        # wedge this event loop (#382/#398). No object to construct here;
+        # run_server ensures the shims post-bind and the portal talks HTTP.
         # Origin + token enforcement. The middleware is a pure function of
         # config — run_server() resolves the token file into
         # config.server.auth_token before constructing the server.
@@ -365,10 +362,10 @@ class AgentWireServer:
         """Clean up backend resources."""
         if self._http_session:
             await self._http_session.close()
-        await self.kokoro.close()
-        # The default-tier STT shim runs in its own tmux session
-        # (agentwire-stt) — leave it running on portal shutdown; the user may
-        # own it. `agentwire stt stop` is the off switch.
+        # The default-tier TTS (agentwire-kokoro) and STT (agentwire-stt) shims
+        # run in their own tmux sessions — leave them running on portal
+        # shutdown; the user may own them. `agentwire kokoro stop` /
+        # `agentwire stt stop` are the off switches.
 
     async def ensure_managed_stt(self) -> None:
         """Ensure the default-tier Moonshine shim subprocess is running.
@@ -397,28 +394,33 @@ class AgentWireServer:
             # shim's /health and surfaces server_transcribe promptly.
             self._voice_status_cache = None
 
-    async def _on_kokoro_state_change(self, kokoro) -> None:
-        """Kokoro warm-up progress → invalidate voice-status cache + toast.
+    async def ensure_managed_tts(self) -> None:
+        """Ensure the default-tier Kokoro TTS shim subprocess is running.
 
-        The toast is replaced in place (keyed on session "kokoro-voice") so
-        the download reads as one updating notification, not a stream."""
-        self._voice_status_cache = None
-        if kokoro.state == "downloading":
-            await self._post_toast(
-                f"Downloading Kokoro voice model… {kokoro.percent}% (one-time, ~200 MB)",
-                session="kokoro-voice", priority="normal", id_prefix="kokoro")
-        elif kokoro.state == "loading":
-            await self._post_toast(
-                "Loading Kokoro voice model…",
-                session="kokoro-voice", priority="normal", id_prefix="kokoro")
-        elif kokoro.state == "ready":
-            await self._post_toast(
-                "Voice ready — Kokoro is now the portal voice",
-                session="kokoro-voice", priority="normal", id_prefix="kokoro")
-        elif kokoro.state == "failed":
-            await self._post_toast(
-                f"Kokoro voice setup failed ({kokoro.error}) — using browser voice fallback",
-                session="kokoro-voice", priority="high", id_prefix="kokoro")
+        Delegates to the CLI (single source of truth): ``agentwire kokoro start``
+        is idempotent — ``cmd_kokoro_start`` early-returns if the
+        ``agentwire-kokoro`` tmux session already exists, so a user-started shim
+        is reused with no port clash. The ~200 MB download + ONNX warm-up
+        happens in that child process, never on the portal's event loop. Mirrors
+        ``ensure_managed_stt``."""
+        await asyncio.sleep(5)  # let the portal finish binding first
+        try:
+            success, result = await self.run_agentwire_cmd(["kokoro", "start"], json_output=False)
+            if success:
+                await self._post_toast(
+                    "Starting host voice (Kokoro) — browser speech until ready",
+                    session="kokoro-voice", priority="normal", id_prefix="kokoro")
+                logger.info("[TTS] Ensured managed Kokoro shim")
+            else:
+                logger.warning("[TTS] Managed shim start failed: %s", result.get("error"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[TTS] Managed shim start error: %s", e)
+        finally:
+            # Flip voice-status off the 30s TTL so the next poll re-probes the
+            # shim's /health and surfaces the ready voice promptly.
+            self._voice_status_cache = None
 
     def _tts_envelope_options(self, exaggeration: float, cfg_weight: float) -> dict:
         """Session knobs + config pass-through, merged into the shim `options`."""
@@ -428,6 +430,29 @@ class AgentWireServer:
             **self.config.tts.options,
         }
 
+    def _tts_base_url(self) -> str | None:
+        """Resolve the shim URL for the active TTS tier.
+
+        ``default`` → the portal-managed Kokoro shim (``tts.url`` override or
+        :8102); ``custom`` → the user/remote-managed shim at ``tts.url``. Both
+        speak the same HTTP contract, so synthesis goes through one path."""
+        from .tts import _default_tts_url
+
+        if self.config.tts.backend == "default":
+            return _default_tts_url(self.config.tts)
+        return self.config.tts.url
+
+    async def _kokoro_shim_ready(self) -> bool:
+        """True if the default-tier Kokoro shim's /health reports ``ok``.
+
+        The default tier probes the managed shim before synthesizing; while it
+        downloads/loads (or hasn't spawned) the caller falls back to browser
+        speechSynthesis / OS voice — never blocking on a not-ready engine."""
+        from .tts import _default_tts_url
+
+        health = await self._probe_shim(_default_tts_url(self.config.tts), "/health")
+        return bool(health and health.get("status") == "ok")
+
     async def _tts_generate(
         self,
         text: str,
@@ -435,12 +460,17 @@ class AgentWireServer:
         instructions: str | None = None,
         options: dict | None = None,
     ) -> bytes | None:
-        """Generate TTS audio via the custom shim (contract envelope).
+        """Generate TTS audio via the active-tier shim (contract envelope).
 
         Core fields: text (+ optional voice). `instructions` and `options`
-        pass through verbatim — only the shim interprets them.
+        pass through verbatim — only the shim interprets them. The base URL
+        resolves per tier (default → managed Kokoro shim, custom → `tts.url`).
         """
         if not self._http_session:
+            return None
+
+        base_url = self._tts_base_url()
+        if not base_url:
             return None
 
         payload: dict = {"text": text}
@@ -453,7 +483,7 @@ class AgentWireServer:
 
         try:
             async with self._http_session.post(
-                f"{self.config.tts.url}/tts",
+                f"{base_url}/tts",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.tts.timeout),
             ) as resp:
@@ -749,7 +779,7 @@ class AgentWireServer:
             voices = await self._tts_get_voices()
             self._voices_cache = (now, voices)
             return voices
-        if self.config.tts.backend == "default" and self.kokoro.ready:
+        if self.config.tts.backend == "default" and await self._kokoro_shim_ready():
             from .tts.engines.kokoro import PRESET_VOICES
 
             return list(PRESET_VOICES)
@@ -803,12 +833,19 @@ class AgentWireServer:
 
         tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
         if tts_cfg.backend == "default":
-            # In-process Kokoro warm-up state; the cache is invalidated on
-            # every state change so transitions surface immediately.
-            tts["kokoro"] = {"state": self.kokoro.state, "percent": self.kokoro.percent}
-            if self.kokoro.error:
-                tts["kokoro"]["error"] = self.kokoro.error
-            if self.kokoro.ready:
+            # Portal-managed Kokoro shim subprocess. Probe its /health for the
+            # warm-up state (mirrors the STT shim); the browser keeps
+            # synthesizing speech until status is "ok", and `available` stays
+            # true because that browser fallback is always there.
+            from .tts import _default_tts_url
+
+            health = await self._probe_shim(_default_tts_url(tts_cfg), "/health")
+            state = health.get("status") if health else "absent"
+            percent = health.get("percent", 0) if health else 0
+            tts["kokoro"] = {"state": state, "percent": percent}
+            if health and health.get("error"):
+                tts["kokoro"]["error"] = health["error"]
+            if state == "ok":
                 from .tts.engines.kokoro import PRESET_VOICES
 
                 tts["voices"] = list(PRESET_VOICES)
@@ -4107,19 +4144,19 @@ projects:
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
 
-            # Default tier: Kokoro on local speakers when ready, OS voice
-            # while warming up — no shim, no HTTP round-trip
+            # Default tier: Kokoro shim on local speakers when ready, OS voice
+            # while it warms up (process-isolated — see ensure_managed_tts)
             if self.config.tts.backend == "default":
                 from .utils.speech import strip_speech_tags
 
                 clean = strip_speech_tags(text)
-                if self.kokoro.ready:
+                if await self._kokoro_shim_ready():
                     try:
                         session_config = self._get_session_config(name)
-                        wav, _ = await self.kokoro.synthesize(
+                        wav = await self._tts_generate(
                             clean, voice or session_config.voice
                         )
-                        if await self._play_wav_locally(wav):
+                        if wav and await self._play_wav_locally(wav):
                             return web.json_response(
                                 {"success": True, "tier": "default", "engine": "kokoro"}
                             )
@@ -5558,7 +5595,7 @@ projects:
 
     async def _speak_no_clients_fallback(self, text: str) -> bool:
         """No browser connected: default tier plays on this machine's
-        speakers — Kokoro when ready, OS voice while warming up — so
+        speakers — the Kokoro shim when ready, OS voice while it warms up — so
         notifications stay audible; custom tier returns False (the CLI's
         smart routing handles local playback there)."""
         if self.config.tts.backend != "default":
@@ -5566,10 +5603,10 @@ projects:
         from .utils.speech import strip_speech_tags
 
         clean = strip_speech_tags(text)
-        if self.kokoro.ready:
+        if await self._kokoro_shim_ready():
             try:
-                wav, _ = await self.kokoro.synthesize(clean, self.config.tts.default_voice)
-                if await self._play_wav_locally(wav):
+                wav = await self._tts_generate(clean, self.config.tts.default_voice)
+                if wav and await self._play_wav_locally(wav):
                     return True
             except Exception as e:
                 logger.error(f"Kokoro local playback failed: {e}")
@@ -5649,24 +5686,20 @@ projects:
         for target in broadcast_to:
             await self._broadcast(target, tts_start_msg)
 
-        # Default tier: in-process Kokoro once the model is warmed up. Until
-        # then (and if warm-up failed) browsers synthesize the text themselves
-        # via speechSynthesis — broadcast clean text instead of audio.
+        # Default tier: the managed Kokoro shim once its model is warmed up
+        # (process-isolated — see ensure_managed_tts). Until then (and if
+        # warm-up failed) browsers synthesize the text themselves via
+        # speechSynthesis — broadcast clean text instead of audio.
         if self.config.tts.backend == "default":
             from .utils.speech import strip_speech_tags
 
             clean = strip_speech_tags(text)
 
-            if self.kokoro.ready:
+            if await self._kokoro_shim_ready():
                 voice = session.config.voice or self.config.tts.default_voice
 
                 async def _generate(chunk: str) -> bytes | None:
-                    try:
-                        wav, _ = await self.kokoro.synthesize(chunk, voice)
-                        return wav
-                    except Exception as e:
-                        logger.error(f"[{session_name}] Kokoro synthesis failed: {e}")
-                        return None
+                    return await self._tts_generate(chunk, voice)
 
                 return await self._speak_chunks(session_name, clean, broadcast_to, _generate)
 
@@ -5784,11 +5817,15 @@ async def run_server(config: Config):
     server = AgentWireServer(config)
     await server.init_backends()
 
-    # Warm up the default-tier Kokoro voice: background model download
-    # (one-time ~200 MB) + engine load. speechSynthesis covers speech until
-    # ready. Cleaned up via close_backends().
-    if config.tts.backend == "default":
-        server.kokoro.start(server._on_kokoro_state_change)
+    # Default-tier TTS: ensure the Kokoro shim subprocess is running (process
+    # isolation — the ~200 MB download + ONNX warm-up happens in that child,
+    # never on this event loop). speechSynthesis covers speech until the shim's
+    # /health is ok; on py3.14+ (no package) the spawn is gated off and it
+    # stays the browser path.
+    from .tts import kokoro_importable
+
+    if config.tts.backend == "default" and kokoro_importable():
+        asyncio.create_task(server.ensure_managed_tts())
 
     # Default-tier STT: ensure the Moonshine shim subprocess is running
     # (process isolation — the ~19s ONNX warm-up happens in that child, never
