@@ -63,6 +63,7 @@ class NotificationsPanel {
         const toast = document.createElement('div');
         toast.className = `notification-toast${priority === 'high' ? ' high' : ''}`;
         toast.dataset.id = id;
+        toast.dataset.session = session || '';
 
         const timeStr = this._formatTime(timestamp);
 
@@ -108,6 +109,24 @@ class NotificationsPanel {
             toast.remove();
         }
         this.toasts.delete(id);
+    }
+
+    /**
+     * Auto-dismiss every outstanding toast tied to a given session — called
+     * when the user tabs into that session's window, so a notification they've
+     * clearly seen stops being noise. Toasts for other sessions are untouched.
+     * Routes through _dismissToast so the dismissal is persisted server-side and
+     * won't reappear on reload.
+     *
+     * @param {string} session
+     */
+    dismissForSession(session) {
+        if (!session) return;
+        for (const [id, toast] of this.toasts) {
+            if (toast.dataset.session === session) {
+                this._dismissToast(id);
+            }
+        }
     }
 
     async _dismissToast(id) {
