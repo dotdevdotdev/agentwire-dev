@@ -1,7 +1,7 @@
 import { apiFetch } from '../api.js';
 import { desktop } from '../desktop-manager.js';
 import { buildSessionId, normalizeMachine } from '../session-id.js';
-import { isService, loadCustomServices } from '../service-classification.js';
+import { isService, isCouncil, loadCustomServices } from '../service-classification.js';
 import { toastSuccess, toastError } from '../toast.js';
 
 // Shared state across sessions and services sections
@@ -285,7 +285,8 @@ export const sessionsSection = {
     },
 
     _render(body) {
-        const work = allSessions.filter(s => !isService(s.name || ''));
+        // Council souls/orchestrators live in the Council section, not here.
+        const work = allSessions.filter(s => !isService(s.name || '') && !isCouncil(s.name || ''));
         let html = this._renderForm();
         if (!work.length && !this._formType) {
             html += '<div class="sidebar-empty">No sessions</div>';

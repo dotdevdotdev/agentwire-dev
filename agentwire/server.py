@@ -308,6 +308,7 @@ class AgentWireServer:
         self.app.router.add_get("/api/scheduler/output", self.api_scheduler_session_output)
         # Council seating board: live sittings + per-prompt snapshot
         self.app.router.add_get("/api/council/sittings", self.api_council_sittings)
+        self.app.router.add_get("/api/council/archive", self.api_council_archive)
         self.app.router.add_get("/api/council/live", self.api_council_live)
         self.app.router.add_get("/api/council/status", self.api_council_status)
         self.app.router.add_post("/api/council/start", self.api_council_start)
@@ -5007,6 +5008,48 @@ projects:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def api_council_archive(self, request: web.Request) -> web.Response:
+        """GET /api/council/archive - Dismissed threads, newest first.
+
+        Each entry: ``{name, rounds, last_prompt_text, dismissed_at, cwd}`` —
+        enough for the sidebar to list past deliberations; the board reads the
+        full thread via ``/api/council/live?sitting=<name>``.
+        """
+        try:
+            from .council import state as council_state
+            from .council import inbox as council_inbox
+            from .council import view as council_view
+
+            out = []
+            for name in council_state.list_archive():
+                ids = council_view.available_prompt_ids(name)
+                last_text = ""
+                if ids:
+                    last_text = self._read_text_safe(
+                        council_inbox.prompt_dir(name, ids[-1]) / "prompt.md"
+                    )
+                rec = council_state.read_archive_dict(name) or {}
+                out.append(
+                    {
+                        "name": name,
+                        "rounds": len(ids),
+                        "last_prompt_text": last_text,
+                        "dismissed_at": rec.get("dismissed_at", ""),
+                        "cwd": rec.get("cwd", ""),
+                    }
+                )
+            out.sort(key=lambda e: e.get("dismissed_at", ""), reverse=True)
+            return web.json_response({"archive": out})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @staticmethod
+    def _read_text_safe(path) -> str:
+        try:
+            return path.read_text()
+        except OSError:
+            return ""
+
     async def api_council_live(self, request: web.Request) -> web.Response:
         """GET /api/council/live - Board snapshot for a sitting (mirrors
         /api/scheduler/live).
@@ -5033,20 +5076,20 @@ projects:
                         {"running": False, "sittings": live}, status=409
                     )
 
-            sitting = council_state.read_sitting(name)
-            if sitting is None:
+            # A dismissed thread has no live sitting.json but is still a fully
+            # readable artifact (archive.json + prompts/). Only 404 when there
+            # is genuinely nothing on disk.
+            live = council_state.read_sitting(name)
+            prompt_id_raw = request.query.get("prompt_id")
+            prompt_id = int(prompt_id_raw) if prompt_id_raw else None
+            dead = await self._council_dead_souls(live) if live else set()
+            snap = council_view.snapshot(name, prompt_id, dead_souls=dead)
+            if snap is None:
                 return web.json_response(
                     {"running": False, "sittings": council_state.list_sittings()},
                     status=404,
                 )
-
-            prompt_id_raw = request.query.get("prompt_id")
-            prompt_id = int(prompt_id_raw) if prompt_id_raw else None
-            dead = await self._council_dead_souls(sitting)
-            snap = council_view.snapshot(name, prompt_id, dead_souls=dead)
-            if snap is None:
-                return web.json_response({"running": False}, status=404)
-            snap["running"] = True
+            snap["running"] = live is not None
             snap["sittings"] = council_state.list_sittings()
             return web.json_response(snap)
         except Exception as e:

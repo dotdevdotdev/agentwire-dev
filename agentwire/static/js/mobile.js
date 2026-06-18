@@ -14,7 +14,7 @@
  */
 
 import { apiFetch, wsProtocols } from './api.js';
-import { isService, loadCustomServices } from './service-classification.js';
+import { isService, isCouncil, loadCustomServices } from './service-classification.js';
 import * as browserStt from './voice/browser-stt.js';
 import * as browserTts from './voice/browser-tts.js';
 import { voicePromptWrap } from './voice/prompt.js';
@@ -143,7 +143,8 @@ function setTab(tab, { render = true } = {}) {
 
 function renderSessions() {
     els.sessionList.innerHTML = '';
-    const visible = sessions.filter(s => isService(s.name || '') === (activeTab === 'services'));
+    // Council sessions have no home on mobile yet — keep them out of both tabs.
+    const visible = sessions.filter(s => !isCouncil(s.name || '') && isService(s.name || '') === (activeTab === 'services'));
     if (visible.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'mobile-empty';

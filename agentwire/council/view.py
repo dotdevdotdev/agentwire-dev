@@ -143,13 +143,31 @@ def snapshot(
     the sitting ``name``; the per-prompt ``meta.json.roster`` (falling back to
     the sitting roster) fixes both soul order and grid size — nothing is
     hardcoded to a roster of six.
+
+    The thread artifact outlives the compute: a dismissed sitting (no live
+    ``sitting.json``) is still a fully readable thread, derived from the
+    preserved ``archive.json`` or, failing that, reconstructed from the
+    ``prompts/`` tree. ``archived`` flags which case the caller is looking at.
     """
     sitting = state.read_sitting(name)
+    archived = sitting is None
     if sitting is None:
-        return None
+        sitting = state.read_archived(name)
+    if sitting is None:
+        if not available_prompt_ids(name):
+            return None
+        sitting = state.Sitting(
+            orchestrator=state.orchestrator_for(name),
+            roster=[],
+            sessions={},
+            started_at="",
+        )
 
+    # available_prompt_ids (disk-derived) works for live and archived alike —
+    # the sitting.json prompt counter is gone once dismissed.
     if prompt_id is None:
-        prompt_id = state.latest_prompt_id(name)
+        ids = available_prompt_ids(name)
+        prompt_id = ids[-1] if ids else None
 
     dead_souls = dead_souls or set()
 
@@ -178,6 +196,7 @@ def snapshot(
         "tiles": tiles,
         "total": len(tiles),
         "final": final,
+        "archived": archived,
     }
 
 

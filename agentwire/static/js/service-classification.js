@@ -17,6 +17,15 @@ const SERVICE_SESSIONS = new Set([
 
 export function isService(name) { return SERVICE_SESSIONS.has(name); }
 
+// Council sessions are a third category — neither a service nor a working
+// session. A sitting is `agentwire-council-<name>` (orchestrator) plus
+// `council-<name>-<lens>` (souls); they belong to the Council section, not the
+// regular Sessions list. Namespace-prefix match (the namespace is reserved).
+export function isCouncil(name) {
+    const n = String(name || '');
+    return n.startsWith('agentwire-council-') || n.startsWith('council-');
+}
+
 // Merge config-defined custom services (services.custom in config.yaml) into
 // the built-in allowlist. Idempotent — concurrent callers share one fetch.
 // Resolves true if any names were added, so callers can re-render.

@@ -32,6 +32,23 @@ The full prompt text is also on disk — the `[COUNCIL PROMPT #N]` message gives
 the exact path (under `~/.agentwire/council/<council>/prompts/<NNNN>/prompt.md`)
 if the message was truncated.
 
+## Memory — consult past deliberations
+
+Earlier rounds and earlier sittings are on disk; a take grounded in what this
+council already concluded beats one argued from scratch. Before answering a
+question that echoes past work, read the history:
+
+- **This sitting's earlier rounds** — `~/.agentwire/council/<council>/prompts/`
+  holds every round (`NNNN/prompt.md` + `replies/<soul>.*.md`). Skim them so you
+  don't re-litigate a settled point or contradict your own prior take.
+- **Other councils' threads (incl. archived/dismissed)** — sibling directories
+  under `~/.agentwire/council/<other>/prompts/` are durable thread artifacts that
+  outlive their sessions. When a decision was made elsewhere, cite it.
+
+Keep it cheap: a quick `ls`/read of the relevant `prompts/` dir, not an
+exhaustive trawl. When a past round changes your answer, say so in your take
+(e.g. "consistent with round 2's call to …") so the orchestrator can attribute it.
+
 ## Rules
 
 - **Passing is expected and free.** If your lens has nothing real to add, pass.

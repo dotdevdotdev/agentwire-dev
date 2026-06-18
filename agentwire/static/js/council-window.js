@@ -44,6 +44,8 @@ const state = {
     roundTexts: {},       // prompt_id -> question text, cached as rounds are visited
     liveness: {},         // soul -> bool (lens session alive — from /status)
     seated: false,        // is a sitting present at all
+    archived: false,      // viewing a dismissed thread (no live sessions)
+    running: true,        // a live sitting backs the view
     busy: false,          // a seat/ask/dismiss POST is in flight
 };
 
@@ -157,6 +159,8 @@ async function loadSnapshot(sitting, promptId) {
 function applySnapshot(snap) {
     state.sitting = snap.sitting;
     state.seated = true;
+    state.archived = !!snap.archived;       // dismissed thread, no live sessions
+    state.running = snap.running !== false;  // live sitting present
     state.promptId = snap.prompt_id;
     state.promptIds = snap.prompt_ids || [];
     state.latestPromptId = state.promptIds.length
@@ -295,6 +299,15 @@ function seatControlHtml() {
                 ${state.busy ? 'Seating…' : 'Seat the council'}
             </button>`;
     }
+    if (state.archived) {
+        // Dismissed thread: read-only, no live sessions to dismiss. Re-asking
+        // (from the ask row) re-seats the same roster under the same name.
+        return `
+            <span class="council-seat-summary council-seat-summary--archived">
+                <span class="council-counter">${esc(counterText())}</span>
+                <span class="council-archived-tag">ARCHIVED</span>
+            </span>`;
+    }
     return `
         <span class="council-seat-summary"><span class="council-seat-led"></span><span class="council-counter">${esc(counterText())}</span></span>
         <button class="council-btn council-btn--ghost" data-action="dismiss" ${state.busy ? 'disabled' : ''}>Dismiss</button>`;
@@ -355,12 +368,18 @@ function roundsCrumbHtml() {
 /** The header ASK row — re-prompt the seated sitting; compact input + button. */
 function askHtml() {
     if (!state.seated || !state.sitting) return '';
+    const placeholder = state.archived
+        ? 'Re-ask this thread — re-seats the same lenses…'
+        : 'Ask the council, or add context…';
+    const label = state.busy
+        ? (state.archived ? 'Re-seating…' : 'Asking…')
+        : (state.archived ? 'Re-seat &amp; ask →' : 'Ask the council →');
     return `
         <div class="council-ask">
             <div class="council-ask-row">
-                <textarea class="council-ask-input" rows="1" placeholder="Ask the council, or add context…" ${state.busy ? 'disabled' : ''}></textarea>
+                <textarea class="council-ask-input" rows="1" placeholder="${esc(placeholder)}" ${state.busy ? 'disabled' : ''}></textarea>
                 <button class="council-btn council-btn--primary council-btn--compact" data-action="ask" ${state.busy ? 'disabled' : ''}>
-                    ${state.busy ? 'Asking…' : 'Ask the council →'}
+                    ${label}
                 </button>
             </div>
             <div class="council-ask-err" data-slot="ask-err"></div>
@@ -651,10 +670,33 @@ async function askCouncil(input) {
     if (!prompt) { input.focus(); return; }
     state.busy = true;
     const btn = container?.querySelector('[data-action="ask"]');
-    if (btn) { btn.disabled = true; btn.textContent = 'Asking…'; }
+    const reseating = state.archived || !state.running;
+    if (btn) { btn.disabled = true; btn.textContent = reseating ? 'Re-seating…' : 'Asking…'; }
     input.disabled = true;
     setAskError('');
     try {
+        // Archived thread → re-seat the same roster under the same name first,
+        // so the fan-out has live lens sessions to land in.
+        if (reseating) {
+            const startBody = { sitting: state.sitting };
+            if (state.roster.length) startBody.roster = state.roster.join(',');
+            const sres = await apiFetch('/api/council/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(startBody),
+            });
+            const sdata = await sres.json().catch(() => ({}));
+            if (!sres.ok) {
+                state.busy = false;
+                if (btn) { btn.disabled = false; }
+                input.disabled = false;
+                setAskError(sdata.error || 'Could not re-seat the council.');
+                return;
+            }
+            state.archived = false;
+            state.running = true;
+            if (btn) btn.textContent = 'Asking…';
+        }
         const res = await apiFetch('/api/council/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
