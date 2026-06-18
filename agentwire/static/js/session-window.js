@@ -22,6 +22,15 @@ function pickTerminalFontSize() {
     return getTerminalFontSize();
 }
 
+// Touch-primary devices (tablets/phones) raise the on-screen keyboard the
+// instant xterm's hidden textarea is focused. Opening or switching to a window
+// shouldn't do that uninvited — the user taps the terminal to type, which
+// focuses xterm and raises the keyboard only when they actually want it. On a
+// mouse/trackpad device we still auto-focus so typing works immediately.
+const TOUCH_PRIMARY = typeof window !== 'undefined'
+    && window.matchMedia
+    && window.matchMedia('(pointer: coarse)').matches;
+
 // Terminal WS reconnect tuning. A transient drop (portal restart, an
 // over-broad bg-process kill, a network blip) should heal silently rather than
 // dump the user onto the manual "Reconnect" wall — the tmux session almost
@@ -116,8 +125,10 @@ export class SessionWindow {
 
         // Focus the terminal so the user can type immediately. Deferred to the
         // next frame so WinBox's maximize animation has settled — focusing
-        // during the transition gets stolen back by the parent.
-        if (this.mode === 'terminal') {
+        // during the transition gets stolen back by the parent. Skipped on
+        // touch devices so opening a session doesn't pop the soft keyboard —
+        // the user taps the terminal to type.
+        if (this.mode === 'terminal' && !TOUCH_PRIMARY) {
             requestAnimationFrame(() => {
                 if (this.terminal) this.terminal.focus();
             });
@@ -239,7 +250,11 @@ export class SessionWindow {
         if (this.winbox) {
             this.winbox.focus();
         }
-        if (this.terminal) {
+        // On touch devices, don't pull focus into the terminal input — that
+        // raises the soft keyboard on every window switch. Bring the window
+        // forward only; tapping the terminal focuses it (and shows the keyboard)
+        // when the user actually wants to type.
+        if (this.terminal && !TOUCH_PRIMARY) {
             this.terminal.focus();
         }
     }
