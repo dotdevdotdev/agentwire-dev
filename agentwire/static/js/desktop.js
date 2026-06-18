@@ -589,6 +589,9 @@ export function openSessionTerminal(session, mode, machine = null) {
             // Voice follows the focused tab — mirror this session to the
             // active-session shadow file so ⌥Space (Hammerspoon) targets it.
             postActiveSession(session);
+            // Tabbing into a session clears its idle/worker toasts — the user
+            // has seen it, so leaving the notification up is just noise.
+            notificationsPanel.dismissForSession(session);
         }
     });
 
