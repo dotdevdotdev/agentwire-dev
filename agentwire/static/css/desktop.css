@@ -146,6 +146,20 @@ body {
     touch-action: pan-y;
 }
 
+/* Window content must also opt into pan-y. WebKit/iPadOS resolves touch-action
+   on the directly-touched element rather than reliably intersecting with the
+   ancestor, so an xterm terminal / Monitor <pre> left at the default `auto`
+   lets the browser claim horizontal swipes — that's why swipe-to-cycle only
+   fired once the terminal was focused. Forcing pan-y here hands every
+   horizontal drag over a window to JS regardless of focus. */
+.wb-body,
+.xterm,
+.xterm-viewport,
+.xterm-screen,
+.session-output {
+    touch-action: pan-y;
+}
+
 .desktop-wallpaper {
     position: absolute;
     inset: 0;
