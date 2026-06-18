@@ -18,9 +18,28 @@ agentwire doctor --dry-run
 # Auto-fix everything without prompts
 agentwire doctor --yes
 
+# Walk ONLY the push-to-talk path (fast, no SSH waits): mic, STT shim,
+# portal/tunnel, tmux+PTT — each pass/fail with a fix line when red
+agentwire doctor --voice
+
 # Check network/service health
 agentwire network status
 ```
+
+### Voice doesn't work / push-to-talk seems dead
+
+`agentwire doctor --voice` walks the live voice loop end to end and tells you
+which link is broken with a next step:
+
+| Stage | Red means | Fix |
+|-------|-----------|-----|
+| **Mic / audio capture** | ffmpeg missing, or (macOS) no input device — mic permission revoked | Grant the mic in System Settings → Privacy → Microphone, or `brew install ffmpeg` |
+| **STT process** | the Moonshine `:8101` shim (default tier) or your custom shim isn't responding | `agentwire stt start` (the portal also auto-starts the default shim) |
+| **Tunnel / portal reachability** | the portal isn't up, or a required reverse tunnel is down | `agentwire portal start` / `agentwire tunnels up` |
+| **tmux wiring + PTT binding** | tmux is missing (no way to deliver keystrokes); host ⌥Space binding absent (informational) | `brew install tmux`; for host PTT copy `examples/hammerspoon-ptt/init.lua` |
+
+Break one dependency and exactly that stage goes red while the others stay
+green — so the broken link is always obvious.
 
 ---
 

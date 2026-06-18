@@ -6854,6 +6854,29 @@ def cmd_safety_tooldefs_show(args) -> int:
     return cli_safety.safety_tooldefs_show_cmd(args.tool)
 
 
+def _render_voice_loop_section(config, ctx) -> int:
+    """Print the voice-loop (push-to-talk) preflight. Returns failures found.
+
+    Read-only pass/fail per stage with an actionable fix line when red — the
+    existing infra sections keep the auto-fix prompts.
+    """
+    from .doctor_voice import run_voice_loop_checks
+
+    print("\nChecking voice loop (push-to-talk)...")
+    failures = 0
+    for stage in run_voice_loop_checks(config, ctx):
+        if stage.status == "ok":
+            print(f"  [ok] {stage.name}: {stage.detail}")
+        elif stage.status == "info":
+            print(f"  [..] {stage.name}: {stage.detail}")
+        else:
+            print(f"  [!!] {stage.name}: {stage.detail}")
+            for fix in stage.fixes:
+                print(f"       Fix: {fix}")
+            failures += 1
+    return failures
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .network import NetworkContext
@@ -6862,12 +6885,34 @@ def cmd_doctor(args) -> int:
 
     dry_run = getattr(args, 'dry_run', False)
     auto_confirm = getattr(args, 'yes', False)
+    voice_only = getattr(args, 'voice', False)
 
     print("AgentWire Doctor")
     print("=" * 60)
 
     issues_found = 0
     issues_fixed = 0
+
+    # --voice: run ONLY the end-to-end push-to-talk preflight (fast, no SSH
+    # waits) — for tight first-run / break-a-dependency verification loops.
+    if voice_only:
+        try:
+            from .config import load_config as load_config_typed
+            config = load_config_typed()
+        except Exception as e:
+            print(f"\n  [!!] Config file error: {e}")
+            print("     Run: agentwire init")
+            return 1
+        try:
+            ctx = NetworkContext.from_config()
+        except Exception:
+            ctx = None
+        issues_found = _render_voice_loop_section(config, ctx)
+        print()
+        print("-" * 60)
+        print("Voice loop ready!" if issues_found == 0
+              else f"Voice loop: {issues_found} stage(s) need attention")
+        return 0 if issues_found == 0 else 1
 
     # 1. Check Python version
     print("\nChecking Python version...")
@@ -7158,34 +7203,12 @@ def cmd_doctor(args) -> int:
             else:
                 print(f"     -> Service is remote, start it on {service_config.machine}")
 
-    # 8b. Check STT shim. STT isn't a `services.*` entry — it's configured via
-    # `stt.url`, so the loop above can't see it. Without this check, a crashed
-    # STT shim is invisible and every custom-tier push-to-talk fails at request
-    # time. Probe it explicitly. (Default tier transcribes in the browser — no
-    # service to check.)
-    stt_cfg = getattr(ctx.config, "stt", None)
-    if getattr(stt_cfg, "backend", "default") == "custom":
-        from agentwire.stt.server_backend import STTServerBackend
-
-        stt_url = stt_cfg.url
-        if STTServerBackend.is_available(stt_url):
-            print(f"  [ok] Stt: responding on {stt_url}")
-        else:
-            print(f"  [!!] Stt: not responding on {stt_url}")
-            print("       Custom-tier push-to-talk will fail until it's back.")
-            print("       Fix: agentwire stt start")
-            print("       If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'")
-            issues_found += 1
-    elif getattr(stt_cfg, "backend", "default") == "cloud":
-        cloud_cfg = getattr(stt_cfg, "cloud", None) or {}
-        key_env = cloud_cfg.get("api_key_env", "OPENAI_API_KEY")
-        if os.environ.get(key_env):
-            print(f"  [ok] Stt: cloud tier ({key_env} is set)")
-        else:
-            print(f"  [!!] Stt: cloud tier but {key_env} is not set")
-            print("       The portal will refuse to start until the key is in its environment.")
-            print("       Fix: add the key to ~/.agentwire/.env (docs/wiki/security/secrets.md)")
-            issues_found += 1
+    # 8b. Voice loop (push-to-talk) — walk the live PTT path end to end and
+    # report each stage pass/fail with a fix line when red: mic/audio capture,
+    # the STT shim (incl. the default-tier Moonshine :8101 shim, invisible to
+    # the services loop), portal/tunnel reachability, and tmux+PTT wiring. This
+    # subsumes the old standalone STT probe — the STT stage covers all tiers.
+    issues_found += _render_voice_loop_section(config, ctx)
 
     # 8c. Secrets — for each configured feature that needs a key, report
     # whether its env var is present. Names only, never values. Keys live in
@@ -11405,6 +11428,10 @@ def main() -> int:
     doctor_parser.add_argument(
         "-y", "--yes", action="store_true",
         help="Auto-confirm all fixes without prompting"
+    )
+    doctor_parser.add_argument(
+        "--voice", action="store_true",
+        help="Run only the voice loop (push-to-talk) preflight — fast, no SSH waits"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
 

@@ -213,6 +213,7 @@ agentwire hooks uninstall       # remove permission hook (Claude Code only)
 agentwire hooks status          # check hook installation status
 agentwire network status        # complete network health check
 agentwire doctor                # auto-diagnose and fix issues
+agentwire doctor --voice        # only the push-to-talk path: mic, STT shim, portal/tunnel, tmux+PTT (pass/fail + fix)
 
 # Notifications
 agentwire notify event          # notify portal of state changes (session/pane events)
