@@ -397,7 +397,11 @@ def msg_send(to: str, text: str, kind: str = "note") -> str:
         to: Recipient session name, or "@all" to broadcast to every live
             agent session except yourself.
         text: The message body.
-        kind: One of note (default), done, request, escalation.
+        kind: One of note (default), done, request, escalation, ingest.
+            `ingest` is PASSIVE — never auto-delivered, so it never drives the
+            recipient into a turn; it waits until they `msg_pull` it. Use it for
+            "output ready to ingest" awareness signals (Briefing Mode): drop a
+            passive pointer to a file the recipient reads on the human's cue.
 
     Returns:
         Confirmation of which sessions were queued, or an error.
@@ -418,13 +422,16 @@ def msg_send(to: str, text: str, kind: str = "note") -> str:
 
 @mcp.tool()
 def msg_inbox(session: str | None = None) -> str:
-    """Peek a session's pending polite messages (does not drain them).
+    """Peek a session's pending + passive messages (does not drain or consume).
+
+    Shows both the driving `pending` messages (auto-delivered when the box
+    clears) and the `passive` ingest messages (which wait until you `msg_pull`).
 
     Args:
         session: Session name (default: the calling session).
 
     Returns:
-        The pending messages, or a note that the inbox is empty.
+        The pending and passive messages, or a note that the inbox is empty.
     """
     args = ["msg", "inbox"]
     if session:
@@ -433,10 +440,47 @@ def msg_inbox(session: str | None = None) -> str:
     if not data.get("success"):
         return f"Failed to read inbox: {data.get('error', 'Unknown error')}"
     pending = data.get("pending") or []
-    if not pending:
+    passive = data.get("passive") or []
+    if not pending and not passive:
         return f"Inbox empty for {data.get('session', session or 'this session')}."
-    lines = [f"{len(pending)} pending for {data.get('session')}:"]
-    for m in pending:
+    lines = []
+    if pending:
+        lines.append(f"{len(pending)} pending for {data.get('session')}:")
+        for m in pending:
+            lines.append(f"  [{m.get('kind')}] from {m.get('from')}: {m.get('text')}")
+    if passive:
+        lines.append(f"{len(passive)} passive (ingest) — call msg_pull to consume:")
+        for m in passive:
+            lines.append(f"  [{m.get('kind')}] from {m.get('from')}: {m.get('text')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def msg_pull(session: str | None = None) -> str:
+    """Read and REMOVE passive (ingest) awareness messages — the voluntary pull.
+
+    This is the Briefing Mode anchor's move: ingest messages are never pushed to
+    you, so call this on the human's cue ("what's ready?") to collect the
+    "output ready" pointers correspondents dropped. Pulling consumes them; the
+    actual content lives in the files they point at, which you then read.
+
+    Args:
+        session: Session name (default: the calling session).
+
+    Returns:
+        The pulled messages, or a note that there were none.
+    """
+    args = ["msg", "pull"]
+    if session:
+        args += ["-s", session]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to pull messages: {data.get('error', 'Unknown error')}"
+    pulled = data.get("pulled") or []
+    if not pulled:
+        return f"No passive (ingest) messages for {data.get('session', session or 'this session')}."
+    lines = [f"Pulled {len(pulled)} passive message(s):"]
+    for m in pulled:
         lines.append(f"  [{m.get('kind')}] from {m.get('from')}: {m.get('text')}")
     return "\n".join(lines)
 
@@ -542,6 +586,56 @@ def session_kill(session: str) -> str:
     if data.get("success"):
         return f"Session '{session}' terminated."
     return f"Failed to kill session: {data.get('error', 'Unknown error')}"
+
+
+@mcp.tool()
+def worktree_create(
+    name: str,
+    project_dir: str = "",
+    roles: str = "",
+    base: str = "",
+    prompt: str = "",
+) -> str:
+    """Create a worktree session (new branch + checkout + tmux session), optionally seeded.
+
+    The spawn half of the worktree lifecycle (paired with worktree_status /
+    worktree_list / worktree_remove). Creates a branch off origin/<base>, a
+    worktree under ~/worktrees/, and a tmux session running an agent with the
+    worktree-session safety etiquette auto-injected. This is how a Briefing Mode
+    anchor fans out correspondents.
+
+    Args:
+        name: Worktree/branch name (becomes the branch + session suffix).
+        project_dir: Path to the git repo (default: server cwd).
+        roles: Comma-separated roles STACKED on the worktree-session etiquette
+            (e.g. "correspondent"). Never replaces the safety rail.
+        base: Base branch to fork from (default: the repo's origin/HEAD).
+        prompt: Optional first message — delivered once the agent is booted and
+            ready (verified paste). Lets you spawn AND seed the task in one call
+            instead of a separate session_send.
+
+    Returns:
+        Success message with the session name + worktree path, or an error.
+    """
+    args = ["worktree", name]
+    if project_dir:
+        args += ["-p", project_dir]
+    if roles:
+        args += ["--roles", roles]
+    if base:
+        args += ["--base", base]
+    if prompt:
+        args += ["--prompt", prompt]
+    # Seeding waits for agent boot (~up to 60s); give the CLI room to finish.
+    data = run_agentwire_cmd(args, timeout=90)
+    if not data.get("success"):
+        return f"Failed to create worktree: {data.get('error', 'Unknown error')}"
+    session = data.get("session", name)
+    path = data.get("path", "")
+    seeded = " (seeded)" if prompt and data.get("first_message_delivered") else ""
+    if data.get("reattached"):
+        return f"Reattached to existing worktree session '{session}' at {path}."
+    return f"Created worktree session '{session}'{seeded} at {path}."
 
 
 @mcp.tool()

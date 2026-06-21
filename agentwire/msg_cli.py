@@ -6,13 +6,18 @@ the recipient's file inbox and the watchdog injects it only when the input box
 is empty and the pane is a safe target — so a worker reporting back never
 clobbers a half-typed human draft.
 
-    agentwire msg send --to <session|@all> [--kind note|done|request|escalation] <text>
-    agentwire msg inbox [-s <session>]      # peek pending (does not drain)
+    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest] <text>
+    agentwire msg inbox [-s <session>]      # peek pending + passive (does not drain/consume)
+    agentwire msg pull  [-s <session>]      # read + REMOVE passive (ingest) messages
     agentwire msg dead  [-s <session>]      # list dropped (dead-lettered) msgs
     agentwire msg flush [-s <session>]      # attempt a drain now (still gated)
 
 The drain also rides ``agentwire limits tick`` every 60s, so messages flow
 without anyone running ``flush``.
+
+The ``ingest`` kind is **passive**: never auto-delivered (the watchdog skips
+it), so it never drives the recipient. It waits until the recipient pulls it
+with ``msg pull`` — the "awareness without being driven" primitive.
 """
 
 from __future__ import annotations
@@ -81,20 +86,59 @@ def cmd_msg_inbox(args) -> int:
         return 1
 
     messages = inbox.list_messages(session)
+    passive = inbox.list_ingest(session)
     if getattr(args, "json", False):
         print(json.dumps({
             "success": True,
             "session": session,
             "pending": [m.to_dict() for m in messages],
+            "passive": [m.to_dict() for m in passive],
         }))
         return 0
 
-    if not messages:
+    if not messages and not passive:
         print(f"Inbox empty for {session}")
         return 0
-    print(f"{len(messages)} pending for {session}:")
-    for m in messages:
-        print(f"  [{m.kind}] from {m.sender} (attempts={m.attempts}): {m.text}")
+    if messages:
+        print(f"{len(messages)} pending for {session}:")
+        for m in messages:
+            print(f"  [{m.kind}] from {m.sender} (attempts={m.attempts}): {m.text}")
+    if passive:
+        print(f"{len(passive)} passive (ingest) for {session} — pull to consume:")
+        for m in passive:
+            print(f"  [{m.kind}] from {m.sender}: {m.text}")
+    return 0
+
+
+def cmd_msg_pull(args) -> int:
+    """Read and REMOVE passive (ingest) messages — the voluntary pull.
+
+    This is how an anchor ingests awareness signals on the human's cue: the
+    watchdog never delivers ingest messages, so pulling is the only way they
+    leave the inbox. The content they point at lives in files, not the message.
+    """
+    session = getattr(args, "session", None) or _current_session()
+    if not session:
+        print("No session (use -s or run inside a session)")
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": "no session"}))
+        return 1
+
+    pulled = inbox.pull_ingest(session)
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "success": True,
+            "session": session,
+            "pulled": [m.to_dict() for m in pulled],
+        }))
+        return 0
+
+    if not pulled:
+        print(f"No passive (ingest) messages for {session}")
+        return 0
+    print(f"Pulled {len(pulled)} passive message(s) for {session}:")
+    for m in pulled:
+        print(f"  [{m.kind}] from {m.sender}: {m.text}")
     return 0
 
 
@@ -212,10 +256,15 @@ def register_msg_parser(subparsers) -> None:
     send_parser.add_argument("--json", action="store_true", help="Output JSON")
     send_parser.set_defaults(func=cmd_msg_send)
 
-    inbox_parser = msg_sub.add_parser("inbox", help="Peek pending messages (no drain)")
+    inbox_parser = msg_sub.add_parser("inbox", help="Peek pending + passive messages (no drain/consume)")
     inbox_parser.add_argument("-s", "--session", default=None, help="Session (default: current)")
     inbox_parser.add_argument("--json", action="store_true", help="Output JSON")
     inbox_parser.set_defaults(func=cmd_msg_inbox)
+
+    pull_parser = msg_sub.add_parser("pull", help="Read + remove passive (ingest) messages")
+    pull_parser.add_argument("-s", "--session", default=None, help="Session (default: current)")
+    pull_parser.add_argument("--json", action="store_true", help="Output JSON")
+    pull_parser.set_defaults(func=cmd_msg_pull)
 
     dead_parser = msg_sub.add_parser(
         "dead", help="List dead-lettered messages (dropped after retries)"

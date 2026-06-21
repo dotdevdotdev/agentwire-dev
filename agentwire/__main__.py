@@ -5200,6 +5200,7 @@ def cmd_worktree(args) -> int:
             'model': getattr(args, 'model', None),
             'roles': getattr(args, 'roles', None),
             'instructions': None, 'persist': False,
+            'first_message': getattr(args, 'prompt', None),
             'env': getattr(args, 'env', None),
         })())
 
@@ -5218,15 +5219,21 @@ def cmd_worktree(args) -> int:
             session=session_name, base=default_base,
             worktree_path=worktree_path,
         )
-        if json_mode:
-            _output_json({"success": True, "session": session_name, "path": str(worktree_path), "reattached": True})
-        else:
-            print(f"Worktree exists: {worktree_path}")
         if tmux_session_exists(session_name):
+            # Already live. For automation/json, report and return (never paste
+            # into a live session); for a human, attach interactively.
+            if json_mode:
+                _output_json({"success": True, "session": session_name,
+                              "path": str(worktree_path), "reattached": True})
+                return 0
+            print(f"Worktree exists: {worktree_path}")
             subprocess.run(["tmux", "attach-session", "-t", session_name])
-        else:
-            return _launch_session()
-        return 0
+            return 0
+        # Worktree dir exists but no live session → relaunch (cmd_new emits the
+        # single authoritative json; don't print a second block here).
+        if not json_mode:
+            print(f"Worktree exists: {worktree_path}")
+        return _launch_session()
 
     # Resolve the git ref to create the worktree from
     base_branch = None
@@ -5324,12 +5331,10 @@ def cmd_worktree(args) -> int:
         worktree_path=worktree_path,
     )
 
-    if json_mode:
-        _output_json({
-            "success": True, "session": session_name, "path": str(worktree_path),
-            "branch": new_branch, "ref": git_ref, "reattached": False,
-        })
-    else:
+    # cmd_new (via _launch_session) emits the single authoritative json
+    # (session, path, branch, first_message_delivered) — don't print a second
+    # block here or run_agentwire_cmd's json.loads chokes on two objects.
+    if not json_mode:
         print(f"Created worktree: {worktree_path}")
         print(f"Mode: {mode_label}")
 
@@ -11353,6 +11358,7 @@ def main() -> int:
     _add_posture_harness_flags(wt_parser)
     wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
     wt_parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worktree-session etiquette")
+    wt_parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
     wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     wt_parser.add_argument("--json", action="store_true", help="Output as JSON")

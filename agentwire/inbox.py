@@ -40,7 +40,16 @@ EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 
 # Typed message enum, Overstory-inspired — kept deliberately small; this is a
 # mailbox, not a workflow engine.
-KINDS = ("note", "done", "request", "escalation")
+#
+# ``ingest`` is the PASSIVE kind: it is never auto-delivered (the watchdog skips
+# it), so it never drives the recipient into a turn. It lands silently in an
+# ``ingest/`` subdir and waits there until the recipient *voluntarily* pulls it
+# (``msg pull``). This is the "awareness without being driven" primitive —
+# correspondents drop a passive pointer; the anchor pulls on the human's cue.
+KINDS = ("note", "done", "request", "escalation", "ingest")
+
+# Kinds the drain never touches — they route to a subdir and are pull-only.
+PASSIVE_KINDS = ("ingest",)
 
 # Broadcast token: deliver to every live agent session except the sender.
 BROADCAST_TOKEN = "@all"
@@ -50,7 +59,12 @@ BROADCAST_TOKEN = "@all"
 # being permanently busy/typed-in).
 MAX_ATTEMPTS = 40
 
-_RESERVED_DIRS = {"dead", "sent", ".lock"}
+_RESERVED_DIRS = {"dead", "sent", ".lock", "ingest"}
+
+
+def is_passive(kind: str) -> bool:
+    """A passive kind is never auto-delivered — it's pull-only (see KINDS)."""
+    return kind in PASSIVE_KINDS
 
 
 # =============================================================================
@@ -112,6 +126,13 @@ def dead_dir(session: str) -> Path:
     return session_dir(session) / "dead"
 
 
+def ingest_dir(session: str) -> Path:
+    """Where passive (``ingest``) messages live — a reserved subdir the drain
+    never walks (it's in ``_RESERVED_DIRS`` and below the top-level glob), so
+    these wait silently until pulled."""
+    return session_dir(session) / "ingest"
+
+
 def _log_event(event: str, **fields) -> None:
     record = {"ts": _now_ms(), "event": event, **fields}
     try:
@@ -164,6 +185,37 @@ def pending_files(session: str) -> list[Path]:
 
 def list_messages(session: str) -> list[Message]:
     return [m for m in (_read_message(f) for f in pending_files(session)) if m]
+
+
+def ingest_files(session: str) -> list[Path]:
+    """A session's queued passive (ingest) message files, oldest first."""
+    idir = ingest_dir(session)
+    if not idir.is_dir():
+        return []
+    return sorted(idir.glob("*.json"))
+
+
+def list_ingest(session: str) -> list[Message]:
+    """Peek passive (ingest) messages without consuming them."""
+    return [m for m in (_read_message(f) for f in ingest_files(session)) if m]
+
+
+def pull_ingest(session: str) -> list[Message]:
+    """Read AND remove all passive (ingest) messages — the voluntary pull.
+
+    The inverse of being pushed: the recipient calls this on its own cadence
+    (e.g. the anchor when the human says "what's ready?"). Returns oldest-first.
+    The watchdog never delivers or dead-letters these, so pulling is the only
+    way they leave the inbox — the durable content lives in the files they
+    point at, not in the message itself.
+    """
+    msgs = list_ingest(session)
+    for m in msgs:
+        if m.path is not None:
+            m.path.unlink(missing_ok=True)
+    if msgs:
+        _log_event("pulled", to=session, count=len(msgs))
+    return msgs
 
 
 def list_dead(session: str) -> list[Message]:
@@ -247,12 +299,15 @@ def enqueue(
             ts=ns // 1_000_000,  # epoch ms (schema), derived from the same clock
             attempts=0,
         )
-        path = session_dir(target) / f"{msg.id}.json"
+        # Passive kinds land in the ingest/ subdir, which the drain never walks
+        # — so they wait silently until the recipient pulls them.
+        base = ingest_dir(target) if is_passive(kind) else session_dir(target)
+        path = base / f"{msg.id}.json"
         msg.path = path
         _write_message(path, msg)
         _log_event(
             "enqueued", id=msg.id, **{"from": sender}, to=target, kind=kind,
-            broadcast=(to == BROADCAST_TOKEN),
+            passive=is_passive(kind), broadcast=(to == BROADCAST_TOKEN),
         )
         written.append(msg)
     return written

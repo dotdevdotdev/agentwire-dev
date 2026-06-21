@@ -29,11 +29,19 @@ date: <YYYY-MM-DD>
 
 Make it readable on its own — the anchor (or the human) may read it cold.
 
-## Signal passively — the file IS the signal
+## Signal passively — drop a pointer, never drive
 
-When your report is written, **you are done. Do not ping the anchor.** No `agentwire msg`, no `session_send`, no `notify-parent` — anything that pastes into the anchor's prompt would *drive* it into a turn, and the anchor must only act on the human's cue. The anchor reads the dropbox when the human says go; your file appearing there is the entire signal.
+When your report is written, send the anchor a **passive** awareness pointer — and *only* a passive one:
 
-This deliberately replaces the worktree-session "notify back when done" step. Write the file, then stop.
+```
+agentwire msg send --to <anchor-session> --kind ingest "report ready: <abs path to your findings file> — <5-word topic>"
+```
+
+The `ingest` kind is special: it is **never auto-delivered**. It lands silently in the anchor's inbox and waits there until the anchor *pulls* it on the human's cue — so it makes the anchor *aware* without ever driving it into a turn. Keep the message tiny: it's a pointer, not the report. The depth lives in the file.
+
+**Do NOT** use `--kind done`/`note`, `session_send`, or `notify-parent` — those paste into the anchor's prompt and drive it, which breaks the whole mode. This passive pointer deliberately replaces the worktree-session "notify back when done" step.
+
+Then you're done — write the file, drop the passive pointer, stop.
 
 ## PRs
 

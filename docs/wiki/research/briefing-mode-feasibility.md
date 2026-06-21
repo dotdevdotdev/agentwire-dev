@@ -3,11 +3,16 @@ name: Briefing Mode — asymmetric-verbosity orchestration (feasibility)
 status: active
 last_updated: 2026-06-21
 phase_1: shipped
+phase_2: shipped
 ---
 
 # Briefing Mode — asymmetric-verbosity orchestration
 
-> **Status — Phase 1 shipped (2026-06-21):** the `anchor` and `correspondent` roles exist (`agentwire/roles/`). Awareness is via a filesystem dropbox (`~/.agentwire/research/<anchor-session>/`) — non-driving by construction, no inbox changes. Spawn an anchor with `agentwire new -s <name> --roles anchor`; it fans out `agentwire worktree <angle> --roles correspondent`, correspondents file deep reports to the dropbox, the anchor pulls + briefs asymmetrically (`say` headline + `portal_notify` card) on the human's cue, and tears down via `agentwire worktree --remove`. **Phase 2** (the passive `ingest` message kind + `msg pull`, MCP `worktree_create` + a `--prompt` seed flag) and **Phase 3** (unified `say(display=)`, blessed dropbox resolver) remain — see §9.
+> **Status — Phases 1 & 2 shipped (2026-06-21):**
+> - **Phase 1:** the `anchor` and `correspondent` roles (`agentwire/roles/`). Spawn an anchor with `agentwire new -s <name> --roles anchor`; it fans out correspondents, which file deep reports to a dropbox (`~/.agentwire/research/<anchor-session>/`); the anchor briefs asymmetrically (`say` headline + `portal_notify` card) on the human's cue.
+> - **Phase 2:** the passive `ingest` message kind — never auto-delivered (routes to a reserved `ingest/` subdir the drain skips), pulled with `agentwire msg pull` / MCP `msg_pull`. Correspondents now drop a passive pointer; the anchor pulls on the human's cue (awareness without being driven). Plus MCP `worktree_create` and a `--prompt` seed flag on `agentwire worktree` (spawn + seed in one call, verified delivery), completing the worktree lifecycle quartet (create / status / list / remove).
+>
+> **Phase 3** (unified `say(display=)`, markdown in the toast, blessed dropbox resolver + typed `ref` field) remains — see §9.
 
 > Feasibility + design report. Investigates building an orchestration mode where the **human-facing orchestrator is deliberately terse** (and splits its summary across voice vs. on-screen text so the two channels complement rather than duplicate) while **researcher worktree sessions are exhaustively verbose** and go deep. Researchers signal the orchestrator only with **passive, non-driving** "output ready" awareness; the orchestrator acts only when the **human** directs it.
 >
