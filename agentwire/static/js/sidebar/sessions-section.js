@@ -12,6 +12,9 @@ export const activityStates = new Map();
 loadCustomServices().then((changed) => { if (changed) notifyListeners(); });
 
 let allSessions = [];
+// session name → read-only git status ({dirty, ahead, behind, pushed, ...})
+// for worktree sessions, populated from /api/worktrees alongside session fetches.
+const worktreeGit = new Map();
 const listeners = new Set();
 
 // Close-button state: session name → confirm-expiry timer / in-flight kill.
@@ -32,6 +35,28 @@ function renderCloseButton(name) {
         return '<button class="sidebar-list-item-btn sidebar-session-close is-confirm" data-action="close" title="Click again to kill the session">sure?</button>';
     }
     return '<button class="sidebar-list-item-btn sidebar-list-item-btn-danger sidebar-session-close" data-action="close" title="Kill session (graceful /exit, then tmux kill)">✕</button>';
+}
+
+// Compact git-status badges for a worktree session. Returns '' for non-worktree
+// sessions (those absent from the worktree map). Local git only — no PR state.
+function renderGitBadges(name) {
+    const git = worktreeGit.get(name);
+    if (!git || !git.exists) return '';
+    const badges = [];
+    if (git.dirty) {
+        const n = (git.staged || 0) + (git.unstaged || 0) + (git.untracked || 0);
+        badges.push(`<span class="sidebar-git-badge git-dirty" title="${git.staged||0} staged, ${git.unstaged||0} unstaged, ${git.untracked||0} untracked">● dirty${n ? ` ${n}` : ''}</span>`);
+    } else {
+        badges.push('<span class="sidebar-git-badge git-clean" title="Working tree clean">clean</span>');
+    }
+    if (!git.upstream) {
+        badges.push('<span class="sidebar-git-badge git-unpushed" title="No upstream — branch not pushed">unpushed</span>');
+    } else {
+        if (git.ahead) badges.push(`<span class="sidebar-git-badge git-ahead" title="${git.ahead} commit(s) ahead of upstream">↑${git.ahead}</span>`);
+        if (git.behind) badges.push(`<span class="sidebar-git-badge git-behind" title="${git.behind} commit(s) behind upstream">↓${git.behind}</span>`);
+        if (git.pushed && !git.ahead) badges.push('<span class="sidebar-git-badge git-pushed" title="Pushed — upstream up to date">pushed</span>');
+    }
+    return `<div class="sidebar-session-git">${badges.join('')}</div>`;
 }
 
 export function renderCard(s, opts = {}) {
@@ -58,6 +83,7 @@ export function renderCard(s, opts = {}) {
         </div>
         ${path ? `<div class="sidebar-session-row2"><span class="sidebar-session-path">${path}</span></div>` : ''}
         ${tagsHtml ? `<div class="sidebar-session-row3">${tagsHtml}</div>` : ''}
+        ${renderGitBadges(name)}
     </div>`;
 }
 
@@ -151,7 +177,22 @@ function initData() {
     });
 }
 
+// Refresh worktree git status (dirty/ahead/behind/pushed) for badge rendering.
+// Fire-and-forget — failures just leave the badges absent, never block the list.
+async function fetchWorktrees() {
+    try {
+        const res = await apiFetch('/api/worktrees');
+        const data = await res.json();
+        worktreeGit.clear();
+        for (const e of (data.entries || [])) {
+            if (e.session && e.git) worktreeGit.set(e.session, e.git);
+        }
+        notifyListeners();
+    } catch (e) { /* leave badges absent on failure */ }
+}
+
 async function fetchSessions() {
+    fetchWorktrees();
     try {
         const localRes = await apiFetch('/api/sessions/local');
         const localData = await localRes.json();

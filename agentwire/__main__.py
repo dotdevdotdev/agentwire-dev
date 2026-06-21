@@ -51,6 +51,7 @@ from .worktree import (
     ensure_worktree,
     parse_session_name,
     remove_worktree,
+    worktree_status,
     git_root,
     default_base_branch,
     apply_naming,
@@ -5157,6 +5158,8 @@ def cmd_worktree(args) -> int:
         return _worktree_list(args, project_path, json_mode)
     if getattr(args, 'prune', False):
         return _worktree_prune(args, project_path, json_mode)
+    if getattr(args, 'status', False):
+        return _worktree_status(args, project_path, worktree_dir, json_mode)
     if getattr(args, 'remove', False):
         return _worktree_remove(args, project_path, worktree_dir, json_mode)
 
@@ -5344,6 +5347,10 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
     for r in rows:
         r["alive"] = tmux_session_exists(r.get("session", ""))
         r["exists"] = Path(r.get("worktree_path", "")).exists()
+        # Fold in read-only git status so the portal can badge the whole list
+        # without N round-trips. Local git only (no network) — cheap per entry.
+        if r["exists"]:
+            r["git"] = worktree_status(Path(r.get("worktree_path", "")))
 
     if json_mode:
         _output_json({"success": True, "entries": rows})
@@ -5356,8 +5363,66 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
 
     for r in rows:
         live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
-        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}")
+        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}")
         print(f"      {r.get('worktree_path')}")
+    return 0
+
+
+def _git_badge(git: dict | None) -> str:
+    """One-line human summary of a worktree's git status (dirty/ahead/behind)."""
+    if not git or not git.get("exists"):
+        return ""
+    parts = []
+    if git.get("dirty"):
+        parts.append(f"dirty(+{git['staged']}/~{git['unstaged']}/?{git['untracked']})")
+    else:
+        parts.append("clean")
+    if not git.get("upstream"):
+        parts.append("no-upstream")
+    else:
+        if git.get("ahead"):
+            parts.append(f"↑{git['ahead']}")
+        if git.get("behind"):
+            parts.append(f"↓{git['behind']}")
+        if git.get("pushed") and not git.get("ahead"):
+            parts.append("pushed")
+    return " ".join(parts)
+
+
+def _worktree_status(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
+    """Read-only git status for one worktree session (--status). Never mutates."""
+    name = getattr(args, 'name', None)
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree --status <name|session>")
+
+    project_name = project_path.name
+    candidates = {name, f"{project_name}-{name}"}
+    entry = None
+    for e in worktree_registry.entries(project_path):
+        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
+            entry = e
+            break
+
+    if entry:
+        session_name = entry.get("session")
+        worktree_path = Path(entry.get("worktree_path"))
+    else:
+        safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+        session_name = name if name.startswith(f"{project_name}-") else f"{project_name}-{safe_name}"
+        worktree_path = worktree_dir / session_name
+
+    git = worktree_status(worktree_path)
+
+    if json_mode:
+        _output_json({"success": True, "session": session_name,
+                      "worktree_path": str(worktree_path),
+                      "alive": tmux_session_exists(session_name), **git})
+        return 0
+
+    if not git.get("exists"):
+        print(f"Worktree path missing: {worktree_path}")
+        return 0
+    print(f"{session_name}  branch={git.get('branch')}  {_git_badge(git)}")
     return 0
 
 
@@ -11281,6 +11346,7 @@ def main() -> int:
     wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
     wt_parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")
     wt_parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
+    wt_parser.add_argument("--status", action="store_true", help="Show read-only git status (dirty/ahead/behind/pushed) for a worktree session")
     wt_parser.add_argument("--remove", action="store_true", help="Kill the session, remove the worktree, and unregister (cleanup/recovery)")
     wt_parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
     wt_parser.add_argument("--all", action="store_true", help="With --list: include worktree sessions across every repo")

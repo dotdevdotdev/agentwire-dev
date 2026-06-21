@@ -544,6 +544,119 @@ def session_kill(session: str) -> str:
     return f"Failed to kill session: {data.get('error', 'Unknown error')}"
 
 
+@mcp.tool()
+def worktree_list(project_dir: str = "") -> str:
+    """List worktree sessions for a repo, each with read-only git status.
+
+    Use this to see the state of in-flight worktree work before tearing it
+    down — which sessions are alive, and whether each worktree is clean and
+    pushed. Git status is local-only (no network): dirty/ahead/behind/pushed.
+
+    Args:
+        project_dir: Path to the git repo. Defaults to the server's cwd; pass a
+            repo path to scope the list to that project.
+
+    Returns:
+        Formatted list of worktree sessions, or a message if none are registered.
+    """
+    args = ["worktree", "--list"]
+    if project_dir:
+        args += ["--project", project_dir]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to list worktrees: {data.get('error', 'Unknown error')}"
+    entries = data.get("entries", [])
+    if not entries:
+        return "No worktree sessions registered."
+    lines = ["Worktree sessions:"]
+    for e in entries:
+        state = "live" if e.get("alive") else ("orphan" if e.get("exists") else "stale")
+        git = e.get("git") or {}
+        badge = ""
+        if git.get("exists"):
+            bits = ["dirty" if git.get("dirty") else "clean"]
+            if not git.get("upstream"):
+                bits.append("no-upstream")
+            else:
+                if git.get("ahead"):
+                    bits.append(f"ahead {git['ahead']}")
+                if git.get("behind"):
+                    bits.append(f"behind {git['behind']}")
+                if git.get("pushed") and not git.get("ahead"):
+                    bits.append("pushed")
+            badge = f" [{', '.join(bits)}]"
+        lines.append(f"  {e.get('session')} ({state}) branch={e.get('branch')}{badge}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def worktree_status(name: str, project_dir: str = "") -> str:
+    """Read-only git status for one worktree session (no network, no mutation).
+
+    Reports whether the worktree is clean and whether its branch is pushed —
+    use it to confirm the agent finished committing/pushing/PR'ing before you
+    call worktree_remove. This tool NEVER commits, pushes, or otherwise writes.
+
+    Args:
+        name: Worktree session name, branch, or short name.
+        project_dir: Path to the git repo (default: server cwd).
+
+    Returns:
+        Git status summary, or an error description.
+    """
+    args = ["worktree", "--status", name]
+    if project_dir:
+        args += ["--project", project_dir]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to get worktree status: {data.get('error', 'Unknown error')}"
+    if not data.get("exists"):
+        return f"Worktree path missing for '{name}' ({data.get('worktree_path')})."
+    bits = ["dirty" if data.get("dirty") else "clean"]
+    if data.get("dirty"):
+        bits[0] += f" (+{data.get('staged', 0)}/~{data.get('unstaged', 0)}/?{data.get('untracked', 0)})"
+    if not data.get("upstream"):
+        bits.append("no upstream (not pushed)")
+    else:
+        if data.get("ahead"):
+            bits.append(f"ahead {data['ahead']}")
+        if data.get("behind"):
+            bits.append(f"behind {data['behind']}")
+        if data.get("pushed") and not data.get("ahead"):
+            bits.append("pushed")
+    alive = "alive" if data.get("alive") else "no session"
+    return f"{data.get('session')} [{alive}] branch={data.get('branch')}: {', '.join(bits)}"
+
+
+@mcp.tool()
+def worktree_remove(name: str, project_dir: str = "") -> str:
+    """Tear down a worktree session: kill the session, remove the worktree + branch, unregister.
+
+    This is the teardown step. The agent should have already committed, pushed,
+    and opened its PR (confirm with worktree_status first). This kills the tmux
+    session, force-removes the git worktree, and drops the registry entry — it
+    does NOT push or open a PR for you.
+
+    Args:
+        name: Worktree session name, branch, or short name.
+        project_dir: Path to the git repo (default: server cwd).
+
+    Returns:
+        Success message describing what was removed, or an error description.
+    """
+    args = ["worktree", "--remove", name]
+    if project_dir:
+        args += ["--project", project_dir]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to remove worktree: {data.get('error', 'Unknown error')}"
+    session = data.get("session", name)
+    killed = " (killed live session)" if data.get("killed") else ""
+    if data.get("worktree_removed"):
+        return f"Removed worktree session '{session}'{killed}; worktree deleted."
+    return f"Unregistered '{session}'{killed}; worktree left at {data.get('path')} (not removed)."
+
+
 # =============================================================================
 # Pane Management Tools
 # =============================================================================
