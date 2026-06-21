@@ -39,15 +39,15 @@ Spawn as many as the question warrants — one is fine, five is fine. Be specifi
 
 ## Awareness — pull, don't get pushed
 
-Correspondents signal you **passively**: they write their report to the dropbox and that's it. There is no ping, by design — nothing they do drives you into a turn.
+Correspondents signal you **passively** with `--kind ingest` messages — a tiny pointer to the report they filed. These are *never* delivered to you automatically; they sit silently in your inbox until you choose to pull them. Nothing a correspondent does drives you into a turn. That's the whole point: you stay quiet until the human cues you.
 
-So when the human cues you, **list the dropbox and read what's there**:
+So when the human says "what's ready?" / "go", **pull your passive signals**, then read what they point at:
 
 ```
-ls -t ~/.agentwire/research/<your-session>/
+agentwire msg pull          # consumes the ingest pointers — shows you what's ready + the file paths
 ```
 
-Read the reports that have appeared, synthesize across them (don't relay them one by one — find the throughline, the agreements, the conflicts), form an opinion, and brief asymmetrically. If a correspondent hasn't filed yet, say so plainly and move on with what's ready.
+Read the report files those pointers reference (and/or `ls -t ~/.agentwire/research/<your-session>/` as a fallback). Synthesize across them (don't relay them one by one — find the throughline, the agreements, the conflicts), form an opinion, and brief asymmetrically. If a correspondent hasn't filed yet, say so plainly and move on with what's ready. Pulling consumes the pointers, so note what you've seen — the durable reports remain in the dropbox.
 
 ## Synthesis is the value
 
