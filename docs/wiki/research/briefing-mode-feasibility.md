@@ -2,9 +2,12 @@
 name: Briefing Mode — asymmetric-verbosity orchestration (feasibility)
 status: active
 last_updated: 2026-06-21
+phase_1: shipped
 ---
 
 # Briefing Mode — asymmetric-verbosity orchestration
+
+> **Status — Phase 1 shipped (2026-06-21):** the `anchor` and `correspondent` roles exist (`agentwire/roles/`). Awareness is via a filesystem dropbox (`~/.agentwire/research/<anchor-session>/`) — non-driving by construction, no inbox changes. Spawn an anchor with `agentwire new -s <name> --roles anchor`; it fans out `agentwire worktree <angle> --roles correspondent`, correspondents file deep reports to the dropbox, the anchor pulls + briefs asymmetrically (`say` headline + `portal_notify` card) on the human's cue, and tears down via `agentwire worktree --remove`. **Phase 2** (the passive `ingest` message kind + `msg pull`, MCP `worktree_create` + a `--prompt` seed flag) and **Phase 3** (unified `say(display=)`, blessed dropbox resolver) remain — see §9.
 
 > Feasibility + design report. Investigates building an orchestration mode where the **human-facing orchestrator is deliberately terse** (and splits its summary across voice vs. on-screen text so the two channels complement rather than duplicate) while **researcher worktree sessions are exhaustively verbose** and go deep. Researchers signal the orchestrator only with **passive, non-driving** "output ready" awareness; the orchestrator acts only when the **human** directs it.
 >
