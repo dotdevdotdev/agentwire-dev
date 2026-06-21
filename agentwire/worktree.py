@@ -334,6 +334,72 @@ def remove_worktree(project_path: Path, worktree_path: Path) -> bool:
     return result.returncode == 0
 
 
+def worktree_status(worktree_path: Path) -> dict:
+    """Read-only git status for a worktree. Local git only — no network, no gh.
+
+    Reports working-tree cleanliness and ahead/behind vs the upstream as it's
+    known locally (reflects the last fetch — never reaches out to the remote).
+    This is a pure read: it runs no `git add`/`commit`/`push`, by design.
+
+    Returns dict:
+        exists:    bool — the worktree path is present on disk
+        branch:    current branch name, or None if detached
+        dirty:     bool — any staged/unstaged/untracked changes
+        staged/unstaged/untracked: int counts
+        upstream:  upstream ref (e.g. "origin/fix-bug"), or None if unset
+        ahead:     commits on HEAD not on upstream
+        behind:    commits on upstream not on HEAD
+        pushed:    bool — upstream exists and ahead == 0 (work is on the remote)
+    """
+    wt = Path(worktree_path)
+    status = {
+        "exists": False, "branch": None, "dirty": False,
+        "staged": 0, "unstaged": 0, "untracked": 0,
+        "upstream": None, "ahead": 0, "behind": 0, "pushed": False,
+    }
+    if not wt.exists():
+        return status
+    status["exists"] = True
+
+    def _git(*a):
+        return subprocess.run(["git", "-C", str(wt), *a], capture_output=True, text=True)
+
+    # Current branch (None when detached, e.g. --ref worktrees).
+    r = _git("rev-parse", "--abbrev-ref", "HEAD")
+    branch = r.stdout.strip() if r.returncode == 0 else ""
+    status["branch"] = None if branch in ("", "HEAD") else branch
+
+    # Working-tree state via porcelain. Column X = index/staged, Y = worktree.
+    r = _git("status", "--porcelain")
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            if not line:
+                continue
+            xy = line[:2]
+            if xy == "??":
+                status["untracked"] += 1
+                continue
+            if xy[0] not in (" ", "?"):
+                status["staged"] += 1
+            if xy[1] not in (" ", "?"):
+                status["unstaged"] += 1
+        status["dirty"] = bool(status["staged"] or status["unstaged"] or status["untracked"])
+
+    # Upstream + ahead/behind, using the locally-stored remote-tracking ref.
+    up = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if up.returncode == 0 and up.stdout.strip():
+        status["upstream"] = up.stdout.strip()
+        # --left-right --count "@{upstream}...HEAD" → "<behind>\t<ahead>"
+        cnt = _git("rev-list", "--left-right", "--count", "@{upstream}...HEAD")
+        if cnt.returncode == 0 and cnt.stdout.split():
+            parts = cnt.stdout.split()
+            if len(parts) == 2:
+                status["behind"], status["ahead"] = int(parts[0]), int(parts[1])
+        status["pushed"] = status["ahead"] == 0
+
+    return status
+
+
 def get_project_type(path: Path) -> str:
     """Determine project type based on git status.
 

@@ -221,6 +221,7 @@ class AgentWireServer:
         self.app.router.add_get("/api/sessions", self.api_sessions)
         self.app.router.add_get("/api/sessions/local", self.api_sessions_local)
         self.app.router.add_get("/api/sessions/remote", self.api_sessions_remote)
+        self.app.router.add_get("/api/worktrees", self.api_worktrees)
         self.app.router.add_get("/api/projects", self.api_projects)
         self.app.router.add_post("/api/projects/create", self.api_projects_create)
         self.app.router.add_post("/api/projects/delete", self.api_projects_delete)
@@ -2495,6 +2496,21 @@ class AgentWireServer:
         except Exception as e:
             logger.error(f"Failed to list sessions: {e}")
             return web.json_response({"machines": []})
+
+    async def api_worktrees(self, request: web.Request) -> web.Response:
+        """List worktree sessions (across all repos) with read-only git status.
+
+        Thin wrapper over `agentwire worktree --list --all --json`; the CLI
+        folds in local-only git status (dirty/ahead/behind/pushed) per entry so
+        the sidebar can badge worktree sessions without per-session round-trips.
+        """
+        try:
+            success, result = await self.run_agentwire_cmd(["worktree", "--list", "--all"])
+            entries = result.get("entries", []) if success else []
+            return web.json_response({"entries": entries})
+        except Exception as e:
+            logger.error(f"Failed to list worktrees: {e}")
+            return web.json_response({"entries": []})
 
     async def api_sessions_local(self, request: web.Request) -> web.Response:
         """Fast endpoint for local sessions only (no SSH checks)."""

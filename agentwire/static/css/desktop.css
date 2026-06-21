@@ -706,6 +706,33 @@ body {
     flex-wrap: wrap;
 }
 
+/* Worktree git-status badges (dirty/ahead/behind/pushed). Local git only. */
+.sidebar-session-git {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding-left: 14px;
+    flex-wrap: wrap;
+}
+
+.sidebar-git-badge {
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--chrome-border);
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.sidebar-git-badge.git-clean { color: var(--text-muted); }
+.sidebar-git-badge.git-dirty { background: rgba(251, 146, 60, 0.18); color: #fb923c; }
+.sidebar-git-badge.git-ahead { background: rgba(0, 191, 255, 0.18); color: #00bfff; }
+.sidebar-git-badge.git-behind { background: rgba(251, 146, 60, 0.18); color: #fb923c; }
+.sidebar-git-badge.git-pushed { background: rgba(57, 255, 20, 0.16); color: #39ff14; }
+.sidebar-git-badge.git-unpushed { background: rgba(248, 113, 113, 0.18); color: #f87171; }
+
 /* Session kill button — always visible and occupying its flex slot, so the
    row never reflows on hover. Confirm/killing states restyle in place. */
 .sidebar-session-close {
