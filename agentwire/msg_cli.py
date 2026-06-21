@@ -42,7 +42,8 @@ def cmd_msg_send(args) -> int:
 
     sender = getattr(args, "from_session", None) or _current_session() or "unknown"
     try:
-        written = inbox.enqueue(args.to, text, kind=args.kind, sender=sender)
+        written = inbox.enqueue(args.to, text, kind=args.kind, sender=sender,
+                                ref=getattr(args, "ref", ""))
     except ValueError as exc:
         if getattr(args, "json", False):
             print(json.dumps({"success": False, "error": str(exc)}))
@@ -107,6 +108,8 @@ def cmd_msg_inbox(args) -> int:
         print(f"{len(passive)} passive (ingest) for {session} — pull to consume:")
         for m in passive:
             print(f"  [{m.kind}] from {m.sender}: {m.text}")
+            if m.ref:
+                print(f"      ref: {m.ref}")
     return 0
 
 
@@ -139,6 +142,8 @@ def cmd_msg_pull(args) -> int:
     print(f"Pulled {len(pulled)} passive message(s) for {session}:")
     for m in pulled:
         print(f"  [{m.kind}] from {m.sender}: {m.text}")
+        if m.ref:
+            print(f"      ref: {m.ref}")
     return 0
 
 
@@ -251,6 +256,10 @@ def register_msg_parser(subparsers) -> None:
     send_parser.add_argument(
         "--from", dest="from_session", default=None,
         help="Override sender (defaults to the current session)",
+    )
+    send_parser.add_argument(
+        "--ref", default="",
+        help="Optional machine-readable pointer (e.g. a report path) — surfaced as a typed field; ideal with --kind ingest",
     )
     send_parser.add_argument("text", nargs="+", help="Message text")
     send_parser.add_argument("--json", action="store_true", help="Output JSON")

@@ -174,6 +174,17 @@ def run_agentwire_cmd(
         return {"success": False, "error": str(e)}
 
 
+def _mcp_result(data: dict, on_success: str, operation: str = "complete operation") -> str:
+    """Standard success/error string for a thin MCP wrapper over run_agentwire_cmd.
+
+    Collapses the repeated `if data.get("success"): return X; return f"Failed…"`
+    pattern so every wrapper reports failures the same way.
+    """
+    if data.get("success"):
+        return on_success
+    return f"Failed to {operation}: {data.get('error', 'Unknown error')}"
+
+
 def format_sessions(data: dict) -> str:
     """Format sessions list for LLM consumption."""
     sessions = data.get("sessions", [])
@@ -381,7 +392,7 @@ def session_send(session: str, message: str) -> str:
 
 
 @mcp.tool()
-def msg_send(to: str, text: str, kind: str = "note") -> str:
+def msg_send(to: str, text: str, kind: str = "note", ref: str = "") -> str:
     """Send a POLITE, non-interrupting message to another session's inbox.
 
     Use this for routine peer updates that should NOT interrupt — a worker
@@ -402,6 +413,9 @@ def msg_send(to: str, text: str, kind: str = "note") -> str:
             recipient into a turn; it waits until they `msg_pull` it. Use it for
             "output ready to ingest" awareness signals (Briefing Mode): drop a
             passive pointer to a file the recipient reads on the human's cue.
+        ref: Optional machine-readable pointer (e.g. a report file path),
+            surfaced as a typed field on the message — pair with kind="ingest"
+            so the recipient can open the file without parsing free text.
 
     Returns:
         Confirmation of which sessions were queued, or an error.
@@ -410,6 +424,8 @@ def msg_send(to: str, text: str, kind: str = "note") -> str:
     args = ["msg", "send", "--to", to, "--kind", kind]
     if caller:
         args += ["--from", caller]
+    if ref:
+        args += ["--ref", ref]
     args.append(text)
     data = run_agentwire_cmd(args)
     if data.get("success"):
@@ -452,6 +468,8 @@ def msg_inbox(session: str | None = None) -> str:
         lines.append(f"{len(passive)} passive (ingest) — call msg_pull to consume:")
         for m in passive:
             lines.append(f"  [{m.get('kind')}] from {m.get('from')}: {m.get('text')}")
+            if m.get('ref'):
+                lines.append(f"      ref: {m.get('ref')}")
     return "\n".join(lines)
 
 
@@ -482,7 +500,32 @@ def msg_pull(session: str | None = None) -> str:
     lines = [f"Pulled {len(pulled)} passive message(s):"]
     for m in pulled:
         lines.append(f"  [{m.get('kind')}] from {m.get('from')}: {m.get('text')}")
+        if m.get('ref'):
+            lines.append(f"      ref: {m.get('ref')}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def research_dir(session: str | None = None) -> str:
+    """Resolve (and create) the Briefing Mode research dropbox for a session.
+
+    Returns the blessed path under ~/.agentwire/research/<session>/ where an
+    anchor's correspondents file their reports. The anchor passes this path to
+    each correspondent and reads the files there when pulling ingest pointers.
+
+    Args:
+        session: Anchor session name (default: the calling session).
+
+    Returns:
+        The dropbox path (created if missing), or an error.
+    """
+    args = ["research", "ensure"]
+    if session:
+        args += ["-s", session]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to resolve research dir: {data.get('error', 'Unknown error')}"
+    return f"Research dropbox: {data.get('path')}"
 
 
 @mcp.tool()
@@ -522,6 +565,42 @@ def msg_dead(session: str | None = None) -> str:
                 f"{m.get('text')}"
             )
     return "\n".join(lines)
+
+
+@mcp.tool()
+def msg_flush(session: str | None = None) -> str:
+    """Attempt a polite-message drain now (still gated on an empty box + safe target).
+
+    Messages drain automatically every ≤60s via the watchdog; use this to force a
+    pass without waiting. It does NOT bypass the safety gates — a busy/parked/
+    non-agent recipient is still deferred. Passive `ingest` messages are never
+    drained (pull them with msg_pull).
+
+    Args:
+        session: Session to flush (default: all sessions with queued messages).
+
+    Returns:
+        What was delivered or deferred.
+    """
+    args = ["msg", "flush"]
+    if session:
+        args += ["-s", session]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to flush: {data.get('error', 'Unknown error')}"
+    if session:
+        if data.get("delivered"):
+            return f"Delivered {data['delivered']} to {session}."
+        return f"Deferred {session}: {data.get('reason', 'unknown')}."
+    flushed = data.get("flushed") or []
+    deferred = data.get("deferred") or []
+    if data.get("skipped"):
+        return str(data["skipped"])
+    if not flushed and not deferred:
+        return "No pending messages."
+    parts = [f"delivered {r['delivered']} → {r['session']}" for r in flushed]
+    parts += [f"deferred {r['session']}: {r.get('reason')}" for r in deferred]
+    return "; ".join(parts)
 
 
 @mcp.tool()
@@ -581,11 +660,8 @@ def session_kill(session: str) -> str:
     Returns:
         Success message or error description.
     """
-    args = ["kill", "-s", session]
-    data = run_agentwire_cmd(args)
-    if data.get("success"):
-        return f"Session '{session}' terminated."
-    return f"Failed to kill session: {data.get('error', 'Unknown error')}"
+    return _mcp_result(run_agentwire_cmd(["kill", "-s", session]),
+                       f"Session '{session}' terminated.", "kill session")
 
 
 @mcp.tool()
@@ -749,6 +825,31 @@ def worktree_remove(name: str, project_dir: str = "") -> str:
     if data.get("worktree_removed"):
         return f"Removed worktree session '{session}'{killed}; worktree deleted."
     return f"Unregistered '{session}'{killed}; worktree left at {data.get('path')} (not removed)."
+
+
+@mcp.tool()
+def worktree_prune(project_dir: str = "") -> str:
+    """Garbage-collect stale worktree registry entries (+ `git worktree prune`).
+
+    Drops registry entries whose worktree dir is gone and runs git's own prune.
+    Housekeeping for an anchor that has spun up and torn down many correspondents.
+
+    Args:
+        project_dir: Path to the git repo (default: server cwd).
+
+    Returns:
+        Which stale entries were pruned, or that there was nothing to prune.
+    """
+    args = ["worktree", "--prune"]
+    if project_dir:
+        args += ["--project", project_dir]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to prune worktrees: {data.get('error', 'Unknown error')}"
+    pruned = data.get("pruned") or []
+    if not pruned:
+        return "Nothing to prune."
+    return f"Pruned {len(pruned)} stale entr{'y' if len(pruned) == 1 else 'ies'}: {', '.join(pruned)}"
 
 
 # =============================================================================
@@ -1000,8 +1101,15 @@ _SAY_DESCRIPTION = (
 
 
 @mcp.tool(description=_SAY_DESCRIPTION)
-def say(text: str, session: str | None = None, voice: str | None = None) -> str:
-    """Speak text via TTS — description built dynamically in _SAY_DESCRIPTION."""
+def say(text: str, session: str | None = None, voice: str | None = None, display: str | None = None) -> str:
+    """Speak text via TTS — description built dynamically in _SAY_DESCRIPTION.
+
+    `display` (optional) shows the human a desktop toast *at the same time*, with
+    DIFFERENT content from the spoken text — the asymmetric brief in one call:
+    `text` is the punchy spoken headline, `display` is the richer scannable card
+    (supports bold/links/line breaks). Pairs voice + screen atomically so you
+    don't have to remember a separate notify_user call.
+    """
     # Quick TTS health check — fail fast if a custom shim is unreachable.
     # Default tier has no server dependency (browser/OS voice), nothing to probe.
     try:
@@ -1024,6 +1132,8 @@ def say(text: str, session: str | None = None, voice: str | None = None) -> str:
         args.extend(["-s", session])
     if voice:
         args.extend(["--voice", voice])
+    if display:
+        args.extend(["--display", display])
     args.append(text)
 
     # Say command doesn't return JSON, run without --json
@@ -1038,27 +1148,27 @@ def say(text: str, session: str | None = None, voice: str | None = None) -> str:
 
 
 @mcp.tool()
-def notify(text: str, to: str | None = None) -> str:
-    """Notify parent session (worker→orchestrator communication).
+def notify_parent(text: str, session: str | None = None) -> str:
+    """Notify your PARENT/orchestrator session — text injected into their prompt.
 
-    Use this to report status, completion, or escalate to a parent session.
+    Up-the-hierarchy report: status, completion, escalation. One of the notify_*
+    family — see also notify_user (human desktop toast) and notify_event (portal
+    lifecycle events).
 
     Args:
-        text: Notification message
-        to: Target session name (optional, defaults to parent from .agentwire.yml)
+        text: Notification message.
+        session: Target session (optional; defaults to your parent from .agentwire.yml).
 
     Returns:
         Success message or error description.
     """
     args = ["notify-parent"]
-    if to:
-        args.extend(["--to", to])
+    if session:
+        args.extend(["--to", session])
     args.append(text)
 
-    data = run_agentwire_cmd(args, json_output=False)
-    if data.get("success"):
-        return "Notification sent."
-    return f"Failed to send notification: {data.get('error', 'Unknown error')}"
+    return _mcp_result(run_agentwire_cmd(args, json_output=False),
+                       "Notification sent to parent.", "notify parent")
 
 
 
@@ -2478,24 +2588,26 @@ def quo_send(body: str, to: str | None = None) -> str:
 
 
 @mcp.tool()
-def session_notify(event: str, session: str | None = None) -> str:
-    """Notify portal of session/pane state changes.
+def notify_event(event: str, session: str | None = None) -> str:
+    """Broadcast a portal LIFECYCLE event (session/pane state change) to the dashboard.
+
+    System/infra signal — usually emitted by tmux hooks, not by hand. One of the
+    notify_* family — see also notify_parent (your orchestrator) and notify_user
+    (human desktop toast).
 
     Args:
-        event: Event type (e.g., 'session_idle', 'session_active')
-        session: Session name (optional, auto-detected if in tmux)
+        event: Event type (e.g., 'session_idle', 'session_active').
+        session: Session name (optional, auto-detected if in tmux).
 
     Returns:
         Success message or error description.
     """
-    args = ["notify", event]
+    args = ["notify-event", event]
     if session:
         args.extend(["-s", session])
 
-    data = run_agentwire_cmd(args)
-    if data.get("success"):
-        return f"Notification '{event}' sent."
-    return f"Failed to send notification: {data.get('error', 'Unknown error')}"
+    return _mcp_result(run_agentwire_cmd(args),
+                       f"Event '{event}' broadcast to the portal.", "broadcast event")
 
 
 # =============================================================================
@@ -3029,16 +3141,19 @@ def desktop_layout(windows: list[dict]) -> str:
 
 
 @mcp.tool()
-def portal_notify(text: str, session: str | None = None, priority: str = "normal") -> str:
-    """Post a toast notification to the portal desktop.
+def notify_user(text: str, session: str | None = None, priority: str = "normal") -> str:
+    """Show the HUMAN a desktop toast on the portal (persistent, visual).
 
-    Creates a persistent visual notification in the bottom-right of the portal.
-    Clicking the toast opens the notifications session for interactive chat.
+    The human-screen channel — the asymmetric text partner to `say` (audio).
+    Supports a safe markdown subset (bold, line breaks, [links](url)). One of the
+    notify_* family — see also notify_parent (your orchestrator) and notify_event
+    (portal lifecycle). Clicking the toast opens the notifications session.
 
     Args:
-        text: Notification message text.
-        session: Session name this notification relates to (shown as badge).
-        priority: 'normal' or 'high' (high gets accent border).
+        text: Notification text. Bold (**x**), line breaks, and [links](https://…)
+            render; everything else is escaped.
+        session: Session this relates to (shown as a badge).
+        priority: 'normal' or 'high' (high gets an accent border).
 
     Returns:
         Notification ID or error description.

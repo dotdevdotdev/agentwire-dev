@@ -73,7 +73,7 @@ class NotificationsPanel {
                 <span class="notification-time">${timeStr}</span>
                 <button class="notification-dismiss" title="Dismiss">&times;</button>
             </div>
-            <div class="notification-toast-body">${this._escapeHtml(text)}</div>
+            <div class="notification-toast-body">${this._renderRichText(text)}</div>
         `;
 
         // Click body -> open notifications session terminal
@@ -152,6 +152,23 @@ class NotificationsPanel {
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    // Render a SAFE markdown subset: bold, links, line breaks. Escape everything
+    // FIRST so no source HTML survives, then introduce only our own known tags.
+    // Links are restricted to http(s)/mailto (no javascript:/data:), and because
+    // quotes are already escaped, the agent text can't break out of the href.
+    _renderRichText(str) {
+        let s = this._escapeHtml(str);
+        // Links before bold so [**label**](url) composes. URL came through escape,
+        // so any " is already &quot; — it can't close the attribute.
+        s = s.replace(
+            /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+            (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        );
+        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/\n/g, '<br>');
+        return s;
     }
 }
 

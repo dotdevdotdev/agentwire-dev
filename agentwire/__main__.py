@@ -2222,9 +2222,11 @@ def _install_global_tmux_hooks() -> None:
     )
     existing = result.stdout
 
-    # Helper to install hook if not present
+    # Reinstall whenever the EXACT command isn't already set, so changes to the
+    # hook string (e.g. a subcommand rename) propagate on portal restart instead
+    # of leaving a stale hook that silently fails.
     def install_hook(hook_name: str, hook_cmd: str) -> None:
-        if hook_name not in existing or agentwire_path not in existing:
+        if hook_cmd not in existing:
             subprocess.run(
                 ["tmux", "set-hook", "-g", hook_name, hook_cmd],
                 capture_output=True,
@@ -2234,40 +2236,40 @@ def _install_global_tmux_hooks() -> None:
     # All hooks suppress output and exit 0 (|| true) to avoid tmux showing error messages
     install_hook(
         "session-created",
-        f'run-shell -b "{agentwire_path} notify session_created -s #{{session_name}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event session_created -s #{{session_name}} >/dev/null 2>&1 || true"'
     )
     install_hook(
         "session-closed",
-        f'run-shell -b "{agentwire_path} notify session_closed -s #{{hook_session_name}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event session_closed -s #{{hook_session_name}} >/dev/null 2>&1 || true"'
     )
 
     # Presence tracking hooks
     install_hook(
         "client-attached",
-        f'run-shell -b "{agentwire_path} notify client_attached -s #{{session_name}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event client_attached -s #{{session_name}} >/dev/null 2>&1 || true"'
     )
     install_hook(
         "client-detached",
-        f'run-shell -b "{agentwire_path} notify client_detached -s #{{session_name}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event client_detached -s #{{session_name}} >/dev/null 2>&1 || true"'
     )
 
     # Pane creation hook (global - catches all pane creations)
     install_hook(
         "after-split-window",
-        f'run-shell -b "{agentwire_path} notify pane_created -s #{{session_name}} --pane-id #{{pane_id}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event pane_created -s #{{session_name}} --pane-id #{{pane_id}} >/dev/null 2>&1 || true"'
     )
 
     # Session rename hook
     # Note: #{hook_session_name} has new name, we pass old name via #{@_old_session_name} if set
     install_hook(
         "session-renamed",
-        f'run-shell -b "{agentwire_path} notify session_renamed -s #{{session_name}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event session_renamed -s #{{session_name}} >/dev/null 2>&1 || true"'
     )
 
     # Activity notification hook (fires when monitor-activity is enabled on a window)
     install_hook(
         "alert-activity",
-        f'run-shell -b "{agentwire_path} notify window_activity -s #{{session_name}} >/dev/null 2>&1 || true"'
+        f'run-shell -b "{agentwire_path} notify-event window_activity -s #{{session_name}} >/dev/null 2>&1 || true"'
     )
 
 
@@ -2295,7 +2297,7 @@ def _install_pane_hooks(session_name: str, pane_index: int) -> None:
     # without pane-id and let the portal refresh its pane list
     # Use || true to suppress error display in tmux
     if "after-kill-pane" not in existing:
-        hook_cmd = f'run-shell -b "{agentwire_path} notify pane_died -s {session_name} >/dev/null 2>&1 || true"'
+        hook_cmd = f'run-shell -b "{agentwire_path} notify-event pane_died -s {session_name} >/dev/null 2>&1 || true"'
         subprocess.run(
             ["tmux", "set-hook", "-t", session_name, "after-kill-pane", hook_cmd],
             capture_output=True,
@@ -2305,7 +2307,7 @@ def _install_pane_hooks(session_name: str, pane_index: int) -> None:
     # This fires when a pane gains focus within the session
     # Use || true to suppress error display in tmux
     if "pane-focus-in" not in existing:
-        hook_cmd = f'run-shell -b "{agentwire_path} notify pane_focused -s {session_name} --pane-id #{{pane_id}} >/dev/null 2>&1 || true"'
+        hook_cmd = f'run-shell -b "{agentwire_path} notify-event pane_focused -s {session_name} --pane-id #{{pane_id}} >/dev/null 2>&1 || true"'
         subprocess.run(
             ["tmux", "set-hook", "-t", session_name, "pane-focus-in", hook_cmd],
             capture_output=True,
@@ -2609,6 +2611,13 @@ def cmd_say(args) -> int:
 
     # Handle voice notifications
     _handle_voice_notifications(text, voice, args, session)
+
+    # Asymmetric brief: if --display is given, show the human a text card toast
+    # alongside the spoken audio (different content per channel). Best-effort —
+    # only lands if the portal's up; the spoken path proceeds regardless.
+    display = getattr(args, 'display', None)
+    if display:
+        _post_desktop_notification(display, session=session, priority="high")
 
     # Try portal first if we have a session
     # Portal handles chunking internally (sequential generation + broadcast)
@@ -3051,6 +3060,63 @@ def _remote_say(text: str, session: str, portal_url: str) -> int:
     except Exception as e:
         print(f"Failed to send to portal: {e}", file=sys.stderr)
         return 1
+
+
+def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal") -> bool:
+    """POST a toast to the portal's desktop-notification endpoint. Best-effort.
+
+    Shared by `agentwire notify-user` and the `say --display` path. Returns True
+    on a 2xx, False on any failure (no portal, network error) — never raises.
+    """
+    import ssl
+
+    body: dict = {"text": text, "priority": priority}
+    if session:
+        body["session"] = session
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(
+            f"{_get_portal_url()}/api/desktop/notification",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", **_portal_auth_headers()},
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=5):
+            return True
+    except Exception:
+        return False
+
+
+def cmd_notify_user(args) -> int:
+    """Show the human a desktop toast on the portal (notify-user)."""
+    text = " ".join(args.text) if args.text else ""
+    json_mode = getattr(args, "json", False)
+    if not text.strip():
+        return _output_result(False, json_mode, "Usage: agentwire notify-user <text>")
+    ok = _post_desktop_notification(
+        text, session=getattr(args, "session", None),
+        priority=getattr(args, "priority", "normal"),
+    )
+    return _output_result(ok, json_mode,
+                          "Toast posted." if ok else "Failed to post toast (portal not reachable?)")
+
+
+def cmd_research(args) -> int:
+    """Resolve (or ensure) the Briefing Mode research dropbox for a session."""
+    from .research import research_dir, ensure_research_dir
+
+    json_mode = getattr(args, "json", False)
+    session = getattr(args, "session", None) or pane_manager.get_current_session()
+    if not session:
+        return _output_result(False, json_mode, "No session (use -s or run inside a session)")
+    sub = getattr(args, "research_command", None)
+    path = ensure_research_dir(session) if sub == "ensure" else research_dir(session)
+    if json_mode:
+        _output_json({"success": True, "session": session, "path": str(path), "exists": path.exists()})
+        return 0
+    print(str(path))
+    return 0
 
 
 def load_session_metadata(session_name: str) -> dict:
@@ -11111,6 +11177,7 @@ def main() -> int:
     say_parser.add_argument("--stream", action="store_true", help="Use streaming mode (if backend supports)")
     say_parser.add_argument("--notify", type=str, metavar="SESSION", help="Also notify this session (sends message as input)")
     say_parser.add_argument("--no-auto-notify", action="store_true", help="Disable auto-notify to pane 0 when in worker pane")
+    say_parser.add_argument("--display", type=str, metavar="TEXT", help="Also show the human a desktop toast with this (different) text — the asymmetric brief in one call")
     say_parser.set_defaults(func=cmd_say)
 
     # === notify command (worker→parent) ===
@@ -11166,7 +11233,7 @@ def main() -> int:
     fetch_parser.set_defaults(func=cmd_fetch)
 
     # === notify command ===
-    notify_parser = subparsers.add_parser("notify", help="Notify portal of session/pane state changes")
+    notify_parser = subparsers.add_parser("notify-event", help="Broadcast a portal lifecycle event (session/pane state change); usually called by tmux hooks")
     notify_parser.add_argument(
         "event",
         help="Event type: session_closed, session_created, pane_died, pane_created, "
@@ -11179,6 +11246,27 @@ def main() -> int:
     notify_parser.add_argument("--new-name", help="New session name (for session_renamed)")
     notify_parser.add_argument("--json", action="store_true", help="Output as JSON")
     notify_parser.set_defaults(func=cmd_notify)
+
+    # notify-user: human-facing desktop toast (the CLI twin of MCP notify_user)
+    notify_user_parser = subparsers.add_parser("notify-user", help="Show the human a desktop toast on the portal")
+    notify_user_parser.add_argument("text", nargs="+", help="Toast text (supports a safe markdown subset: bold, links, line breaks)")
+    notify_user_parser.add_argument("-s", "--session", help="Session this relates to (shown as a badge)")
+    notify_user_parser.add_argument("--priority", default="normal", choices=["normal", "high"], help="Toast priority")
+    notify_user_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    notify_user_parser.set_defaults(func=cmd_notify_user)
+
+    # research: Briefing Mode dropbox path resolver
+    research_parser = subparsers.add_parser("research", help="Resolve the Briefing Mode research dropbox path for a session")
+    research_sub = research_parser.add_subparsers(dest="research_command")
+    for _verb, _help in (("dir", "Print the dropbox path (not created)"),
+                         ("ensure", "Create + print the dropbox path")):
+        _rp = research_sub.add_parser(_verb, help=_help)
+        _rp.add_argument("-s", "--session", default=None, help="Anchor session (default: current)")
+        _rp.add_argument("--json", action="store_true", help="Output as JSON")
+        _rp.set_defaults(func=cmd_research)
+    research_parser.add_argument("-s", "--session", default=None, help="Anchor session (default: current)")
+    research_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    research_parser.set_defaults(func=cmd_research)
 
     # === send command ===
     send_parser = subparsers.add_parser("send", help="Send prompt to a session or pane (adds Enter)")
