@@ -73,6 +73,27 @@ clobbered draft is not.
 | `done` | a worker finished |
 | `request` | asking for something |
 | `escalation` | needs attention |
+| `ingest` | **passive** — awareness only; never auto-delivered (see below) |
+
+An optional `--ref` carries a machine-readable pointer (e.g. a report path)
+alongside the text, surfaced as a typed field rather than parsed out of prose —
+ideal with `ingest`.
+
+## Passive `ingest` — awareness without being driven
+
+Every other kind is *driving*: the watchdog pastes it (and presses Enter) into
+the recipient's prompt the moment their box is empty — which **starts a turn**.
+`ingest` is the exception. It routes to a reserved `ingest/` subdir that the
+drain and watchdog never walk, so it lands **silently** and waits. The recipient
+collects it on their own cadence with `msg pull` (MCP `msg_pull`) — read **and**
+remove. Nothing about an `ingest` message ever drives the recipient.
+
+This is the primitive behind **[Briefing Mode](../briefing-mode.md)**: a
+correspondent drops `msg send --kind ingest --ref <report-path> "<topic>"`; the
+anchor stays quiet until the human says "what's ready?", then `msg pull`s the
+pointers and reads the files. The durable content lives in the referenced file,
+not the message — so `pull` (consume-on-read) is the only way these leave the
+inbox; they are never dead-lettered.
 
 ## Broadcast
 
@@ -83,11 +104,13 @@ skipped automatically because their pane 0 doesn't run an agent.
 ## CLI
 
 ```bash
-agentwire msg send --to <session|@all> [--kind note|done|request|escalation] <text>
+agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest] [--ref <path>] <text>
 agentwire msg send --to agentwire-dev-fix-nav --kind done "PR #312 drafted"
-agentwire msg inbox [-s <session>]   # peek pending (does not drain)
+agentwire msg send --to anchor --kind ingest --ref /path/report.md "auth findings"  # passive
+agentwire msg inbox [-s <session>]   # peek pending + passive (does not drain/consume)
+agentwire msg pull  [-s <session>]   # read + REMOVE passive (ingest) messages
 agentwire msg dead  [-s <session>]   # list dropped (dead-lettered) msgs + why
-agentwire msg flush [-s <session>]   # attempt a drain now (still gated)
+agentwire msg flush [-s <session>]   # attempt a drain now (still gated; never touches passive)
 ```
 
 `msg dead` with `-s` scopes to one session; outside a session it lists every
@@ -99,9 +122,12 @@ the single source of truth; the portal and MCP call it.
 
 ## MCP tools
 
-- `msg_send(to, text, kind="note")` — polite peer update; delivers at the next
-  safe boundary.
-- `msg_inbox(session=None)` — peek pending messages (does not drain).
+- `msg_send(to, text, kind="note", ref="")` — polite peer update; delivers at the
+  next safe boundary. `kind="ingest"` is passive (pull-only); `ref` is a typed
+  pointer.
+- `msg_inbox(session=None)` — peek pending + passive messages (does not consume).
+- `msg_pull(session=None)` — read + remove passive (`ingest`) messages.
+- `msg_flush(session=None)` — force a (still-gated) drain of the driving queue.
 - `msg_dead(session=None)` — list dead-lettered messages with their drop reason
   + timestamp (omit `session` to list every session that has any).
 
@@ -113,7 +139,8 @@ session right now.
 
 | Path | Purpose |
 |---|---|
-| `~/.agentwire/inbox/<session>/*.json` | queued messages (filename = order) |
+| `~/.agentwire/inbox/<session>/*.json` | queued driving messages (filename = order) |
+| `~/.agentwire/inbox/<session>/ingest/` | passive `ingest` messages — pull-only, drain never walks here |
 | `~/.agentwire/inbox/<session>/dead/` | dead-lettered after the attempt cap |
 | `~/.agentwire/inbox/<session>/.lock/` | mkdir-based per-session drain lock |
 | `~/.agentwire/inbox/.tick.lock` | global flock guarding `tick()` |

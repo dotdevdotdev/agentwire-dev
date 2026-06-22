@@ -14,8 +14,10 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire list` | `sessions_list()` |
 | `agentwire new -s name` | `session_create(name="...")` |
 | `agentwire send -s name "msg"` | `session_send(session="...", message="...")` |
-| `agentwire msg send --to name "msg"` | `msg_send(to="...", text="...", kind="note")` |
+| `agentwire msg send --to name "msg"` | `msg_send(to="...", text="...", kind="note", ref="")` |
 | `agentwire msg inbox -s name` | `msg_inbox(session="...")` |
+| `agentwire msg pull -s name` | `msg_pull(session="...")` |
+| `agentwire msg flush -s name` | `msg_flush(session="...")` |
 | `agentwire msg dead -s name` | `msg_dead(session="...")` |
 | `agentwire output -s name` | `session_output(session="...")` |
 | `agentwire info -s name` | `session_info(session="...")` |
@@ -25,7 +27,9 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire fork -s name -t project/branch` | `session_fork(session="...", target="...")` |
 | `agentwire fork -s name -t project/branch --commit abc` | `session_fork(session="...", target="...", commit="abc")` |
 
-**`session_send` vs `msg_send`:** `session_send` pastes + Enter **immediately** — and clobbers a human's half-typed draft if the box is occupied. Use it only when you must forcibly drive a session *now*. `msg_send` is the polite path: it queues a typed message into a file inbox and the watchdog injects it only when the recipient's box is empty and the pane is safe (≤60s). For routine peer updates ("PR drafted", "picking up the footer"), prefer `msg_send`. `kind` ∈ note|done|request|escalation; `to="@all"` broadcasts to live agent sessions except you. See wiki sessions/messaging.md.
+**`session_send` vs `msg_send`:** `session_send` pastes + Enter **immediately** — and clobbers a human's half-typed draft if the box is occupied. Use it only when you must forcibly drive a session *now*. `msg_send` is the polite path: it queues a typed message into a file inbox and the watchdog injects it only when the recipient's box is empty and the pane is safe (≤60s). For routine peer updates ("PR drafted", "picking up the footer"), prefer `msg_send`. `kind` ∈ note|done|request|escalation|**ingest**; `to="@all"` broadcasts to live agent sessions except you. See wiki sessions/messaging.md.
+
+**Passive `ingest` messages (Briefing Mode):** `kind="ingest"` is **never auto-delivered** — it lands silently and waits until the recipient calls `msg_pull()`. Use it for "output ready" awareness signals that must NOT drive the recipient into a turn. Pair with `ref="<path>"` so the pointer is machine-readable. `msg_flush` forces a (still-gated) drain of the *driving* queue; it never touches passive messages.
 
 **Note:** `session_create` (via `agentwire new`) records the calling session as the new session's creator — interactive prompts (permission/plan/AskUserQuestion) in the child then route back to you as `[PROMPT from ...]` messages. Answer them with `agentwire prompts answer -s <session> --expect <hash> <key>` via Bash (guarded compare-and-send), NEVER with raw `session_send_keys` — a late keystroke races the portal and can type into the child's input or abort its turn.
 
@@ -47,8 +51,10 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 
 | CLI Command | MCP Tool |
 |-------------|----------|
-| `agentwire say "text"` | `say(text="...")` |
-| `agentwire notify-parent "text"` | `notify(text="...", to="...")` |
+| `agentwire say "text"` | `say(text="...", display="...")` |
+| `agentwire notify-parent "text"` | `notify_parent(text="...", session="...")` |
+| `agentwire notify-user "text"` | `notify_user(text="...", session="...", priority="normal")` |
+| `agentwire notify-event EVENT` | `notify_event(event="...", session="...")` |
 | `agentwire listen start` | `listen_start()` |
 | `agentwire listen stop` | `listen_stop()` |
 | `agentwire listen cancel` | `listen_cancel()` |
@@ -101,7 +107,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 
 | CLI Command | MCP Tool |
 |-------------|----------|
-| `agentwire notify event` | `session_notify(event="...")` |
+| `agentwire notify-event EVENT` | `notify_event(event="...")` |
 | `agentwire tunnels up` | `tunnels_up()` |
 | `agentwire tunnels down` | `tunnels_down()` |
 | `agentwire tunnels status` | `tunnels_status()` |
@@ -162,7 +168,7 @@ up|down`) — the MCP surface is read-only introspection.
 | Open panel | `desktop_open_panel(panel_type="sessions")` |
 | Open artifact window (URL/file) | `desktop_open_artifact(url="...", title="...")` |
 | Write HTML + open as artifact | `desktop_write_artifact(filename="...", html_content="...", title="...")` |
-| Post toast notification | `portal_notify(text="...", session="...", priority="normal")` |
+| Post toast to the human | `notify_user(text="...", session="...", priority="normal")` (safe markdown: bold, [links](url), line breaks) |
 | Close window | `desktop_close_window(window_id="...")` |
 | Focus window | `desktop_focus_window(window_id="...")` |
 | Tile window | `desktop_tile_window(window_id="...", zone="left")` |
@@ -173,4 +179,6 @@ up|down`) — the MCP surface is read-only introspection.
 - **MCP tools** — Agents in sessions (orchestrators, workers)
 - **CLI commands** — Humans, shell scripts, automation outside of agent sessions
 
-**Note:** MCP tools don't support git worktree creation. Workers spawned via `pane_spawn` share the orchestrator's working directory. For isolated commits with worktrees, use the CLI `agentwire spawn --branch <name>` directly.
+**Worktree lifecycle (MCP):** `worktree_create(name, project_dir, roles, base, prompt)` spawns a worktree session (new branch + checkout + tmux session, optionally seeded with `prompt`); `worktree_status` / `worktree_list` (read-only git status), `worktree_remove` (teardown: kill + remove + unregister), `worktree_prune` (GC stale entries). Worker *panes* via `pane_spawn` still share the orchestrator's working dir — use those for quick subtasks, worktree sessions for isolated parallel work.
+
+**Briefing Mode** (asymmetric-verbosity orchestration): an `anchor` (terse, human-facing) fans out `correspondent` worktrees (verbose researchers) via `worktree_create(roles="correspondent")`; they file reports into `research_dir()` (`~/.agentwire/research/<session>/`) and drop a passive `msg_send(kind="ingest", ref="<path>")` pointer; the anchor `msg_pull()`s on the human's cue and briefs with `say(text=..., display=...)` (voice + toast, different content). See wiki briefing-mode.md.
