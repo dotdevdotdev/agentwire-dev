@@ -1448,25 +1448,6 @@ def _describe_probe_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _check_tts_health(
-    url: str, timeout: int = 2
-) -> tuple[bool, list[str] | None, str | None]:
-    """Check if TTS server is responding at URL.
-
-    Returns:
-        (is_healthy, voices_list or None, error_cause or None)
-    """
-
-    try:
-        req = urllib.request.urlopen(f"{url}/voices", timeout=timeout)
-        voices = json.loads(req.read().decode())
-        if isinstance(voices, list):
-            return True, voices, None
-        return True, None, None
-    except Exception as e:
-        return False, None, _describe_probe_error(e)
-
-
 def cmd_tts_start(args) -> int:
     """Start the Chatterbox TTS server in tmux."""
     from .network import NetworkContext
@@ -1626,185 +1607,39 @@ def cmd_tts_warm(args) -> int:
 
 
 def cmd_tts_status(args) -> int:
-    """Check TTS status (default tier: in-process Kokoro; custom: shim server)."""
-    from .network import NetworkContext
+    """Report whether speech can happen right now and via what path.
+
+    Resolves the ACTIVE tier (default → browser/OS; custom → shim) and only
+    probes a server when the tier actually has one. Flags an orphaned engine
+    server — e.g. a shim still up on the custom-tier port while the tier is
+    'default' (running but unused) (#441).
+    """
+    from .config import load_config as load_config_typed
+    from .voice_status import resolve_tts_status
 
     json_mode = getattr(args, 'json', False)
-    ctx = NetworkContext.from_config()
     session_name = get_tts_session_name()
-    config = load_config()
-    backend = config.get("tts", {}).get("backend", "unknown")
+    st = resolve_tts_status(load_config_typed())
 
-    if backend == "default":
-        # Default tier: Kokoro runs in-process (portal/CLI) — there is no
-        # shim server to probe. Report install + model-cache state.
-        from .tts.local import kokoro_importable
+    if json_mode:
+        payload = {"success": True, **st.to_json()}
+        if st.server_url:
+            payload["session"] = session_name if tmux_session_exists(session_name) else None
+        _output_json(payload)
+        return 0 if st.ready else 1
 
-        importable = kokoro_importable()
-        cached = False
-        if importable:
-            from .tts.engines.kokoro import KokoroEngine
-
-            cached = KokoroEngine.model_files_cached()
-        state = (
-            "ready" if cached
-            else "model not downloaded" if importable
-            else "unavailable (kokoro-onnx not installed; requires Python <3.14)"
-        )
-        if json_mode:
-            _output_json({
-                "success": True,
-                "tier": "default",
-                "engine": "kokoro",
-                "kokoro_installed": importable,
-                "model_cached": cached,
-                "state": state,
-                "backend": backend,
-            })
-        else:
-            print("Default voice tier: Kokoro (in-process)")
-            print(f"  State: {state}")
-            if importable and not cached:
-                print("  Download: run 'agentwire tts warm' to fetch the ~200 MB "
-                      "model now (one-time, cached to ~/.cache/kokoro_onnx/).")
-                print("            Or just start the portal — it downloads in the "
-                      "background and speaks with the OS voice until ready.")
-        return 0
-
-    if ctx.is_local("tts"):
-        url = ctx.get_service_url("tts", use_tunnel=False)
-        if tmux_session_exists(session_name):
-            healthy, voices, error = _check_tts_health(url)
-            if json_mode:
-                _output_json({
-                    "success": True,
-                    "running": True,
-                    "url": url,
-                    "session": session_name,
-                    "healthy": healthy,
-                    "voices": voices or [],
-                    "error": error,
-                    "backend": backend,
-                    "machine": None,
-                })
-            else:
-                print(f"TTS server is running in tmux session '{session_name}'")
-                print(f"  Attach: tmux attach -t {session_name}")
-                if healthy:
-                    if voices:
-                        print(f"  Voices: {', '.join(voices)}")
-                    else:
-                        print(f"  Health: OK ({url})")
-                else:
-                    print(f"  Status: not responding yet — {error}")
-            return 0
-        else:
-            # No local tmux session, but check if TTS is reachable anyway
-            healthy, voices, error = _check_tts_health(url)
-            if healthy:
-                if json_mode:
-                    _output_json({
-                        "success": True,
-                        "running": True,
-                        "url": url,
-                        "healthy": True,
-                        "voices": voices or [],
-                        "backend": backend,
-                        "machine": None,
-                        "external": True,
-                    })
-                else:
-                    print("TTS server is running (external/tunnel)")
-                    if voices:
-                        print(f"  Voices: {', '.join(voices)}")
-                    print(f"  URL: {url}")
-                return 0
-
-            if json_mode:
-                _output_json({
-                    "success": True,
-                    "running": False,
-                    "url": url,
-                    "healthy": False,
-                    "error": error,
-                    "backend": backend,
-                    "machine": None,
-                })
-            else:
-                print("TTS server is not running.")
-                if error:
-                    print(f"  Probe: {error}")
-                print("  Start:  agentwire tts start")
-            return 1
-
-    # TTS runs on another machine - check via health endpoint
-    machine_id = ctx.get_machine_for_service("tts")
-    url = ctx.get_service_url("tts", use_tunnel=True)
-
-    healthy, voices, error = _check_tts_health(url)
-    if healthy:
-        if json_mode:
-            _output_json({
-                "success": True,
-                "running": True,
-                "url": url,
-                "healthy": True,
-                "voices": voices or [],
-                "backend": backend,
-                "machine": machine_id,
-            })
-        else:
-            print(f"TTS server runs on {machine_id}")
-            print("  Status: running")
-            if voices:
-                print(f"  Voices: {', '.join(voices)}")
-            print(f"  URL: {url}")
-        return 0
-    else:
-        # Try direct connection if tunnel might not exist
-        direct_url = ctx.get_service_url("tts", use_tunnel=False)
-        direct_error = None
-        if direct_url != url:
-            healthy, voices, direct_error = _check_tts_health(direct_url)
-            if healthy:
-                if json_mode:
-                    _output_json({
-                        "success": True,
-                        "running": True,
-                        "url": direct_url,
-                        "healthy": True,
-                        "voices": voices or [],
-                        "backend": backend,
-                        "machine": machine_id,
-                        "tunnel_issue": True,
-                    })
-                else:
-                    print(f"TTS server runs on {machine_id}")
-                    print("  Status: running (tunnel not working, direct OK)")
-                    if voices:
-                        print(f"  Voices: {', '.join(voices)}")
-                    print(f"  URL: {direct_url}")
-                    print("  Hint: Run 'agentwire tunnels check' to verify tunnels")
-                return 0
-
-        if json_mode:
-            _output_json({
-                "success": True,
-                "running": False,
-                "url": url,
-                "healthy": False,
-                "error": error,
-                "direct_error": direct_error,
-                "backend": backend,
-                "machine": machine_id,
-            })
-        else:
-            print(f"TTS server runs on {machine_id}")
-            print("  Status: not reachable")
-            print(f"  Checked: {url} — {error}")
-            if direct_url != url:
-                print(f"  Also checked: {direct_url} — {direct_error}")
-        return 1
+    print(f"TTS: {st.tier} tier — {st.path}")
+    print(f"  {'[ok]' if st.ready else '[!!]'} {st.detail}")
+    if st.server_url and tmux_session_exists(session_name):
+        print(f"  Attach: tmux attach -t {session_name}")
+    if not st.ready and st.tier == "custom":
+        print("  Start: agentwire tts start")
+    if st.tier == "default":
+        print("  Warm the in-process model now: agentwire tts warm "
+              "(else the portal downloads it in the background, OS voice until ready)")
+    for w in st.warnings:
+        print(f"  [..] {w}")
+    return 0 if st.ready else 1
 
 
 # === STT Commands ===
@@ -1895,71 +1730,32 @@ def cmd_stt_stop(args) -> int:
 
 
 def cmd_stt_status(args) -> int:
-    """Check STT server status."""
+    """Report the active STT tier's path — only probing a server when the tier
+    actually has one (default-with-Moonshine, custom). Cloud and the browser
+    fallback have no shim to probe (#441)."""
+    from .config import load_config as load_config_typed
+    from .voice_status import resolve_stt_status
+
     json_mode = getattr(args, 'json', False)
     session_name = get_stt_session_name()
-    config = load_config()
-    stt_url = config.get("stt", {}).get("url", "http://localhost:8101")
-
-    # Check health endpoint
-    probe_error = None
-    try:
-        req = urllib.request.Request(f"{stt_url}/health")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-            if json_mode:
-                _output_json({
-                    "success": True,
-                    "running": True,
-                    "url": stt_url,
-                    "healthy": True,
-                    "model": data.get('model', 'unknown'),
-                    "device": data.get('device', 'unknown'),
-                    "session": session_name if tmux_session_exists(session_name) else None,
-                })
-            else:
-                print("STT server is running")
-                print(f"  Model: {data.get('model', 'unknown')}")
-                print(f"  Device: {data.get('device', 'unknown')}")
-                print(f"  URL: {stt_url}")
-                if tmux_session_exists(session_name):
-                    print(f"  Attach: tmux attach -t {session_name}")
-            return 0
-    except Exception as e:
-        probe_error = _describe_probe_error(e)
-
-    if tmux_session_exists(session_name):
-        if json_mode:
-            _output_json({
-                "success": True,
-                "running": True,
-                "url": stt_url,
-                "healthy": False,
-                "error": probe_error,
-                "session": session_name,
-                "starting": True,
-            })
-        else:
-            print(f"STT server is starting in tmux session '{session_name}'")
-            if probe_error:
-                print(f"  Probe: {probe_error}")
-            print(f"  Attach: tmux attach -t {session_name}")
-        return 0
+    st = resolve_stt_status(load_config_typed())
 
     if json_mode:
-        _output_json({
-            "success": True,
-            "running": False,
-            "url": stt_url,
-            "healthy": False,
-            "error": probe_error,
-        })
-    else:
-        print("STT server is not running.")
-        if probe_error:
-            print(f"  Probe: {probe_error}")
+        payload = {"success": True, **st.to_json()}
+        if st.server_url:
+            payload["session"] = session_name if tmux_session_exists(session_name) else None
+        _output_json(payload)
+        return 0 if st.ready else 1
+
+    print(f"STT: {st.tier} tier — {st.path}")
+    print(f"  {'[ok]' if st.ready else '[!!]'} {st.detail}")
+    if st.server_url and tmux_session_exists(session_name):
+        print(f"  Attach: tmux attach -t {session_name}")
+    if not st.ready and st.server_url:
         print("  Start: agentwire stt start")
-    return 1
+    for w in st.warnings:
+        print(f"  [..] {w}")
+    return 0 if st.ready else 1
 
 
 # === Kokoro (default-tier TTS shim) Commands ===
@@ -2415,15 +2211,16 @@ def _infer_session_from_path() -> str | None:
     return None
 
 
-def _check_portal_connections(session: str, portal_url: str) -> tuple[bool, str]:
+def _check_portal_connections(session: str, portal_url: str) -> tuple[bool, str, int]:
     """Check if portal has active browser connections for a session.
 
     Tries session name variants: as-is, with hostname.
 
     Returns:
-        Tuple of (has_connections, actual_session_name)
+        Tuple of (has_connections, actual_session_name, connection_count)
         - has_connections: True if there are connections (audio should go to portal)
         - actual_session_name: The session name that has connections (may include @machine)
+        - connection_count: number of connected browser clients for that session
     """
     import ssl
 
@@ -2448,13 +2245,13 @@ def _check_portal_connections(session: str, portal_url: str) -> tuple[bool, str]
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                 result = json.loads(response.read().decode())
                 if result.get("has_connections", False):
-                    return True, session_name
+                    return True, session_name, int(result.get("connection_count", 0))
 
         except Exception:
             continue
 
     # No connections found in any variant
-    return False, session
+    return False, session, 0
 
 
 def _local_say_os(text: str) -> int:
@@ -2550,11 +2347,15 @@ def _local_say_dispatch(
     instructions: str | None = None,
     language: str = "English",
     stream: bool = False,
-) -> int:
+) -> tuple[int, str]:
     """Local (non-portal) TTS playback, dispatched on the configured tier.
 
     default → in-process Kokoro (OS voice until the model is cached);
     custom → HTTP shim + afplay/aplay; anything else (none) → OS voice.
+
+    Returns (return_code, sink) where sink names the path that actually played
+    ("custom-server", "local-speakers (kokoro)", "os-voice") so callers can
+    report a truthful "did it play" ack instead of a blind "queued" (#444).
     """
     tier = tts_config.get("backend", "default")
 
@@ -2562,14 +2363,15 @@ def _local_say_dispatch(
         from .network import NetworkContext
         ctx = NetworkContext.from_config()
         tts_url = ctx.get_service_url("tts", use_tunnel=True)
-        return _local_say(
+        rc = _local_say(
             text, voice, exaggeration, cfg_weight, tts_url,
             backend=backend, instructions=instructions, language=language, stream=stream
         )
+        return rc, "custom-server"
 
     if tier == "default" and _local_say_kokoro(text, voice) == 0:
-        return 0
-    return _local_say_os(text)
+        return 0, "local-speakers (kokoro)"
+    return _local_say_os(text), "os-voice"
 
 
 def cmd_say(args) -> int:
@@ -2587,10 +2389,10 @@ def cmd_say(args) -> int:
     - Use --no-auto-notify to disable worker->orchestrator notification
     """
     text = " ".join(args.text) if args.text else ""
+    json_mode = getattr(args, 'json', False)
 
     if not text:
-        print("Usage: agentwire say <text>", file=sys.stderr)
-        return 1
+        return _output_result(False, json_mode, "Usage: agentwire say <text>")
 
     config = load_config()
     tts_config = config.get("tts", {})
@@ -2619,28 +2421,40 @@ def cmd_say(args) -> int:
     if display:
         _post_desktop_notification(display, session=session, priority="high")
 
+    def _say_result(rc: int, sink: str, clients: int = 0) -> int:
+        """Report which sink actually received the audio (#444): browser
+        (played by N connected clients), local speakers / OS voice, or a
+        failed dispatch — instead of a blind "queued"."""
+        if json_mode:
+            _output_json({"success": rc == 0, "sink": sink if rc == 0 else None,
+                          "clients": clients, "session": session,
+                          "error": None if rc == 0 else f"playback failed via {sink}"})
+        return rc
+
     # Try portal first if we have a session
     # Portal handles chunking internally (sequential generation + broadcast)
     if session:
         portal_url = _get_portal_url()
-        has_connections, actual_session = _check_portal_connections(session, portal_url)
+        has_connections, actual_session, clients = _check_portal_connections(session, portal_url)
 
         if has_connections:
-            return _remote_say(text, actual_session, portal_url)
+            rc = _remote_say(text, actual_session, portal_url)
+            return _say_result(rc, "browser", clients)
 
     # No portal connections — chunk locally for better TTS quality
     from .utils.chunker import chunk_text
     chunks = chunk_text(text)
 
+    last_sink = "os-voice"
     for chunk in chunks:
-        result = _local_say_dispatch(
+        result, last_sink = _local_say_dispatch(
             chunk, voice, exaggeration, cfg_weight, tts_config,
             backend=backend, instructions=instructions, language=language, stream=stream
         )
         if result != 0:
-            return result
+            return _say_result(result, last_sink)
 
-    return 0
+    return _say_result(0, last_sink)
 
 
 def cmd_notify_parent(args) -> int:
@@ -2662,10 +2476,10 @@ def cmd_notify_parent(args) -> int:
         agentwire notify --to agentwire "Build finished"
     """
     text = " ".join(args.text) if args.text else ""
+    json_mode = getattr(args, 'json', False)
 
     if not text:
-        print("Usage: agentwire notify <message>", file=sys.stderr)
-        return 1
+        return _output_result(False, json_mode, "Usage: agentwire notify-parent <message>")
 
     target_session = getattr(args, 'to', None)
     current_session = pane_manager.get_current_session()
@@ -2690,13 +2504,13 @@ def cmd_notify_parent(args) -> int:
 
     if target_session:
         if target_session == current_session and current_pane == 0:
-            print("Cannot notify own pane", file=sys.stderr)
-            return 1
+            return _output_result(False, json_mode, "Cannot notify own pane")
     elif current_pane is not None and current_pane > 0 and current_session:
         target_session = current_session
     else:
-        print("No target session (set 'parent' in .agentwire.yml or use --to)", file=sys.stderr)
-        return 1
+        return _output_result(
+            False, json_mode,
+            "No target session (set 'parent' in .agentwire.yml or use --to)")
 
     # safe_deliver refuses targets where a paste could do damage (live
     # dialog on screen, bare shell, parked session) and verifies the paste
@@ -2704,6 +2518,14 @@ def cmd_notify_parent(args) -> int:
     from agentwire import prompt_router
 
     delivered, reason = prompt_router.safe_deliver(target_session, 0, notification)
+    if json_mode:
+        _output_json({
+            "success": delivered,
+            "target": target_session,
+            "delivered": delivered,
+            "reason": reason if not delivered else None,
+        })
+        return 0 if delivered else 1
     if not delivered:
         print(f"Notification not delivered to {target_session}: {reason}", file=sys.stderr)
         return 1
@@ -3240,7 +3062,8 @@ def cmd_notify(args) -> int:
 
         if result.get("success"):
             if json_mode:
-                _output_json({"success": True, "event": event, "session": session})
+                _output_json({"success": True, "event": event, "session": session,
+                              "clients": result.get("clients", 0)})
             return 0
         else:
             return _output_result(False, json_mode, result.get("error", "Unknown error"))
@@ -3265,6 +3088,7 @@ def cmd_send(args) -> int:
     prompt = " ".join(args.prompt) if args.prompt else ""
     json_mode = getattr(args, 'json', False)
     wait_ready = getattr(args, 'wait_ready', False)
+    verify = getattr(args, 'verify', False)
 
     if wait_ready and pane_index is not None:
         return _output_result(False, json_mode, "--wait-ready targets a session's pane 0; it can't be combined with --pane")
@@ -3276,6 +3100,21 @@ def cmd_send(args) -> int:
 
         try:
             target_session = session_full or pane_manager.get_current_session()
+            if verify:
+                # Confirm the paste actually landed in the pane (a paste into a
+                # busy/booting pane can vanish silently). Report verified vs not.
+                from agentwire.session_ready import send_verified
+
+                ok = send_verified(target_session, prompt, pane_index=pane_index)
+                if json_mode:
+                    _output_json({
+                        "success": True, "pane": pane_index, "session": target_session,
+                        "verified": ok,
+                        "message": "Prompt sent (verified)" if ok else "Prompt sent but delivery could not be verified",
+                    })
+                else:
+                    print(f"Sent to pane {pane_index}" + ("" if ok else " (delivery NOT verified)"))
+                return 0
             pane_manager.send_to_pane(session_full, pane_index, prompt)
             if json_mode:
                 _output_json({
@@ -3351,7 +3190,12 @@ def cmd_send(args) -> int:
             return 1
 
         if json_mode:
-            print(json.dumps({"success": True, "session": session_full, "machine": machine_id, "message": "Prompt sent"}))
+            # Delivery can't be verified across SSH (no pane capture) — say so
+            # honestly rather than implying confirmation.
+            out = {"success": True, "session": session_full, "machine": machine_id, "message": "Prompt sent"}
+            if verify:
+                out["verified"] = None  # unverifiable: remote session
+            print(json.dumps(out))
         else:
             print(f"Sent to {session_full}")
         return 0
@@ -3387,6 +3231,21 @@ def cmd_send(args) -> int:
             print(json.dumps({"success": True, "session": session_full, "machine": None, "verified": True, "message": "Prompt sent"}))
         else:
             print(f"Sent to {session} (verified)")
+        return 0
+
+    if verify:
+        # Same delivery verification as --wait-ready, but without waiting for a
+        # fresh-boot banner — for an already-running session, just confirm the
+        # paste landed and report verified vs unconfirmed.
+        from agentwire.session_ready import send_verified
+
+        ok = send_verified(session, prompt)
+        if json_mode:
+            print(json.dumps({"success": True, "session": session_full, "machine": None,
+                              "verified": ok,
+                              "message": "Prompt sent" if ok else "Prompt sent but delivery could not be verified"}))
+        else:
+            print(f"Sent to {session}" + (" (verified)" if ok else " (delivery NOT verified)"))
         return 0
 
     # Delegate paste + Enter handling to the shared pane_manager helper so
@@ -6986,15 +6845,30 @@ def cmd_network_status(args) -> int:
     print("\nServices")
     print("-" * 60)
 
-    # Default-tier TTS has no service to health-check
-    tts_config = load_config().get("tts", {})
-    tts_backend = tts_config.get("backend", "default")
+    # Resolve the ACTIVE voice tier for each subsystem and only health-check a
+    # server when that tier actually uses one. A tier with no server (default
+    # TTS, cloud/browser-fallback STT) reports its path, not a phantom probe —
+    # and an orphaned engine server (up but unused by the tier) is flagged.
+    from .config import load_config as load_config_typed
+    from .voice_status import resolve_stt_status, resolve_tts_status
 
-    for service_name in ["portal", "tts"]:
-        if service_name == "tts" and tts_backend != "custom":
-            print(f"  {'Tts':<16}{'browser/OS voice':<18}[ok] default tier")
-            continue
+    typed_cfg = load_config_typed()
+    for resolver in (resolve_tts_status, resolve_stt_status):
+        vs = resolver(typed_cfg)
+        label = vs.subsystem.upper()
+        loc = vs.server_url if vs.server_url else f"{vs.tier} tier"
+        if vs.ready:
+            mark, note = "[ok]", (vs.path if not vs.server_url else "running")
+        else:
+            mark, note = "[!!]", vs.detail
+            issues.append({"type": "service_down", "service": vs.subsystem,
+                            "location": loc, "error": vs.detail})
+        print(f"  {label:<16}{loc:<18}{mark} {note}")
+        for w in vs.warnings:
+            print(f"  {'':<16}{'':<18}[..] {w}")
+            issues.append({"type": "voice_orphan", "service": vs.subsystem, "warning": w})
 
+    for service_name in ["portal"]:
         service_config = getattr(ctx.config.services, service_name, None)
         if service_config is None:
             continue
@@ -11178,6 +11052,7 @@ def main() -> int:
     say_parser.add_argument("--notify", type=str, metavar="SESSION", help="Also notify this session (sends message as input)")
     say_parser.add_argument("--no-auto-notify", action="store_true", help="Disable auto-notify to pane 0 when in worker pane")
     say_parser.add_argument("--display", type=str, metavar="TEXT", help="Also show the human a desktop toast with this (different) text — the asymmetric brief in one call")
+    say_parser.add_argument("--json", action="store_true", help="Output the sink ack as JSON (which path played: browser/local/os)")
     say_parser.set_defaults(func=cmd_say)
 
     # === notify command (worker→parent) ===
@@ -11187,6 +11062,7 @@ def main() -> int:
     notify_cmd_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     notify_cmd_parser.add_argument("--raw", action="store_true",
                                    help="Send the message verbatim (no [NOTIFY from ...] prefix)")
+    notify_cmd_parser.add_argument("--json", action="store_true", help="Output as JSON")
     notify_cmd_parser.set_defaults(func=cmd_notify_parent)
 
     # === open command (artifact windows) ===
@@ -11275,6 +11151,9 @@ def main() -> int:
     send_parser.add_argument("prompt", nargs="*", help="Prompt to send")
     send_parser.add_argument("--wait-ready", dest="wait_ready", action="store_true",
                              help="Wait for the agent to be ready, then verify delivery (local sessions only)")
+    send_parser.add_argument("--verify", action="store_true",
+                             help="Confirm the message actually landed in the pane (local only); "
+                                  "report verified vs unconfirmed instead of blind success")
     send_parser.add_argument("--timeout", type=float, default=30.0,
                              help="Readiness wait timeout in seconds (with --wait-ready, default: 30)")
     send_parser.add_argument("--json", action="store_true", help="Output as JSON")

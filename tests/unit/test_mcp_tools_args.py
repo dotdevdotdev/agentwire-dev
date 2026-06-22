@@ -56,9 +56,11 @@ class TestSessionTools:
     @patch("agentwire.mcp_server.get_caller_session", return_value="orchestrator")
     def test_session_send_cross_session(self, mock_caller, mock_cmd):
         from agentwire.mcp_server import session_send
-        mock_cmd.return_value = _success()
+        mock_cmd.return_value = _success(verified=True)
         session_send(session="worker", message="do task")
-        sent_msg = mock_cmd.call_args[0][0][3]  # args[3] = message
+        args = mock_cmd.call_args[0][0]
+        assert args[:4] == ["send", "-s", "worker", "--verify"]
+        sent_msg = args[4]  # message follows --verify
         assert '[MESSAGE FROM SESSION "orchestrator"' in sent_msg
         assert 'session_send(session="orchestrator"' in sent_msg
 
@@ -66,10 +68,11 @@ class TestSessionTools:
     @patch("agentwire.mcp_server.get_caller_session", return_value=None)
     def test_session_send_no_caller(self, mock_caller, mock_cmd):
         from agentwire.mcp_server import session_send
-        mock_cmd.return_value = _success()
-        session_send(session="target", message="hello")
-        sent_msg = mock_cmd.call_args[0][0][3]
-        assert sent_msg == "hello"
+        mock_cmd.return_value = _success(verified=True)
+        result = session_send(session="target", message="hello")
+        args = mock_cmd.call_args[0][0]
+        assert args == ["send", "-s", "target", "--verify", "hello"]
+        assert "verified" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -81,18 +84,18 @@ class TestPaneTools:
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     def test_pane_send_with_session(self, mock_cmd):
         from agentwire.mcp_server import pane_send
-        mock_cmd.return_value = _success()
+        mock_cmd.return_value = _success(verified=True)
         pane_send(pane=1, message="task", session="my-session")
         args = mock_cmd.call_args[0][0]
-        assert args == ["send", "--pane", "1", "task", "-s", "my-session"]
+        assert args == ["send", "--pane", "1", "--verify", "task", "-s", "my-session"]
 
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     def test_pane_send_without_session(self, mock_cmd):
         from agentwire.mcp_server import pane_send
-        mock_cmd.return_value = _success()
+        mock_cmd.return_value = _success(verified=True)
         pane_send(pane=0, message="hi")
         args = mock_cmd.call_args[0][0]
-        assert args == ["send", "--pane", "0", "hi"]
+        assert args == ["send", "--pane", "0", "--verify", "hi"]
 
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     def test_pane_output_success(self, mock_cmd):
@@ -117,26 +120,30 @@ class TestPaneTools:
 class TestVoiceTools:
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     def test_notify_with_target(self, mock_cmd):
-        from agentwire.mcp_server import notify
-        mock_cmd.return_value = _success()
-        notify(text="hey", to="main")
+        from agentwire.mcp_server import notify_parent
+        mock_cmd.return_value = _success(delivered=True, target="main")
+        result = notify_parent(text="hey", session="main")
         args = mock_cmd.call_args[0][0]
         assert args == ["notify-parent", "--to", "main", "hey"]
+        assert "delivered" in result.lower()
 
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     def test_notify_without_target(self, mock_cmd):
-        from agentwire.mcp_server import notify
-        mock_cmd.return_value = _success()
-        notify(text="hey")
+        from agentwire.mcp_server import notify_parent
+        mock_cmd.return_value = _success(delivered=True, target="parent")
+        notify_parent(text="hey")
         args = mock_cmd.call_args[0][0]
         assert args == ["notify-parent", "hey"]
 
     @patch("agentwire.mcp_server.run_agentwire_cmd")
-    def test_notify_failure(self, mock_cmd):
-        from agentwire.mcp_server import notify
-        mock_cmd.return_value = _failure("no portal")
-        result = notify(text="hey")
-        assert "Failed" in result
+    def test_notify_not_delivered(self, mock_cmd):
+        from agentwire.mcp_server import notify_parent
+        # safe_deliver refused (e.g. parked session) — surfaced, not hidden.
+        mock_cmd.return_value = {"success": False, "delivered": False,
+                                 "target": "main", "reason": "session is parked"}
+        result = notify_parent(text="hey", session="main")
+        assert "NOT delivered" in result
+        assert "parked" in result
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +273,8 @@ class TestEmailTool:
         result = email_send(body="hi", to="a@b.com", subject="test")
         args = mock_cmd.call_args[0][0]
         assert args == ["email", "--body", "hi", "--to", "a@b.com", "--subject", "test"]
-        assert "sent" in result.lower()
+        # Honest async boundary: accepted by provider, not "delivered" (#444).
+        assert "accepted by provider" in result.lower()
 
     @patch("agentwire.mcp_server.run_agentwire_cmd")
     def test_email_send_minimal(self, mock_cmd):

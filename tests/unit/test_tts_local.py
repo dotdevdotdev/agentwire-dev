@@ -251,20 +251,21 @@ class TestLocalSayDispatch:
     def test_default_tier_prefers_kokoro(self):
         with patch("agentwire.__main__._local_say_kokoro", return_value=0) as kokoro, \
              patch("agentwire.__main__._local_say_os") as os_say:
-            assert self._dispatch({"backend": "default"}) == 0
+            # Returns (return_code, sink) — the sink names the path that played.
+            assert self._dispatch({"backend": "default"}) == (0, "local-speakers (kokoro)")
         kokoro.assert_called_once()
         os_say.assert_not_called()
 
     def test_default_tier_falls_back_to_os_voice(self):
         with patch("agentwire.__main__._local_say_kokoro", return_value=1), \
              patch("agentwire.__main__._local_say_os", return_value=0) as os_say:
-            assert self._dispatch({"backend": "default"}) == 0
+            assert self._dispatch({"backend": "default"}) == (0, "os-voice")
         os_say.assert_called_once()
 
     def test_backend_none_never_synthesizes(self):
         with patch("agentwire.__main__._local_say_kokoro") as kokoro, \
              patch("agentwire.__main__._local_say_os", return_value=0) as os_say:
-            assert self._dispatch({"backend": "none"}) == 0
+            assert self._dispatch({"backend": "none"}) == (0, "os-voice")
         kokoro.assert_not_called()
         os_say.assert_called_once()
 
@@ -272,7 +273,7 @@ class TestLocalSayDispatch:
         with patch("agentwire.__main__._local_say", return_value=0) as shim, \
              patch("agentwire.__main__._local_say_kokoro") as kokoro, \
              patch("agentwire.__main__._local_say_os") as os_say:
-            assert self._dispatch({"backend": "custom"}) == 0
+            assert self._dispatch({"backend": "custom"}) == (0, "custom-server")
         shim.assert_called_once()
         kokoro.assert_not_called()
         os_say.assert_not_called()

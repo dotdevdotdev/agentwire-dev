@@ -71,7 +71,8 @@ def test_mic_info_when_enumeration_unparseable(monkeypatch):
 
 
 def test_stt_default_fails_when_shim_down(monkeypatch):
-    monkeypatch.setattr(dv, "_http_health", lambda url, timeout=2.0: (False, None))
+    import agentwire.voice_status as vs
+    monkeypatch.setattr(vs, "_probe", lambda url, endpoint="/health", timeout=2.0: (False, "connection refused"))
     import agentwire.stt as stt_mod
     monkeypatch.setattr(stt_mod, "moonshine_importable", lambda: True)
     r = dv.check_stt(_cfg())
@@ -81,15 +82,14 @@ def test_stt_default_fails_when_shim_down(monkeypatch):
 
 
 def test_stt_default_ok_when_shim_healthy(monkeypatch):
-    monkeypatch.setattr(
-        dv, "_http_health",
-        lambda url, timeout=2.0: (True, {"status": "ok", "model": {"model": "moonshine/base"}}),
-    )
+    import agentwire.voice_status as vs
+    monkeypatch.setattr(vs, "_probe", lambda url, endpoint="/health", timeout=2.0: (True, None))
     import agentwire.stt as stt_mod
     monkeypatch.setattr(stt_mod, "moonshine_importable", lambda: True)
     r = dv.check_stt(_cfg())
     assert r.status == "ok"
-    assert "moonshine/base" in r.detail
+    assert "healthy" in r.detail
+    assert "8101" in r.detail
 
 
 def test_stt_default_info_when_moonshine_absent(monkeypatch):
@@ -101,7 +101,8 @@ def test_stt_default_info_when_moonshine_absent(monkeypatch):
 
 
 def test_stt_custom_fails_when_shim_down(monkeypatch):
-    monkeypatch.setattr(dv, "_http_health", lambda url, timeout=2.0: (False, None))
+    import agentwire.voice_status as vs
+    monkeypatch.setattr(vs, "_probe", lambda url, endpoint="/health", timeout=2.0: (False, "connection refused"))
     r = dv.check_stt(_cfg(backend="custom", url="http://localhost:9"))
     assert r.failed
     assert "custom" in r.detail
@@ -195,13 +196,12 @@ def test_only_stt_red_when_shim_down(monkeypatch):
     monkeypatch.setattr(dv.shutil, "which", lambda n: "/usr/bin/tmux")
     monkeypatch.setattr(dv, "_tmux_server_running", lambda: True)
 
-    # STT shim down (dead), portal up.
-    def fake_health(url, timeout=2.0):
-        if "8101" in url or ":9" in url:
-            return (False, None)
-        return (True, {"status": "ok"})
+    # STT shim down (dead) — resolver probes via voice_status._probe.
+    import agentwire.voice_status as vs
+    monkeypatch.setattr(vs, "_probe", lambda url, endpoint="/health", timeout=2.0: (False, "connection refused"))
 
-    monkeypatch.setattr(dv, "_http_health", fake_health)
+    # Portal up — check_portal still uses dv._http_health.
+    monkeypatch.setattr(dv, "_http_health", lambda url, timeout=2.0: (True, {"status": "ok"}))
     cfg = _cfg()
     cfg.portal = SimpleNamespace(url="http://localhost:8765")  # up per fake_health
 

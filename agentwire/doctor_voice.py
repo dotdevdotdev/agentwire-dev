@@ -187,60 +187,40 @@ def check_mic() -> StageResult:
 def check_stt(config: Any) -> StageResult:
     """Stage 2 — the STT process behind transcription.
 
-    Default tier = the portal-managed Moonshine ``:8101`` shim (#383); custom
-    tier = a user/remote shim at ``stt.url``; cloud tier = an OpenAI-compatible
-    API keyed from the environment.
+    Delegates tier resolution to :mod:`agentwire.voice_status` (the SSOT that
+    every status surface shares): cloud tier checks the API key, default tier
+    probes the Moonshine ``:8101`` shim or reports the browser fallback, custom
+    tier probes the configured shim. Only a tier that actually has a server is
+    probed (#441).
     """
+    from .voice_status import resolve_stt_status
+
     name = "STT process"
-    stt = getattr(config, "stt", None)
-    backend = getattr(stt, "backend", "default") if stt is not None else "default"
+    st = resolve_stt_status(config)
 
-    if backend == "cloud":
-        import os
-        cloud = getattr(stt, "cloud", None) or {}
-        key_env = cloud.get("api_key_env", "OPENAI_API_KEY")
-        if os.environ.get(key_env):
-            return StageResult(name, "ok", f"cloud tier ({key_env} is set)")
-        return StageResult(
-            name, "fail", f"cloud tier but {key_env} is not set",
-            fixes=[f"Add {key_env}=... to ~/.agentwire/.env (docs/wiki/security/secrets.md)"],
-        )
+    # A tier with no probed server: cloud is a real working path (green when
+    # its key is set, red when missing); the default-tier browser fallback is
+    # neutral info (works, but isn't host-checkable).
+    if not st.server_url:
+        if st.tier == "cloud":
+            if st.ready:
+                return StageResult(name, "ok", f"cloud tier — {st.detail}")
+            return StageResult(
+                name, "fail", f"cloud tier — {st.detail}",
+                fixes=["Add the API key to ~/.agentwire/.env (docs/wiki/security/secrets.md)"],
+            )
+        return StageResult(name, "info", f"{st.path} — {st.detail}")
 
-    from .stt import DEFAULT_STT_URL, moonshine_importable
+    if st.ready:
+        return StageResult(name, "ok", st.detail)
 
-    if backend == "default" and not moonshine_importable():
-        # py3.14+ or base install without the moonshine extra — push-to-talk
-        # transcribes in the browser via SpeechRecognition. Works, no shim.
-        return StageResult(
-            name, "info",
-            "browser SpeechRecognition fallback (Moonshine not installed for "
-            "this Python — no host shim to run)",
-        )
-
-    url = getattr(stt, "url", None) or DEFAULT_STT_URL
-    reachable, payload = _http_health(url)
-    if reachable and (payload or {}).get("status") == "ok":
-        # /health "model" may be a nested {backend, model, load_time} dict or a
-        # bare string depending on the shim — surface the human-readable name.
-        model = (payload or {}).get("model", "unknown")
-        if isinstance(model, dict):
-            model = model.get("model", "unknown")
-        return StageResult(name, "ok", f"{backend} tier shim healthy at {url} (model {model})")
-
-    if backend == "default":
-        fixes = [
-            "The portal auto-starts it; if it isn't running: agentwire stt start",
-            "If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'",
-        ]
-    else:
-        fixes = [
-            "agentwire stt start",
-            "If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'",
-        ]
+    fixes = ["agentwire stt start",
+             "If it won't boot: uv pip install --python .venv/bin/python -e '.[stt]'"]
+    if st.tier == "default":
+        fixes[0] = "The portal auto-starts it; if it isn't running: agentwire stt start"
     return StageResult(
         name, "fail",
-        f"{backend}-tier shim not responding at {url} — push-to-talk will fail "
-        "(or fall back to browser speech) until it's back",
+        f"{st.detail} — push-to-talk will fail (or fall back to browser speech) until it's back",
         fixes=fixes,
     )
 

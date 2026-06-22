@@ -12,17 +12,17 @@ through here.
 import time
 
 
-def send_to_session(session: str, message: str) -> None:
-    """Inject a message into a session's pane 0."""
+def send_to_session(session: str, message: str, pane_index: int = 0) -> None:
+    """Inject a message into a session's pane (pane 0 by default)."""
     from agentwire import pane_manager
 
-    pane_manager.send_to_target(f"{session}.0", message, enter=True)
+    pane_manager.send_to_target(f"{session}.{pane_index}", message, enter=True)
 
 
-def capture_session(session: str, lines: int = 60) -> str:
+def capture_session(session: str, lines: int = 60, pane_index: int = 0) -> str:
     from agentwire import pane_manager
 
-    return pane_manager.capture_pane(session, 0, lines=lines)
+    return pane_manager.capture_pane(session, pane_index, lines=lines)
 
 
 def wait_for_session_ready(
@@ -123,18 +123,21 @@ def send_verified(
     marker: str | None = None,
     retries: int = 1,
     settle: float = 2.0,
+    pane_index: int = 0,
 ) -> bool:
     """Send a message and verify it actually landed in the pane.
 
     After sending, confirm the message is visible in the pane — via
     *marker* if given (council's explicit-marker pattern), otherwise via
     :func:`message_visible` on the message itself. Retry once if not.
+
+    *pane_index* targets a worker pane (1+) instead of the session's pane 0.
     """
     for _ in range(retries + 1):
-        send_to_session(session, message)
+        send_to_session(session, message, pane_index=pane_index)
         time.sleep(settle)
         try:
-            capture = capture_session(session)
+            capture = capture_session(session, pane_index=pane_index)
             if marker is not None:
                 if marker in capture:
                     return True
