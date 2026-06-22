@@ -1232,7 +1232,16 @@ def say(text: str, session: str | None = None, voice: str | None = None, display
 
     # Sink ack (#444): report which path actually played, not a blind "queued".
     sink = data.get("sink")
-    toast = " Toast shown." if display else ""
+    # Toast ack: report the toast's real fate, not a blind "shown". `toast` is
+    # True if the portal accepted it, False if the portal was unreachable, None
+    # if no display was requested.
+    toast_ok = data.get("toast")
+    if toast_ok is None:
+        toast = ""
+    elif toast_ok:
+        toast = " Toast posted to the portal."
+    else:
+        toast = " (toast not delivered — portal unreachable)."
     if sink == "browser":
         n = data.get("clients", 0)
         return f"Spoken to {n} connected browser client{'s' if n != 1 else ''}.{toast}"
