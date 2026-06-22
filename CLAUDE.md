@@ -131,6 +131,10 @@ Interactive prompts (permission, plan-approval, AskUserQuestion) hitting a child
 
 Multi-soul orchestrator sitting, **namespaced by `<name>`** so independent councils run concurrently: `agentwire-council-<name>` fans prompts out to lens sessions (`council-<name>-brain`, `council-<name>-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/<name>/prompts/`; the orchestrator collects and synthesizes with attribution. Targeting: `--name` → cwd-repo-slug if it matches a live sitting → sole live sitting → else error+list; every command echoes which sitting it hit. The standard `soul` role self-excludes from any `council-*` session. CLI under `agentwire council ...` (incl. `council list`), 6 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](docs/wiki/council.md).
 
+## Briefing Mode
+
+Asymmetric-verbosity orchestration: a terse, human-facing **`anchor`** (persona role; replaces orchestrator) fans out exhaustively-verbose **`correspondent`** worktrees (`worktree_create(roles="correspondent", prompt=…)`; stacks on the worktree-session rail). Correspondents file deep reports into the dropbox (`agentwire research ensure` / `research_dir()` → `~/.agentwire/research/<anchor>/`) and signal **passively** — `msg send --kind ingest --ref <path>` is never auto-delivered, so it never drives the anchor. The anchor stays quiet until the human cues it, then `msg pull`s the pointers, reads the files, and **briefs across two channels in one call**: `say(text="<spoken headline>", display="<richer toast card>")` — different content per channel; the toast (`notify_user`) renders a safe markdown subset. Teardown via `worktree_remove` / `worktree_prune`. The notify-* family is split by target: `notify_user` (human toast), `notify_parent` (your orchestrator), `notify_event` (portal lifecycle). Full reference: [`docs/wiki/briefing-mode.md`](docs/wiki/briefing-mode.md).
+
 ## Reference Skills
 
 Reference detail lives in skills under `.claude/skills/` — invoke as needed:

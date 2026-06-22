@@ -43,7 +43,9 @@ agentwire worktree name -b develop  # from specific base branch
 agentwire worktree name -c      # from repo's current branch
 agentwire worktree name -e      # checkout existing branch (no new branch)
 agentwire worktree name --ref v2.0  # detached at tag/commit
-agentwire worktree --list       # list this repo's worktree sessions (registry); --all = every repo
+agentwire worktree name --prompt "task"  # spawn AND seed the first message in one call (verified delivery)
+agentwire worktree --list       # list this repo's worktree sessions + read-only git status; --all = every repo
+agentwire worktree --status name  # read-only git status (dirty/ahead/behind/pushed) for one worktree
 agentwire worktree --remove name  # kill session + remove worktree + unregister (cleanup/recovery)
 agentwire worktree --prune      # drop registry entries whose worktree is gone + git worktree prune
 agentwire fork -s name          # fork session into new worktree
@@ -99,6 +101,7 @@ agentwire stt start --backend moonshine --model moonshine/base --port 8101  # ad
 # Voice
 agentwire say "text"            # speak (auto-routes to browser or local)
 agentwire say -s name "text"    # speak to specific session
+agentwire say "spoken" --display "richer card"  # speak AND show a desktop toast with different text (one call)
 agentwire notify-parent "text"   # notify parent session (worker→orchestrator)
 agentwire notify-parent --to name "text" # notify specific session
 agentwire notify-parent --raw --to name "text"  # verbatim, no [NOTIFY ...] prefix
@@ -115,11 +118,17 @@ agentwire prompts clear -s name --pane 1  # drop a marker
 
 # Polite messaging (non-interrupting agent-to-agent inbox; see wiki sessions/messaging.md)
 agentwire msg send --to name "text"          # queue a message (delivers when their box is clear)
-agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation
+agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation|ingest
+agentwire msg send --to name --kind ingest --ref "/path/report.md" "topic"  # PASSIVE: never auto-delivered, pull-only
 agentwire msg send --to @all "team update"   # broadcast to live agent sessions except sender
-agentwire msg inbox -s name                  # peek pending (does not drain)
+agentwire msg inbox -s name                  # peek pending + passive (does not drain/consume)
+agentwire msg pull -s name                   # read + REMOVE passive (ingest) messages — the voluntary pull
 agentwire msg dead -s name                   # list dropped (dead-lettered) msgs + reason/timestamp
 agentwire msg flush -s name                  # attempt a drain now (still gated on empty box + safe target)
+
+# Research dropbox (Briefing Mode)
+agentwire research dir -s name               # print the dropbox path (~/.agentwire/research/<session>/)
+agentwire research ensure -s name            # create + print the dropbox path
                                 # `msg` NEVER clobbers a human's draft — unlike `send`, which
                                 # pastes + Enter immediately. Use `send` only to forcibly drive a session now.
 
@@ -215,8 +224,10 @@ agentwire network status        # complete network health check
 agentwire doctor                # auto-diagnose and fix issues
 agentwire doctor --voice        # only the push-to-talk path: mic, STT shim, portal/tunnel, tmux+PTT (pass/fail + fix)
 
-# Notifications
-agentwire notify event          # notify portal of state changes (session/pane events)
+# Notifications (the notify-* family, by target)
+agentwire notify-event EVENT    # broadcast a portal lifecycle event (session/pane); usually called by tmux hooks
+agentwire notify-parent "text"  # text up to your parent/orchestrator session
+agentwire notify-user "text"    # desktop toast for the human (safe markdown: bold, [links](url), line breaks)
 
 # MCP Server
 agentwire mcp                   # expose agentwire as MCP server
