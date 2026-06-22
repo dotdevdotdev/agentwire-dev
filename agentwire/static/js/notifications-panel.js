@@ -8,7 +8,6 @@
 import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 
-const NOTIFICATIONS_SESSION = 'agentwire-notifications';
 const MAX_TOASTS = 8;
 
 class NotificationsPanel {
@@ -76,10 +75,11 @@ class NotificationsPanel {
             <div class="notification-toast-body">${this._renderRichText(text)}</div>
         `;
 
-        // Click body -> open notifications session terminal
+        // Click body -> open the subject session this notification is about
         toast.querySelector('.notification-toast-body').addEventListener('click', () => {
-            // Import dynamically to avoid circular deps
-            const event = new CustomEvent('open-notification-session');
+            const event = new CustomEvent('open-notification-session', {
+                detail: { session: toast.dataset.session || '' },
+            });
             document.dispatchEvent(event);
         });
 
