@@ -253,7 +253,7 @@ def _sweep_legacy_once() -> list[str]:
 def _write_workspace(name: str, session_type: str) -> None:
     """Workspace dir the sitting's sessions run in.
 
-    ``parent: agentwire-council-<name>`` routes any ``agentwire notify`` from a
+    ``parent: agentwire-council-<name>`` routes any ``agentwire notify-parent`` from a
     soul to the sitting's own orchestrator for free.
     """
     ws = state.workspace_dir(name)

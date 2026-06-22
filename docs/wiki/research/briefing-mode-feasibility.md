@@ -4,6 +4,7 @@ status: active
 last_updated: 2026-06-21
 phase_1: shipped
 phase_2: shipped
+phase_3: shipped
 ---
 
 # Briefing Mode — asymmetric-verbosity orchestration
@@ -12,7 +13,9 @@ phase_2: shipped
 > - **Phase 1:** the `anchor` and `correspondent` roles (`agentwire/roles/`). Spawn an anchor with `agentwire new -s <name> --roles anchor`; it fans out correspondents, which file deep reports to a dropbox (`~/.agentwire/research/<anchor-session>/`); the anchor briefs asymmetrically (`say` headline + `portal_notify` card) on the human's cue.
 > - **Phase 2:** the passive `ingest` message kind — never auto-delivered (routes to a reserved `ingest/` subdir the drain skips), pulled with `agentwire msg pull` / MCP `msg_pull`. Correspondents now drop a passive pointer; the anchor pulls on the human's cue (awareness without being driven). Plus MCP `worktree_create` and a `--prompt` seed flag on `agentwire worktree` (spawn + seed in one call, verified delivery), completing the worktree lifecycle quartet (create / status / list / remove).
 >
-> **Phase 3** (unified `say(display=)`, markdown in the toast, blessed dropbox resolver + typed `ref` field) remains — see §9.
+> - **Phase 3 (shipped):** unified `say(text=, display=)` — one call speaks a headline AND shows a richer text card (different content per channel). The toast (`notify_user`) now renders a safe markdown subset (bold, [links](url), line breaks). Typed `ref` field on messages + an `agentwire research` / `research_dir()` dropbox resolver under `~/.agentwire/research/<session>/`. Plus a **comms-surface rename** for clarity: the three confusable notify-* tools are now `notify_user` (human toast, was `portal_notify`), `notify_parent` (your orchestrator, was `notify`), `notify_event` (portal lifecycle, was `session_notify` / CLI `notify`→`notify-event`). And parity helpers: MCP `worktree_create` / `worktree_prune` / `msg_flush`, CLI `notify-user`.
+>
+> **Note for readers:** the body below is the original point-in-time investigation; where it cites `portal_notify`, "no worktree-create tool yet", or `mkdir` for the dropbox, the shipped names/tools above supersede it.
 
 > Feasibility + design report. Investigates building an orchestration mode where the **human-facing orchestrator is deliberately terse** (and splits its summary across voice vs. on-screen text so the two channels complement rather than duplicate) while **researcher worktree sessions are exhaustively verbose** and go deep. Researchers signal the orchestrator only with **passive, non-driving** "output ready" awareness; the orchestrator acts only when the **human** directs it.
 >

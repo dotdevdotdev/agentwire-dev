@@ -83,6 +83,7 @@ class Message:
     attempts: int = 0
     reason: str = ""  # last defer reason (why delivery kept failing)
     dead_ts: int = 0  # epoch ms when dead-lettered (0 = still live)
+    ref: str = ""  # optional machine-readable pointer (e.g. a report path) — for ingest
     path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -96,6 +97,7 @@ class Message:
             "attempts": self.attempts,
             "reason": self.reason,
             "dead_ts": self.dead_ts,
+            "ref": self.ref,
         }
 
     def render(self) -> str:
@@ -161,6 +163,7 @@ def _read_message(path: Path) -> "Message | None":
             attempts=int(data.get("attempts", 0)),
             reason=str(data.get("reason", "")),
             dead_ts=int(data.get("dead_ts", 0)),
+            ref=str(data.get("ref", "")),
             path=path,
         )
     except (KeyError, ValueError, TypeError):
@@ -277,7 +280,7 @@ def resolve_targets(to: str, sender: "str | None") -> list[str]:
 
 
 def enqueue(
-    to: str, text: str, kind: str = "note", sender: "str | None" = None
+    to: str, text: str, kind: str = "note", sender: "str | None" = None, ref: str = ""
 ) -> list[Message]:
     """Drop a message into one or more recipient inboxes. Returns what was written."""
     if kind not in KINDS:
@@ -298,6 +301,7 @@ def enqueue(
             text=text,
             ts=ns // 1_000_000,  # epoch ms (schema), derived from the same clock
             attempts=0,
+            ref=ref,
         )
         # Passive kinds land in the ingest/ subdir, which the drain never walks
         # — so they wait silently until the recipient pulls them.
