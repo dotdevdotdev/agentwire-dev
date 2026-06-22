@@ -2418,8 +2418,9 @@ def cmd_say(args) -> int:
     # alongside the spoken audio (different content per channel). Best-effort —
     # only lands if the portal's up; the spoken path proceeds regardless.
     display = getattr(args, 'display', None)
-    if display:
-        _post_desktop_notification(display, session=session, priority="high")
+    # Capture whether the toast actually reached the portal, so the caller can
+    # report it honestly rather than claiming "shown" when the portal is down.
+    toast_ok = _post_desktop_notification(display, session=session, priority="high") if display else None
 
     def _say_result(rc: int, sink: str, clients: int = 0) -> int:
         """Report which sink actually received the audio (#444): browser
@@ -2427,7 +2428,7 @@ def cmd_say(args) -> int:
         failed dispatch — instead of a blind "queued"."""
         if json_mode:
             _output_json({"success": rc == 0, "sink": sink if rc == 0 else None,
-                          "clients": clients, "session": session,
+                          "clients": clients, "session": session, "toast": toast_ok,
                           "error": None if rc == 0 else f"playback failed via {sink}"})
         return rc
 
@@ -3103,9 +3104,13 @@ def cmd_send(args) -> int:
             if verify:
                 # Confirm the paste actually landed in the pane (a paste into a
                 # busy/booting pane can vanish silently). Report verified vs not.
+                # retries=0: send ONCE and report — never re-paste. A streaming
+                # pane can scroll the echo out of the capture window and produce
+                # a false miss; re-pasting there would deliver the instruction
+                # twice, which is worse than a false "not verified" warning.
                 from agentwire.session_ready import send_verified
 
-                ok = send_verified(target_session, prompt, pane_index=pane_index)
+                ok = send_verified(target_session, prompt, pane_index=pane_index, retries=0)
                 if json_mode:
                     _output_json({
                         "success": True, "pane": pane_index, "session": target_session,
@@ -3236,10 +3241,12 @@ def cmd_send(args) -> int:
     if verify:
         # Same delivery verification as --wait-ready, but without waiting for a
         # fresh-boot banner — for an already-running session, just confirm the
-        # paste landed and report verified vs unconfirmed.
+        # paste landed and report verified vs unconfirmed. retries=0: send ONCE
+        # and report — a re-paste on a false miss (a busy session that scrolled
+        # the echo past the capture window) would deliver the message twice.
         from agentwire.session_ready import send_verified
 
-        ok = send_verified(session, prompt)
+        ok = send_verified(session, prompt, retries=0)
         if json_mode:
             print(json.dumps({"success": True, "session": session_full, "machine": None,
                               "verified": ok,
