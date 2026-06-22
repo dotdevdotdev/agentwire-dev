@@ -235,9 +235,13 @@ async function init() {
     // Scratch pad drawer (Alt+N, right-edge handle, selection capture)
     scratchpad.init();
 
-    // Click on a toast -> open the notifications session as interactive terminal
-    document.addEventListener('open-notification-session', () => {
-        openSessionTerminal('agentwire-notifications', 'terminal');
+    // Click on a toast -> open the subject session it's about as interactive terminal.
+    // No subject (e.g. a system-level toast) -> no-op, never fall back to the bridge.
+    document.addEventListener('open-notification-session', (e) => {
+        const session = e.detail && e.detail.session;
+        if (session) {
+            openSessionTerminal(session, 'terminal');
+        }
     });
 
     // Set initial voice indicator state

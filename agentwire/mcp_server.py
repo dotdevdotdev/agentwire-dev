@@ -3147,7 +3147,8 @@ def notify_user(text: str, session: str | None = None, priority: str = "normal")
     The human-screen channel — the asymmetric text partner to `say` (audio).
     Supports a safe markdown subset (bold, line breaks, [links](url)). One of the
     notify_* family — see also notify_parent (your orchestrator) and notify_event
-    (portal lifecycle). Clicking the toast opens the notifications session.
+    (portal lifecycle). Clicking the toast opens the session that generated the
+    notification (the `session` below); a toast with no session is non-clickable.
 
     Args:
         text: Notification text. Bold (**x**), line breaks, and [links](https://…)
