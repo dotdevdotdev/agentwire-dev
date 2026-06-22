@@ -7,11 +7,12 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 
 **Agents running in agentwire sessions should use MCP tools instead of CLI commands.** The agentwire MCP server provides tools that wrap CLI functionality. Use these instead of `Bash: agentwire <cmd>`.
 
-## Session Management (11 tools)
+## Session Management (12 tools)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
 | `agentwire list` | `sessions_list()` |
+| `agentwire list --context` | `sessions_context(session="")` — context headroom (remaining %); LOW = bloated. Observe-only (#442). |
 | `agentwire new -s name` | `session_create(name="...")` |
 | `agentwire send -s name "msg"` | `session_send(session="...", message="...")` |
 | `agentwire msg send --to name "msg"` | `msg_send(to="...", text="...", kind="note", ref="")` |

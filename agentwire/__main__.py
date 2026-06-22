@@ -3277,7 +3277,8 @@ def cmd_list(args) -> int:
     local_only = getattr(args, 'local', False)
     remote_only = getattr(args, 'remote', False)
     machine_filter = getattr(args, 'machine', None)
-    show_sessions = getattr(args, 'sessions', False)
+    show_context = getattr(args, 'context', False)
+    show_sessions = getattr(args, 'sessions', False) or show_context
 
     # Check if we're inside a tmux session
     current_session = pane_manager.get_current_session()
@@ -3342,6 +3343,16 @@ def cmd_list(args) -> int:
                         }
                         if usage_limit_parked(parts[0]):
                             session_info["usage_limit"] = True
+                        if show_context:
+                            from .session_context import session_context as _sctx
+                            ctx = _sctx(parts[0])
+                            session_info["context"] = {
+                                "is_agent": ctx.is_agent,
+                                "remaining_pct": ctx.remaining_pct,
+                                "model": ctx.model,
+                                "flagged": ctx.flagged,
+                                "note": ctx.note,
+                            }
                         local_sessions.append(session_info)
                         all_sessions.append(session_info)
 
@@ -3419,7 +3430,17 @@ def cmd_list(args) -> int:
                 # Remove @machine suffix for display within machine group
                 display_name = s['name'].rsplit('@', 1)[0] if '@' in s['name'] else s['name']
                 parked_marker = " [parked: usage limit]" if s.get("usage_limit") else ""
-                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}")
+                ctx_marker = ""
+                if show_context:
+                    ctx = s.get("context")
+                    if ctx is None:
+                        ctx_marker = "  ctx=remote(n/a)"
+                    elif ctx.get("remaining_pct") is None:
+                        ctx_marker = "  ctx=— (daemon/non-agent)" if not ctx.get("is_agent") else "  ctx=? (no bar)"
+                    else:
+                        flag = " ⚠ LOW" if ctx.get("flagged") else ""
+                        ctx_marker = f"  ctx={ctx['remaining_pct']}% left{flag}"
+                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}{ctx_marker}")
         else:
             print("  (no sessions)")
         print()
@@ -11176,6 +11197,9 @@ def main() -> int:
     list_parser.add_argument("--remote", action="store_true", help="Only show remote sessions")
     list_parser.add_argument("--machine", help="Filter by specific machine ID")
     list_parser.add_argument("--sessions", action="store_true", help="Show sessions instead of panes")
+    list_parser.add_argument("--context", action="store_true",
+                             help="Annotate each session with its Claude Code context headroom "
+                                  "(remaining %); flags sessions running low (implies --sessions)")
     list_parser.set_defaults(func=cmd_list)
 
     new_parser = subparsers.add_parser("new", help="Create new Claude Code session")
