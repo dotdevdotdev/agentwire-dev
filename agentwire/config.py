@@ -448,6 +448,20 @@ class PromptRouterConfig:
 
 
 @dataclass
+class SessionContextConfig:
+    """Session context-bloat observability (Phase 0) knobs.
+
+    Observe-only: surfaces each session's remaining-context % and flags
+    sessions running low. No auto-``/clear`` / ``/compact`` — that is Phase 1.
+    """
+
+    # Flag a session when its REMAINING context drops to/below this %
+    # (the bar shows headroom, not usage — see session_context.py). Default
+    # 20% remaining == ~80% of the way toward the limit.
+    warn_remaining_pct: int = 20
+
+
+@dataclass
 class Config:
     """Root configuration for AgentWire."""
 
@@ -468,6 +482,7 @@ class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
+    session_context: SessionContextConfig = field(default_factory=SessionContextConfig)
     channels: dict = field(default_factory=dict)
 
 
@@ -771,6 +786,18 @@ def _dict_to_config(data: dict) -> Config:
         exclude_sessions=[str(s) for s in pr_exclude_raw if s],
     )
 
+    # Session context observability (Phase 0 — bloat warn threshold)
+    session_context_data = data.get("session_context", {}) or {}
+    if not isinstance(session_context_data, dict):
+        session_context_data = {}
+    try:
+        warn_remaining_pct = int(session_context_data.get("warn_remaining_pct", 20))
+    except (TypeError, ValueError):
+        warn_remaining_pct = 20
+    session_context = SessionContextConfig(
+        warn_remaining_pct=max(0, min(100, warn_remaining_pct)),
+    )
+
     # Session defaults
     session_data = data.get("session", {}) or {}
     session = SessionConfig(
@@ -796,6 +823,7 @@ def _dict_to_config(data: dict) -> Config:
         safety=safety,
         usage_limit=usage_limit,
         prompt_router=prompt_router,
+        session_context=session_context,
     )
 
 

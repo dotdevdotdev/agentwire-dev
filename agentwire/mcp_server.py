@@ -309,6 +309,77 @@ def sessions_list() -> str:
     return format_sessions(data)
 
 
+def format_session_contexts(data: dict, session_filter: str | None = None) -> str:
+    """Format per-session context headroom for LLM consumption.
+
+    The bar % is context REMAINING (headroom before Claude Code auto-compacts),
+    not usage — so LOW = bloated. Daemons (scheduler/portal/tts/…) have no bar
+    and are reported as non-interactive.
+    """
+    sessions = data.get("sessions", [])
+    if session_filter:
+        sessions = [s for s in sessions if s.get("name", "").split("@")[0] == session_filter]
+        if not sessions:
+            return f"No session named '{session_filter}'."
+    if not sessions:
+        return "No active sessions."
+
+    def sort_key(s):
+        ctx = s.get("context") or {}
+        pct = ctx.get("remaining_pct")
+        return (not ctx.get("is_agent"), pct if pct is not None else 999, s.get("name", ""))
+
+    flagged = []
+    lines = ["Session context (remaining % = headroom; LOW = bloated):"]
+    for s in sorted(sessions, key=sort_key):
+        name = s.get("name", "unknown")
+        ctx = s.get("context")
+        if ctx is None:
+            lines.append(f"  - {name}: (remote — context n/a)")
+            continue
+        pct = ctx.get("remaining_pct")
+        if pct is None:
+            kind = "daemon/non-agent" if not ctx.get("is_agent") else "agent, no bar visible"
+            lines.append(f"  - {name}: — ({kind})")
+            continue
+        model = f" {ctx['model']}" if ctx.get("model") else ""
+        flag = "  ⚠ LOW — running out of context" if ctx.get("flagged") else ""
+        lines.append(f"  - {name}:{model} {pct}% context remaining{flag}")
+        if ctx.get("flagged"):
+            flagged.append(name)
+
+    if flagged:
+        lines.append("")
+        lines.append(f"⚠ {len(flagged)} session(s) low on context: {', '.join(flagged)}")
+        lines.append("(Observe-only — Phase 0. No auto-/clear or /compact is performed.)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def sessions_context(session: str | None = None) -> str:
+    """Report Claude Code context headroom for sessions (observability only).
+
+    Each interactive session's footer shows a context bar whose percentage is
+    the context REMAINING before Claude Code auto-compacts — so a LOW number
+    means the session is bloated. Daemon sessions (scheduler/portal/tts/stt)
+    run plain processes with no bar and are reported as non-interactive.
+
+    This is Phase 0 of context-bloat management: it makes bloat visible and
+    queryable. It NEVER auto-/clear or /compacts a session.
+
+    Args:
+        session: Optional single session name to report. Omit for all sessions
+            (sorted most-bloated first).
+
+    Returns:
+        Formatted per-session context state, with low sessions flagged.
+    """
+    data = run_agentwire_cmd(["list", "--context"])
+    if not data.get("success"):
+        return f"Failed to read session context: {data.get('error', 'Unknown error')}"
+    return format_session_contexts(data, session_filter=session)
+
+
 @mcp.tool()
 def session_create(
     name: str,

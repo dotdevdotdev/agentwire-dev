@@ -210,6 +210,11 @@ usage_limit:             # Usage-limit recovery watchdog (docs/wiki/usage-limit-
   enabled: true          # Master switch for dialog detection/parking (default: true)
   exclude_sessions: []   # Session names never auto-parked (gates NEW parks only)
 
+session_context:         # Context-bloat observability (Phase 0, observe-only — issue #442)
+  warn_remaining_pct: 20 # Flag a session when its REMAINING context drops to/below this %.
+                         # The Claude Code bar shows headroom, not usage, so LOW = bloated.
+                         # Surfaced via `agentwire list --context` and MCP `sessions_context`.
+
 worktree:                         # `agentwire worktree <name>` orchestration (WorktreeConfig).
                                   # Distinct from projects.worktrees above (the legacy
                                   # project/branch layout). `quicktask:` is a legacy alias for
