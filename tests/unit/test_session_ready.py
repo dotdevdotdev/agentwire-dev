@@ -104,27 +104,27 @@ class TestSendVerified:
 
     def test_marker_mode_confirms(self, monkeypatch):
         self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
         monkeypatch.setattr(
             session_ready, "capture_session",
-            lambda s, lines=60: "...[COUNCIL PROMPT #1]...")
+            lambda s, lines=60, pane_index=0: "...[COUNCIL PROMPT #1]...")
         assert session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
 
     def test_marker_mode_retries_then_fails(self, monkeypatch):
         self._quiet(monkeypatch)
         sends = []
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: sends.append(s))
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: sends.append(s))
         monkeypatch.setattr(
-            session_ready, "capture_session", lambda s, lines=60: "no marker here")
+            session_ready, "capture_session", lambda s, lines=60, pane_index=0: "no marker here")
         assert not session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
         assert len(sends) == 2  # initial + one retry
 
     def test_markerless_uses_message_visible(self, monkeypatch):
         self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
         monkeypatch.setattr(
             session_ready, "capture_session",
-            lambda s, lines=60: "❯ build a voice diary app")
+            lambda s, lines=60, pane_index=0: "❯ build a voice diary app")
         assert session_ready.send_verified("s", "build a voice diary app")
 
     def test_markerless_confirms_on_retry(self, monkeypatch):
@@ -132,10 +132,10 @@ class TestSendVerified:
         sends = []
         captures = ["", "❯ my idea text"]
 
-        def fake_capture(s, lines=60):
+        def fake_capture(s, lines=60, pane_index=0):
             return captures[min(len(sends) - 1, 1)]
 
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: sends.append(s))
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: sends.append(s))
         monkeypatch.setattr(session_ready, "capture_session", fake_capture)
         assert session_ready.send_verified("s", "my idea text")
         assert len(sends) == 2
@@ -143,12 +143,22 @@ class TestSendVerified:
     def test_capture_exception_counts_as_miss(self, monkeypatch):
         self._quiet(monkeypatch)
 
-        def boom(s, lines=60):
+        def boom(s, lines=60, pane_index=0):
             raise RuntimeError("gone")
 
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m: None)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
         monkeypatch.setattr(session_ready, "capture_session", boom)
         assert not session_ready.send_verified("s", "msg")
+
+    def test_pane_index_threads_through(self, monkeypatch):
+        self._quiet(monkeypatch)
+        seen = {}
+        monkeypatch.setattr(session_ready, "send_to_session",
+                            lambda s, m, pane_index=0: seen.update(send=pane_index))
+        monkeypatch.setattr(session_ready, "capture_session",
+                            lambda s, lines=60, pane_index=0: seen.update(cap=pane_index) or "❯ hi there")
+        assert session_ready.send_verified("s", "hi there", pane_index=2)
+        assert seen == {"send": 2, "cap": 2}
 
 
 class TestCouncilDelegation:

@@ -1339,9 +1339,13 @@ class AgentWireServer:
 
         self.active_notifications[notification_id] = notification
 
+        clients = len(self.dashboard_clients)
         await self.broadcast_dashboard("notification", notification)
 
-        return web.json_response({"success": True, "id": notification_id})
+        # Report how many dashboards saw it live. 0 isn't a failure — the toast
+        # is persisted in active_notifications and restored on the next page
+        # load — but the caller deserves to know nobody is watching right now.
+        return web.json_response({"success": True, "id": notification_id, "clients": clients})
 
     async def api_desktop_notification_dismiss(self, request):
         """POST /api/desktop/notification/dismiss — dismiss a notification."""
@@ -5581,7 +5585,10 @@ projects:
                 # Generic event - just broadcast it
                 await self.broadcast_dashboard(event, data)
 
-            return web.json_response({"success": True})
+            # Report how many dashboards received the broadcast. A lifecycle
+            # event is ephemeral (not persisted), so 0 clients means nobody saw
+            # it — the caller should know that, not get a blind "broadcast" (#444).
+            return web.json_response({"success": True, "clients": len(self.dashboard_clients)})
 
         except Exception as e:
             logger.error(f"Notify API failed: {e}")

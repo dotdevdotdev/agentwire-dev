@@ -445,6 +445,33 @@ class TestApiNotify:
         resp = await client.post("/api/notify", json={"session": "test"})
         assert resp.status == 400
 
+    async def test_generic_event_reports_client_count(self, portal_client):
+        """#444: a broadcast reports how many dashboards received it, so the
+        caller knows whether anything actually saw the ephemeral event."""
+        client, server = portal_client
+        server.dashboard_clients = {object(), object()}
+        server.broadcast_dashboard = AsyncMock()
+        resp = await client.post("/api/notify", json={"event": "agent_progress"})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["success"] is True
+        assert data["clients"] == 2
+
+
+class TestApiDesktopNotification:
+    async def test_toast_reports_client_count(self, portal_client):
+        """#444: posting a toast reports how many dashboards saw it live (the
+        toast is persisted, so 0 isn't a failure — but the caller is told)."""
+        client, server = portal_client
+        server.dashboard_clients = {object()}
+        server.broadcast_dashboard = AsyncMock()
+        resp = await client.post("/api/desktop/notification", json={"text": "hi"})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["success"] is True
+        assert data["clients"] == 1
+        assert "id" in data
+
 
 # ---------------------------------------------------------------------------
 # Security middleware: Origin validation (CSRF guard)

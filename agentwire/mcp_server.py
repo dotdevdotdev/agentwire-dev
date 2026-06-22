@@ -174,6 +174,25 @@ def run_agentwire_cmd(
         return {"success": False, "error": str(e)}
 
 
+def _delivery_result(data: dict, where: str) -> str:
+    """Honest delivery report for send/notify tools (#444).
+
+    The CLI confirms a paste actually landed in the pane (``--verify``) and
+    returns ``verified``: True (landed), False (sent but not seen — likely a
+    busy/booting pane that dropped it), or None (remote — unverifiable across
+    SSH). Surface that instead of a blind "sent".
+    """
+    verified = data.get("verified")
+    if verified is True:
+        return f"Message delivered {where} (verified in pane)."
+    if verified is False:
+        return (f"Message sent {where} but delivery could NOT be verified — it may "
+                f"have been dropped (busy/booting pane). Check the pane or resend.")
+    if verified is None and "verified" in data:
+        return f"Message sent {where} (remote session — delivery can't be verified across SSH)."
+    return f"Message sent {where}."
+
+
 def _mcp_result(data: dict, on_success: str, operation: str = "complete operation") -> str:
     """Standard success/error string for a thin MCP wrapper over run_agentwire_cmd.
 
@@ -384,11 +403,11 @@ def session_send(session: str, message: str) -> str:
             f"session_send(session=\"{caller}\", message=\"<your reply>\")]\n"
             f"{message}"
         )
-    args = ["send", "-s", session, message]
+    args = ["send", "-s", session, "--verify", message]
     data = run_agentwire_cmd(args)
-    if data.get("success"):
-        return f"Message sent to session '{session}'."
-    return f"Failed to send message: {data.get('error', 'Unknown error')}"
+    if not data.get("success"):
+        return f"Failed to send message: {data.get('error', 'Unknown error')}"
+    return _delivery_result(data, f"to session '{session}'")
 
 
 @mcp.tool()
@@ -905,14 +924,14 @@ def pane_send(pane: int, message: str, session: str | None = None) -> str:
     Returns:
         Success message or error description.
     """
-    args = ["send", "--pane", str(pane), message]
+    args = ["send", "--pane", str(pane), "--verify", message]
     if session:
         args.extend(["-s", session])
 
     data = run_agentwire_cmd(args)
-    if data.get("success"):
-        return f"Message sent to pane {pane}."
-    return f"Failed to send to pane: {data.get('error', 'Unknown error')}"
+    if not data.get("success"):
+        return f"Failed to send to pane: {data.get('error', 'Unknown error')}"
+    return _delivery_result(data, f"to pane {pane}")
 
 
 @mcp.tool()
@@ -1136,15 +1155,23 @@ def say(text: str, session: str | None = None, voice: str | None = None, display
         args.extend(["--display", display])
     args.append(text)
 
-    # Say command doesn't return JSON, run without --json
-    data = run_agentwire_cmd(args, json_output=False)
-    if data.get("success"):
-        from .utils.chunker import chunk_text
-        chunks = chunk_text(text)
-        if len(chunks) > 1:
-            return f"Queued speech ({len(chunks)} chunks)."
-        return "Queued speech."
-    return f"Failed to speak: {data.get('error', 'Unknown error')}"
+    data = run_agentwire_cmd(args, timeout=120)
+    if not data.get("success"):
+        return f"Failed to speak: {data.get('error', 'Unknown error')}"
+
+    # Sink ack (#444): report which path actually played, not a blind "queued".
+    sink = data.get("sink")
+    toast = " Toast shown." if display else ""
+    if sink == "browser":
+        n = data.get("clients", 0)
+        return f"Spoken to {n} connected browser client{'s' if n != 1 else ''}.{toast}"
+    if sink == "local-speakers (kokoro)":
+        return f"Spoken on local speakers (in-process Kokoro).{toast}"
+    if sink == "custom-server":
+        return f"Spoken via custom TTS shim on local speakers.{toast}"
+    if sink == "os-voice":
+        return f"Spoken via the OS voice (no browser connected).{toast}"
+    return f"Speech dispatched.{toast}"
 
 
 @mcp.tool()
@@ -1167,8 +1194,12 @@ def notify_parent(text: str, session: str | None = None) -> str:
         args.extend(["--to", session])
     args.append(text)
 
-    return _mcp_result(run_agentwire_cmd(args, json_output=False),
-                       "Notification sent to parent.", "notify parent")
+    data = run_agentwire_cmd(args)
+    target = data.get("target", session or "parent")
+    if data.get("delivered"):
+        return f"Notification delivered to {target} (verified)."
+    reason = data.get("reason") or data.get("error") or "unknown reason"
+    return f"Notification NOT delivered to {target}: {reason}"
 
 
 
@@ -1375,37 +1406,55 @@ def portal_status() -> str:
     return f"Failed to check portal status: {data.get('error', 'Unknown error')}"
 
 
+def _format_voice_status(kind: str, data: dict) -> str:
+    """Render a voice_status resolver payload (from `tts/stt status --json`).
+
+    Answers "can I X right now, and via what path" instead of probing a server
+    the active tier may never use. Surfaces orphaned engine servers (running
+    but unused by the tier).
+    """
+    if not data.get("success"):
+        return f"Failed to check {kind} status: {data.get('error', 'Unknown error')}"
+    tier = data.get("tier", "unknown")
+    path = data.get("path", "?")
+    ready = data.get("ready", False)
+    detail = data.get("detail", "")
+    head = "ready" if ready else "NOT ready"
+    lines = [f"{kind} [{tier} tier] — {head}: {path}"]
+    if detail:
+        lines.append(f"  {detail}")
+    for w in data.get("warnings") or []:
+        lines.append(f"  ⚠ {w}")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def tts_status() -> str:
-    """Check TTS server status.
+    """Can I speak right now, and through what path?
+
+    Reports the ACTIVE TTS tier (default → browser portal when connected, else
+    OS voice; custom → shim) — not a probe of a configured-but-unused server.
+    Flags an orphaned engine server (e.g. a shim still up on the custom port
+    while the tier is 'default').
 
     Returns:
-        TTS server status and configuration.
+        Active TTS path, readiness, and any orphan warnings.
     """
-    data = run_agentwire_cmd(["tts", "status"])
-    if data.get("success"):
-        running = data.get("running", False)
-        backend = data.get("backend", "unknown")
-        if running:
-            return f"TTS server is running (backend: {backend})"
-        return f"TTS server is not running. Backend configured: {backend}"
-    return f"Failed to check TTS status: {data.get('error', 'Unknown error')}"
+    return _format_voice_status("TTS", run_agentwire_cmd(["tts", "status"]))
 
 
 @mcp.tool()
 def stt_status() -> str:
-    """Check STT server status.
+    """Can I hear (transcribe) right now, and through what path?
+
+    Reports the ACTIVE STT tier (default → Moonshine :8101 shim or browser
+    fallback; cloud → API key; custom → shim) — only probing a server when the
+    tier actually has one.
 
     Returns:
-        STT server status and configuration.
+        Active STT path, readiness, and any warnings.
     """
-    data = run_agentwire_cmd(["stt", "status"])
-    if data.get("success"):
-        running = data.get("running", False)
-        if running:
-            return "STT server is running."
-        return "STT server is not running."
-    return f"Failed to check STT status: {data.get('error', 'Unknown error')}"
+    return _format_voice_status("STT", run_agentwire_cmd(["stt", "status"]))
 
 
 # =============================================================================
@@ -2562,7 +2611,9 @@ def email_send(
 
     data = run_agentwire_cmd(args, json_output=False)
     if data.get("success"):
-        return "Email sent."
+        # Accepted by Resend ≠ delivered to the inbox — the provider boundary is
+        # a genuine async one, so don't claim more than acceptance (#444).
+        return "Email accepted by provider (Resend)."
     return f"Failed to send email: {data.get('error', 'Unknown error')}"
 
 
@@ -2583,7 +2634,9 @@ def quo_send(body: str, to: str | None = None) -> str:
 
     data = run_agentwire_cmd(args, json_output=False)
     if data.get("success"):
-        return "Quo SMS sent."
+        # Accepted by OpenPhone ≠ delivered to the handset — async provider
+        # boundary, so claim only acceptance (#444).
+        return "SMS accepted by provider (Quo/OpenPhone)."
     return f"Failed to send Quo SMS: {data.get('error', 'Unknown error')}"
 
 
@@ -2606,8 +2659,14 @@ def notify_event(event: str, session: str | None = None) -> str:
     if session:
         args.extend(["-s", session])
 
-    return _mcp_result(run_agentwire_cmd(args),
-                       f"Event '{event}' broadcast to the portal.", "broadcast event")
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to broadcast event: {data.get('error', 'Unknown error')}"
+    # Lifecycle events are ephemeral — report whether any dashboard saw it (#444).
+    n = data.get("clients", 0)
+    if n > 0:
+        return f"Event '{event}' broadcast to {n} dashboard client{'s' if n != 1 else ''}."
+    return f"Event '{event}' had no listeners — no dashboard connected (nothing saw it)."
 
 
 # =============================================================================
@@ -3162,9 +3221,15 @@ def notify_user(text: str, session: str | None = None, priority: str = "normal")
     if session:
         body["session"] = session
     data = _portal_request("POST", "/api/desktop/notification", body)
-    if data.get("success"):
-        return f"Notification posted (id: {data.get('id')})."
-    return f"Failed to post notification: {data.get('error', 'Unknown error')}"
+    if not data.get("success"):
+        return f"Failed to post notification: {data.get('error', 'Unknown error')}"
+    # Honest delivery: how many dashboards saw it live (#444). The toast is
+    # persisted and restored on next load, so 0 clients ≠ lost.
+    n = data.get("clients", 0)
+    if n > 0:
+        return f"Toast shown to {n} connected client{'s' if n != 1 else ''} (id: {data.get('id')})."
+    return (f"Toast queued (id: {data.get('id')}) — no portal open right now; "
+            f"it will appear on next load.")
 
 
 # =============================================================================
