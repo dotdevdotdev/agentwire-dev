@@ -219,43 +219,57 @@ def test_act_skips_when_no_policy():
     assert r["skipped"] == "no_policy"
 
 
-def test_act_defers_when_unsafe():
-    with patch.object(sc, "session_context", return_value=_ctx_obj(10)), patch.object(
-        sc, "_safe_to_act", return_value=(False, "box_not_empty")
-    ), patch.object(sc, "_log_event"):
+def test_act_defers_when_box_not_empty():
+    # Collision guard: a non-empty / unparseable box defers before any paste.
+    with patch.object(sc, "session_context", return_value=_ctx_obj(10)), patch(
+        "agentwire.prompt_router.prompt_is_empty", return_value=False
+    ), patch("agentwire.prompt_router.safe_deliver") as deliver, patch.object(
+        sc, "_log_event"
+    ):
         r = sc.act_on_session("s", "clear", threshold=20)
     assert r["acted"] is False
     assert r["deferred"] == "box_not_empty"
+    deliver.assert_not_called()  # never even attempt the paste
 
 
-def test_act_sends_command_when_flagged_and_safe():
-    sent = {}
+def test_act_defers_when_safe_deliver_refuses():
+    # An empty box but safe_deliver refuses (parked / live-menu) or the paste
+    # can't be verified — logged honestly as NOT acted, retried next tick.
+    with patch.object(sc, "session_context", return_value=_ctx_obj(10)), patch(
+        "agentwire.prompt_router.prompt_is_empty", return_value=True
+    ), patch(
+        "agentwire.prompt_router.safe_deliver",
+        return_value=(False, "delivery_unverified"),
+    ), patch.object(sc, "_log_event"):
+        r = sc.act_on_session("s", "clear", threshold=20)
+    assert r["acted"] is False
+    assert r["deferred"] == "delivery_unverified"
 
-    def fake_send(session, command, **kw):
-        sent["session"] = session
-        sent["command"] = command
 
-    with patch.object(sc, "session_context", return_value=_ctx_obj(10)), patch.object(
-        sc, "_safe_to_act", return_value=(True, "ok")
-    ), patch.object(sc, "_log_event"), patch(
-        "agentwire.session_ready.send_to_session", side_effect=fake_send
-    ):
+def test_act_sends_command_when_flagged_and_verified():
+    # Happy path: empty box + verified safe_deliver => acted, via safe_deliver
+    # (NOT a raw paste) so the audit log is honest.
+    with patch.object(sc, "session_context", return_value=_ctx_obj(10)), patch(
+        "agentwire.prompt_router.prompt_is_empty", return_value=True
+    ), patch(
+        "agentwire.prompt_router.safe_deliver", return_value=(True, "delivered")
+    ) as deliver, patch.object(sc, "_log_event"):
         r = sc.act_on_session("s", "clear", threshold=20)
     assert r["acted"] is True
     assert r["command"] == "/clear"
-    assert sent == {"session": "s", "command": "/clear"}
+    deliver.assert_called_once_with("s", 0, "/clear")
 
 
-def test_act_compact_sends_compact():
-    with patch.object(sc, "session_context", return_value=_ctx_obj(5)), patch.object(
-        sc, "_safe_to_act", return_value=(True, "ok")
-    ), patch.object(sc, "_log_event"), patch(
-        "agentwire.session_ready.send_to_session"
-    ) as send:
+def test_act_compact_routes_compact_through_safe_deliver():
+    with patch.object(sc, "session_context", return_value=_ctx_obj(5)), patch(
+        "agentwire.prompt_router.prompt_is_empty", return_value=True
+    ), patch(
+        "agentwire.prompt_router.safe_deliver", return_value=(True, "delivered")
+    ) as deliver, patch.object(sc, "_log_event"):
         r = sc.act_on_session("s", "compact", threshold=20)
     assert r["acted"] is True
     assert r["command"] == "/compact"
-    send.assert_called_once_with("s", "/compact")
+    deliver.assert_called_once_with("s", 0, "/compact")
 
 
 # ── tick (Phase 1) ───────────────────────────────────────────────────────────

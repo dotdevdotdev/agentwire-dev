@@ -299,33 +299,28 @@ def resolve_policy(session: str, cfg=None) -> str:
     return POLICY_NONE
 
 
-def _safe_to_act(session: str) -> tuple[bool, str]:
-    """Is *session* a safe target for an auto-action right now?
-
-    Reuses the polite-delivery guards (#296): never act on a parked session
-    (a paste would corrupt the usage-limit resume) and only when the Claude
-    input box is a clean, empty prompt — :func:`prompt_router.prompt_is_empty`
-    returns False for a live dialog, a busy render, a human's half-typed draft,
-    or any pane it can't parse as an empty box. That single gate also implies
-    an agent pane sitting idle, so we never ``/clear`` mid-turn.
-    """
-    from . import prompt_router, usage_limit
-
-    if usage_limit.is_parked(session):
-        return False, "parked"
-    if not prompt_router.is_agent_pane(session, 0):
-        return False, "not_agent"
-    if not prompt_router.prompt_is_empty(session, 0):
-        return False, "box_not_empty"
-    return True, "ok"
-
-
 def act_on_session(session: str, policy: str, threshold: int | None = None) -> dict:
     """Evaluate one opted-in session and ``/clear`` | ``/compact`` if warranted.
 
-    Returns a result dict (always; never raises). ``acted`` is True only when a
-    command was actually sent. ``skipped``/``deferred`` carry a reason so the
-    audit log explains every no-op.
+    Returns a result dict (always; never raises). ``acted`` is True **only when
+    the command was a verified delivery** — the paste is routed through
+    :func:`prompt_router.safe_deliver`, so a guarded refusal or a silent paste
+    failure is logged honestly as NOT acted (and retried next tick), never
+    assumed sent.
+
+    Delivery mirrors the sibling inbox drain (:func:`inbox.flush_session`):
+
+    1. **Collision guard first** — :func:`prompt_router.prompt_is_empty` must
+       see a clean, empty Claude box (it returns False for a live dialog, a
+       busy render, a human's half-typed draft, or any unparseable screen). This
+       also closes the TOCTOU window as far as a *human* draft goes: we never
+       paste over uncommitted text.
+    2. **safe_deliver** — adds the parked / non-agent / live-menu refusals AND a
+       verified paste (:func:`session_ready.send_verified`, marker = the command
+       text, which Claude Code echoes as ``❯ /clear`` after the slash command
+       runs). A turn that races in between the two steps either leaves the box
+       non-empty (→ refused) or shows a live render (→ refused), so the clear
+       can't land mid-stream.
     """
     if policy not in _POLICY_COMMAND:
         return {"session": session, "acted": False, "skipped": "no_policy"}
@@ -341,8 +336,32 @@ def act_on_session(session: str, policy: str, threshold: int | None = None) -> d
             "remaining_pct": ctx.remaining_pct,
         }
 
-    safe, reason = _safe_to_act(session)
-    if not safe:
+    from . import prompt_router
+
+    # Collision guard before anything is pasted (mirrors inbox.flush_session).
+    if not prompt_router.prompt_is_empty(session, 0):
+        _log_event(
+            "deferred", session=session, policy=policy,
+            remaining_pct=ctx.remaining_pct, reason="box_not_empty",
+        )
+        return {
+            "session": session, "acted": False, "deferred": "box_not_empty",
+            "remaining_pct": ctx.remaining_pct,
+        }
+
+    command = _POLICY_COMMAND[policy]
+    try:
+        delivered, reason = prompt_router.safe_deliver(session, 0, command)
+    except Exception as exc:  # delivery must never break the watchdog
+        _log_event(
+            "send_failed", session=session, policy=policy,
+            remaining_pct=ctx.remaining_pct, error=str(exc),
+        )
+        return {"session": session, "acted": False, "deferred": "send_failed"}
+
+    if not delivered:
+        # Guarded refusal (parked / not-agent / live-menu) or an unverified
+        # paste — logged honestly as not acted, retried next tick.
         _log_event(
             "deferred", session=session, policy=policy,
             remaining_pct=ctx.remaining_pct, reason=reason,
@@ -352,25 +371,12 @@ def act_on_session(session: str, policy: str, threshold: int | None = None) -> d
             "remaining_pct": ctx.remaining_pct,
         }
 
-    command = _POLICY_COMMAND[policy]
-    try:
-        from .session_ready import send_to_session
-
-        send_to_session(session, command)
-        sent = True
-    except Exception as exc:  # a send failure must not break the watchdog
-        _log_event(
-            "send_failed", session=session, policy=policy,
-            remaining_pct=ctx.remaining_pct, error=str(exc),
-        )
-        return {"session": session, "acted": False, "deferred": "send_failed"}
-
     _log_event(
         "acted", session=session, policy=policy, command=command,
         remaining_pct=ctx.remaining_pct, threshold=threshold,
     )
     return {
-        "session": session, "acted": sent, "policy": policy, "command": command,
+        "session": session, "acted": True, "policy": policy, "command": command,
         "remaining_pct": ctx.remaining_pct,
     }
 
