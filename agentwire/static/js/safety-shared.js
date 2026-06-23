@@ -69,22 +69,7 @@ export async function fetchSafetyLogs(decisionFilter = '', limit = 200) {
     } catch { return []; }
 }
 
-export async function fetchSafetyRules() {
-    try {
-        const data = await apiFetch('/api/safety/rules').then((r) => r.json());
-        return data.rules || [];
-    } catch { return []; }
-}
-
-export async function postSafetyConfig(payload) {
-    return apiFetch('/api/safety/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    }).then((r) => r.json());
-}
-
-export function showEventModal(e, onDisabledChange) {
+export function showEventModal(e) {
     const existing = document.getElementById('safetyEventOverlay');
     if (existing) existing.remove();
     const wrap = document.createElement('div');
@@ -108,59 +93,10 @@ export function showEventModal(e, onDisabledChange) {
                 <span>Command</span>
                 <pre>${escapeHtml(e.command || '')}</pre>
             </div>
-            ${e.rule_id ? `<button class="safety-disable-from-event" data-action="disable-rule" data-rule-id="${escapeHtml(e.rule_id)}">Disable rule "${escapeHtml(e.rule_id)}"</button>` : ''}
         </div>
     </div>`;
     document.body.appendChild(wrap);
-    wrap.addEventListener('click', async (ev) => {
-        if (ev.target === wrap || ev.target.closest('[data-close]')) { wrap.remove(); return; }
-        const btn = ev.target.closest('[data-action="disable-rule"]');
-        if (btn) {
-            const status = await fetchSafetyStatus();
-            const id = btn.dataset.ruleId;
-            const next = [...(status.disabled_rules || []), id];
-            await postSafetyConfig({ disabled_rules: next });
-            wrap.remove();
-            if (onDisabledChange) onDisabledChange();
-        }
-    });
-}
-
-export async function openAddRulePicker(currentDisabled, onChange) {
-    const rules = await fetchSafetyRules();
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal safety-rule-picker">
-        <div class="modal-header"><h3>Disable a rule</h3><button class="modal-close" data-close>×</button></div>
-        <div class="modal-body">
-            <input type="search" class="safety-rule-filter" placeholder="Filter rules…" autocomplete="off" />
-            <div class="safety-rule-list">
-                ${rules.map((r) => `
-                    <div class="safety-rule-row" data-rule-id="${escapeHtml(r.id)}">
-                        <code>${escapeHtml(r.id)}</code>
-                        <span>${escapeHtml(r.reason || '')}</span>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    const filterInput = overlay.querySelector('.safety-rule-filter');
-    filterInput?.focus();
-    filterInput?.addEventListener('input', () => {
-        const q = filterInput.value.toLowerCase();
-        overlay.querySelectorAll('.safety-rule-row').forEach((row) => {
-            row.hidden = q && !row.textContent.toLowerCase().includes(q);
-        });
-    });
-    overlay.addEventListener('click', async (e) => {
-        if (e.target === overlay || e.target.closest('[data-close]')) { overlay.remove(); return; }
-        const row = e.target.closest('.safety-rule-row');
-        if (row) {
-            const id = row.dataset.ruleId;
-            await postSafetyConfig({ disabled_rules: [...currentDisabled, id] });
-            overlay.remove();
-            if (onChange) onChange();
-        }
+    wrap.addEventListener('click', (ev) => {
+        if (ev.target === wrap || ev.target.closest('[data-close]')) wrap.remove();
     });
 }

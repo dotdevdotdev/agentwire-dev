@@ -10,25 +10,25 @@ import {
     escapeHtml,
     fetchSafetyStatus,
     fetchSafetyLogs,
-    postSafetyConfig,
     showEventModal,
-    openAddRulePicker,
 } from '../safety-shared.js';
+
+const HOST_MANAGED_NOTE = 'Managed in <code>~/.agentwire/config.yaml</code> — frozen from the API (#425).';
 
 const SIDEBAR_LIMIT = 10;
 
 let currentFilter = { decision: '' };
-let cachedStatus = { disabled_rules: [] };
 
 function renderHeader(status) {
     const enabled = status?.enabled ?? true;
     const counts = status?.today_counts || {};
     const fmt = (k) => counts[k] || 0;
     return `<div class="safety-header">
-        <label class="safety-toggle">
-            <input type="checkbox" data-action="toggle-enabled" ${enabled ? 'checked' : ''} />
-            <span>Damage control ${enabled ? 'enabled' : 'disabled'}</span>
-        </label>
+        <div class="safety-badge ${enabled ? 'on' : 'off'}">
+            <span class="safety-badge-dot">${enabled ? '●' : '○'}</span>
+            <span>Damage control ${enabled ? 'ON' : 'OFF'}</span>
+        </div>
+        <div class="safety-managed-note">${HOST_MANAGED_NOTE}</div>
         <div class="safety-stats">
             <span class="safety-decision blocked">${fmt('blocked')}</span>
             <span class="safety-decision escape">${fmt('allowed_by_escape')}</span>
@@ -49,13 +49,11 @@ function renderDisabledRules(status) {
     return `<div class="safety-disabled-rules">
         <div class="safety-disabled-rules-header">
             <span>Disabled rules (${disabled.length})</span>
-            <button class="safety-disabled-add" data-action="add-rule">+</button>
         </div>
         <div class="safety-disabled-rules-list">
             ${disabled.length ? disabled.map((id) => `
                 <div class="safety-disabled-rule" data-rule-id="${escapeHtml(id)}">
                     <code>${escapeHtml(id)}</code>
-                    <button class="safety-rule-remove" data-action="remove-rule" data-rule-id="${escapeHtml(id)}" title="Re-enable rule">×</button>
                 </div>
             `).join('') : '<div class="safety-empty">No rules disabled.</div>'}
         </div>
@@ -75,7 +73,6 @@ export const safetySection = {
             fetchSafetyStatus(),
             fetchSafetyLogs(currentFilter.decision, 500),
         ]);
-        cachedStatus = status || { disabled_rules: [] };
 
         const newestFirst = allEntries.slice().reverse();
         const shown = newestFirst.slice(0, SIDEBAR_LIMIT);
@@ -90,32 +87,16 @@ export const safetySection = {
                 ? `<button class="safety-show-all" data-action="open-window">Show all ${newestFirst.length} events →</button>`
                 : '');
 
-        body.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', async (e) => {
-            await postSafetyConfig({ enabled: e.target.checked });
-            this.refresh(body);
-        });
         body.querySelectorAll('.safety-chip').forEach((chip) => {
             chip.addEventListener('click', () => {
                 currentFilter.decision = chip.dataset.decision || '';
                 this.refresh(body);
             });
         });
-        body.querySelectorAll('[data-action="remove-rule"]').forEach((btn) => {
-            btn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const id = btn.dataset.ruleId;
-                const next = (cachedStatus.disabled_rules || []).filter((r) => r !== id);
-                await postSafetyConfig({ disabled_rules: next });
-                this.refresh(body);
-            });
-        });
-        body.querySelector('[data-action="add-rule"]')?.addEventListener('click', () => {
-            openAddRulePicker(cachedStatus.disabled_rules || [], () => this.refresh(body));
-        });
         body.querySelectorAll('.safety-event').forEach((row) => {
             row.addEventListener('click', () => {
                 try {
-                    showEventModal(JSON.parse(row.dataset.event), () => this.refresh(body));
+                    showEventModal(JSON.parse(row.dataset.event));
                 } catch (_) {}
             });
         });
