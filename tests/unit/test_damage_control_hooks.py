@@ -548,3 +548,152 @@ class TestAuditLogger:
         assert len(lines) == 3
         decisions = [json.loads(line)["decision"] for line in lines]
         assert decisions == ["blocked", "asked", "allowed"]
+
+
+# ---------------------------------------------------------------------------
+# mcp-tool-damage-control.py: outbound MCP tool gating (#457)
+# ---------------------------------------------------------------------------
+#
+# email_send / quo_send run `agentwire email …` / `agentwire quo …` under the
+# hood, so the hook synthesizes that command and runs it through the SAME
+# decision ladder + outbound.* rules as the Bash shell-out. These tests cover
+# the synthesizer, the unattended fail-closed ladder, the attended ask, and a
+# parity proof that the synthesized command decides identically to the literal
+# `agentwire email`/`quo` string.
+
+
+@pytest.fixture(scope="module")
+def mcp_hook():
+    return _load_hook("mcp-tool-damage-control.py")
+
+
+class TestMcpHookSynthesizer:
+    def test_email_send_synthesizes_command(self, mcp_hook):
+        cmd = mcp_hook._synthesize_command(
+            "mcp__agentwire__email_send",
+            {"body": "secret payload", "to": "a@b.com", "subject": "Hi"},
+        )
+        assert cmd == "agentwire email --to a@b.com --subject Hi"
+        # body never leaks into the synthesized (audit-logged) command
+        assert "secret payload" not in cmd
+
+    def test_email_send_handles_list_recipients(self, mcp_hook):
+        cmd = mcp_hook._synthesize_command(
+            "mcp__agentwire__email_send",
+            {"body": "x", "to": ["a@b.com", "c@d.com"]},
+        )
+        assert cmd == "agentwire email --to a@b.com --to c@d.com"
+
+    def test_quo_send_synthesizes_command(self, mcp_hook):
+        cmd = mcp_hook._synthesize_command(
+            "mcp__agentwire__quo_send", {"body": "x", "to": "+15551234567"}
+        )
+        assert cmd == "agentwire quo --to +15551234567"
+
+    def test_non_gated_tool_returns_none(self, mcp_hook):
+        assert mcp_hook._synthesize_command(
+            "mcp__agentwire__say", {"text": "hi"}
+        ) is None
+
+
+class TestMcpHookParity:
+    """The synthesized command must decide identically to the literal CLI string."""
+
+    def test_email_parity(self, mcp_hook, bundled_config):
+        synth = mcp_hook._synthesize_command(
+            "mcp__agentwire__email_send", {"body": "x", "to": "a@b.com"}
+        )
+        literal = mcp_hook.check_command("agentwire email --to a@b.com", bundled_config)
+        from_synth = mcp_hook.check_command(synth, bundled_config)
+        assert from_synth["decision"] == literal["decision"] == "ask"
+        assert from_synth["id"] == literal["id"] == "outbound.agentwire-email"
+
+    def test_quo_parity(self, mcp_hook, bundled_config):
+        synth = mcp_hook._synthesize_command(
+            "mcp__agentwire__quo_send", {"body": "x", "to": "+1555"}
+        )
+        literal = mcp_hook.check_command("agentwire quo --to +1555", bundled_config)
+        from_synth = mcp_hook.check_command(synth, bundled_config)
+        assert from_synth["decision"] == literal["decision"] == "ask"
+        assert from_synth["id"] == literal["id"] == "outbound.agentwire-quo"
+
+
+class TestMcpHookSubprocess:
+    """Full main() flow: read JSON from stdin, synthesize, decide, exit 0/2."""
+
+    HOOK = HOOKS_DIR / "mcp-tool-damage-control.py"
+
+    def _run(self, tool_name, tool_input, unattended=False,
+             permission_mode="default", allow_env=None):
+        env = {
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "HOME": "/tmp",  # no ~/.agentwire/config.yaml → safety enabled (default)
+        }
+        if unattended:
+            env["AGENTWIRE_UNATTENDED"] = "1"
+        if allow_env:
+            env["AGENTWIRE_UNATTENDED_ALLOW"] = allow_env
+        payload = {
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "permission_mode": permission_mode,
+        }
+        return subprocess.run(
+            [sys.executable, str(self.HOOK)],
+            input=json.dumps(payload),
+            capture_output=True, text=True, env=env, timeout=15,
+        )
+
+    def test_non_gated_tool_passes(self):
+        proc = self._run("mcp__agentwire__say", {"text": "hi"})
+        assert proc.returncode == 0
+
+    def test_email_unattended_not_allowlisted_blocks(self):
+        proc = self._run(
+            "mcp__agentwire__email_send",
+            {"body": "x", "to": "a@b.com", "subject": "s"},
+            unattended=True,
+        )
+        assert proc.returncode == 2
+        assert "unattended" in proc.stderr.lower()
+        assert "outbound.agentwire-email" in proc.stderr
+
+    def test_quo_unattended_not_allowlisted_blocks(self):
+        proc = self._run(
+            "mcp__agentwire__quo_send", {"body": "x", "to": "+1555"},
+            unattended=True,
+        )
+        assert proc.returncode == 2
+        assert "unattended" in proc.stderr.lower()
+
+    def test_email_unattended_allowlisted_proceeds(self):
+        proc = self._run(
+            "mcp__agentwire__email_send", {"body": "x", "to": "a@b.com"},
+            unattended=True, allow_env="outbound.agentwire-email",
+        )
+        assert proc.returncode == 0
+
+    def test_quo_unattended_allowlisted_proceeds(self):
+        proc = self._run(
+            "mcp__agentwire__quo_send", {"body": "x", "to": "+1555"},
+            unattended=True, allow_env="outbound.agentwire-quo",
+        )
+        assert proc.returncode == 0
+
+    def test_attended_non_bypass_asks(self):
+        proc = self._run(
+            "mcp__agentwire__email_send", {"body": "x", "to": "a@b.com"},
+            unattended=False, permission_mode="default",
+        )
+        assert proc.returncode == 0
+        out = json.loads(proc.stdout)
+        decision = out["hookSpecificOutput"]["permissionDecision"]
+        assert decision == "ask"
+
+    def test_attended_bypass_allows(self):
+        proc = self._run(
+            "mcp__agentwire__email_send", {"body": "x", "to": "a@b.com"},
+            unattended=False, permission_mode="bypassPermissions",
+        )
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""

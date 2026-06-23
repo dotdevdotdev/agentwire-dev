@@ -8579,6 +8579,14 @@ def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
         if event:
             register_hook_in_settings(event, hook_name)
 
+    # Heal the damage-control PreToolUse matchers (Bash/Edit/Write + the outbound
+    # MCP tools) in settings.json so `hooks install` keeps them current too.
+    try:
+        from agentwire.cli_safety import register_damage_control_in_settings
+        register_damage_control_in_settings()
+    except Exception:
+        pass
+
     return results
 
 
