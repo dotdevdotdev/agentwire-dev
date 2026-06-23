@@ -6,7 +6,8 @@ Loads config from YAML file with sensible defaults and env var overrides.
 
 import os
 import sys
-from dataclasses import dataclass, field, fields as dataclass_fields
+from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Optional
 
@@ -348,6 +349,10 @@ class CustomServiceConfig:
     type: Optional[str] = None   # session type override (e.g. claude-bypass)
     restart: str = "on-failure"  # never | on-failure | always
     healthcheck: HealthcheckConfig = field(default_factory=HealthcheckConfig)
+    # Context auto-management policy (issue #442): clear | compact | none.
+    # Default "none" — a service is only auto-managed when it opts in. Stateless
+    # bridges (notifications) set "clear"; stateful orchestrators "compact".
+    context_policy: str = "none"
 
     def __post_init__(self):
         if self.project:
@@ -459,16 +464,29 @@ class PromptRouterConfig:
 
 @dataclass
 class SessionContextConfig:
-    """Session context-bloat observability (Phase 0) knobs.
+    """Session context-bloat observability + auto-management (issue #442) knobs.
 
-    Observe-only: surfaces each session's remaining-context % and flags
-    sessions running low. No auto-``/clear`` / ``/compact`` — that is Phase 1.
+    Phase 0 surfaces each session's remaining-context % and flags low sessions.
+    Phase 1 adds opt-in auto-action: a session carrying a ``context_policy`` of
+    ``clear``/``compact`` (default ``none``) gets that command sent when it
+    crosses the warn threshold while idle at an empty prompt.
     """
 
     # Flag a session when its REMAINING context drops to/below this %
     # (the bar shows headroom, not usage — see session_context.py). Default
     # 20% remaining == ~80% of the way toward the limit.
     warn_remaining_pct: int = 20
+
+    # Master switch for the Phase-1 auto-action sweep on the limits watchdog.
+    # Observability (CLI/MCP) is unaffected by this — it only gates auto-action.
+    auto_enabled: bool = True
+
+    # Per-session policy overrides keyed by session name — ``clear`` | ``compact``
+    # | ``none``. For arbitrary sessions (councils, anchors) that aren't service-
+    # registry entries. Bundled services are default-on via their own entry, so
+    # they need no entry here. Anything not listed (and not a default-on service)
+    # is ``none`` — never auto-managed.
+    policies: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -694,6 +712,9 @@ def _dict_to_config(data: dict) -> Config:
                 command=hc_data.get("command"),
                 interval=hc_data.get("interval", 60),
             )
+            context_policy = entry.get("context_policy", "none")
+            if context_policy not in ("clear", "compact", "none"):
+                context_policy = "none"
             custom_services.append(CustomServiceConfig(
                 name=entry["name"],
                 project=entry.get("project"),
@@ -702,6 +723,7 @@ def _dict_to_config(data: dict) -> Config:
                 type=entry.get("type"),
                 restart=entry.get("restart", "on-failure"),
                 healthcheck=healthcheck,
+                context_policy=context_policy,
             ))
     services = ServicesConfig(
         portal=portal_service,
@@ -800,7 +822,7 @@ def _dict_to_config(data: dict) -> Config:
         exclude_sessions=[str(s) for s in pr_exclude_raw if s],
     )
 
-    # Session context observability (Phase 0 — bloat warn threshold)
+    # Session context observability + auto-management (issue #442)
     session_context_data = data.get("session_context", {}) or {}
     if not isinstance(session_context_data, dict):
         session_context_data = {}
@@ -808,8 +830,18 @@ def _dict_to_config(data: dict) -> Config:
         warn_remaining_pct = int(session_context_data.get("warn_remaining_pct", 20))
     except (TypeError, ValueError):
         warn_remaining_pct = 20
+    policies_raw = session_context_data.get("policies", {}) or {}
+    if not isinstance(policies_raw, dict):
+        policies_raw = {}
+    policies = {
+        str(name): str(pol)
+        for name, pol in policies_raw.items()
+        if str(pol) in ("clear", "compact", "none")
+    }
     session_context = SessionContextConfig(
         warn_remaining_pct=max(0, min(100, warn_remaining_pct)),
+        auto_enabled=bool(session_context_data.get("auto_enabled", True)),
+        policies=policies,
     )
 
     # Session defaults
