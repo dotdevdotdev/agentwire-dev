@@ -199,6 +199,50 @@ class TestFrozenConfig:
         assert "realsecret" in restored
         assert security.frozen_config_violations(restored, self.OLD) == []
 
+    def test_redaction_restores_each_secret_by_path(self):
+        # S1 (PR #458 red-team): multiple api_key entries at different paths must
+        # each get their OWN secret back — not a single global first-match.
+        old = (
+            "pi:\n"
+            "  providers:\n"
+            "    zai:\n"
+            '      api_key: "zai-secret"\n'
+            "    openai:\n"
+            '      api_key: "openai-secret"\n'
+            "server:\n"
+            '  auth_token: "tok"\n'
+        )
+        redacted = (
+            "pi:\n"
+            "  providers:\n"
+            "    zai:\n"
+            '      api_key: "[REDACTED]"\n'
+            "    openai:\n"
+            '      api_key: "[REDACTED]"\n'
+            "server:\n"
+            '  auth_token: "[REDACTED]"\n'
+        )
+        restored = security.restore_redactions(redacted, old)
+        assert "[REDACTED]" not in restored
+        # Each key restored to its own path's value, in order.
+        assert restored.index("zai-secret") < restored.index("openai-secret")
+        assert "tok" in restored
+        # Comments and unrelated lines survive (text round-trip, not re-serialize).
+        assert restored.count("api_key") == 2
+
+    def test_redaction_preserves_comments(self):
+        old = 'server:\n  auth_token: "realsecret"\n  port: 8765\n'
+        redacted = (
+            "# my portal config\n"
+            "server:\n"
+            '  auth_token: "[REDACTED]"\n'
+            "  port: 8765  # keep this comment\n"
+        )
+        restored = security.restore_redactions(redacted, old)
+        assert "# my portal config" in restored
+        assert "# keep this comment" in restored
+        assert "realsecret" in restored
+
 
 # ---------------------------------------------------------------------------
 # Token → device resolution

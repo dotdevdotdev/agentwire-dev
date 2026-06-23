@@ -1240,6 +1240,18 @@ class TestPairingEndpoint:
         resp = await client.post("/api/pair", json={})
         assert resp.status == 400
 
+    async def test_pair_rate_limited(self, portal_client_with_token):
+        """S1: the public token-minting endpoint throttles brute-force attempts."""
+        client, server = portal_client_with_token
+        cap = server._PAIR_PER_IP
+        # Exhaust the per-IP budget with bad codes (each a recorded attempt).
+        for _ in range(cap):
+            r = await client.post("/api/pair", json={"code": "BADCODE0"})
+            assert r.status == 403  # invalid code, but counted
+        # The next attempt is throttled before the code is even checked.
+        r = await client.post("/api/pair", json={"code": "BADCODE0"})
+        assert r.status == 429
+
 
 class TestPerDeviceAuth:
     async def test_paired_device_token_works(self, portal_client_with_token):

@@ -226,43 +226,54 @@ def _load_yaml(text: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+_REDACTED_LINE = re.compile(
+    r'^(?P<indent>[ \t]*)(?P<field>[A-Za-z0-9_]+)(?P<sep>[ \t]*:[ \t]*)'
+    r'["\']?\[REDACTED\]["\']?[ \t]*(?P<eol>\r?\n?)$'
+)
+_MAPPING_KEY = re.compile(r'^(?P<indent>[ \t]*)(?P<key>[A-Za-z0-9_]+)[ \t]*:[ \t]*(?P<val>.*?)[ \t]*\r?\n?$')
+
+
 def restore_redactions(new_content: str, old_content: str) -> str:
     """Reverse the read-side secret redaction before a config save.
 
     ``GET /api/config`` replaces ``auth_token``/``api_key`` values with
-    ``"[REDACTED]"``. If that text is saved back verbatim it would overwrite the
-    real secret on disk (and falsely trip the frozen-key check on
-    ``server.auth_token``). Restore any redaction marker to the on-disk value.
+    ``"[REDACTED]"``. Saving that text back verbatim would overwrite the real
+    secret on disk (and falsely trip the frozen-key check on
+    ``server.auth_token``).
+
+    Restores each redacted field to the on-disk value **at its own YAML path** —
+    so multiple ``api_key`` entries (e.g. several pi providers) each get their
+    own secret back, not a single global first-match. Operates on the raw text so
+    comments and formatting survive the round-trip; only redacted scalar lines
+    change.
     """
     old = _load_yaml(old_content)
-    real_auth = _dig(old, "server.auth_token")
+    out: list[str] = []
+    stack: list[tuple[int, str]] = []  # (indent, key) path to the current mapping
 
-    def _find_first(d, key):
-        if not isinstance(d, dict):
-            return None
-        if key in d and not isinstance(d[key], (dict, list)):
-            return d[key]
-        for v in d.values():
-            found = _find_first(v, key) if isinstance(v, dict) else None
-            if found is not None:
-                return found
-        return None
+    for line in new_content.splitlines(keepends=True):
+        key_m = _MAPPING_KEY.match(line)
+        if key_m:
+            indent = len(key_m.group("indent").expandtabs())
+            # Pop siblings/deeper levels so the path reflects this key's parent.
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            red_m = _REDACTED_LINE.match(line)
+            if red_m and red_m.group("field") in _REDACTED_FIELDS:
+                path = ".".join([k for _, k in stack] + [red_m.group("field")])
+                real = _dig(old, path)
+                if real is not None:
+                    out.append(
+                        f'{red_m.group("indent")}{red_m.group("field")}'
+                        f'{red_m.group("sep")}{_yaml_scalar(real)}{red_m.group("eol")}'
+                    )
+                    continue  # scalar leaf — don't push onto the path
+            # A key that opens a nested mapping (no inline value) extends the path.
+            if key_m.group("val") == "":
+                stack.append((indent, key_m.group("key")))
+        out.append(line)
 
-    def repl(m: "re.Match") -> str:
-        field = m.group("field")
-        if field == "auth_token" and real_auth is not None:
-            return f'{m.group("prefix")}{_yaml_scalar(real_auth)}'
-        if field == "api_key":
-            val = _find_first(old, "api_key")
-            if val is not None:
-                return f'{m.group("prefix")}{_yaml_scalar(val)}'
-        return m.group(0)
-
-    pattern = re.compile(
-        r'(?P<prefix>(?P<field>api_key|auth_token)\s*:\s*)'
-        r'["\']?\[REDACTED\]["\']?'
-    )
-    return pattern.sub(repl, new_content)
+    return "".join(out)
 
 
 def _yaml_scalar(value) -> str:

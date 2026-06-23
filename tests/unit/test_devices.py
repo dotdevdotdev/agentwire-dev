@@ -1,6 +1,7 @@
 """Unit tests for agentwire.devices — registry, hashing, pairing lifecycle."""
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -140,3 +141,68 @@ class TestPairing:
         path = tmp_path / "pairings.json"
         pairing = create_pairing("phone", path=path)
         assert consume_pairing(pairing.code.lower(), path=path) is not None
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — the race window where B1/B2 hid (PR #458 red-team)
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrency:
+    def test_revoke_survives_concurrent_touches(self, reg_path):
+        """B1: a touch racing a revoke must NOT resurrect the device.
+
+        Each worker loads a snapshot (active), then touches — exactly the
+        unlocked read-modify-write that used to wipe revoked=true. With the
+        re-read-under-lock fix, the device must end revoked regardless of order.
+        """
+        reg = DeviceRegistry(reg_path)
+        device, token = reg.add("phone")
+        # Make last_seen stale so touch() actually wants to write.
+        from agentwire.devices import _read_devices, _atomic_write_json, _iso
+        from dataclasses import asdict
+        ds = _read_devices(reg_path)
+        ds[0].last_seen = _iso(0)
+        _atomic_write_json(reg_path, {"devices": [asdict(d) for d in ds]})
+
+        def toucher():
+            r = DeviceRegistry.load(reg_path)  # snapshot: active
+            time.sleep(0.001)
+            r.touch(device.id)
+
+        def revoker():
+            time.sleep(0.001)
+            DeviceRegistry.load(reg_path).revoke(device.id)
+
+        with ThreadPoolExecutor(max_workers=12) as ex:
+            futs = [ex.submit(toucher) for _ in range(11)] + [ex.submit(revoker)]
+            for f in futs:
+                f.result()
+
+        final = DeviceRegistry.load(reg_path)
+        assert final.devices[0].revoked is True
+        assert final.resolve(token) is None
+
+    def test_concurrent_redeem_is_single_use(self, tmp_path):
+        """B2: many concurrent redemptions of one code → exactly one winner."""
+        path = tmp_path / "pairings.json"
+        pairing = create_pairing("phone", path=path)
+
+        def redeem():
+            return consume_pairing(pairing.code, path=path)
+
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            results = [f.result() for f in [ex.submit(redeem) for _ in range(16)]]
+
+        winners = [r for r in results if r is not None]
+        assert len(winners) == 1
+
+    def test_concurrent_adds_all_persist(self, reg_path):
+        """Parallel pairings must not clobber each other (lost-update guard)."""
+        def add(i):
+            return DeviceRegistry.load(reg_path).add(f"dev{i}")
+
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            list(ex.map(add, range(20)))
+
+        assert len(DeviceRegistry.load(reg_path).devices) == 20

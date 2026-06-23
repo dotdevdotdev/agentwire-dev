@@ -27,14 +27,23 @@ phone no longer logs out the laptop.
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
+
+try:
+    import fcntl  # POSIX only — agentwire targets macOS/Linux.
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 
 DEVICES_FILE = Path.home() / ".agentwire" / "devices.json"
 PAIRINGS_FILE = Path.home() / ".agentwire" / "pairings.json"
@@ -76,6 +85,61 @@ def _iso(ts: Optional[float] = None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts if ts is not None else _now()))
 
 
+def _parse_iso(value: Optional[str]) -> float:
+    """Parse a stored UTC ISO stamp back to epoch seconds (0 on failure)."""
+    try:
+        return calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Concurrency-safe persistence
+#
+# Both files (devices.json, pairings.json) are shared across processes — the
+# portal serves auth on every request while the CLI revokes/pairs out of band.
+# Every read-modify-write therefore runs under an exclusive flock on a sibling
+# ``.lock`` file (a dedicated lock target, so the atomic os.replace below never
+# swaps the inode we're holding), and writes go through a temp-file + rename so
+# a reader never sees a half-written file.
+
+
+@contextmanager
+def _file_lock(path: Path):
+    """Exclusive cross-process lock keyed on ``<path>.lock``."""
+    if fcntl is None:  # pragma: no cover - non-POSIX fallback
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.parent / (path.name + ".lock")
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write JSON via temp-file + atomic rename, owner-only. Call under lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(payload, indent=2) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Device registry
 
@@ -102,8 +166,39 @@ class Device:
 BOOTSTRAP_DEVICE = Device(id="host", name="host (bootstrap token)", token_hash="")
 
 
+def _read_devices(path: Path) -> list[Device]:
+    """Parse the on-disk registry into Device rows (authoritative current state)."""
+    devices: list[Device] = []
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        raw = None
+    if isinstance(raw, dict):
+        for entry in raw.get("devices", []):
+            if not isinstance(entry, dict) or "token_hash" not in entry:
+                continue
+            devices.append(
+                Device(
+                    id=entry.get("id", ""),
+                    name=entry.get("name", ""),
+                    token_hash=entry["token_hash"],
+                    created=entry.get("created", ""),
+                    last_seen=entry.get("last_seen"),
+                    revoked=bool(entry.get("revoked", False)),
+                )
+            )
+    return devices
+
+
 class DeviceRegistry:
-    """Load/save the device registry and resolve presented tokens to devices."""
+    """Load/save the device registry and resolve presented tokens to devices.
+
+    Reads (``resolve``/``active``) use the in-memory snapshot from ``load``.
+    **Writes (``add``/``revoke``/``touch``) re-read the file fresh under an
+    exclusive lock and write authoritatively** — never persisting a stale
+    snapshot. This is what makes revoke a real kill-switch: a concurrent
+    ``touch`` can't resurrect a device revoked between load and write.
+    """
 
     def __init__(self, path: Path, devices: Optional[list[Device]] = None):
         self.path = path
@@ -112,34 +207,14 @@ class DeviceRegistry:
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "DeviceRegistry":
         path = path or DEVICES_FILE
-        devices: list[Device] = []
-        try:
-            raw = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            raw = None
-        if isinstance(raw, dict):
-            for entry in raw.get("devices", []):
-                if not isinstance(entry, dict) or "token_hash" not in entry:
-                    continue
-                devices.append(
-                    Device(
-                        id=entry.get("id", ""),
-                        name=entry.get("name", ""),
-                        token_hash=entry["token_hash"],
-                        created=entry.get("created", ""),
-                        last_seen=entry.get("last_seen"),
-                        revoked=bool(entry.get("revoked", False)),
-                    )
-                )
-        return cls(path, devices)
+        return cls(path, _read_devices(path))
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"devices": [asdict(d) for d in self.devices]}
-        self.path.write_text(json.dumps(payload, indent=2) + "\n")
-        self.path.chmod(0o600)
+        """Authoritatively persist the in-memory snapshot (locked, atomic)."""
+        with _file_lock(self.path):
+            _atomic_write_json(self.path, {"devices": [asdict(d) for d in self.devices]})
 
-    # -- mutation ---------------------------------------------------------
+    # -- mutation (re-read fresh under lock, write authoritatively) --------
 
     def add(self, name: str, token: Optional[str] = None) -> tuple[Device, str]:
         """Register a new device, returning (device, plaintext_token).
@@ -154,35 +229,46 @@ class DeviceRegistry:
             token_hash=hash_token(token),
             created=_iso(),
         )
-        self.devices.append(device)
-        self.save()
+        with _file_lock(self.path):
+            devices = _read_devices(self.path)
+            devices.append(device)
+            _atomic_write_json(self.path, {"devices": [asdict(d) for d in devices]})
+            self.devices = devices
         return device, token
 
     def revoke(self, device_id: str) -> bool:
-        for d in self.devices:
-            if d.id == device_id and not d.revoked:
-                d.revoked = True
-                self.save()
-                return True
-        return False
+        with _file_lock(self.path):
+            devices = _read_devices(self.path)
+            found = False
+            for d in devices:
+                if d.id == device_id and not d.revoked:
+                    d.revoked = True
+                    found = True
+            if found:
+                _atomic_write_json(self.path, {"devices": [asdict(d) for d in devices]})
+            self.devices = devices
+        return found
 
     def touch(self, device_id: str) -> None:
-        """Best-effort last_seen update, throttled to one write per minute."""
-        for d in self.devices:
-            if d.id != device_id:
-                continue
-            now = _now()
+        """Best-effort last_seen update, throttled to one write per minute.
+
+        Re-reads under the lock and refuses to write a device that is absent or
+        already revoked — so it can never undo a concurrent revoke.
+        """
+        now = _now()
+        with _file_lock(self.path):
+            devices = _read_devices(self.path)
+            target = next((d for d in devices if d.id == device_id), None)
+            if target is None or target.revoked:
+                return
+            if now - _parse_iso(target.last_seen) < _LAST_SEEN_THROTTLE:
+                return
+            target.last_seen = _iso(now)
             try:
-                prev = time.mktime(time.strptime(d.last_seen, "%Y-%m-%dT%H:%M:%SZ")) if d.last_seen else 0
-            except (ValueError, TypeError):
-                prev = 0
-            if now - prev >= _LAST_SEEN_THROTTLE:
-                d.last_seen = _iso(now)
-                try:
-                    self.save()
-                except OSError:
-                    pass
-            return
+                _atomic_write_json(self.path, {"devices": [asdict(d) for d in devices]})
+                self.devices = devices
+            except OSError:
+                pass
 
     # -- lookup -----------------------------------------------------------
 
@@ -258,9 +344,8 @@ def _load_pairings(path: Path) -> list[Pairing]:
 
 
 def _save_pairings(path: Path, pairings: list[Pairing]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"pairings": [asdict(p) for p in pairings]}, indent=2) + "\n")
-    path.chmod(0o600)
+    """Persist pending pairings (locked, atomic). Call under ``_file_lock``."""
+    _atomic_write_json(path, {"pairings": [asdict(p) for p in pairings]})
 
 
 def create_pairing(
@@ -270,37 +355,41 @@ def create_pairing(
 ) -> Pairing:
     """Create and persist a pending pairing code (host side)."""
     path = path or PAIRINGS_FILE
-    pairings = [p for p in _load_pairings(path) if not p.expired()]
     pairing = Pairing(
         code=generate_pairing_code(),
         name=name or "device",
         expires=_now() + ttl,
     )
-    pairings.append(pairing)
-    _save_pairings(path, pairings)
+    with _file_lock(path):
+        pairings = [p for p in _load_pairings(path) if not p.expired()]
+        pairings.append(pairing)
+        _save_pairings(path, pairings)
     return pairing
 
 
 def consume_pairing(code: str, path: Optional[Path] = None) -> Optional[Pairing]:
     """Validate a pairing code, removing it (one-shot). Portal side.
 
-    Returns the Pairing on success, None if unknown/expired. Expired entries are
+    Atomic compare-and-delete under the pairings lock: concurrent redemptions of
+    the same code can't all win — exactly one acquires the lock, removes the
+    code, and returns it; the rest re-read and find it gone. Expired entries are
     swept on the way through.
     """
     if not code:
         return None
     path = path or PAIRINGS_FILE
     code = code.strip().upper()
-    pairings = _load_pairings(path)
-    match: Optional[Pairing] = None
-    survivors: list[Pairing] = []
-    now = _now()
-    for p in pairings:
-        if p.expired(now):
-            continue  # drop expired
-        if match is None and hmac.compare_digest(p.code, code):
-            match = p
-            continue  # consume (don't carry forward)
-        survivors.append(p)
-    _save_pairings(path, survivors)
+    with _file_lock(path):
+        pairings = _load_pairings(path)
+        match: Optional[Pairing] = None
+        survivors: list[Pairing] = []
+        now = _now()
+        for p in pairings:
+            if p.expired(now):
+                continue  # drop expired
+            if match is None and hmac.compare_digest(p.code, code):
+                match = p
+                continue  # consume (don't carry forward)
+            survivors.append(p)
+        _save_pairings(path, survivors)
     return match

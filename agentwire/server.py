@@ -179,6 +179,10 @@ class AgentWireServer:
         self.session_client_counts: dict[str, int] = {}  # Attached tmux client counts per session
         self.active_notifications: dict[str, dict] = {}  # id -> notification for persistence across refresh
         self._background_tasks: set[asyncio.Task] = set()  # strong refs so create_task work isn't GC'd
+        # Rate-limit state for the public, unauthenticated POST /api/pair (#423 S1).
+        # Per-IP and global sliding-window attempt logs (monotonic timestamps).
+        self._pair_attempts: dict[str, list[float]] = {}
+        self._pair_attempts_global: list[float] = []
         self.machine_status_checker = CachedStatusChecker(ttl_seconds=30)  # Progressive loading for machines
         self.remote_sessions_checker = CachedStatusChecker(ttl_seconds=20)  # Progressive loading for remote sessions
         self.projects_checker = CachedStatusChecker(ttl_seconds=30)  # Progressive loading for projects
@@ -1007,6 +1011,27 @@ class AgentWireServer:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
+    # Pairing rate limit: max 5 attempts / IP / minute, 30 globally / minute.
+    _PAIR_WINDOW = 60.0
+    _PAIR_PER_IP = 5
+    _PAIR_GLOBAL = 30
+
+    def _pair_rate_ok(self, ip: str) -> bool:
+        """Record a pairing attempt; False if it exceeds the per-IP or global cap."""
+        now = time.monotonic()
+        cutoff = now - self._PAIR_WINDOW
+        self._pair_attempts_global = [t for t in self._pair_attempts_global if t > cutoff]
+        per_ip = [t for t in self._pair_attempts.get(ip, []) if t > cutoff]
+        if len(per_ip) >= self._PAIR_PER_IP or len(self._pair_attempts_global) >= self._PAIR_GLOBAL:
+            self._pair_attempts[ip] = per_ip  # keep pruned state, don't record the rejected attempt
+            return False
+        per_ip.append(now)
+        self._pair_attempts[ip] = per_ip
+        self._pair_attempts_global.append(now)
+        # Drop IP buckets that pruned to empty so the dict can't grow unbounded.
+        self._pair_attempts = {k: v for k, v in self._pair_attempts.items() if v}
+        return True
+
     async def api_pair(self, request: web.Request) -> web.Response:
         """Redeem a pairing code for a freshly-minted device token (#423).
 
@@ -1014,6 +1039,15 @@ class AgentWireServer:
         host printed via `agentwire portal pair`. One-shot: the code is consumed.
         """
         from .devices import DeviceRegistry, consume_pairing
+
+        # Rate limit (#423 S1): this is the one unauthenticated token-minting
+        # endpoint. Throttle per-IP and globally over a sliding window so a
+        # brute-forcer can't grind pairing codes (40-bit, 10-min TTL).
+        if not self._pair_rate_ok(request.remote or "?"):
+            return web.json_response(
+                {"error": "Too many pairing attempts — wait a minute and retry."},
+                status=429,
+            )
 
         try:
             data = await request.json()
