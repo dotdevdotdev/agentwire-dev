@@ -48,6 +48,7 @@ Headless and scheduled execution.
 ## Security
 
 - **[Secrets & API keys](security/secrets.md)** — `~/.agentwire/.env` is the one place every key lives; which vars each feature reads; the `api_key_env` pattern for new integrations
+- **[Remote-access hardening](security/remote-access-hardening.md)** — threat model for the any-device→tunnel→portal→shell path; network footprint map (what agentwire owns vs BYO tunnels); the portal auth boundary and the per-device / capability-scope / freeze-config hardening plan (#396, #420, #423–#425)
 - **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
 
 ## Integrations
