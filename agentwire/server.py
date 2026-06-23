@@ -122,6 +122,30 @@ def _is_allowed_in_restricted_mode(tool_name: str, tool_input: dict) -> bool:
     return bool(re.match(pattern, command))
 
 
+def should_nag_idle_session(
+    name: str,
+    last_output_timestamp: float,
+    nagged_output_ts: dict[str, float],
+) -> bool:
+    """Edge-trigger decision for the idle-nag loop (pure, unit-testable).
+
+    A session is included in the nag batch only when it has never been
+    nagged this episode, or when its ``last_output_timestamp`` has advanced
+    since the last nag (a genuinely new question/error/activity). A session
+    that stays continuously idle keeps a *fixed* ``last_output_timestamp``,
+    so it nags exactly once per idle episode instead of every scan.
+
+    ``nagged_output_ts`` maps session name -> the ``last_output_timestamp``
+    captured at its last nag. The caller is responsible for recording the
+    timestamp on include and for popping the entry when the session drops
+    below the idle threshold (resetting the episode).
+    """
+    prior = nagged_output_ts.get(name)
+    if prior is None:
+        return True
+    return last_output_timestamp > prior
+
+
 @dataclass
 class SessionConfig:
     """Runtime configuration for a session."""
@@ -1781,7 +1805,11 @@ class AgentWireServer:
         NAG_IDLE_THRESHOLD = 120  # seconds idle before including in nag (2 min minimum)
         NAG_SESSION = "agentwire-notifications"
         SERVICE_PREFIX = "agentwire-"
-        nag_counts: dict[str, int] = {}  # session -> consecutive nag count
+        nag_counts: dict[str, int] = {}  # session -> nag count this idle episode
+        # session -> last_output_timestamp captured at its last nag. Drives the
+        # edge-trigger: a continuously-idle session keeps a fixed timestamp, so
+        # it nags once; a new question/error advances the timestamp and re-nags.
+        nagged_output_ts: dict[str, float] = {}
 
         logger.info("[IdleNag] Starting idle nag loop (interval: %ds, threshold: %ds)",
                      NAG_INTERVAL, NAG_IDLE_THRESHOLD)
@@ -1793,6 +1821,7 @@ class AgentWireServer:
             try:
                 if not self.dashboard_clients:
                     nag_counts.clear()
+                    nagged_output_ts.clear()
                     await asyncio.sleep(NAG_INTERVAL)
                     continue
 
@@ -1809,10 +1838,18 @@ class AgentWireServer:
                     last_ts = info.get("last_output_timestamp", 0.0)
                     idle_secs = time.time() - last_ts if last_ts else float('inf')
                     if idle_secs > NAG_IDLE_THRESHOLD:
-                        idle_sessions.append((name, idle_secs))
+                        # Edge-trigger: only nag on a never-nagged session or
+                        # when its output has genuinely changed since last nag.
+                        if should_nag_idle_session(name, last_ts, nagged_output_ts):
+                            idle_sessions.append((name, idle_secs, last_ts))
                     else:
+                        # Active again — reset the episode so it can nag afresh.
                         nag_counts.pop(name, None)
+                        nagged_output_ts.pop(name, None)
 
+                # Empty batch → do NOT wake the notifications agent. This is the
+                # core of the edge-trigger: a continuously-idle session is sent
+                # exactly once, then the agent stays asleep.
                 if not idle_sessions:
                     await asyncio.sleep(NAG_INTERVAL)
                     continue
@@ -1823,8 +1860,9 @@ class AgentWireServer:
 
                 # Fetch fresh output for each idle session
                 session_data = []
-                for name, idle_secs in idle_sessions:
+                for name, idle_secs, last_ts in idle_sessions:
                     nag_counts[name] = nag_counts.get(name, 0) + 1
+                    nagged_output_ts[name] = last_ts
                     idle_min = int(idle_secs / 60)
 
                     # Session metadata
