@@ -10258,8 +10258,18 @@ def _set_task_enabled(name: str, enabled: bool) -> int:
 
     tasks[name]["enabled"] = enabled
 
-    with open(board_path, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+    # Atomic + validated write — never leave scheduler.yaml half-written (#449).
+    from .scheduler import _atomic_write
+
+    text = yaml.dump(raw, default_flow_style=False, sort_keys=False)
+
+    def _validate(tmp_path: str) -> None:
+        with open(tmp_path) as f:
+            reparsed = yaml.safe_load(f)
+        if not isinstance(reparsed, dict) or "tasks" not in reparsed:
+            raise ValueError("scheduler board failed re-parse validation")
+
+    _atomic_write(board_path, text, validate=_validate)
 
     action = "Enabled" if enabled else "Disabled"
     print(f"{action}: {name}")

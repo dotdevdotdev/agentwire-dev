@@ -219,6 +219,13 @@ agentwire ensure -s session --task name --dry-run       # Preview without execut
 
 ## Scheduler Integration
 
+> **`scheduler.yaml` holds your task definitions only.** The daemon treats it
+> as read-only and never writes to it. Run-state (last run, status, summaries,
+> gate commits, worktree/PR tracking) is persisted to a separate
+> `~/.agentwire/scheduler-state.yaml`, written atomically with rotated backups
+> (`scheduler-state.yaml.bak1..bak5`). This keeps machine-written state from
+> ever corrupting hand-authored tasks.
+
 Schedule tasks in `~/.agentwire/scheduler.yaml`:
 
 ```yaml

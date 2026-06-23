@@ -403,6 +403,10 @@ class SchedulerConfig:
 
     autostart: bool = True         # start the daemon when the portal boots
     board_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler.yaml")
+    # Run-state lives in its OWN file — the daemon NEVER rewrites board_file
+    # (which holds user-authored task definitions). See #449.
+    state_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler-state.yaml")
+    state_backups: int = 5         # rotated good copies of the state file kept for recovery
     events_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler-events.jsonl")
     live_state_file: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "scheduler-live.json")
     git_timeout: int = 10          # git rev-parse, diff, status
@@ -412,9 +416,15 @@ class SchedulerConfig:
     session_create_timeout: int = 30
     max_loop_sleep: int = 60
     dispatch_cooldown: int = 60
+    # Crash-loop guard: a board that won't parse / has no tasks backs off
+    # exponentially from `error_backoff_base` up to `error_backoff_max`
+    # instead of tight-looping (#449).
+    error_backoff_base: int = 30
+    error_backoff_max: int = 1800
 
     def __post_init__(self):
         self.board_file = _expand_path(self.board_file) or self.board_file
+        self.state_file = _expand_path(self.state_file) or self.state_file
         self.events_file = _expand_path(self.events_file) or self.events_file
         self.live_state_file = _expand_path(self.live_state_file) or self.live_state_file
 
@@ -732,6 +742,8 @@ def _dict_to_config(data: dict) -> Config:
     scheduler = SchedulerConfig(
         autostart=scheduler_data.get("autostart", True),
         board_file=scheduler_data.get("board_file", "~/.agentwire/scheduler.yaml"),
+        state_file=scheduler_data.get("state_file", "~/.agentwire/scheduler-state.yaml"),
+        state_backups=scheduler_data.get("state_backups", 5),
         events_file=scheduler_data.get("events_file", "~/.agentwire/scheduler-events.jsonl"),
         live_state_file=scheduler_data.get("live_state_file", "~/.agentwire/scheduler-live.json"),
         git_timeout=scheduler_data.get("git_timeout", 10),
@@ -741,6 +753,8 @@ def _dict_to_config(data: dict) -> Config:
         session_create_timeout=scheduler_data.get("session_create_timeout", 30),
         max_loop_sleep=scheduler_data.get("max_loop_sleep", 60),
         dispatch_cooldown=scheduler_data.get("dispatch_cooldown", 60),
+        error_backoff_base=scheduler_data.get("error_backoff_base", 30),
+        error_backoff_max=scheduler_data.get("error_backoff_max", 1800),
     )
 
     # REPL (Textual TUI) — theme overrides
