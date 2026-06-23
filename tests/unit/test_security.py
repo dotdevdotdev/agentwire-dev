@@ -148,3 +148,123 @@ class TestValidateStartupSecurity:
     def test_loopback_without_token_passes(self, tmp_path):
         config = self._config(tmp_path, "127.0.0.1", None)
         security.validate_startup_security(config)
+
+
+# ---------------------------------------------------------------------------
+# Frozen security-critical config (#425)
+# ---------------------------------------------------------------------------
+
+
+class TestFrozenConfig:
+    OLD = (
+        'server:\n'
+        '  host: "127.0.0.1"\n'
+        '  port: 8765\n'
+        '  auth_token: "realsecret"\n'
+        'executables:\n'
+        '  claude: "/usr/bin/claude"\n'
+        'safety:\n'
+        '  enabled: true\n'
+    )
+
+    def test_unchanged_config_allowed(self):
+        assert security.frozen_config_violations(self.OLD, self.OLD) == []
+
+    def test_changing_auth_token_blocked(self):
+        new = self.OLD.replace('"realsecret"', '""')
+        assert "server.auth_token" in security.frozen_config_violations(new, self.OLD)
+
+    def test_changing_host_blocked(self):
+        new = self.OLD.replace('"127.0.0.1"', '"0.0.0.0"')
+        assert "server.host" in security.frozen_config_violations(new, self.OLD)
+
+    def test_changing_executables_blocked(self):
+        new = self.OLD.replace('/usr/bin/claude', '/tmp/evil')
+        assert "executables" in security.frozen_config_violations(new, self.OLD)
+
+    def test_disabling_safety_blocked(self):
+        new = self.OLD.replace("enabled: true", "enabled: false")
+        assert "safety" in security.frozen_config_violations(new, self.OLD)
+
+    def test_non_frozen_change_allowed(self):
+        new = self.OLD.replace("port: 8765", "port: 9000")
+        assert security.frozen_config_violations(new, self.OLD) == []
+
+    def test_redacted_auth_token_is_not_a_change(self):
+        # The UI round-trips auth_token as "[REDACTED]"; restoring it first means
+        # an otherwise-unchanged save must not trip the frozen check.
+        redacted = self.OLD.replace('"realsecret"', '"[REDACTED]"')
+        restored = security.restore_redactions(redacted, self.OLD)
+        assert "[REDACTED]" not in restored
+        assert "realsecret" in restored
+        assert security.frozen_config_violations(restored, self.OLD) == []
+
+    def test_redaction_restores_each_secret_by_path(self):
+        # S1 (PR #458 red-team): multiple api_key entries at different paths must
+        # each get their OWN secret back — not a single global first-match.
+        old = (
+            "pi:\n"
+            "  providers:\n"
+            "    zai:\n"
+            '      api_key: "zai-secret"\n'
+            "    openai:\n"
+            '      api_key: "openai-secret"\n'
+            "server:\n"
+            '  auth_token: "tok"\n'
+        )
+        redacted = (
+            "pi:\n"
+            "  providers:\n"
+            "    zai:\n"
+            '      api_key: "[REDACTED]"\n'
+            "    openai:\n"
+            '      api_key: "[REDACTED]"\n'
+            "server:\n"
+            '  auth_token: "[REDACTED]"\n'
+        )
+        restored = security.restore_redactions(redacted, old)
+        assert "[REDACTED]" not in restored
+        # Each key restored to its own path's value, in order.
+        assert restored.index("zai-secret") < restored.index("openai-secret")
+        assert "tok" in restored
+        # Comments and unrelated lines survive (text round-trip, not re-serialize).
+        assert restored.count("api_key") == 2
+
+    def test_redaction_preserves_comments(self):
+        old = 'server:\n  auth_token: "realsecret"\n  port: 8765\n'
+        redacted = (
+            "# my portal config\n"
+            "server:\n"
+            '  auth_token: "[REDACTED]"\n'
+            "  port: 8765  # keep this comment\n"
+        )
+        restored = security.restore_redactions(redacted, old)
+        assert "# my portal config" in restored
+        assert "# keep this comment" in restored
+        assert "realsecret" in restored
+
+
+# ---------------------------------------------------------------------------
+# Token → device resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDevice:
+    def test_bootstrap_token_resolves(self):
+        dev = security.resolve_device("boot", auth_token="boot")
+        assert dev is security.BOOTSTRAP_DEVICE
+
+    def test_wrong_bootstrap_and_empty_registry_is_none(self):
+        assert security.resolve_device("nope", auth_token="boot") is None
+
+    def test_paired_token_resolves(self, monkeypatch):
+        from agentwire.devices import DeviceRegistry
+
+        reg = DeviceRegistry.load()  # path patched to tmp by autouse fixture
+        device, token = reg.add("phone")
+        from agentwire import devices as devices_mod
+
+        devices_mod._cache.clear()
+        resolved = security.resolve_device(token, auth_token="boot")
+        assert resolved is not None
+        assert resolved.id == device.id

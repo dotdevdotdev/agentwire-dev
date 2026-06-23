@@ -2,6 +2,17 @@
 
 Access your AgentWire portal from anywhere using Cloudflare Tunnel with Zero Trust authentication.
 
+> **agentwire ships no tunnel code (#420).** Internet exposure is bring-your-own —
+> cloudflared, tailscale, or a plain `ssh -L` you run yourself. agentwire owns only
+> the portal's *local* security boundary: 127.0.0.1 default, per-device bearer
+> tokens, refuse-to-start on a non-loopback bind without a token, self-signed TLS.
+> The tunnel in front of it is yours to operate. (The internal `agentwire tunnels *`
+> SSH service-router still exists as an opt-in manual helper for the vestigial
+> remote-GPU-service case, but is **no longer auto-spawned at portal start**.)
+>
+> Pair a device once with `agentwire portal pair` (prints a code + QR); see
+> [remote-access-hardening](../security/remote-access-hardening.md) for the auth model.
+
 ## Overview
 
 This guide covers:

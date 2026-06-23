@@ -1,4 +1,4 @@
-"""Portal security: Origin validation (CSRF guard) and bearer-token auth.
+"""Portal security: Origin validation (CSRF guard) and per-device bearer auth.
 
 Two layers, both enforced by a single aiohttp middleware:
 
@@ -7,20 +7,26 @@ Two layers, both enforced by a single aiohttp middleware:
    origin, a localhost equivalent, or an entry in ``server.allowed_origins``.
    Absent Origin is allowed (curl/CLI/scripts don't send one). Always on.
 
-2. Token auth — when an auth token is configured, every request outside the
-   public bootstrap surface (``GET /``, ``/health``, ``/static/*``) must carry
-   it: ``Authorization: Bearer <token>`` on HTTP, or a
-   ``Sec-WebSocket-Protocol: agentwire.bearer.<token>`` subprotocol on
-   WebSocket upgrades. Required whenever the bind is non-loopback.
+2. Token auth — when auth is configured, every request outside the public
+   bootstrap surface (``GET /``, ``/mobile``, ``/pair``, ``/health``,
+   ``/static/*``, ``POST /api/pair``) must carry a credential:
+   ``Authorization: Bearer <token>`` on HTTP, or a
+   ``Sec-WebSocket-Protocol: agentwire.bearer.<token>`` subprotocol on WS
+   upgrades. The presented token resolves to a *device* — either the bootstrap
+   token (``~/.agentwire/portal.token`` / ``server.auth_token``, used by the
+   CLI/MCP/hooks) or a paired device in the registry (``devices.json``; see
+   :mod:`agentwire.devices`). Unknown or revoked → 401. Every credential is
+   full-access; per-device identity buys named, individually-revocable
+   attribution, not capability scoping.
 
-The token lives at ``~/.agentwire/portal.token`` (0600, auto-generated).
-``server.auth_token`` in config overrides it: ``""`` disables auth (loopback
-binds only), any other string replaces the file token.
+``server.auth_token`` semantics: ``None`` → use the token file; ``""`` →
+disable auth (loopback binds only); any other string → explicit override.
 """
 
 import hmac
 import ipaddress
 import logging
+import re
 import secrets
 from pathlib import Path
 from typing import Optional
@@ -29,12 +35,29 @@ from urllib.parse import urlsplit
 import yaml
 from aiohttp import web
 
+from . import devices as devices_mod
+from .devices import BOOTSTRAP_DEVICE, Device
+
 logger = logging.getLogger(__name__)
 
 MUTATING_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 TOKEN_FILE = Path.home() / ".agentwire" / "portal.token"
 WS_PROTOCOL_PREFIX = "agentwire.bearer."
 _LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1"}
+
+# Config keys that the portal API must never be able to change — editing them is
+# host-file-only (#425). A leaked/compromised token must not be able to disable
+# its own auth, rewrite the executables/services that run as RCE, move the bind
+# host, or turn off the rm-rf damage-control rules.
+FROZEN_CONFIG_KEYS = (
+    "server.auth_token",
+    "server.host",
+    "executables",
+    "services",
+    "safety",
+)
+REDACTION_MARKER = "[REDACTED]"
+_REDACTED_FIELDS = ("api_key", "auth_token")
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +191,107 @@ def origin_allowed(origin: str, request: web.Request, allowed_origins: list) -> 
 
 
 def _is_public_path(request: web.Request) -> bool:
-    """The unauthenticated bootstrap surface: the page shells + health check."""
+    """The unauthenticated bootstrap surface: page shells, health, pairing.
+
+    ``POST /api/pair`` is public because an unpaired device has no token yet — it
+    is instead gated by the short-lived pairing code it must present.
+    """
+    path = request.path
+    if request.method == "POST":
+        return path == "/api/pair"
     if request.method != "GET":
         return False
-    path = request.path
-    return path in ("/", "/mobile", "/health") or path.startswith("/static/")
+    return path in ("/", "/mobile", "/pair", "/health") or path.startswith("/static/")
+
+
+# ---------------------------------------------------------------------------
+# Frozen security-critical config (#425)
+
+
+def _dig(data, dotted: str):
+    """Walk a dotted path into a nested dict; None if any segment is missing."""
+    cur = data
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _load_yaml(text: str) -> dict:
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_REDACTED_LINE = re.compile(
+    r'^(?P<indent>[ \t]*)(?P<field>[A-Za-z0-9_]+)(?P<sep>[ \t]*:[ \t]*)'
+    r'["\']?\[REDACTED\]["\']?[ \t]*(?P<eol>\r?\n?)$'
+)
+_MAPPING_KEY = re.compile(r'^(?P<indent>[ \t]*)(?P<key>[A-Za-z0-9_]+)[ \t]*:[ \t]*(?P<val>.*?)[ \t]*\r?\n?$')
+
+
+def restore_redactions(new_content: str, old_content: str) -> str:
+    """Reverse the read-side secret redaction before a config save.
+
+    ``GET /api/config`` replaces ``auth_token``/``api_key`` values with
+    ``"[REDACTED]"``. Saving that text back verbatim would overwrite the real
+    secret on disk (and falsely trip the frozen-key check on
+    ``server.auth_token``).
+
+    Restores each redacted field to the on-disk value **at its own YAML path** —
+    so multiple ``api_key`` entries (e.g. several pi providers) each get their
+    own secret back, not a single global first-match. Operates on the raw text so
+    comments and formatting survive the round-trip; only redacted scalar lines
+    change.
+    """
+    old = _load_yaml(old_content)
+    out: list[str] = []
+    stack: list[tuple[int, str]] = []  # (indent, key) path to the current mapping
+
+    for line in new_content.splitlines(keepends=True):
+        key_m = _MAPPING_KEY.match(line)
+        if key_m:
+            indent = len(key_m.group("indent").expandtabs())
+            # Pop siblings/deeper levels so the path reflects this key's parent.
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            red_m = _REDACTED_LINE.match(line)
+            if red_m and red_m.group("field") in _REDACTED_FIELDS:
+                path = ".".join([k for _, k in stack] + [red_m.group("field")])
+                real = _dig(old, path)
+                if real is not None:
+                    out.append(
+                        f'{red_m.group("indent")}{red_m.group("field")}'
+                        f'{red_m.group("sep")}{_yaml_scalar(real)}{red_m.group("eol")}'
+                    )
+                    continue  # scalar leaf — don't push onto the path
+            # A key that opens a nested mapping (no inline value) extends the path.
+            if key_m.group("val") == "":
+                stack.append((indent, key_m.group("key")))
+        out.append(line)
+
+    return "".join(out)
+
+
+def _yaml_scalar(value) -> str:
+    if isinstance(value, str):
+        return f'"{value}"'
+    return str(value)
+
+
+def frozen_config_violations(new_content: str, old_content: str) -> list[str]:
+    """Frozen keys whose value differs between the submitted and on-disk config.
+
+    Run *after* :func:`restore_redactions` so a redacted-but-unchanged
+    ``auth_token`` doesn't read as a change. An empty list means the save is
+    allowed.
+    """
+    new = _load_yaml(new_content)
+    old = _load_yaml(old_content)
+    return [key for key in FROZEN_CONFIG_KEYS if _dig(new, key) != _dig(old, key)]
 
 
 def _extract_token(request: web.Request, is_ws: bool) -> Optional[str]:
@@ -187,8 +306,27 @@ def _extract_token(request: web.Request, is_ws: bool) -> Optional[str]:
     return None
 
 
+def resolve_device(provided: Optional[str], auth_token: Optional[str]) -> Optional[Device]:
+    """Resolve a presented token to a device, or None.
+
+    The bootstrap token (``portal.token`` / config override) maps to a synthetic
+    full-scope ``host`` device; everything else is looked up (by hash) in the
+    device registry. Revoked devices resolve to None.
+    """
+    if not provided:
+        return None
+    if auth_token and hmac.compare_digest(provided.encode(), auth_token.encode()):
+        return BOOTSTRAP_DEVICE
+    return devices_mod.load_registry_cached().resolve(provided)
+
+
 def create_security_middleware(auth_token: Optional[str], allowed_origins: list):
-    """Build the aiohttp middleware enforcing origin + token policy."""
+    """Build the aiohttp middleware enforcing origin + per-device token auth.
+
+    ``auth_token`` is the bootstrap credential. Auth is enforced whenever it is
+    set *or* the registry holds an active paired device; a loopback dev portal
+    with neither configured stays open (origin checks still cover the browser).
+    """
 
     @web.middleware
     async def security_middleware(request: web.Request, handler):
@@ -204,16 +342,20 @@ def create_security_middleware(auth_token: Optional[str], allowed_origins: list)
                 )
                 raise web.HTTPForbidden(text="Origin not allowed")
 
-        # Token check: everything except the public bootstrap surface.
-        if auth_token and not _is_public_path(request):
+        auth_enabled = bool(auth_token) or bool(
+            devices_mod.load_registry_cached().active()
+        )
+        if auth_enabled and not _is_public_path(request):
             provided = _extract_token(request, is_ws)
-            if not provided or not hmac.compare_digest(
-                provided.encode(), auth_token.encode()
-            ):
+            device = resolve_device(provided, auth_token)
+            if device is None:
                 raise web.HTTPUnauthorized(
                     text="Missing or invalid auth token",
                     headers={"WWW-Authenticate": 'Bearer realm="agentwire"'},
                 )
+            request["device"] = device
+            if device.id != BOOTSTRAP_DEVICE.id:
+                devices_mod.load_registry_cached().touch(device.id)
 
         return await handler(request)
 

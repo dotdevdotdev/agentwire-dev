@@ -1156,3 +1156,152 @@ class TestPermissionRouting:
                 "/api/permission/myproj/respond", json={"decision": "allow"}
             )
             await task
+
+
+# ---------------------------------------------------------------------------
+# #425 — frozen security-critical config
+# ---------------------------------------------------------------------------
+
+
+class TestFrozenConfigEndpoint:
+    def _write_config(self, monkeypatch, tmp_path, body):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cfg = tmp_path / ".agentwire" / "config.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(body)
+        return cfg
+
+    async def test_changing_auth_token_rejected(self, portal_client, monkeypatch, tmp_path):
+        client, server = portal_client
+        cfg = self._write_config(
+            monkeypatch, tmp_path,
+            'server:\n  host: "127.0.0.1"\n  auth_token: "real"\n',
+        )
+        resp = await client.post("/api/config", json={
+            "content": 'server:\n  host: "127.0.0.1"\n  auth_token: ""\n',
+        })
+        assert resp.status == 403
+        data = await resp.json()
+        assert "server.auth_token" in data["frozen_keys"]
+        # On-disk config untouched.
+        assert 'auth_token: "real"' in cfg.read_text()
+
+    async def test_changing_executables_rejected(self, portal_client, monkeypatch, tmp_path):
+        client, server = portal_client
+        self._write_config(monkeypatch, tmp_path, "executables:\n  claude: /usr/bin/claude\n")
+        resp = await client.post("/api/config", json={
+            "content": "executables:\n  claude: /tmp/evil\n",
+        })
+        assert resp.status == 403
+        assert "executables" in (await resp.json())["frozen_keys"]
+
+    async def test_non_frozen_change_allowed(self, portal_client, monkeypatch, tmp_path):
+        client, server = portal_client
+        cfg = self._write_config(monkeypatch, tmp_path, "server:\n  port: 8765\n")
+        resp = await client.post("/api/config", json={
+            "content": "server:\n  port: 9000\n",
+        })
+        assert resp.status == 200
+        assert "9000" in cfg.read_text()
+
+    async def test_safety_config_frozen(self, portal_client):
+        client, server = portal_client
+        resp = await client.post("/api/safety/config", json={"enabled": False})
+        assert resp.status == 403
+        assert "safety" in (await resp.json())["frozen_keys"]
+
+
+# ---------------------------------------------------------------------------
+# #423 — device pairing + per-device credentials
+# ---------------------------------------------------------------------------
+
+
+class TestPairingEndpoint:
+    async def test_pair_with_valid_code_mints_token(self, portal_client_with_token):
+        from agentwire.devices import create_pairing
+
+        client, server = portal_client_with_token
+        pairing = create_pairing("phone")
+        # /api/pair is public — no bearer required.
+        resp = await client.post("/api/pair", json={"code": pairing.code})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["token"]
+        assert data["device"]["name"] == "phone"
+        assert "token_hash" not in data["device"]
+
+    async def test_pair_with_bad_code_rejected(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.post("/api/pair", json={"code": "BOGUS123"})
+        assert resp.status == 403
+
+    async def test_pair_missing_code_400(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.post("/api/pair", json={})
+        assert resp.status == 400
+
+    async def test_pair_rate_limited(self, portal_client_with_token):
+        """S1: the public token-minting endpoint throttles brute-force attempts."""
+        client, server = portal_client_with_token
+        cap = server._PAIR_PER_IP
+        # Exhaust the per-IP budget with bad codes (each a recorded attempt).
+        for _ in range(cap):
+            r = await client.post("/api/pair", json={"code": "BADCODE0"})
+            assert r.status == 403  # invalid code, but counted
+        # The next attempt is throttled before the code is even checked.
+        r = await client.post("/api/pair", json={"code": "BADCODE0"})
+        assert r.status == 429
+
+
+class TestPerDeviceAuth:
+    async def test_paired_device_token_works(self, portal_client_with_token):
+        from agentwire import devices
+        from agentwire.devices import DeviceRegistry
+
+        client, server = portal_client_with_token
+        reg = DeviceRegistry.load()
+        device, token = reg.add("laptop")
+        devices._cache.clear()
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            resp = await client.get(
+                "/api/sessions/local",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status == 200
+
+    async def test_revoked_device_gets_401(self, portal_client_with_token):
+        from agentwire import devices
+        from agentwire.devices import DeviceRegistry
+
+        client, server = portal_client_with_token
+        reg = DeviceRegistry.load()
+        device, token = reg.add("laptop")
+        devices._cache.clear()
+        reg.revoke(device.id)
+        devices._cache.clear()
+        resp = await client.get(
+            "/api/sessions/local", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status == 401
+
+    async def test_revoke_one_keeps_other(self, portal_client_with_token):
+        from agentwire import devices
+        from agentwire.devices import DeviceRegistry
+
+        client, server = portal_client_with_token
+        reg = DeviceRegistry.load()
+        d1, t1 = reg.add("laptop")
+        d2, t2 = reg.add("phone")
+        reg.revoke(d1.id)
+        devices._cache.clear()
+        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = (True, {"sessions": []})
+            assert (await client.get(
+                "/api/sessions/local", headers={"Authorization": f"Bearer {t1}"}
+            )).status == 401
+            assert (await client.get(
+                "/api/sessions/local", headers={"Authorization": f"Bearer {t2}"}
+            )).status == 200
+
+

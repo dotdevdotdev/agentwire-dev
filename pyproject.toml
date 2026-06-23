@@ -45,6 +45,10 @@ dependencies = [
     "useful-moonshine-onnx>=20250101; python_version < '3.14'",
     # Used by agentwire.tts.base (TTSRequest); explicit rather than transitive via mcp.
     "pydantic>=2.0.0",
+    # Device-pairing QR codes in the terminal (`agentwire portal pair`). Pure
+    # Python; ASCII output needs no Pillow. Import is guarded so it degrades to
+    # a printed URL if absent.
+    "qrcode>=7.4",
 ]
 
 [project.optional-dependencies]

@@ -820,9 +820,6 @@ def _start_portal_local(args, attach: bool = True) -> int:
     When attach is False (used by `agentwire up`), the portal is started
     detached and we return without attaching.
     """
-    from .network import NetworkContext
-    from .tunnels import TunnelManager
-
     session_name = get_portal_session_name()
 
     if tmux_session_exists(session_name):
@@ -832,31 +829,10 @@ def _start_portal_local(args, attach: bool = True) -> int:
             subprocess.run(["tmux", "attach-session", "-t", session_name])
         return 0
 
-    # Ensure required tunnels are up before starting portal
-    ctx = NetworkContext.from_config()
-    required_tunnels = ctx.get_required_tunnels()
-
-    if required_tunnels:
-        print("Ensuring tunnels to remote services...")
-        tm = TunnelManager()
-
-        for spec in required_tunnels:
-            status = tm.check_tunnel(spec)
-
-            if status.status == "up":
-                print(f"  [ok] {spec.remote_machine}:{spec.remote_port} (already up)")
-            else:
-                print(f"  [..] Creating tunnel to {spec.remote_machine}:{spec.remote_port}...", end=" ", flush=True)
-                result = tm.create_tunnel(spec, ctx)
-
-                if result.status == "up":
-                    print("[ok]")
-                else:
-                    print("[!!]")
-                    print(f"      Warning: Could not create tunnel: {result.error}")
-                    print(f"      The portal may not be able to reach {spec.remote_machine}.")
-
-        print()
+    # No tunnel auto-spawn (#420): agentwire owns only the local portal
+    # boundary. Reaching the portal from elsewhere is bring-your-own
+    # (cloudflared/tailscale/ssh -L), and `agentwire tunnels *` remains as an
+    # opt-in manual helper for the vestigial remote-service-split case.
 
     # Build the server command
     # --dev runs from source with uv run (picks up code changes immediately)
@@ -1222,6 +1198,80 @@ def cmd_portal_token(args) -> int:
     if override:
         print("(from server.auth_token override in config.yaml)", file=sys.stderr)
     return 0
+
+
+def cmd_portal_pair(args) -> int:
+    """Create a short-lived pairing code (+ QR) for a new device."""
+    from .devices import PAIRING_TTL_SECONDS, create_pairing
+
+    pairing = create_pairing(name=getattr(args, "name", None) or "device")
+
+    portal_url = _default_portal_url()
+    pair_url = f"{portal_url}/pair?code={pairing.code}"
+    ttl_min = PAIRING_TTL_SECONDS // 60
+
+    print(f"Pairing code: {pairing.code}")
+    print(f"  Name:  {pairing.name}")
+    print(f"  Expires in {ttl_min} minutes.")
+    print()
+    print("On the device, open:")
+    print(f"  {pair_url}")
+    print("or visit", f"{portal_url}/pair", "and enter the code.")
+    print()
+
+    try:
+        import qrcode  # type: ignore
+
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(pair_url)
+        qr.make()
+        qr.print_ascii(invert=True)
+    except Exception:
+        print("(install `qrcode` to render a scannable QR here)")
+
+    return 0
+
+
+def cmd_portal_devices(args) -> int:
+    """List paired portal devices."""
+    from .devices import DeviceRegistry
+
+    registry = DeviceRegistry.load()
+    json_mode = getattr(args, "json", False)
+
+    if json_mode:
+        _output_json({"success": True, "devices": [d.public() for d in registry.devices]})
+        return 0
+
+    if not registry.devices:
+        print("No paired devices. The host bootstrap token (agentwire portal token)")
+        print("is the only credential. Add one with: agentwire portal pair")
+        return 0
+
+    print(f"{'ID':<14}{'NAME':<24}{'LAST SEEN':<22}STATUS")
+    for d in registry.devices:
+        status = "revoked" if d.revoked else "active"
+        print(
+            f"{d.id:<14}{(d.name or '')[:23]:<24}"
+            f"{(d.last_seen or 'never'):<22}{status}"
+        )
+    return 0
+
+
+def cmd_portal_revoke(args) -> int:
+    """Revoke one paired device without affecting the others."""
+    from .devices import DeviceRegistry
+
+    registry = DeviceRegistry.load()
+    if registry.revoke(args.device_id):
+        print(f"Revoked device '{args.device_id}'. It now gets 401 on every route.")
+        return 0
+    print(
+        f"No active device with id '{args.device_id}'. "
+        "List them with: agentwire portal devices",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def cmd_portal_restart(args) -> int:
@@ -6273,8 +6323,11 @@ def cmd_machine_add(args) -> int:
     print()
     print("Next steps:")
     print("  1. Ensure SSH access: ssh", f"{user}@{host}" if user else host)
-    print("  2. Start tunnel: autossh -M 0 -f -N -R 8765:localhost:8765", machine_id)
-    print("  3. Restart portal: agentwire portal stop && agentwire portal start")
+    print("  2. Restart portal: agentwire portal stop && agentwire portal start")
+    print()
+    print("Remote session management uses plain SSH — no tunnel needed. To reach")
+    print("the portal from another network, bring your own tunnel (cloudflared/")
+    print("tailscale); see docs/wiki/deployment/remote-access.md.")
     print()
     print("For full setup guide, run: /machine-setup in a Claude session")
 
@@ -6312,28 +6365,6 @@ def cmd_machine_remove(args) -> int:
     print(f"Removing machine '{machine_id}' (host: {host})...")
     print()
 
-    # Step 2: Kill autossh tunnel
-    print("Stopping tunnel...")
-    result = subprocess.run(
-        ["pkill", "-f", f"autossh.*{machine_id}"],
-        capture_output=True,
-    )
-    if result.returncode == 0:
-        print(f"  ✓ Killed autossh tunnel for {machine_id}")
-    else:
-        # Also try by host if different from id
-        if host != machine_id:
-            result = subprocess.run(
-                ["pkill", "-f", f"autossh.*{host}"],
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                print(f"  ✓ Killed autossh tunnel for {host}")
-            else:
-                print("  - No tunnel running (or already stopped)")
-        else:
-            print("  - No tunnel running (or already stopped)")
-
     # Step 3: Remove from machines.json
     print("Updating machines.json...")
     machines_data["machines"] = [m for m in machines if m.get("id") != machine_id]
@@ -6351,21 +6382,17 @@ def cmd_machine_remove(args) -> int:
     print("1. Remove SSH config entry:")
     print(f"   Edit ~/.ssh/config and remove the 'Host {machine_id}' block")
     print()
-    print("2. Remove from tunnel startup script (if using):")
-    print("   Edit ~/.local/bin/agentwire-tunnels")
-    print(f"   Remove '{machine_id}' from the MACHINES list")
-    print()
-    print("3. Delete GitHub deploy keys:")
+    print("2. Delete GitHub deploy keys:")
     print("   gh repo deploy-key list --repo <user>/<repo>")
     print(f"   # Find keys titled '{machine_id}' and delete them:")
     print("   gh repo deploy-key delete <key-id> --repo <user>/<repo>")
     print()
-    print("4. Destroy remote machine:")
+    print("3. Destroy remote machine:")
     print("   Option A: Delete user only")
     print("     ssh root@<ip> 'pkill -u agentwire; userdel -r agentwire'")
     print("   Option B: Destroy the VM entirely via provider console")
     print()
-    print("5. Restart portal to pick up changes:")
+    print("4. Restart portal to pick up changes:")
     print("   agentwire portal stop && agentwire portal start")
     print()
 
@@ -10963,6 +10990,27 @@ def main() -> int:
         "--rotate", action="store_true", help="Generate and save a new token"
     )
     portal_token.set_defaults(func=cmd_portal_token)
+
+    # portal pair — mint a pairing code (+QR) for a new device
+    portal_pair = portal_subparsers.add_parser(
+        "pair", help="Pair a new device (prints a short-lived code + QR)"
+    )
+    portal_pair.add_argument("--name", help="Friendly device name (e.g. 'phone')")
+    portal_pair.set_defaults(func=cmd_portal_pair)
+
+    # portal devices — list paired devices
+    portal_devices = portal_subparsers.add_parser(
+        "devices", help="List paired portal devices"
+    )
+    portal_devices.add_argument("--json", action="store_true", help="Output JSON")
+    portal_devices.set_defaults(func=cmd_portal_devices)
+
+    # portal revoke — revoke one device
+    portal_revoke = portal_subparsers.add_parser(
+        "revoke", help="Revoke one paired device by id"
+    )
+    portal_revoke.add_argument("device_id", help="Device id (see `portal devices`)")
+    portal_revoke.set_defaults(func=cmd_portal_revoke)
 
     # === tts command group ===
     tts_parser = subparsers.add_parser("tts", help="Manage TTS server")
