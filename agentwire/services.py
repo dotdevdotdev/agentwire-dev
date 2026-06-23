@@ -14,8 +14,7 @@ the watchdog resurrects them.
 import json
 import subprocess
 import sys
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -110,6 +109,11 @@ def registry(cfg: Config) -> list[CustomServiceConfig]:
         type="claude-bypass",
         restart="on-failure",
         healthcheck=HealthcheckConfig(),  # tmux_session, 60s
+        # Default-on context auto-management (issue #442): the idle-nag bridge
+        # is STATELESS — it's fed ~1440 [IDLE NAG] prompts/day and needs none of
+        # its backlog, so /clear it aggressively when it bloats rather than
+        # leaning on Claude's own (stateful-oriented) auto-compaction.
+        context_policy="clear",
     )
     return [notifications, *user_services]
 

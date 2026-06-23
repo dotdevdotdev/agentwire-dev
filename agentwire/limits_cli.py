@@ -93,17 +93,22 @@ def cmd_limits_tick(args) -> int:
     """One watchdog pass (called by launchd every minute).
 
     Runs the usage-limit sweep FIRST, then prompt routing (#276), then the
-    polite-message inbox drain (#296) — the ordering guarantees a usage-limit
-    dialog is parked before either sweep looks at the pane, and that the
-    inbox only ever delivers to panes the prompt sweep already cleared.
+    polite-message inbox drain (#296), then context auto-management (#442) —
+    the ordering guarantees a usage-limit dialog is parked before any sweep
+    looks at the pane, that the inbox only ever delivers to panes the prompt
+    sweep already cleared, and that auto-``/clear`` runs LAST so it never fights
+    a pending paste/prompt for the same idle, empty box.
     """
-    from agentwire import inbox, prompt_router
+    from agentwire import inbox, prompt_router, session_context
 
     result = usage_limit.tick()
     prompts = prompt_router.tick()
     messages = inbox.tick()
+    context = session_context.tick()
     if getattr(args, "json", False):
-        print(json.dumps({**result, "prompts": prompts, "messages": messages}))
+        print(json.dumps({
+            **result, "prompts": prompts, "messages": messages, "context": context,
+        }))
         return 0
     if result.get("skipped"):
         print(result["skipped"])
@@ -132,6 +137,14 @@ def cmd_limits_tick(args) -> int:
     if msg_deferred:
         print("messages deferred: " + ", ".join(
             f"{e['session']}({e['reason']})" for e in msg_deferred))
+    ctx_acted = context.get("acted") or []
+    ctx_deferred = context.get("deferred") or []
+    if ctx_acted:
+        print("context auto-managed: " + ", ".join(
+            f"{e['session']}→{e['command']}@{e['remaining_pct']}%" for e in ctx_acted))
+    if ctx_deferred:
+        print("context deferred: " + ", ".join(
+            f"{e['session']}({e['deferred']})" for e in ctx_deferred))
     return 0
 
 

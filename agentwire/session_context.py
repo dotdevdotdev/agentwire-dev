@@ -1,8 +1,17 @@
-"""Session context observability — read the Claude Code context bar from a pane.
+"""Session context observability + auto-management (issue #442).
 
-Phase 0 of context-bloat management (issue #442): make bloat *visible* and
-queryable. This module only OBSERVES — it never auto-``/clear``s or
-``/compact``s anything (that is Phase 1, a separate change).
+Phase 0 made context bloat *visible* and queryable (parse the bar, flag low
+sessions, expose via CLI/MCP). Phase 1 adds the *deterministic, zero-LLM*
+auto-action: opted-in sessions whose remaining context crosses the warn
+threshold get ``/clear`` (stateless service sessions) or ``/compact`` while
+they sit idle at an empty prompt. See :func:`tick` and :func:`resolve_policy`.
+
+**Opt-in only.** A session is auto-managed solely when it carries an explicit
+``context_policy`` (``clear`` | ``compact``); the default everywhere is
+``none``. Bundled stateless service sessions are default-on via their
+service-registry entry — the ``agentwire-notifications`` idle-nag bridge is the
+canonical case (it accumulates ~1440 prompts/day and needs none of its backlog).
+The watchdog never touches a session without a policy.
 
 What the bar means (verified empirically, 2026-06-22)
 -----------------------------------------------------
@@ -41,16 +50,37 @@ gracefully (surfaced as non-interactive, never flagged).
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from .usage_limit import _capture, _tmux
 
 # The context bar: a bracketed run of block-element glyphs (U+2580–U+259F
 # covers full/partial/empty blocks) followed by "NN%". ANSI is stripped first.
+#
+# HARDENING (Phase 1, issue #442) — because auto-``/clear`` now keys off the
+# parsed value, a false read must never be able to trigger an action. Two
+# anchors over the naive "any [blocks] N%":
+#   1. **Trailing token** — the bar+pct must be the last thing on its line
+#      (``[ \t]*$`` with re.MULTILINE). The real Claude footer renders the bar
+#      as the trailing token; an inline ``CPU [███░░] 50% busy`` mid-line is
+#      rejected.
+#   2. **Longest glyph-run wins** — :func:`parse_context_bar` scans every
+#      matching line and returns the percentage of the *widest* bar, so when a
+#      worker pane renders its own short progress bar alongside the real (wide)
+#      Claude footer, the footer dominates rather than the leftmost match.
+# The lookahead requires ≥1 block glyph so an all-spaces ``[   ]`` never matches.
+# Belt-and-suspenders: the auto-action sweep also gates on an idle, empty Claude
+# input box (:func:`prompt_router.prompt_is_empty`), which a pane merely drawing
+# a download meter does not present.
 _ANSI = re.compile(r"\x1b\[[0-9;]*m|\x1b\].*?\x07")
-_CONTEXT_BAR_RE = re.compile(r"\[(?:[▀-▟]|\s)+\]\s*(\d{1,3})\s*%")
+_CONTEXT_BAR_RE = re.compile(
+    r"\[(?=[^\]\n]*[▀-▟])([▀-▟ ]+)\][ \t]*(\d{1,3})[ \t]*%[ \t]*$",
+    re.MULTILINE,
+)
 # The meta line above the bar: "… main   opus  $1805.19  7988m".
 _MODEL_RE = re.compile(r"\b(opus|sonnet|haiku|fable)\b", re.IGNORECASE)
 
@@ -83,14 +113,21 @@ def parse_context_bar(visible: str) -> int | None:
     """Remaining-context % from a Claude Code status bar, or None.
 
     None means no bar on screen — a daemon pane, a busy/starting render, or a
-    pane that simply isn't a Claude conversation.
+    pane that simply isn't a Claude conversation. When several bars are present
+    (e.g. a worker pane drawing its own progress bar under the Claude footer),
+    the widest one wins — see :data:`_CONTEXT_BAR_RE` hardening notes.
     """
     clean = _ANSI.sub("", visible)
-    m = _CONTEXT_BAR_RE.search(clean)
-    if not m:
-        return None
-    pct = int(m.group(1))
-    return pct if 0 <= pct <= 100 else None
+    best_pct: int | None = None
+    best_run = -1
+    for m in _CONTEXT_BAR_RE.finditer(clean):
+        pct = int(m.group(2))
+        if not 0 <= pct <= 100:
+            continue
+        run = len(m.group(1))
+        if run > best_run:
+            best_run, best_pct = run, pct
+    return best_pct
 
 
 def parse_model(visible: str) -> str | None:
@@ -194,3 +231,184 @@ def _warn_threshold() -> int:
         return int(get_config().session_context.warn_remaining_pct)
     except Exception:
         return DEFAULT_WARN_REMAINING_PCT
+
+
+# =============================================================================
+# Phase 1 — opt-in auto-management (clear / compact)
+# =============================================================================
+
+POLICY_NONE = "none"
+POLICY_CLEAR = "clear"
+POLICY_COMPACT = "compact"
+VALID_POLICIES = (POLICY_NONE, POLICY_CLEAR, POLICY_COMPACT)
+
+# The slash command each acting policy sends to the session.
+_POLICY_COMMAND = {POLICY_CLEAR: "/clear", POLICY_COMPACT: "/compact"}
+
+EVENTS_FILE = Path.home() / ".agentwire" / "session-context-events.jsonl"
+
+
+def _log_event(event: str, **fields) -> None:
+    """Append one auto-action audit record (best-effort, never raises)."""
+    from datetime import datetime, timezone
+
+    record = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+    try:
+        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(EVENTS_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def resolve_policy(session: str, cfg=None) -> str:
+    """The context-management policy for *session* — ``clear`` | ``compact`` | ``none``.
+
+    Resolution, first match wins:
+      1. Explicit per-session override in config ``session_context.policies``
+         (a ``{name: policy}`` map — for arbitrary sessions like councils/anchors).
+      2. The session's service-registry entry ``context_policy`` (bundled
+         stateless services are default-on here — notifications => ``clear``).
+      3. ``none`` — never auto-managed.
+
+    An unknown/invalid value is treated as ``none`` (fail safe — never act).
+    """
+    if cfg is None:
+        try:
+            from .config import get_config
+
+            cfg = get_config()
+        except Exception:
+            return POLICY_NONE
+
+    policies = getattr(cfg.session_context, "policies", {}) or {}
+    override = policies.get(session)
+    if override in VALID_POLICIES:
+        return override
+
+    try:
+        from . import services
+
+        for svc in services.registry(cfg):
+            if svc.name == session:
+                pol = getattr(svc, "context_policy", POLICY_NONE)
+                return pol if pol in VALID_POLICIES else POLICY_NONE
+    except Exception:
+        pass
+
+    return POLICY_NONE
+
+
+def _safe_to_act(session: str) -> tuple[bool, str]:
+    """Is *session* a safe target for an auto-action right now?
+
+    Reuses the polite-delivery guards (#296): never act on a parked session
+    (a paste would corrupt the usage-limit resume) and only when the Claude
+    input box is a clean, empty prompt — :func:`prompt_router.prompt_is_empty`
+    returns False for a live dialog, a busy render, a human's half-typed draft,
+    or any pane it can't parse as an empty box. That single gate also implies
+    an agent pane sitting idle, so we never ``/clear`` mid-turn.
+    """
+    from . import prompt_router, usage_limit
+
+    if usage_limit.is_parked(session):
+        return False, "parked"
+    if not prompt_router.is_agent_pane(session, 0):
+        return False, "not_agent"
+    if not prompt_router.prompt_is_empty(session, 0):
+        return False, "box_not_empty"
+    return True, "ok"
+
+
+def act_on_session(session: str, policy: str, threshold: int | None = None) -> dict:
+    """Evaluate one opted-in session and ``/clear`` | ``/compact`` if warranted.
+
+    Returns a result dict (always; never raises). ``acted`` is True only when a
+    command was actually sent. ``skipped``/``deferred`` carry a reason so the
+    audit log explains every no-op.
+    """
+    if policy not in _POLICY_COMMAND:
+        return {"session": session, "acted": False, "skipped": "no_policy"}
+
+    threshold = threshold if threshold is not None else _warn_threshold()
+    ctx = session_context(session, 0, threshold)
+
+    if not ctx.is_agent or ctx.remaining_pct is None:
+        return {"session": session, "acted": False, "skipped": "no_bar"}
+    if not ctx.flagged:
+        return {
+            "session": session, "acted": False, "skipped": "above_threshold",
+            "remaining_pct": ctx.remaining_pct,
+        }
+
+    safe, reason = _safe_to_act(session)
+    if not safe:
+        _log_event(
+            "deferred", session=session, policy=policy,
+            remaining_pct=ctx.remaining_pct, reason=reason,
+        )
+        return {
+            "session": session, "acted": False, "deferred": reason,
+            "remaining_pct": ctx.remaining_pct,
+        }
+
+    command = _POLICY_COMMAND[policy]
+    try:
+        from .session_ready import send_to_session
+
+        send_to_session(session, command)
+        sent = True
+    except Exception as exc:  # a send failure must not break the watchdog
+        _log_event(
+            "send_failed", session=session, policy=policy,
+            remaining_pct=ctx.remaining_pct, error=str(exc),
+        )
+        return {"session": session, "acted": False, "deferred": "send_failed"}
+
+    _log_event(
+        "acted", session=session, policy=policy, command=command,
+        remaining_pct=ctx.remaining_pct, threshold=threshold,
+    )
+    return {
+        "session": session, "acted": sent, "policy": policy, "command": command,
+        "remaining_pct": ctx.remaining_pct,
+    }
+
+
+def tick() -> dict:
+    """One auto-context-management pass over opted-in sessions.
+
+    The 4th sweep on ``agentwire limits tick`` (after usage-limit park, prompt
+    routing, and the inbox drain). For every local session carrying a
+    ``clear``/``compact`` policy whose remaining context has crossed the warn
+    threshold *and* which is idle at an empty prompt, send ``/clear`` |
+    ``/compact``. Deterministic, zero-LLM. Never raises.
+
+    A session that defers (busy / parked / mid-turn) is simply retried next
+    tick; a session above threshold is left alone. No cooldown is needed — a
+    successful ``/clear`` resets the bar above the threshold, so it won't be
+    re-flagged, and a silently-failed one *should* be retried.
+    """
+    try:
+        from .config import get_config
+
+        cfg = get_config()
+    except Exception:
+        return {"skipped": "no_config"}
+
+    if not getattr(cfg.session_context, "auto_enabled", True):
+        return {"skipped": "disabled"}
+
+    threshold = int(getattr(cfg.session_context, "warn_remaining_pct", DEFAULT_WARN_REMAINING_PCT))
+
+    acted, deferred = [], []
+    for session in _list_local_sessions():
+        policy = resolve_policy(session, cfg)
+        if policy not in _POLICY_COMMAND:
+            continue
+        result = act_on_session(session, policy, threshold)
+        if result.get("acted"):
+            acted.append(result)
+        elif result.get("deferred"):
+            deferred.append(result)
+    return {"acted": acted, "deferred": deferred}
