@@ -9,6 +9,7 @@ and time math.
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -263,9 +264,18 @@ def load_board() -> Board:
         if st.once and st.max_runs is None:
             st.max_runs = 1
 
-    raw_state = raw.get("state", {})
-    if raw_state and isinstance(raw_state, dict):
-        for name, s in raw_state.items():
+    # Run-state lives in its own file (scheduler-state.yaml). For boards that
+    # still carry a legacy embedded `state:` block, read it too — but the
+    # dedicated state file always wins on conflict. The daemon NEVER writes
+    # state back into board_file (#449).
+    merged_state: dict = {}
+    legacy_state = raw.get("state", {})
+    if isinstance(legacy_state, dict):
+        merged_state.update(legacy_state)
+    merged_state.update(_load_state_file())
+
+    if merged_state:
+        for name, s in merged_state.items():
             if not isinstance(s, dict):
                 continue
             board.state[name] = TaskState(
@@ -287,16 +297,56 @@ def load_board() -> Board:
     return board
 
 
-def save_board(board: Board) -> None:
-    """Save board state back to YAML (preserves task definitions, rewrites state)."""
-    board_path = _sched_config().board_file
-    if not board_path.exists():
+def _backup_path(path: Path, n: int) -> Path:
+    """Path of the Nth rotated backup of `path` (e.g. scheduler-state.yaml.bak1)."""
+    return path.with_name(path.name + f".bak{n}")
+
+
+def _rotate_backups(path: Path, keep: int) -> None:
+    """Rotate path -> .bak1 .. .bakN before it is overwritten.
+
+    Only validated content is ever written to `path`, so every rotated copy
+    is a known-good snapshot — a bad write is recoverable from the newest
+    backup (#449). No-op if backups are disabled or there's nothing to rotate.
+    """
+    if keep <= 0 or not path.exists():
         return
+    # Shift older backups down: .bak(N-1) -> .bakN, ..., .bak1 -> .bak2
+    for i in range(keep, 1, -1):
+        src = _backup_path(path, i - 1)
+        if src.exists():
+            os.replace(src, _backup_path(path, i))
+    try:
+        shutil.copy2(path, _backup_path(path, 1))
+    except OSError:
+        pass
 
-    with open(board_path) as f:
-        raw = yaml.safe_load(f) or {}
 
-    # Only update the state section
+def _atomic_write(path: Path, text: str, validate=None) -> None:
+    """Write `text` to `path` atomically: temp file -> fsync -> validate -> rename.
+
+    The file is never left half-written: a crash mid-write leaves the original
+    intact and only a discardable .tmp behind. `validate(tmp_path)` (if given)
+    must raise on bad content — the rename is skipped and the temp removed,
+    so corrupt content can never replace a good file (#449).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if validate is not None:
+            validate(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _state_to_dict(board: Board) -> dict:
+    """Serialize board run-state to a plain dict for persistence."""
     state_dict = {}
     for name, s in board.state.items():
         entry = {
@@ -324,11 +374,55 @@ def save_board(board: Board) -> None:
         if s.pr_url:
             entry["pr_url"] = s.pr_url
         state_dict[name] = entry
+    return state_dict
 
-    raw["state"] = state_dict
 
-    with open(board_path, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+def _load_state_file() -> dict:
+    """Load run-state from the dedicated state file, healing through backups.
+
+    Returns the `state:` mapping. If the live file is missing or won't parse,
+    falls back through the rotated backups (newest first) so one bad write
+    doesn't lose history. Returns {} if nothing parses.
+    """
+    cfg = _sched_config()
+    state_path = cfg.state_file
+    keep = getattr(cfg, "state_backups", 5)
+    candidates = [state_path] + [_backup_path(state_path, i) for i in range(1, keep + 1)]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except (yaml.YAMLError, OSError):
+            continue
+        if isinstance(data, dict):
+            st = data.get("state", {})
+            if isinstance(st, dict):
+                return st
+    return {}
+
+
+def save_board(board: Board) -> None:
+    """Persist run-state to the dedicated state file.
+
+    NEVER touches board_file — that holds user-authored task definitions and
+    is read-only to the daemon (#449). Writes are atomic (temp + fsync +
+    re-parse validation + rename) and the previous good copy is rotated into
+    a backup first, so a bad write can never clobber the board or itself.
+    """
+    state_path = _sched_config().state_file
+    payload = {"state": _state_to_dict(board)}
+    text = yaml.dump(payload, default_flow_style=False, sort_keys=False)
+
+    def _validate(tmp_path: str) -> None:
+        with open(tmp_path) as f:
+            reparsed = yaml.safe_load(f)
+        if not isinstance(reparsed, dict) or "state" not in reparsed:
+            raise ValueError("scheduler state file failed re-parse validation")
+
+    _rotate_backups(state_path, _sched_config().state_backups)
+    _atomic_write(state_path, text, validate=_validate)
 
 
 def _dt_to_ts(dt: datetime | None) -> float:
@@ -1680,6 +1774,51 @@ def get_board_display(board: Board) -> list[dict]:
     return rows
 
 
+def _board_load_backoff(attempt: int) -> float:
+    """Exponential backoff (seconds) for the Nth consecutive board-load failure.
+
+    base * 2**attempt, capped at error_backoff_max. This is what stops a bad
+    board from tight-looping: instead of respawning every ~30s and emitting
+    millions of log lines, the daemon stays alive and backs off (#449).
+    """
+    cfg = _sched_config()
+    base = getattr(cfg, "error_backoff_base", 30)
+    cap = getattr(cfg, "error_backoff_max", 1800)
+    return float(min(cap, base * (2 ** min(max(attempt, 0), 16))))
+
+
+def _load_board_blocking(started_at: datetime) -> Board:
+    """Load the board, retrying with backoff instead of exiting on failure.
+
+    Staying alive (rather than sys.exit) is the whole point: an external
+    KeepAlive supervisor never sees the process die, so it can't respawn-storm.
+    Identical errors are logged once (not every attempt) to bound log growth.
+    """
+    attempt = 0
+    last_err: str | None = None
+    while True:
+        try:
+            return load_board()
+        except (FileNotFoundError, ValueError) as e:
+            wait = _board_load_backoff(attempt)
+            msg = str(e)
+            if msg != last_err:
+                print(f"[{_ts()}] Board load failed: {msg} — backing off "
+                      f"{int(wait)}s (attempt {attempt + 1})", file=sys.stderr)
+                _log_event("board_load_error", error=msg[:200], backoff=wait,
+                           attempt=attempt + 1)
+                last_err = msg
+            uptime = int((datetime.now(timezone.utc) - started_at).total_seconds())
+            _write_live_state(
+                status="error",
+                started_at=started_at.isoformat(),
+                error=msg[:200],
+                uptime_seconds=uptime,
+            )
+            attempt += 1
+            time.sleep(wait)
+
+
 def run_scheduler_loop() -> None:
     """Main scheduler daemon loop. Runs forever."""
     started_at = datetime.now(timezone.utc)
@@ -1690,11 +1829,7 @@ def run_scheduler_loop() -> None:
     print(f"[{_ts()}] Scheduler starting...")
     print(f"[{_ts()}] Board: {_sched_config().board_file}")
 
-    try:
-        board = load_board()
-    except (FileNotFoundError, ValueError) as e:
-        print(f"[{_ts()}] Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    board = _load_board_blocking(started_at)
 
     task_count = len(board.tasks)
     enabled_count = sum(1 for t in board.tasks.values() if t.enabled)
@@ -1714,14 +1849,39 @@ def run_scheduler_loop() -> None:
     )
     _notify_portal_state()
 
+    load_failures = 0
+    last_load_error: str | None = None
+
     while True:
         max_sleep = _sched_config().max_loop_sleep
 
         try:
             board = load_board()
+            load_failures = 0
+            last_load_error = None
         except (FileNotFoundError, ValueError) as e:
-            print(f"[{_ts()}] Board read error: {e}", file=sys.stderr)
-            time.sleep(max_sleep)
+            # The board was valid at startup but has since gone bad (mid-edit,
+            # corruption). Back off exponentially with throttled logging rather
+            # than spinning every loop and ballooning the log (#449).
+            wait = _board_load_backoff(load_failures)
+            msg = str(e)
+            if msg != last_load_error:
+                print(f"[{_ts()}] Board read error: {msg} — backing off "
+                      f"{int(wait)}s", file=sys.stderr)
+                _log_event("board_load_error", error=msg[:200], backoff=wait,
+                           attempt=load_failures + 1)
+                last_load_error = msg
+            uptime = int((datetime.now(timezone.utc) - started_at).total_seconds())
+            _write_live_state(
+                status="error",
+                started_at=started_at.isoformat(),
+                error=msg[:200],
+                tasks_completed=tasks_completed,
+                tasks_failed=tasks_failed,
+                uptime_seconds=uptime,
+            )
+            load_failures += 1
+            time.sleep(wait)
             continue
 
         # Reap worktrees whose PR has merged/closed (cheap — only tasks with

@@ -16,6 +16,10 @@ from agentwire.scheduler import (
     Schedule,
     SchedulerTask,
     TaskState,
+    _atomic_write,
+    _board_load_backoff,
+    _load_board_blocking,
+    _load_state_file,
     _compute_next_eligible,
     _dispatch_worktree_task,
     _in_time_window,
@@ -39,6 +43,8 @@ def board_env(tmp_path):
     # Mock the scheduler config to use our temp path
     class FakeSchedulerConfig:
         board_file = board_path
+        state_file = tmp_path / "scheduler-state.yaml"
+        state_backups = 5
         events_file = tmp_path / "events.jsonl"
         live_state_file = tmp_path / "live.json"
         git_timeout = 10
@@ -48,6 +54,8 @@ def board_env(tmp_path):
         session_create_timeout = 30
         max_loop_sleep = 60
         dispatch_cooldown = 60
+        error_backoff_base = 30
+        error_backoff_max = 1800
 
     with patch("agentwire.scheduler._sched_config", return_value=FakeSchedulerConfig()):
         yield board_path
@@ -399,3 +407,167 @@ class TestSchedulerWorktreeDispatchOptsOutOfPR:
         assert "--kind" in cmd and cmd[cmd.index("--kind") + 1] == "orchestrator"
         # And it still passes the task role, which now wins outright.
         assert "--roles" in cmd and "task-runner" in cmd[cmd.index("--roles") + 1]
+
+
+# --- #449: state/config separation, atomic writes, backups, crash-loop guard ---
+
+class TestStateConfigSeparation:
+    """The daemon must NEVER rewrite board_file (user task definitions)."""
+
+    def test_save_board_leaves_board_file_byte_for_byte_untouched(self, board_env, tmp_path):
+        board = load_board()
+        before = board_env.read_bytes()
+
+        # A realistic state mutation (what a dispatch would record).
+        board.state["code-quality"] = TaskState(
+            last_run=datetime(2026, 6, 22, 9, 0, 0, tzinfo=timezone.utc),
+            last_status="complete",
+            last_duration=42,
+            run_count=99,
+            last_summary="multi\nline\nsummary with: colons & \"quotes\"",
+            last_dispatch=datetime(2026, 6, 22, 8, 59, 0, tzinfo=timezone.utc),
+        )
+        save_board(board)
+
+        # board_file (tasks) is identical to the byte; state went elsewhere.
+        assert board_env.read_bytes() == before
+        state_file = tmp_path / "scheduler-state.yaml"
+        assert state_file.exists()
+        assert "code-quality" in state_file.read_text()
+        # And the board_file still has no machine-written summary smeared in.
+        assert "multi\nline" not in board_env.read_text()
+
+    def test_state_round_trips_through_dedicated_file(self, board_env, tmp_path):
+        board = load_board()
+        board.state["code-quality"] = TaskState(
+            last_status="failed", last_duration=300, run_count=6,
+            last_summary="boom",
+        )
+        save_board(board)
+
+        reloaded = load_board()
+        st = reloaded.state["code-quality"]
+        assert st.last_status == "failed"
+        assert st.run_count == 6
+        assert st.last_summary == "boom"
+        # Tasks still intact.
+        assert reloaded.tasks["code-quality"].schedule.every == "1h"
+
+    def test_dedicated_state_wins_over_legacy_embedded(self, board_env, tmp_path):
+        # Fixture embeds run_count=5 for code-quality in board_file's state:.
+        board = load_board()
+        assert board.state["code-quality"].run_count == 5  # legacy still read
+        board.state["code-quality"].run_count = 77
+        save_board(board)
+        assert load_board().state["code-quality"].run_count == 77
+
+
+class TestAtomicWrites:
+    def test_no_partial_file_when_validation_fails(self, tmp_path):
+        target = tmp_path / "out.yaml"
+        target.write_text("original: good\n")
+
+        def always_bad(_tmp):
+            raise ValueError("nope")
+
+        with pytest.raises(ValueError):
+            _atomic_write(target, "new: content\n", validate=always_bad)
+
+        # Original intact, no .tmp droppings left behind.
+        assert target.read_text() == "original: good\n"
+        leftovers = [p for p in tmp_path.iterdir() if p.name != "out.yaml"]
+        assert leftovers == []
+
+    def test_rename_replaces_atomically_on_success(self, tmp_path):
+        target = tmp_path / "out.yaml"
+        target.write_text("old: 1\n")
+        _atomic_write(target, "new: 2\n")
+        assert target.read_text() == "new: 2\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["out.yaml"]
+
+    def test_save_board_validation_rejects_unloadable_state(self, board_env, tmp_path, monkeypatch):
+        board = load_board()
+        state_file = tmp_path / "scheduler-state.yaml"
+        # Force yaml.dump to emit garbage that won't re-parse as the expected shape.
+        monkeypatch.setattr("agentwire.scheduler.yaml.dump",
+                            lambda *a, **k: "::: not valid yaml :::\n")
+        with pytest.raises((ValueError, Exception)):
+            save_board(board)
+        # Nothing half-written; no stray temp files.
+        assert not state_file.exists()
+        leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+        assert leftovers == []
+
+
+class TestBackupRotation:
+    def test_rotation_keeps_last_n_good_copies(self, board_env, tmp_path):
+        board = load_board()
+        state_file = tmp_path / "scheduler-state.yaml"
+
+        for i in range(8):
+            board.state["code-quality"].run_count = i
+            save_board(board)
+
+        # keep=5 → at most .bak1..bak5 exist.
+        baks = sorted(p.name for p in tmp_path.glob("scheduler-state.yaml.bak*"))
+        assert baks == [f"scheduler-state.yaml.bak{n}" for n in range(1, 6)]
+        # bak1 is the most recent previous good copy (run_count 6, since the
+        # live file holds 7).
+        bak1 = yaml.safe_load((tmp_path / "scheduler-state.yaml.bak1").read_text())
+        assert bak1["state"]["code-quality"]["run_count"] == 6
+
+    def test_load_heals_from_backup_when_live_state_corrupt(self, board_env, tmp_path):
+        board = load_board()
+        board.state["code-quality"].run_count = 12
+        save_board(board)          # writes live
+        board.state["code-quality"].run_count = 13
+        save_board(board)          # rotates the run_count=12 copy into bak1
+
+        # Corrupt the live state file with content that won't parse (the #449
+        # failure was a mangled multi-line scalar → yaml.scanner.ScannerError).
+        state_file = tmp_path / "scheduler-state.yaml"
+        state_file.write_text('state:\n  code-quality:\n    last_summary: "unterminated\n')
+        with pytest.raises(yaml.YAMLError):
+            yaml.safe_load(state_file.read_text())
+
+        healed = _load_state_file()
+        # Falls back to bak1 (run_count 12), not a crash or empty.
+        assert healed["code-quality"]["run_count"] == 12
+
+
+class TestCrashLoopGuard:
+    def test_backoff_grows_then_caps(self, board_env):
+        waits = [_board_load_backoff(n) for n in range(0, 12)]
+        # Monotonic non-decreasing, starts at base, ends at the cap.
+        assert waits[0] == 30
+        assert all(b >= a for a, b in zip(waits, waits[1:]))
+        assert waits[-1] == 1800
+        assert max(waits) == 1800
+
+    def test_no_tasks_board_raises_not_loops(self, board_env, tmp_path):
+        # A board with state but no tasks (the post-corruption #449 state).
+        board_env.write_text("state:\n  x:\n    last_status: complete\n")
+        with pytest.raises(ValueError, match="No tasks"):
+            load_board()
+
+    def test_blocking_load_backs_off_then_succeeds_without_exit(self, board_env, monkeypatch):
+        import agentwire.scheduler as sched
+        sleeps = []
+        monkeypatch.setattr(sched.time, "sleep", lambda s: sleeps.append(s))
+
+        calls = {"n": 0}
+        real_load = sched.load_board
+
+        def flaky_load():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ValueError("No tasks defined in board")
+            return real_load()
+
+        monkeypatch.setattr(sched, "load_board", flaky_load)
+        started = datetime.now(timezone.utc)
+        board = _load_board_blocking(started)  # must NOT sys.exit
+
+        assert board.tasks  # eventually loaded the real board
+        assert len(sleeps) == 2          # backed off on the two failures
+        assert sleeps == [30, 60]        # exponential
