@@ -50,6 +50,7 @@ agentwire/hooks/damage-control/       # Bundled in package
 ├── bash-tool-damage-control.py       # Bash tool hook
 ├── edit-tool-damage-control.py       # Edit tool hook
 ├── write-tool-damage-control.py      # Write tool hook
+├── mcp-tool-damage-control.py        # Outbound MCP tool hook (email_send/quo_send)
 ├── audit_logger.py                   # Audit logging framework
 └── rules/                            # Pattern files (categorized)
     ├── core.yaml                     # rm, chmod, system-level dangers
@@ -317,6 +318,52 @@ name the exact rule id, so widening is copy-paste into the task's
   carries (`DROP DATABASE` in an `echo` also blocks).
 
 ---
+
+## Outbound MCP tool gating (#457)
+
+Agents inside agentwire sessions reach external comms through **MCP tools**, not
+the Bash tool — `email_send` (external email via Resend) and `quo_send`
+(external SMS via Quo/OpenPhone). PreToolUse fires for MCP tools too, so a fourth
+hook gates them:
+
+- **`mcp-tool-damage-control.py`** registered with matcher
+  `mcp__agentwire__(email_send|quo_send)`.
+- On fire it **synthesizes the equivalent shell command** the tool runs under the
+  hood (`email_send` → `agentwire email --to … --subject …`; `quo_send` →
+  `agentwire quo --to …`; the message body is omitted from the synthesized,
+  audit-logged command) and runs it through the **identical** decision ladder
+  (`check_command` + `is_unattended` + `resolve_unattended_allow`) as the Bash
+  hook. That reuses `outbound.agentwire-email` / `outbound.agentwire-quo`
+  verbatim — same rule IDs, same `unattended_allow`, same
+  `agentwire safety notify-unattended-block` owner-alert on an unattended block.
+- Generated from `agentwire/safety/_core.py` via
+  `scripts/regen_damage_control_hooks.py` like the other three — never hand-edit
+  between the GENERATED markers.
+
+Effect: an unattended scheduler dispatch can no longer send irreversible
+email/SMS silently, and an attended session now gets a real `ask` prompt instead
+of zero friction.
+
+### MCP surface audit — what is gated vs left open
+
+Only verbs that are **outward-facing AND irreversible** (reach real people, can't
+be un-done) warrant gating, matching the `outbound.*` scope. The rest of the
+`mcp__agentwire__*` surface was reviewed and intentionally left open:
+
+| MCP tool(s) | Decision | Why |
+|---|---|---|
+| `email_send`, `quo_send` | **Gated** | External email/SMS to real people — irreversible. |
+| `say`, `notify_user`, `notify_parent`, `notify_event`, `msg_send`, `session_send` | Open | Internal to the agentwire network / local desktop; not external, reversible. |
+| `session_create`/`recreate`/`fork`/`kill`, `pane_*` | Open | Local tmux lifecycle; reversible, no external reach. |
+| `machine_add`/`machine_remove` | Open | Local registry edit; reversible. |
+| `scheduler_run`, `scheduler_enable`/`disable` | Open | Triggers local task runs (themselves gated by this hook + the Bash hook). |
+| `council_start`/`stop` | Open | Local orchestration sessions. |
+| `voiceclone_*` | Open | Local TTS asset management. |
+| `desktop_*`, `worktree_*`, `handoff_*`, `history_*` | Open | Local UI / git-backed / filesystem; reversible. |
+
+If a new outward-irreversible MCP verb is added, extend
+`DAMAGE_CONTROL_MATCHERS` (matcher) + `_synthesize_command` (in the hook) and add
+the matching `outbound.*`/`publish.*` rule — don't invent a tool→tier table.
 
 ## AgentWire-Specific Protections
 

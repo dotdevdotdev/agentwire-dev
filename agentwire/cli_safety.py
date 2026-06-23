@@ -57,6 +57,7 @@ DAMAGE_CONTROL_FILES = [
     "bash-tool-damage-control.py",
     "edit-tool-damage-control.py",
     "write-tool-damage-control.py",
+    "mcp-tool-damage-control.py",
     "audit_logger.py",
 ]
 
@@ -492,6 +493,57 @@ def safety_tooldefs_show_cmd(tool: str) -> int:
     return 0
 
 
+# PreToolUse matcher → damage-control hook script. The matcher is the Claude Code
+# tool name (regex). MCP tools use the ``mcp__<server>__<tool>`` form; the outbound
+# tools that reach real people irreversibly are gated like the Bash shell-out.
+DAMAGE_CONTROL_MATCHERS = {
+    "Bash": "bash-tool-damage-control.py",
+    "Edit": "edit-tool-damage-control.py",
+    "Write": "write-tool-damage-control.py",
+    "mcp__agentwire__(email_send|quo_send)": "mcp-tool-damage-control.py",
+}
+
+
+def register_damage_control_in_settings() -> int:
+    """Ensure every damage-control PreToolUse matcher is in ``~/.claude/settings.json``.
+
+    Idempotent: only appends matchers/commands that aren't already present.
+    Returns the number of entries added.
+    """
+    settings_file = Path.home() / ".claude" / "settings.json"
+    if settings_file.exists():
+        try:
+            settings = json.loads(settings_file.read_text())
+        except json.JSONDecodeError:
+            settings = {}
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+    pre = hooks.setdefault("PreToolUse", [])
+
+    added = 0
+    for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
+        command = f"~/.agentwire/hooks/damage-control/{hook_file}"
+        already = any(
+            h.get("command") == command
+            for entry in pre
+            for h in entry.get("hooks", [])
+        )
+        if already:
+            continue
+        pre.append({
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": command}],
+        })
+        added += 1
+
+    if added:
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        settings_file.write_text(json.dumps(settings, indent=2))
+    return added
+
+
 def safety_install_cmd() -> int:
     """CLI command: ``agentwire safety install`` — interactive setup."""
     print("AgentWire Safety Installation")
@@ -565,6 +617,14 @@ def safety_install_cmd() -> int:
             print(f"✓ Installed {tooldef_file.name}")
     except FileNotFoundError as e:
         print(f"⚠️  {e}")
+
+    print()
+    print("Registering PreToolUse hooks in ~/.claude/settings.json...")
+    added = register_damage_control_in_settings()
+    if added:
+        print(f"✓ Registered {added} damage-control matcher{'s' if added != 1 else ''}")
+    else:
+        print("✓ All damage-control matchers already registered")
 
     print()
     print("✓ Installation complete!")
