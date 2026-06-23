@@ -327,6 +327,93 @@ class TestUnattendedSubprocess:
 
 
 # ---------------------------------------------------------------------------
+# Unattended-relevant verb coverage (#428)
+# ---------------------------------------------------------------------------
+#
+# The unattended guardrail only catches the `ask` tier. A high-impact verb left
+# at `allow` (deploy / outbound / DB migration / publish) would sail through a
+# headless scheduler session silently. These tests assert each such verb is at
+# least `ask` (so the guardrail fails it closed unattended) while benign
+# read-only variants stay `allow` (so interactive mode isn't over-blocked).
+
+# Bundled rules + tooldefs evaluated through the real decision ladder.
+_DC_ROOT = Path(__file__).resolve().parent.parent.parent / "agentwire"
+_DC_RULES = _DC_ROOT / "hooks" / "damage-control" / "rules"
+_DC_TOOLDEFS = _DC_ROOT / "tooldefs"
+
+
+@pytest.fixture(scope="module")
+def bundled_config(bash_hook):
+    cfg = bash_hook.load_config(_DC_RULES, _DC_TOOLDEFS)
+    cfg["safety"] = {"enabled": True, "disabled_rules": [], "unattended_allow": []}
+    return cfg
+
+
+class TestUnattendedVerbCoverage:
+    # Verbs that MUST be at least `ask` so the unattended guardrail catches them.
+    ASK_OR_BLOCK = [
+        # deploys
+        "vercel deploy --prod", "vercel --prod", "netlify deploy", "fly deploy",
+        "flyctl deploy", "wrangler deploy", "wrangler publish", "railway up",
+        "supabase functions deploy fn", "gcloud run deploy svc",
+        "gcloud app deploy", "gcloud functions deploy fn", "terraform apply",
+        "pulumi up", "serverless deploy", "sls deploy", "sam deploy",
+        "cdk deploy", "ansible-playbook site.yml",
+        "aws cloudformation deploy --stack-name s",
+        "aws lambda update-function-code --function-name f",
+        "aws ecs update-service --service s", "docker push reg/img",
+        "docker compose push", "kubectl apply -f x.yaml",
+        "gh release create v1", "gh workflow run deploy.yml",
+        # outbound comms
+        "agentwire email --to a@b.com", "agentwire quo --to +1 --body hi",
+        "twilio api:core:messages:create --to +1",
+        "aws ses send-email --to a@b.com", "aws sesv2 send-email --to a@b.com",
+        "aws sns publish --message hi", "sendmail a@b.com", "mail -s subj a@b.com",
+        # db migrations / writes
+        "prisma migrate deploy", "npx prisma migrate deploy", "prisma migrate dev",
+        "prisma db push", "supabase db push", "supabase migration up",
+        "alembic upgrade head", "alembic downgrade -1", "python manage.py migrate",
+        "rails db:migrate", "bundle exec rake db:migrate", "knex migrate:latest",
+        "npx sequelize db:migrate", "flyway migrate", "liquibase update",
+        'psql -c "UPDATE users SET x=1 WHERE id=2"',
+        'psql -c "INSERT INTO t VALUES (1)"',
+        'mysql -e "ALTER TABLE t ADD COLUMN c int"',
+        'mongosh --eval "db.t.updateMany({},{})"',
+        # package publish
+        "npm publish", "uv publish", "cargo publish", "poetry publish",
+        "twine upload dist/*", "pnpm publish", "yarn publish", "gem push g.gem",
+        "mvn deploy",
+    ]
+
+    # Schema-dropping migration variants must hard-block (data loss).
+    HARD_BLOCK = [
+        "prisma migrate reset --force",
+        "flyway clean",
+    ]
+
+    # Benign read-only variants must stay `allow` (no interactive over-blocking).
+    STAYS_ALLOW = [
+        "vercel ls", "git status", "kubectl get pods", "gh pr view 5",
+        'psql -c "SELECT * FROM users WHERE id = 1"',
+        'psql -c "SELECT update_time FROM updates"',
+        "mysql -e 'SELECT 1'",
+    ]
+
+    @pytest.mark.parametrize("cmd", ASK_OR_BLOCK)
+    def test_high_impact_verb_is_gated(self, bash_hook, bundled_config, cmd):
+        decision = bash_hook.check_command(cmd, bundled_config)["decision"]
+        assert decision in ("ask", "block"), f"{cmd!r} resolved to {decision}"
+
+    @pytest.mark.parametrize("cmd", HARD_BLOCK)
+    def test_destructive_migration_hard_blocks(self, bash_hook, bundled_config, cmd):
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+
+    @pytest.mark.parametrize("cmd", STAYS_ALLOW)
+    def test_benign_variant_stays_allow(self, bash_hook, bundled_config, cmd):
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
+
+
+# ---------------------------------------------------------------------------
 # edit-tool-damage-control.py & write-tool-damage-control.py
 # ---------------------------------------------------------------------------
 

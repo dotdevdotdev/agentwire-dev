@@ -1,0 +1,62 @@
+# Outbound communication damage control rules
+#
+# Outward-facing "send" verbs — email, SMS, push. These are irreversible (you
+# can't un-send) and reach real people, so they must NOT sail through an
+# UNATTENDED (scheduler) session silently. They're classified `ask: true`:
+#   - interactive bypass/auto session  → allow (no friction, the common case)
+#   - interactive non-bypass session   → confirm prompt
+#   - UNATTENDED (AGENTWIRE_UNATTENDED) → fail closed: block + email owner,
+#     unless the rule id is on the task's `unattended_allow`.
+#
+# Caveat: agents inside agentwire sessions usually send via MCP tools
+# (`email_send`, `quo_send`) which do NOT pass through this Bash hook. These
+# patterns cover the case where an agent (or a scheduled task's `post:` step)
+# shells out to the CLI. See docs/wiki/internals/damage-control.md.
+
+bashToolPatterns:
+  # ---------------------------------------------------------------------------
+  # AGENTWIRE OUTBOUND CHANNELS (external — email via Resend, SMS via Quo)
+  # ---------------------------------------------------------------------------
+  - pattern: '\bagentwire\s+email\b'
+    reason: agentwire email (sends an external email via Resend)
+    ask: true
+    id: outbound.agentwire-email
+
+  - pattern: '\bagentwire\s+quo\b'
+    reason: agentwire quo (sends an external SMS via Quo/OpenPhone)
+    ask: true
+    id: outbound.agentwire-quo
+
+  # ---------------------------------------------------------------------------
+  # TWILIO (SMS / messaging)
+  # ---------------------------------------------------------------------------
+  - pattern: '\btwilio\s+api[:\w.]*messages[:\w.]*create\b'
+    reason: twilio messages create (sends an SMS/MMS)
+    ask: true
+    id: outbound.twilio-messages
+
+  # ---------------------------------------------------------------------------
+  # AWS messaging (SES email, SNS publish)
+  # ---------------------------------------------------------------------------
+  - pattern: '\baws\s+ses(v2)?\s+send-email\b'
+    reason: aws ses send-email (sends an external email)
+    ask: true
+    id: outbound.aws-ses
+
+  - pattern: '\baws\s+sns\s+publish\b'
+    reason: aws sns publish (sends an SMS/notification)
+    ask: true
+    id: outbound.aws-sns
+
+  # ---------------------------------------------------------------------------
+  # GENERIC MAIL TRANSPORTS
+  # ---------------------------------------------------------------------------
+  - pattern: '\bsendmail\b'
+    reason: sendmail (sends external email)
+    ask: true
+    id: outbound.sendmail
+
+  - pattern: '\b(mail|mailx)\s+(-[^\s]*\s+)*-s\b'
+    reason: mail -s (sends external email)
+    ask: true
+    id: outbound.mail
