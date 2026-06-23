@@ -34,3 +34,20 @@ bashToolPatterns:
 
   - pattern: '\bhelm\s+uninstall\b'
     reason: helm uninstall (removes release)
+
+  # ---------------------------------------------------------------------------
+  # CONTAINER REGISTRY PUBLISH / WORKLOAD DELETE (ask: true)
+  # ---------------------------------------------------------------------------
+  # `docker push` publishes an image (outward-facing) and a generic
+  # `kubectl delete <resource>` removes a workload. Previously `allow`-tier.
+  # The catastrophic kubectl deletes above are hard-blocked and listed first, so
+  # they still block; this generic ask only catches the narrower deletes.
+  - pattern: '\bdocker\s+(compose\s+)?push\b'
+    reason: docker push (publishes an image to a registry)
+    ask: true
+    id: container.docker-push
+
+  - pattern: '\bkubectl\s+delete\b'
+    reason: kubectl delete (removes a Kubernetes resource)
+    ask: true
+    id: container.kubectl-delete

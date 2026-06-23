@@ -85,3 +85,49 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\bnpm\s+unpublish\b'
     reason: npm unpublish (removes package from registry)
+
+  # ---------------------------------------------------------------------------
+  # DEPLOYS (ask: true — outward-facing, caught in unattended sessions)
+  # ---------------------------------------------------------------------------
+  # A deploy ships code to production. The matching `remove`/`destroy` verbs are
+  # hard-blocked above; the deploy verbs themselves were previously `allow`-tier,
+  # so a scheduled agent could ship to prod silently. Classify them `ask`.
+  - pattern: '\bvercel\s+deploy\b'
+    reason: vercel deploy (ships a deployment)
+    ask: true
+    id: deploy.vercel
+
+  - pattern: '\bvercel\s+(-[^\s]*\s+)*--prod\b'
+    reason: vercel --prod (ships a production deployment)
+    ask: true
+    id: deploy.vercel-prod
+
+  - pattern: '\bnetlify\s+deploy\b'
+    reason: netlify deploy (ships a deployment)
+    ask: true
+    id: deploy.netlify
+
+  - pattern: '\b(fly|flyctl)\s+deploy\b'
+    reason: fly deploy (ships a Fly.io deployment)
+    ask: true
+    id: deploy.fly
+
+  - pattern: '\bwrangler\s+(deploy|publish)\b'
+    reason: wrangler deploy (ships a Cloudflare Worker)
+    ask: true
+    id: deploy.wrangler
+
+  - pattern: '\brailway\s+(up|deploy)\b'
+    reason: railway up (ships a Railway deployment)
+    ask: true
+    id: deploy.railway
+
+  - pattern: '\brender\s+deploys?\s+create\b'
+    reason: render deploys create (ships a Render deployment)
+    ask: true
+    id: deploy.render
+
+  - pattern: '\bsupabase\s+functions\s+deploy\b'
+    reason: supabase functions deploy (ships an edge function)
+    ask: true
+    id: deploy.supabase-functions

@@ -33,3 +33,21 @@ bashToolPatterns:
 
   - pattern: '\baws\s+iam\s+delete-user\b'
     reason: aws iam delete-user
+
+  # ---------------------------------------------------------------------------
+  # AWS DEPLOYS (ask: true — ship code/infra, caught in unattended sessions)
+  # ---------------------------------------------------------------------------
+  - pattern: '\baws\s+cloudformation\s+deploy\b'
+    reason: aws cloudformation deploy (ships an infrastructure change)
+    ask: true
+    id: deploy.aws-cloudformation
+
+  - pattern: '\baws\s+lambda\s+update-function-code\b'
+    reason: aws lambda update-function-code (ships new function code)
+    ask: true
+    id: deploy.aws-lambda-update
+
+  - pattern: '\baws\s+ecs\s+update-service\b'
+    reason: aws ecs update-service (ships an ECS deployment)
+    ask: true
+    id: deploy.aws-ecs-update

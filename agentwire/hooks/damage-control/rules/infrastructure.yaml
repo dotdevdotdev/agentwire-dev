@@ -19,3 +19,33 @@ bashToolPatterns:
 
   - pattern: '\bsam\s+delete\b'
     reason: sam delete (deletes SAM application)
+
+  # ---------------------------------------------------------------------------
+  # IaC DEPLOYS (ask: true — provision/ship infra, caught in unattended sessions)
+  # ---------------------------------------------------------------------------
+  # `terraform apply` is already ask-tier via the terraform tooldef; these cover
+  # the other IaC apply verbs that were previously `allow`-tier.
+  - pattern: '\bpulumi\s+up\b'
+    reason: pulumi up (provisions/updates infrastructure)
+    ask: true
+    id: deploy.pulumi-up
+
+  - pattern: '\b(serverless|sls)\s+deploy\b'
+    reason: serverless deploy (ships a Serverless Framework stack)
+    ask: true
+    id: deploy.serverless
+
+  - pattern: '\bsam\s+deploy\b'
+    reason: sam deploy (ships an AWS SAM application)
+    ask: true
+    id: deploy.sam
+
+  - pattern: '\bcdk\s+deploy\b'
+    reason: cdk deploy (ships an AWS CDK stack)
+    ask: true
+    id: deploy.cdk
+
+  - pattern: '\bansible-playbook\b'
+    reason: ansible-playbook (applies configuration to remote hosts)
+    ask: true
+    id: deploy.ansible

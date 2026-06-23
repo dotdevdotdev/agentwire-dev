@@ -54,10 +54,12 @@ agentwire/hooks/damage-control/       # Bundled in package
 └── rules/                            # Pattern files (categorized)
     ├── core.yaml                     # rm, chmod, system-level dangers
     ├── git.yaml                      # force push, reset --hard
-    ├── databases.yaml                # DROP, TRUNCATE
-    ├── containers.yaml               # docker prune, etc.
-    ├── cloud-hosting.yaml, aws.yaml, gcp.yaml, firebase.yaml
+    ├── databases.yaml                # DROP, TRUNCATE, migrations, raw DML
+    ├── containers.yaml               # docker prune/push, kubectl delete
+    ├── cloud-hosting.yaml, aws.yaml, gcp.yaml, firebase.yaml  # incl. deploys
     ├── infrastructure.yaml, remote.yaml
+    ├── outbound.yaml                 # email/SMS send verbs (ask)
+    ├── publish.yaml                  # package-registry publish (ask)
     ├── agentwire.yaml                # tmux/session protections
     └── gws.yaml                      # Google Workspace CLI
 
@@ -75,7 +77,7 @@ Hooks load every `*.yaml` file in the rules directory and merge their pattern li
 
 ## Security Patterns
 
-Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (12 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
+Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (14 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
 
 ### Pattern Types
 
@@ -251,10 +253,68 @@ tasks:
 ```
 
 > **Coverage note:** the guardrail makes the `ask` tier fail closed. A
-> destructive command that isn't classified as `ask`/`block` at all (e.g. some
-> cloud-deploy or outbound-email verbs not yet in the rules) is unaffected and
-> remains a separate rules-coverage task — the moment such a verb is classified
-> `ask`, this guardrail blocks it unattended for free.
+> destructive command that isn't classified as `ask`/`block` at all is
+> unaffected and would sail through unattended. The moment such a verb is
+> classified `ask`, this guardrail blocks it unattended for free. The matrix
+> below (the #428 audit) is the record of which high-impact verbs are covered.
+
+### Unattended verb-coverage matrix (#428)
+
+The guardrail is only as strong as the tier assignments for the verbs we most
+want stopped headless. Two mechanisms classify a verb as `ask`:
+
+- **rule** — an `ask: true` `bashToolPattern` in `rules/*.yaml`
+- **tooldef** — an `access: write` command in `tooldefs/*.yaml`, auto-promoted
+  to an `ask` pattern at load time
+
+Both land in the same `ask` tier, so both are caught unattended. `ask` resolves
+per session mode: interactive **bypass/auto** → allow (no friction, the common
+agentwire posture); interactive **non-bypass** → confirm prompt; **unattended**
+→ block + email owner (unless the rule id is allowlisted). Genuinely
+catastrophic, never-reversible verbs are `block` (fire in every mode).
+
+| Verb class | Representative commands | Tier | Where |
+|---|---|---|---|
+| **Deploy — hosting** | `vercel deploy` / `--prod`, `netlify deploy`, `fly deploy`, `wrangler deploy`/`publish`, `railway up`, `render deploys create`, `supabase functions deploy` | ask | `cloud-hosting.yaml` (`deploy.*`) |
+| **Deploy — cloud** | `gcloud run deploy`, `gcloud app deploy` | ask | `gcp.yaml` (`deploy.gcloud-*`) |
+| | `gcloud functions deploy` | ask | gcp tooldef |
+| | `aws cloudformation deploy`, `aws lambda update-function-code`, `aws ecs update-service` | ask | `aws.yaml` (`deploy.aws-*`) |
+| **Deploy — IaC** | `terraform apply` | ask | terraform tooldef |
+| | `pulumi up`, `serverless`/`sls deploy`, `sam deploy`, `cdk deploy`, `ansible-playbook` | ask | `infrastructure.yaml` (`deploy.*`) |
+| **Deploy — containers** | `kubectl apply` | ask | kubectl tooldef |
+| | `docker push`, `docker compose push` | ask | `containers.yaml` (`container.docker-push`) |
+| **Deploy — CI/release** | `gh release create`, `gh workflow run`, `gh pr merge` | ask | gh tooldef |
+| **Outbound comms** | `agentwire email`, `agentwire quo`, `twilio … messages create`, `aws ses send-email`, `aws sns publish`, `sendmail`, `mail -s` | ask | `outbound.yaml` (`outbound.*`) |
+| **DB migrations** | `prisma migrate deploy`/`dev`, `prisma db push`, `supabase db push`, `supabase migration up`, `alembic upgrade`/`downgrade`, `manage.py migrate`, `rails`/`rake db:migrate`, `knex migrate:*`, `sequelize db:migrate`, `flyway migrate`, `liquibase update` | ask | `databases.yaml` (`db.*`) |
+| **DB raw writes** | `psql`/`mysql` executing INSERT/UPDATE/ALTER/CREATE/GRANT, `mongosh` insert/update/delete | ask | `databases.yaml` (`db.psql-write`, `db.mysql-write`, `db.mongosh-write`) |
+| **DB schema-drop** | `prisma migrate reset`, `flyway clean` | **block** | `databases.yaml` (`db.prisma-reset`, `db.flyway-clean`) |
+| **Package publish** | `npm publish`, `uv publish` | ask | npm/uv tooldef |
+| | `cargo`/`poetry`/`pnpm`/`yarn publish`, `twine upload`, `gem push`, `mvn deploy` | ask | `publish.yaml` (`publish.*`) |
+| **Destroy / drop** | `vercel remove`, `gh repo delete`, `terraform destroy`, `DROP DATABASE`, `aws … delete-*`, `git push --force`, `rm -rf` | **block** | various |
+
+**Allowlisting a covered verb for one task** — the block message and owner email
+name the exact rule id, so widening is copy-paste into the task's
+`unattended_allow` (e.g. `deploy.vercel`, `outbound.agentwire-email`,
+`db.prisma-migrate`).
+
+**Residual gaps (intentional / known):**
+
+- **MCP send paths bypass the hook.** Agents in agentwire sessions usually send
+  via MCP tools (`email_send`, `quo_send`), which are *not* Bash/Edit/Write and
+  so never reach this hook. The `outbound.*` rules only catch a shell-out to the
+  CLI. Closing the MCP path needs a guard at the MCP layer, not a rule — out of
+  scope here.
+- **File-fed SQL can't be introspected.** `psql -f migration.sql` /
+  `mysql < dump.sql` carry their statements in a file the regex can't read, so
+  they stay `allow` unless the file path trips a path rule. Catastrophic inline
+  statements (`DROP`/`TRUNCATE`/`DELETE`-without-`WHERE`) are still blocked by
+  the client-agnostic SQL patterns.
+- **Bare implicit-deploy invocations.** `vercel` with no subcommand deploys to
+  preview; matching a bare binary name would false-positive on every read
+  subcommand, so only the explicit `vercel deploy` / `--prod` forms are gated.
+- **Text matching is conservative.** A literal mention inside `echo`/a comment
+  can trip an `ask` (errs safe). This is the same tradeoff every existing rule
+  carries (`DROP DATABASE` in an `echo` also blocks).
 
 ---
 

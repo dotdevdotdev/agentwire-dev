@@ -24,3 +24,18 @@ bashToolPatterns:
 
   - pattern: '\bgcloud\s+iam\s+service-accounts\s+delete\b'
     reason: gcloud iam service-accounts delete
+
+  # ---------------------------------------------------------------------------
+  # GCP DEPLOYS (ask: true — outward-facing, caught in unattended sessions)
+  # ---------------------------------------------------------------------------
+  # `gcloud functions deploy` is already ask-tier via the gcp tooldef; these
+  # cover the other deploy surfaces (Cloud Run, App Engine).
+  - pattern: '\bgcloud\s+run\s+deploy\b'
+    reason: gcloud run deploy (ships a Cloud Run service)
+    ask: true
+    id: deploy.gcloud-run
+
+  - pattern: '\bgcloud\s+app\s+deploy\b'
+    reason: gcloud app deploy (ships an App Engine version)
+    ask: true
+    id: deploy.gcloud-app
