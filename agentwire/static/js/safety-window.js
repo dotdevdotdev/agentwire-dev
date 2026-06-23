@@ -9,10 +9,10 @@ import {
     escapeHtml,
     fetchSafetyStatus,
     fetchSafetyLogs,
-    postSafetyConfig,
     showEventModal,
-    openAddRulePicker,
 } from './safety-shared.js';
+
+const HOST_MANAGED_NOTE = 'Managed in <code>~/.agentwire/config.yaml</code> — frozen from the API (#425).';
 
 let activeWindow = null;
 const state = {
@@ -30,10 +30,11 @@ function pageHtml(status, entries) {
     return `
         <div class="safety-window-content">
             <aside class="safety-window-sidebar">
-                <label class="safety-toggle">
-                    <input type="checkbox" data-action="toggle-enabled" ${enabled ? 'checked' : ''} />
-                    <span>Damage control ${enabled ? 'enabled' : 'disabled'}</span>
-                </label>
+                <div class="safety-badge ${enabled ? 'on' : 'off'}">
+                    <span class="safety-badge-dot">${enabled ? '●' : '○'}</span>
+                    <span>Damage control ${enabled ? 'ON' : 'OFF'}</span>
+                </div>
+                <div class="safety-managed-note">${HOST_MANAGED_NOTE}</div>
                 <div class="safety-window-stats">
                     <div class="safety-window-stat"><span class="safety-decision blocked">${fmt('blocked')}</span><label>blocked</label></div>
                     <div class="safety-window-stat"><span class="safety-decision escape">${fmt('allowed_by_escape')}</span><label>escape</label></div>
@@ -60,13 +61,11 @@ function pageHtml(status, entries) {
                 <div class="safety-window-section">
                     <div class="safety-disabled-rules-header">
                         <h4>Disabled rules (${disabled.length})</h4>
-                        <button class="safety-disabled-add" data-action="add-rule">+</button>
                     </div>
                     <div class="safety-disabled-rules-list">
                         ${disabled.length ? disabled.map((id) => `
                             <div class="safety-disabled-rule" data-rule-id="${escapeHtml(id)}">
                                 <code>${escapeHtml(id)}</code>
-                                <button class="safety-rule-remove" data-action="remove-rule" data-rule-id="${escapeHtml(id)}" title="Re-enable rule">×</button>
                             </div>
                         `).join('') : '<div class="safety-empty">No rules disabled.</div>'}
                     </div>
@@ -105,14 +104,10 @@ async function loadAndRender(container) {
         entries = entries.filter((e) => projectFromCwd(e.cwd) === state.project);
     }
     container.innerHTML = pageHtml(status, entries);
-    bindControls(container, status);
+    bindControls(container);
 }
 
-function bindControls(container, status) {
-    container.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', async (e) => {
-        await postSafetyConfig({ enabled: e.target.checked });
-        loadAndRender(container);
-    });
+function bindControls(container) {
     container.querySelectorAll('.safety-chip').forEach((chip) => {
         chip.addEventListener('click', () => {
             state.decision = chip.dataset.decision || '';
@@ -123,23 +118,11 @@ function bindControls(container, status) {
         state.project = e.target.value || '';
         loadAndRender(container);
     });
-    container.querySelectorAll('[data-action="remove-rule"]').forEach((btn) => {
-        btn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const id = btn.dataset.ruleId;
-            const next = (status.disabled_rules || []).filter((r) => r !== id);
-            await postSafetyConfig({ disabled_rules: next });
-            loadAndRender(container);
-        });
-    });
-    container.querySelector('[data-action="add-rule"]')?.addEventListener('click', () => {
-        openAddRulePicker(status.disabled_rules || [], () => loadAndRender(container));
-    });
     container.querySelector('[data-action="refresh"]')?.addEventListener('click', () => loadAndRender(container));
     container.querySelectorAll('.safety-event').forEach((row) => {
         row.addEventListener('click', () => {
             try {
-                showEventModal(JSON.parse(row.dataset.event), () => loadAndRender(container));
+                showEventModal(JSON.parse(row.dataset.event));
             } catch (_) {}
         });
     });
