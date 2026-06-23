@@ -27,6 +27,28 @@ Two corrections frame everything below:
 
 ---
 
+## What shipped (2026-06-22)
+
+The hardening wave landed as **#425 + #423** plus the **#420** networking cuts. **#424 (capability
+scopes, `full` vs `ptt`) was dropped not-planned** — its only real use case (restricted guest/PTT
+devices) was cut by the owner, so every credential is full-access and there is no scope system.
+
+| Item | Status | Shape |
+|---|---|---|
+| **#420** networking cuts | ✅ shipped | Tunnel auto-spawn removed from `portal start`; reverse-tunnel (`autossh -R` / `~/.local/bin/agentwire-tunnels`) guidance stripped from `machine add/remove`; `network status` is read-only (already was — confirmed). `agentwire tunnels *` stays as an opt-in manual helper, never auto-fired. |
+| **#425** freeze config | ✅ shipped | `POST /api/config` rejects (403) any change to frozen keys `server.auth_token`, `server.host`, `executables`, `services`, `safety`; `POST /api/safety/config` is frozen entirely (host-edit-only). The read-side redaction round-trip is now reversed on save so the editor can't blank `auth_token`. Constant: `security.FROZEN_CONFIG_KEYS`. |
+| **#423** per-device creds | ✅ shipped | New `agentwire/devices.py`: `devices.json` registry (0600) stores a **sha256 hash** per device + `pairings.json` for short-lived codes. Pairing: `agentwire portal pair` → code + QR → `GET /pair?code=` page → `POST /api/pair` mints a device token. Middleware resolves the presented token to a device (bootstrap token = synthetic `host` device, else registry lookup); unknown/revoked → 401. CLI: `portal pair` / `portal devices` / `portal revoke <id>`. |
+| **#424** scopes | ❌ dropped | Not-planned. No `full`/`ptt`, no per-route allowlist, no PTT session whitelist. |
+
+**Auth model now:** the bootstrap token (`~/.agentwire/portal.token` / `server.auth_token`) is the
+host/owner full credential used by the CLI, MCP, hooks and daemons — unchanged. *Remote* devices no
+longer paste that shared token; they pair to get their own named, individually-revocable credential.
+Revoking one device (`agentwire portal revoke dev_xxxx`) doesn't log out the others. Every credential
+is full-access. The registry is read through an mtime-cached loader so revocation takes effect on the
+next request without a portal restart.
+
+---
+
 ## Part 1 — Network footprint map (#420)
 
 ### What agentwire actually opens / owns

@@ -74,8 +74,13 @@ agentwire portal start          # start in tmux
 agentwire portal stop           # stop portal
 agentwire portal restart        # stop + start
 agentwire portal status         # check health
-agentwire portal token          # print the auth token (devices enter it once)
-agentwire portal token --rotate # generate a new token (re-enter on devices)
+agentwire portal token          # print the bootstrap auth token (host/CLI/MCP credential)
+agentwire portal token --rotate # generate a new bootstrap token (re-enter on devices)
+
+# Per-device credentials (#423) — pair a device for its OWN revocable token
+agentwire portal pair [--name phone]   # print a short-lived pairing code + QR → /pair?code=
+agentwire portal devices [--json]      # list paired devices (id, name, last-seen, status)
+agentwire portal revoke <id>           # revoke ONE device (others keep working)
 
 # Scratch pad (shared notes — portal drawer Alt+N; file: ~/.agentwire/scratchpad.json)
 agentwire scratchpad list       # list notes (newest first)

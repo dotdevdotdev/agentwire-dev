@@ -71,6 +71,22 @@ def scheduler_board_file(tmp_config_dir):
     return board_path
 
 
+@pytest.fixture(autouse=True)
+def isolated_device_registry(tmp_path, monkeypatch):
+    """Point the device registry + pairings at a temp dir for every test.
+
+    Keeps the suite from reading/writing the developer's real
+    ~/.agentwire/devices.json, and clears the mtime cache between tests.
+    """
+    from agentwire import devices
+
+    monkeypatch.setattr(devices, "DEVICES_FILE", tmp_path / "aw-devices.json")
+    monkeypatch.setattr(devices, "PAIRINGS_FILE", tmp_path / "aw-pairings.json")
+    devices._cache.clear()
+    yield
+    devices._cache.clear()
+
+
 @pytest.fixture
 def clean_env(monkeypatch):
     """Remove all AGENTWIRE_* env vars."""

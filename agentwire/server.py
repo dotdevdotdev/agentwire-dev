@@ -41,8 +41,10 @@ from .security import (
     WS_PROTOCOL_PREFIX,
     create_security_middleware,
     ensure_auth_token,
+    frozen_config_violations,
     is_loopback_host,
     resolve_auth_token,
+    restore_redactions,
     validate_startup_security,
 )
 from .ssh import ssh_base_opts
@@ -215,6 +217,8 @@ class AgentWireServer:
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/mobile", self.handle_mobile)
+        self.app.router.add_get("/pair", self.handle_pair_page)
+        self.app.router.add_post("/api/pair", self.api_pair)
         self.app.router.add_get("/ws", self.handle_dashboard_ws)
         self.app.router.add_get("/ws/{name:.+}", self.handle_websocket)
         self.app.router.add_get("/ws/terminal/{name:.+}", self.handle_terminal_ws)
@@ -990,6 +994,51 @@ class AgentWireServer:
         response = aiohttp_jinja2.render_template("mobile.html", request, {})
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
+
+    async def handle_pair_page(self, request: web.Request) -> web.Response:
+        """Serve the device-pairing page (#423).
+
+        Public bootstrap surface: an unpaired device has no token yet. The page
+        reads the pairing code from `?code=` (or a manual field), POSTs it to
+        `/api/pair`, and stores the minted device token in localStorage — the
+        same key `apiFetch` reads — then bounces to the portal.
+        """
+        response = aiohttp_jinja2.render_template("pair.html", request, {})
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+    async def api_pair(self, request: web.Request) -> web.Response:
+        """Redeem a pairing code for a freshly-minted device token (#423).
+
+        Public (no bearer required) but gated by the short-lived pairing code the
+        host printed via `agentwire portal pair`. One-shot: the code is consumed.
+        """
+        from .devices import DeviceRegistry, consume_pairing
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        code = str(data.get("code", "")).strip()
+        if not code:
+            return web.json_response({"error": "Missing pairing code"}, status=400)
+
+        pairing = consume_pairing(code)
+        if pairing is None:
+            return web.json_response(
+                {"error": "Invalid or expired pairing code"}, status=403
+            )
+
+        name = str(data.get("name") or pairing.name or "device")
+        registry = DeviceRegistry.load()
+        device, token = registry.add(name=name)
+        logger.info("Paired device %s (%r)", device.id, device.name)
+        return web.json_response(
+            {
+                "token": token,
+                "device": device.public(),
+            }
+        )
 
     def _ws_response(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocketResponse that echoes the auth bearer subprotocol.
@@ -3677,7 +3726,13 @@ projects:
         })
 
     async def api_save_config(self, request: web.Request) -> web.Response:
-        """Save config file contents."""
+        """Save config file contents.
+
+        Security-critical keys are frozen (#425): even a valid token cannot use
+        this endpoint to disable auth, move the bind host, rewrite the
+        executables/services that run as RCE, or turn off the damage-control
+        rules. Those are host-file-edit-only.
+        """
         try:
             data = await request.json()
             content = data.get("content", "")
@@ -3690,6 +3745,27 @@ projects:
                 return web.json_response({"error": f"Invalid YAML: {e}"})
 
             config_path = Path.home() / ".agentwire" / "config.yaml"
+            old_content = config_path.read_text() if config_path.exists() else ""
+
+            # Reverse the read-side secret redaction so saving the editor's text
+            # back doesn't overwrite real secrets with "[REDACTED]" (and so the
+            # frozen-key check below sees the true auth_token, not the marker).
+            content = restore_redactions(content, old_content)
+
+            violations = frozen_config_violations(content, old_content)
+            if violations:
+                return web.json_response(
+                    {
+                        "error": (
+                            "These keys are frozen and can only be changed by "
+                            "editing ~/.agentwire/config.yaml on the host: "
+                            + ", ".join(violations)
+                        ),
+                        "frozen_keys": violations,
+                    },
+                    status=403,
+                )
+
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(content)
 
@@ -3778,41 +3854,25 @@ projects:
             return web.json_response({"error": str(e)}, status=500)
 
     async def api_safety_config_post(self, request: web.Request) -> web.Response:
-        """Update ~/.agentwire/config.yaml safety block (enabled, disabled_rules)."""
-        try:
-            data = await request.json()
-            cfg_path = Path.home() / ".agentwire" / "config.yaml"
-            raw: Dict[str, Any] = {}
-            if cfg_path.exists():
-                try:
-                    with open(cfg_path, "r") as f:
-                        raw = yaml.safe_load(f) or {}
-                except Exception:
-                    raw = {}
-            safety = raw.get("safety", {})
-            if not isinstance(safety, dict):
-                safety = {}
-            if "enabled" in data:
-                safety["enabled"] = bool(data["enabled"])
-            if "disabled_rules" in data and isinstance(data["disabled_rules"], list):
-                safety["disabled_rules"] = sorted({str(r) for r in data["disabled_rules"] if r})
-            raw["safety"] = safety
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cfg_path, "w") as f:
-                yaml.safe_dump(raw, f, sort_keys=False)
-            # Reload runtime config so /api/safety/status sees the change immediately
-            try:
-                from .config import reload_config
-                self.config = reload_config()
-            except Exception:
-                pass
-            return web.json_response({
-                "success": True,
-                "enabled": safety.get("enabled", True),
-                "disabled_rules": safety.get("disabled_rules", []),
-            })
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+        """Frozen (#425): the safety block is host-file-edit-only.
+
+        Disabling the damage-control rules with the same token that the rules are
+        meant to contain defeats defense-in-depth. The master switch and
+        disabled-rules list can now only be changed by editing
+        ~/.agentwire/config.yaml on the host. GET /api/safety/* still works for
+        viewing status, rules and logs.
+        """
+        return web.json_response(
+            {
+                "error": (
+                    "Safety configuration is frozen and can only be changed by "
+                    "editing the `safety:` block in ~/.agentwire/config.yaml on "
+                    "the host, then reloading the portal."
+                ),
+                "frozen_keys": ["safety"],
+            },
+            status=403,
+        )
 
     async def api_refresh_sessions(self, request: web.Request) -> web.Response:
         """Refresh sessions and broadcast update to all dashboard clients.

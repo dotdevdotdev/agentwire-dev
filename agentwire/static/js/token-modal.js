@@ -24,7 +24,7 @@ function renderModal() {
                         <span class="quicktask-label">Auth token</span>
                         <input type="password" name="token" placeholder="Paste your portal token" autocomplete="off" required />
                     </label>
-                    <p class="quicktask-hint">Run <code>agentwire portal token</code> on the portal machine to see it. You only need to do this once per device.</p>
+                    <p class="quicktask-hint">Run <code>agentwire portal token</code> on the portal machine to see it — or pair this device with <code>agentwire portal pair</code> (scan the QR / open <code>/pair</code>) for its own revocable credential. Once per device.</p>
                     <div class="quicktask-footer">
                         <button type="submit" class="quicktask-btn-submit">Connect</button>
                     </div>

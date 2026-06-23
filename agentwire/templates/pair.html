@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+
+{% block title %}Pair device — AgentWire{% endblock %}
+
+{% block content %}
+<div class="pair-app" style="max-width:420px;margin:10vh auto;padding:0 1.25rem;font-family:system-ui,sans-serif;">
+    <h1 style="display:flex;align-items:center;gap:.5rem;">
+        <img src="/static/favicon.png" alt="" style="width:32px;height:32px;"> Pair this device
+    </h1>
+    <p class="pair-sub" style="opacity:.75;">
+        Enter the pairing code from <code>agentwire portal pair</code> on the portal
+        machine. The code is single-use and expires after a few minutes.
+    </p>
+
+    <div id="pairError" hidden
+         style="background:#3a1a1a;border:1px solid #a33;border-radius:.5rem;padding:.75rem;margin:.75rem 0;"></div>
+    <div id="pairOk" hidden
+         style="background:#163016;border:1px solid #3a7;border-radius:.5rem;padding:.75rem;margin:.75rem 0;"></div>
+
+    <form id="pairForm" autocomplete="off">
+        <label style="display:block;margin:.5rem 0 .25rem;">Pairing code</label>
+        <input id="pairCode" name="code" inputmode="latin" autocapitalize="characters"
+               placeholder="ABCD2345" required
+               style="width:100%;padding:.6rem;font-size:1.2rem;letter-spacing:.15em;text-transform:uppercase;border-radius:.5rem;border:1px solid #555;box-sizing:border-box;">
+        <button type="submit" id="pairSubmit"
+                style="margin-top:1rem;width:100%;padding:.7rem;font-size:1rem;border-radius:.5rem;border:none;background:#39ff14;color:#000;font-weight:600;cursor:pointer;">
+            Pair device
+        </button>
+    </form>
+</div>
+
+<script type="module">
+    import { setToken } from '/static/js/api.js';
+
+    const params = new URLSearchParams(location.search);
+    const form = document.getElementById('pairForm');
+    const codeInput = document.getElementById('pairCode');
+    const errEl = document.getElementById('pairError');
+    const okEl = document.getElementById('pairOk');
+    const submitBtn = document.getElementById('pairSubmit');
+
+    function showError(msg) { errEl.textContent = msg; errEl.hidden = false; okEl.hidden = true; }
+
+    async function pair(code) {
+        errEl.hidden = true;
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Pairing…';
+        try {
+            const resp = await fetch('/api/pair', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                showError(data.error || `Pairing failed (${resp.status})`);
+                return;
+            }
+            setToken(data.token);
+            okEl.textContent = `Paired as “${data.device?.name || 'device'}”. Redirecting…`;
+            okEl.hidden = false;
+            setTimeout(() => { location.href = '/'; }, 800);
+        } catch (e) {
+            showError('Network error — is the portal reachable?');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Pair device';
+        }
+    }
+
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const code = codeInput.value.trim().toUpperCase();
+        if (code) pair(code);
+    });
+
+    // QR deep-link: /pair?code=XXXX auto-submits.
+    const presetCode = (params.get('code') || '').trim().toUpperCase();
+    if (presetCode) {
+        codeInput.value = presetCode;
+        pair(presetCode);
+    } else {
+        codeInput.focus();
+    }
+</script>
+{% endblock %}
