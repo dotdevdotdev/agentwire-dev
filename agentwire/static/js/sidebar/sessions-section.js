@@ -22,6 +22,11 @@ const listeners = new Set();
 const pendingClose = new Map();
 const killingSessions = new Set();
 
+// Parents whose nested children are collapsed in the sidebar (issue #448).
+// Module-level so collapse state survives the frequent activity re-renders.
+// Default is expanded — the whole point is making the relationship visible.
+const collapsedParents = new Set();
+
 export function getAllSessions() { return allSessions; }
 export function onSessionsChanged(fn) { listeners.add(fn); }
 
@@ -73,10 +78,21 @@ export function renderCard(s, opts = {}) {
     const roles = (s.roles || []).map(r => `<span class="sidebar-tag sidebar-tag-role">${r}</span>`).join('');
     const path = s.path ? s.path.replace(/^\/Users\/[^/]+\//, '~/') : '';
     const tagsHtml = `${tags.join('')}${roles}`;
+    // Collapse caret for parents with nested children (issue #448). The count
+    // badge keeps the relationship legible even when the children are hidden.
+    const childCount = opts.childCount || 0;
+    const caret = childCount
+        ? `<button class="sidebar-list-item-btn sidebar-children-toggle" data-action="toggle-children" title="${opts.collapsed ? 'Show' : 'Hide'} ${childCount} child session${childCount > 1 ? 's' : ''}">${opts.collapsed ? '▸' : '▾'}</button>`
+        : '';
+    const childBadge = childCount
+        ? `<span class="sidebar-child-count" title="${childCount} child session${childCount > 1 ? 's' : ''}">${childCount}</span>`
+        : '';
     return `<div class="sidebar-session-card" data-session="${name}" data-machine="${machine || ''}" data-id="${id}">
         <div class="sidebar-session-row1">
+            ${caret}
             <span class="sidebar-activity-dot ${dotClass}" data-session-dot="${name}"></span>
             <span class="sidebar-session-name">${name}</span>
+            ${childBadge}
             <button class="sidebar-list-item-btn" data-action="connect" title="Connect">▸</button>
             <button class="sidebar-list-item-btn" data-action="monitor" title="Monitor">👁</button>
             ${opts.closable ? renderCloseButton(name) : ''}
@@ -93,6 +109,54 @@ export function updateActivityDot(body, session) {
     dot.className = 'sidebar-activity-dot';
     const state = activityStates.get(session) || 'idle';
     dot.classList.add(state === 'idle' ? 'dot-idle' : state === 'processing' ? 'dot-processing' : state === 'generating' ? 'dot-generating' : 'dot-playing');
+}
+
+// Group sessions into a parent→children forest (issue #448). A session nests
+// under another only when its `parent` (display linkage from the CLI: creator
+// recorded at `agentwire new`, else `.agentwire.yml parent:`) is itself present
+// in the same list. Sessions whose parent is absent render as top-level roots.
+function buildSessionTree(sessions) {
+    const byName = new Map(sessions.map(s => [s.name || '', s]));
+    const childrenOf = new Map();  // parent name → [child sessions]
+    const roots = [];
+    for (const s of sessions) {
+        const parent = s.parent;
+        if (parent && parent !== s.name && byName.has(parent)) {
+            if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+            childrenOf.get(parent).push(s);
+        } else {
+            roots.push(s);
+        }
+    }
+    return { childrenOf, roots };
+}
+
+// Render one session and its nested children (recursive). `visited` guards
+// against pathological parent cycles so a 2-cycle can't loop forever.
+function renderSessionNode(s, childrenOf, visited) {
+    const name = s.name || '';
+    if (visited.has(name)) return '';
+    visited.add(name);
+    const kids = childrenOf.get(name) || [];
+    const collapsed = collapsedParents.has(name);
+    const card = renderCard(s, { closable: true, childCount: kids.length, collapsed });
+    if (!kids.length) return card;
+    const childrenHtml = collapsed ? '' : `<div class="sidebar-session-children">
+        <div class="sidebar-session-children-label">Child sessions</div>
+        ${kids.map(k => renderSessionNode(k, childrenOf, visited)).join('')}
+    </div>`;
+    return `<div class="sidebar-session-group">${card}${childrenHtml}</div>`;
+}
+
+// Full forest render: roots first, then any session orphaned by a cycle.
+function renderSessionForest(sessions) {
+    const { childrenOf, roots } = buildSessionTree(sessions);
+    const visited = new Set();
+    let html = roots.map(s => renderSessionNode(s, childrenOf, visited)).join('');
+    for (const s of sessions) {
+        if (!visited.has(s.name || '')) html += renderSessionNode(s, childrenOf, visited);
+    }
+    return html;
 }
 
 export async function handleSessionClick(e) {
@@ -332,12 +396,22 @@ export const sessionsSection = {
         if (!work.length && !this._formType) {
             html += '<div class="sidebar-empty">No sessions</div>';
         } else {
-            html += work.map(s => renderCard(s, { closable: true })).join('');
+            html += renderSessionForest(work);
         }
         body.innerHTML = html;
         body.onclick = (e) => {
             if (e.target.closest('.sidebar-form')) {
                 this._handleFormClick(e, body);
+                return;
+            }
+            const toggle = e.target.closest('[data-action="toggle-children"]');
+            if (toggle) {
+                const name = toggle.closest('[data-session]')?.dataset.session;
+                if (name) {
+                    if (collapsedParents.has(name)) collapsedParents.delete(name);
+                    else collapsedParents.add(name);
+                    this._render(body);
+                }
                 return;
             }
             handleSessionClick(e);
