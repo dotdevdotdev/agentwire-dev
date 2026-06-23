@@ -7114,7 +7114,7 @@ def cmd_safety_logs(args) -> int:
 
 def cmd_safety_install(args) -> int:
     """CLI command: agentwire safety install"""
-    return cli_safety.safety_install_cmd()
+    return cli_safety.safety_install_cmd(assume_yes=getattr(args, "yes", False))
 
 
 def cmd_safety_tooldefs_list(args) -> int:
@@ -7125,6 +7125,79 @@ def cmd_safety_tooldefs_list(args) -> int:
 def cmd_safety_tooldefs_show(args) -> int:
     """CLI command: agentwire safety tooldefs show <tool>"""
     return cli_safety.safety_tooldefs_show_cmd(args.tool)
+
+
+def _render_damage_control_section() -> int:
+    """Print the damage-control health block. Returns the count of issues found.
+
+    Covers the four #462 blind spots plus DC hook staleness: the global kill
+    switch (``safety.enabled: false``), installed-rules drift vs the bundled
+    rules, PreToolUse matcher registration, and DC hook-script staleness.
+    """
+    issues = 0
+
+    # Kill switch — config.safety.enabled gates ALL damage control. A silent
+    # `false` is the loudest possible failure, so flag it first and hard.
+    try:
+        from .config import load_config as _load_config_typed
+        safety_enabled = _load_config_typed().safety.enabled
+    except Exception as e:
+        print(f"  [..] Could not read safety config: {e}")
+        safety_enabled = True
+    if not safety_enabled:
+        print("  [!!] Damage control is DISABLED (safety.enabled: false)")
+        print("       ALL command/path/outbound gating is off.")
+        print("       Fix: set safety.enabled: true in ~/.agentwire/config.yaml")
+        issues += 1
+    else:
+        print("  [ok] Damage control enabled (safety.enabled: true)")
+
+    try:
+        from . import cli_safety
+    except Exception as e:
+        print(f"  [..] Could not load safety module: {e}")
+        return issues
+
+    # DC hook-script staleness (bash/edit/write/mcp-tool + audit_logger).
+    hook_drift = cli_safety.damage_control_hook_drift()
+    stale_hooks = [f for f, s in hook_drift.items() if s == "stale"]
+    missing_hooks = [f for f, s in hook_drift.items() if s == "missing"]
+    if stale_hooks or missing_hooks:
+        if missing_hooks:
+            print(f"  [!!] DC hook scripts missing: {', '.join(sorted(missing_hooks))}")
+        if stale_hooks:
+            print(f"  [!!] DC hook scripts STALE: {', '.join(sorted(stale_hooks))}")
+        print("       Fix: agentwire safety install --yes")
+        issues += 1
+    else:
+        print("  [ok] DC hook scripts current")
+
+    # Installed-rules drift vs bundled rules (the incident's missing files).
+    rule_drift = cli_safety.rules_drift()
+    missing_rules = [f for f, s in rule_drift.items() if s == "missing"]
+    stale_rules = [f for f, s in rule_drift.items() if s == "stale"]
+    if missing_rules:
+        print(f"  [!!] Damage-control rules NOT installed: {', '.join(sorted(missing_rules))}")
+        print("       Fix: agentwire safety install --yes")
+        issues += 1
+    elif stale_rules:
+        # Stale = installed copy differs from bundled. Could be an intentional
+        # customization, so warn (not error) and don't auto-overwrite.
+        print(f"  [..] Damage-control rules differ from bundled: {', '.join(sorted(stale_rules))}")
+        print("       (customized? `agentwire safety install --yes` leaves these untouched)")
+    else:
+        print("  [ok] Damage-control rules installed and match bundled")
+
+    # Matcher presence in ~/.claude/settings.json.
+    missing_matchers = cli_safety.missing_damage_control_matchers()
+    if missing_matchers:
+        print(f"  [!!] PreToolUse matchers not registered: {', '.join(missing_matchers)}")
+        print("       Fix: agentwire safety install --yes")
+        issues += 1
+    else:
+        print("  [ok] PreToolUse damage-control matchers registered")
+
+    return issues
 
 
 def _render_voice_loop_section(config, ctx) -> int:
@@ -7307,6 +7380,36 @@ def cmd_doctor(args) -> int:
         else:
             print(f"  [..] {label}: not found ({why})")
             print("     Run: agentwire hooks install")
+
+    # 4b. Damage control (safety) — the kill switch, install drift, and the
+    # PreToolUse matcher registration. The #462 incident: a global disable and
+    # missing rule files were both invisible to every diagnostic.
+    print("\nChecking damage control (safety)...")
+    issues_found += _render_damage_control_section()
+
+    # 4c. Local checkout vs origin/main — rebuild reinstalls whatever is checked
+    # out, so a never-pulled main silently ships stale code. Today only worktree
+    # creation fetches; surface the drift here too.
+    print("\nChecking source checkout...")
+    src_root = Path(__file__).parent.parent
+    if not (src_root / "pyproject.toml").exists():
+        try:
+            src_root = get_source_dir()
+        except Exception:
+            src_root = None
+    if src_root is None:
+        print("  [..] Could not locate source checkout — skipping git-drift check")
+    else:
+        behind, err = _git_behind_origin(src_root)
+        if err:
+            print(f"  [..] Source checkout: skipped git-drift check ({err})")
+        elif behind and behind > 0:
+            print(f"  [!!] Local main is {behind} commit(s) behind origin/main")
+            print(f"       {src_root}")
+            print("       Fix: git pull --ff-only  (then agentwire rebuild)")
+            issues_found += 1
+        else:
+            print("  [ok] Local main up to date with origin/main")
 
     # Check custom services (registry-driven: built-in notifications bridge
     # + user-defined services from services.custom)
@@ -7705,13 +7808,68 @@ def cmd_voiceclone_delete(args) -> int:
 UV_CACHE_DIR = Path.home() / ".cache" / "uv"
 
 
+def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):
+    """How many commits ``origin/<base>`` is ahead of the checkout's HEAD.
+
+    Returns ``(behind, error)``: ``behind`` is the commit count (0 = up to date),
+    or ``None`` with a human-readable ``error`` string when the comparison can't
+    be made (not a git repo, no remote, offline fetch failure, etc.).
+    """
+    if not (repo / ".git").exists():
+        return None, "not a git checkout"
+    if do_fetch:
+        fetch = subprocess.run(
+            ["git", "fetch", "origin", base],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if fetch.returncode != 0:
+            return None, (fetch.stderr or fetch.stdout or "git fetch failed").strip()
+    count = subprocess.run(
+        ["git", "rev-list", "--count", f"HEAD..origin/{base}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if count.returncode != 0:
+        return None, (count.stderr or count.stdout or "git rev-list failed").strip()
+    try:
+        return int(count.stdout.strip()), None
+    except ValueError:
+        return None, f"unexpected rev-list output: {count.stdout.strip()!r}"
+
+
 def cmd_rebuild(args) -> int:
     """Rebuild: clear uv cache, uninstall, reinstall from source.
 
     This is the correct way to pick up source changes when developing.
     `uv tool install . --force` does NOT work - it uses cached wheels.
     """
+    force = getattr(args, "force", False)
+
     print("Rebuilding agentwire-dev...")
+    print()
+
+    # Resolve the source checkout up front so the git-drift guard and the
+    # install step agree on which tree they're operating over.
+    project_root = Path(__file__).parent.parent
+    if not (project_root / "pyproject.toml").exists():
+        project_root = get_source_dir()
+
+    # Git-drift guard: rebuild is otherwise git-blind and will happily reinstall
+    # stale code when local main was never pulled after a remote merge. Refuse
+    # (unless --force) so the fix happens before the reinstall, not after.
+    behind, err = _git_behind_origin(project_root)
+    if err:
+        print(f"  - Skipping git-drift check ({err})")
+    elif behind and behind > 0:
+        print(f"  [!!] Local checkout is {behind} commit(s) behind origin/main.")
+        print(f"       {project_root}")
+        print("       Rebuild would reinstall stale code. Run first:")
+        print("         git pull --ff-only")
+        if not force:
+            print("       (or re-run with --force to rebuild anyway)")
+            return 1
+        print("       --force given: rebuilding from the behind checkout anyway.")
+    else:
+        print("  ✓ Checkout up to date with origin/main")
     print()
 
     # Step 1: Clear uv cache
@@ -7735,13 +7893,7 @@ def cmd_rebuild(args) -> int:
         # Might not be installed, that's fine
         print("  - Not installed (continuing)")
 
-    # Step 3: Reinstall from current directory
-    # Find the project root (where pyproject.toml is)
-    project_root = Path(__file__).parent.parent
-    if not (project_root / "pyproject.toml").exists():
-        # Fallback to configured source directory
-        project_root = get_source_dir()
-
+    # Step 3: Reinstall from the source checkout resolved above.
     print(f"Installing from {project_root}...")
     result = subprocess.run(
         ["uv", "tool", "install", "."],
@@ -8579,11 +8731,14 @@ def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
         if event:
             register_hook_in_settings(event, hook_name)
 
-    # Heal the damage-control PreToolUse matchers (Bash/Edit/Write + the outbound
-    # MCP tools) in settings.json so `hooks install` keeps them current too.
+    # Heal the full damage-control surface (hook scripts + rules + tooldefs +
+    # PreToolUse matchers), not just the settings.json matchers. This closes the
+    # documented post-rebuild gap: CLAUDE.md tells users to re-run `hooks install`
+    # after a rebuild, so it must actually sync the DC files/rules — drift-aware,
+    # never clobbering a customized rule.
     try:
-        from agentwire.cli_safety import register_damage_control_in_settings
-        register_damage_control_in_settings()
+        from agentwire.cli_safety import heal_damage_control
+        heal_damage_control(quiet=True)
     except Exception:
         pass
 
@@ -11781,7 +11936,12 @@ def main() -> int:
 
     # safety install
     safety_install = safety_subparsers.add_parser(
-        "install", help="Install damage control hooks (interactive)"
+        "install", help="Install/heal damage control hooks, rules, and matchers"
+    )
+    safety_install.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Non-interactive, drift-aware heal (install missing + update stale "
+             "owned hooks; never clobbers existing rules)",
     )
     safety_install.set_defaults(func=cmd_safety_install)
 
@@ -11825,6 +11985,10 @@ def main() -> int:
     # === rebuild command ===
     rebuild_parser = subparsers.add_parser(
         "rebuild", help="Clear uv cache and reinstall from source (for development)"
+    )
+    rebuild_parser.add_argument(
+        "--force", action="store_true",
+        help="Rebuild even when the local checkout is behind origin/main",
     )
     rebuild_parser.set_defaults(func=cmd_rebuild)
 

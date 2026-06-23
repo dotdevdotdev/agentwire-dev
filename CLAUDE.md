@@ -9,6 +9,10 @@ Voice interface for AI coding agents. Push-to-talk from any device to tmux sessi
 `uv tool install` caches builds and ignores source changes.
 
 ```bash
+# Step 0 — after a remote merge, pull first. rebuild reinstalls whatever is
+# checked out, so a never-pulled main silently ships stale code.
+git pull --ff-only
+
 # During development (picks up changes instantly)
 agentwire portal start --dev
 
@@ -16,10 +20,10 @@ agentwire portal start --dev
 agentwire rebuild
 
 # After code changes: ALWAYS do both
-agentwire rebuild && agentwire portal restart --dev
+git pull --ff-only && agentwire rebuild && agentwire portal restart --dev
 ```
 
-Rebuild alone = stale static files. Restart alone = stale Python. The MCP server runs as a separate process started by Claude Code — session restart required after rebuild to pick up MCP changes.
+Rebuild alone = stale static files. Restart alone = stale Python. The MCP server runs as a separate process started by Claude Code — session restart required after rebuild to pick up MCP changes. `rebuild` now refuses (warn + `--force` to override) when the checkout is behind `origin/main`, and `agentwire doctor` flags a behind-main checkout, a disabled kill switch (`safety.enabled: false`), and damage-control rule/hook/matcher drift.
 
 ## CLI is the Single Source of Truth
 

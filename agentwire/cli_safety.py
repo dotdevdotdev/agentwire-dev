@@ -544,90 +544,200 @@ def register_damage_control_in_settings() -> int:
     return added
 
 
-def safety_install_cmd() -> int:
-    """CLI command: ``agentwire safety install`` — interactive setup."""
+def _file_drift_state(target: Path, source: Path) -> str:
+    """Drift state of an installed damage-control file: missing | stale | ok.
+
+    ``ok`` when the bundled source is absent (nothing to compare) or the
+    installed bytes match it; ``missing`` when the source ships but no copy is
+    installed; ``stale`` when an installed copy differs from the bundled bytes.
+    """
+    if not source.exists():
+        return "ok"
+    if not target.exists():
+        return "missing"
+    try:
+        return "ok" if target.read_bytes() == source.read_bytes() else "stale"
+    except OSError:
+        return "stale"
+
+
+def damage_control_hook_drift() -> Dict[str, str]:
+    """Drift state per DC hook script (``bash/edit/write/mcp-tool-...`` + logger).
+
+    Returns ``{filename: missing|stale|ok}`` comparing the installed copies in
+    ``~/.agentwire/hooks/damage-control/`` against the bundled package source.
+    """
+    hooks_source = Path(__file__).parent / "hooks" / "damage-control"
+    return {
+        fn: _file_drift_state(HOOKS_DIR / fn, hooks_source / fn)
+        for fn in DAMAGE_CONTROL_FILES
+    }
+
+
+def rules_drift() -> Dict[str, str]:
+    """Drift state per bundled rule file vs ``~/.agentwire/damage-control/``.
+
+    Only the bundled rule set is inspected (user-added rules with no bundled
+    counterpart are not "drift"). Returns ``{filename: missing|stale|ok}``.
+    """
+    try:
+        source_dir = get_damage_control_source()
+    except FileNotFoundError:
+        return {}
+    return {
+        src.name: _file_drift_state(RULES_DIR / src.name, src)
+        for src in sorted(source_dir.glob("*.yaml"))
+    }
+
+
+def missing_damage_control_matchers() -> List[str]:
+    """Damage-control matchers not registered in ``~/.claude/settings.json``."""
+    settings_file = Path.home() / ".claude" / "settings.json"
+    try:
+        settings = json.loads(settings_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        settings = {}
+    pre = settings.get("hooks", {}).get("PreToolUse", []) if isinstance(settings, dict) else []
+    registered = {
+        h.get("command")
+        for entry in pre
+        for h in (entry.get("hooks", []) if isinstance(entry, dict) else [])
+    }
+    missing = []
+    for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
+        if f"~/.agentwire/hooks/damage-control/{hook_file}" not in registered:
+            missing.append(matcher)
+    return missing
+
+
+def heal_damage_control(quiet: bool = False) -> Dict[str, Any]:
+    """Drift-aware sync of DC hook scripts, rules, tooldefs, and matchers.
+
+    Non-interactive. Agentwire-owned hook scripts are installed when missing and
+    overwritten when stale (they carry no user edits). Rules and tooldefs are
+    install-missing-only — an existing rule, including a hand-customized one, is
+    left untouched, so this never blind-clobbers user rules. Matchers are
+    registered if absent. Returns a summary dict of what changed.
+    """
+    log = (lambda *a: None) if quiet else print
+
+    HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    RULES_DIR.mkdir(parents=True, exist_ok=True)
+    TOOLDEFS_DIR.mkdir(parents=True, exist_ok=True)
+
+    summary: Dict[str, Any] = {
+        "hooks_installed": [], "hooks_updated": [],
+        "rules_installed": [], "tooldefs_installed": [], "matchers_added": 0,
+    }
+
+    hooks_source = Path(__file__).parent / "hooks" / "damage-control"
+    for fn in DAMAGE_CONTROL_FILES:
+        src = hooks_source / fn
+        if not src.exists():
+            log(f"⚠️  Missing {fn} in package")
+            continue
+        target = HOOKS_DIR / fn
+        state = _file_drift_state(target, src)
+        if state == "ok":
+            continue
+        shutil.copy2(src, target)
+        if fn.endswith(".py"):
+            target.chmod(0o755)
+        if state == "missing":
+            summary["hooks_installed"].append(fn)
+            log(f"✓ Installed hook {fn}")
+        else:
+            summary["hooks_updated"].append(fn)
+            log(f"✓ Updated stale hook {fn}")
+
+    # Rules: install missing only — never overwrite an existing (possibly
+    # hand-customized) rule file.
+    try:
+        rules_source = get_damage_control_source()
+        for src in sorted(rules_source.glob("*.yaml")):
+            target = RULES_DIR / src.name
+            if not target.exists():
+                shutil.copy2(src, target)
+                summary["rules_installed"].append(src.name)
+                log(f"✓ Installed rule {src.name}")
+    except FileNotFoundError as e:
+        log(f"⚠️  {e}")
+
+    # Tooldefs: install missing only (user overrides win, same as rules).
+    try:
+        tooldefs_source = get_tooldefs_source()
+        for src in sorted(tooldefs_source.glob("*.yaml")):
+            target = TOOLDEFS_DIR / src.name
+            if not target.exists():
+                shutil.copy2(src, target)
+                summary["tooldefs_installed"].append(src.name)
+                log(f"✓ Installed tooldef {src.name}")
+    except FileNotFoundError as e:
+        log(f"⚠️  {e}")
+
+    added = register_damage_control_in_settings()
+    summary["matchers_added"] = added
+    if added:
+        log(f"✓ Registered {added} damage-control matcher{'s' if added != 1 else ''}")
+
+    return summary
+
+
+def safety_install_cmd(assume_yes: bool = False) -> int:
+    """CLI command: ``agentwire safety install``.
+
+    With ``--yes``/``assume_yes`` it runs unattended and drift-aware: installs
+    missing hook scripts/rules/tooldefs, updates stale *owned* hook scripts, and
+    registers any absent matchers, without prompting and without clobbering an
+    existing (possibly customized) rule. Without it, the same heal runs behind
+    the two interactive confirmations.
+    """
     print("AgentWire Safety Installation")
     print("=" * 50)
     print()
 
-    if HOOKS_DIR.exists() and RULES_DIR.exists() and any(RULES_DIR.glob("*.yaml")):
-        print("⚠️  Safety hooks already installed")
-        print(f"   Location: {HOOKS_DIR}")
-        if input("Reinstall? [y/N] ").strip().lower() != "y":
+    if not assume_yes:
+        if HOOKS_DIR.exists() and RULES_DIR.exists() and any(RULES_DIR.glob("*.yaml")):
+            print("⚠️  Safety hooks already installed")
+            print(f"   Location: {HOOKS_DIR}")
+            if input("Re-sync (drift-aware heal)? [y/N] ").strip().lower() != "y":
+                print("Installation cancelled.")
+                return 0
+
+        print("This will install/heal damage control security hooks at:")
+        print(f"  {HOOKS_DIR}")
+        print()
+        print("The hooks will:")
+        print("  • Block dangerous commands (rm -rf /, etc.)")
+        print("  • Protect sensitive files (.env, SSH keys, etc.)")
+        print("  • Log all security decisions")
+        print()
+
+        if input("Proceed with installation? [y/N] ").strip().lower() != "y":
             print("Installation cancelled.")
             return 0
 
-    print("This will install damage control security hooks to:")
-    print(f"  {HOOKS_DIR}")
-    print()
-    print("The hooks will:")
-    print("  • Block dangerous commands (rm -rf /, etc.)")
-    print("  • Protect sensitive files (.env, SSH keys, etc.)")
-    print("  • Log all security decisions")
-    print()
-
-    if input("Proceed with installation? [y/N] ").strip().lower() != "y":
-        print("Installation cancelled.")
-        return 0
-
     try:
-        source_dir = get_damage_control_source()
+        get_damage_control_source()
     except FileNotFoundError as e:
         print(f"\n⚠️  {e}")
         print("   The damage-control hooks are missing from the package.")
         return 1
 
     print()
-    print("Creating directories...")
-    HOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    RULES_DIR.mkdir(parents=True, exist_ok=True)
-    TOOLDEFS_DIR.mkdir(parents=True, exist_ok=True)
-    for d in (HOOKS_DIR, LOGS_DIR, RULES_DIR, TOOLDEFS_DIR):
-        print(f"✓ Created {d}")
+    summary = heal_damage_control()
 
-    hooks_source = Path(__file__).parent / "hooks" / "damage-control"
+    touched = (
+        summary["hooks_installed"] or summary["hooks_updated"]
+        or summary["rules_installed"] or summary["tooldefs_installed"]
+        or summary["matchers_added"]
+    )
     print()
-    print("Installing hooks...")
-    for filename in DAMAGE_CONTROL_FILES:
-        source_file = hooks_source / filename
-        target_file = HOOKS_DIR / filename
-        if source_file.exists():
-            shutil.copy2(source_file, target_file)
-            if filename.endswith(".py"):
-                target_file.chmod(0o755)
-            print(f"✓ Installed {filename}")
-        else:
-            print(f"⚠️  Missing {filename} in package")
-
-    print()
-    print("Installing rules...")
-    for rules_file in sorted(source_dir.glob("*.yaml")):
-        target_file = RULES_DIR / rules_file.name
-        shutil.copy2(rules_file, target_file)
-        print(f"✓ Installed {rules_file.name}")
-
-    print()
-    print("Installing tooldefs...")
-    try:
-        tooldefs_source = get_tooldefs_source()
-        for tooldef_file in sorted(tooldefs_source.glob("*.yaml")):
-            target_file = TOOLDEFS_DIR / tooldef_file.name
-            shutil.copy2(tooldef_file, target_file)
-            print(f"✓ Installed {tooldef_file.name}")
-    except FileNotFoundError as e:
-        print(f"⚠️  {e}")
-
-    print()
-    print("Registering PreToolUse hooks in ~/.claude/settings.json...")
-    added = register_damage_control_in_settings()
-    if added:
-        print(f"✓ Registered {added} damage-control matcher{'s' if added != 1 else ''}")
+    if touched:
+        print("✓ Damage control synced.")
     else:
-        print("✓ All damage-control matchers already registered")
-
-    print()
-    print("✓ Installation complete!")
+        print("✓ Damage control already in sync — nothing to do.")
     print()
     print("Next steps:")
     print("  1. Test with: agentwire safety check 'rm -rf /'")
