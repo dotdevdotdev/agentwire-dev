@@ -733,6 +733,47 @@ body {
 .sidebar-git-badge.git-pushed { background: rgba(57, 255, 20, 0.16); color: #39ff14; }
 .sidebar-git-badge.git-unpushed { background: rgba(248, 113, 113, 0.18); color: #f87171; }
 
+/* Nested child/spawned sessions (issue #448) — display-only hierarchy so a
+   worktree/spawned session reads as belonging to its parent, never an unrelated
+   peer. Children are indented under the parent card with a connecting rail. */
+.sidebar-session-group {
+    margin-bottom: 4px;
+}
+
+.sidebar-session-children {
+    margin: 2px 0 2px 10px;
+    padding-left: 10px;
+    border-left: 2px solid var(--chrome-border);
+}
+
+.sidebar-session-children-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding: 2px 0 4px;
+}
+
+/* Collapse caret — compact, no border, so it sits flush before the dot. */
+.sidebar-children-toggle {
+    border: none;
+    background: transparent;
+    padding: 0 2px;
+    min-width: 14px;
+    color: var(--text-muted);
+}
+
+/* Child-count badge next to a parent's name (visible even when collapsed). */
+.sidebar-child-count {
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: var(--chrome-border);
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
 /* Session kill button — always visible and occupying its flex slot, so the
    row never reflows on hover. Confirm/killing states restyle in place. */
 .sidebar-session-close {

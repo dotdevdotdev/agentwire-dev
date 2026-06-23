@@ -3005,6 +3005,30 @@ def _record_session_creator(session_name: str, created_by: str | None, via: str)
     store_session_metadata(session_name, metadata)
 
 
+def _display_parent(session_name: str, path: str = "") -> "str | None":
+    """The session that should visually own this one in the sidebar.
+
+    Display-only relationship (powers sidebar nesting, issue #448) — NOT a
+    lifecycle coupling. Mirrors prompt_router.resolve_parent's precedence for
+    pane-0 sessions, minus the liveness check (the sidebar decides whether to
+    nest based on whether the parent is actually in the list):
+      1. Creator recorded at `agentwire new` time (session metadata).
+      2. `.agentwire.yml` `parent:` field (from the session's path).
+    Returns None for top-level sessions (no recorded parent).
+    """
+    bare = session_name.split("@")[0]
+    creator = load_session_metadata(bare).get("created_by")
+    if isinstance(creator, str) and creator and creator != bare:
+        return creator
+    try:
+        parent = get_parent_from_config(Path(path) if path else None)
+    except Exception:
+        parent = None
+    if parent and parent != bare:
+        return parent
+    return None
+
+
 def cmd_notify(args) -> int:
     """Send a notification to the portal about session/pane state changes.
 
@@ -3347,6 +3371,7 @@ def cmd_list(args) -> int:
                             "machine": None,
                             "type": cfg.get("type"),
                             "roles": cfg.get("roles", []),
+                            "parent": _display_parent(parts[0], path),
                         }
                         if usage_limit_parked(parts[0]):
                             session_info["usage_limit"] = True
