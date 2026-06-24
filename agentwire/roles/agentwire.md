@@ -65,7 +65,7 @@ When you discover something noteworthy during your work — a technology gotcha,
 
 **Rules**: one page per entity (check before creating), update existing pages rather than duplicating, include code snippets, date your updates in frontmatter `last_updated`. Read `~/.agentwire/wiki/CLAUDE.md` for the full schema.
 
-**Before researching**: check if a wiki page already exists on the topic. Use existing knowledge first.
+**Before researching**: call the `wiki_query` MCP tool (`wiki_query("<topic>")`) to see what's already recorded — it returns the top pages with paths + snippets; read them and use existing knowledge first. (From a shell, the same search is `agentwire wiki query "<topic>"`.) When you discover something new, scaffold the page with `agentwire wiki new <category> <name>` and write it in-context.
 
 ## Notifications
 
