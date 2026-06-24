@@ -113,7 +113,7 @@ tail -f /tmp/queue-processor-debug.log  # queue processor
 
 ## Wiki (Knowledge Base)
 
-LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wiki pattern. Research and debugging knowledge compounds across sessions. Use `/wiki ingest`, `/wiki query <question>`, `/wiki lint` skills. **Before researching**: agents check the wiki first. After discovering: agents write it down.
+LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wiki pattern. Research and debugging knowledge compounds across sessions. **Authoring is in-context** — the session that learns something writes the page itself (there's no batch ingester); the *mechanical* ops are deterministic, via the `agentwire wiki` CLI and the `wiki_query` / `wiki_lint` / `wiki_status` MCP tools (`status` / `query` / `lint` / `new` / `done` — stdlib-only, no rebuild needed; see the `wiki` skill). **Before researching**: agents call `wiki_query` first. After discovering: agents write/update a page (`agentwire wiki new` scaffolds it). `raw/` is an optional verbatim-source inbox; archive a consumed source with `agentwire wiki done`.
 
 ## Handoffs
 
