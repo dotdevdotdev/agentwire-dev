@@ -23,7 +23,7 @@ agentwire rebuild
 git pull --ff-only && agentwire rebuild && agentwire portal restart --dev
 ```
 
-Rebuild alone = stale static files. Restart alone = stale Python. The MCP server runs as a separate process started by Claude Code — session restart required after rebuild to pick up MCP changes. `rebuild` now refuses (warn + `--force` to override) when the checkout is behind `origin/main`, and `agentwire doctor` flags a behind-main checkout, a disabled kill switch (`safety.enabled: false`), and damage-control rule/hook/matcher drift.
+Rebuild alone = stale static files. Restart alone = stale Python. The MCP server runs as a separate process started by Claude Code — session restart required after rebuild to pick up MCP changes. `rebuild` now refuses (warn + `--force` to override) when the checkout is behind `origin/main`, and `agentwire doctor` flags a behind-main checkout, a disabled kill switch (`enabled: false` in `~/.agentwire/damagecontrol.yml`), and damage-control rule/hook/matcher drift.
 
 ## CLI is the Single Source of Truth
 

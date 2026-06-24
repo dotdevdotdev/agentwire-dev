@@ -162,7 +162,7 @@ Decision shortcut:
 Defense in depth, three layers:
 
 1. **Damage control hooks** (always on if `agentwire hooks install` was run): PreToolUse hooks on Bash/Edit/Write match commands and paths against `agentwire/hooks/damage-control/rules/*.yaml`. Block hard-blocked patterns, prompt for ask-patterns, run bypassable patterns through allowlist checks.
-2. **Per-project allowlists** (`safety.allowed_paths` in `.agentwire.yml`): override the global rules for paths inside this project (e.g., `dist/*` allow-all, `.env.development` allow read/write/edit).
+2. **Per-project allowlists** (`allowed_paths` in the protected `.damagecontrol.yml` at the repo root): override the global rules for paths inside this project (e.g., `dist/*` allow-all, `.env.development` allow read/write/edit). The allowlist is host-owned — an agent can't edit `.damagecontrol.yml` to widen its own freedom (#466/#467).
 3. **Classifier-mode auto sessions** (`type: claude-auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Safe ops auto-approve at zero cost; dangerous ops are blocked. Layered on top of the hook-level checks.
 
 → [Damage control](internals/damage-control.md), [claude-auto](sessions/claude-code-auto-mode.md).
