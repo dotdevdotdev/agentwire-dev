@@ -11,7 +11,6 @@ import pytest
 
 from agentwire import wiki
 
-
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
@@ -97,13 +96,16 @@ def test_status_unprocessed_raw_excludes_processed(tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_query_ranks_name_over_body(tmp_path):
-    # Page A has the term only in the body (many times); Page B has it in the name once.
-    _write(tmp_path, "patterns/a.md",
-           "---\nname: Alpha\nlast_updated: 2026-06-01\n---\n\n# Alpha\n\nwidget widget widget widget\n")
-    _write(tmp_path, "patterns/widget.md",
-           "---\nname: widget\nlast_updated: 2026-06-01\n---\n\n# widget\n\nnothing relevant here\n")
-    results = wiki.query("widget", tmp_path)
-    assert results[0]["rel"] == "patterns/widget.md"  # name hit (×10) beats 4 body hits
+    # Isolate the *name* weight: the winner has the term ONLY in frontmatter
+    # `name:` — not in its stem (file is q1.md) and not in any heading — while
+    # the loser has it many times in the body. So the test fails if _W_NAME is
+    # neutralized, unconfounded by stem/heading weight.
+    _write(tmp_path, "patterns/q1.md",
+           "---\nname: kryptonite\nlast_updated: 2026-06-01\n---\n\n# Page One\n\nordinary prose\n")
+    _write(tmp_path, "patterns/q2.md",
+           "---\nname: Two\nlast_updated: 2026-06-01\n---\n\n# Page Two\n\nkryptonite kryptonite kryptonite kryptonite\n")
+    results = wiki.query("kryptonite", tmp_path)
+    assert results[0]["rel"] == "patterns/q1.md"  # single name hit (×10) beats 4 body hits (×1)
 
 
 def test_query_empty_returns_nothing(wiki_root):
@@ -181,6 +183,16 @@ def test_lint_broken_link_resolves_alias_and_anchor(tmp_path):
     assert _kinds(findings, "broken-link") == []
 
 
+def test_lint_broken_link_resolves_bare_alias(tmp_path):
+    # Alias with NO anchor — pins the alias-strip independently of anchor-strip.
+    _write(tmp_path, "patterns/a.md",
+           "---\nname: A\nlast_updated: 2026-06-01\n---\n\nsee [[b|just an alias]]\n")
+    _write(tmp_path, "patterns/b.md",
+           "---\nname: B\nlast_updated: 2026-06-01\n---\n\nlinked from [[a]]\n")
+    findings = wiki.structural_lint(tmp_path, today=date(2026, 6, 24))
+    assert _kinds(findings, "broken-link") == []
+
+
 def test_lint_missing_frontmatter(tmp_path):
     _write(tmp_path, "patterns/bare.md", "# Bare\n\nno frontmatter at all\n")
     findings = wiki.structural_lint(tmp_path, today=date(2026, 6, 24))
@@ -203,11 +215,28 @@ def test_lint_missing_name(tmp_path):
     assert any("missing 'name'" in f.reason for f in _kinds(findings, "frontmatter"))
 
 
-def test_lint_folds_in_ground_truth(wiki_root):
-    # lint() returns dicts and includes wiki_audit findings; structural ones present.
+def test_lint_returns_dicts(wiki_root):
     findings = wiki.lint(wiki_root, today=date(2026, 6, 24))
     assert all(isinstance(f, dict) for f in findings)
     assert all({"wiki_file", "line", "kind", "claim", "reason"} <= set(f) for f in findings)
+
+
+def test_lint_folds_in_ground_truth(tmp_path):
+    # The core "reuse wiki_audit" deliverable: lint() MUST surface ground-truth
+    # findings, not just structural ones. The page below makes two checkable
+    # claims that wiki_audit flags against the real repo — a nonexistent repo
+    # path and a nonexistent agentwire subcommand. If the wiki_audit.audit()
+    # fold-in is dropped from lint(), neither appears and this test fails.
+    _write(tmp_path, "technologies/claims.md",
+           "---\nname: Claims\ncategory: infra\nstatus: in-use\nlast_updated: 2026-06-01\n---\n\n"
+           "# Claims\n\nSelf-link [[claims]] to avoid an orphan finding.\n\n"
+           "See `agentwire/does_not_exist_xyz.py` and run `agentwire bogus-subcmd-xyz`.\n")
+    findings = wiki.lint(tmp_path, today=date(2026, 6, 24))
+    kinds = {f["kind"] for f in findings}
+    # Ground-truth kinds — produced only by wiki_audit, never by structural_lint.
+    assert "path" in kinds or "subcommand" in kinds
+    paths = {f["claim"] for f in findings if f["kind"] == "path"}
+    assert "agentwire/does_not_exist_xyz.py" in paths
 
 
 # --------------------------------------------------------------------------- #

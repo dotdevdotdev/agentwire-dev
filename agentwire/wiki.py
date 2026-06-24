@@ -285,6 +285,8 @@ def structural_lint(root: Path | str | None = None, *, today: date | None = None
             findings.append(LintFinding(page.rel, 1, "frontmatter", page.rel,
                                         "missing or unterminated frontmatter block", ""))
         else:
+            # `title:` is accepted as an alias for `name:` — intentional, blessed
+            # in the wiki schema (some pages key the display name as `title:`).
             if not (fm.get("name") or fm.get("title")):
                 findings.append(LintFinding(page.rel, 1, "frontmatter", page.rel,
                                             "frontmatter missing 'name' (or 'title')", ""))
