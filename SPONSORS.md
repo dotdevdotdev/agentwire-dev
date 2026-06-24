@@ -35,11 +35,11 @@ AgentWire is made possible by these generous supporters.
 
 | Tier | Amount | What you get |
 |---|---|---|
-| **Supporter** | $5/mo | Name in SPONSORS.md · Supporter role in Discord |
+| **Supporter** | $5/mo | Name in SPONSORS.md |
 | **Backer** | $15/mo | Everything in Supporter · Priority responses on your GitHub issues · Input on what gets built next |
 | **Pro** | $35/mo | Everything in Backer · Early access to new features · Vote on roadmap priorities · Beta branch access |
 | **Team** | $100/mo | Everything in Pro · Logo in README · Monthly 30-minute support call · Priority bug fixes |
-| **Enterprise** | $500/mo | Everything in Team · Dedicated Discord channel · 48-hour bug response · Quarterly roadmap review · Featured logo placement |
+| **Enterprise** | $500/mo | Everything in Team · 48-hour bug response · Quarterly roadmap review · Featured logo placement |
 
 ### One-Time
 
