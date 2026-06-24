@@ -76,6 +76,55 @@ Hooks load every `*.yaml` file in the rules directory and merge their pattern li
 
 ---
 
+## Policy files & the protected control plane (#466)
+
+Damage control reads its kill switch, its rules, and its own hook registration
+from files on disk. If the policed agent can write those files, it can disable
+safety, act, and re-enable — defeating everything. So the **knobs live in
+dedicated, host-owned files** and the **whole control plane is hard-protected**.
+
+### Policy files (the only place the knobs live)
+
+| File | Scope |
+|------|-------|
+| `~/.agentwire/damagecontrol.yml` | Global `enabled` / `disabled_rules` / `unattended_allow` |
+| `<repo>/.damagecontrol.yml` | Per-project override (nearest, walking up from cwd). May both **loosen and tighten** — it simply wins on `enabled`; rule knobs merge (set-union) |
+
+```yaml
+# ~/.agentwire/damagecontrol.yml
+enabled: true            # master switch; missing file/key ⇒ true (fail-secure)
+disabled_rules: []       # stable rule IDs to disable
+unattended_allow: []     # extra rule IDs an unattended run may resolve ask→allow
+```
+
+These knobs **no longer live in `config.yaml` or `.agentwire.yml`** (relocated
+out entirely — `load_safety_config` reads only the files above). `.agentwire.yml`
+keeps only `safety.allowed_paths` (the human allowlist). `agentwire safety
+install` scaffolds the global file with `enabled: true` if missing.
+
+### The protected control plane (escape-hatch- AND kill-switch-exempt)
+
+Any write / edit / delete / move / chmod targeting one of these paths is
+**BLOCKED**, and — unlike every other rule — the `# allow:` escape hatch and the
+`enabled: false` kill switch **do NOT override it**:
+
+- `~/.agentwire/damagecontrol.yml`, any `.damagecontrol.yml`
+- `~/.claude/settings.json` (the PreToolUse hook registration)
+- `~/.agentwire/hooks/damage-control/*.py` (the hook scripts), `~/.claude/hooks/*`
+- `~/.agentwire/damage-control/*.yaml` (the rule files)
+
+The guarantee: **the agent only ever operates within the freedom the human
+preset; it can never expand its own freedom by editing a file.** The one
+override is the user's `allowedPaths` allowlist — a human, host-side opt-in (the
+agent can't add to it without editing a protected file, which is itself blocked).
+The mechanism is `check_protected_command` / `check_protected_path` in
+`safety/_core.py`, which run **before** `detect_escape_hatch` and the kill switch.
+`rules/control-plane.yaml` lists the same paths as `readOnlyPaths` for
+defense-in-depth + visibility, but the code-level check is what makes the
+protection absolute.
+
+---
+
 ## Security Patterns
 
 Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (14 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
@@ -223,15 +272,15 @@ spawns inherits the marker (defense in depth).
 **What's unaffected.** Hard `block` rules (`rm -rf`, `git push --force`, DB
 drops) fire regardless — they never depended on a human. Interactive `bypass`
 sessions resolve `ask` exactly as before. The kill switch still wins: with
-`safety.enabled: false`, nothing is checked, so the unattended gate is inert too
-(enable safety for scheduled projects to engage it).
+`enabled: false` in `~/.agentwire/damagecontrol.yml`, nothing is checked, so the
+unattended gate is inert too (enable safety for scheduled projects to engage it).
 
 **The allowlist** (union of three sources):
 
 | Source | Where | Scope |
 |--------|-------|-------|
 | `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create` — work + open a PR, nothing irreversible or outward-facing |
-| `safety.unattended_allow` | `config.yaml` / project `.agentwire.yml` | Global / per-project extension (list of rule ids) |
+| `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project extension (list of rule ids) |
 | `unattended_allow` | per-task in `.agentwire.yml` | Per-task extension — the pressure-relief valve: widen for one task instead of loosening the global default |
 
 Allowlisting is **by rule ID**, not command text — so `git.push` (plain push)

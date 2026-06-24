@@ -45,7 +45,7 @@ session:
 | `parent` | Session name | Parent session for hierarchical notifications |
 | `shell` | `/bin/sh`, `/bin/bash`, etc. | Default shell for task commands |
 | `tasks` | Task definitions | Scheduled workload configurations |
-| `safety` | `{allowed_paths: [...]}` | Per-project damage control allowlist |
+| `safety` | `{allowed_paths: [...]}` | Per-project damage control allowlist (the human opt-in). **Only `allowed_paths` lives here** — the kill switch / `disabled_rules` / global `unattended_allow` moved to the host-owned `~/.agentwire/damagecontrol.yml` + project `.damagecontrol.yml` (#466), which the agent cannot write. |
 
 For pi sessions (`pi-*`, e.g. `pi-zai`, `pi-deepseek`), see the `agentwire-pi` skill.
 

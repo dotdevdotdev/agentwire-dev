@@ -3878,10 +3878,13 @@ projects:
                             counts[d] = counts.get(d, 0) + 1
                 except Exception:
                     pass
-            safety_cfg = getattr(self.config, "safety", None)
+            # Read the kill switch + disabled rules from the agent-unwritable
+            # damage-control policy files (#466), not from config.yaml.
+            from .safety._core import load_safety_config
+            safety_cfg = load_safety_config()
             return web.json_response({
-                "enabled": getattr(safety_cfg, "enabled", True) if safety_cfg else True,
-                "disabled_rules": list(getattr(safety_cfg, "disabled_rules", []) or []),
+                "enabled": safety_cfg.get("enabled", True),
+                "disabled_rules": list(safety_cfg.get("disabled_rules", []) or []),
                 "rule_count": len(patterns.get("bashToolPatterns", [])),
                 "today_counts": counts,
             })
@@ -3931,15 +3934,16 @@ projects:
         Disabling the damage-control rules with the same token that the rules are
         meant to contain defeats defense-in-depth. The master switch and
         disabled-rules list can now only be changed by editing
-        ~/.agentwire/config.yaml on the host. GET /api/safety/* still works for
-        viewing status, rules and logs.
+        ~/.agentwire/damagecontrol.yml on the host — itself a protected,
+        agent-unwritable control-plane file (#466). GET /api/safety/* still works
+        for viewing status, rules and logs.
         """
         return web.json_response(
             {
                 "error": (
                     "Safety configuration is frozen and can only be changed by "
-                    "editing the `safety:` block in ~/.agentwire/config.yaml on "
-                    "the host, then reloading the portal."
+                    "editing ~/.agentwire/damagecontrol.yml on the host, then "
+                    "reloading the portal."
                 ),
                 "frozen_keys": ["safety"],
             },

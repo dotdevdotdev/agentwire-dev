@@ -153,19 +153,19 @@ def _normalize_allowed_entry(entry: dict) -> dict:
 
 @dataclass
 class SafetyConfig:
-    """Per-project safety overrides for damage control hooks."""
+    """Per-project safety overrides for damage control hooks.
+
+    Holds ONLY the ``allowed_paths`` allowlist — the human opt-in that re-permits
+    specific paths (including protected control-plane files). The kill switch and
+    rule knobs (``enabled`` / ``disabled_rules`` / ``unattended_allow``) live in
+    the agent-unwritable ``.damagecontrol.yml`` instead (#466), never here.
+    """
     allowed_paths: list[dict] = field(default_factory=list)
-    enabled: Optional[bool] = None  # None = inherit global
-    disabled_rules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d: dict = {}
         if self.allowed_paths:
             d["allowed_paths"] = self.allowed_paths
-        if self.enabled is not None:
-            d["enabled"] = self.enabled
-        if self.disabled_rules:
-            d["disabled_rules"] = list(self.disabled_rules)
         return d
 
     @classmethod
@@ -174,17 +174,7 @@ class SafetyConfig:
         if not isinstance(raw, list):
             raw = []
         allowed_paths = [_normalize_allowed_entry(e) for e in raw if isinstance(e, dict)]
-        enabled = data.get("enabled")
-        if enabled is not None:
-            enabled = bool(enabled)
-        rules = data.get("disabled_rules", [])
-        if not isinstance(rules, list):
-            rules = []
-        return cls(
-            allowed_paths=allowed_paths,
-            enabled=enabled,
-            disabled_rules=[str(r) for r in rules if r],
-        )
+        return cls(allowed_paths=allowed_paths)
 
 
 @dataclass

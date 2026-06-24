@@ -1,0 +1,24 @@
+# Damage-control control plane (#466)
+#
+# These are the files that DEFINE damage control — its kill switch, its rules,
+# and its own hook registration. If the policed agent could write them it could
+# disable safety, act, and re-enable, bypassing everything.
+#
+# The REAL guarantee lives in code: ``check_protected_command`` /
+# ``check_protected_path`` in ``agentwire/safety/_core.py`` block writes to
+# these paths BEFORE the ``# allow:`` escape hatch and BEFORE the kill switch,
+# so neither can override them. Only the user's ``allowedPaths`` allowlist (a
+# host-side opt-in) re-permits a path.
+#
+# Listing them here as ``readOnlyPaths`` too is defense-in-depth + visibility
+# (they show up in ``agentwire safety status`` rule counts). The readOnly tier
+# is escape-hatch-bypassable on its own — the code-level check is what makes the
+# protection absolute.
+
+readOnlyPaths:
+  - "~/.agentwire/damagecontrol.yml"
+  - "*.damagecontrol.yml"
+  - "~/.claude/settings.json"
+  - "~/.agentwire/hooks/damage-control/*.py"
+  - "~/.claude/hooks/*"
+  - "~/.agentwire/damage-control/*.yaml"

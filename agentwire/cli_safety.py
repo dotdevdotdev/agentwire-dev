@@ -51,6 +51,47 @@ HOOKS_DIR = CONFIG_DIR / "hooks" / "damage-control"
 LOGS_DIR = CONFIG_DIR / "logs" / "damage-control"
 RULES_DIR = CONFIG_DIR / "damage-control"
 TOOLDEFS_DIR = CONFIG_DIR / "tooldefs"
+# Host-owned, agent-unwritable policy file: kill switch + rule knobs (#466).
+DAMAGECONTROL_FILE = CONFIG_DIR / "damagecontrol.yml"
+
+DAMAGECONTROL_SCAFFOLD = """\
+# AgentWire damage-control policy (#466) — HOST-OWNED, agent-unwritable.
+#
+# This file (and project-root `.damagecontrol.yml`) are the ONLY place the
+# damage-control kill switch and rule knobs live. They are part of the protected
+# control plane: the policed agent cannot write them (the `# allow:` escape
+# hatch and the kill switch itself cannot override that), so an agent can never
+# expand its own freedom. Loosening is always a host-side edit of this file.
+
+# Master switch. false turns ALL command/path/outbound gating off. Missing file
+# or missing key ⇒ true (fail-secure).
+enabled: true
+
+# Stable rule IDs to disable (see `agentwire safety status` / the portal Safety
+# window for IDs). e.g.:
+# disabled_rules:
+#   - git.push
+disabled_rules: []
+
+# Rule IDs an UNATTENDED (scheduler) run may resolve `ask` → allow for, on top of
+# the built-in default allowlist. e.g.:
+# unattended_allow:
+#   - gh.pr-merge
+unattended_allow: []
+"""
+
+
+def scaffold_damagecontrol_file() -> bool:
+    """Create ~/.agentwire/damagecontrol.yml with `enabled: true` if missing.
+
+    Returns True if it wrote the file, False if it already existed. Never
+    overwrites an existing policy file.
+    """
+    if DAMAGECONTROL_FILE.exists():
+        return False
+    DAMAGECONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DAMAGECONTROL_FILE.write_text(DAMAGECONTROL_SCAFFOLD)
+    return True
 
 # Files to install from the package (hook scripts only, not rules)
 DAMAGE_CONTROL_FILES = [
@@ -137,8 +178,15 @@ def get_safety_status() -> Dict[str, Any]:
     rule_files = sorted(f.name for f in RULES_DIR.glob("*.yaml")) if RULES_DIR.exists() else []
     tooldefs_count = len(list(TOOLDEFS_DIR.glob("*.yaml"))) if TOOLDEFS_DIR.exists() else 0
 
+    from agentwire.safety._core import load_safety_config
+    safety_cfg = load_safety_config()
+
     status: Dict[str, Any] = {
         "hooks_installed": HOOKS_DIR.exists(),
+        "enabled": safety_cfg.get("enabled", True),
+        "disabled_rules": list(safety_cfg.get("disabled_rules", []) or []),
+        "policy_file": str(DAMAGECONTROL_FILE),
+        "policy_file_exists": DAMAGECONTROL_FILE.exists(),
         "rules_dir": str(RULES_DIR),
         "patterns_exist": RULES_DIR.exists() and any(RULES_DIR.glob("*.yaml")),
         "rule_files": rule_files,
@@ -237,6 +285,14 @@ def format_safety_status(status: Dict[str, Any]) -> str:
         lines.append("⚠️  Hooks not installed")
         lines.append("   Run: agentwire safety install")
         return "\n".join(lines)
+
+    enabled = status.get("enabled", True)
+    lines.append(f"{'✓' if enabled else '⚠️ '} Damage control: {'ENABLED' if enabled else 'DISABLED'}")
+    lines.append(f"  Policy file: {status.get('policy_file', '')}"
+                 f"{'' if status.get('policy_file_exists') else ' (missing → defaults to enabled)'}")
+    if status.get("disabled_rules"):
+        lines.append(f"  Disabled rules: {', '.join(status['disabled_rules'])}")
+    lines.append("")
 
     lines.append(f"✓ Hooks directory: {status['hooks_installed']}")
     lines.append(f"✓ Rules directory: {status['rules_dir']}")
@@ -629,7 +685,14 @@ def heal_damage_control(quiet: bool = False) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "hooks_installed": [], "hooks_updated": [],
         "rules_installed": [], "tooldefs_installed": [], "matchers_added": 0,
+        "policy_scaffolded": False,
     }
+
+    # Host-owned policy file: create with `enabled: true` (fail-secure) if absent.
+    # Never overwrite an existing one — it carries the owner's kill-switch state.
+    if scaffold_damagecontrol_file():
+        summary["policy_scaffolded"] = True
+        log(f"✓ Scaffolded {DAMAGECONTROL_FILE} (enabled: true)")
 
     hooks_source = Path(__file__).parent / "hooks" / "damage-control"
     for fn in DAMAGE_CONTROL_FILES:
@@ -731,7 +794,7 @@ def safety_install_cmd(assume_yes: bool = False) -> int:
     touched = (
         summary["hooks_installed"] or summary["hooks_updated"]
         or summary["rules_installed"] or summary["tooldefs_installed"]
-        or summary["matchers_added"]
+        or summary["matchers_added"] or summary["policy_scaffolded"]
     )
     print()
     if touched:
