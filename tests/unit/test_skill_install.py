@@ -15,6 +15,8 @@ import agentwire.__main__ as m
 from agentwire.__main__ import (
     _managed_global_skills,
     _managed_skill_state,
+    _render_skill_section,
+    install_hooks,
     install_skills,
     skill_drift,
 )
@@ -117,9 +119,70 @@ def test_skill_drift_ok_stale_missing(env):
     assert skill_drift() == {"wiki": "stale"}
 
 
-def test_skill_drift_missing_when_no_source(env, monkeypatch):
+def test_skill_drift_source_unavailable_when_no_source(env, monkeypatch):
+    """A source checkout (skill only in the built wheel) → source-unavailable,
+    NOT missing — so doctor doesn't false-positive."""
     def boom():
         raise FileNotFoundError("no skills dir")
 
     monkeypatch.setattr(m, "get_skills_source", boom)
-    assert skill_drift() == {"wiki": "missing"}
+    assert skill_drift() == {"wiki": "source-unavailable"}
+
+
+def test_install_force_resymlinks_when_ok(env):
+    """state 'ok' + force → still re-creates the symlink (updated, not current)."""
+    source, target_root = env
+    install_skills()
+    assert _managed_skill_state(target_root / "wiki", source / "wiki") == "ok"
+
+    results = install_skills(force=True)
+    assert results == {"wiki": "updated"}
+    assert (target_root / "wiki").resolve() == (source / "wiki").resolve()
+
+
+# --- doctor wiring (issue #475 fix: source-unavailable must not be an issue) ---
+
+def test_doctor_section_flags_missing_and_increments(env):
+    """Source resolvable + target absent → doctor reports an issue."""
+    assert _render_skill_section() == 1
+
+
+def test_doctor_section_flags_stale_and_increments(env):
+    """Source resolvable + real-dir target → stale → doctor reports an issue."""
+    _, target_root = env
+    target = target_root / "wiki"
+    target.mkdir(parents=True)
+    assert _render_skill_section() == 1
+
+
+def test_doctor_section_clean_when_installed(env):
+    install_skills()
+    assert _render_skill_section() == 0
+
+
+def test_doctor_section_no_issue_when_source_unavailable(env, monkeypatch):
+    """Running from a checkout (no packaged source) must NOT bump issues_found."""
+    def boom():
+        raise FileNotFoundError("no skills dir")
+
+    monkeypatch.setattr(m, "get_skills_source", boom)
+    assert _render_skill_section() == 0
+
+
+# --- install_hooks() actually drives install_skills() ---
+
+def test_install_hooks_installs_skills(env, tmp_path, monkeypatch):
+    """install_hooks() must heal global skills on the same pass."""
+    # Stub out the hook half so we exercise only the skill wiring, and keep
+    # damage-control healing from touching the real machine.
+    monkeypatch.setattr(m, "get_hooks_source", lambda: tmp_path / "no-hooks")
+    import agentwire.cli_safety as cs
+    monkeypatch.setattr(cs, "heal_damage_control", lambda quiet=True: None)
+
+    _, target_root = env
+    target = target_root / "wiki"
+    assert not target.exists()
+
+    results = install_hooks()
+    assert results.get("wiki") == "installed"
+    assert target.is_symlink()

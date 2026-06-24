@@ -7183,6 +7183,32 @@ def cmd_safety_tooldefs_show(args) -> int:
     return cli_safety.safety_tooldefs_show_cmd(args.tool)
 
 
+def _render_skill_section() -> int:
+    """Print the global-skill drift block. Returns the count of issues found.
+
+    Hand-placed at wiki-setup and never resynced, so a stale or missing copy was
+    invisible until #475. Flagged the same way as hooks. `source-unavailable`
+    (running from a checkout, where skills only live in the built wheel) is NOT a
+    drift problem — there's nothing to install from — so it never bumps the count.
+    """
+    issues = 0
+    for name, state in sorted(skill_drift().items()):
+        target = CLAUDE_SKILLS_DIR / name
+        if state == "ok":
+            print(f"  [ok] /{name} skill: {target}")
+        elif state == "source-unavailable":
+            print(f"  [..] /{name} skill: source not packaged here (running from a checkout)")
+        elif state == "stale":
+            print(f"  [!!] /{name} skill: STALE — installed copy differs from packaged source")
+            print("     Run: agentwire hooks install")
+            issues += 1
+        else:
+            print(f"  [!!] /{name} skill: not installed")
+            print("     Run: agentwire hooks install")
+            issues += 1
+    return issues
+
+
 def _render_damage_control_section() -> int:
     """Print the damage-control health block. Returns the count of issues found.
 
@@ -7442,19 +7468,7 @@ def cmd_doctor(args) -> int:
     # never resynced, so a stale or missing copy was invisible until #475. Flag
     # the same way as hooks — drift-aware against the packaged source.
     print("\nChecking AgentWire global skills...")
-    skills = skill_drift()
-    for name, state in sorted(skills.items()):
-        target = CLAUDE_SKILLS_DIR / name
-        if state == "ok":
-            print(f"  [ok] /{name} skill: {target}")
-        elif state == "stale":
-            print(f"  [!!] /{name} skill: STALE — installed copy differs from packaged source")
-            print("     Run: agentwire hooks install")
-            issues_found += 1
-        else:
-            print(f"  [!!] /{name} skill: not installed")
-            print("     Run: agentwire hooks install")
-            issues_found += 1
+    issues_found += _render_skill_section()
 
     # 4b. Damage control (safety) — the kill switch, install drift, and the
     # PreToolUse matcher registration. The #462 incident: a global disable and
@@ -8771,22 +8785,31 @@ def install_skills(force: bool = False, copy: bool = False) -> dict[str, str]:
 
 
 def skill_drift() -> dict[str, str]:
-    """Drift state of agentwire-owned global skills: {name: ok|stale|missing}.
+    """Drift state of agentwire-owned global skills.
 
-    Mirrors cli_safety.*_drift() so `agentwire doctor` can flag a hand-placed or
-    drifted skill the same way it flags hook drift.
+    Returns {name: ok|stale|missing|source-unavailable}. Mirrors
+    cli_safety.*_drift() so `agentwire doctor` can flag a hand-placed or drifted
+    skill the same way it flags hook drift.
+
+    `source-unavailable` means the packaged skill can't be resolved in the
+    running context — e.g. doctor invoked from a SOURCE checkout, where skills
+    only exist inside the built wheel (`agentwire/skills/`), not on disk. That is
+    NOT a drift problem: there is nothing to install from, so doctor skips it
+    rather than crying "missing". `missing`/`stale` are reserved for the case
+    where the source IS resolvable (installed tool) and the installed copy is
+    genuinely absent or wrong.
     """
     try:
         skills_source = get_skills_source()
     except FileNotFoundError:
-        return {name: "missing" for name in _managed_global_skills()}
+        return {name: "source-unavailable" for name in _managed_global_skills()}
 
     drift: dict[str, str] = {}
     for name in _managed_global_skills():
         source = skills_source / name
         target = CLAUDE_SKILLS_DIR / name
         if not source.exists():
-            drift[name] = "missing"
+            drift[name] = "source-unavailable"
             continue
         drift[name] = _managed_skill_state(target, source)
     return drift
