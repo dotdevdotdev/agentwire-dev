@@ -136,6 +136,14 @@ exclude = [
     "agentwire/office/node_modules/**",
 ]
 
+# Ship the agentwire-owned GLOBAL skill into the package so get_skills_source()
+# resolves it and `hooks install` can symlink ~/.claude/skills/wiki at it. SSOT:
+# the source lives at .claude/skills/wiki (also the project-scoped copy); this
+# maps it to agentwire/skills/wiki in the wheel, so it is auto-current on every
+# rebuild — the same posture as hooks/commands bundled inside the package.
+[tool.hatch.build.targets.wheel.force-include]
+".claude/skills/wiki" = "agentwire/skills/wiki"
+
 [tool.hatch.version]
 path = "agentwire/__init__.py"
 
