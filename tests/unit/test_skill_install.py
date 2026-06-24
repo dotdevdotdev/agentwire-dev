@@ -7,7 +7,6 @@ monkeypatched temp dirs — the real ~/.claude/skills/ is never touched.
 """
 
 import shutil
-from pathlib import Path
 
 import pytest
 
