@@ -7183,6 +7183,32 @@ def cmd_safety_tooldefs_show(args) -> int:
     return cli_safety.safety_tooldefs_show_cmd(args.tool)
 
 
+def _render_skill_section() -> int:
+    """Print the global-skill drift block. Returns the count of issues found.
+
+    Hand-placed at wiki-setup and never resynced, so a stale or missing copy was
+    invisible until #475. Flagged the same way as hooks. `source-unavailable`
+    (running from a checkout, where skills only live in the built wheel) is NOT a
+    drift problem — there's nothing to install from — so it never bumps the count.
+    """
+    issues = 0
+    for name, state in sorted(skill_drift().items()):
+        target = CLAUDE_SKILLS_DIR / name
+        if state == "ok":
+            print(f"  [ok] /{name} skill: {target}")
+        elif state == "source-unavailable":
+            print(f"  [..] /{name} skill: source not packaged here (running from a checkout)")
+        elif state == "stale":
+            print(f"  [!!] /{name} skill: STALE — installed copy differs from packaged source")
+            print("     Run: agentwire hooks install")
+            issues += 1
+        else:
+            print(f"  [!!] /{name} skill: not installed")
+            print("     Run: agentwire hooks install")
+            issues += 1
+    return issues
+
+
 def _render_damage_control_section() -> int:
     """Print the damage-control health block. Returns the count of issues found.
 
@@ -7437,6 +7463,12 @@ def cmd_doctor(args) -> int:
         else:
             print(f"  [..] {label}: not found ({why})")
             print("     Run: agentwire hooks install")
+
+    # 4a-bis. Global skills (currently just /wiki). Hand-placed at wiki-setup and
+    # never resynced, so a stale or missing copy was invisible until #475. Flag
+    # the same way as hooks — drift-aware against the packaged source.
+    print("\nChecking AgentWire global skills...")
+    issues_found += _render_skill_section()
 
     # 4b. Damage control (safety) — the kill switch, install drift, and the
     # PreToolUse matcher registration. The #462 incident: a global disable and
@@ -8650,6 +8682,139 @@ def install_commands(force: bool = False) -> list[str]:
     return installed
 
 
+CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
+
+
+def get_skills_source() -> Path:
+    """Get the path to the skills directory in the installed package.
+
+    Mirrors get_commands_source(): resolves to the bundled package dir so the
+    installed symlink is auto-current after `agentwire rebuild` (which reinstalls
+    the wheel), never a transient checkout path.
+    """
+    package_dir = Path(__file__).parent
+    skills_dir = package_dir / "skills"
+    if skills_dir.exists():
+        return skills_dir
+
+    try:
+        with importlib.resources.files("agentwire").joinpath("skills") as p:
+            if p.exists():
+                return Path(p)
+    except (TypeError, FileNotFoundError):
+        pass
+
+    raise FileNotFoundError("Could not find skills directory in package")
+
+
+def _managed_global_skills() -> list[str]:
+    """Agentwire-owned skills that belong GLOBALLY in ~/.claude/skills/.
+
+    Only `wiki` is global — the wiki store lives at ~/.agentwire/wiki/ and is
+    usable from any session. The agentwire-* skills stay project-scoped (shipped
+    via the repo's .claude/skills/, discovered per-project) and are NOT installed
+    here. Third-party skills (cua-driver, shadcn-ui, …) are never touched.
+    """
+    return ["wiki"]
+
+
+def _managed_skill_state(target: Path, source: Path) -> str:
+    """Drift state of a managed global skill DIRECTORY: missing | stale | ok.
+
+    Skills are directories, so unlike _managed_file_state this never compares
+    bytes. A symlink is ok only when it resolves to the packaged source; a real
+    directory (the hand-placed pre-#475 state) or a symlink pointing elsewhere is
+    stale and must be removed before re-symlinking.
+    """
+    if target.is_symlink():
+        if not target.exists():
+            return "stale"  # dangling symlink
+        return "ok" if target.resolve() == source.resolve() else "stale"
+    if not target.exists():
+        return "missing"
+    return "stale"  # real dir/file occupying the slot
+
+
+def _remove_skill_target(target: Path) -> None:
+    """Clear whatever occupies a skill slot — symlink, real dir, or stray file."""
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
+
+
+def install_skills(force: bool = False, copy: bool = False) -> dict[str, str]:
+    """Install/refresh agentwire-owned global skills into ~/.claude/skills/.
+
+    Each managed skill is a directory installed as a symlink (or copied with
+    --copy) pointing at the packaged source, drift-aware: a correct symlink is
+    left alone, a real-dir / wrong-symlink target is replaced.
+
+    Returns {name: "installed" | "updated" | "current" | "missing-source"}.
+    """
+    try:
+        skills_source = get_skills_source()
+    except FileNotFoundError:
+        print("  Warning: skills directory not found, skipping skill installation")
+        return {}
+
+    results: dict[str, str] = {}
+    for name in _managed_global_skills():
+        source = skills_source / name
+        if not source.exists():
+            print(f"  Warning: skill '{name}' not found in package, skipping")
+            results[name] = "missing-source"
+            continue
+
+        target = CLAUDE_SKILLS_DIR / name
+        state = _managed_skill_state(target, source)
+        if state == "ok" and not force:
+            results[name] = "current"
+            continue
+
+        existed = target.exists() or target.is_symlink()
+        CLAUDE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        _remove_skill_target(target)
+        if copy:
+            shutil.copytree(source, target)
+        else:
+            target.symlink_to(source.resolve(), target_is_directory=True)
+        results[name] = "updated" if existed else "installed"
+
+    return results
+
+
+def skill_drift() -> dict[str, str]:
+    """Drift state of agentwire-owned global skills.
+
+    Returns {name: ok|stale|missing|source-unavailable}. Mirrors
+    cli_safety.*_drift() so `agentwire doctor` can flag a hand-placed or drifted
+    skill the same way it flags hook drift.
+
+    `source-unavailable` means the packaged skill can't be resolved in the
+    running context — e.g. doctor invoked from a SOURCE checkout, where skills
+    only exist inside the built wheel (`agentwire/skills/`), not on disk. That is
+    NOT a drift problem: there is nothing to install from, so doctor skips it
+    rather than crying "missing". `missing`/`stale` are reserved for the case
+    where the source IS resolvable (installed tool) and the installed copy is
+    genuinely absent or wrong.
+    """
+    try:
+        skills_source = get_skills_source()
+    except FileNotFoundError:
+        return {name: "source-unavailable" for name in _managed_global_skills()}
+
+    drift: dict[str, str] = {}
+    for name in _managed_global_skills():
+        source = skills_source / name
+        target = CLAUDE_SKILLS_DIR / name
+        if not source.exists():
+            drift[name] = "source-unavailable"
+            continue
+        drift[name] = _managed_skill_state(target, source)
+    return drift
+
+
 def register_hook_in_settings(event: str, hook_name: str) -> bool:
     """Register a hook under `event` in Claude's settings.json.
 
@@ -8799,6 +8964,11 @@ def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
     except Exception:
         pass
 
+    # Global skills (currently just /wiki) are agentwire-owned too, and rotted
+    # silently because nothing ever resynced the hand-placed copies. Heal them
+    # on the same install pass — drift-aware, like the hooks above.
+    results.update(install_skills(force=force, copy=copy))
+
     return results
 
 
@@ -8819,6 +8989,15 @@ def cmd_hooks_install(args) -> int:
             print(f"  /{name}")
     else:
         print("Slash commands already installed.")
+
+    refreshed_skills = False
+    for name in _managed_global_skills():
+        state = results.get(name)
+        if state in ("installed", "updated"):
+            print(f"{state.capitalize()} skill -> /{name} ({CLAUDE_SKILLS_DIR / name})")
+            refreshed_skills = True
+    if not refreshed_skills:
+        print("Skills already current.")
 
     return 0
 
