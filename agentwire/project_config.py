@@ -138,60 +138,13 @@ def compose_session_type(harness: str, posture: str) -> str:
     return harness
 
 
-def _normalize_allowed_entry(entry: dict) -> dict:
-    """Normalize an allowed_paths entry to {path: str, allow: str|list}.
-
-    Entry must be a dict with "path" key and optional "allow" (defaults to "all").
-    """
-    allow = entry.get("allow", "all")
-    if isinstance(allow, str):
-        allow = allow.strip().lower()
-    elif isinstance(allow, list):
-        allow = [a.strip().lower() for a in allow]
-    return {"path": entry["path"], "allow": allow}
-
-
-@dataclass
-class SafetyConfig:
-    """Per-project safety overrides for damage control hooks."""
-    allowed_paths: list[dict] = field(default_factory=list)
-    enabled: Optional[bool] = None  # None = inherit global
-    disabled_rules: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        d: dict = {}
-        if self.allowed_paths:
-            d["allowed_paths"] = self.allowed_paths
-        if self.enabled is not None:
-            d["enabled"] = self.enabled
-        if self.disabled_rules:
-            d["disabled_rules"] = list(self.disabled_rules)
-        return d
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "SafetyConfig":
-        raw = data.get("allowed_paths", [])
-        if not isinstance(raw, list):
-            raw = []
-        allowed_paths = [_normalize_allowed_entry(e) for e in raw if isinstance(e, dict)]
-        enabled = data.get("enabled")
-        if enabled is not None:
-            enabled = bool(enabled)
-        rules = data.get("disabled_rules", [])
-        if not isinstance(rules, list):
-            rules = []
-        return cls(
-            allowed_paths=allowed_paths,
-            enabled=enabled,
-            disabled_rules=[str(r) for r in rules if r],
-        )
-
-
 @dataclass
 class ProjectConfig:
     """Project-level configuration for a project directory.
 
-    Lives in .agentwire.yml in the project root.
+    Lives in .agentwire.yml in the project root. Holds NO damage-control safety
+    config — the kill switch, rule knobs, AND the per-project allowlist all live
+    in the protected, agent-unwritable ``.damagecontrol.yml`` instead (#466/#467).
     Shared by all sessions running in this project folder.
     Session name is NOT stored here - it's runtime context from environment.
     """
@@ -201,7 +154,6 @@ class ProjectConfig:
     parent: Optional[str] = None  # Parent session for hierarchical notifications
     shell: Optional[str] = None  # Default shell for task commands (default: /bin/sh)
     tasks: dict[str, Any] = field(default_factory=dict)  # Task definitions (raw dict, parsed by tasks.py)
-    safety: SafetyConfig = field(default_factory=SafetyConfig)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for YAML serialization."""
@@ -218,9 +170,6 @@ class ProjectConfig:
             d["shell"] = self.shell
         if self.tasks:
             d["tasks"] = self.tasks
-        safety_dict = self.safety.to_dict()
-        if safety_dict:
-            d["safety"] = safety_dict
         return d
 
     @classmethod
@@ -232,8 +181,6 @@ class ProjectConfig:
         parent = data.get("parent")
         shell = data.get("shell")
         tasks = data.get("tasks", {})
-        safety_data = data.get("safety", {})
-        safety = SafetyConfig.from_dict(safety_data) if isinstance(safety_data, dict) else SafetyConfig()
 
         return cls(
             type=SessionType.from_str(type_value) if isinstance(type_value, str) else type_value,
@@ -242,7 +189,6 @@ class ProjectConfig:
             parent=parent,
             shell=shell,
             tasks=tasks if isinstance(tasks, dict) else {},
-            safety=safety,
         )
 
 

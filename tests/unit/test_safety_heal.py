@@ -26,6 +26,7 @@ def fake_env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_safety, "LOGS_DIR", cfg / "logs" / "damage-control")
     monkeypatch.setattr(cli_safety, "RULES_DIR", cfg / "damage-control")
     monkeypatch.setattr(cli_safety, "TOOLDEFS_DIR", cfg / "tooldefs")
+    monkeypatch.setattr(cli_safety, "DAMAGECONTROL_FILE", cfg / "damagecontrol.yml")
     return home
 
 
@@ -115,12 +116,12 @@ class TestDoctorDamageControlSection:
         return fake_env
 
     def _patch_safety_enabled(self, monkeypatch, enabled):
-        import agentwire.config as cfg_mod
-
-        class _Cfg:
-            safety = type("S", (), {"enabled": enabled})()
-
-        monkeypatch.setattr(cfg_mod, "load_config", lambda *a, **k: _Cfg())
+        # The kill switch now lives in the host-owned damagecontrol.yml, read by
+        # load_safety_config (#466). Write it directly in the fake home.
+        cli_safety.DAMAGECONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cli_safety.DAMAGECONTROL_FILE.write_text(
+            f"enabled: {str(bool(enabled)).lower()}\n"
+        )
 
     def test_clean_when_healed_and_enabled(self, monkeypatch, capsys):
         from agentwire.__main__ import _render_damage_control_section

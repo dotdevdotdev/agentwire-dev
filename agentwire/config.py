@@ -435,14 +435,6 @@ class SchedulerConfig:
 
 
 @dataclass
-class SafetyConfig:
-    """Global damage-control safety knobs."""
-
-    enabled: bool = True
-    disabled_rules: list[str] = field(default_factory=list)
-
-
-@dataclass
 class UsageLimitConfig:
     """Usage-limit recovery (watchdog) knobs.
 
@@ -507,7 +499,6 @@ class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     repl: ReplConfig = field(default_factory=ReplConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
-    safety: SafetyConfig = field(default_factory=SafetyConfig)
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
     session_context: SessionContextConfig = field(default_factory=SessionContextConfig)
@@ -786,18 +777,6 @@ def _dict_to_config(data: dict) -> Config:
         theme_overrides = {}
     repl = ReplConfig(theme={str(k): str(v) for k, v in theme_overrides.items()})
 
-    # Safety (damage-control kill switch + disabled rules)
-    safety_data = data.get("safety", {}) or {}
-    if not isinstance(safety_data, dict):
-        safety_data = {}
-    disabled_rules_raw = safety_data.get("disabled_rules", []) or []
-    if not isinstance(disabled_rules_raw, list):
-        disabled_rules_raw = []
-    safety = SafetyConfig(
-        enabled=bool(safety_data.get("enabled", True)),
-        disabled_rules=[str(r) for r in disabled_rules_raw if r],
-    )
-
     # Usage-limit recovery (watchdog enable + session exclusions)
     usage_limit_data = data.get("usage_limit", {}) or {}
     if not isinstance(usage_limit_data, dict):
@@ -866,7 +845,6 @@ def _dict_to_config(data: dict) -> Config:
         scheduler=scheduler,
         channels=channel_configs,
         repl=repl,
-        safety=safety,
         usage_limit=usage_limit,
         prompt_router=prompt_router,
         session_context=session_context,

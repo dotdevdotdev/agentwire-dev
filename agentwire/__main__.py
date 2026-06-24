@@ -7136,21 +7136,22 @@ def _render_damage_control_section() -> int:
     """
     issues = 0
 
-    # Kill switch — config.safety.enabled gates ALL damage control. A silent
-    # `false` is the loudest possible failure, so flag it first and hard.
+    # Kill switch — ``enabled`` in ~/.agentwire/damagecontrol.yml gates ALL
+    # damage control. A silent `false` is the loudest possible failure, so flag
+    # it first and hard.
     try:
-        from .config import load_config as _load_config_typed
-        safety_enabled = _load_config_typed().safety.enabled
+        from .safety._core import load_safety_config
+        safety_enabled = load_safety_config().get("enabled", True)
     except Exception as e:
         print(f"  [..] Could not read safety config: {e}")
         safety_enabled = True
     if not safety_enabled:
-        print("  [!!] Damage control is DISABLED (safety.enabled: false)")
+        print("  [!!] Damage control is DISABLED (enabled: false)")
         print("       ALL command/path/outbound gating is off.")
-        print("       Fix: set safety.enabled: true in ~/.agentwire/config.yaml")
+        print("       Fix: set enabled: true in ~/.agentwire/damagecontrol.yml")
         issues += 1
     else:
-        print("  [ok] Damage control enabled (safety.enabled: true)")
+        print("  [ok] Damage control enabled (enabled: true)")
 
     try:
         from . import cli_safety

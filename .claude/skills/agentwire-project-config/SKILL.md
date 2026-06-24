@@ -45,9 +45,17 @@ session:
 | `parent` | Session name | Parent session for hierarchical notifications |
 | `shell` | `/bin/sh`, `/bin/bash`, etc. | Default shell for task commands |
 | `tasks` | Task definitions | Scheduled workload configurations |
-| `safety` | `{allowed_paths: [...]}` | Per-project damage control allowlist |
 
 For pi sessions (`pi-*`, e.g. `pi-zai`, `pi-deepseek`), see the `agentwire-pi` skill.
+
+> **No safety config in `.agentwire.yml` (#466/#467).** `.agentwire.yml` is
+> agent-writable, so it carries **zero** damage-control policy. The kill switch,
+> `disabled_rules`, `unattended_allow`, **and the per-project `allowed_paths`
+> allowlist** all live in the protected, agent-unwritable `.damagecontrol.yml` at
+> the repo root (and global `~/.agentwire/damagecontrol.yml`) — edited host-side
+> only. The allowlist is the one knob that overrides the protected-control-plane
+> check, so it must itself sit behind that protection. See
+> [`docs/wiki/internals/damage-control.md`](../../docs/wiki/internals/damage-control.md).
 
 ## Task Schema
 

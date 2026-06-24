@@ -202,19 +202,26 @@ def _parse_allowed_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _find_project_config() -> Tuple[str, List[Any]]:
-    """Walk up from $PWD to find ``.agentwire.yml`` and return its allowed_paths."""
+    """Walk up from $PWD to find ``.damagecontrol.yml`` and return its allowed_paths.
+
+    The per-project allowlist lives in the PROTECTED ``.damagecontrol.yml``
+    (top-level ``allowed_paths``), never the agent-writable ``.agentwire.yml``.
+    Otherwise an agent could allowlist a control-plane path in ``.agentwire.yml``
+    and re-permit its own write to ``damagecontrol.yml`` — the exact bypass #466
+    set out to close. The allowlist is the one knob that overrides the protected
+    check, so it must itself live behind the protected control plane (#467).
+    """
     cwd = os.environ.get("PWD", os.getcwd())
     current = os.path.abspath(cwd)
     while True:
-        config_file = os.path.join(current, ".agentwire.yml")
+        config_file = os.path.join(current, ".damagecontrol.yml")
         if os.path.isfile(config_file):
             try:
                 if yaml:
                     with open(config_file, "r") as f:
                         data = yaml.safe_load(f) or {}
-                    safety = data.get("safety", {})
-                    if isinstance(safety, dict):
-                        paths = safety.get("allowed_paths", [])
+                    if isinstance(data, dict):
+                        paths = data.get("allowed_paths", [])
                         if isinstance(paths, list):
                             return current, paths
             except Exception:
@@ -228,7 +235,7 @@ def _find_project_config() -> Tuple[str, List[Any]]:
 
 
 def load_allowed_paths(config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Merge global ``allowedPaths`` from config with per-project ``.agentwire.yml`` entries."""
+    """Merge global ``allowedPaths`` from config with per-project ``.damagecontrol.yml`` entries."""
     raw = list(config.get("allowedPaths", []))
 
     project_root, project_paths = _find_project_config()
@@ -540,11 +547,21 @@ def load_safety_config(
     global_config_path: Optional[Path] = None,
     cwd: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve the effective ``safety`` block from global + nearest project config.
+    """Resolve the effective safety knobs from the dedicated damage-control files.
 
-    Returns ``{enabled: bool, disabled_rules: list[str], unattended_allow: list[str]}``.
-    Project ``.agentwire.yml`` overrides global ``enabled``; ``disabled_rules`` and
-    ``unattended_allow`` are merged (set-union).
+    The kill switch and rule knobs live in HOST-OWNED, agent-unwritable files
+    (see ``is_protected_control_plane``) — never in ``config.yaml`` /
+    ``.agentwire.yml``, which the policed agent can edit:
+
+      * Global:  ``~/.agentwire/damagecontrol.yml``
+      * Project: ``.damagecontrol.yml`` (nearest, walking up from ``cwd``)
+
+    Each holds top-level ``enabled`` / ``disabled_rules`` / ``unattended_allow``.
+    Returns ``{enabled, disabled_rules, unattended_allow}``. A project
+    ``.damagecontrol.yml`` may both loosen AND tighten ``enabled`` (it simply
+    wins); ``disabled_rules`` / ``unattended_allow`` are merged (set-union).
+
+    Fail-secure: a missing/unreadable/yaml-less global file ⇒ ``enabled: true``.
     """
     enabled = True
     disabled_rules: List[str] = []
@@ -554,22 +571,29 @@ def load_safety_config(
         return {"enabled": enabled, "disabled_rules": disabled_rules,
                 "unattended_allow": unattended_allow}
 
+    def _absorb(data: Any) -> Optional[bool]:
+        """Pull knobs from a parsed policy doc; return its ``enabled`` (or None)."""
+        local_enabled: Optional[bool] = None
+        if isinstance(data, dict):
+            if "enabled" in data and data["enabled"] is not None:
+                local_enabled = bool(data["enabled"])
+            rules = data.get("disabled_rules", [])
+            if isinstance(rules, list):
+                disabled_rules.extend(str(r) for r in rules if r)
+            allow = data.get("unattended_allow", [])
+            if isinstance(allow, list):
+                unattended_allow.extend(str(a) for a in allow if a)
+        return local_enabled
+
     if global_config_path is None:
-        global_config_path = Path.home() / ".agentwire" / "config.yaml"
+        global_config_path = Path.home() / ".agentwire" / "damagecontrol.yml"
     try:
         if global_config_path.exists():
             with open(global_config_path, "r") as f:
-                data = yaml.safe_load(f) or {}
-            safety = data.get("safety", {})
-            if isinstance(safety, dict):
-                if "enabled" in safety:
-                    enabled = bool(safety["enabled"])
-                rules = safety.get("disabled_rules", [])
-                if isinstance(rules, list):
-                    disabled_rules.extend(str(r) for r in rules if r)
-                allow = safety.get("unattended_allow", [])
-                if isinstance(allow, list):
-                    unattended_allow.extend(str(a) for a in allow if a)
+                gdata = yaml.safe_load(f) or {}
+            genabled = _absorb(gdata)
+            if genabled is not None:
+                enabled = genabled
     except Exception:
         pass
 
@@ -577,21 +601,12 @@ def load_safety_config(
         cwd = os.environ.get("PWD", os.getcwd())
     current = os.path.abspath(cwd)
     while True:
-        candidate = os.path.join(current, ".agentwire.yml")
+        candidate = os.path.join(current, ".damagecontrol.yml")
         if os.path.isfile(candidate):
             try:
                 with open(candidate, "r") as f:
                     pdata = yaml.safe_load(f) or {}
-                psafety = pdata.get("safety", {})
-                if isinstance(psafety, dict):
-                    if "enabled" in psafety and psafety["enabled"] is not None:
-                        project_enabled = bool(psafety["enabled"])
-                    prules = psafety.get("disabled_rules", [])
-                    if isinstance(prules, list):
-                        disabled_rules.extend(str(r) for r in prules if r)
-                    pallow = psafety.get("unattended_allow", [])
-                    if isinstance(pallow, list):
-                        unattended_allow.extend(str(a) for a in pallow if a)
+                project_enabled = _absorb(pdata)
             except Exception:
                 pass
             break
@@ -608,6 +623,94 @@ def load_safety_config(
         "disabled_rules": sorted(set(disabled_rules)),
         "unattended_allow": sorted(set(unattended_allow)),
     }
+
+
+# ============================================================================
+# PROTECTED CONTROL PLANE (escape-hatch- AND kill-switch-EXEMPT)
+# ============================================================================
+#
+# Damage control reads its kill switch, its rules, and its own hook
+# registration from files on disk. If the policed agent can write those files,
+# it can disable safety, act, and re-enable — defeating everything (#466). So
+# the WHOLE control plane is hard-protected: any write/edit/delete/move/chmod
+# targeting one of these paths is BLOCKED, and — unlike every other rule — the
+# ``# allow:`` escape hatch and the ``enabled: false`` kill switch do NOT
+# override it. Only the user's ``allowedPaths`` allowlist can re-permit a path,
+# because that is a human, host-side opt-in (the agent cannot add to it without
+# editing a protected file, which is itself blocked).
+#
+# The guarantee: the agent only ever operates within the freedom the human
+# preset. Loosening is always a host-side act.
+
+PROTECTED_CONTROL_PLANE_PATHS = [
+    "~/.agentwire/damagecontrol.yml",   # global kill switch + rule knobs
+    "*.damagecontrol.yml",              # project kill switch + rule knobs (any dir)
+    "~/.claude/settings.json",          # PreToolUse hook registration
+    "~/.agentwire/hooks/damage-control/*.py",  # the hook scripts themselves
+    "~/.claude/hooks/*",                # agentwire-owned Claude Code hooks
+    "~/.agentwire/damage-control/*.yaml",      # the damage-control rule files
+]
+
+
+def _protected_path_patterns() -> List[str]:
+    """Protected paths in both ``~``-form and ``$HOME``-expanded form.
+
+    Commands may reference either; including both ensures the regex/glob
+    matchers catch e.g. ``/Users/me/.claude/settings.json`` and
+    ``~/.claude/settings.json`` alike.
+    """
+    out: List[str] = []
+    for p in PROTECTED_CONTROL_PLANE_PATHS:
+        out.append(p)
+        expanded = os.path.expanduser(p)
+        if expanded != p:
+            out.append(expanded)
+    return out
+
+
+def is_protected_control_plane(file_path: str) -> bool:
+    """True if ``file_path`` is part of the damage-control control plane."""
+    for pat in _protected_path_patterns():
+        if match_path(file_path, pat):
+            return True
+    return False
+
+
+def check_protected_path(
+    file_path: str,
+    allowed_paths: List[Dict[str, Any]],
+) -> Tuple[bool, str]:
+    """Block edits/writes to a control-plane file unless the user allowlisted it.
+
+    Used by the edit/write hooks. The allowlist (a human opt-in) may override;
+    nothing else does.
+    """
+    if is_protected_control_plane(file_path):
+        if is_path_allowed_for_op(file_path, allowed_paths, "edit"):
+            return False, ""
+        return True, "protected control-plane file (host-owned; edit on the host)"
+    return False, ""
+
+
+def check_protected_command(
+    command: str,
+    allowed_paths: List[Dict[str, Any]],
+) -> Tuple[bool, str]:
+    """Block a bash command that writes/edits/deletes a control-plane file.
+
+    Mirrors the ``readOnlyPaths`` matcher but is escape-hatch- and
+    kill-switch-exempt. The user's allowlist may re-permit a specific path.
+    """
+    for path in _protected_path_patterns():
+        matched, reason = check_path_patterns(
+            command, path, READ_ONLY_BLOCKED, "protected control-plane path"
+        )
+        if matched:
+            op = _infer_operation_from_reason(reason)
+            if is_command_path_allowed(command, allowed_paths, op):
+                continue
+            return True, f"Protected control-plane path: {path}"
+    return False, ""
 
 
 _ESCAPE_HATCH_RE = re.compile(r"#\s*allow:[ \t]*([^\n]+)", re.IGNORECASE)
@@ -640,18 +743,36 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     ``escape_reason``, ``escape``, ``disabled``.
 
     Order:
-      0. Escape hatch (``# allow: <reason>``) → ALLOW (escape=True)
-      1. Kill switch (``config["safety"]["enabled"] is False``) → ALLOW (disabled=True)
-      2. Hard-blocked bash patterns (skip if ``id`` in ``disabled_rules``)
-      3. Ask patterns
-      4. Bypassable bash patterns → check allowlist for required operation
-      5. zeroAccessPaths → check allowlist with ``read`` permission
-      6. readOnlyPaths → match against READ_ONLY_BLOCKED operation patterns
-      7. noDeletePaths → match against NO_DELETE_BLOCKED patterns
+      0. Protected control plane → BLOCK (escape-hatch- AND kill-switch-exempt;
+         only the user's allowlist re-permits) — runs FIRST so an agent can't
+         self-authorize a write to the files that gate everything else.
+      1. Escape hatch (``# allow: <reason>``) → ALLOW (escape=True)
+      2. Kill switch (``config["safety"]["enabled"] is False``) → ALLOW (disabled=True)
+      3. Hard-blocked bash patterns (skip if ``id`` in ``disabled_rules``)
+      4. Ask patterns
+      5. Bypassable bash patterns → check allowlist for required operation
+      6. zeroAccessPaths → check allowlist with ``read`` permission
+      7. readOnlyPaths → match against READ_ONLY_BLOCKED operation patterns
+      8. noDeletePaths → match against NO_DELETE_BLOCKED patterns
     """
     safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
     disabled_rules = set(safety_cfg.get("disabled_rules", []) or [])
     is_enabled = safety_cfg.get("enabled", True)
+
+    allowed = load_allowed_paths(config)
+
+    # Protected control plane FIRST — before the escape hatch and the kill
+    # switch. An agent must never be able to self-authorize a write to the
+    # files that define safety itself (#466).
+    prot_blocked, prot_reason = check_protected_command(command, allowed)
+    if prot_blocked:
+        return {
+            "decision": "block",
+            "reason": prot_reason,
+            "pattern": "protectedControlPlane",
+            "command": command,
+            "protected": True,
+        }
 
     escape_reason = detect_escape_hatch(command)
     if escape_reason:
@@ -677,7 +798,6 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     zero_access = config.get("zeroAccessPaths", [])
     read_only = config.get("readOnlyPaths", [])
     no_delete = config.get("noDeletePaths", [])
-    allowed = load_allowed_paths(config)
 
     bypassable_matches: List[Tuple[str, str, Optional[str]]] = []
 
@@ -770,12 +890,21 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
-    """File-path-only check used by edit/write hooks. Returns ``(blocked, reason)``."""
+    """File-path-only check used by edit/write hooks. Returns ``(blocked, reason)``.
+
+    The protected control plane is checked FIRST, before the kill switch — the
+    files that gate safety stay agent-unwritable even when safety is disabled;
+    only the user's allowlist re-permits them (#466).
+    """
+    allowed = load_allowed_paths(config)
+
+    prot_blocked, prot_reason = check_protected_path(file_path, allowed)
+    if prot_blocked:
+        return True, prot_reason
+
     safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
     if safety_cfg.get("enabled", True) is False:
         return False, ""
-
-    allowed = load_allowed_paths(config)
 
     if is_path_allowed_for_op(file_path, allowed, "edit"):
         return False, ""
@@ -825,15 +954,17 @@ def main() -> None:
     if not file_path:
         sys.exit(0)
 
-    if config["safety"].get("enabled", True) is False:
-        log_disabled("Edit", file_path)
-        sys.exit(0)
-
+    # check_path enforces the protected control plane even when safety is
+    # disabled, so it must run BEFORE the kill-switch short-circuit (#466).
     blocked, reason = check_path(file_path, config)
     if blocked:
         log_blocked("Edit", file_path, reason)
         print(f"SECURITY: Blocked edit to {reason}: {file_path}", file=sys.stderr)
         sys.exit(2)
+
+    if config["safety"].get("enabled", True) is False:
+        log_disabled("Edit", file_path)
+        sys.exit(0)
 
     log_allowed("Edit", file_path, user_approved=False)
     sys.exit(0)

@@ -7,7 +7,6 @@ from pathlib import Path
 from agentwire.project_config import (
     SessionType,
     ProjectConfig,
-    SafetyConfig,
     compose_session_type,
     ensure_gitignored,
     normalize_session_type,
@@ -236,93 +235,24 @@ class TestProjectConfigIO:
         assert found is None
 
 
-# --- SafetyConfig ---
+# --- ProjectConfig holds no safety config (#466/#467) ---
 
-class TestSafetyConfig:
-    def test_from_dict_with_structured_entries(self):
-        sc = SafetyConfig.from_dict({"allowed_paths": [
-            {"path": "dist/*", "allow": "all"},
-            {"path": ".env.dev", "allow": ["read", "write"]},
-        ]})
-        assert len(sc.allowed_paths) == 2
-        assert sc.allowed_paths[0] == {"path": "dist/*", "allow": "all"}
-        assert sc.allowed_paths[1] == {"path": ".env.dev", "allow": ["read", "write"]}
+class TestProjectConfigNoSafety:
+    def test_safety_block_is_ignored(self):
+        """A `safety:` block in .agentwire.yml is no longer parsed into the config.
 
-    def test_from_dict_empty(self):
-        sc = SafetyConfig.from_dict({})
-        assert sc.allowed_paths == []
-
-    def test_from_dict_plain_strings_skipped(self):
-        """Plain strings are not valid entries and are silently skipped."""
-        sc = SafetyConfig.from_dict({"allowed_paths": ["dist/*", ".env.dev"]})
-        assert sc.allowed_paths == []
-
-    def test_from_dict_none_becomes_empty(self):
-        sc = SafetyConfig.from_dict({"allowed_paths": None})
-        assert sc.allowed_paths == []
-
-    def test_to_dict_omits_empty(self):
-        sc = SafetyConfig()
-        assert sc.to_dict() == {}
-
-    def test_to_dict_includes_populated(self):
-        sc = SafetyConfig(allowed_paths=[{"path": "dist/*", "allow": "all"}])
-        assert sc.to_dict() == {"allowed_paths": [{"path": "dist/*", "allow": "all"}]}
-
-
-class TestProjectConfigSafety:
-    def test_from_dict_with_safety(self):
-        data = {
+        Per-project safety policy (incl. allowed_paths) lives in the protected
+        .damagecontrol.yml — .agentwire.yml carries none.
+        """
+        config = ProjectConfig.from_dict({
             "type": "claude-bypass",
-            "safety": {"allowed_paths": [
-                {"path": "dist/*", "allow": "all"},
-                {"path": ".env.dev", "allow": ["read", "write"]},
-            ]},
-        }
-        config = ProjectConfig.from_dict(data)
-        assert len(config.safety.allowed_paths) == 2
-        assert config.safety.allowed_paths[0]["path"] == "dist/*"
+            "safety": {"allowed_paths": [{"path": "dist/*", "allow": "all"}]},
+        })
+        assert not hasattr(config, "safety")
 
-    def test_from_dict_without_safety(self):
-        config = ProjectConfig.from_dict({"type": "bare"})
-        assert config.safety.allowed_paths == []
-
-    def test_to_dict_includes_safety(self):
-        config = ProjectConfig(
-            type=SessionType.CLAUDE_BYPASS,
-            safety=SafetyConfig(allowed_paths=[{"path": "dist/*", "allow": "all"}]),
-        )
-        d = config.to_dict()
-        assert d["safety"] == {"allowed_paths": [{"path": "dist/*", "allow": "all"}]}
-
-    def test_to_dict_omits_empty_safety(self):
+    def test_to_dict_never_emits_safety(self):
         config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
-        d = config.to_dict()
-        assert "safety" not in d
-
-    def test_round_trip_with_safety(self):
-        original = ProjectConfig(
-            type=SessionType.CLAUDE_BYPASS,
-            safety=SafetyConfig(allowed_paths=[
-                {"path": "dist/*", "allow": "all"},
-                {"path": "/tmp/*", "allow": ["read", "write"]},
-            ]),
-        )
-        d = original.to_dict()
-        restored = ProjectConfig.from_dict(d)
-        assert len(restored.safety.allowed_paths) == len(original.safety.allowed_paths)
-        assert restored.safety.allowed_paths[0]["path"] == "dist/*"
-
-    def test_save_load_with_safety(self, project_dir):
-        config = ProjectConfig(
-            type=SessionType.CLAUDE_BYPASS,
-            safety=SafetyConfig(allowed_paths=[{"path": "dist/*", "allow": "all"}]),
-        )
-        assert save_project_config(config, project_dir) is True
-        loaded = load_project_config(project_dir)
-        assert loaded is not None
-        assert len(loaded.safety.allowed_paths) == 1
-        assert loaded.safety.allowed_paths[0]["path"] == "dist/*"
+        assert "safety" not in config.to_dict()
 
 
 # --- ensure_gitignored ---
