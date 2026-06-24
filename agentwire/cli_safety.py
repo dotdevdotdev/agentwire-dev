@@ -78,6 +78,16 @@ disabled_rules: []
 # unattended_allow:
 #   - gh.pr-merge
 unattended_allow: []
+
+# Per-project/global path allowlist — the human opt-in that re-permits paths
+# (including protected control-plane files). This lives HERE, not in the
+# agent-writable .agentwire.yml, because it overrides the protected check. e.g.:
+# allowed_paths:
+#   - path: "dist/*"
+#     allow: all
+#   - path: ".env.development"
+#     allow: [read, write, edit]
+allowed_paths: []
 """
 
 

@@ -202,19 +202,26 @@ def _parse_allowed_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _find_project_config() -> Tuple[str, List[Any]]:
-    """Walk up from $PWD to find ``.agentwire.yml`` and return its allowed_paths."""
+    """Walk up from $PWD to find ``.damagecontrol.yml`` and return its allowed_paths.
+
+    The per-project allowlist lives in the PROTECTED ``.damagecontrol.yml``
+    (top-level ``allowed_paths``), never the agent-writable ``.agentwire.yml``.
+    Otherwise an agent could allowlist a control-plane path in ``.agentwire.yml``
+    and re-permit its own write to ``damagecontrol.yml`` — the exact bypass #466
+    set out to close. The allowlist is the one knob that overrides the protected
+    check, so it must itself live behind the protected control plane (#467).
+    """
     cwd = os.environ.get("PWD", os.getcwd())
     current = os.path.abspath(cwd)
     while True:
-        config_file = os.path.join(current, ".agentwire.yml")
+        config_file = os.path.join(current, ".damagecontrol.yml")
         if os.path.isfile(config_file):
             try:
                 if yaml:
                     with open(config_file, "r") as f:
                         data = yaml.safe_load(f) or {}
-                    safety = data.get("safety", {})
-                    if isinstance(safety, dict):
-                        paths = safety.get("allowed_paths", [])
+                    if isinstance(data, dict):
+                        paths = data.get("allowed_paths", [])
                         if isinstance(paths, list):
                             return current, paths
             except Exception:
@@ -228,7 +235,7 @@ def _find_project_config() -> Tuple[str, List[Any]]:
 
 
 def load_allowed_paths(config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Merge global ``allowedPaths`` from config with per-project ``.agentwire.yml`` entries."""
+    """Merge global ``allowedPaths`` from config with per-project ``.damagecontrol.yml`` entries."""
     raw = list(config.get("allowedPaths", []))
 
     project_root, project_paths = _find_project_config()

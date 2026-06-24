@@ -16,6 +16,7 @@ from agentwire.safety._core import (
     check_command,
     check_path,
     is_protected_control_plane,
+    load_allowed_paths,
     load_safety_config,
 )
 
@@ -197,6 +198,107 @@ def test_project_merges_rule_knobs(tmp_path):
     out = load_safety_config(global_config_path=g, cwd=str(proj))
     assert set(out["disabled_rules"]) == {"git.push", "gh.pr-create"}
     assert set(out["unattended_allow"]) == {"a", "b"}
+
+
+# --------------------------------------------------------------------------
+# The per-project allowlist lives in the PROTECTED .damagecontrol.yml, NOT the
+# agent-writable .agentwire.yml (#467 — the residual one-step bypass).
+#
+# These read the project file from DISK via _find_project_config()'s PWD walk,
+# so they exercise the real source of the allowlist — injecting a merged dict
+# would hide exactly the bug being closed.
+# --------------------------------------------------------------------------
+
+PROTECTED_TARGET = os.path.expanduser("~/.agentwire/damagecontrol.yml")  # a protected path to (try to) re-permit
+
+
+def _base_cfg():
+    c = load_patterns()
+    c["safety"] = {"enabled": True}
+    c["allowedPaths"] = []  # no host-side global allowlist for these
+    return c
+
+
+def test_agentwire_yml_allowlist_does_NOT_repermit_protected(tmp_path, monkeypatch):
+    """BUG REPRODUCER: .agentwire.yml safety.allowed_paths must NOT re-permit a
+    protected path — otherwise an agent edits .agentwire.yml to free itself."""
+    (tmp_path / ".agentwire.yml").write_text(
+        "type: claude-bypass\n"
+        "safety:\n"
+        "  allowed_paths:\n"
+        f"    - path: {PROTECTED_TARGET}\n"
+        "      allow: all\n"
+    )
+    monkeypatch.setenv("PWD", str(tmp_path))
+    cfg = _base_cfg()
+
+    blocked, _ = check_path(PROTECTED_TARGET, cfg)
+    assert blocked is True
+    result = check_command(f"echo 'enabled: false' > {PROTECTED_TARGET}", cfg)
+    assert result["decision"] == "block"
+    assert result.get("protected") is True
+
+
+def test_damagecontrol_yml_allowlist_DOES_repermit_protected(tmp_path, monkeypatch):
+    """Host-side opt-in works: an allowed_paths entry in the PROTECTED
+    .damagecontrol.yml re-permits the agent to edit that path."""
+    (tmp_path / ".damagecontrol.yml").write_text(
+        "enabled: true\n"
+        "allowed_paths:\n"
+        f"  - path: {PROTECTED_TARGET}\n"
+        "    allow: all\n"
+    )
+    monkeypatch.setenv("PWD", str(tmp_path))
+    cfg = _base_cfg()
+
+    blocked, _ = check_path(PROTECTED_TARGET, cfg)
+    assert blocked is False
+    result = check_command(f"echo 'enabled: false' > {PROTECTED_TARGET}", cfg)
+    assert result["decision"] != "block"
+
+
+def test_global_host_allowlist_still_repermits(tmp_path, monkeypatch):
+    """The host-owned global allowedPaths (from the protected rule YAMLs) still
+    overrides, as before."""
+    monkeypatch.setenv("PWD", str(tmp_path))  # no project file present
+    cfg = _base_cfg()
+    cfg["allowedPaths"] = [{"path": PROTECTED_TARGET, "allow": "all"}]
+    blocked, _ = check_path(PROTECTED_TARGET, cfg)
+    assert blocked is False
+
+
+def test_load_allowed_paths_sources_from_damagecontrol_not_agentwire(tmp_path, monkeypatch):
+    """The per-project allowlist comes from .damagecontrol.yml; an .agentwire.yml
+    safety block contributes nothing."""
+    (tmp_path / ".agentwire.yml").write_text(
+        "type: claude-bypass\n"
+        "safety:\n"
+        "  allowed_paths:\n"
+        "    - path: /from/agentwire\n"
+        "      allow: all\n"
+    )
+    (tmp_path / ".damagecontrol.yml").write_text(
+        "allowed_paths:\n"
+        "  - path: /from/damagecontrol\n"
+        "    allow: all\n"
+    )
+    monkeypatch.setenv("PWD", str(tmp_path))
+    paths = [e["path"] for e in load_allowed_paths({"allowedPaths": []})]
+    assert "/from/damagecontrol" in paths
+    assert "/from/agentwire" not in paths
+
+
+def test_agentwire_yml_alone_contributes_no_allowlist(tmp_path, monkeypatch):
+    (tmp_path / ".agentwire.yml").write_text(
+        "type: claude-bypass\n"
+        "safety:\n"
+        "  allowed_paths:\n"
+        "    - path: /from/agentwire\n"
+        "      allow: all\n"
+    )
+    monkeypatch.setenv("PWD", str(tmp_path))
+    paths = [e["path"] for e in load_allowed_paths({"allowedPaths": []})]
+    assert paths == []
 
 
 def test_host_side_edit_is_honored_by_loader(tmp_path):

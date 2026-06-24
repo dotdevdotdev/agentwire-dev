@@ -87,19 +87,24 @@ dedicated, host-owned files** and the **whole control plane is hard-protected**.
 
 | File | Scope |
 |------|-------|
-| `~/.agentwire/damagecontrol.yml` | Global `enabled` / `disabled_rules` / `unattended_allow` |
-| `<repo>/.damagecontrol.yml` | Per-project override (nearest, walking up from cwd). May both **loosen and tighten** — it simply wins on `enabled`; rule knobs merge (set-union) |
+| `~/.agentwire/damagecontrol.yml` | Global `enabled` / `disabled_rules` / `unattended_allow` (+ `allowed_paths`) |
+| `<repo>/.damagecontrol.yml` | Per-project override (nearest, walking up from cwd). May both **loosen and tighten** — it wins on `enabled`; rule knobs + `allowed_paths` merge |
 
 ```yaml
-# ~/.agentwire/damagecontrol.yml
+# ~/.agentwire/damagecontrol.yml  (or <repo>/.damagecontrol.yml)
 enabled: true            # master switch; missing file/key ⇒ true (fail-secure)
 disabled_rules: []       # stable rule IDs to disable
 unattended_allow: []     # extra rule IDs an unattended run may resolve ask→allow
+allowed_paths: []        # per-project allowlist (see allowedPaths below)
 ```
 
-These knobs **no longer live in `config.yaml` or `.agentwire.yml`** (relocated
-out entirely — `load_safety_config` reads only the files above). `.agentwire.yml`
-keeps only `safety.allowed_paths` (the human allowlist). `agentwire safety
+**ALL** damage-control policy — kill switch, rule knobs, AND the per-project
+`allowed_paths` allowlist — lives in these files. They **no longer live in
+`config.yaml` or `.agentwire.yml`** at all (relocated out entirely;
+`load_safety_config` / `_find_project_config` read only the files above). The
+allowlist had to move too (#467): it's the one knob that overrides the protected
+check, so leaving it in the agent-writable `.agentwire.yml` would let an agent
+allowlist a control-plane path and re-permit its own write. `agentwire safety
 install` scaffolds the global file with `enabled: true` if missing.
 
 ### The protected control plane (escape-hatch- AND kill-switch-exempt)
@@ -217,17 +222,17 @@ allowedPaths:
     allow: all
 ```
 
-**Per-project** (in `.agentwire.yml`):
+**Per-project** (top-level `allowed_paths` in the **protected** `.damagecontrol.yml` at the repo root — NOT `.agentwire.yml`, see [Policy files](#policy-files--the-protected-control-plane-466) and #467):
 ```yaml
-safety:
-  allowed_paths:
-    - path: ".env.development"
-      allow: [read, write, edit]
-    - path: "dist/*"
-      allow: all
+# <repo>/.damagecontrol.yml
+allowed_paths:
+  - path: ".env.development"
+    allow: [read, write, edit]
+  - path: "dist/*"
+    allow: all
 ```
 
-Plain strings (legacy format) are auto-coerced to `{path: str, allow: all}` for backwards compatibility.
+The allowlist is the one knob that overrides the protected-control-plane check, so it lives behind that same protection — an agent can't edit `.damagecontrol.yml` to widen its own freedom.
 
 Per-project paths are relative to the project root and resolved to absolute paths before matching.
 
