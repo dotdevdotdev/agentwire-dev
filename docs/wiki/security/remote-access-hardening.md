@@ -145,7 +145,7 @@ confirm "an agentwire portal lives here" (fingerprint).
 3. **Config-write is an auth-disable + RCE pivot.** `POST /api/config` writes raw YAML; an attacker
    who's in can set `auth_token: ""`, rewrite `executables`, and persist. → **#425**
 4. **Safety rules are API-writable.** `POST /api/safety/config` can disable the rm-rf hooks with
-   the same token — defense-in-depth defeated by one secret. → **#425**
+   the same token — defense-in-depth defeated by one secret. → **#425** *(closed; **#466/#467** then went further — the kill switch, rules, and allowlist moved out of `config.yaml`/`.agentwire.yml` entirely into the protected, agent-unwritable `~/.agentwire/damagecontrol.yml` + `<repo>/.damagecontrol.yml`, closing the **local-agent** write path too, not just the token/API one.)*
 5. **No auth-failure logging, no lockout, no alerting.** 401s are silent. → backlog (action E).
 6. **Token transport relies on opt-in TLS.** SSL only turns on if cert+key exist (`config.py:45`).
    A non-loopback *plaintext* LAN bind sends the bearer token in cleartext. Fine when the BYO

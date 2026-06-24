@@ -729,7 +729,7 @@ Damage Control is ONE layer:
 ### Q: What if I need to run a blocked command?
 
 **A**: Four options:
-1. Add the path to `allowedPaths` in a user-override `*.yaml` under `~/.agentwire/damage-control/` (global) or to `safety.allowed_paths` in `.agentwire.yml` (per-project)
+1. Add the path to `allowedPaths` in a user-override `*.yaml` under `~/.agentwire/damage-control/` (global) or to `allowed_paths` in the protected `.damagecontrol.yml` at the repo root (per-project — a host-side edit; the agent can't widen its own allowlist)
 2. Use "ask" patterns (prompts for confirmation)
 3. Temporarily comment out the pattern in your override YAML
 4. Run command outside AgentWire session
