@@ -11760,7 +11760,7 @@ Command Categories:
     list_parser.add_argument("--sessions", action="store_true", help="Show sessions instead of panes")
     list_parser.add_argument("--context", action="store_true",
                              help="Annotate each session with its Claude Code context headroom "
-                                  "(remaining %); flags sessions running low (implies --sessions)")
+                                  "(remaining %%); flags sessions running low (implies --sessions)")
     list_parser.set_defaults(func=cmd_list)
 
     new_parser = subparsers.add_parser("new", help="Create new Claude Code session")
