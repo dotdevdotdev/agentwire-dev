@@ -55,6 +55,10 @@ hardening (control-plane path coverage, tilde/`$HOME` canonicalization, `.env`
 whole-component matching, shell-aware fail-closed matching, read-surface
 policing) and the new fail-closed-when-unattended behavior.
 
+### Redundant Permissions Bypass (`--dangerously-skip-permissions`)
+
+By default, AgentWire initializes Claude Code with the `--dangerously-skip-permissions` flag. This is safe because AgentWire implements its own **Damage Control Hooks** at the system shell level (installed via `agentwire hooks install`). Rather than relying on fragile, prompt-based AI dialogs for command approval, AgentWire intercepts and enforces safety rules directly in the shell. Bypassing Claude's built-in prompts prevents unnecessary interruptions and speeds up agent execution while maintaining robust security controls.
+
 ## Trust Model
 
 The portal enforces two security layers in-process:

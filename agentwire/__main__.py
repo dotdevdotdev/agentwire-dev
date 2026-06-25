@@ -11310,6 +11310,42 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agentwire",
         description="Multi-session voice web interface for AI coding agents.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Command Categories:
+  Getting Started:
+    init             Interactive setup wizard
+    portal           Manage the web portal
+    new              Create a new Claude Code session
+    say              Speak text via TTS
+
+  Sessions:
+    list             List panes or sessions
+    info             Get session information
+    kill             Kill a session or pane
+    spawn            Spawn a worker pane in current session
+    worktree         Create a git worktree + session
+    send             Send prompt to a session or pane
+    output           Read session or pane output
+
+  Voice:
+    listen           Voice input recording
+    voiceclone       Record and upload voice clones
+    tts              Manage TTS server
+    stt              Manage STT server
+
+  Diagnostics:
+    doctor           Auto-diagnose and fix common issues
+    network          Network diagnostics and status
+    safety           Damage control security commands
+    hooks            Manage agentwire hook files
+
+  Advanced:
+    council          Multi-soul council operations
+    scheduler        Manage the task scheduler
+    ensure           Run named task with reliable session management
+    limits           Usage-limit recovery management
+"""
     )
     parser.add_argument(
         "--version",

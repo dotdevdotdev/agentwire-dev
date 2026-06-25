@@ -51,7 +51,6 @@ pip install agentwire-dev
 
 # Setup (interactive)
 agentwire init
-agentwire generate-certs
 
 # Run
 agentwire portal start
@@ -62,7 +61,22 @@ agentwire portal start
 
 **Honest setup time:** under a minute to a working voice portal with a genuinely good voice — Kokoro-82M runs on CPU out of the box (one-time ~200 MB model download in the background; the browser voice covers the wait). ~15 minutes for the full experience: cloned voices via a self-hosted TTS shim, Whisper-grade transcription, phone-from-anywhere (certs + token).
 
-> **Network & trust model.** The portal binds `127.0.0.1` by default — local only. To use it from your phone, set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`. Non-loopback binds require an auth token (auto-generated on first start; print it with `agentwire portal token`) — your phone prompts for it once, then remembers it. Origin checks reject cross-site browser requests on every bind. Still: keep it on a trusted LAN. Never port-forward it or run it on a public-facing VPS — for internet access use Cloudflare Tunnel + Zero Trust. Details in [SECURITY.md](SECURITY.md).
+### Phone / LAN Access
+
+The portal binds to loopback (`127.0.0.1`) by default. To access the portal from your phone, tablet, or other devices on your local network:
+
+1. **Generate SSL certificates** (required for microphone access over non-loopback connections):
+   ```bash
+   agentwire generate-certs
+   ```
+2. **Enable LAN access**: set `server.host: 0.0.0.0` in `~/.agentwire/config.yaml`.
+3. **Get your auth token**: non-loopback connections require a bearer token. Print it with:
+   ```bash
+   agentwire portal token
+   ```
+4. **Connect**: Open `https://<your-machine-ip>:8765` on your phone and enter the token when prompted.
+
+Origin checks reject cross-site browser requests on every bind. Keep the portal on a trusted LAN, and never expose it directly to the public internet. See [SECURITY.md](SECURITY.md) for details.
 
 <details>
 <summary><strong>Platform-specific instructions</strong></summary>
