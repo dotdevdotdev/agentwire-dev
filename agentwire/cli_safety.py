@@ -108,6 +108,7 @@ DAMAGE_CONTROL_FILES = [
     "bash-tool-damage-control.py",
     "edit-tool-damage-control.py",
     "write-tool-damage-control.py",
+    "read-tool-damage-control.py",
     "mcp-tool-damage-control.py",
     "audit_logger.py",
 ]
@@ -566,6 +567,11 @@ DAMAGE_CONTROL_MATCHERS = {
     "Bash": "bash-tool-damage-control.py",
     "Edit": "edit-tool-damage-control.py",
     "Write": "write-tool-damage-control.py",
+    # Content-reading tools: PreToolUse fires (and can block) for these, so a
+    # zero-access secret read can't slip past the shell/edit/write hooks.
+    "Read": "read-tool-damage-control.py",
+    "Grep": "read-tool-damage-control.py",
+    "Glob": "read-tool-damage-control.py",
     "mcp__agentwire__(email_send|quo_send)": "mcp-tool-damage-control.py",
 }
 
@@ -591,8 +597,12 @@ def register_damage_control_in_settings() -> int:
     added = 0
     for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
         command = f"~/.agentwire/hooks/damage-control/{hook_file}"
+        # Dedup on the (matcher, command) pair, not the command alone: several
+        # matchers (Read/Grep/Glob) legitimately share one hook script, so a
+        # command-only check would register only the first and silently drop the
+        # rest.
         already = any(
-            h.get("command") == command
+            entry.get("matcher") == matcher and h.get("command") == command
             for entry in pre
             for h in entry.get("hooks", [])
         )

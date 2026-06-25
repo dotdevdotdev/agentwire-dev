@@ -39,11 +39,21 @@ This security policy applies to:
 
 AgentWire includes built-in security features:
 
-- **Damage Control Hooks:** Block 300+ dangerous command patterns
-- **Path Protection:** Prevent access to sensitive files (.env, SSH keys, credentials)
+- **Damage Control Hooks:** Block 300+ dangerous command patterns. Commands are
+  matched after shell-aware normalization (quote/escape stripping, simple `$VAR`
+  resolution); constructs that can't be statically verified (command
+  substitution, `eval`, `base64 -d | sh`) fail closed.
+- **Path Protection:** Prevent access to sensitive files (`.env`, SSH keys,
+  credentials) across shell, file edits/writes, **and native content reads**
+  (Read/Grep/Glob). Committed env templates (`.env.example`, `.sample`,
+  `.template`, `.dist`) are treated as secret-free and remain readable.
 - **Audit Logging:** All blocked operations are logged
 
-See `docs/wiki/internals/damage-control.md` for details.
+See `docs/wiki/internals/damage-control.md` for details, and
+`docs/wiki/security/damage-control-hardening.md` for the 2026-06 matcher
+hardening (control-plane path coverage, tilde/`$HOME` canonicalization, `.env`
+whole-component matching, shell-aware fail-closed matching, read-surface
+policing) and the new fail-closed-when-unattended behavior.
 
 ## Trust Model
 

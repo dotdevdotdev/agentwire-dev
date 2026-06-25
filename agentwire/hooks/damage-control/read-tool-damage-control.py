@@ -4,13 +4,17 @@
 # dependencies = ["pyyaml"]
 # ///
 """
-AgentWire Bash Tool Damage Control
+AgentWire Read Tool Damage Control
 ==================================
 
-Claude Code PreToolUse hook for Bash tool calls. Decides allow/block/ask based
-on the merged rule set under ``agentwire/hooks/damage-control/rules/*.yaml``
-(or the user's ``~/.agentwire/damage-control/*.yaml`` override) plus
-ask-patterns generated from write-tier tooldef commands.
+Claude Code PreToolUse hook for the content-reading tools (``Read``, ``Grep``,
+``Glob``). The Bash/Edit/Write hooks never see these tools, so without this hook
+a ``zeroAccessPaths`` secret (``~/.agentwire/.env``, ``~/.ssh/id_rsa``, ``*.pem``)
+could be read directly and exfiltrated. PreToolUse fires (and can block, exit 2)
+for read tools too, so we run the targeted path through ``check_read_path``.
+
+Only zero-access reads are blocked — read-only paths and the host-owned control
+plane stay readable. Writes/edits are handled by the dedicated hooks.
 
 Implementation: the body of ``agentwire/safety/_core.py`` is inlined below
 between the BEGIN/END GENERATED markers. Edit ``_core.py``, then run
@@ -24,13 +28,11 @@ from pathlib import Path
 
 # audit_logger lives next to this script
 try:
-    from audit_logger import log_allowed, log_asked, log_blocked, log_disabled, log_escape
+    from audit_logger import log_allowed, log_blocked, log_disabled
 except ImportError:
     def log_allowed(*args, **kwargs): pass
-    def log_asked(*args, **kwargs): pass
     def log_blocked(*args, **kwargs): pass
     def log_disabled(*args, **kwargs): pass
-    def log_escape(*args, **kwargs): pass
 
 
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
@@ -1187,7 +1189,6 @@ def check_read_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def _resolve_rules_dir() -> Path:
-    """User override (~/.agentwire/damage-control/) wins; else bundled rules/."""
     user_dir = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
     user_rules = user_dir / "damage-control"
     if user_rules.exists() and any(user_rules.glob("*.yaml")):
@@ -1195,43 +1196,18 @@ def _resolve_rules_dir() -> Path:
     return Path(__file__).parent / "rules"
 
 
-def _resolve_tooldefs_dir():
-    """User tooldefs (~/.agentwire/tooldefs/) win; else bundled."""
-    user_dir = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
-    user_tooldefs = user_dir / "tooldefs"
-    if user_tooldefs.exists() and any(user_tooldefs.glob("*.yaml")):
-        return user_tooldefs
-    bundled = Path(__file__).parent.parent.parent / "tooldefs"
-    return bundled if bundled.exists() else None
-
-
-def _notify_unattended_block(command: str, reason: str, rule_id: str | None) -> None:
-    """Fire-and-forget: email the owner that an unattended action was blocked.
-
-    The hook is a PEP 723 script (pyyaml-only) and can't import the agentwire
-    package, so it shells out to the installed CLI, which emails via the same
-    Resend wiring usage-limit recovery uses. Detached + non-blocking so SMTP
-    never sits on the hook's hot path; failures are swallowed (the block has
-    already fired and is audit-logged regardless).
-    """
-    import subprocess
-    try:
-        subprocess.Popen(
-            ["agentwire", "safety", "notify-unattended-block",
-             "--reason", reason or "",
-             "--rule-id", rule_id or "",
-             "--command", command[:500]],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception:
-        pass
+# Tools that read file content (or list paths), keyed to the tool_input field
+# that names the target path. ``Glob`` only reveals filenames, but a zero-access
+# directory is still off-limits, so it is covered for consistency.
+READ_TOOL_PATH_FIELDS = {
+    "Read": "file_path",
+    "Grep": "path",
+    "Glob": "path",
+}
 
 
 def main() -> None:
-    config = load_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
+    config = load_config(_resolve_rules_dir())
     config["safety"] = load_safety_config()
 
     try:
@@ -1239,81 +1215,30 @@ def main() -> None:
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON input: {e}", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        print(f"Error reading input: {e}", file=sys.stderr)
-        sys.exit(1)
 
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
-    # Claude Code passes ``permission_mode`` in the hook input. Two modes
-    # indicate the user has explicitly opted out of ask-escalation friction:
-    #   - "bypassPermissions" → --dangerously-skip-permissions
-    #   - "auto"              → autonomous /loop or similar auto mode
-    # Hard blocks still fire either way; ``ask:true`` patterns become allow.
-    permission_mode = input_data.get("permission_mode", "")
-    bypass_modes = {"bypassPermissions", "auto"}
 
-    if tool_name != "Bash":
+    field = READ_TOOL_PATH_FIELDS.get(tool_name)
+    if not field:
         sys.exit(0)
 
-    command = tool_input.get("command", "")
-    if not command:
+    file_path = tool_input.get(field, "")
+    if not file_path:
         sys.exit(0)
 
-    result = check_command(command, config)
-    decision = result["decision"]
-    reason = result["reason"]
-
-    if decision == "block":
-        try:
-            log_blocked("Bash", command, reason, pattern=result.get("pattern"), rule_id=result.get("id"))
-        except TypeError:
-            log_blocked("Bash", command, reason)
-        print(f"SECURITY: Blocked: {reason}", file=sys.stderr)
-        print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
+    blocked, reason = check_read_path(file_path, config)
+    if blocked:
+        log_blocked(tool_name, file_path, reason)
+        print(f"SECURITY: Blocked read of {reason}: {file_path}", file=sys.stderr)
         sys.exit(2)
-    elif decision == "ask" and is_unattended():
-        # No human present (scheduler dispatch). The interactive confirm is
-        # meaningless, so fail closed: BLOCK + notify the owner, unless the
-        # matched rule is explicitly on the unattended allowlist.
-        rule_id = result.get("id")
-        allow = resolve_unattended_allow(config)
-        if rule_id and rule_id in allow:
-            log_allowed("Bash", command, user_approved=False)
-            sys.exit(0)
-        try:
-            log_blocked("Bash", command, f"unattended: {reason}",
-                        pattern=result.get("pattern"), rule_id=rule_id)
-        except TypeError:
-            log_blocked("Bash", command, f"unattended: {reason}")
-        _notify_unattended_block(command, reason, rule_id)
-        print(f"SECURITY: Blocked (unattended — no human to confirm): {reason}", file=sys.stderr)
-        print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
-        if rule_id:
-            print(f"To permit this for an unattended task, add rule id "
-                  f"'{rule_id}' to its .agentwire.yml task `unattended_allow`.",
-                  file=sys.stderr)
-        sys.exit(2)
-    elif decision == "ask" and permission_mode not in bypass_modes:
-        log_asked("Bash", command, reason)
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask",
-                "permissionDecisionReason": reason,
-            }
-        }
-        print(json.dumps(output))
+
+    if config["safety"].get("enabled", True) is False:
+        log_disabled(tool_name, file_path)
         sys.exit(0)
-    elif result.get("escape"):
-        log_escape("Bash", command, result.get("escape_reason") or "")
-        sys.exit(0)
-    elif result.get("disabled"):
-        log_disabled("Bash", command)
-        sys.exit(0)
-    else:
-        log_allowed("Bash", command, user_approved=False)
-        sys.exit(0)
+
+    log_allowed(tool_name, file_path, user_approved=False)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

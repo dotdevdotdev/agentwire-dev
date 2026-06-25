@@ -1,0 +1,74 @@
+# Security CI for the damage-control matcher.
+#
+# Three independent signals:
+#   1. bypass-corpus  — the load-bearing gate. Asserts the known evasion vectors
+#                       (quoting/escaping, $VAR, substitution, tilde/$HOME secret
+#                       reads, non-rm deletion) stay BLOCK/ASK and a corpus of
+#                       safe everyday commands keeps PASSing. Merges gate on this.
+#   2. bandit         — advisory (non-blocking) static scan. There are intentional
+#                       `shell=True` sites (scheduler gates, service healthchecks),
+#                       so this informs review rather than blocking it.
+#   3. pip-audit      — known-vuln scan over the resolved dependency set, on PRs
+#                       and a weekly cron.
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1"  # Mondays 07:00 UTC
+
+jobs:
+  bypass-corpus:
+    name: damage-control bypass corpus (merge gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync --extra dev
+      - name: Hooks are in sync with _core.py
+        run: uv run --no-sync python scripts/regen_damage_control_hooks.py --check
+      - name: Run bypass + sync + control-plane corpus
+        run: >
+          uv run --no-sync pytest -q
+          tests/unit/test_damage_control_bypass.py
+          tests/unit/test_damage_control_sync.py
+          tests/unit/test_control_plane_protection.py
+
+  bandit:
+    name: bandit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true  # intentional shell=True sites — advisory only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Run bandit
+        run: uvx bandit -r agentwire -ll
+
+  pip-audit:
+    name: pip-audit (advisory)
+    runs-on: ubuntu-latest
+    # Advisory, not a merge gate: most flagged CVEs live in heavy OPTIONAL deps
+    # (torch/onnxruntime pulled by kokoro/moonshine) and are transitive, so
+    # hard-blocking every PR on them is noise. Keep it running on PRs + the
+    # weekly cron for visibility; the damage-control bypass corpus is the hard
+    # merge gate. Direct portal-facing deps are bumped explicitly in pyproject.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Export locked dependencies
+        run: uv export --no-emit-project --format requirements-txt -o requirements.txt
+      - name: Audit dependencies
+        run: uvx pip-audit -r requirements.txt

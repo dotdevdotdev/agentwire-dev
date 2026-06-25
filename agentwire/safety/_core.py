@@ -11,6 +11,7 @@ fail loudly if drift happens.
 import fnmatch
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -114,26 +115,98 @@ def glob_to_regex(pattern: str) -> str:
     return result
 
 
+def canonicalize_command(command: str) -> str:
+    """Expand ``~``, ``$HOME`` and ``${HOME}`` in a command to the home dir.
+
+    The rule patterns are stored in ``~``-form and expanded with
+    ``expanduser`` before matching; without expanding the COMMAND too, a
+    tilde/``$HOME`` secret read (``cat ~/.ssh/id_rsa``, ``cat $HOME/.aws/credentials``)
+    only ever matched against its fully-expanded ``/Users/<me>/...`` form and
+    slipped past. Canonicalizing both sides closes that gap. ``./``-prefixes are
+    handled by the path-context boundary in :func:`path_match_regex` (a leading
+    ``/`` is an accepted boundary char), so no separate ``normpath`` of the raw
+    command string — which is not a pure path — is attempted here.
+    """
+    home = os.path.expanduser("~")
+    if not home or home == "~":
+        return command
+    out = command.replace("${HOME}", home).replace("$HOME", home)
+    # Only expand ``~`` when it begins a path (start of string or after a
+    # whitespace/quote/=/: boundary and immediately followed by ``/``), so we
+    # never touch ``~`` used as a literal (e.g. inside a sed expression).
+    out = re.sub(r'(^|[\s=:"\'(<>])~(?=/)', lambda m: m.group(1) + home, out)
+    return out
+
+
+def path_match_regex(expanded_pattern: str) -> str:
+    """Build a path-context regex for a rule pattern (glob or literal).
+
+    Both glob and literal patterns are matched as a whole path COMPONENT — never
+    a bare substring. The literal branch previously used ``expanded in command``,
+    which hard-blocked innocuous text: ``.env`` matched ``.environment``,
+    ``docs/.env.example``, ``grep -v .environ`` (#492). The component boundary
+    (a leading path-separator/whitespace boundary, and a trailing boundary that
+    forbids the basename being extended by another filename char) fixes those
+    false positives while still catching real secret paths.
+    """
+    lead = r'(?:^|[\s=:"\'<>(/])'
+    if is_glob_pattern(expanded_pattern):
+        glob_regex = glob_to_regex(expanded_pattern)
+        return r'(?:^|[\s/="\'<>])' + glob_regex + r'(?:[\s"\')<>]|$)'
+    is_dir = expanded_pattern.endswith('/')
+    body = re.escape(expanded_pattern.rstrip('/'))
+    if is_dir:
+        # Directory prefix: anything under it counts as a hit.
+        trail = r'(?:/|[\s"\')<>;&|]|$)'
+    else:
+        # Filename/path: the basename must end here — the next char must not be
+        # a path-extending char, so ``.env`` no longer matches ``.env.example``.
+        trail = r'(?![A-Za-z0-9_.\-])'
+    return lead + body + trail
+
+
+# ``.env.example`` / ``.env.sample`` / ``.env.template`` / ``.env.dist`` are
+# committed, secret-free TEMPLATE files — never the real env. The ``.env.*`` glob
+# would otherwise hard-block reading them (#492), so they are carved out.
+_SAFE_ENV_TEMPLATE_RE = re.compile(
+    r'\.env\.(?:example|sample|template|dist)(?![A-Za-z0-9_])', re.IGNORECASE
+)
+
+
 def matches_path_in_command(pattern: str, command: str) -> bool:
-    """Check if a path pattern occurs in a command string in a path-context."""
+    """Check if a path pattern occurs in a command string in a path-context.
+
+    The command is canonicalized (``~``/``$HOME`` expanded) and the pattern is
+    matched as a whole path component against both the raw and canonicalized
+    forms, so neither tilde indirection (#2) nor bare-substring over-blocking
+    (#492) defeats it.
+    """
     expanded = os.path.expanduser(pattern)
-    if not is_glob_pattern(pattern):
-        return expanded in command
+    regex = path_match_regex(expanded)
+    haystacks = [command]
+    canon = canonicalize_command(command)
+    if canon != command:
+        haystacks.append(canon)
 
-    glob_regex = glob_to_regex(expanded)
-    file_path_regex = r'(?:^|[\s/="\'<>])' + glob_regex + r'(?:[\s"\')<>]|$)'
-    try:
-        if not re.search(file_path_regex, command, re.IGNORECASE):
+    matched = False
+    for hay in haystacks:
+        try:
+            m = re.search(regex, hay, re.IGNORECASE)
+        except re.error:
             return False
-    except re.error:
+        if m and not _SAFE_ENV_TEMPLATE_RE.search(m.group(0)):
+            matched = True
+            break
+    if not matched:
         return False
 
-    # Reject method-call lookalikes: foo.py( should not match *.py
-    extension = pattern.split('*')[-1] if '*' in pattern else pattern
-    if extension.startswith('.'):
-        extension = extension[1:]
-    if extension and re.search(r'\w\.' + re.escape(extension) + r'\s*\(', command):
-        return False
+    if is_glob_pattern(pattern):
+        # Reject method-call lookalikes: foo.py( should not match *.py
+        extension = pattern.split('*')[-1] if '*' in pattern else pattern
+        if extension.startswith('.'):
+            extension = extension[1:]
+        if extension and re.search(r'\w\.' + re.escape(extension) + r'\s*\(', command):
+            return False
     return True
 
 
@@ -431,7 +504,13 @@ def load_config(
         "noDeletePaths": [],
         "allowedPaths": [],
     }
-    if not yaml or not rules_dir.exists():
+    if not yaml:
+        # No YAML parser ⇒ we cannot load ANY rules. Returning the empty rule set
+        # would silently disable all protection (fail OPEN). Mark the config so
+        # the decision ladder fails CLOSED instead.
+        merged["_parser_unavailable"] = "pyyaml unavailable — cannot load rules"
+        return merged
+    if not rules_dir.exists():
         return merged
     taken_ids: set = set()
     yaml_files = sorted(rules_dir.glob("*.yaml"))
@@ -617,6 +696,20 @@ PROTECTED_CONTROL_PLANE_PATHS = [
     "~/.agentwire/hooks/damage-control/*.py",  # the hook scripts themselves
     "~/.claude/hooks/*",                # agentwire-owned Claude Code hooks
     "~/.agentwire/damage-control/*.yaml",      # the damage-control rule files
+    # Execution-plane configs: agentwire runs strings from these files through
+    # its OWN ``subprocess.run(..., shell=True)`` calls (scheduler gate commands
+    # in scheduler.py, service healthchecks in services.py) — those subprocesses
+    # do NOT traverse the Claude Code hook, so a policed agent that can write a
+    # gate/healthcheck gets unguarded code execution on the next tick (a
+    # confused-deputy escape). Treat them as control plane (#466 lockdown).
+    "~/.agentwire/scheduler.yaml",      # scheduler gate commands run via shell
+    "~/.agentwire/config.yaml",         # service healthcheck commands run via shell
+    # Per-project task config: ``.agentwire.yml`` also defines task pre/post/gate
+    # commands. Protecting it closes the same escape, with an ergonomic tradeoff —
+    # under worktree dispatch the agent can no longer author its own task config,
+    # so task authoring becomes a host-side act (consistent with the control-plane
+    # guarantee: loosening is always host-side).
+    "*.agentwire.yml",                  # project session/task config (any dir)
 ]
 
 
@@ -668,16 +761,22 @@ def check_protected_command(
 
     Mirrors the ``readOnlyPaths`` matcher but is escape-hatch- and
     kill-switch-exempt. The user's allowlist may re-permit a specific path.
+
+    Matches against the raw command AND its normalized subcommands so quoting /
+    escaping (``r\\m``, ``r''m``) can't sneak a write past the control-plane gate.
     """
+    subcommands, _ambiguous = normalize_subcommands(command)
+    haystacks = [command] + [s for s in subcommands if s and s != command]
     for path in _protected_path_patterns():
-        matched, reason = check_path_patterns(
-            command, path, READ_ONLY_BLOCKED, "protected control-plane path"
-        )
-        if matched:
-            op = _infer_operation_from_reason(reason)
-            if is_command_path_allowed(command, allowed_paths, op):
-                continue
-            return True, f"Protected control-plane path: {path}"
+        for hay in haystacks:
+            matched, reason = check_path_patterns(
+                hay, path, READ_ONLY_BLOCKED, "protected control-plane path"
+            )
+            if matched:
+                op = _infer_operation_from_reason(reason)
+                if is_command_path_allowed(command, allowed_paths, op):
+                    break
+                return True, f"Protected control-plane path: {path}"
     return False, ""
 
 
@@ -697,6 +796,90 @@ def detect_escape_hatch(command: str) -> Optional[str]:
         return None
     reason = m.group(1).strip()
     return reason or None
+
+
+# ============================================================================
+# SHELL-AWARE NORMALIZATION
+# ============================================================================
+#
+# The bash matcher historically ran the rule regexes against the RAW command
+# string. With no tokenization, trivial shell quoting/escaping defeated every
+# rule: ``r\m -rf /x`` (backslash), ``r''m -rf /x`` (empty quotes),
+# ``R=rm; $R -rf /x`` ($VAR indirection) all read as ALLOWED while literal
+# ``rm -rf /x`` blocked. We now ALSO match against a normalized form where
+# quotes/escapes are removed (via ``shlex``) and simple ``$VAR`` assignments are
+# resolved, split per subcommand. Anything we cannot tokenize safely — command
+# substitution (``$(...)`` / backticks), ``eval``, a ``base64 -d | sh`` pipeline,
+# or unbalanced quotes — FAILS CLOSED (escalated to ``ask``, which the unattended
+# resolver turns into a block).
+
+_SUBSTITUTION_RE = re.compile(r"\$\(|`")
+_EVAL_RE = re.compile(r"(?:^|[\s;&|({])eval(?:\s|$)")
+_BASE64_PIPE_RE = re.compile(r"\bbase64\b[^\n|]*(?:-d|--decode)[^\n|]*\|", re.IGNORECASE)
+_ASSIGN_RE = re.compile(
+    r"(?:^|[\n;&|]|&&|\|\|)\s*([A-Za-z_]\w*)=('[^']*'|\"[^\"]*\"|[^\s;|&]*)"
+)
+_SHELL_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
+
+
+def detect_obfuscation(command: str) -> Optional[str]:
+    """Return a reason string if ``command`` hides intent behind shell features.
+
+    These constructs can smuggle a dangerous command past static matching, so we
+    decline to reason about them and fail closed instead.
+    """
+    if _SUBSTITUTION_RE.search(command):
+        return "command substitution"
+    if _EVAL_RE.search(command):
+        return "eval"
+    if _BASE64_PIPE_RE.search(command):
+        return "base64-decode pipeline"
+    return None
+
+
+def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
+    """Tokenize ``command`` and return ``(normalized_subcommands, ambiguous)``.
+
+    ``normalized_subcommands`` is the per-subcommand argv re-joined with single
+    spaces, after ``shlex`` has stripped quotes/escapes and simple ``$VAR``
+    assignments earlier in the same command have been resolved. ``ambiguous`` is
+    a reason string when the command can't be tokenized safely (and the caller
+    should fail closed); it is ``None`` on success.
+    """
+    obf = detect_obfuscation(command)
+    if obf:
+        return [], obf
+
+    # Resolve simple ``VAR=value`` assignments so ``R=rm; $R -rf`` normalizes to
+    # ``rm -rf``. Only literal values (no nested expansion) are resolved.
+    assigns: Dict[str, str] = {}
+    for m in _ASSIGN_RE.finditer(command):
+        assigns[m.group(1)] = m.group(2).strip("'\"")
+
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return [], "unbalanced quotes"
+
+    def _resolve(tok: str) -> str:
+        for name, val in assigns.items():
+            tok = tok.replace("${%s}" % name, val).replace("$" + name, val)
+        return tok
+
+    subs: List[str] = []
+    cur: List[str] = []
+    for tok in tokens:
+        if tok in _SHELL_OPERATORS:
+            if cur:
+                subs.append(" ".join(cur))
+                cur = []
+            continue
+        cur.append(_resolve(tok))
+    if cur:
+        subs.append(" ".join(cur))
+    return subs, None
 
 
 # ============================================================================
@@ -742,6 +925,16 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             "protected": True,
         }
 
+    # Parser unavailable ⇒ no rules loaded ⇒ fail closed (block), before the
+    # escape hatch / kill switch can wave it through.
+    if config.get("_parser_unavailable"):
+        return {
+            "decision": "block",
+            "reason": str(config["_parser_unavailable"]),
+            "pattern": "parserUnavailable",
+            "command": command,
+        }
+
     escape_reason = detect_escape_hatch(command)
     if escape_reason:
         return {
@@ -767,6 +960,23 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     read_only = config.get("readOnlyPaths", [])
     no_delete = config.get("noDeletePaths", [])
 
+    # Match rules against the raw command AND its normalized subcommands, so a
+    # quoting/escaping/$VAR trick (``r\m``, ``r''m``, ``R=rm; $R -rf``) is caught
+    # the same as the literal form. ``ambiguous`` is set when the command hides
+    # behind substitution/eval/base64-pipe/unbalanced-quotes — we fail closed to
+    # ``ask`` at the end (the unattended resolver turns that into a block).
+    subcommands, ambiguous = normalize_subcommands(command)
+    haystacks = [command] + [s for s in subcommands if s and s != command]
+
+    def _search(pat: str) -> bool:
+        for hay in haystacks:
+            try:
+                if re.search(pat, hay, re.IGNORECASE):
+                    return True
+            except re.error:
+                return False
+        return False
+
     bypassable_matches: List[Tuple[str, str, Optional[str]]] = []
 
     for pattern_obj in bash_patterns:
@@ -780,7 +990,7 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
         should_ask = pattern_obj.get("ask", False)
         bypassable = pattern_obj.get("bypassable", False)
         try:
-            if re.search(pattern, command, re.IGNORECASE):
+            if _search(pattern):
                 if should_ask:
                     return {
                         "decision": "ask",
@@ -814,7 +1024,7 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     for path in zero_access:
-        if matches_path_in_command(path, command):
+        if any(matches_path_in_command(path, hay) for hay in haystacks):
             if is_command_path_allowed(command, allowed, "read"):
                 continue
             return {
@@ -825,9 +1035,13 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     for path in read_only:
-        matched, reason = check_path_patterns(command, path, READ_ONLY_BLOCKED, "read-only path")
-        if matched:
-            op = _infer_operation_from_reason(reason)
+        op = None
+        for hay in haystacks:
+            matched, reason = check_path_patterns(hay, path, READ_ONLY_BLOCKED, "read-only path")
+            if matched:
+                op = _infer_operation_from_reason(reason)
+                break
+        if op is not None:
             if is_command_path_allowed(command, allowed, op):
                 continue
             return {
@@ -838,8 +1052,10 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     for path in no_delete:
-        matched, _reason = check_path_patterns(command, path, NO_DELETE_BLOCKED, "no-delete path")
-        if matched:
+        if any(
+            check_path_patterns(hay, path, NO_DELETE_BLOCKED, "no-delete path")[0]
+            for hay in haystacks
+        ):
             if is_command_path_allowed(command, allowed, "delete"):
                 continue
             return {
@@ -848,6 +1064,17 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                 "pattern": f"noDeletePath: {path}",
                 "command": command,
             }
+
+    # Nothing matched. If the command hid behind substitution/eval/etc. we could
+    # not verify it statically — fail closed to ``ask`` (a block when unattended).
+    if ambiguous:
+        return {
+            "decision": "ask",
+            "reason": f"Unverifiable command ({ambiguous}) — confirm before running",
+            "pattern": f"ambiguous:{ambiguous}",
+            "command": command,
+            "id": "core.ambiguous-command",
+        }
 
     return {
         "decision": "allow",
@@ -884,5 +1111,34 @@ def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     for readonly in config.get("readOnlyPaths", []):
         if match_path(file_path, readonly):
             return True, f"read-only path {readonly}"
+
+    return False, ""
+
+
+def check_read_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
+    """File-path-only check for content-reading tools (Read/Grep/Glob).
+
+    The Bash/Edit/Write hooks never see native ``Read``/``Grep``/``Glob`` tool
+    calls, so a ``zeroAccessPaths`` secret (``~/.agentwire/.env``, ``~/.ssh/id_rsa``,
+    ``*.pem``) could be exfiltrated by reading it directly. Claude Code fires a
+    blocking ``PreToolUse`` hook for these tools too, so the read-tool hook runs
+    ``file_path`` through this check and blocks a zero-access read.
+
+    Only ``zeroAccessPaths`` deny reads — ``readOnlyPaths`` are readable by
+    definition, and the control plane is host-owned config the agent may read
+    (only its *writes* are blocked). The kill switch disables this like any other
+    rule; the allowlist (a human opt-in) re-permits a specific read.
+    """
+    allowed = load_allowed_paths(config)
+    if is_path_allowed_for_op(file_path, allowed, "read"):
+        return False, ""
+
+    safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
+    if safety_cfg.get("enabled", True) is False:
+        return False, ""
+
+    for zero_path in config.get("zeroAccessPaths", []):
+        if match_path(file_path, zero_path):
+            return True, f"zero-access path {zero_path} (no read access)"
 
     return False, ""

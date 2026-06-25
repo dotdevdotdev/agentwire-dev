@@ -28,6 +28,12 @@ CONTROL_PLANE_FILES = [
     os.path.expanduser("~/.agentwire/hooks/damage-control/bash-tool-damage-control.py"),
     os.path.expanduser("~/.claude/hooks/idle-handler.sh"),
     os.path.expanduser("~/.agentwire/damage-control/core.yaml"),
+    # Execution-plane configs whose strings agentwire runs via shell=True
+    # (scheduler gate commands, service healthchecks, per-project task commands)
+    # — these never traverse the Claude Code hook, so they are control plane too.
+    os.path.expanduser("~/.agentwire/scheduler.yaml"),
+    os.path.expanduser("~/.agentwire/config.yaml"),
+    "/some/repo/.agentwire.yml",
 ]
 
 
@@ -50,8 +56,26 @@ def test_every_control_plane_file_is_protected(path):
 
 def test_unrelated_file_is_not_protected():
     assert is_protected_control_plane(os.path.expanduser("~/projects/foo/main.py")) is False
-    # ``config.yaml`` / ``.agentwire.yml`` are NOT control plane (no knobs there now)
-    assert is_protected_control_plane(os.path.expanduser("~/.agentwire/config.yaml")) is False
+    # A regular source file in a repo is not control plane even if the repo
+    # carries an .agentwire.yml.
+    assert is_protected_control_plane(os.path.expanduser("~/projects/foo/app/config.yaml")) is False
+
+
+BASH_EXECUTION_PLANE_WRITES = [
+    "echo 'x' > ~/.agentwire/scheduler.yaml",
+    "echo 'x' > ~/.agentwire/config.yaml",
+    "echo 'x' > .agentwire.yml",
+    "sed -i 's/a/b/' ~/.agentwire/scheduler.yaml",
+]
+
+
+@pytest.mark.parametrize("command", BASH_EXECUTION_PLANE_WRITES)
+def test_bash_write_to_execution_plane_blocked(cfg, command):
+    """Gate/healthcheck/task config files run via agentwire's own shell=True —
+    the agent must not be able to write them (confused-deputy escape)."""
+    result = check_command(command, cfg)
+    assert result["decision"] == "block"
+    assert result.get("protected") is True
 
 
 # --------------------------------------------------------------------------
