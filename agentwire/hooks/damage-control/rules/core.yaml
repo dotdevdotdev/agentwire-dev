@@ -32,6 +32,22 @@ bashToolPatterns:
     reason: trash command (moves files to trash - use git clean or manual cleanup)
     bypassable: true
 
+  # Non-``rm`` deletion paths that the literal-``rm`` rules miss.
+  - pattern: '\bfind\b.*\s-delete\b'
+    reason: find -delete (recursive deletion - use git clean or manual cleanup)
+    bypassable: true
+
+  - pattern: '\bfind\b.*-exec\s+rm\b'
+    reason: find -exec rm (deletion via find - use git clean or manual cleanup)
+    bypassable: true
+
+  - pattern: 'shutil\.rmtree'
+    reason: shutil.rmtree recursive delete (equivalent to rm -rf)
+
+  - pattern: '\bperl\b.*\bunlink\b'
+    reason: perl unlink delete (use git clean or manual cleanup)
+    bypassable: true
+
   # ---------------------------------------------------------------------------
   # PERMISSION CHANGES
   # ---------------------------------------------------------------------------
@@ -73,6 +89,10 @@ bashToolPatterns:
 
 # ---------------------------------------------------------------------------
 # ZERO ACCESS PATHS - No read, write, or any access allowed
+#
+# Enforced across shell (Bash hook), file edits/writes (Edit/Write hooks) AND
+# native content reads (Read/Grep/Glob hook → check_read_path). Template files
+# (.env.example/.sample/.template/.dist) are carved out as secret-free.
 # ---------------------------------------------------------------------------
 zeroAccessPaths:
   # ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ HOOK_FILES = [
     "bash-tool-damage-control.py",
     "edit-tool-damage-control.py",
     "write-tool-damage-control.py",
+    "read-tool-damage-control.py",
     "mcp-tool-damage-control.py",
 ]
 
