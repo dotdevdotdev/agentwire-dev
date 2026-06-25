@@ -234,8 +234,11 @@ def run_onboarding(skip_session: bool = False) -> int:
     # ─────────────────────────────────────────────────────────────
     print_header("2. AI Agent")
 
+    # --dangerously-skip-permissions is safe here because damage-control hooks
+    # enforce all safety constraints at the hook level (see SECURITY.md)
     agent_command = "claude --dangerously-skip-permissions"
     print_success(f"Agent: {agent_command}")
+    print_info("  (--dangerously-skip-permissions is safe here; AgentWire's hooks enforce safety instead)")
 
     # ─────────────────────────────────────────────────────────────
     # Question 3: Topology
