@@ -49,7 +49,11 @@ AgentWire includes built-in security features:
   `.template`, `.dist`) are treated as secret-free and remain readable.
 - **Audit Logging:** All blocked operations are logged
 
-See `docs/wiki/internals/damage-control.md` for details.
+See `docs/wiki/internals/damage-control.md` for details, and
+`docs/wiki/security/damage-control-hardening.md` for the 2026-06 matcher
+hardening (control-plane path coverage, tilde/`$HOME` canonicalization, `.env`
+whole-component matching, shell-aware fail-closed matching, read-surface
+policing) and the new fail-closed-when-unattended behavior.
 
 ## Trust Model
 

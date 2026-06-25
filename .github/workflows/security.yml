@@ -54,8 +54,14 @@ jobs:
         run: uvx bandit -r agentwire -ll
 
   pip-audit:
-    name: pip-audit
+    name: pip-audit (advisory)
     runs-on: ubuntu-latest
+    # Advisory, not a merge gate: most flagged CVEs live in heavy OPTIONAL deps
+    # (torch/onnxruntime pulled by kokoro/moonshine) and are transitive, so
+    # hard-blocking every PR on them is noise. Keep it running on PRs + the
+    # weekly cron for visibility; the damage-control bypass corpus is the hard
+    # merge gate. Direct portal-facing deps are bumped explicitly in pyproject.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
