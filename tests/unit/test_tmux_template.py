@@ -30,6 +30,12 @@ class TestBundledTemplate:
         "bind -T copy-mode-vi v send -X begin-selection",
         "bind -T copy-mode-vi y send -X copy-selection-and-cancel",
         "unbind -T copy-mode-vi MouseDragEnd1Pane",
+        # Default copy-mode table also unbound — a stray drag can land there and
+        # wedge the portal's chunked WebSocket-terminal paste (#471)
+        "unbind -T copy-mode    MouseDragEnd1Pane",
+        # Selection-aware wheel: grow selection when present, view-scroll when not (#472)
+        "bind -T copy-mode-vi WheelUpPane   if -F '#{selection_present}' 'send -X -N 3 cursor-up'   'send -X -N 3 scroll-up'",
+        "bind -T copy-mode-vi WheelDownPane if -F '#{selection_present}' 'send -X -N 3 cursor-down' 'send -X -N 3 scroll-down'",
         # Multi-client sizing: portal Monitor must not shrink windows, and
         # explicit resize-window calls must not lock manual mode permanently
         "set -g window-size largest",
