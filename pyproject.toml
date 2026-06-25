@@ -179,6 +179,13 @@ exclude = [
     "agentwire/static/agentwire-logo-splash-green-dark.jpeg",
 ]
 
+# The sdist excludes .claude/, but the wheel force-includes .claude/skills/wiki
+# (-> agentwire/skills/wiki). Carry it into the sdist too, otherwise building the
+# wheel *from* the sdist (`uv build`, or `pip install` from the sdist) can't
+# resolve the wheel's force-include and fails.
+[tool.hatch.build.targets.sdist.force-include]
+".claude/skills/wiki" = ".claude/skills/wiki"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["tests/snapshot/apps"]
