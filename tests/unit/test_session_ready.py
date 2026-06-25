@@ -161,6 +161,74 @@ class TestSendVerified:
         assert seen == {"send": 2, "cap": 2}
 
 
+class TestPaneShowsActivity:
+    def test_esc_to_interrupt(self):
+        assert session_ready.pane_shows_activity("✶ Cogitating… (esc to interrupt)")
+
+    def test_token_counter(self):
+        assert session_ready.pane_shows_activity("· 1.2k tokens · esc")
+
+    def test_tool_output_glyph(self):
+        assert session_ready.pane_shows_activity("⏺ Bash(ls)\n  ⎿ file.py")
+
+    def test_idle_no_activity(self):
+        assert not session_ready.pane_shows_activity("❯ \nBypassing Permissions")
+
+
+class TestSendVerifiedRegression:
+    """Pins #478 — fast bypass agent submits + scrolls the paste away."""
+
+    def _quiet(self, monkeypatch):
+        monkeypatch.setattr(session_ready.time, "sleep", lambda _: None)
+
+    def test_scrolled_out_but_working_is_delivered(self, monkeypatch):
+        # Prompt fragment/placeholder has scrolled OUT of the capture, the
+        # input box is empty, and the agent is visibly working → DELIVERED.
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
+        monkeypatch.setattr(
+            session_ready, "capture_session",
+            lambda s, lines=60, pane_index=0: "⏺ Read(foo.py)\n  ⎿ 42 lines\n✶ Working… (esc to interrupt)")
+        from agentwire import prompt_router
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+        assert session_ready.send_verified("s", "my unique multiline prompt")
+
+    def test_placeholder_in_scrollback_is_delivered(self, monkeypatch):
+        # Large paste renders only as the placeholder, still in scrollback.
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
+        monkeypatch.setattr(
+            session_ready, "capture_session",
+            lambda s, lines=60, pane_index=0: "older output...\n❯ [Pasted text #1 +40 lines]\nmore")
+        assert session_ready.send_verified("s", "line one\nline two\n...forty lines")
+
+    def test_genuine_vanish_is_not_delivered(self, monkeypatch):
+        # Empty input box, no activity, nothing in scrollback → NOT delivered.
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
+        monkeypatch.setattr(
+            session_ready, "capture_session",
+            lambda s, lines=60, pane_index=0: "❯ \nBypassing Permissions")
+        from agentwire import prompt_router
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+        assert not session_ready.send_verified("s", "this prompt vanished entirely")
+
+    def test_verification_reads_scrollback(self, monkeypatch):
+        # send_verified must request scrollback, not just the visible tail.
+        self._quiet(monkeypatch)
+        seen = {}
+        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
+
+        def fake_capture(s, lines=60, pane_index=0):
+            seen["lines"] = lines
+            return ""
+        monkeypatch.setattr(session_ready, "capture_session", fake_capture)
+        from agentwire import prompt_router
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+        session_ready.send_verified("s", "anything")
+        assert seen["lines"] == session_ready.VERIFY_SCROLLBACK_LINES
+
+
 class TestCouncilDelegation:
     """council.cli.send_verified / wait_ready now delegate here."""
 

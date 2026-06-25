@@ -11,6 +11,33 @@ through here.
 
 import time
 
+# How far back into scrollback to look when verifying delivery. A fast bypass
+# agent consumes the paste, submits it, and emits tool output within the settle
+# window, scrolling the ``[Pasted text …]`` placeholder / first-line fragment
+# past the visible tail. Verification reads scrollback (not just the visible
+# 60 lines) so a submitted prompt that scrolled up is still found.
+VERIFY_SCROLLBACK_LINES = 200
+
+# Delay for the early snapshot — catches the placeholder/fragment before a fast
+# agent scrolls it away. The remaining settle gives a slow agent time to render.
+EARLY_SETTLE = 0.15
+
+# Substrings that mean "Claude is actively working" — a spinner footer, the
+# token counter, the esc-to-interrupt hint, or tool-output glyphs. A
+# submitted-and-working agent is the success case the old check mistook for a
+# vanished paste.
+ACTIVITY_MARKERS = (
+    "esc to interrupt",
+    "esc-to-interrupt",
+    "tokens",
+    "⎿",  # tool-result indent
+    "⏺",  # tool-call bullet
+    "✶",  # spinner glyphs Claude cycles while thinking
+    "✻",
+    "✽",
+    "✢",
+)
+
 
 def send_to_session(session: str, message: str, pane_index: int = 0) -> None:
     """Inject a message into a session's pane (pane 0 by default)."""
@@ -23,6 +50,30 @@ def capture_session(session: str, lines: int = 60, pane_index: int = 0) -> str:
     from agentwire import pane_manager
 
     return pane_manager.capture_pane(session, pane_index, lines=lines)
+
+
+def pane_shows_activity(capture: str) -> bool:
+    """Does the pane show Claude actively working (spinner / tokens / output)?"""
+    lowered = capture.lower()
+    return any(marker.lower() in lowered for marker in ACTIVITY_MARKERS)
+
+
+def consumed_and_working(session: str, capture: str, pane_index: int = 0) -> bool:
+    """Positive "consumed" signal: input box empty AND pane shows activity.
+
+    A submitted prompt leaves the input box empty while the agent works. We
+    require *both* — empty alone is also the idle/never-received state, so an
+    empty box with no activity is NOT treated as delivered (guards the genuine
+    vanish case against a false positive).
+    """
+    if not pane_shows_activity(capture):
+        return False
+    from agentwire import prompt_router
+
+    try:
+        return prompt_router.prompt_is_empty(session, pane_index)
+    except Exception:
+        return False
 
 
 def wait_for_session_ready(
@@ -131,17 +182,44 @@ def send_verified(
     *marker* if given (council's explicit-marker pattern), otherwise via
     :func:`message_visible` on the message itself. Retry once if not.
 
+    Verification reads *scrollback* (not just the visible tail) and snapshots
+    twice — once ~150ms after the paste (to catch the ``[Pasted text …]``
+    placeholder / fragment before a fast agent scrolls it away) and once after
+    *settle*. A hit at *either* time counts. For the markerless case a positive
+    "consumed" signal (input box went empty AND the pane shows activity) also
+    counts — a submitted-and-working agent is delivery, not failure. The
+    genuine vanish case (empty box, no activity, nothing in scrollback) still
+    returns False.
+
     *pane_index* targets a worker pane (1+) instead of the session's pane 0.
     """
+
+    def confirmed() -> bool:
+        capture = capture_session(
+            session, lines=VERIFY_SCROLLBACK_LINES, pane_index=pane_index
+        )
+        if marker is not None:
+            return marker in capture
+        if message_visible(capture, message):
+            return True
+        return consumed_and_working(session, capture, pane_index=pane_index)
+
     for _ in range(retries + 1):
         send_to_session(session, message, pane_index=pane_index)
-        time.sleep(settle)
+        # Early snapshot — placeholder/fragment still on screen before the
+        # agent consumes and scrolls it away.
+        time.sleep(EARLY_SETTLE)
         try:
-            capture = capture_session(session, pane_index=pane_index)
-            if marker is not None:
-                if marker in capture:
-                    return True
-            elif message_visible(capture, message):
+            if confirmed():
+                return True
+        except Exception:
+            pass
+        # Late snapshot — gives a slow agent time to render the paste.
+        remaining = settle - EARLY_SETTLE
+        if remaining > 0:
+            time.sleep(remaining)
+        try:
+            if confirmed():
                 return True
         except Exception:
             pass
