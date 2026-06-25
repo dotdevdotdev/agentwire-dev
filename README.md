@@ -76,7 +76,7 @@ The portal binds to loopback (`127.0.0.1`) by default. To access the portal from
    ```
 4. **Connect**: Open `https://<your-machine-ip>:8765` on your phone and enter the token when prompted.
 
-Origin checks reject cross-site browser requests on every bind. Keep the portal on a trusted LAN, and never expose it directly to the public internet. See [SECURITY.md](SECURITY.md) for details.
+Origin checks reject cross-site browser requests on every bind. Keep the portal on a trusted LAN — never port-forward it or run it on a public-facing VPS. For internet access, use Cloudflare Tunnel + Zero Trust. See [SECURITY.md](SECURITY.md) for details.
 
 <details>
 <summary><strong>Platform-specific instructions</strong></summary>
