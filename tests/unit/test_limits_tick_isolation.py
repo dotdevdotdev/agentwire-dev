@@ -12,7 +12,7 @@ import pytest
 from agentwire import limits_cli
 
 
-class _Boom(RuntimeError):
+class _Boom(RuntimeError):  # noqa: N818  # test-only stage-failure sentinel, not a public error type
     pass
 
 
