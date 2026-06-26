@@ -855,6 +855,9 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 #   * the subcommand's head feeds an interpreter / command-wrapper (``eval``,
 #     ``bash -c``, ``sh -c``, ``source``, ``xargs``, ``sudo``, ``env`` …) where a
 #     substitution argument becomes the executed command; or
+#   * the substitution is the argument of a command-consuming flag (``find
+#     -exec``/``-execdir``/``-ok``/``-okdir``) — the masked token is the command
+#     word that tool will run (``find . -exec $(echo rm) {} +``); or
 #   * the static skeleton (substitution as one opaque token) already matches a
 #     deny/ask rule (``rm -rf $(...)`` — handled by the normal ladder, since the
 #     masked subcommands are still fed through it).
@@ -878,6 +881,14 @@ _INTERPRETER_HEADS = {
     "eval", "bash", "sh", "zsh", "dash", "ksh", "source", ".",
     "xargs", "sudo", "doas", "env", "command", "exec", "nohup",
     "time", "timeout", "watch", "nice", "setsid", "stdbuf",
+}
+
+# Flags whose FOLLOWING argument is a command word that the tool will execute —
+# the substitution there is run, not passed as data (``find ... -exec $(echo rm)
+# {} +`` smuggles a masked ``rm`` into find's command slot). Same fail-closed
+# reasoning as ``_INTERPRETER_HEADS`` but keyed off the flag, not argv-0 (#502).
+_COMMAND_CONSUMING_FLAGS = {
+    "-exec", "-execdir", "-ok", "-okdir",
 }
 
 
@@ -941,6 +952,11 @@ def _dangerous_substitution(subcommands_tokens: List[List[str]]) -> Optional[str
         # Substitution feeding an interpreter / command-wrapper.
         if head in _INTERPRETER_HEADS and any(_has_subst(t) for t in toks[1:]):
             return "command substitution feeding an interpreter"
+        # Substitution landing in a command-consuming flag's argument (the
+        # command word that ``find -exec`` / ``-ok`` / … will run).
+        for i, tok in enumerate(toks[:-1]):
+            if tok.strip("'\"") in _COMMAND_CONSUMING_FLAGS and _has_subst(toks[i + 1]):
+                return "command substitution in a command-consuming argument"
     return None
 
 

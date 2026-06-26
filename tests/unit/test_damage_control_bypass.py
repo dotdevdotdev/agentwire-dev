@@ -58,6 +58,14 @@ BYPASS_VECTORS = [
     "eval $(echo something)",             # eval always fails closed
     # static skeleton still matches a deny rule even with a benign data sub
     "rm " + _RF + " $(echo /important)",
+    # command substitution in a command-CONSUMING flag's argument — the masked
+    # token is the command word find/-exec will RUN, smuggling a deletion past
+    # the rm matcher. Must re-flag for all four exec-family flags (#502).
+    "find /important -exec $(echo rm) {} +",
+    "find /important -execdir $(echo rm) {} +",
+    "find /important -ok $(echo rm) {} +",
+    "find /important -okdir $(echo rm) {} +",
+    "find /important -exec `echo rm` {} +",
     # non-rm deletion paths
     "find /important -delete",
     "find /important -exec rm {} +",
@@ -120,6 +128,9 @@ SAFE_COMMANDS = [
     "ls $(git rev-parse --show-toplevel)",
     "tar -czf backup.tgz $(ls)",
     "echo result $((1 + 2))",
+    # substitution in a NON-command-consuming flag's argument is data, not a
+    # command word — find -name takes a glob, so it must still pass (#502).
+    "find . -name $(echo '*.py')",
 ]
 
 
