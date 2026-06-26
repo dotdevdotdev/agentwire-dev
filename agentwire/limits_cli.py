@@ -89,6 +89,46 @@ def _fmt_local(iso: str) -> str:
         return str(iso)
 
 
+WATCHDOG_EVENTS_FILE = Path.home() / ".agentwire" / "watchdog-events.jsonl"
+
+
+def _log_stage_failure(stage: str, exc: BaseException) -> None:
+    """Append a stage-failure record to the watchdog events log (best-effort).
+
+    The watchdog runs unattended under launchd; a stage raising must never go
+    silent. We log to stderr (captured in the launchd log) AND to a jsonl event
+    so the failure is both immediately visible and durably auditable.
+    """
+    record = {
+        "ts": datetime.now().astimezone().isoformat(),
+        "event": "stage_failed",
+        "stage": stage,
+        "error": f"{type(exc).__name__}: {exc}",
+    }
+    print(f"watchdog stage '{stage}' failed: {record['error']}", file=sys.stderr)
+    try:
+        WATCHDOG_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(WATCHDOG_EVENTS_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def _run_stage(stage: str, fn, default):
+    """Run one watchdog stage in isolation.
+
+    A raise in one stage is logged and swallowed so the remaining stages still
+    run this cycle — without this guard the first raise propagates out of the
+    CLI dispatcher, the process exits, and every later stage is silently skipped
+    until the next minute's tick (see #490).
+    """
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 — isolate stages, never starve the rest
+        _log_stage_failure(stage, exc)
+        return default
+
+
 def cmd_limits_tick(args) -> int:
     """One watchdog pass (called by launchd every minute).
 
@@ -98,13 +138,21 @@ def cmd_limits_tick(args) -> int:
     looks at the pane, that the inbox only ever delivers to panes the prompt
     sweep already cleared, and that auto-``/clear`` runs LAST so it never fights
     a pending paste/prompt for the same idle, empty box.
+
+    Each stage runs inside :func:`_run_stage` so an exception in one subsystem
+    is logged and skipped rather than aborting the whole cycle (#490).
     """
     from agentwire import inbox, prompt_router, session_context
 
-    result = usage_limit.tick()
-    prompts = prompt_router.tick()
-    messages = inbox.tick()
-    context = session_context.tick()
+    result = _run_stage(
+        "usage_limit", usage_limit.tick,
+        {"skipped": None, "parked": [], "resumed": [], "waiting": []})
+    prompts = _run_stage(
+        "prompt_router", prompt_router.tick, {"routed": [], "deferred": []})
+    messages = _run_stage(
+        "inbox", inbox.tick, {"flushed": [], "deferred": []})
+    context = _run_stage(
+        "session_context", session_context.tick, {"acted": [], "deferred": []})
     if getattr(args, "json", False):
         print(json.dumps({
             **result, "prompts": prompts, "messages": messages, "context": context,
