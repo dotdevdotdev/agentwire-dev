@@ -9,6 +9,12 @@
 # marked `requires_tmux` and deselected here. They still run locally where tmux
 # is on PATH. Per the council guardrail we do NOT chase coverage % or block PRs
 # on flaky/tmux-dependent tests.
+#
+# Coverage is measured and surfaced (term-missing in the log + a table in the
+# run's job summary + an uploaded coverage.xml artifact) but is REPORT-ONLY:
+# there is deliberately no --cov-fail-under, so a low percentage never reds the
+# build. The point is visibility — letting the maintainer spot untested
+# new/changed handlers (#487) — not a threshold gate.
 name: pytest
 
 on:
@@ -31,5 +37,26 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
-      - name: Run test suite (tmux-dependent tests deselected)
-        run: uv run --no-sync pytest -q -m "not requires_tmux"
+      - name: Run test suite (tmux-dependent tests deselected) + coverage
+        run: >
+          uv run --no-sync pytest -q -m "not requires_tmux"
+          --cov=agentwire --cov-report=term-missing --cov-report=xml
+
+      - name: Publish coverage summary (report-only)
+        if: always()
+        run: |
+          {
+            echo '## Coverage (report-only — no threshold gate)'
+            echo ''
+            echo '```'
+            uv run --no-sync coverage report 2>/dev/null || echo 'no coverage data'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage.xml artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
