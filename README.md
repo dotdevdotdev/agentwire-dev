@@ -3,7 +3,11 @@
 </p>
 
 <p align="center">
-  <strong>Talk to your AI coding agents. From anywhere.</strong>
+  <strong>Self-hosted, voice-native control for Claude Code — your machine, your keys, no cloud account.</strong>
+</p>
+
+<p align="center">
+  Orchestrate many agents by voice. Cloned neural voices run on your own CPU.
 </p>
 
 <p align="center">
@@ -16,13 +20,24 @@
 
 ---
 
-## The Problem
+## Why AgentWire
 
-You're on the couch. Your AI agent is on your workstation. You have an idea.
+Remote access to a coding agent is now table stakes — Anthropic ships first-party
+Remote Control, and a crowd of hosted tools ("talk to your agents from anywhere")
+do the same. AgentWire competes on what those structurally can't match:
 
-Old way: Get up. Walk to computer. Type.
+- **Self-hosted, keys-local.** Runs entirely on your hardware. No cloud account, no
+  third party in the loop, no telemetry — your code and your API keys never leave
+  the machine.
+- **Voice-native, not voice-bolted-on.** Push-to-talk in, neural TTS out, with
+  **voice cloning that runs on CPU** — clone a voice and have your agents talk back
+  in it, no GPU required.
+- **Built to orchestrate _many_ agents, not watch one.** Council (multi-soul
+  deliberation), an overnight scheduler, briefing mode, and worktree-parallel
+  workers — tmux- and Claude-Code-native from the ground up.
 
-**AgentWire way:** Pull out phone. Hold button. Talk. Done.
+> **Use the official app to watch one session; use AgentWire to orchestrate many,
+> by voice, on your own hardware.** See [How is this different?](#how-is-this-different)
 
 ---
 
@@ -107,14 +122,48 @@ pip install agentwire-dev
 | Feature | Description |
 |---------|-------------|
 | **Voice Control** | Push-to-talk from any device on your network |
+| **Neural Voice + Cloning** | Kokoro neural TTS out of the box; clone a voice that runs on CPU |
+| **Council** | Fan a prompt to multiple "soul" sessions (brain, conscience, critic…), synthesize with attribution |
+| **Scheduler** | Overnight / recurring autonomous tasks with gates, priorities, and usage-limit recovery |
+| **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
 | **Multi-Session** | Run multiple agents on different projects simultaneously |
 | **Git Worktrees** | Same project, multiple branches, parallel agents |
 | **Remote Machines** | SSH into GPU servers and talk to agents there |
 | **Worker Orchestration** | Spawn worker panes, coordinate tasks, voice commands |
 | **Safety Hooks** | 300+ dangerous commands blocked (rm -rf, force push, etc.) |
-| **TTS Responses** | Agents talk back via browser audio |
 | **Outbound Channels** | Email (Resend) + SMS (Quo / OpenPhone) for cross-device notifications |
 | **Session Roles** | Leader/worker patterns for multi-agent workflows |
+
+---
+
+## How is this different?
+
+Plenty of tools let you reach an agent from your phone. Here's an honest look at
+where AgentWire sits — including where the alternatives win.
+
+| | **AgentWire** | **Omnara** | **Anthropic Remote Control** | **raw SSH + tmux** |
+|---|:---:|:---:|:---:|:---:|
+| Self-hosted (your hardware) | ✅ | ❌ hosted | ❌ via Claude app | ✅ |
+| Cloud account required | ❌ none | ✅ | ✅ Anthropic | ❌ none |
+| Keys / code stay local | ✅ | ❌ | ❌ | ✅ |
+| Neural voice + cloning | ✅ CPU clone | ❌ | ❌ | ❌ |
+| Voice push-to-talk | ✅ | ❌ | ❌ | ❌ |
+| tmux / Claude-Code-native | ✅ | partial | ✅ (Claude only) | ✅ |
+| Multi-agent orchestration | ✅ council, scheduler, workers | partial | ❌ one session | manual |
+| Zero-setup remote access | ⚠️ certs + tunnel | ✅ | ✅ QR scan | ⚠️ |
+| Cloud session persistence | ❌ | ✅ | ✅ | ❌ |
+| License / price | AGPL-3 / commercial | freemium SaaS | bundled w/ Claude | free |
+
+**Where the others win, fairly:** Anthropic's Remote Control is zero-setup — scan a
+QR code and you're live, E2E-encrypted, with push notifications. Omnara gives you
+cloud persistence and a polished native app with no machine to keep running. If you
+want to glance at one session from your phone with nothing to install, those are
+great.
+
+**Where AgentWire wins:** if you want your code and keys to never leave your machine,
+to drive a fleet of agents by voice, and to hear them answer in a voice you cloned —
+on hardware you own — that's the gap AgentWire fills. Full breakdown:
+[`docs/wiki/comparison.md`](docs/wiki/comparison.md).
 
 ---
 
