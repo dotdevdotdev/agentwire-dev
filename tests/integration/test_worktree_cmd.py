@@ -7,7 +7,6 @@ launch stubbed out so the tests stay hermetic.
 
 import subprocess
 from argparse import Namespace
-from pathlib import Path
 
 import pytest
 
@@ -136,7 +135,7 @@ def test_base_flag_wins_over_current(tmp_path, monkeypatch, wt_env):
     # Put the clone's current branch somewhere else entirely.
     _git(clone, "checkout", "-q", "-b", "scratch")
 
-    rc = _run(monkeypatch, _config(wt_dir := tmp_path / "worktrees"),
+    rc = _run(monkeypatch, _config(tmp_path / "worktrees"),
               name="hot", base="release", current=True, project=str(clone))
     assert rc == 0
     assert reg.entries(clone.resolve())[0]["base"] == "release"

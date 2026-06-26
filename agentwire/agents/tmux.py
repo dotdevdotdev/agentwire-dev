@@ -8,8 +8,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .base import AgentBackend
 from ..ssh import ssh_base_opts
+from .base import AgentBackend
 
 logger = logging.getLogger(__name__)
 

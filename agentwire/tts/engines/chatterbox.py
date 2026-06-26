@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Iterator
 
-import torch
-
 from ..base import TTSCapabilities, TTSEngine, TTSRequest, TTSResult
 
 
@@ -139,6 +137,7 @@ class ChatterboxStreamingEngine(TTSEngine):
     def generate_stream(self, request: TTSRequest) -> Iterator[bytes]:
         """Generate audio as streaming chunks."""
         import io
+
         import torchaudio
 
         voice_path = None

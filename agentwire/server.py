@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 import aiohttp
 import aiohttp_jinja2
@@ -704,7 +704,6 @@ class AgentWireServer:
         """
         import socket
 
-        import yaml
         local_hostname = socket.gethostname().split('.')[0]
 
         is_local = machine_id is None or machine_id == "local" or machine_id == local_hostname
@@ -755,7 +754,6 @@ class AgentWireServer:
         """
         import socket
 
-        import yaml
         local_hostname = socket.gethostname().split('.')[0]
 
         is_local = machine_id is None or machine_id == "local" or machine_id == local_hostname
@@ -1801,10 +1799,10 @@ class AgentWireServer:
         message and speaks it via say(). The dashboard itself must have at
         least one connected client — no listeners means no nags.
         """
-        NAG_INTERVAL = 120  # seconds between scans
-        NAG_IDLE_THRESHOLD = 120  # seconds idle before including in nag (2 min minimum)
-        NAG_SESSION = "agentwire-notifications"
-        SERVICE_PREFIX = "agentwire-"
+        NAG_INTERVAL = 120  # seconds between scans  # noqa: N806  # function-local constant
+        NAG_IDLE_THRESHOLD = 120  # seconds idle before including in nag (2 min minimum)  # noqa: N806  # function-local constant
+        NAG_SESSION = "agentwire-notifications"  # noqa: N806  # function-local constant
+        SERVICE_PREFIX = "agentwire-"  # noqa: N806  # function-local constant
         nag_counts: dict[str, int] = {}  # session -> nag count this idle episode
         # session -> last_output_timestamp captured at its last nag. Drives the
         # edge-trigger: a continuously-idle session keeps a fixed timestamp, so
@@ -1988,7 +1986,7 @@ class AgentWireServer:
         """
         from .services import WatchdogState
 
-        TICK = 15  # seconds between scheduling passes
+        TICK = 15  # seconds between scheduling passes  # noqa: N806  # function-local constant
         states: dict[str, WatchdogState] = {}
         last_check: dict[str, float] = {}
 
@@ -5209,8 +5207,8 @@ projects:
         full thread via ``/api/council/live?sitting=<name>``.
         """
         try:
-            from .council import state as council_state
             from .council import inbox as council_inbox
+            from .council import state as council_state
             from .council import view as council_view
 
             out = []
@@ -5408,7 +5406,9 @@ projects:
         browser swaps a single tile with no re-fetch and no flicker. A new prompt
         round emits ``{reset: True}`` so the board refetches its snapshot.
         """
-        from .council import inbox, state as council_state, view as council_view
+        from .council import inbox
+        from .council import state as council_state
+        from .council import view as council_view
 
         seen: dict[str, dict] = {}  # name -> {prompt_id, files: {name: mtime}}
         logger.info("[Council] Board watcher started")

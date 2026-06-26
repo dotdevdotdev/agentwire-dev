@@ -512,7 +512,6 @@ def _compute_recurrence(schedule: Schedule, last_run_ts: float) -> float:
 
     Returns a Unix timestamp of when the task becomes eligible.
     """
-    now = time.time()
     every = schedule.every
 
     if not every:
@@ -538,7 +537,6 @@ def _compute_recurrence(schedule: Schedule, last_run_ts: float) -> float:
     now_local = datetime.now()
 
     # Find today's target time
-    import calendar
     from datetime import timedelta
     target_today = now_local.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
 
@@ -562,7 +560,6 @@ def _compute_next_eligible(board: Board, task_name: str) -> float | None:
     """
     task = board.tasks[task_name]
     schedule = task.schedule
-    state = board.state.get(task_name, TaskState())
     last_run_ts = _get_last_run_ts(board, task_name)
 
     # Start with recurrence-based eligibility

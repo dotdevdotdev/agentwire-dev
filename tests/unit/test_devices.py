@@ -159,8 +159,9 @@ class TestConcurrency:
         reg = DeviceRegistry(reg_path)
         device, token = reg.add("phone")
         # Make last_seen stale so touch() actually wants to write.
-        from agentwire.devices import _read_devices, _atomic_write_json, _iso
         from dataclasses import asdict
+
+        from agentwire.devices import _atomic_write_json, _iso, _read_devices
         ds = _read_devices(reg_path)
         ds[0].last_seen = _iso(0)
         _atomic_write_json(reg_path, {"devices": [asdict(d) for d in ds]})

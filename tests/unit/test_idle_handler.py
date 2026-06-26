@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-
 HOOK_PATH = (
     Path(__file__).resolve().parent.parent.parent
     / "agentwire" / "hooks" / "idle-handler.sh"
@@ -74,8 +73,8 @@ class TestSecondIdleCleanup:
 
     def test_context_removed_when_session_left_alive(self):
         lines = HOOK_PATH.read_text().splitlines()
-        marker = [i for i, l in enumerate(lines)
-                  if "exit_on_complete=false, session left alive" in l]
+        marker = [i for i, line in enumerate(lines)
+                  if "exit_on_complete=false, session left alive" in line]
         assert marker, "persistent branch (exit_on_complete=false) missing from hook"
         preceding = "\n".join(lines[max(0, marker[0] - 6):marker[0]])
         assert 'rm "$task_context_file"' in preceding, (

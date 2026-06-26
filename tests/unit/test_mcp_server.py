@@ -1,11 +1,9 @@
 """Tests for agentwire/mcp_server.py — format functions, run_agentwire_cmd, helpers."""
 
-import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Format functions — empty/missing-key/multi-entry behavior is parametrized;
@@ -478,6 +476,7 @@ class TestTtsToolPromptFetch:
 
     def test_custom_shim_prompt_returned(self, tmp_path, monkeypatch):
         import io
+
         from agentwire import mcp_server
         from agentwire.config import load_config
         cfg = load_config(tmp_path / "nonexistent.yaml")

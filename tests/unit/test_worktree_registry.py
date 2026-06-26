@@ -1,6 +1,5 @@
 """Tests for agentwire/worktree_registry.py — local branch↔session store."""
 
-from pathlib import Path
 
 import pytest
 
@@ -105,8 +104,8 @@ def test_concurrent_registration_threads_all_survive(tmp_path):
 
 def test_concurrent_registration_processes_all_survive(tmp_path, monkeypatch):
     """Cross-PROCESS contention (the real dispatch case) — flock must serialize."""
-    import sys
     import subprocess as sp
+    import sys
 
     registry_dir = tmp_path / "wt-registry"
     repo = tmp_path / "monorepo"

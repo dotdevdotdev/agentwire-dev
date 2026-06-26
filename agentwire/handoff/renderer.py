@@ -13,7 +13,6 @@ import jinja2
 
 from .schema import BundleData
 
-
 _TABS = (
     {"id": "overview", "label": "Overview"},
     {"id": "goal", "label": "The Goal"},

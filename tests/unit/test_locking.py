@@ -1,6 +1,6 @@
 """Tests for agentwire/locking.py — Lock path sanitization."""
 
-from agentwire.locking import _get_lock_path, LOCKS_DIR
+from agentwire.locking import LOCKS_DIR, _get_lock_path
 
 
 class TestLockPathSanitization:

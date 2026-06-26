@@ -1,20 +1,19 @@
 """Tests for agentwire/project_config.py — SessionType, ProjectConfig, normalize."""
 
+
 import pytest
 import yaml
-from pathlib import Path
 
 from agentwire.project_config import (
-    SessionType,
     ProjectConfig,
+    SessionType,
     compose_session_type,
     ensure_gitignored,
-    normalize_session_type,
     find_project_config,
     load_project_config,
+    normalize_session_type,
     save_project_config,
 )
-
 
 # --- SessionType.from_str ---
 

@@ -102,9 +102,9 @@ def transcribe_via_server(audio_path: Path, stt_url: str, timeout: int = 30) -> 
 
     Returns transcribed text on success, None if server unavailable.
     """
-    import urllib.request
-    import urllib.error
     import json
+    import urllib.error
+    import urllib.request
 
     try:
         # Check if server is healthy first (fast fail)

@@ -1,0 +1,33 @@
+# Ruff lint gate (#485).
+#
+# `ruff` was a declared dev dep with full config ([tool.ruff.lint]
+# select = E,F,I,N,W in pyproject.toml) but no workflow ever invoked it, so
+# lint regressions landed on main unnoticed — including a guaranteed
+# NameError crash in `agentwire hooks status` that sat for ~5 months because
+# only a pyflakes-class gate catches an undefined name in a code path with no
+# test coverage. This runs ruff on every PR and every push to main and fails
+# the build on any lint error in the configured set.
+name: ruff
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ruff:
+    name: ruff (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run ruff (configured set in pyproject.toml)
+        run: uv run --no-sync ruff check agentwire/ tests/

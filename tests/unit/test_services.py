@@ -1,7 +1,6 @@
 """Tests for agentwire/services.py — registry, healthchecks, watchdog policy (#214)."""
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -13,7 +12,7 @@ from agentwire.config import (
     ServicesConfig,
     _dict_to_config,
 )
-from agentwire.services import WatchdogState, BACKOFF_BASE, BACKOFF_CAP
+from agentwire.services import BACKOFF_BASE, BACKOFF_CAP, WatchdogState
 
 
 @pytest.fixture

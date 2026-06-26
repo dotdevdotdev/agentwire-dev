@@ -6,16 +6,16 @@ from pathlib import Path
 import pytest
 
 from agentwire.worktree import (
-    parse_session_name,
-    get_session_path,
-    is_git_repo,
-    get_project_type,
-    ensure_worktree,
-    git_root,
-    default_base_branch,
-    slugify,
     apply_naming,
+    default_base_branch,
+    ensure_worktree,
+    get_project_type,
+    get_session_path,
+    git_root,
+    is_git_repo,
     is_valid_branch_name,
+    parse_session_name,
+    slugify,
 )
 
 

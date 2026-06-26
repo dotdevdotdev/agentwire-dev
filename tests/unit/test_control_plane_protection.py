@@ -20,7 +20,6 @@ from agentwire.safety._core import (
     load_safety_config,
 )
 
-
 CONTROL_PLANE_FILES = [
     os.path.expanduser("~/.agentwire/damagecontrol.yml"),
     "/some/repo/.damagecontrol.yml",
@@ -243,7 +242,7 @@ def _base_cfg():
     return c
 
 
-def test_agentwire_yml_allowlist_does_NOT_repermit_protected(tmp_path, monkeypatch):
+def test_agentwire_yml_allowlist_does_NOT_repermit_protected(tmp_path, monkeypatch):  # noqa: N802  # caps emphasize the negative assertion
     """BUG REPRODUCER: .agentwire.yml safety.allowed_paths must NOT re-permit a
     protected path — otherwise an agent edits .agentwire.yml to free itself."""
     (tmp_path / ".agentwire.yml").write_text(
@@ -263,7 +262,7 @@ def test_agentwire_yml_allowlist_does_NOT_repermit_protected(tmp_path, monkeypat
     assert result.get("protected") is True
 
 
-def test_damagecontrol_yml_allowlist_DOES_repermit_protected(tmp_path, monkeypatch):
+def test_damagecontrol_yml_allowlist_DOES_repermit_protected(tmp_path, monkeypatch):  # noqa: N802  # caps emphasize the positive assertion
     """Host-side opt-in works: an allowed_paths entry in the PROTECTED
     .damagecontrol.yml re-permits the agent to edit that path."""
     (tmp_path / ".damagecontrol.yml").write_text(

@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Iterator
 
-import torch
-
 from ..base import TTSCapabilities, TTSEngine, TTSRequest, TTSResult
 
 SUPPORTED_LANGUAGES = ["English", "Japanese", "Chinese", "French", "German"]

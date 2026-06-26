@@ -1,6 +1,6 @@
 """Tests for agentwire/history.py — Path encoding/decoding."""
 
-from agentwire.history import encode_project_path, decode_project_path
+from agentwire.history import decode_project_path, encode_project_path
 
 
 class TestPathEncoding:

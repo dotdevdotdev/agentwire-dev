@@ -7,7 +7,6 @@ import pytest
 
 from agentwire.roles import RoleConfig
 
-
 # Mock for load_config() in __main__ used by the pi-* branch.
 # Keys are env-only (~/.agentwire/.env) — config holds the env var NAME.
 FAKE_CONFIG = {

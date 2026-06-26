@@ -7,8 +7,6 @@ others stay green — without disrupting the live :8101 shim / :8765 portal.
 
 from types import SimpleNamespace
 
-import pytest
-
 from agentwire import doctor_voice as dv
 
 

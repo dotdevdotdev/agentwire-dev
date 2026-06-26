@@ -3,11 +3,9 @@
 import argparse
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
-import pytest
 import yaml
-
 
 # --- _recent_activity (scheduler status helper) ---
 
@@ -45,7 +43,6 @@ class TestRecentActivity:
 class TestCmdRolesList:
     def test_json_output(self, capsys):
         """cmd_roles_list --json should return bundled roles."""
-        from agentwire.__main__ import _output_json
 
         # Directly test that roles are loadable
         from agentwire.roles import discover_role, parse_role_file
@@ -285,6 +282,7 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
     cmd_fork pass to load_roles (i.e. resolve_roles + inject_soul output).
     """
     from types import SimpleNamespace
+
     import agentwire.__main__ as mod
 
     cap = _RoleCapture()
@@ -472,6 +470,7 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
     passes to load_roles (resolve_roles + inject_soul output).
     """
     from types import SimpleNamespace
+
     import agentwire.__main__ as mod
     import agentwire.history as hist
 

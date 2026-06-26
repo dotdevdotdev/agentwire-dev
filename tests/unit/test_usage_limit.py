@@ -6,7 +6,7 @@ The dialog fixture is the real pane capture from the 2026-06-10 incident
 
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
