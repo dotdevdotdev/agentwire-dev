@@ -12,13 +12,19 @@ on:
     branches: [main]
     paths:
       - "pyproject.toml"
+      - "uv.lock"
       - "agentwire/tts/**"
       - ".github/workflows/tts-smoke.yml"
   pull_request:
     paths:
       - "pyproject.toml"
+      - "uv.lock"
       - "agentwire/tts/**"
       - ".github/workflows/tts-smoke.yml"
+  # Transitive wheel/onnxruntime changes can break Intel-mac resolution without
+  # touching any path above; a weekly cron catches that proactively (#487).
+  schedule:
+    - cron: "0 7 * * 2"  # Tuesdays 07:00 UTC
 
 jobs:
   torchless-import:
