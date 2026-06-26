@@ -87,12 +87,23 @@ def session_lock(
         lock_file = open(lock_path, "w")
 
         if wait:
-            # Blocking with timeout
+            # Blocking with timeout.
+            #
+            # We rely on flock's kernel-level guarantee: when a lock holder
+            # dies, the kernel automatically releases its flock, so the next
+            # LOCK_EX|LOCK_NB poll on this same file simply succeeds. There is
+            # no need (and it is unsafe) to unlink a "stale" lock file based on
+            # a separately-observed dead PID: between reading that PID and the
+            # unlink, another process can acquire the flock and write its own
+            # PID, and the unlink would then delete a *live* holder's lock —
+            # breaking mutual exclusion (issue #491). The flock acquisition
+            # below is itself the ownership check; acquiring it proves the
+            # prior holder is gone, and we never remove a file we don't hold.
             start_time = time.time()
             while True:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break  # Lock acquired
+                    break  # Lock acquired (prior holder, if any, is gone)
                 except BlockingIOError:
                     elapsed = time.time() - start_time
                     if elapsed >= timeout:
@@ -100,15 +111,6 @@ def session_lock(
                             f"Timeout waiting for lock on session '{session}' "
                             f"after {timeout:.1f}s"
                         )
-                    # Check if the lock holder is still alive
-                    holder_pid = get_lock_holder(session)
-                    if holder_pid is not None and not _is_process_running(holder_pid):
-                        # Stale lock from a dead process — clean it up
-                        remove_lock(session)
-                        # Close our current file handle (the old lock file is gone)
-                        lock_file.close()
-                        lock_file = open(lock_path, "w")
-                        continue  # Retry immediately
                     time.sleep(poll_interval)
         else:
             # Non-blocking - fail immediately if locked
