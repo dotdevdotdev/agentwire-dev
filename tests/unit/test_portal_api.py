@@ -1301,3 +1301,57 @@ class TestPerDeviceAuth:
             )).status == 200
 
 
+
+
+# ---------------------------------------------------------------------------
+# Static assets: WebP icons, gzip, Cache-Control (#488)
+# ---------------------------------------------------------------------------
+
+
+class TestStaticAssets:
+    async def test_icons_listing_returns_webp(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/api/icons/sessions")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["default"], "expected default icons"
+        assert all(name.endswith(".webp") for name in data["default"])
+        assert all(name.endswith(".webp") for name in data["custom"])
+
+    async def test_js_served_gzipped_with_cache(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get(
+            "/static/js/icon-manager.js", headers={"Accept-Encoding": "gzip"}
+        )
+        assert resp.status == 200
+        assert resp.headers["Content-Encoding"] == "gzip"
+        assert "max-age" in resp.headers["Cache-Control"]
+        assert resp.content_type == "text/javascript"
+
+    async def test_image_has_long_cache_and_no_gzip(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get(
+            "/static/icons/sessions/fox.webp", headers={"Accept-Encoding": "gzip"}
+        )
+        assert resp.status == 200
+        assert resp.headers.get("Content-Encoding") is None
+        assert "max-age=604800" in resp.headers["Cache-Control"]
+        assert resp.content_type == "image/webp"
+
+    async def test_no_gzip_without_accept_encoding(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get(
+            "/static/js/icon-manager.js", headers={"Accept-Encoding": "identity"}
+        )
+        assert resp.status == 200
+        assert resp.headers.get("Content-Encoding") is None
+
+    async def test_path_traversal_blocked(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/static/../server.py")
+        assert resp.status == 404
+
+    async def test_missing_static_returns_404(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/static/does-not-exist.js")
+        assert resp.status == 404
