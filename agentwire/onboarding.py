@@ -153,7 +153,7 @@ def get_install_instructions(platform: str) -> dict[str, str]:
 # ─────────────────────────────────────────────────────────────
 
 
-def run_onboarding(skip_session: bool = False) -> int:
+def run_onboarding(skip_session: bool = True) -> int:
     """Run the minimal onboarding wizard.
 
     Asks 3 questions:
@@ -161,10 +161,13 @@ def run_onboarding(skip_session: bool = False) -> int:
     2. Agent (Claude Code)
     3. Topology (Standalone / Multi-machine)
 
-    Then writes minimal config and spawns Claude for interactive setup.
+    Then writes minimal config and ends on the concrete portal-URL next
+    steps (the default), or spawns Claude for interactive setup (--assisted).
 
     Args:
-        skip_session: If True, skip spawning Claude session at the end.
+        skip_session: If True (the default), end the wizard on the portal-URL
+            next-steps block. If False (--assisted), spawn the interactive
+            Claude setup session at the end.
     """
     print()
     print(f"{BOLD}Welcome to AgentWire Setup!{RESET}")
@@ -468,7 +471,7 @@ services:
         print(f"  1. {CYAN}agentwire portal start{RESET}")
         print(f"  2. Open {CYAN}{portal_open_url}{RESET} in Chrome — voice works immediately")
         print()
-        print_info("Run 'agentwire init' again to complete setup with Claude's help.")
+        print_info("Run 'agentwire init --assisted' to configure TTS/STT with Claude's help.")
         return 0
 
     print()
