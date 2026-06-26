@@ -844,12 +844,26 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 # ``R=rm; $R -rf /x`` ($VAR indirection) all read as ALLOWED while literal
 # ``rm -rf /x`` blocked. We now ALSO match against a normalized form where
 # quotes/escapes are removed (via ``shlex``) and simple ``$VAR`` assignments are
-# resolved, split per subcommand. Anything we cannot tokenize safely — command
-# substitution (``$(...)`` / backticks), ``eval``, a ``base64 -d | sh`` pipeline,
-# or unbalanced quotes — FAILS CLOSED (escalated to ``ask``, which the unattended
-# resolver turns into a block).
+# resolved, split per subcommand. ``eval`` and a ``base64 -d | sh`` pipeline are
+# unconditionally unverifiable and FAIL CLOSED (escalated to ``ask``, which the
+# unattended resolver turns into a block).
+#
+# Command substitution (``$(...)`` / backticks) is handled position-aware (#502).
+# Failing closed on ALL substitution over-blocked benign data-argument use that
+# agents run constantly (``echo $(date)``, ``git log --since=$(date ...)``,
+# ``cat "$(pwd)/file"``). Instead we MASK each substitution to one opaque token
+# and escalate only when the substitution lands in a DANGEROUS position:
+#   * it is the command word (argv-0) of a subcommand, or its argv-0 begins with
+#     a substitution — what runs comes from the substitution's *output*, which we
+#     can't see (``$(echo rm) -rf /`` — the benign-looking inner is irrelevant); or
+#   * the subcommand's head feeds an interpreter / command-wrapper (``eval``,
+#     ``bash -c``, ``sh -c``, ``source``, ``xargs``, ``sudo``, ``env`` …) where a
+#     substitution argument becomes the executed command; or
+#   * the static skeleton (substitution as one opaque token) already matches a
+#     deny/ask rule (``rm -rf $(...)`` — handled by the normal ladder, since the
+#     masked subcommands are still fed through it).
+# Pure data-argument substitution to a known-safe head command passes.
 
-_SUBSTITUTION_RE = re.compile(r"\$\(|`")
 _EVAL_RE = re.compile(r"(?:^|[\s;&|({])eval(?:\s|$)")
 _BASE64_PIPE_RE = re.compile(r"\bbase64\b[^\n|]*(?:-d|--decode)[^\n|]*\|", re.IGNORECASE)
 _ASSIGN_RE = re.compile(
@@ -857,15 +871,91 @@ _ASSIGN_RE = re.compile(
 )
 _SHELL_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
 
+# Opaque stand-in for a masked command substitution. Alphanumeric + underscores
+# so it survives shlex tokenization and never matches a path/rule on its own.
+_SUBST_PLACEHOLDER = "__awsubst__"
+
+# Heads where a substitution ARGUMENT becomes (part of) what gets executed, so a
+# substitution anywhere in the subcommand is dangerous: interpreters that run
+# their args/stdin as code, and command-wrappers whose next argv is the command.
+_INTERPRETER_HEADS = {
+    "eval", "bash", "sh", "zsh", "dash", "ksh", "source", ".",
+    "xargs", "sudo", "doas", "env", "command", "exec", "nohup",
+    "time", "timeout", "watch", "nice", "setsid", "stdbuf",
+}
+
+
+def _mask_substitutions(command: str) -> Tuple[str, bool, bool]:
+    """Replace each ``$(...)`` / ```...``` with a placeholder token.
+
+    Returns ``(masked, had_substitution, unbalanced)``. ``unbalanced`` is True
+    when a substitution is opened but never closed (we fail closed on it). Nested
+    ``$(...)`` parens are balanced; arithmetic ``$((...))`` is masked too (it is
+    inert data, never command position).
+    """
+    out: List[str] = []
+    i = 0
+    n = len(command)
+    had = False
+    while i < n:
+        c = command[i]
+        if c == "`":
+            j = command.find("`", i + 1)
+            if j == -1:
+                return "".join(out) + command[i:], True, True
+            out.append(_SUBST_PLACEHOLDER)
+            had = True
+            i = j + 1
+        elif c == "$" and i + 1 < n and command[i + 1] == "(":
+            depth = 1
+            j = i + 2
+            while j < n and depth > 0:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                return "".join(out) + command[i:], True, True
+            out.append(_SUBST_PLACEHOLDER)
+            had = True
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), had, False
+
+
+def _has_subst(tok: str) -> bool:
+    return _SUBST_PLACEHOLDER in tok
+
+
+def _dangerous_substitution(subcommands_tokens: List[List[str]]) -> Optional[str]:
+    """Return a reason if any masked substitution sits in a dangerous position.
+
+    ``subcommands_tokens`` is the per-subcommand token list (placeholders intact).
+    """
+    for toks in subcommands_tokens:
+        if not toks:
+            continue
+        head = toks[0].strip("'\"")
+        # Substitution in command position — its output is what runs.
+        if _has_subst(toks[0]):
+            return "command substitution in command position"
+        # Substitution feeding an interpreter / command-wrapper.
+        if head in _INTERPRETER_HEADS and any(_has_subst(t) for t in toks[1:]):
+            return "command substitution feeding an interpreter"
+    return None
+
 
 def detect_obfuscation(command: str) -> Optional[str]:
     """Return a reason string if ``command`` hides intent behind shell features.
 
-    These constructs can smuggle a dangerous command past static matching, so we
-    decline to reason about them and fail closed instead.
+    ``eval`` and ``base64 -d | sh`` are unconditionally unverifiable — they run
+    their argument/stdin as code, so we decline to reason about them and fail
+    closed. Command substitution is NOT flagged here; it is handled position-aware
+    in :func:`normalize_subcommands` (#502).
     """
-    if _SUBSTITUTION_RE.search(command):
-        return "command substitution"
     if _EVAL_RE.search(command):
         return "eval"
     if _BASE64_PIPE_RE.search(command):
@@ -877,23 +967,29 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
     """Tokenize ``command`` and return ``(normalized_subcommands, ambiguous)``.
 
     ``normalized_subcommands`` is the per-subcommand argv re-joined with single
-    spaces, after ``shlex`` has stripped quotes/escapes and simple ``$VAR``
-    assignments earlier in the same command have been resolved. ``ambiguous`` is
-    a reason string when the command can't be tokenized safely (and the caller
-    should fail closed); it is ``None`` on success.
+    spaces, after command substitutions have been masked to an opaque token,
+    ``shlex`` has stripped quotes/escapes, and simple ``$VAR`` assignments earlier
+    in the same command have been resolved. ``ambiguous`` is a reason string when
+    the command can't be verified safely (and the caller should fail closed); it
+    is ``None`` on success. Benign data-argument substitution returns its masked
+    skeleton with ``ambiguous=None`` so the normal rule ladder still inspects it.
     """
     obf = detect_obfuscation(command)
     if obf:
         return [], obf
 
+    masked, had_subst, unbalanced = _mask_substitutions(command)
+    if unbalanced:
+        return [], "unbalanced command substitution"
+
     # Resolve simple ``VAR=value`` assignments so ``R=rm; $R -rf`` normalizes to
     # ``rm -rf``. Only literal values (no nested expansion) are resolved.
     assigns: Dict[str, str] = {}
-    for m in _ASSIGN_RE.finditer(command):
+    for m in _ASSIGN_RE.finditer(masked):
         assigns[m.group(1)] = m.group(2).strip("'\"")
 
     try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:
@@ -905,17 +1001,22 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
         return tok
 
     subs: List[str] = []
+    sub_tokens: List[List[str]] = []
     cur: List[str] = []
     for tok in tokens:
         if tok in _SHELL_OPERATORS:
             if cur:
                 subs.append(" ".join(cur))
+                sub_tokens.append(cur)
                 cur = []
             continue
         cur.append(_resolve(tok))
     if cur:
         subs.append(" ".join(cur))
-    return subs, None
+        sub_tokens.append(cur)
+
+    ambiguous = _dangerous_substitution(sub_tokens) if had_subst else None
+    return subs, ambiguous
 
 
 # ============================================================================
