@@ -41,6 +41,7 @@ from .usage_limit import (
 )
 from .usage_limit import detect_dialog as _usage_limit_dialog
 from .usage_limit import is_parked as _is_parked
+from .utils.event_log import append_event
 
 STATE_DIR = Path.home() / ".agentwire" / "prompt-router"
 EVENTS_FILE = Path.home() / ".agentwire" / "prompt-router-events.jsonl"
@@ -392,12 +393,7 @@ def detect_prompt(visible: str) -> "PromptInfo | None":
 
 def _log_event(event: str, **fields) -> None:
     record = {"ts": _now().isoformat(), "event": event, **fields}
-    try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(EVENTS_FILE, "a") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError:
-        pass
+    append_event(EVENTS_FILE, record)
 
 
 def marker_path(session: str, pane_index: int) -> Path:

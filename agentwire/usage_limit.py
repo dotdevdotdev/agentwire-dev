@@ -40,6 +40,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .utils.event_log import append_event
+
 STATE_DIR = Path.home() / ".agentwire" / "usage-limit"
 DONE_DIR = STATE_DIR / "done"
 EVENTS_FILE = Path.home() / ".agentwire" / "usage-limit-events.jsonl"
@@ -110,12 +112,7 @@ def _atomic_write(path: Path, data: dict) -> None:
 def log_event(event: str, **fields) -> None:
     """Append an event to the usage-limit events log (best-effort)."""
     record = {"ts": _now().isoformat(), "event": event, **fields}
-    try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(EVENTS_FILE, "a") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError:
-        pass
+    append_event(EVENTS_FILE, record)
 
 
 def _tmux(args: list[str], timeout: float = 5) -> subprocess.CompletedProcess:

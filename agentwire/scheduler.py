@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from .config import get_config
+from .utils.event_log import append_event
 
 
 def _sched_config():
@@ -844,11 +845,9 @@ def _log_event(event: str, **fields) -> None:
     }
     try:
         events_path = _sched_config().events_file
-        events_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(events_path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError:
-        pass
+    except Exception:
+        return
+    append_event(events_path, entry)
 
 
 def _write_live_state(**fields) -> None:
