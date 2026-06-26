@@ -34,7 +34,7 @@ import jinja2
 import yaml
 from aiohttp import web
 
-from . import prompt_router
+from . import prompt_router, security
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
 from .security import (
@@ -224,7 +224,9 @@ class AgentWireServer:
         self.app = web.Application(
             middlewares=[
                 create_security_middleware(
-                    config.server.auth_token, config.server.allowed_origins
+                    config.server.auth_token,
+                    config.server.allowed_origins,
+                    on_lockout=self._on_auth_lockout,
                 )
             ]
         )
@@ -1053,6 +1055,37 @@ class AgentWireServer:
         # Drop IP buckets that pruned to empty so the dict can't grow unbounded.
         self._pair_attempts = {k: v for k, v in self._pair_attempts.items() if v}
         return True
+
+    def _on_auth_lockout(self, ip: str, failures: int) -> None:
+        """Owner-notify when an IP is locked out for auth-token spraying (#498).
+
+        The security middleware calls this synchronously on the lockout-crossing;
+        send_email blocks (HTTP to Resend), so offload it to a thread to keep the
+        event loop responsive. Best-effort — a failed email never wedges auth.
+        """
+        import socket as _socket
+
+        def _send() -> None:
+            try:
+                from .channels.email import send_email
+
+                send_email(
+                    subject=f"[agentwire] portal auth lockout: {ip}",
+                    body=(
+                        f"The portal on `{_socket.gethostname()}` locked out "
+                        f"`{ip}` after {failures} failed auth attempts within "
+                        f"{int(security.AUTH_FAIL_WINDOW)}s — possible token spray "
+                        "against an exposed portal. Further requests from that IP "
+                        "are rejected with 429 until the window clears."
+                    ),
+                )
+            except Exception:
+                logger.exception("auth-lockout owner email failed")
+
+        try:
+            asyncio.get_running_loop().run_in_executor(None, _send)
+        except RuntimeError:
+            _send()
 
     async def api_pair(self, request: web.Request) -> web.Response:
         """Redeem a pairing code for a freshly-minted device token (#423).

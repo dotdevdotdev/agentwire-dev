@@ -334,7 +334,10 @@ def test_ssh_connectivity(host: str, user: Optional[str] = None, timeout: int = 
                 "ssh",
                 *ssh_base_opts(),
                 "-o", f"ConnectTimeout={timeout}",
-                "-o", "StrictHostKeyChecking=accept-new",
+                # Do NOT TOFU-accept unknown host keys (was accept-new): an
+                # unrecognised host is treated as unreachable, not silently
+                # trusted. Hosts must be in known_hosts to probe as healthy.
+                "-o", "StrictHostKeyChecking=yes",
                 "-o", "BatchMode=yes",
                 target,
                 "echo ok",
@@ -366,12 +369,19 @@ def test_service_health(url: str, timeout: int = 5) -> tuple[bool, Optional[str]
     import ssl
     import urllib.error
     import urllib.request
+    from urllib.parse import urlparse
+
+    from .security import is_loopback_host
 
     try:
-        # Create SSL context that accepts self-signed certs
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        # Only disable TLS verification for loopback targets (self-signed local
+        # dev certs). Remote health URLs get full certificate + hostname
+        # verification — no blanket CERT_NONE (CWE-295).
+        host = urlparse(url).hostname or ""
+        if is_loopback_host(host):
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
 
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
