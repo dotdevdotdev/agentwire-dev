@@ -28,8 +28,9 @@ import ipaddress
 import logging
 import re
 import secrets
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 import yaml
@@ -144,17 +145,39 @@ def is_loopback_host(host: str) -> bool:
 
 
 def validate_startup_security(config) -> None:
-    """Refuse non-loopback binds without an auth token.
+    """Refuse unsafe non-loopback binds.
+
+    Two guards, both only apply when the bind host is reachable from the network:
+
+    1. **No auth token** — refuse always (the portal would be wide open).
+    2. **Plaintext transport** — when TLS is off, the bearer token rides the wire
+       in cleartext (``Authorization: Bearer <token>``). Refuse unless the
+       operator explicitly opts in with ``server.allow_insecure: true`` (the BYO
+       reverse-tunnel case, where the tunnel terminates TLS and connects to the
+       portal locally).
 
     Call after ``ensure_auth_token()`` has populated config.server.auth_token.
     """
-    if not is_loopback_host(config.server.host) and not config.server.auth_token:
+    if is_loopback_host(config.server.host):
+        return
+    if not config.server.auth_token:
         raise SystemExit(
             f"Refusing to start: server.host is {config.server.host!r} (reachable "
             "from the network) but portal auth is disabled (server.auth_token: \"\" "
             "in config). Either remove auth_token from config to use the generated "
             "token, run `agentwire portal token --rotate` to create one, or bind "
             "to 127.0.0.1."
+        )
+    if not config.server.ssl.enabled and not getattr(
+        config.server, "allow_insecure", False
+    ):
+        raise SystemExit(
+            f"Refusing to start: server.host is {config.server.host!r} (reachable "
+            "from the network) but TLS is not configured, so the auth token would "
+            "transit the network in cleartext (Authorization: Bearer ...). Either "
+            "configure server.ssl.cert/key, bind to 127.0.0.1, or — if a reverse "
+            "tunnel terminates TLS in front of the portal — set "
+            "server.allow_insecure: true to acknowledge the plaintext local bind."
         )
 
 
@@ -320,13 +343,72 @@ def resolve_device(provided: Optional[str], auth_token: Optional[str]) -> Option
     return devices_mod.load_registry_cached().resolve(provided)
 
 
-def create_security_middleware(auth_token: Optional[str], allowed_origins: list):
+# ---------------------------------------------------------------------------
+# Auth-failure tracking + lockout (gap #5)
+
+# A token-spray against an internet-exposed portal must not be invisible. We log
+# every rejected credential and count failures per source IP over a sliding
+# window; once a non-loopback IP crosses the threshold it is locked out (429)
+# for the rest of the window and the owner is notified once. Loopback is never
+# counted or locked — local dev/CLI/MCP/hooks fail-and-retry freely.
+AUTH_FAIL_WINDOW = 300.0  # seconds
+AUTH_FAIL_LOCKOUT = 10    # failures within the window before an IP is locked out
+
+
+class AuthFailureTracker:
+    """Sliding-window per-IP auth-failure counter with lockout.
+
+    ``record`` appends a failure and returns the count in the current window;
+    ``is_locked`` reports whether an IP has reached the lockout threshold. State
+    is pruned lazily so the dict can't grow unbounded.
+    """
+
+    def __init__(self, threshold: int = AUTH_FAIL_LOCKOUT, window: float = AUTH_FAIL_WINDOW):
+        self.threshold = threshold
+        self.window = window
+        self._fails: dict[str, list[float]] = {}
+
+    def _live(self, ip: str, now: float) -> list[float]:
+        cutoff = now - self.window
+        return [t for t in self._fails.get(ip, []) if t > cutoff]
+
+    def is_locked(self, ip: str, *, now: Optional[float] = None) -> bool:
+        now = time.monotonic() if now is None else now
+        return len(self._live(ip, now)) >= self.threshold
+
+    def record(self, ip: str, *, now: Optional[float] = None) -> int:
+        """Record a failure for ``ip``; return its failure count in the window."""
+        now = time.monotonic() if now is None else now
+        cutoff = now - self.window
+        # Prune every IP's stale timestamps, then drop emptied buckets, so the
+        # dict can't grow unbounded under a spray from many one-off source IPs.
+        pruned = {
+            k: kept
+            for k, ts in self._fails.items()
+            if (kept := [t for t in ts if t > cutoff])
+        }
+        live = pruned.get(ip, [])
+        live.append(now)
+        pruned[ip] = live
+        self._fails = pruned
+        return len(live)
+
+
+def create_security_middleware(
+    auth_token: Optional[str],
+    allowed_origins: list,
+    on_lockout: Optional[Callable[[str, int], None]] = None,
+):
     """Build the aiohttp middleware enforcing origin + per-device token auth.
 
     ``auth_token`` is the bootstrap credential. Auth is enforced whenever it is
     set *or* the registry holds an active paired device; a loopback dev portal
     with neither configured stays open (origin checks still cover the browser).
+
+    ``on_lockout(ip, failures)`` is invoked once when a non-loopback IP first
+    crosses the failure threshold — wire it to the owner-notification path.
     """
+    tracker = AuthFailureTracker()
 
     @web.middleware
     async def security_middleware(request: web.Request, handler):
@@ -346,9 +428,35 @@ def create_security_middleware(auth_token: Optional[str], allowed_origins: list)
             devices_mod.load_registry_cached().active()
         )
         if auth_enabled and not _is_public_path(request):
+            ip = request.remote or "?"
+            # Loopback callers (CLI/MCP/hooks/local dev) are exempt from the
+            # spray lockout so a bad local token never wedges the dev portal.
+            countable = not is_loopback_host(ip)
+            if countable and tracker.is_locked(ip):
+                logger.warning(
+                    "Locked out %s %s from %s (too many auth failures)",
+                    request.method, request.path, ip,
+                )
+                raise web.HTTPTooManyRequests(
+                    text="Too many failed auth attempts — try again later.",
+                )
             provided = _extract_token(request, is_ws)
             device = resolve_device(provided, auth_token)
             if device is None:
+                failures = tracker.record(ip) if countable else 0
+                logger.warning(
+                    "Rejected %s %s: invalid auth token from %s (failures: %d)",
+                    request.method, request.path, ip, failures,
+                )
+                if countable and failures >= tracker.threshold:
+                    if on_lockout is not None:
+                        try:
+                            on_lockout(ip, failures)
+                        except Exception:
+                            logger.exception("auth-lockout notification failed")
+                    raise web.HTTPTooManyRequests(
+                        text="Too many failed auth attempts — try again later.",
+                    )
                 raise web.HTTPUnauthorized(
                     text="Missing or invalid auth token",
                     headers={"WWW-Authenticate": 'Bearer realm="agentwire"'},

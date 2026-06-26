@@ -70,6 +70,10 @@ class ServerConfig:
     # None = use ~/.agentwire/portal.token (auto-generated). "" = auth
     # disabled (loopback binds only). Any other string = explicit override.
     auth_token: Optional[str] = None
+    # Acknowledge a plaintext (non-TLS) bind on a network-reachable host: the
+    # bearer token then transits in cleartext. Required to start a non-loopback
+    # bind without TLS — the BYO-tunnel case where the tunnel terminates TLS.
+    allow_insecure: bool = False
 
 
 @dataclass
@@ -585,6 +589,7 @@ def _dict_to_config(data: dict) -> Config:
         allowed_origins=server_data.get("allowed_origins") or [],
         # "" (explicit disable) must survive — don't collapse it to None.
         auth_token=server_data.get("auth_token"),
+        allow_insecure=bool(server_data.get("allow_insecure", False)),
     )
 
     # Projects

@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from aiohttp import web
 
 from agentwire import security
 from agentwire.config import load_config
@@ -129,10 +130,11 @@ class TestTokenLifecycle:
 
 
 class TestValidateStartupSecurity:
-    def _config(self, tmp_path, host, auth_token):
+    def _config(self, tmp_path, host, auth_token, allow_insecure=False):
         config = load_config(tmp_path / "nonexistent.yaml")
         config.server.host = host
         config.server.auth_token = auth_token
+        config.server.allow_insecure = allow_insecure
         return config
 
     def test_non_loopback_without_token_refuses(self, tmp_path):
@@ -140,13 +142,61 @@ class TestValidateStartupSecurity:
         with pytest.raises(SystemExit):
             security.validate_startup_security(config)
 
-    def test_non_loopback_with_token_passes(self, tmp_path):
+    def test_non_loopback_plaintext_refuses(self, tmp_path):
+        # Token set, but no TLS and no opt-in: token would transit in cleartext.
         config = self._config(tmp_path, "0.0.0.0", "tok")
+        with pytest.raises(SystemExit, match="cleartext"):
+            security.validate_startup_security(config)
+
+    def test_non_loopback_plaintext_with_optin_passes(self, tmp_path):
+        config = self._config(tmp_path, "0.0.0.0", "tok", allow_insecure=True)
         security.validate_startup_security(config)
 
     def test_loopback_without_token_passes(self, tmp_path):
         config = self._config(tmp_path, "127.0.0.1", None)
         security.validate_startup_security(config)
+
+    def test_loopback_plaintext_passes(self, tmp_path):
+        # Local dev: plaintext loopback bind must never be refused.
+        config = self._config(tmp_path, "127.0.0.1", "tok")
+        security.validate_startup_security(config)
+
+
+# ---------------------------------------------------------------------------
+# Auth-failure tracking + lockout (gap #5)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthFailureTracker:
+    def test_records_and_counts_within_window(self):
+        t = security.AuthFailureTracker(threshold=3, window=100.0)
+        assert t.record("1.2.3.4", now=0.0) == 1
+        assert t.record("1.2.3.4", now=1.0) == 2
+        assert not t.is_locked("1.2.3.4", now=1.0)
+        assert t.record("1.2.3.4", now=2.0) == 3
+        assert t.is_locked("1.2.3.4", now=2.0)
+
+    def test_window_slides(self):
+        t = security.AuthFailureTracker(threshold=2, window=100.0)
+        t.record("1.2.3.4", now=0.0)
+        t.record("1.2.3.4", now=1.0)
+        assert t.is_locked("1.2.3.4", now=1.0)
+        # Old failures age out of the window.
+        assert not t.is_locked("1.2.3.4", now=200.0)
+
+    def test_per_ip_isolation(self):
+        t = security.AuthFailureTracker(threshold=2, window=100.0)
+        t.record("1.1.1.1", now=0.0)
+        t.record("1.1.1.1", now=1.0)
+        assert t.is_locked("1.1.1.1", now=1.0)
+        assert not t.is_locked("2.2.2.2", now=1.0)
+
+    def test_empty_buckets_pruned(self):
+        t = security.AuthFailureTracker(threshold=5, window=10.0)
+        t.record("1.1.1.1", now=0.0)
+        # A later record on a different IP prunes the now-stale first bucket.
+        t.record("2.2.2.2", now=100.0)
+        assert "1.1.1.1" not in t._fails
 
 
 # ---------------------------------------------------------------------------
@@ -267,3 +317,58 @@ class TestResolveDevice:
         resolved = security.resolve_device(token, auth_token="boot")
         assert resolved is not None
         assert resolved.id == device.id
+
+
+# ---------------------------------------------------------------------------
+# Middleware lockout behaviour (gap #5)
+# ---------------------------------------------------------------------------
+
+
+class TestMiddlewareLockout:
+    """Drive the middleware directly: bad tokens log, count, and eventually 429."""
+
+    def _request(self, remote, token="badtoken"):
+        # Minimal stand-in: the middleware only reads method/path/headers/remote
+        # and item-assigns request["device"] on success (never hit here).
+        class _Req(dict):
+            pass
+
+        req = _Req()
+        req.method = "GET"
+        req.path = "/api/sessions"
+        req.headers = {"Authorization": f"Bearer {token}"}
+        req.remote = remote
+        return req
+
+    async def _handler(self, request):
+        return web.Response(text="ok")
+
+    async def test_spray_locks_out_and_notifies(self, monkeypatch):
+        monkeypatch.setattr(security, "resolve_device", lambda *a, **k: None)
+        locked = []
+        mw = security.create_security_middleware(
+            "secret", [], on_lockout=lambda ip, n: locked.append((ip, n))
+        )
+        # First AUTH_FAIL_LOCKOUT-1 failures are 401; the threshold crossing is 429.
+        for _ in range(security.AUTH_FAIL_LOCKOUT - 1):
+            with pytest.raises(web.HTTPUnauthorized):
+                await mw(self._request("9.9.9.9"), self._handler)
+        with pytest.raises(web.HTTPTooManyRequests):
+            await mw(self._request("9.9.9.9"), self._handler)
+        assert locked == [("9.9.9.9", security.AUTH_FAIL_LOCKOUT)]
+        # Subsequent requests stay locked out (429) without re-notifying.
+        with pytest.raises(web.HTTPTooManyRequests):
+            await mw(self._request("9.9.9.9"), self._handler)
+        assert len(locked) == 1
+
+    async def test_loopback_never_locked_out(self, monkeypatch):
+        monkeypatch.setattr(security, "resolve_device", lambda *a, **k: None)
+        locked = []
+        mw = security.create_security_middleware(
+            "secret", [], on_lockout=lambda ip, n: locked.append(ip)
+        )
+        # Far more than the threshold from loopback: always 401, never 429.
+        for _ in range(security.AUTH_FAIL_LOCKOUT + 5):
+            with pytest.raises(web.HTTPUnauthorized):
+                await mw(self._request("127.0.0.1"), self._handler)
+        assert locked == []
