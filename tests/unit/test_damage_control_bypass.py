@@ -66,6 +66,17 @@ BYPASS_VECTORS = [
     "find /important -ok $(echo rm) {} +",
     "find /important -okdir $(echo rm) {} +",
     "find /important -exec `echo rm` {} +",
+    # command-WRAPPERS run argv[1:] as a command, so a masked substitution there
+    # IS the command word. The wrapper universe is unbounded (#502 inversion):
+    # an unrecognized head with a substitution argument must fail SAFE.
+    "ionice $(echo rm) " + _RF + " /important",
+    "chrt 0 $(echo rm) " + _RF + " /important",
+    "taskset -c 0 $(echo rm) " + _RF + " /important",
+    "flock /tmp/l $(echo rm) " + _RF + " /important",
+    "setpriv $(echo rm) " + _RF + " /important",
+    "firejail $(echo rm) " + _RF + " /important",
+    "unshare $(echo rm) " + _RF + " /important",
+    "cpulimit -l 50 $(echo rm) " + _RF + " /important",
     # non-rm deletion paths
     "find /important -delete",
     "find /important -exec rm {} +",

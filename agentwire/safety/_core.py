@@ -816,20 +816,21 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 # Failing closed on ALL substitution over-blocked benign data-argument use that
 # agents run constantly (``echo $(date)``, ``git log --since=$(date ...)``,
 # ``cat "$(pwd)/file"``). Instead we MASK each substitution to one opaque token
-# and escalate only when the substitution lands in a DANGEROUS position:
-#   * it is the command word (argv-0) of a subcommand, or its argv-0 begins with
-#     a substitution — what runs comes from the substitution's *output*, which we
-#     can't see (``$(echo rm) -rf /`` — the benign-looking inner is irrelevant); or
-#   * the subcommand's head feeds an interpreter / command-wrapper (``eval``,
-#     ``bash -c``, ``sh -c``, ``source``, ``xargs``, ``sudo``, ``env`` …) where a
-#     substitution argument becomes the executed command; or
-#   * the substitution is the argument of a command-consuming flag (``find
-#     -exec``/``-execdir``/``-ok``/``-okdir``) — the masked token is the command
-#     word that tool will run (``find . -exec $(echo rm) {} +``); or
-#   * the static skeleton (substitution as one opaque token) already matches a
-#     deny/ask rule (``rm -rf $(...)`` — handled by the normal ladder, since the
-#     masked subcommands are still fed through it).
-# Pure data-argument substitution to a known-safe head command passes.
+# and apply an ALLOWLIST model: a masked substitution DEFAULTS to dangerous
+# (escalate → ``ask``) and passes only when its position is affirmatively DATA.
+# It is dangerous — i.e. its output can become an executed command word — when:
+#   * it is the command word (argv-0) of a subcommand (``$(echo rm) -rf /`` — the
+#     benign-looking inner is irrelevant, the *output* runs); or
+#   * it is the argument of a command-consuming flag (``find -exec``/``-execdir``/
+#     ``-ok``/``-okdir`` — ``find . -exec $(echo rm) {} +``); or
+#   * it sits anywhere in ``argv[1:]`` of a head that is NOT a recognized
+#     data-position command. This is the key inversion: command-wrappers that run
+#     their args as a command (``sudo``, ``xargs``, ``ionice``, ``chrt``,
+#     ``flock``, ``firejail``, ``setpriv`` …) are an unbounded set, so rather than
+#     enumerate them we allow only the known-data heads (``_DATA_SAFE_HEADS``) and
+#     fail SAFE on everything else.
+# The static skeleton (substitution as one opaque token) is still fed through the
+# normal rule ladder, so ``rm -rf $(...)`` is also caught there.
 
 _EVAL_RE = re.compile(r"(?:^|[\s;&|({])eval(?:\s|$)")
 _BASE64_PIPE_RE = re.compile(r"\bbase64\b[^\n|]*(?:-d|--decode)[^\n|]*\|", re.IGNORECASE)
@@ -842,19 +843,28 @@ _SHELL_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
 # so it survives shlex tokenization and never matches a path/rule on its own.
 _SUBST_PLACEHOLDER = "__awsubst__"
 
-# Heads where a substitution ARGUMENT becomes (part of) what gets executed, so a
-# substitution anywhere in the subcommand is dangerous: interpreters that run
-# their args/stdin as code, and command-wrappers whose next argv is the command.
-_INTERPRETER_HEADS = {
-    "eval", "bash", "sh", "zsh", "dash", "ksh", "source", ".",
-    "xargs", "sudo", "doas", "env", "command", "exec", "nohup",
-    "time", "timeout", "watch", "nice", "setsid", "stdbuf",
+# Substitution policy is an ALLOWLIST, not a blocklist (#502). Enumerating
+# dangerous command-wrappers (``sudo``, ``xargs``, ``ionice``, ``chrt``,
+# ``flock``, ``firejail``, ``setpriv``, ``proot`` …) is whack-a-mole — every one
+# runs ``argv[1:]`` as a command, so a masked substitution there IS the command
+# word, and the set is effectively unbounded. Instead we DEFAULT a masked
+# substitution to dangerous (escalate → ``ask``) and allow it only when its
+# position is affirmatively DATA: a substitution argument to one of these
+# recognized non-wrapper, non-interpreter heads (text/file utilities + VCS
+# read), where the substitution's output is consumed as a string/path/pattern
+# and never executed. An unknown head ⇒ ask (fail safe), not allow (fail open).
+_DATA_SAFE_HEADS = {
+    "echo", "printf", "cat", "tac", "ls", "grep", "egrep", "fgrep", "zgrep",
+    "rg", "ag", "head", "tail", "test", "[", "git", "tar", "sort", "uniq",
+    "wc", "cut", "tr", "diff", "comm", "jq", "yq", "basename", "dirname",
+    "realpath", "readlink", "stat", "file", "du", "df", "date", "pwd", "find",
+    "fd", "column", "nl", "fold", "rev", "paste", "join", "expand", "seq",
 }
 
 # Flags whose FOLLOWING argument is a command word that the tool will execute —
 # the substitution there is run, not passed as data (``find ... -exec $(echo rm)
-# {} +`` smuggles a masked ``rm`` into find's command slot). Same fail-closed
-# reasoning as ``_INTERPRETER_HEADS`` but keyed off the flag, not argv-0 (#502).
+# {} +`` smuggles a masked ``rm`` into find's command slot). Checked for EVERY
+# head (incl. data-safe ``find``), before the data-position allow (#502).
 _COMMAND_CONSUMING_FLAGS = {
     "-exec", "-execdir", "-ok", "-okdir",
 }
@@ -913,18 +923,22 @@ def _dangerous_substitution(subcommands_tokens: List[List[str]]) -> Optional[str
     for toks in subcommands_tokens:
         if not toks:
             continue
-        head = toks[0].strip("'\"")
         # Substitution in command position — its output is what runs.
         if _has_subst(toks[0]):
             return "command substitution in command position"
-        # Substitution feeding an interpreter / command-wrapper.
-        if head in _INTERPRETER_HEADS and any(_has_subst(t) for t in toks[1:]):
-            return "command substitution feeding an interpreter"
         # Substitution landing in a command-consuming flag's argument (the
-        # command word that ``find -exec`` / ``-ok`` / … will run).
+        # command word that ``find -exec`` / ``-ok`` / … will run). Checked for
+        # every head, since data-safe ``find`` still has exec slots.
         for i, tok in enumerate(toks[:-1]):
             if tok.strip("'\"") in _COMMAND_CONSUMING_FLAGS and _has_subst(toks[i + 1]):
                 return "command substitution in a command-consuming argument"
+        # Any other substitution in argv[1:]: allow ONLY when the head is a
+        # recognized data-position command; otherwise it may be a command-wrapper
+        # whose argument becomes the executed command — fail safe to ``ask``.
+        if any(_has_subst(t) for t in toks[1:]):
+            head = os.path.basename(toks[0].strip("'\""))
+            if head not in _DATA_SAFE_HEADS:
+                return "command substitution argument to an unrecognized command (possible wrapper)"
     return None
 
 
