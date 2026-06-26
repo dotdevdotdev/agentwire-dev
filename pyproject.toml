@@ -28,8 +28,8 @@ dependencies = [
     "aiohttp-jinja2>=1.6",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
-    "python-dotenv>=1.0.0",
-    "requests>=2.28.0",
+    "python-dotenv>=1.2.2",  # >=1.2.2 clears CVE-2026-28684
+    "requests>=2.33.0",  # >=2.33.0 clears CVE-2026-25645
     "mcp>=1.2.0",
     "resend>=2.0.0",
     "markdown>=3.5",

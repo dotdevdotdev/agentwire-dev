@@ -56,11 +56,11 @@ jobs:
   pip-audit:
     name: pip-audit (advisory)
     runs-on: ubuntu-latest
-    # Advisory, not a merge gate: most flagged CVEs live in heavy OPTIONAL deps
-    # (torch/onnxruntime pulled by kokoro/moonshine) and are transitive, so
-    # hard-blocking every PR on them is noise. Keep it running on PRs + the
-    # weekly cron for visibility; the damage-control bypass corpus is the hard
-    # merge gate. Direct portal-facing deps are bumped explicitly in pyproject.
+    # Advisory, not a merge gate: hard-blocking every PR on transitive CVEs is
+    # noise. Keep it running on PRs + the weekly cron for visibility; the
+    # damage-control bypass corpus is the hard merge gate. Direct portal-facing
+    # deps are bumped explicitly in pyproject; transitive fixes land via lock
+    # bumps. See docs/wiki/security/pip-audit.md for the residual-CVE rationale.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +68,33 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Export locked dependencies
-        run: uv export --no-emit-project --format requirements-txt -o requirements.txt
-      - name: Audit dependencies
-        run: uvx pip-audit -r requirements.txt
+      # PR/push audit is scoped to RUNTIME deps only (--no-dev, no optional
+      # extras) so the signal tracks what the default install actually ships.
+      # The heavy torch/onnxruntime+gradio chain lives behind the tts/stt
+      # extras and is covered by the full audit on the weekly cron below.
+      - name: Export runtime (default) dependencies
+        run: uv export --no-emit-project --no-dev --format requirements-txt -o requirements.txt
+      # Residual starlette CVEs are un-bumpable: starlette is transitive via mcp
+      # and the fixes require starlette >=1.0, but the tts extra (gradio ->
+      # chatterbox-tts) caps starlette <1.0 in the universal resolution. agentwire
+      # speaks MCP over stdio and serves the portal with aiohttp, so starlette's
+      # HTTP request-handling CVEs are not on a reachable path. Documented +
+      # ignored here so the advisory signal stays meaningful; revisit when mcp /
+      # chatterbox-tts relax the ceiling. See docs/wiki/security/pip-audit.md.
+      - name: Audit runtime dependencies
+        run: >
+          uvx pip-audit -r requirements.txt
+          --ignore-vuln PYSEC-2026-161
+          --ignore-vuln CVE-2026-48818
+          --ignore-vuln CVE-2026-48817
+          --ignore-vuln CVE-2026-54283
+          --ignore-vuln CVE-2026-54282
+      # Full audit including optional extras (tts/stt: torch, onnxruntime,
+      # gradio, ...). Weekly only and never ignore-filtered — surfaces the full
+      # backlog for review without blocking or spamming every PR.
+      - name: Export all dependencies (incl. optional extras)
+        if: github.event_name == 'schedule'
+        run: uv export --no-emit-project --all-extras --format requirements-txt -o requirements-all.txt
+      - name: Full audit (weekly cron, optional extras)
+        if: github.event_name == 'schedule'
+        run: uvx pip-audit -r requirements-all.txt
