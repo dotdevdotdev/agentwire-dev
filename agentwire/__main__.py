@@ -11302,8 +11302,13 @@ class VersionAction(argparse.Action):
         parser.exit()
 
 
-def main() -> int:
-    """Main entry point."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level argparse parser with every registered subcommand.
+
+    Extracted from ``main()`` so the parser tree can be constructed without
+    dispatching, which the CLI smoke tests rely on to enumerate subcommands
+    and invoke their ``--help`` (see ``tests/unit/test_cli_smoke.py``).
+    """
     parser = argparse.ArgumentParser(
         prog="agentwire",
         description="Multi-session voice web interface for AI coding agents.",
@@ -12698,94 +12703,54 @@ Command Categories:
     c_reply.add_argument("--json", action="store_true", help="Output JSON")
     c_reply.set_defaults(func=council_cli.cmd_council_reply)
 
+    return parser
+
+
+def _find_subparser(parser: argparse.ArgumentParser, *names: str):
+    """Walk the subparser tree by command name(s); return the parser or None."""
+    current = parser
+    for name in names:
+        sub = None
+        for action in current._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                sub = action.choices.get(name)
+                break
+        if sub is None:
+            return None
+        current = sub
+    return current
+
+
+# Command groups whose bare invocation (no subcommand) prints group help.
+_GROUP_COMMANDS = [
+    "portal", "tts", "stt", "tunnels", "machine", "history", "handoff",
+    "wiki", "hooks", "projects", "safety", "network", "listen",
+    "voiceclone", "roles", "task", "lock", "scheduler", "council", "limits",
+]
+
+
+def main() -> int:
+    """Main entry point."""
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         return 0
 
-    if args.command == "portal" and getattr(args, "portal_command", None) is None:
-        portal_parser.print_help()
+    if (
+        args.command in _GROUP_COMMANDS
+        and getattr(args, f"{args.command}_command", None) is None
+    ):
+        _find_subparser(parser, args.command).print_help()
         return 0
 
-    if args.command == "tts" and getattr(args, "tts_command", None) is None:
-        tts_parser.print_help()
-        return 0
-
-    if args.command == "stt" and getattr(args, "stt_command", None) is None:
-        stt_parser.print_help()
-        return 0
-
-    if args.command == "tunnels" and getattr(args, "tunnels_command", None) is None:
-        tunnels_parser.print_help()
-        return 0
-
-    if args.command == "machine" and getattr(args, "machine_command", None) is None:
-        machine_parser.print_help()
-        return 0
-
-    if args.command == "history" and getattr(args, "history_command", None) is None:
-        history_parser.print_help()
-        return 0
-
-    if args.command == "handoff" and getattr(args, "handoff_command", None) is None:
-        handoff_parser.print_help()
-        return 0
-
-    if args.command == "wiki" and getattr(args, "wiki_command", None) is None:
-        wiki_parser.print_help()
-        return 0
-
-    if args.command == "hooks" and getattr(args, "hooks_command", None) is None:
-        hooks_parser.print_help()
-        return 0
-
-    if args.command == "projects" and getattr(args, "projects_command", None) is None:
-        projects_parser.print_help()
-        return 0
-
-    if args.command == "safety" and getattr(args, "safety_command", None) is None:
-        safety_parser.print_help()
-        return 0
-
-    if args.command == "safety" and getattr(args, "safety_command", None) == "tooldefs" and getattr(args, "tooldefs_command", None) is None:
-        safety_tooldefs.print_help()
-        return 0
-
-    if args.command == "network" and getattr(args, "network_command", None) is None:
-        network_parser.print_help()
-        return 0
-
-    if args.command == "listen" and getattr(args, "listen_command", None) is None:
-        listen_parser.print_help()
-        return 0
-
-    if args.command == "voiceclone" and getattr(args, "voiceclone_command", None) is None:
-        voiceclone_parser.print_help()
-        return 0
-
-    if args.command == "roles" and getattr(args, "roles_command", None) is None:
-        roles_parser.print_help()
-        return 0
-
-    if args.command == "task" and getattr(args, "task_command", None) is None:
-        task_parser.print_help()
-        return 0
-
-    if args.command == "lock" and getattr(args, "lock_command", None) is None:
-        lock_parser.print_help()
-        return 0
-
-    if args.command == "scheduler" and getattr(args, "scheduler_command", None) is None:
-        scheduler_parser.print_help()
-        return 0
-
-    if args.command == "council" and getattr(args, "council_command", None) is None:
-        council_parser.print_help()
-        return 0
-
-    if args.command == "limits" and getattr(args, "limits_command", None) is None:
-        limits_parser.print_help()
+    if (
+        args.command == "safety"
+        and getattr(args, "safety_command", None) == "tooldefs"
+        and getattr(args, "tooldefs_command", None) is None
+    ):
+        _find_subparser(parser, "safety", "tooldefs").print_help()
         return 0
 
     if hasattr(args, "func"):
