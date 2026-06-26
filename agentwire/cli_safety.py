@@ -20,7 +20,9 @@ try:
 except ImportError:
     yaml = None
 
-from agentwire.safety._core import (
+# Re-exported from safety._core so callers and tests can import the whole
+# damage-control surface from agentwire.cli_safety.
+from agentwire.safety._core import (  # noqa: F401
     ALL_OPERATIONS,
     NO_DELETE_BLOCKED,
     READ_ONLY_BLOCKED,

@@ -7,7 +7,6 @@ import pytest
 from agentwire import security
 from agentwire.config import load_config
 
-
 # ---------------------------------------------------------------------------
 # Loopback detection
 # ---------------------------------------------------------------------------

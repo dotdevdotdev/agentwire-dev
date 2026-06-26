@@ -25,8 +25,13 @@ from dotenv import load_dotenv
 load_dotenv()  # .env in current directory
 load_dotenv(Path.home() / ".agentwire" / ".env")  # Global config
 
-from . import __version__, cli_safety, pane_manager
-from .project_config import (
+from . import (  # noqa: E402  # must follow load_dotenv() above
+    __version__,
+    cli_safety,
+    pane_manager,
+    worktree_registry,
+)
+from .project_config import (  # noqa: E402  # must follow load_dotenv() above
     DEFAULT_HARNESS,
     POSTURES,
     ProjectConfig,
@@ -39,7 +44,7 @@ from .project_config import (
     normalize_session_type,
     save_project_config,
 )
-from .roles import (
+from .roles import (  # noqa: E402  # must follow load_dotenv() above
     RoleConfig,
     derive_session_kind,
     inject_soul,
@@ -47,17 +52,16 @@ from .roles import (
     merge_roles,
     resolve_roles,
 )
-from .worktree import (
+from .worktree import (  # noqa: E402  # must follow load_dotenv() above
+    apply_naming,
+    default_base_branch,
     ensure_worktree,
+    git_root,
+    is_valid_branch_name,
     parse_session_name,
     remove_worktree,
     worktree_status,
-    git_root,
-    default_base_branch,
-    apply_naming,
-    is_valid_branch_name,
 )
-from . import worktree_registry
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
@@ -2753,7 +2757,6 @@ def _restart_tts_remote_for_venv(ssh_target: str, machine_id: str, venv: str, ba
     config = load_config()
     tts_config = config.get("tts", {})
     port = tts_config.get("port", 8100)
-    host = tts_config.get("host", "0.0.0.0")
 
     # Stop existing server
     kill_cmd = f"tmux kill-session -t {session_name} 2>/dev/null || true"
@@ -2977,7 +2980,7 @@ def cmd_notify_user(args) -> int:
 
 def cmd_research(args) -> int:
     """Resolve (or ensure) the Briefing Mode research dropbox for a session."""
-    from .research import research_dir, ensure_research_dir
+    from .research import ensure_research_dir, research_dir
 
     json_mode = getattr(args, "json", False)
     session = getattr(args, "session", None) or pane_manager.get_current_session()
@@ -3829,8 +3832,6 @@ def cmd_new(args) -> int:
                     content = f.read()
                 # Create remote temp file with same content
                 remote_temp = f"/tmp/agentwire-prompt-{session_name.replace('/', '-')}.txt"
-                # Escape content for shell
-                escaped_content = content.replace("'", "'\"'\"'")
                 write_cmd = f"cat > {shlex.quote(remote_temp)} << 'AGENTWIRE_EOF'\n{content}\nAGENTWIRE_EOF"
                 result = _run_remote(machine_id, write_cmd)
                 if result.returncode == 0:
@@ -6172,7 +6173,6 @@ def cmd_history_resume(args) -> int:
     project_path_str = args.project
     json_mode = getattr(args, 'json', False)
 
-    agent_type = "claude"
     # Resolve prefix to full UUID for Claude Code sessions
     from .history import resolve_session_id
     resolved = resolve_session_id(session_id, machine_id)
@@ -6802,6 +6802,7 @@ def cmd_up(args) -> int:
     doesn't block the rest or the dev session.
     """
     from argparse import Namespace
+
     from .config import load_config as load_config_typed
     from .network import NetworkContext
 
@@ -9122,7 +9123,7 @@ def cmd_hooks_status(args) -> int:
             if is_hook_registered(event, hook_name):
                 print(f"  Registered: yes ({event} in ~/.claude/settings.json)")
             else:
-                print(f"  Registered: NO - run 'agentwire hooks install' to fix")
+                print("  Registered: NO - run 'agentwire hooks install' to fix")
 
     # Tmux portal sync hooks
     print("\n=== Tmux Portal Sync Hooks ===")
@@ -9157,7 +9158,7 @@ def cmd_hooks_status(args) -> int:
         )
         if result.returncode != 0:
             print("\nNo tmux sessions running")
-            return 0 if hook_installed else 1
+            return 0
 
         sessions = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
@@ -9188,7 +9189,7 @@ def cmd_hooks_status(args) -> int:
     except Exception as e:
         print(f"Error checking tmux hooks: {e}")
 
-    return 0 if hook_installed else 1
+    return 0
 
 
 # === Tunnel Commands ===
@@ -9490,10 +9491,8 @@ def _ensure_remote(args, session: str, machine_id: str, json_mode: bool) -> int:
     # Stream output in real-time — ensure can run for tens of minutes
     try:
         proc = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        last_line = ""
         for line in proc.stdout:
             print(line, end="", flush=True)
-            last_line = line.rstrip()
         proc.wait()
         return proc.returncode
     except Exception as e:
@@ -10741,7 +10740,6 @@ def cmd_scheduler_history(args) -> int:
     if json_mode:
         history = []
         for name, state in board.state.items():
-            task = board.tasks.get(name)
             history.append({
                 "task": name,
                 "last_run": state.last_run.isoformat() if state.last_run else None,
@@ -10773,7 +10771,6 @@ def cmd_scheduler_history(args) -> int:
 
 def cmd_scheduler_report(args) -> int:
     """Generate a morning report HTML artifact of recent task runs."""
-    from html import escape as html_escape
 
     from .scheduler import _parse_duration, format_interval, load_board, read_events
 
@@ -10785,9 +10782,9 @@ def cmd_scheduler_report(args) -> int:
     since_seconds = _parse_duration(since_str) or 28800  # default 8h
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=since_seconds)
 
-    # Load board state
+    # Load board state (validate it loads; events are read below)
     try:
-        board = load_board()
+        load_board()
     except Exception as e:
         print(f"Error loading board: {e}", file=sys.stderr)
         return 1
@@ -12535,10 +12532,9 @@ Command Categories:
     sched_report.add_argument("--json", action="store_true", help="Output JSON")
     sched_report.set_defaults(func=cmd_scheduler_report)
 
-    from .council import cli as council_cli
-
     # === limits command group (usage-limit recovery) ===
     from . import limits_cli
+    from .council import cli as council_cli
 
     limits_parser = subparsers.add_parser(
         "limits",

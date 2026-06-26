@@ -1,6 +1,5 @@
 """Tests for agentwire/roles/__init__.py — Role parsing, merging, discovery."""
 
-from pathlib import Path
 
 import pytest
 
@@ -8,13 +7,11 @@ from agentwire.roles import (
     INTRINSIC_ETIQUETTE,
     SAFETY_RAIL_KINDS,
     RoleConfig,
-    MergedRole,
-    parse_role_file,
-    merge_roles,
     derive_session_kind,
     discover_role,
     inject_soul,
-    load_roles,
+    merge_roles,
+    parse_role_file,
     resolve_roles,
 )
 

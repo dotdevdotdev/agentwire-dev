@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 

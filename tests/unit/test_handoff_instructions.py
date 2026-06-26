@@ -1,7 +1,6 @@
 """Tests for agentwire/handoff/instructions.py."""
 
 from pathlib import Path
-from unittest import mock
 
 import pytest
 

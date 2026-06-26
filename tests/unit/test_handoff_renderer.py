@@ -3,7 +3,6 @@
 from agentwire.handoff.parser import parse
 from agentwire.handoff.renderer import render_html
 
-
 _BASE = """\
 <session_bundle version="1">
 <title>Render Test</title>

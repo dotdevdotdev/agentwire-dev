@@ -6,7 +6,6 @@ import sys
 import urllib.error
 import urllib.request
 
-
 JINA_BASE = "https://r.jina.ai/"
 DEFAULT_LIMIT = 8000
 # Cloudflare blocks requests with the default urllib UA; pose as a browser.

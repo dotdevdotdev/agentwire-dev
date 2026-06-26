@@ -1,22 +1,20 @@
 """Tests for agentwire/tasks.py — Task parsing, validation, loading."""
 
+
 import pytest
 import yaml
-from pathlib import Path
 
 from agentwire.tasks import (
     PreCommand,
     TaskConfig,
-    OutputConfig,
     TaskNotFound,
     TaskValidationError,
+    list_tasks,
+    load_task,
     parse_pre_command,
     parse_task_config,
     validate_task,
-    load_task,
-    list_tasks,
 )
-
 
 # --- parse_pre_command ---
 

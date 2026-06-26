@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from agentwire.scheduler import (
+    _EXIT_TO_STATUS,
     Board,
     Schedule,
     SchedulerTask,
@@ -14,9 +15,7 @@ from agentwire.scheduler import (
     format_interval,
     format_overdue,
     pick_next_task,
-    _EXIT_TO_STATUS,
 )
-
 
 # --- format_interval ---
 
@@ -132,8 +131,9 @@ class TestCheckGate:
         assert _check_gate(board, "t") is False
 
     def test_git_diff_changes_in_paths_passes(self, board, git_project):
-        from agentwire.scheduler import _check_gate
         import subprocess as sp
+
+        from agentwire.scheduler import _check_gate
         old_head = self._head(git_project)
         (git_project / "watched.txt").write_text("changed")
         sp.run(["git", "-C", str(git_project), "add", "-A"], check=True)
@@ -197,6 +197,7 @@ class TestGateError:
     def test_timeout_fails_open_and_records(self, board):
         import subprocess
         from unittest.mock import patch
+
         from agentwire.scheduler import _check_gate
 
         boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
@@ -214,6 +215,7 @@ class TestGateError:
     def test_error_logged_once_until_changes(self, board):
         import subprocess
         from unittest.mock import patch
+
         from agentwire.scheduler import _check_gate
 
         boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
@@ -227,6 +229,7 @@ class TestGateError:
     def test_clears_when_gate_recovers(self, board, tmp_path):
         import subprocess
         from unittest.mock import patch
+
         from agentwire.scheduler import _check_gate
 
         boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
@@ -375,16 +378,18 @@ class TestWorktreeMode:
         assert _is_worktree_task(self._task(worktree=True)) is True
 
     def test_explicit_worktree_false_wins(self, tmp_path):
-        from agentwire.scheduler import _is_worktree_task
         # Even a real git repo is skipped when explicitly disabled.
         import subprocess
+
+        from agentwire.scheduler import _is_worktree_task
         subprocess.run(["git", "-C", str(tmp_path), "init", "-q"])
         t = self._task(project=str(tmp_path), worktree=False)
         assert _is_worktree_task(t) is False
 
     def test_auto_on_for_git_repo(self, tmp_path):
-        from agentwire.scheduler import _is_worktree_task
         import subprocess
+
+        from agentwire.scheduler import _is_worktree_task
         subprocess.run(["git", "-C", str(tmp_path), "init", "-q"])
         assert _is_worktree_task(self._task(project=str(tmp_path))) is True
 
@@ -403,6 +408,7 @@ class TestFinalizeWorktree:
 
     def test_no_changes_removes_worktree_and_skips_pr(self, tmp_path, monkeypatch):
         import subprocess
+
         from agentwire import scheduler
 
         # A clean "worktree" (no uncommitted changes).
@@ -425,7 +431,7 @@ class TestReapWorktreePrs:
     """The reaper tears down worktrees only when their PR is merged/closed."""
 
     def _board_with_pr(self, state="OPEN"):
-        from agentwire.scheduler import Board, SchedulerTask, TaskState, Schedule
+        from agentwire.scheduler import Board, Schedule, SchedulerTask, TaskState
         board = Board()
         board.tasks["t"] = SchedulerTask(name="t", project="/tmp/p", session="t",
                                          task="t", schedule=Schedule(every="1h"))
@@ -513,8 +519,8 @@ class TestPersistentSessionDispatch:
     # --- _dispatch_inplace_task kill behavior ---
 
     def _patch_dispatch(self, monkeypatch):
-        from agentwire import scheduler
         import agentwire.locking
+        from agentwire import scheduler
         killed, precreated = [], []
         monkeypatch.setattr(agentwire.locking, "remove_stale_lock", lambda s: None)
         monkeypatch.setattr(scheduler, "_kill_session", lambda s: killed.append(s))

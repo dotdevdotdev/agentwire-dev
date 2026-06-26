@@ -8,12 +8,11 @@ import pytest
 from agentwire.templating import (
     TemplateContext,
     TemplateError,
-    expand_template,
-    expand_env_vars,
     expand_all,
+    expand_env_vars,
+    expand_template,
     preview_template,
 )
-
 
 # --- TemplateContext ---
 

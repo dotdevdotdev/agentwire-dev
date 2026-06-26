@@ -11,8 +11,8 @@ The CLI/MCP renders show-the-story.html from it via Jinja2 (deterministic).
 
 from .schema import (
     BundleData,
-    Decision,
     DeadEnd,
+    Decision,
     Instruction,
     JourneyBeat,
     Metadata,

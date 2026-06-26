@@ -3,10 +3,8 @@
 import json
 
 import pytest
-import yaml
 
-from agentwire.utils.file_io import load_json, save_json, load_yaml, save_yaml
-
+from agentwire.utils.file_io import load_json, load_yaml, save_json, save_yaml
 
 # --- load/save JSON ---
 

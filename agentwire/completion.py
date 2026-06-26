@@ -22,7 +22,7 @@ class CompletionError(Exception):
     pass
 
 
-class CompletionTimeout(CompletionError):
+class CompletionTimeout(CompletionError):  # noqa: N818  # public API name, renaming breaks callers
     """Raised when waiting for completion times out."""
 
     pass

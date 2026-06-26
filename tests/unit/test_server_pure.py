@@ -2,10 +2,7 @@
 
 import asyncio
 
-import pytest
-
-from agentwire.server import SessionConfig, PendingPermission, _is_allowed_in_restricted_mode
-
+from agentwire.server import PendingPermission, SessionConfig, _is_allowed_in_restricted_mode
 
 # ---------------------------------------------------------------------------
 # _is_allowed_in_restricted_mode

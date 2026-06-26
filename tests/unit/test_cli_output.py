@@ -1,10 +1,6 @@
 """Tests for __main__.py — _output_json and _output_result."""
 
 import json
-import sys
-
-import pytest
-
 
 # --- _output_json ---
 

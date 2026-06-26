@@ -39,7 +39,7 @@ class TestParseEnvValue:
     def test_parsing(self, input_val, expected):
         result = _parse_env_value(input_val)
         assert result == expected
-        assert type(result) == type(expected)
+        assert type(result) == type(expected)  # noqa: E721  # exact-type check: bool vs int matters (True == 1)
 
 
 # --- _merge_dict ---

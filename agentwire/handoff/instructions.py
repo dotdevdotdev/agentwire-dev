@@ -19,7 +19,6 @@ from pathlib import Path
 from ..history import encode_project_path
 from .schema import Instruction
 
-
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 

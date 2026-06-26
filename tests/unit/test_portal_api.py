@@ -1,16 +1,12 @@
 """Integration tests for portal API handlers via aiohttp TestClient."""
 
-import json
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from agentwire.config import load_config
 from agentwire.server import AgentWireServer
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -146,7 +142,7 @@ class TestApiCreateSession:
         with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
             mock_cmd.return_value = (True, {"session": "test"})
             server.broadcast_dashboard = AsyncMock()
-            resp = await client.post("/api/create", json={
+            await client.post("/api/create", json={
                 "name": "test", "type": "bare",
             })
         # Find the "new" call (not the "list" calls for sessions refresh)
@@ -222,7 +218,7 @@ class TestApiCreateSession:
                 return (False, {"error": "Agent in 'ideaproj' not ready after 60s"})
             return (True, {"session": "ideaproj", "path": "/p"})
 
-        with patch.object(server, "run_agentwire_cmd", side_effect=cmd_router) as mock_cmd:
+        with patch.object(server, "run_agentwire_cmd", side_effect=cmd_router):
             server.broadcast_dashboard = AsyncMock()
             resp = await client.post("/api/create", json={
                 "name": "ideaproj", "first_message": "an idea",

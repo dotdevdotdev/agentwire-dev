@@ -1,7 +1,6 @@
 """Tests for agentwire/scratchpad.py — shared notes storage (#156 redesign)."""
 
 import json
-from pathlib import Path
 
 import pytest
 

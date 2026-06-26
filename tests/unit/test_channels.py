@@ -142,8 +142,8 @@ class TestEmailChannel:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config_data))
 
-        from agentwire.config import load_config
         import agentwire.config as config_mod
+        from agentwire.config import load_config
         old = config_mod._config
         config_mod._config = load_config(config_path)
 
@@ -207,8 +207,8 @@ class TestQuoChannel:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config_data))
 
-        from agentwire.config import load_config
         import agentwire.config as config_mod
+        from agentwire.config import load_config
         old = config_mod._config
         config_mod._config = load_config(config_path)
 

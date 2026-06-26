@@ -2,8 +2,6 @@
 
 from unittest.mock import patch
 
-import pytest
-
 
 def _success(**extra):
     return {"success": True, **extra}
@@ -393,5 +391,5 @@ class TestSchedulerHistory:
         ])
         result = scheduler_history(limit=3)
         # Should only show 3 most recent
-        lines = [l for l in result.split("\n") if l.startswith("  ")]
+        lines = [line for line in result.split("\n") if line.startswith("  ")]
         assert len(lines) == 3

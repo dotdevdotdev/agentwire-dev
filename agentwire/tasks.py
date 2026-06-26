@@ -17,7 +17,7 @@ class TaskError(Exception):
     pass
 
 
-class TaskNotFound(TaskError):
+class TaskNotFound(TaskError):  # noqa: N818  # public API name, renaming breaks callers
     """Raised when a task is not found in configuration."""
 
     pass

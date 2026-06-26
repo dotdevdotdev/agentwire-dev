@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-
 HOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control"
 
 

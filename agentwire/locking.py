@@ -17,13 +17,13 @@ class LockError(Exception):
     pass
 
 
-class LockTimeout(LockError):
+class LockTimeout(LockError):  # noqa: N818  # public API name, renaming breaks callers
     """Raised when waiting for a lock times out."""
 
     pass
 
 
-class LockConflict(LockError):
+class LockConflict(LockError):  # noqa: N818  # public API name, renaming breaks callers
     """Raised when a lock is held by another process (non-blocking)."""
 
     pass
@@ -214,7 +214,6 @@ def list_locks() -> list[dict]:
         status is 'active' (process running), 'stale' (process dead/missing),
         or 'unknown' (can't determine)
     """
-    import os
 
     if not LOCKS_DIR.exists():
         return []

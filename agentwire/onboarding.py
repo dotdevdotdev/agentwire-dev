@@ -190,7 +190,7 @@ def run_onboarding(skip_session: bool = False) -> int:
     # Check tmux (required)
     tmux_ok, tmux_path = check_tmux()
     if not tmux_ok:
-        print_error(f"tmux not found (required)")
+        print_error("tmux not found (required)")
         print_info(f"Install with: {instructions['tmux']}")
         return 1
     print_success(f"tmux: {tmux_path}")

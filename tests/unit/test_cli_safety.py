@@ -3,17 +3,16 @@
 import pytest
 
 from agentwire.cli_safety import (
-    is_glob_pattern,
-    glob_to_regex,
-    matches_path_in_command,
-    check_command_safety,
-    load_allowed_paths,
-    is_command_path_allowed,
     _match_allowed_path,
     _parse_allowed_entry,
+    check_command_safety,
+    glob_to_regex,
+    is_command_path_allowed,
+    is_glob_pattern,
     is_path_allowed_for_op,
+    load_allowed_paths,
+    matches_path_in_command,
 )
-
 
 # --- is_glob_pattern ---
 
@@ -357,6 +356,7 @@ class TestCheckCommandSafetyDecisionPaths:
 
     def _rules(self, tmp_path, monkeypatch, patterns):
         import yaml
+
         import agentwire.cli_safety as mod
         rd = tmp_path / "rules"
         rd.mkdir(exist_ok=True)
@@ -518,6 +518,7 @@ class TestExtractCommandPaths:
 class TestReadOnlyPathMutationOperators:
     def _rules(self, tmp_path, monkeypatch, patterns):
         import yaml
+
         import agentwire.cli_safety as mod
         rd = tmp_path / "rules"
         rd.mkdir(exist_ok=True)

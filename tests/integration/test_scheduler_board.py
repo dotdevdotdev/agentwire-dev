@@ -1,15 +1,12 @@
 """Integration tests for scheduler board load/save round-trip and scheduling logic."""
 
 import shutil
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
-
-from unittest.mock import MagicMock
 
 from agentwire.scheduler import (
     Board,
@@ -18,12 +15,12 @@ from agentwire.scheduler import (
     TaskState,
     _atomic_write,
     _board_load_backoff,
-    _load_board_blocking,
-    _load_state_file,
     _compute_next_eligible,
     _dispatch_worktree_task,
     _in_time_window,
     _is_in_flight,
+    _load_board_blocking,
+    _load_state_file,
     format_schedule,
     get_board_display,
     load_board,
@@ -502,7 +499,6 @@ class TestAtomicWrites:
 class TestBackupRotation:
     def test_rotation_keeps_last_n_good_copies(self, board_env, tmp_path):
         board = load_board()
-        state_file = tmp_path / "scheduler-state.yaml"
 
         for i in range(8):
             board.state["code-quality"].run_count = i

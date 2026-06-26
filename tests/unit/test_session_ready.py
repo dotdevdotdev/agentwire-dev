@@ -2,7 +2,6 @@
 
 from agentwire import session_ready
 
-
 BANNER = "❯ \nBypassing Permissions"
 TRUST = "Do you trust this folder?\nPress Enter to confirm"
 
