@@ -69,6 +69,51 @@ class TestHealthEndpoint:
         assert "version" in data
 
 
+class TestPwaSurface:
+    """PWA manifest + service worker + push API (#483)."""
+
+    async def test_manifest_served_publicly(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.get("/manifest.webmanifest")  # no bearer
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["display"] == "standalone"
+        assert data["start_url"] == "/"
+
+    async def test_service_worker_served_with_root_scope(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.get("/service-worker.js")  # no bearer
+        assert resp.status == 200
+        assert resp.headers.get("Service-Worker-Allowed") == "/"
+
+    async def test_push_config_reports_disabled_by_default(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/api/push/config")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["enabled"] is False
+
+    async def test_push_subscribe_validates_payload(self, portal_client):
+        client, _ = portal_client
+        resp = await client.post("/api/push/subscribe", json={"endpoint": ""})
+        assert resp.status == 400
+
+    async def test_push_subscribe_and_unsubscribe(self, portal_client, tmp_path, monkeypatch):
+        from agentwire import push_store
+
+        monkeypatch.setattr(push_store, "SUBSCRIPTIONS_FILE", tmp_path / "push.json")
+        client, _ = portal_client
+        sub = {"endpoint": "https://push.example/x", "keys": {"p256dh": "p", "auth": "a"}}
+        resp = await client.post("/api/push/subscribe", json=sub)
+        assert resp.status == 200
+        assert (await resp.json())["success"] is True
+        assert len(push_store.load(tmp_path / "push.json")) == 1
+
+        resp = await client.post("/api/push/unsubscribe", json={"endpoint": sub["endpoint"]})
+        assert resp.status == 200
+        assert (await resp.json())["removed"] is True
+
+
 # ---------------------------------------------------------------------------
 # Sessions API
 # ---------------------------------------------------------------------------

@@ -49,6 +49,12 @@ dependencies = [
     # Python; ASCII output needs no Pillow. Import is guarded so it degrades to
     # a printed URL if absent.
     "qrcode>=7.4",
+    # Web Push (#483): signs VAPID pushes to the browser Push API so portal
+    # notifications reach a backgrounded/locked phone. Inactive until the owner
+    # sets channels.push.enabled + VAPID keys; the import is guarded so a missing
+    # wheel degrades to "push disabled", never a crash. Pulls in cryptography
+    # (used directly by `agentwire push keygen`).
+    "pywebpush>=1.14.0",
 ]
 
 [project.optional-dependencies]

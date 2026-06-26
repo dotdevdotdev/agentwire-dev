@@ -17,9 +17,9 @@ from agentwire.channels.base import (
 
 class TestChannelRegistry:
     def test_builtin_channels_registered(self):
-        """Only email + quo are registered after the inbound-channel gut."""
+        """email + quo + push (Web Push, #483) are the built-in send-only channels."""
         channels = ChannelRegistry.all()
-        assert set(channels.keys()) == {"email", "quo"}
+        assert set(channels.keys()) == {"email", "quo", "push"}
 
     def test_get_existing(self):
         cls = ChannelRegistry.get("email")
