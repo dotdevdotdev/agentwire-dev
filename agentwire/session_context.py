@@ -50,13 +50,13 @@ gracefully (surfaced as non-interactive, never flagged).
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .usage_limit import _capture, _tmux
+from .utils.event_log import append_event
 
 # The context bar: a bracketed run of block-element glyphs (U+2580–U+259F
 # covers full/partial/empty blocks) followed by "NN%". ANSI is stripped first.
@@ -253,12 +253,7 @@ def _log_event(event: str, **fields) -> None:
     from datetime import datetime, timezone
 
     record = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
-    try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(EVENTS_FILE, "a") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError:
-        pass
+    append_event(EVENTS_FILE, record)
 
 
 def resolve_policy(session: str, cfg=None) -> str:

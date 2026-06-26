@@ -35,6 +35,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from agentwire.utils.event_log import append_event
+
 INBOX_ROOT = Path.home() / ".agentwire" / "inbox"
 EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 
@@ -137,12 +139,7 @@ def ingest_dir(session: str) -> Path:
 
 def _log_event(event: str, **fields) -> None:
     record = {"ts": _now_ms(), "event": event, **fields}
-    try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(EVENTS_FILE, "a") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError:
-        pass
+    append_event(EVENTS_FILE, record)
 
 
 def _read_message(path: Path) -> "Message | None":
