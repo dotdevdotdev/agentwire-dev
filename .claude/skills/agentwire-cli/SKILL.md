@@ -256,7 +256,8 @@ agentwire limits install        # install + load the launchd watchdog (60s tick)
 agentwire limits uninstall      # unload + remove the watchdog
 
 # Setup & Development
-agentwire init                  # interactive setup wizard
+agentwire init                  # interactive setup wizard (ends on the portal URL)
+agentwire init --assisted       # ...and spawn the Claude TTS/STT setup session at the end
 agentwire generate-certs        # generate SSL certificates
 agentwire up                    # boot all services + dev session (see "Boot everything")
 agentwire dev                   # start/attach to dev session ONLY (no services)

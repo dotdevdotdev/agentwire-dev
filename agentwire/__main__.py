@@ -6874,8 +6874,10 @@ def cmd_up(args) -> int:
 def cmd_init(args) -> int:
     """Initialize AgentWire configuration with interactive wizard.
 
-    Default behavior: Run full wizard with optional agentwire setup at the end.
-    Quick mode (--quick): Run wizard only, skip agentwire setup prompt.
+    Default behavior: Run the wizard and end on the concrete portal-URL next
+    steps, so a first-run evaluator lands on a working voice portal.
+    Assisted mode (--assisted): also spawn the interactive Claude setup
+    session at the end to configure TTS/STT and other services.
     """
     # Check Python version first
     if not check_python_version():
@@ -6888,14 +6890,9 @@ def cmd_init(args) -> int:
 
     from .onboarding import run_onboarding
 
-    if args.quick:
-        # Quick mode: run wizard but skip agentwire step
-        # We do this by running onboarding and returning before agentwire prompt
-        # The onboarding module handles this internally
-        return run_onboarding(skip_session=True)
-
-    # Default: run full wizard (ends with optional agentwire setup)
-    return run_onboarding()
+    # Default ends on the portal-URL next steps; --assisted opts into the
+    # interactive Claude setup session.
+    return run_onboarding(skip_session=not args.assisted)
 
 
 def cmd_generate_certs(args) -> int:
@@ -11360,8 +11357,9 @@ Command Categories:
     # === init command ===
     init_parser = subparsers.add_parser("init", help="Interactive setup wizard")
     init_parser.add_argument(
-        "--quick", action="store_true",
-        help="Quick mode: skip agentwire setup at end"
+        "--assisted", action="store_true",
+        help="Spawn the interactive Claude setup session at the end "
+             "(default: end on the portal-URL next steps)"
     )
     init_parser.set_defaults(func=cmd_init)
 
