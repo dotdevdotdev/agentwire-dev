@@ -7,8 +7,10 @@ Multi-session voice web interface for AI coding agents.
 import asyncio
 import base64
 import fcntl
+import gzip
 import json
 import logging
+import mimetypes
 import os
 import pty
 import random
@@ -53,6 +55,22 @@ from .worktree import parse_session_name
 __version__ = "1.3.0"
 
 logger = logging.getLogger(__name__)
+
+# Static asset serving (#488): gzip text on the fly + Cache-Control headers.
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+STATIC_ROOT = (Path(__file__).parent / "static").resolve()
+# Extensions worth gzipping (text compresses ~3-5x); images/fonts don't.
+COMPRESSIBLE_SUFFIXES = {
+    ".js", ".mjs", ".css", ".json", ".svg", ".map", ".txt",
+    ".html", ".xml", ".webmanifest", ".ico",
+}
+# Long cache for content-stable binaries (icons/images), short for code/text
+# since filenames aren't content-hashed yet (a follow-up could append_version).
+IMAGE_SUFFIXES = {".webp", ".png", ".jpeg", ".jpg", ".gif", ".woff", ".woff2"}
+STATIC_CACHE_IMAGE = "public, max-age=604800"  # 7 days
+STATIC_CACHE_CODE = "public, max-age=3600"     # 1 hour
 
 # Paste chunking: large inputs (pastes) are written in chunks with delays
 # to avoid flooding the PTY buffer and freezing the agent session.
@@ -203,6 +221,7 @@ class AgentWireServer:
         self.session_client_counts: dict[str, int] = {}  # Attached tmux client counts per session
         self.active_notifications: dict[str, dict] = {}  # id -> notification for persistence across refresh
         self._background_tasks: set[asyncio.Task] = set()  # strong refs so create_task work isn't GC'd
+        self._gzip_cache: dict[Path, tuple[float, bytes]] = {}  # static gzip cache: path -> (mtime, bytes)
         # Rate-limit state for the public, unauthenticated POST /api/pair (#423 S1).
         # Per-IP and global sliding-window attempt logs (monotonic timestamps).
         self._pair_attempts: dict[str, list[float]] = {}
@@ -353,7 +372,10 @@ class AgentWireServer:
         artifacts_dir = self.config.artifacts.dir
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.app.router.add_static("/artifacts", artifacts_dir)
-        self.app.router.add_static("/static", Path(__file__).parent / "static")
+        # Custom static handler: gzip text assets on the fly + Cache-Control so
+        # phone first-load and repeat loads aren't crippled by the static
+        # payload (aiohttp's add_static does neither). See _handle_static.
+        self.app.router.add_get("/static/{path:.+}", self._handle_static)
 
     async def init_backends(self):
         """Initialize TTS, STT, and agent backends."""
@@ -3478,6 +3500,49 @@ class AgentWireServer:
         voices = await self._get_voices()
         return web.json_response(voices)
 
+    async def _handle_static(self, request: web.Request) -> web.StreamResponse:
+        """Serve /static assets with Cache-Control + on-the-fly gzip.
+
+        aiohttp's ``add_static`` adds neither, so a phone first-load streams
+        ~445KB of uncompressed JS and repeat loads re-fetch unconditionally.
+        This handler gzips compressible text (cached in-memory by path+mtime)
+        and stamps Cache-Control on everything (#488).
+        """
+        # Resolve safely under the static root (block path traversal).
+        target = (STATIC_ROOT / request.match_info["path"]).resolve()
+        if not target.is_relative_to(STATIC_ROOT) or not target.is_file():
+            raise web.HTTPNotFound()
+
+        suffix = target.suffix.lower()
+        cache = STATIC_CACHE_IMAGE if suffix in IMAGE_SUFFIXES else STATIC_CACHE_CODE
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+
+        accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "")
+        if suffix in COMPRESSIBLE_SUFFIXES and accepts_gzip:
+            body = self._gzipped_static(target)
+            return web.Response(
+                body=body,
+                content_type=content_type,
+                charset="utf-8",
+                headers={
+                    "Cache-Control": cache,
+                    "Content-Encoding": "gzip",
+                    "Vary": "Accept-Encoding",
+                },
+            )
+
+        return web.FileResponse(target, headers={"Cache-Control": cache})
+
+    def _gzipped_static(self, path: Path) -> bytes:
+        """Return gzipped bytes for a static file, cached by path + mtime."""
+        mtime = path.stat().st_mtime
+        cached = self._gzip_cache.get(path)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        body = gzip.compress(path.read_bytes(), compresslevel=6)
+        self._gzip_cache[path] = (mtime, body)
+        return body
+
     async def api_icons(self, request: web.Request) -> web.Response:
         """Get list of icon files for a category (sessions, machines, projects).
 
@@ -3494,11 +3559,14 @@ class AgentWireServer:
             return web.json_response({"custom": [], "default": []})
 
         def list_images(directory: Path) -> list[str]:
+            # Serve the small pre-generated WebP thumbnails (see
+            # scripts/generate_icon_thumbnails.py) rather than the full-res
+            # PNG/JPEG sources — the sidebar renders these at ~48px.
             if not directory.exists():
                 return []
             return sorted([
                 f.name for f in directory.iterdir()
-                if f.is_file() and f.suffix.lower() in (".png", ".jpeg", ".jpg")
+                if f.is_file() and f.suffix.lower() == ".webp"
             ])
 
         # Custom icons for name matching
