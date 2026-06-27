@@ -327,3 +327,7 @@ Quick links:
 <p align="center">
   <strong>AgentWire: For people who have better things to do.</strong>
 </p>
+
+---
+
+**Maintained by dotdev. Reach out via email at dev@dotdev.dev or on GitHub @dotdevdotdev.**
