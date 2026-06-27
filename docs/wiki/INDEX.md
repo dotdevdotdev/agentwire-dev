@@ -12,10 +12,9 @@ New to AgentWire? Start here:
 2. **[Concepts](concepts.md)** — narrative mental model: why tmux, sessions, orchestrator/worker, channels, scheduled work
 3. **[Architecture](architecture.md)** — single-page diagram of how the pieces fit together
 4. **[Glossary](glossary.md)** — definitions for session, pane, channel, gate, and the rest
-5. **[How AgentWire compares](comparison.md)** — honest positioning vs Omnara, Anthropic Remote Control, raw SSH+tmux
-6. **[README](../../README.md)** — what AgentWire is, full install matrix, feature list
-7. **[CLAUDE.md](../../CLAUDE.md)** — agent-facing project guide
-8. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
+5. **[README](../../README.md)** — what AgentWire is, full install matrix, feature list
+6. **[CLAUDE.md](../../CLAUDE.md)** — agent-facing project guide
+7. **[Sessions: claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — the safest default for autonomous work
 
 ## Sessions
 

@@ -22,9 +22,9 @@
 
 ## Why AgentWire
 
-Remote access to a coding agent is now table stakes — Anthropic ships first-party
-Remote Control, and a crowd of hosted tools ("talk to your agents from anywhere")
-do the same. AgentWire competes on what those structurally can't match:
+Remote access to a coding agent is now table stakes — first-party and hosted tools
+all let you reach an agent from your phone. AgentWire competes on what those
+structurally can't match:
 
 - **Self-hosted, keys-local.** Runs entirely on your hardware. No cloud account, no
   third party in the loop, no telemetry — your code and your API keys never leave
@@ -37,7 +37,7 @@ do the same. AgentWire competes on what those structurally can't match:
   workers — tmux- and Claude-Code-native from the ground up.
 
 > **Use the official app to watch one session; use AgentWire to orchestrate many,
-> by voice, on your own hardware.** See [How is this different?](#how-is-this-different)
+> by voice, on your own hardware.**
 
 ---
 
@@ -133,38 +133,6 @@ pip install agentwire-dev
 | **Safety Hooks** | 300+ dangerous commands blocked (rm -rf, force push, etc.) |
 | **Outbound Channels** | Email (Resend) + SMS (Quo / OpenPhone) for cross-device notifications |
 | **Session Roles** | Leader/worker patterns for multi-agent workflows |
-
----
-
-## How is this different?
-
-Plenty of tools let you reach an agent from your phone. Here's an honest look at
-where AgentWire sits — including where the alternatives win.
-
-| | **AgentWire** | **Omnara** | **Anthropic Remote Control** | **raw SSH + tmux** |
-|---|:---:|:---:|:---:|:---:|
-| Self-hosted (your hardware) | ✅ | ❌ hosted | ❌ via Claude app | ✅ |
-| Cloud account required | ❌ none | ✅ | ✅ Anthropic | ❌ none |
-| Keys / code stay local | ✅ | ❌ | ❌ | ✅ |
-| Neural voice (CPU) | ✅ Kokoro | ❌ | ❌ | ❌ |
-| Voice cloning (self-hosted) | ✅ GPU shim | ❌ | ❌ | ❌ |
-| Voice push-to-talk | ✅ | ❌ | ❌ | ❌ |
-| tmux / Claude-Code-native | ✅ | partial | ✅ (Claude only) | ✅ |
-| Multi-agent orchestration | ✅ council, scheduler, workers | partial | ❌ one session | manual |
-| Zero-setup remote access | ⚠️ certs + tunnel | ✅ | ✅ QR scan | ⚠️ |
-| Cloud session persistence | ❌ | ✅ | ✅ | ❌ |
-| License / price | AGPL-3 / commercial | freemium SaaS | bundled w/ Claude | free |
-
-**Where the others win, fairly:** Anthropic's Remote Control is zero-setup — scan a
-QR code and you're live, E2E-encrypted, with push notifications. Omnara gives you
-cloud persistence and a polished native app with no machine to keep running. If you
-want to glance at one session from your phone with nothing to install, those are
-great.
-
-**Where AgentWire wins:** if you want your code and keys to never leave your machine,
-to drive a fleet of agents by voice, and to hear them answer in a voice you cloned —
-on hardware you own — that's the gap AgentWire fills. Full breakdown:
-[`docs/wiki/comparison.md`](docs/wiki/comparison.md).
 
 ---
 
