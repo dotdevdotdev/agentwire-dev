@@ -15,8 +15,9 @@ So AgentWire shouldn't lead with "from anywhere." It should lead with what those
 
 1. **Self-hosted, keys-local.** Runs entirely on your hardware. No cloud account, no
    third party in the path, no telemetry. Your code and API keys never leave the machine.
-2. **Voice-native with cloning on CPU.** Push-to-talk in, neural TTS out, and voice
-   cloning that runs without a GPU — your agents talk back in a voice you chose or cloned.
+2. **Voice-native.** Push-to-talk in, **neural TTS out on plain CPU** (Kokoro, no GPU).
+   For your agents to talk back in a **cloned voice**, run a self-hosted GPU shim
+   (Chatterbox / Qwen / Zonos) — still on your hardware, still your keys.
 3. **Multi-agent orchestration.** Council (multi-soul deliberation), an overnight
    scheduler, briefing mode, and worktree-parallel workers — tmux- and Claude-Code-native.
 
@@ -27,7 +28,8 @@ So AgentWire shouldn't lead with "from anywhere." It should lead with what those
 | Self-hosted (your hardware) | ✅ | ❌ hosted | ❌ via Claude app | ✅ |
 | Cloud account required | ❌ none | ✅ | ✅ Anthropic | ❌ none |
 | Keys / code stay local | ✅ | ❌ | ❌ | ✅ |
-| Neural voice + cloning | ✅ CPU clone | ❌ | ❌ | ❌ |
+| Neural voice (CPU) | ✅ Kokoro | ❌ | ❌ | ❌ |
+| Voice cloning (self-hosted) | ✅ GPU shim | ❌ | ❌ | ❌ |
 | Voice push-to-talk | ✅ | ❌ | ❌ | ❌ |
 | tmux / Claude-Code-native | ✅ | partial | ✅ (Claude only) | ✅ |
 | Multi-agent orchestration | ✅ council, scheduler, workers | partial | ❌ one session | manual |
@@ -55,7 +57,8 @@ Pick AgentWire when:
 
 - your code and keys must **never leave your machine** (privacy, compliance, or principle);
 - you want to **drive a fleet of agents by voice**, not babysit a single session;
-- you want them to **answer in a neural voice you cloned**, running on your own CPU;
+- you want them to **answer in a neural voice on CPU** (Kokoro), or in a **cloned voice**
+  via a self-hosted GPU shim — either way on hardware you own;
 - you live in **tmux + Claude Code** and want orchestration native to that, not a wrapper.
 
 The one-liner: **use the official app to watch one session; use AgentWire to orchestrate
@@ -68,13 +71,13 @@ repo). Owner to lift and refine.
 
 - **Headline:** Self-hosted, voice-native control for Claude Code.
 - **Subhead:** Your machine, your keys, no cloud account. Orchestrate many agents by
-  voice — and hear them answer in a voice you cloned, running on your own CPU.
+  voice — neural TTS on your CPU, and cloned voices via a self-hosted GPU shim.
 - **Positioning line (above or below CTA):** Remote access is table stakes now. AgentWire
-  is the one that never phones home. *Use the official app to watch one session; use
-  AgentWire to orchestrate many, on hardware you own.*
+  is the one with no telemetry, where your keys never leave the machine. *Use the official
+  app to watch one session; use AgentWire to orchestrate many, on hardware you own.*
 - **Three pillars (feature row):**
-  - 🔒 **Local-first** — runs on your hardware, keys stay local, zero telemetry.
-  - 🎙️ **Voice-native** — push-to-talk in, cloned neural voice out, CPU-only.
+  - 🔒 **Local-first** — runs on your hardware, keys stay local, no telemetry.
+  - 🎙️ **Voice-native** — push-to-talk in, neural TTS on CPU, cloned voices via a GPU shim.
   - 🧠 **Orchestration** — council, scheduler, briefing mode, parallel worktree workers.
 
 Sources: <https://github.com/omnara-ai/omnara>, <https://www.ycombinator.com/companies/omnara>,

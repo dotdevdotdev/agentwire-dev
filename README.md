@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  Orchestrate many agents by voice. Cloned neural voices run on your own CPU.
+  Orchestrate many agents by voice — neural TTS on your CPU, voice cloning via a self-hosted GPU shim.
 </p>
 
 <p align="center">
@@ -29,9 +29,9 @@ do the same. AgentWire competes on what those structurally can't match:
 - **Self-hosted, keys-local.** Runs entirely on your hardware. No cloud account, no
   third party in the loop, no telemetry — your code and your API keys never leave
   the machine.
-- **Voice-native, not voice-bolted-on.** Push-to-talk in, neural TTS out, with
-  **voice cloning that runs on CPU** — clone a voice and have your agents talk back
-  in it, no GPU required.
+- **Voice-native, not voice-bolted-on.** Push-to-talk in, **neural TTS out on plain
+  CPU** (Kokoro, no GPU). Want your agents to talk back in a **cloned voice**? Run a
+  self-hosted GPU shim (Chatterbox / Qwen / Zonos) — same machine, still your keys.
 - **Built to orchestrate _many_ agents, not watch one.** Council (multi-soul
   deliberation), an overnight scheduler, briefing mode, and worktree-parallel
   workers — tmux- and Claude-Code-native from the ground up.
@@ -122,7 +122,7 @@ pip install agentwire-dev
 | Feature | Description |
 |---------|-------------|
 | **Voice Control** | Push-to-talk from any device on your network |
-| **Neural Voice + Cloning** | Kokoro neural TTS out of the box; clone a voice that runs on CPU |
+| **Neural Voice + Cloning** | Kokoro neural TTS on CPU out of the box; voice cloning via a self-hosted GPU shim |
 | **Council** | Fan a prompt to multiple "soul" sessions (brain, conscience, critic…), synthesize with attribution |
 | **Scheduler** | Overnight / recurring autonomous tasks with gates, priorities, and usage-limit recovery |
 | **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
@@ -146,7 +146,8 @@ where AgentWire sits — including where the alternatives win.
 | Self-hosted (your hardware) | ✅ | ❌ hosted | ❌ via Claude app | ✅ |
 | Cloud account required | ❌ none | ✅ | ✅ Anthropic | ❌ none |
 | Keys / code stay local | ✅ | ❌ | ❌ | ✅ |
-| Neural voice + cloning | ✅ CPU clone | ❌ | ❌ | ❌ |
+| Neural voice (CPU) | ✅ Kokoro | ❌ | ❌ | ❌ |
+| Voice cloning (self-hosted) | ✅ GPU shim | ❌ | ❌ | ❌ |
 | Voice push-to-talk | ✅ | ❌ | ❌ | ❌ |
 | tmux / Claude-Code-native | ✅ | partial | ✅ (Claude only) | ✅ |
 | Multi-agent orchestration | ✅ council, scheduler, workers | partial | ❌ one session | manual |
