@@ -1,12 +1,13 @@
 """Integration tests for portal API handlers via aiohttp TestClient."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from agentwire.config import load_config
-from agentwire.server import AgentWireServer
+from agentwire.server import AgentWireServer, Session
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1400,3 +1401,77 @@ class TestStaticAssets:
         client, _ = portal_client
         resp = await client.get("/static/does-not-exist.js")
         assert resp.status == 404
+
+
+class TestMonitorInProcessCapture:
+    """#489 — the monitor captures session output IN-PROCESS via
+    agent.get_output instead of spawning a per-session `agentwire output`
+    subprocess, while still broadcasting dashboard activity for every session."""
+
+    def _server(self, tmp_path):
+        server = AgentWireServer(_make_config(tmp_path))
+        server.agent = MagicMock()
+        server.agent.get_output = MagicMock(return_value="scrollback")
+        return server
+
+    async def _run_one_tick(self, server):
+        task = asyncio.create_task(server.monitor_all_sessions())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_captures_in_process_no_output_subprocess(self, tmp_path):
+        server = self._server(tmp_path)
+
+        cli_calls = []
+
+        async def fake_cmd(args):
+            cli_calls.append(args)
+            if args[:1] == ["list"] and "--local" in args:
+                return True, {"sessions": [{"name": "alpha"}, {"name": "beta"}]}
+            return True, {"sessions": []}
+
+        server.run_agentwire_cmd = AsyncMock(side_effect=fake_cmd)
+        server.broadcast_dashboard = AsyncMock()
+
+        await self._run_one_tick(server)
+
+        # Output captured in-process for every listed session...
+        captured = {c.args[0] for c in server.agent.get_output.call_args_list}
+        assert {"alpha", "beta"} <= captured
+        # ...and NEVER via an `agentwire output` subprocess.
+        assert not any(a[:1] == ["output"] for a in cli_calls), cli_calls
+
+    async def test_dashboard_activity_broadcast_for_all_sessions(self, tmp_path):
+        """A session with fresh output gets active:true on the dashboard,
+        whether or not it has an open window (single source = the monitor)."""
+        server = self._server(tmp_path)
+        # Distinct output per session so each registers a change → active.
+        server.agent.get_output = MagicMock(
+            side_effect=lambda name, lines=50: f"output-for-{name}"
+        )
+
+        async def fake_cmd(args):
+            if args[:1] == ["list"] and "--local" in args:
+                return True, {"sessions": [{"name": "watched"}, {"name": "headless"}]}
+            return True, {"sessions": []}
+
+        server.run_agentwire_cmd = AsyncMock(side_effect=fake_cmd)
+        server.broadcast_dashboard = AsyncMock()
+
+        # "watched" has an open window; "headless" does not. Both must broadcast.
+        sess = Session(name="watched", config=server._get_session_config("watched"))
+        sess.clients.add(object())
+        server.active_sessions["watched"] = sess
+
+        await self._run_one_tick(server)
+
+        active = {
+            c.args[1]["session"]
+            for c in server.broadcast_dashboard.call_args_list
+            if c.args[0] == "session_activity" and c.args[1].get("active") is True
+        }
+        assert {"watched", "headless"} <= active

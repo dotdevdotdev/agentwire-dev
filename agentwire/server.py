@@ -1839,13 +1839,23 @@ class AgentWireServer:
     async def monitor_all_sessions(self):
         """Background task to monitor all session activity for dashboard indicators.
 
-        Polls tmux output for all sessions and broadcasts activity state changes.
+        Single source of truth for the dashboard's per-session activity dots:
+        captures every session's output once per tick **in-process** via
+        `self.agent.get_output` (the same `tmux capture-pane` `_poll_output`
+        uses) and broadcasts `session_activity` only on state change. This
+        replaces the previous per-session `agentwire output` subprocess, which
+        re-imported the full CLI on every tick (#489).
+
+        `_poll_output` remains live-streaming only — it does not touch the
+        dashboard activity broadcasts.
         """
         threshold = self.config.server.activity_threshold_seconds
         # Track per-session state: {session_name: {"last_output": str, "last_active": bool}}
         session_states: dict[str, dict] = {}
 
         logger.info(f"[Monitor] Starting session monitor (threshold: {threshold}s)")
+
+        loop = asyncio.get_event_loop()
 
         while True:
             try:
@@ -1869,15 +1879,11 @@ class AgentWireServer:
                 # Poll each session
                 for session_name in session_names:
                     try:
-                        # Get current output
-                        success, output_result = await self.run_agentwire_cmd(
-                            ["output", "-s", session_name, "-n", "50"]
+                        # Capture output in-process (no subprocess / CLI re-import).
+                        current_output = await loop.run_in_executor(
+                            None,
+                            lambda n=session_name: self.agent.get_output(n, lines=50),
                         )
-
-                        if not success:
-                            continue
-
-                        current_output = output_result.get("output", "")
 
                         # Initialize state for new sessions
                         if session_name not in session_states:
