@@ -95,6 +95,7 @@ export function renderCard(s, opts = {}) {
             ${childBadge}
             <button class="sidebar-list-item-btn" data-action="connect" title="Connect">▸</button>
             <button class="sidebar-list-item-btn" data-action="monitor" title="Monitor">👁</button>
+            <button class="sidebar-list-item-btn" data-action="review" title="Review diff (approve/deny)">🔍</button>
             ${opts.closable ? renderCloseButton(name) : ''}
         </div>
         ${path ? `<div class="sidebar-session-row2"><span class="sidebar-session-path">${path}</span></div>` : ''}
@@ -169,6 +170,11 @@ export async function handleSessionClick(e) {
     const action = btn.dataset.action;
     if (action === 'close') {
         handleCloseClick(session);
+        return;
+    }
+    if (action === 'review') {
+        const { openReviewWindow } = await import('../desktop.js');
+        openReviewWindow(session);
         return;
     }
     const { openSessionTerminal } = await import('../desktop.js');

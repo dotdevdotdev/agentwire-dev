@@ -300,6 +300,9 @@ class AgentWireServer:
         self.app.router.add_get("/api/sessions/{name:.+}/connections", self.api_session_connections)
         self.app.router.add_post("/api/local-tts/{name:.+}", self.api_local_tts)
         self.app.router.add_post("/api/answer/{name:.+}", self.api_answer)
+        # Mobile Review window: structured diff + tap-to-approve/deny
+        self.app.router.add_get("/api/review/{name:.+}", self.api_review)
+        self.app.router.add_post("/api/review/{name:.+}/answer", self.api_review_answer)
         self.app.router.add_post("/api/session/{name:.+}/recreate", self.api_recreate_session)
         self.app.router.add_post("/api/session/{name:.+}/spawn-sibling", self.api_spawn_sibling)
         self.app.router.add_post("/api/session/{name:.+}/fork", self.api_fork_session)
@@ -4603,6 +4606,83 @@ projects:
         except Exception as e:
             logger.error(f"Answer API failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
+
+    def _live_prompt(self, session: str, pane: int = 0) -> "dict | None":
+        """The live interactive prompt on a pane, shaped for the Review window.
+
+        Returns kind/question/options plus the ``expect`` hash the guarded
+        answer path needs. Prefers the router marker's hash when present (hook-
+        routed permission prompts carry a payload-derived hash that can't be
+        recomputed from the screen; ``prompt_router.answer`` bridges it), else
+        the screen-derived content hash.
+        """
+        visible = prompt_router._capture(f"{session}.{pane}")
+        info = prompt_router.detect_prompt(visible)
+        if info is None:
+            return None
+        marker = prompt_router.read_marker(session, pane)
+        expect = (marker or {}).get("hash") or info.content_hash()
+        return {
+            "kind": info.kind,
+            "question": info.question,
+            "summary": info.summary,
+            "options": info.options,
+            "expect": expect,
+            "pane": pane,
+        }
+
+    async def api_review(self, request: web.Request) -> web.Response:
+        """GET /api/review/{session} — structured diff + any live prompt."""
+        name = request.match_info["name"]
+        ok, diff = await self.run_agentwire_cmd(["diff", "-s", name])
+        if not ok:
+            return web.json_response(
+                {"error": diff.get("error", "Failed to load diff")}, status=502
+            )
+        try:
+            prompt = await asyncio.get_event_loop().run_in_executor(
+                None, self._live_prompt, name
+            )
+        except Exception as e:
+            logger.warning(f"[{name}] Review prompt detection failed: {e}")
+            prompt = None
+        return web.json_response({"success": True, "diff": diff, "prompt": prompt})
+
+    async def api_review_answer(self, request: web.Request) -> web.Response:
+        """POST /api/review/{session}/answer — approve/deny the live prompt.
+
+        Drives the existing guarded compare-and-send path so a stale tap (the
+        prompt already answered, or a different one now live) is a safe no-op.
+        Approve selects option 1 (allow / proceed); deny sends Escape, which
+        cancels a permission, plan, or question dialog.
+        """
+        name = request.match_info["name"]
+        try:
+            data = await request.json()
+            decision = (data.get("decision") or "").strip().lower()
+            expect = (data.get("expect") or "").strip()
+            pane = int(data.get("pane", 0) or 0)
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid request body"}, status=400)
+
+        if decision not in ("approve", "deny"):
+            return web.json_response(
+                {"error": "decision must be 'approve' or 'deny'"}, status=400
+            )
+        if not expect:
+            return web.json_response({"error": "Missing 'expect' hash"}, status=400)
+
+        keys = ["1"] if decision == "approve" else ["Escape"]
+        try:
+            ok, message = await asyncio.get_event_loop().run_in_executor(
+                None, prompt_router.answer, name, pane, expect, keys
+            )
+        except Exception as e:
+            logger.error(f"[{name}] Review answer failed: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+
+        status = 200 if ok else 409
+        return web.json_response({"success": ok, "message": message}, status=status)
 
     async def api_permission_request(self, request: web.Request) -> web.Response:
         """POST /api/permission/{session} - Handle permission request from Claude Code hook.

@@ -12599,6 +12599,10 @@ Command Categories:
     )
     l_uninstall.set_defaults(func=limits_cli.cmd_limits_uninstall)
 
+    # === diff command (structured git diff for the mobile Review window) ===
+    from . import diff_cli
+    diff_cli.register_diff_parser(subparsers)
+
     # === prompts command group (prompt routing, rides the limits watchdog) ===
     from . import prompts_cli
     prompts_cli.register_prompts_parser(subparsers)

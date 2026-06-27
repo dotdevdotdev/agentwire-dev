@@ -3937,6 +3937,199 @@ body .winbox.max {
 }
 
 /* ============================================
+   Review Window (mobile-first diff + approve/deny)
+   ============================================ */
+
+.review-window .wb-body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.review-window-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    background: var(--background);
+    color: var(--text);
+}
+
+.review-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--chrome-border);
+    flex: 0 0 auto;
+}
+
+.review-session {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 45%;
+}
+
+.review-summary {
+    flex: 1;
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.review-btn {
+    background: var(--chrome);
+    color: var(--text);
+    border: 1px solid var(--chrome-border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 14px;
+    min-height: 40px;  /* comfortable phone tap target */
+}
+
+.review-btn:hover { background: var(--hover); border-color: var(--accent); }
+.review-refresh { padding: 8px 10px; min-width: 40px; }
+
+.review-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+.review-loading, .review-empty, .review-error, .review-truncated, .review-binary {
+    padding: 16px;
+    color: var(--text-muted);
+}
+.review-error { color: var(--error); }
+
+.review-file { border-bottom: 1px solid var(--chrome-border); }
+
+.review-file-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    cursor: pointer;
+    background: var(--chrome);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.review-file-head:hover { background: var(--hover); }
+
+.review-caret { width: 12px; color: var(--text-muted); }
+
+.review-status {
+    font-size: 10px;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--background);
+    color: var(--text-muted);
+}
+.review-status-added { color: #39ff14; }
+.review-status-deleted { color: var(--error); }
+.review-status-renamed { color: #00bfff; }
+
+.review-file-path {
+    flex: 1;
+    word-break: break-all;
+    font-family: inherit;
+}
+
+.review-file-stat { color: var(--text-muted); white-space: nowrap; }
+
+.review-hunks.hidden { display: none; }
+
+.review-hunk-head {
+    padding: 4px 10px;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--chrome) 60%, transparent);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.review-hunk-section { opacity: 0.7; }
+
+.review-line {
+    display: flex;
+    align-items: stretch;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.review-line-add { background: rgba(57, 255, 20, 0.10); }
+.review-line-del { background: rgba(220, 50, 50, 0.12); }
+
+.review-gutter {
+    flex: 0 0 auto;
+    width: 36px;
+    padding: 0 4px;
+    text-align: right;
+    color: var(--text-muted);
+    opacity: 0.6;
+    user-select: none;
+    border-right: 1px solid var(--chrome-border);
+}
+
+.review-code {
+    flex: 1;
+    padding: 0 6px 0 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.review-sign { display: inline-block; width: 1ch; opacity: 0.7; }
+
+.review-actions {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--chrome-border);
+    background: var(--chrome);
+    padding: 10px;
+}
+.review-actions.hidden { display: none; }
+
+.review-prompt {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+.review-prompt-kind {
+    text-transform: uppercase;
+    font-size: 10px;
+    color: var(--text-muted);
+    border: 1px solid var(--chrome-border);
+    border-radius: 3px;
+    padding: 1px 5px;
+}
+.review-prompt-q { color: var(--text); }
+
+.review-action-buttons {
+    display: flex;
+    gap: 10px;
+}
+.review-action-buttons .review-btn {
+    flex: 1;
+    min-height: 48px;  /* big, thumb-friendly */
+    font-size: 16px;
+    font-weight: 600;
+}
+.review-approve { border-color: #39ff14; color: #39ff14; }
+.review-approve:hover { background: rgba(57, 255, 20, 0.12); }
+.review-deny { border-color: var(--error); color: var(--error); }
+.review-deny:hover { background: rgba(220, 50, 50, 0.12); }
+.review-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ============================================
    Scheduler Panel
    ============================================ */
 

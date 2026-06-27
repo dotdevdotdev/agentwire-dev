@@ -13,6 +13,7 @@ import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
+import { ReviewWindow } from './review-window.js';
 import { CouncilWindow, COUNCIL_WINDOW_ID } from './council-window.js';
 import { sidebar } from './sidebar.js';
 import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
@@ -39,6 +40,7 @@ import { initAnnouncements } from './announcement-modal.js';
 // State - track open windows
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
 const artifactWindows = new Map();  // artifactId -> ArtifactWindow instance
+const reviewWindows = new Map();  // windowId -> ReviewWindow instance
 let councilWindow = null;  // single CouncilWindow instance (one board at a time)
 
 // Global PTT state
@@ -656,6 +658,50 @@ export function openArtifactWindow(url, title = 'Artifact', artifactId = null) {
 }
 
 /**
+ * Open a mobile-first Review window for a session — diff + tap-to-approve/deny.
+ * Re-opening focuses (and refreshes) the existing window for that session.
+ *
+ * @param {string} session - Session whose diff to review
+ */
+export function openReviewWindow(session) {
+    const id = `review-${session}`;
+    if (reviewWindows.has(id)) {
+        const existing = reviewWindows.get(id);
+        if (existing.isMinimized) {
+            if (!desktop.isTiled(id)) desktop.minimizeAllExcept(id);
+            existing.restore();
+        } else {
+            existing.focus();
+        }
+        existing.refresh();
+        return;
+    }
+
+    desktop.minimizeAllExcept(null);
+
+    const rw = new ReviewWindow({
+        session,
+        windowId: id,
+        root: elements.desktopArea,
+        onClose: () => {
+            reviewWindows.delete(id);
+            removeTaskbarButton(id);
+            unrecordTaskbarEntry(id);
+        },
+        onFocus: () => {
+            updateTaskbarActive(id);
+            desktop.setActiveWindow(id);
+            saveTaskbarState();
+        },
+    });
+
+    rw.open();
+    reviewWindows.set(id, rw);
+    addTaskbarButton(id, rw);
+    recordTaskbarEntry({ kind: 'review', id, session });
+}
+
+/**
  * Open the council workspace window. Registers through the same desktop path as
  * a session window (single-window maximize + taskbar tab), so it opens
  * maximized, appears in the open-sessions area, and is tabbable. Only one board
@@ -760,6 +806,8 @@ function _openByRecord(rec) {
         openArtifactWindow(rec.url, rec.title || 'Artifact', rec.id);
     } else if (rec.kind === 'council') {
         openCouncilWindow(rec.sitting || null);
+    } else if (rec.kind === 'review') {
+        openReviewWindow(rec.session);
     }
 }
 

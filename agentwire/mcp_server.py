@@ -712,6 +712,44 @@ def session_output(session: str, lines: int = 50) -> str:
 
 
 @mcp.tool()
+def diff(session: str, base: str = "") -> str:
+    """Summarize a session's git diff (what the agent changed).
+
+    Thin wrapper over `agentwire diff`. Use this to review a worktree
+    session's work before approving it. The portal's mobile Review window
+    renders the same data with tap-to-approve controls.
+
+    Args:
+        session: Session name to inspect.
+        base: Diff base ref. Empty = HEAD if there are uncommitted changes,
+            else origin/main (a worktree-session's committed branch work).
+
+    Returns:
+        A per-file summary of additions/deletions, or "No changes".
+    """
+    args = ["diff", "-s", session]
+    if base:
+        args += ["--base", base]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to get diff: {data.get('error', 'Unknown error')}"
+    files = data.get("files", [])
+    if not files:
+        return f"No changes vs {data.get('base')}."
+    lines = [
+        f"Diff vs {data.get('base')} "
+        f"(+{data.get('additions')} -{data.get('deletions')}):"
+    ]
+    for f in files:
+        lines.append(
+            f"  {f['status']}: {f['path']} (+{f['additions']} -{f['deletions']})"
+        )
+    if data.get("truncated"):
+        lines.append("  … diff truncated (review at a desk)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def session_info(session: str) -> str:
     """Get detailed information about a session.
 
