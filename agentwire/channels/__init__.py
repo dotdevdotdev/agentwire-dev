@@ -3,6 +3,7 @@
 # Auto-register built-in channels
 from . import (
     email,  # noqa: F401
+    push,  # noqa: F401
     quo,  # noqa: F401
 )
 from .base import (

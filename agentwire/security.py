@@ -224,6 +224,10 @@ def _is_public_path(request: web.Request) -> bool:
         return path == "/api/pair"
     if request.method != "GET":
         return False
+    # PWA bootstrap files must be fetchable before any token exists: the browser
+    # requests the manifest and service worker as part of installing the app.
+    if path in ("/manifest.webmanifest", "/service-worker.js"):
+        return True
     return path in ("/", "/mobile", "/pair", "/health") or path.startswith("/static/")
 
 

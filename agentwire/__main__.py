@@ -11641,6 +11641,16 @@ Command Categories:
     email_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress success output")
     email_parser.set_defaults(func=cmd_email)
 
+    # === push command (#483) ===
+    from agentwire.channels.push import cmd_push
+    push_parser = subparsers.add_parser(
+        "push", help="Web Push (VAPID) for the PWA — generate keys / check status"
+    )
+    push_sub = push_parser.add_subparsers(dest="push_cmd")
+    push_sub.add_parser("keygen", help="Generate a VAPID keypair for ~/.agentwire/.env")
+    push_sub.add_parser("status", help="Show push readiness + subscription count")
+    push_parser.set_defaults(func=cmd_push)
+
     # === fetch command ===
     from agentwire.fetch import cmd_fetch
     fetch_parser = subparsers.add_parser(

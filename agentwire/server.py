@@ -265,6 +265,13 @@ class AgentWireServer:
         """Configure HTTP and WebSocket routes."""
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/", self.handle_index)
+        # PWA: manifest + root-scoped service worker (#483). Served from root so
+        # the SW controls scope "/"; public so the browser can install the app.
+        self.app.router.add_get("/manifest.webmanifest", self.handle_manifest)
+        self.app.router.add_get("/service-worker.js", self.handle_service_worker)
+        self.app.router.add_get("/api/push/config", self.api_push_config)
+        self.app.router.add_post("/api/push/subscribe", self.api_push_subscribe)
+        self.app.router.add_post("/api/push/unsubscribe", self.api_push_unsubscribe)
         self.app.router.add_get("/mobile", self.handle_mobile)
         self.app.router.add_get("/pair", self.handle_pair_page)
         self.app.router.add_post("/api/pair", self.api_pair)
@@ -1034,6 +1041,92 @@ class AgentWireServer:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
+    async def handle_manifest(self, request: web.Request) -> web.Response:
+        """Serve the PWA web app manifest from root (#483)."""
+        manifest_path = Path(__file__).parent / "static" / "manifest.webmanifest"
+        return web.FileResponse(
+            manifest_path,
+            headers={"Content-Type": "application/manifest+json"},
+        )
+
+    async def handle_service_worker(self, request: web.Request) -> web.Response:
+        """Serve the service worker from root so its scope is "/" (#483).
+
+        ``Service-Worker-Allowed: /`` belt-and-suspenders the root scope, and we
+        forbid caching so a redeploy of the SW is picked up promptly.
+        """
+        sw_path = Path(__file__).parent / "static" / "service-worker.js"
+        return web.FileResponse(
+            sw_path,
+            headers={
+                "Content-Type": "application/javascript",
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+        )
+
+    async def api_push_config(self, request: web.Request) -> web.Response:
+        """GET /api/push/config — public-key + enabled flag for the push client (#483)."""
+        from .channels.push import _get_push_config, push_ready
+
+        cfg = _get_push_config()
+        ready, _reason = push_ready()
+        return web.json_response(
+            {"enabled": bool(ready), "vapidPublicKey": cfg.vapid_public_key or ""}
+        )
+
+    async def api_push_subscribe(self, request: web.Request) -> web.Response:
+        """POST /api/push/subscribe — persist a browser's Web Push subscription (#483)."""
+        from . import push_store
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        endpoint = (data.get("endpoint") or "").strip()
+        keys = data.get("keys") or {}
+        if not endpoint or not isinstance(keys, dict) or not keys.get("p256dh") or not keys.get("auth"):
+            return web.json_response(
+                {"success": False, "error": "endpoint and keys{p256dh,auth} required"},
+                status=400,
+            )
+        push_store.add(endpoint=endpoint, keys=keys, device=str(data.get("device", "")))
+        return web.json_response({"success": True})
+
+    async def api_push_unsubscribe(self, request: web.Request) -> web.Response:
+        """POST /api/push/unsubscribe — drop a stored subscription (#483)."""
+        from . import push_store
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        endpoint = (data.get("endpoint") or "").strip()
+        if not endpoint:
+            return web.json_response({"success": False, "error": "endpoint required"}, status=400)
+        removed = push_store.remove(endpoint)
+        return web.json_response({"success": True, "removed": removed})
+
+    async def _fanout_push(self, text: str, session: str | None = None,
+                           priority: str = "normal") -> None:
+        """Best-effort Web Push fan-out for a toast (#483).
+
+        Mirrors every portal toast to subscribed devices so a backgrounded/locked
+        phone buzzes. A no-op when push is disabled/unconfigured; runs the
+        blocking pywebpush calls off the event loop and never raises into the
+        toast path.
+        """
+        try:
+            from .channels.push import push_ready, send_web_push
+
+            ready, _reason = push_ready()
+            if not ready:
+                return
+            title = f"AgentWire — {session}" if session else "AgentWire"
+            await asyncio.to_thread(send_web_push, title, text, "/", session or "agentwire")
+        except Exception:
+            logger.debug("push fan-out failed", exc_info=True)
+
     async def handle_mobile(self, request: web.Request) -> web.Response:
         """Serve the mobile PTT page — minimal phone surface (#279).
 
@@ -1501,6 +1594,7 @@ class AgentWireServer:
 
         clients = len(self.dashboard_clients)
         await self.broadcast_dashboard("notification", notification)
+        await self._fanout_push(text, session=session, priority=priority)
 
         # Report how many dashboards saw it live. 0 isn't a failure — the toast
         # is persisted in active_notifications and restored on the next page
@@ -2021,6 +2115,7 @@ class AgentWireServer:
         }
         self.active_notifications[notification_id] = notification
         await self.broadcast_dashboard("notification", notification)
+        await self._fanout_push(text, session=session, priority=priority)
 
     async def _notify_service_event(self, name: str, text: str, speak: bool):
         """Toast (+ optional TTS) for a service watchdog event."""
