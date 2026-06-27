@@ -3,7 +3,11 @@
 </p>
 
 <p align="center">
-  <strong>Talk to your AI coding agents. From anywhere.</strong>
+  <strong>Self-hosted, voice-native control for Claude Code — your machine, your keys, no cloud account.</strong>
+</p>
+
+<p align="center">
+  Orchestrate many agents by voice — neural TTS on your CPU, voice cloning via a self-hosted GPU shim.
 </p>
 
 <p align="center">
@@ -16,13 +20,24 @@
 
 ---
 
-## The Problem
+## Why AgentWire
 
-You're on the couch. Your AI agent is on your workstation. You have an idea.
+Remote access to a coding agent is now table stakes — first-party and hosted tools
+all let you reach an agent from your phone. AgentWire competes on what those
+structurally can't match:
 
-Old way: Get up. Walk to computer. Type.
+- **Self-hosted, keys-local.** Runs entirely on your hardware. No cloud account, no
+  third party in the loop, no telemetry — your code and your API keys never leave
+  the machine.
+- **Voice-native, not voice-bolted-on.** Push-to-talk in, **neural TTS out on plain
+  CPU** (Kokoro, no GPU). Want your agents to talk back in a **cloned voice**? Run a
+  self-hosted GPU shim (Chatterbox / Qwen / Zonos) — same machine, still your keys.
+- **Built to orchestrate _many_ agents, not watch one.** Council (multi-soul
+  deliberation), an overnight scheduler, briefing mode, and worktree-parallel
+  workers — tmux- and Claude-Code-native from the ground up.
 
-**AgentWire way:** Pull out phone. Hold button. Talk. Done.
+> **Use the official app to watch one session; use AgentWire to orchestrate many,
+> by voice, on your own hardware.**
 
 ---
 
@@ -107,12 +122,15 @@ pip install agentwire-dev
 | Feature | Description |
 |---------|-------------|
 | **Voice Control** | Push-to-talk from any device on your network |
+| **Neural Voice + Cloning** | Kokoro neural TTS on CPU out of the box; voice cloning via a self-hosted GPU shim |
+| **Council** | Fan a prompt to multiple "soul" sessions (brain, conscience, critic…), synthesize with attribution |
+| **Scheduler** | Overnight / recurring autonomous tasks with gates, priorities, and usage-limit recovery |
+| **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
 | **Multi-Session** | Run multiple agents on different projects simultaneously |
 | **Git Worktrees** | Same project, multiple branches, parallel agents |
 | **Remote Machines** | SSH into GPU servers and talk to agents there |
 | **Worker Orchestration** | Spawn worker panes, coordinate tasks, voice commands |
 | **Safety Hooks** | 300+ dangerous commands blocked (rm -rf, force push, etc.) |
-| **TTS Responses** | Agents talk back via browser audio |
 | **Outbound Channels** | Email (Resend) + SMS (Quo / OpenPhone) for cross-device notifications |
 | **Session Roles** | Leader/worker patterns for multi-agent workflows |
 
