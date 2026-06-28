@@ -33,19 +33,33 @@ from . import (  # noqa: E402  # must follow load_dotenv() above
 from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401: re-exported moved helpers
     _UNATTENDED_ENV_KEYS,
     CONFIG_DIR,
+    KIND_DEFAULT_POSTURE,
     AgentCommand,
+    _add_posture_harness_flags,
     _build_tmux_env_flags,
     _build_tmux_env_flags_shell,
+    _check_portal_health,
     _check_tmux_installed,
+    _default_portal_url,
     _display_parent,
+    _get_agentwire_path,
     _get_all_machines,
     _get_machine_config,
+    _get_portal_url,
     _get_session_project_path,
+    _git_behind_origin,
+    _install_global_tmux_hooks,
+    _notify_portal_sessions_changed,
     _output_json,
     _output_result,
     _parse_session_target,
+    _portal_auth_headers,
+    _post_desktop_notification,
     _record_session_creator,
+    _resolve_session_type_from_args,
+    _run_remote,
     _set_session_name_env,
+    _start_portal_local,
     _tmux_global_option,
     _with_unattended_env,
     build_agent_command,
@@ -108,27 +122,6 @@ def _portal_auth_curl_args() -> list[str]:
     return ["-H", f"Authorization: Bearer {token}"] if token else []
 
 
-def _portal_auth_headers() -> dict:
-    """Headers carrying the portal auth token, if one is configured."""
-    from .security import get_local_portal_token
-
-    token = get_local_portal_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
-def _default_portal_url() -> str:
-    """Default portal URL — scheme mirrors the typed config's logic: https
-    only when server.ssl cert/key are configured AND exist on disk."""
-    ssl_cfg = load_config().get("server", {}).get("ssl", {})
-    cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
-    enabled = bool(
-        cert and key
-        and Path(os.path.expanduser(cert)).exists()
-        and Path(os.path.expanduser(key)).exists()
-    )
-    return f"{'https' if enabled else 'http'}://localhost:8765"
-
-
 def _portal_api(method: str, path: str, data: dict | None = None, timeout: int = 10) -> dict | None:
     """Make an API request to the portal using curl (reliable with self-signed certs).
 
@@ -163,150 +156,7 @@ def _portal_api(method: str, path: str, data: dict | None = None, timeout: int =
         return None
 
 
-def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:
-    """Run command on remote machine via SSH.
-
-    Args:
-        machine_id: Machine ID from machines.json
-        command: Shell command to run
-
-    Returns:
-        subprocess.CompletedProcess with stdout, stderr, returncode
-    """
-    machine = _get_machine_config(machine_id)
-    if machine is None:
-        # Return a failed result
-        result = subprocess.CompletedProcess(
-            args=["ssh", machine_id, command],
-            returncode=1,
-            stdout="",
-            stderr=f"Machine '{machine_id}' not found in machines.json",
-        )
-        return result
-
-    host = machine.get("host", machine_id)
-    user = machine.get("user")
-    port = machine.get("port")
-
-    # Build SSH target
-    if user:
-        ssh_target = f"{user}@{host}"
-    else:
-        ssh_target = host
-
-    # Build SSH command with optional port and connection timeout
-    ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
-    if port:
-        ssh_cmd.extend(["-p", str(port)])
-    ssh_cmd.extend([ssh_target, command])
-
-    try:
-        return subprocess.run(
-            ssh_cmd,
-            capture_output=True,
-            text=True,
-            timeout=10,  # Hard timeout for command execution
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            args=ssh_cmd,
-            returncode=1,
-            stdout="",
-            stderr=f"SSH connection to {machine_id} timed out",
-        )
-
-
-def _notify_portal_sessions_changed():
-    """Notify portal that sessions have changed so it can broadcast to clients.
-
-    This is fire-and-forget - failures are silently ignored since the portal
-    may not be running.
-    """
-    import ssl
-
-    try:
-        # Create SSL context that doesn't verify (localhost self-signed cert)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        req = urllib.request.Request(
-            f"{_default_portal_url()}/api/sessions/refresh",
-            method="POST",
-            data=b"",
-            headers=_portal_auth_headers(),
-        )
-        urllib.request.urlopen(req, timeout=2, context=ctx)
-    except Exception:
-        # Portal may not be running - that's fine
-        pass
-
-
 # === Portal Commands ===
-
-
-def _start_portal_local(args, attach: bool = True) -> int:
-    """Start portal locally in tmux.
-
-    When attach is False (used by `agentwire up`), the portal is started
-    detached and we return without attaching.
-    """
-    session_name = get_portal_session_name()
-
-    if tmux_session_exists(session_name):
-        print(f"Portal already running in tmux session '{session_name}'")
-        if attach:
-            print("Attaching... (Ctrl+B D to detach)")
-            subprocess.run(["tmux", "attach-session", "-t", session_name])
-        return 0
-
-    # No tunnel auto-spawn (#420): agentwire owns only the local portal
-    # boundary. Reaching the portal from elsewhere is bring-your-own
-    # (cloudflared/tailscale/ssh -L), and `agentwire tunnels *` remains as an
-    # opt-in manual helper for the vestigial remote-service-split case.
-
-    # Build the server command
-    # --dev runs from source with uv run (picks up code changes immediately)
-    if getattr(args, 'dev', False):
-        cmd_parts = ["uv", "run", "python", "-m", "agentwire", "portal", "serve"]
-    else:
-        cmd_parts = ["agentwire", "portal", "serve"]
-
-    if args.port:
-        cmd_parts.extend(["--port", str(args.port)])
-    if args.host:
-        cmd_parts.extend(["--host", args.host])
-    if args.no_tts:
-        cmd_parts.append("--no-tts")
-    if args.no_stt:
-        cmd_parts.append("--no-stt")
-    if args.config:
-        cmd_parts.extend(["--config", str(args.config)])
-
-    server_cmd = " ".join(cmd_parts)
-
-    # Create tmux session and start server
-    mode = "dev mode (from source)" if getattr(args, 'dev', False) else "installed"
-    print(f"Starting AgentWire portal ({mode}) in tmux session '{session_name}'...")
-    subprocess.run([
-        "tmux", "new-session", "-d", "-s", session_name,
-    ])
-    subprocess.run([
-        "tmux", "send-keys", "-t", session_name, server_cmd, "Enter",
-    ])
-
-    # Install global tmux hooks for portal sync
-    _install_global_tmux_hooks()
-
-    # Custom services (incl. the notifications bridge) are autostarted by the
-    # portal server itself on launch — see run_server() in server.py.
-
-    if attach:
-        print("Portal started. Attaching... (Ctrl+B D to detach)")
-        subprocess.run(["tmux", "attach-session", "-t", session_name])
-    else:
-        print("Portal started.")
-    return 0
 
 
 def _start_portal_remote(ssh_target: str, machine_id: str, args) -> int:
@@ -399,21 +249,6 @@ def _stop_portal_remote(ssh_target: str, machine_id: str) -> int:
 
     print(f"Portal stopped on {machine_id}.")
     return 0
-
-
-def _check_portal_health(url: str, timeout: int = 2) -> bool:
-    """Check if portal is responding at URL."""
-    import ssl
-
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        req = urllib.request.urlopen(f"{url}/health", context=ctx, timeout=timeout)
-        return req.status == 200
-    except Exception:
-        return False
 
 
 def cmd_portal_start(args) -> int:
@@ -1425,131 +1260,6 @@ def cmd_channels_list(args) -> int:
 
 # === Say Command ===
 
-def _get_portal_url() -> str:
-    """Get portal URL from config, with smart fallbacks.
-
-    Uses NetworkContext to determine the best URL:
-    - If portal is local: use localhost
-    - If portal is remote with tunnel: use localhost (tunnel port)
-    - If portal is remote without tunnel: use direct URL
-    """
-    from .network import NetworkContext
-
-    ctx = NetworkContext.from_config()
-
-    if ctx.is_local("portal"):
-        # Portal runs locally — scheme comes from services.portal.scheme
-        # (http unless SSL certs exist or explicitly configured)
-        return ctx.get_service_url("portal")
-
-    # Portal is remote - check if tunnel exists by testing localhost first
-    tunnel_url = ctx.get_service_url("portal", use_tunnel=True)
-    direct_url = ctx.get_service_url("portal", use_tunnel=False)
-
-    # Try tunnel first (more common setup)
-    if _check_portal_health(tunnel_url):
-        return tunnel_url
-
-    # Fall back to direct connection
-    return direct_url
-
-
-def _get_agentwire_path() -> str:
-    """Get the full path to the agentwire executable.
-
-    Checks config first, then falls back to shutil.which() to find it in PATH.
-    This ensures tmux hooks work even when run-shell has a minimal PATH.
-    """
-    import shutil
-
-    config = load_config()
-    configured_path = config.get("executables", {}).get("agentwire")
-
-    if configured_path:
-        return os.path.expanduser(configured_path)
-
-    # Find agentwire in PATH
-    found = shutil.which("agentwire")
-    if found:
-        return found
-
-    # Fallback to common location
-    return os.path.expanduser("~/.local/bin/agentwire")
-
-
-def _install_global_tmux_hooks() -> None:
-    """Install global tmux hooks for portal sync.
-
-    Installs hooks globally so the portal is notified of:
-    - session-created: New session created
-    - session-closed: Session destroyed
-    - client-attached: Client attached to session (presence tracking)
-    - client-detached: Client detached from session
-    - after-split-window: New pane created
-    - session-renamed: Session name changed
-    - alert-activity: Activity in monitored window (requires monitor-activity on)
-    """
-    agentwire_path = _get_agentwire_path()
-
-    # Check existing hooks
-    result = subprocess.run(
-        ["tmux", "show-hooks", "-g"],
-        capture_output=True,
-        text=True,
-    )
-    existing = result.stdout
-
-    # Reinstall whenever the EXACT command isn't already set, so changes to the
-    # hook string (e.g. a subcommand rename) propagate on portal restart instead
-    # of leaving a stale hook that silently fails.
-    def install_hook(hook_name: str, hook_cmd: str) -> None:
-        if hook_cmd not in existing:
-            subprocess.run(
-                ["tmux", "set-hook", "-g", hook_name, hook_cmd],
-                capture_output=True,
-            )
-
-    # Session lifecycle hooks
-    # All hooks suppress output and exit 0 (|| true) to avoid tmux showing error messages
-    install_hook(
-        "session-created",
-        f'run-shell -b "{agentwire_path} notify-event session_created -s #{{session_name}} >/dev/null 2>&1 || true"'
-    )
-    install_hook(
-        "session-closed",
-        f'run-shell -b "{agentwire_path} notify-event session_closed -s #{{hook_session_name}} >/dev/null 2>&1 || true"'
-    )
-
-    # Presence tracking hooks
-    install_hook(
-        "client-attached",
-        f'run-shell -b "{agentwire_path} notify-event client_attached -s #{{session_name}} >/dev/null 2>&1 || true"'
-    )
-    install_hook(
-        "client-detached",
-        f'run-shell -b "{agentwire_path} notify-event client_detached -s #{{session_name}} >/dev/null 2>&1 || true"'
-    )
-
-    # Pane creation hook (global - catches all pane creations)
-    install_hook(
-        "after-split-window",
-        f'run-shell -b "{agentwire_path} notify-event pane_created -s #{{session_name}} --pane-id #{{pane_id}} >/dev/null 2>&1 || true"'
-    )
-
-    # Session rename hook
-    # Note: #{hook_session_name} has new name, we pass old name via #{@_old_session_name} if set
-    install_hook(
-        "session-renamed",
-        f'run-shell -b "{agentwire_path} notify-event session_renamed -s #{{session_name}} >/dev/null 2>&1 || true"'
-    )
-
-    # Activity notification hook (fires when monitor-activity is enabled on a window)
-    install_hook(
-        "alert-activity",
-        f'run-shell -b "{agentwire_path} notify-event window_activity -s #{{session_name}} >/dev/null 2>&1 || true"'
-    )
-
-
 def _install_pane_hooks(session_name: str, pane_index: int) -> None:
     """Install tmux hooks to notify portal of pane state changes.
 
@@ -2365,32 +2075,6 @@ def _remote_say(text: str, session: str, portal_url: str) -> int:
         return 1
 
 
-def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal") -> bool:
-    """POST a toast to the portal's desktop-notification endpoint. Best-effort.
-
-    Shared by `agentwire notify-user` and the `say --display` path. Returns True
-    on a 2xx, False on any failure (no portal, network error) — never raises.
-    """
-    import ssl
-
-    body: dict = {"text": text, "priority": priority}
-    if session:
-        body["session"] = session
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(
-            f"{_get_portal_url()}/api/desktop/notification",
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", **_portal_auth_headers()},
-        )
-        with urllib.request.urlopen(req, context=ctx, timeout=5):
-            return True
-    except Exception:
-        return False
-
-
 def cmd_notify_user(args) -> int:
     """Show the human a desktop toast on the portal (notify-user)."""
     text = " ".join(args.text) if args.text else ""
@@ -2931,61 +2615,6 @@ def cmd_list(args) -> int:
 
 # Default POSTURE per session KIND (the spawn verb). Harness defaults to
 # claude. These are the floor when no --posture/--harness/--type is given.
-KIND_DEFAULT_POSTURE = {
-    "orchestrator": "bypass",      # agentwire new — you drive it, full access
-    "worktree-session": "bypass",  # agentwire worktree — autonomous, full access
-    "worker": "restricted",        # agentwire spawn — locked-down executor
-}
-
-
-def _resolve_session_type_from_args(args, kind: str) -> tuple[str | None, str | None]:
-    """Resolve the internal fused session type from the shared flag core.
-
-    Posture × harness are the canonical axes; legacy --type (fused strings or
-    intent presets) and the internal --bare/--restricted/--prompted booleans
-    are accepted on input but never the primary surface.
-
-    Precedence: explicit --posture/--harness compose first; else legacy
-    --type; else legacy booleans; else the kind's default posture × claude.
-
-    Returns ``(session_type, error)`` — error is a message string when an
-    invalid posture was given, session_type is None in that case.
-    """
-    posture = getattr(args, 'posture', None)
-    harness = getattr(args, 'harness', None)
-    type_arg = getattr(args, 'type', None)
-    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
-
-    if posture or harness:
-        try:
-            return compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture), None
-        except ValueError as e:
-            return None, str(e)
-    if type_arg:
-        return normalize_session_type(type_arg, detect_default_agent_type()), None
-    # Internal legacy booleans (set by cmd_worktree / cmd_recreate callers).
-    if getattr(args, 'bare', False):
-        return "bare", None
-    if getattr(args, 'restricted', False):
-        return f"{detect_default_agent_type()}-restricted", None
-    if getattr(args, 'prompted', False):
-        return f"{detect_default_agent_type()}-prompted", None
-    return compose_session_type(DEFAULT_HARNESS, default_posture), None
-
-
-def _add_posture_harness_flags(parser) -> None:
-    """Register the shared posture × harness axes on a spawn-verb parser.
-
-    These are the canonical session-type surface across new/worktree/spawn;
-    legacy --type (fused strings, intent presets) stays accepted but secondary.
-    """
-    parser.add_argument("--posture", choices=list(POSTURES),
-                        help="How much the agent may do unprompted: bypass/prompted/restricted/readonly "
-                             "(default depends on the verb: new/worktree → bypass, spawn → restricted)")
-    parser.add_argument("--harness",
-                        help="Agent backend: claude (default), pi-<provider> (e.g. pi-zai, pi-deepseek), or bare")
-
-
 def cmd_session_defaults(args) -> int:
     """Resolve what a new session would get — backs the portal resolver endpoint.
 
@@ -7285,34 +6914,6 @@ def cmd_voiceclone_delete(args) -> int:
 # === Rebuild/Uninstall Commands ===
 
 UV_CACHE_DIR = Path.home() / ".cache" / "uv"
-
-
-def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):
-    """How many commits ``origin/<base>`` is ahead of the checkout's HEAD.
-
-    Returns ``(behind, error)``: ``behind`` is the commit count (0 = up to date),
-    or ``None`` with a human-readable ``error`` string when the comparison can't
-    be made (not a git repo, no remote, offline fetch failure, etc.).
-    """
-    if not (repo / ".git").exists():
-        return None, "not a git checkout"
-    if do_fetch:
-        fetch = subprocess.run(
-            ["git", "fetch", "origin", base],
-            cwd=repo, capture_output=True, text=True,
-        )
-        if fetch.returncode != 0:
-            return None, (fetch.stderr or fetch.stdout or "git fetch failed").strip()
-    count = subprocess.run(
-        ["git", "rev-list", "--count", f"HEAD..origin/{base}"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    if count.returncode != 0:
-        return None, (count.stderr or count.stdout or "git rev-list failed").strip()
-    try:
-        return int(count.stdout.strip()), None
-    except ValueError:
-        return None, f"unexpected rev-list output: {count.stdout.strip()!r}"
 
 
 def cmd_rebuild(args) -> int:
