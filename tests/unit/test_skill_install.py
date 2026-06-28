@@ -14,11 +14,11 @@ import agentwire.__main__ as m
 from agentwire.__main__ import (
     _managed_global_skills,
     _managed_skill_state,
-    _render_skill_section,
     install_hooks,
     install_skills,
     skill_drift,
 )
+from agentwire.doctor_cli import _render_skill_section
 
 
 @pytest.fixture
