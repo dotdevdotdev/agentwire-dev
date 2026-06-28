@@ -11,7 +11,7 @@ import yaml
 
 class TestRecentActivity:
     def test_keeps_outcome_events_newest_first(self):
-        from agentwire.__main__ import _recent_activity
+        from agentwire.scheduler_cli import _recent_activity
 
         events = [
             {"ts": "2026-06-15T10:00:00+00:00", "event": "scheduler_sleeping"},
@@ -28,7 +28,7 @@ class TestRecentActivity:
         assert "complete" in out[1]["detail"]
 
     def test_respects_limit(self):
-        from agentwire.__main__ import _recent_activity
+        from agentwire.scheduler_cli import _recent_activity
 
         events = [
             {"ts": f"2026-06-15T10:0{i}:00+00:00", "event": "task_completed",
