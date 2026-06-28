@@ -1023,3 +1023,140 @@ def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):
         return int(count.stdout.strip()), None
     except ValueError:
         return None, f"unexpected rev-list output: {count.stdout.strip()!r}"
+
+
+def _start_portal_local(args, attach: bool = True) -> int:
+    """Start portal locally in tmux.
+
+    When attach is False (used by `agentwire up`), the portal is started
+    detached and we return without attaching.
+    """
+    session_name = get_portal_session_name()
+
+    if tmux_session_exists(session_name):
+        print(f"Portal already running in tmux session '{session_name}'")
+        if attach:
+            print("Attaching... (Ctrl+B D to detach)")
+            subprocess.run(["tmux", "attach-session", "-t", session_name])
+        return 0
+
+    # No tunnel auto-spawn (#420): agentwire owns only the local portal
+    # boundary. Reaching the portal from elsewhere is bring-your-own
+    # (cloudflared/tailscale/ssh -L), and `agentwire tunnels *` remains as an
+    # opt-in manual helper for the vestigial remote-service-split case.
+
+    # Build the server command
+    # --dev runs from source with uv run (picks up code changes immediately)
+    if getattr(args, 'dev', False):
+        cmd_parts = ["uv", "run", "python", "-m", "agentwire", "portal", "serve"]
+    else:
+        cmd_parts = ["agentwire", "portal", "serve"]
+
+    if args.port:
+        cmd_parts.extend(["--port", str(args.port)])
+    if args.host:
+        cmd_parts.extend(["--host", args.host])
+    if args.no_tts:
+        cmd_parts.append("--no-tts")
+    if args.no_stt:
+        cmd_parts.append("--no-stt")
+    if args.config:
+        cmd_parts.extend(["--config", str(args.config)])
+
+    server_cmd = " ".join(cmd_parts)
+
+    # Create tmux session and start server
+    mode = "dev mode (from source)" if getattr(args, 'dev', False) else "installed"
+    print(f"Starting AgentWire portal ({mode}) in tmux session '{session_name}'...")
+    subprocess.run([
+        "tmux", "new-session", "-d", "-s", session_name,
+    ])
+    subprocess.run([
+        "tmux", "send-keys", "-t", session_name, server_cmd, "Enter",
+    ])
+
+    # Install global tmux hooks for portal sync
+    _install_global_tmux_hooks()
+
+    # Custom services (incl. the notifications bridge) are autostarted by the
+    # portal server itself on launch — see run_server() in server.py.
+
+    if attach:
+        print("Portal started. Attaching... (Ctrl+B D to detach)")
+        subprocess.run(["tmux", "attach-session", "-t", session_name])
+    else:
+        print("Portal started.")
+    return 0
+
+
+def _install_global_tmux_hooks() -> None:
+    """Install global tmux hooks for portal sync.
+
+    Installs hooks globally so the portal is notified of:
+    - session-created: New session created
+    - session-closed: Session destroyed
+    - client-attached: Client attached to session (presence tracking)
+    - client-detached: Client detached from session
+    - after-split-window: New pane created
+    - session-renamed: Session name changed
+    - alert-activity: Activity in monitored window (requires monitor-activity on)
+    """
+    agentwire_path = _get_agentwire_path()
+
+    # Check existing hooks
+    result = subprocess.run(
+        ["tmux", "show-hooks", "-g"],
+        capture_output=True,
+        text=True,
+    )
+    existing = result.stdout
+
+    # Reinstall whenever the EXACT command isn't already set, so changes to the
+    # hook string (e.g. a subcommand rename) propagate on portal restart instead
+    # of leaving a stale hook that silently fails.
+    def install_hook(hook_name: str, hook_cmd: str) -> None:
+        if hook_cmd not in existing:
+            subprocess.run(
+                ["tmux", "set-hook", "-g", hook_name, hook_cmd],
+                capture_output=True,
+            )
+
+    # Session lifecycle hooks
+    # All hooks suppress output and exit 0 (|| true) to avoid tmux showing error messages
+    install_hook(
+        "session-created",
+        f'run-shell -b "{agentwire_path} notify-event session_created -s #{{session_name}} >/dev/null 2>&1 || true"'
+    )
+    install_hook(
+        "session-closed",
+        f'run-shell -b "{agentwire_path} notify-event session_closed -s #{{hook_session_name}} >/dev/null 2>&1 || true"'
+    )
+
+    # Presence tracking hooks
+    install_hook(
+        "client-attached",
+        f'run-shell -b "{agentwire_path} notify-event client_attached -s #{{session_name}} >/dev/null 2>&1 || true"'
+    )
+    install_hook(
+        "client-detached",
+        f'run-shell -b "{agentwire_path} notify-event client_detached -s #{{session_name}} >/dev/null 2>&1 || true"'
+    )
+
+    # Pane creation hook (global - catches all pane creations)
+    install_hook(
+        "after-split-window",
+        f'run-shell -b "{agentwire_path} notify-event pane_created -s #{{session_name}} --pane-id #{{pane_id}} >/dev/null 2>&1 || true"'
+    )
+
+    # Session rename hook
+    # Note: #{hook_session_name} has new name, we pass old name via #{@_old_session_name} if set
+    install_hook(
+        "session-renamed",
+        f'run-shell -b "{agentwire_path} notify-event session_renamed -s #{{session_name}} >/dev/null 2>&1 || true"'
+    )
+
+    # Activity notification hook (fires when monitor-activity is enabled on a window)
+    install_hook(
+        "alert-activity",
+        f'run-shell -b "{agentwire_path} notify-event window_activity -s #{{session_name}} >/dev/null 2>&1 || true"'
+    )
