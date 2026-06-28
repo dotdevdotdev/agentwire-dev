@@ -318,9 +318,11 @@ Quick links:
 
 ## License
 
-**Dual-licensed:**
-- [AGPL v3](LICENSE) - Free for open source
-- Commercial license available - [contact us](mailto:dev@dotdev.dev)
+AgentWire is **free and open source under the [Apache License 2.0](LICENSE)** — your machine, your keys, no telemetry.
+
+> **Free-forever pledge:** the tool is free forever. No paid tier, no open-core, no feature paywall. Commercial training &amp; enablement for teams is offered separately by [dotdev](https://dotdev.dev) — the tool itself is never gated.
+
+Contributions are accepted under the [Developer Certificate of Origin](CONTRIBUTING.md#developer-certificate-of-origin) (a `Signed-off-by` line), not a CLA.
 
 ---
 

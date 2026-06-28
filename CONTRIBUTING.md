@@ -2,9 +2,13 @@
 
 Thank you for your interest in contributing to AgentWire!
 
-## Contributor License Agreement
+## Developer Certificate of Origin
 
-By submitting a pull request, you agree to the terms of our [Contributor License Agreement](CLA.md). This allows us to maintain our dual-licensing model (AGPL v3 + commercial) while accepting community contributions.
+AgentWire is licensed under the [Apache License 2.0](LICENSE), and we use the [Developer Certificate of Origin](https://developercertificate.org/) (DCO) instead of a CLA — there is nothing to sign. You simply add a `Signed-off-by` line to each commit, certifying you wrote the patch (or otherwise have the right to submit it under Apache-2.0):
+
+    Signed-off-by: Jane Developer <jane@example.com>
+
+Add it automatically with `git commit -s` (use your real name and an email that matches your commit author). That's the whole process.
 
 ## Development Setup
 
