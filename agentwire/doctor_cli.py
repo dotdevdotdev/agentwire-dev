@@ -7,7 +7,7 @@ ones. ``network status`` is the read-only network-health glance.
 
 The hook/skill drift helpers (``get_hooks_source``, ``_managed_hook_files``,
 ``_managed_file_state``, ``skill_drift``, ``CLAUDE_SKILLS_DIR``) are owned by
-the hooks domain and still live in ``__main__``; doctor reads them via a
+the hooks domain and live in ``hooks_cli``; doctor reads them via a
 function-local deferred import to stay single-source-of-truth.
 """
 
@@ -239,7 +239,7 @@ def _render_skill_section() -> int:
     (running from a checkout, where skills only live in the built wheel) is NOT a
     drift problem — there's nothing to install from — so it never bumps the count.
     """
-    from .__main__ import CLAUDE_SKILLS_DIR, skill_drift
+    from .hooks_cli import CLAUDE_SKILLS_DIR, skill_drift
 
     issues = 0
     for name, state in sorted(skill_drift().items()):
@@ -358,7 +358,7 @@ def _render_voice_loop_section(config, ctx) -> int:
 
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
-    from .__main__ import _managed_file_state, _managed_hook_files, get_hooks_source
+    from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
     from .network import NetworkContext
     from .tunnels import TunnelManager, test_service_health, test_ssh_connectivity
     from .validation import validate_config
