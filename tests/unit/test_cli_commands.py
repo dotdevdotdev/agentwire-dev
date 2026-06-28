@@ -472,8 +472,8 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
     """
     from types import SimpleNamespace
 
-    import agentwire.__main__ as mod
     import agentwire.history as hist
+    import agentwire.history_cli as mod
 
     cap = _RoleCapture()
 
@@ -511,7 +511,7 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
 
 class TestHistoryResumeRoutesThroughResolveRoles:
     def test_zero_config_resume_is_orchestrator(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.history_cli as mod
 
         cap, project_dir = _patch_history_resume(
             monkeypatch, tmp_path, project_config_roles=None
@@ -527,7 +527,7 @@ class TestHistoryResumeRoutesThroughResolveRoles:
         assert "soul" in cap.role_names
 
     def test_saved_roles_replace_orchestrator_persona(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.history_cli as mod
 
         cap, project_dir = _patch_history_resume(
             monkeypatch, tmp_path, project_config_roles=["custom"]

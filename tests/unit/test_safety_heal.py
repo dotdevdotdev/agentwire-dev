@@ -124,7 +124,7 @@ class TestDoctorDamageControlSection:
         )
 
     def test_clean_when_healed_and_enabled(self, monkeypatch, capsys):
-        from agentwire.__main__ import _render_damage_control_section
+        from agentwire.doctor_cli import _render_damage_control_section
         self._patch_safety_enabled(monkeypatch, True)
         issues = _render_damage_control_section()
         out = capsys.readouterr().out
@@ -132,7 +132,7 @@ class TestDoctorDamageControlSection:
         assert "[ok] Damage control enabled" in out
 
     def test_disabled_kill_switch_flagged(self, monkeypatch, capsys):
-        from agentwire.__main__ import _render_damage_control_section
+        from agentwire.doctor_cli import _render_damage_control_section
         self._patch_safety_enabled(monkeypatch, False)
         issues = _render_damage_control_section()
         out = capsys.readouterr().out
@@ -140,7 +140,7 @@ class TestDoctorDamageControlSection:
         assert "DISABLED" in out
 
     def test_missing_rule_flagged(self, monkeypatch, capsys):
-        from agentwire.__main__ import _render_damage_control_section
+        from agentwire.doctor_cli import _render_damage_control_section
         self._patch_safety_enabled(monkeypatch, True)
         next(cli_safety.RULES_DIR.glob("*.yaml")).unlink()
         issues = _render_damage_control_section()
@@ -149,7 +149,7 @@ class TestDoctorDamageControlSection:
         assert "rules NOT installed" in out
 
     def test_missing_matcher_flagged(self, monkeypatch, capsys):
-        from agentwire.__main__ import _render_damage_control_section
+        from agentwire.doctor_cli import _render_damage_control_section
         self._patch_safety_enabled(monkeypatch, True)
         settings = Path.home() / ".claude" / "settings.json"
         settings.write_text(json.dumps({"hooks": {"PreToolUse": []}}))
