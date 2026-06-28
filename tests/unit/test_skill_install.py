@@ -10,15 +10,15 @@ import shutil
 
 import pytest
 
-import agentwire.__main__ as m
-from agentwire.__main__ import (
+import agentwire.hooks_cli as m
+from agentwire.doctor_cli import _render_skill_section
+from agentwire.hooks_cli import (
     _managed_global_skills,
     _managed_skill_state,
     install_hooks,
     install_skills,
     skill_drift,
 )
-from agentwire.doctor_cli import _render_skill_section
 
 
 @pytest.fixture
