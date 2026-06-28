@@ -3,7 +3,7 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from agentwire.__main__ import cmd_init
+from agentwire.system_cli import cmd_init
 
 
 def _run(assisted: bool) -> dict:
@@ -15,8 +15,8 @@ def _run(assisted: bool) -> dict:
         captured["skip_session"] = skip_session
         return 0
 
-    with patch("agentwire.__main__.check_python_version", return_value=True), \
-         patch("agentwire.__main__.check_pip_environment", return_value=True), \
+    with patch("agentwire.system_cli.check_python_version", return_value=True), \
+         patch("agentwire.system_cli.check_pip_environment", return_value=True), \
          patch("agentwire.onboarding.run_onboarding", side_effect=fake_onboarding):
         rc = cmd_init(Namespace(assisted=assisted))
 
