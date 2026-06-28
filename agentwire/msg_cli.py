@@ -10,6 +10,7 @@ clobbers a half-typed human draft.
     agentwire msg inbox [-s <session>]      # peek pending + passive (does not drain/consume)
     agentwire msg pull  [-s <session>]      # read + REMOVE passive (ingest) messages
     agentwire msg dead  [-s <session>]      # list dropped (dead-lettered) msgs
+    agentwire msg dead  --purge [-s <session>] [--older-than 7d]  # clear the graveyard
     agentwire msg flush [-s <session>]      # attempt a drain now (still gated)
 
 The drain also rides ``agentwire limits tick`` every 60s, so messages flow
@@ -156,13 +157,58 @@ def _fmt_ts(ms: int) -> str:
     return datetime.datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
 
 
+def _parse_duration(text: str) -> "int | None":
+    """Parse ``7d`` / ``12h`` / ``30m`` / ``45s`` / ``2w`` (or bare seconds) →
+    seconds. Returns None for anything unparseable."""
+    import re
+
+    m = re.fullmatch(r"\s*(\d+)\s*([smhdw]?)\s*", text or "")
+    if not m:
+        return None
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[m.group(2) or "s"]
+    return int(m.group(1)) * mult
+
+
+def _purge_dead(args) -> int:
+    """Clear dead-lettered corpses. ``-s`` scopes to one session; without it the
+    whole graveyard is cleared (purge never falls back to the *current* session
+    — that's a listing convenience, too sharp an edge for a delete)."""
+    import sys
+    import time
+
+    session = getattr(args, "session", None)
+    before_ms = None
+    older = getattr(args, "older_than", None)
+    if older:
+        secs = _parse_duration(older)
+        if secs is None:
+            print(f"Invalid --older-than value: {older!r} (use e.g. 7d, 12h, 30m)", file=sys.stderr)
+            return 2
+        before_ms = int(time.time() * 1000) - secs * 1000
+
+    removed = inbox.purge_dead(session, before_ms=before_ms)
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "success": True, "purged": removed,
+            "session": session, "older_than": older,
+        }))
+        return 0
+    scope = f" for {session}" if session else ""
+    when = f" older than {older}" if older else ""
+    print(f"Purged {removed} dead-lettered message(s){scope}{when}.")
+    return 0
+
+
 def cmd_msg_dead(args) -> int:
-    """List dead-lettered messages (dropped after MAX_ATTEMPTS retries).
+    """List (or, with ``--purge``, clear) dead-lettered messages.
 
     These are messages a recipient never accepted — its input box stayed busy,
     or it was parked/non-agent the whole time. They are *not* retried; this is
-    where silent data loss became visible.
+    where silent data loss became visible. ``--purge`` is the human/ops cleanup
+    for the graveyard `doctor` surfaces.
     """
+    if getattr(args, "purge", False):
+        return _purge_dead(args)
     session = getattr(args, "session", None) or _current_session()
     sessions = [session] if session else inbox.dead_sessions()
 
@@ -276,11 +322,20 @@ def register_msg_parser(subparsers) -> None:
     pull_parser.set_defaults(func=cmd_msg_pull)
 
     dead_parser = msg_sub.add_parser(
-        "dead", help="List dead-lettered messages (dropped after retries)"
+        "dead", help="List (or --purge) dead-lettered messages (dropped after retries)"
     )
     dead_parser.add_argument(
         "-s", "--session", default=None,
-        help="Session (default: current, or all sessions when run outside one)",
+        help="Session (list default: current, or all when outside one; "
+             "purge default: all — never the current session)",
+    )
+    dead_parser.add_argument(
+        "--purge", action="store_true",
+        help="Delete dead-lettered corpses instead of listing them",
+    )
+    dead_parser.add_argument(
+        "--older-than", dest="older_than", default=None, metavar="DUR",
+        help="With --purge: only clear corpses older than DUR (e.g. 7d, 12h, 30m)",
     )
     dead_parser.add_argument("--json", action="store_true", help="Output JSON")
     dead_parser.set_defaults(func=cmd_msg_dead)

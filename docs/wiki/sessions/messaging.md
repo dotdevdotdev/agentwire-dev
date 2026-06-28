@@ -110,12 +110,22 @@ agentwire msg send --to anchor --kind ingest --ref /path/report.md "auth finding
 agentwire msg inbox [-s <session>]   # peek pending + passive (does not drain/consume)
 agentwire msg pull  [-s <session>]   # read + REMOVE passive (ingest) messages
 agentwire msg dead  [-s <session>]   # list dropped (dead-lettered) msgs + why
+agentwire msg dead  --purge [-s <session>] [--older-than 7d]  # clear the graveyard
 agentwire msg flush [-s <session>]   # attempt a drain now (still gated; never touches passive)
 ```
 
 `msg dead` with `-s` scopes to one session; outside a session it lists every
 session that has dead letters. Each line shows the kind, sender, died-at time,
 attempt count, and the drop reason.
+
+`msg dead --purge` deletes corpses (`doctor` surfaces them but never grows a
+cleanup itself). `-s` scopes the purge to one session; **without `-s` it clears
+every session's graveyard** — purge deliberately does *not* fall back to the
+current session the way the lister does, since a silent self-scope on a delete
+is too sharp an edge. `--older-than <dur>` (`7d`/`12h`/`30m`/`2w`) clears only
+corpses that died before the cutoff, so you can drop stale ones and keep recent
+report-backs you haven't read. Pre-schema corpses (no `dead_ts`) count as
+infinitely old.
 
 `--from` defaults to the current session. All commands take `--json`. The CLI is
 the single source of truth; the portal and MCP call it.

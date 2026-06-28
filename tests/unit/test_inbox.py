@@ -280,6 +280,52 @@ class TestDead:
         inbox.enqueue("a", "x", sender="z")
         assert inbox.dead_sessions() == []
 
+    # -- purge_dead -----------------------------------------------------------
+
+    def _seed_dead(self, session, dead_ts, tag):
+        """Write a corpse straight into a session's dead/ dir with a chosen dead_ts."""
+        msg = inbox.Message(
+            id=f"{dead_ts}-{tag}", sender="w", to=session, kind="done",
+            text=f"corpse {tag}", ts=dead_ts, attempts=inbox.MAX_ATTEMPTS,
+            reason="box_not_empty", dead_ts=dead_ts,
+        )
+        inbox._write_message(inbox.dead_dir(session) / f"{msg.id}.json", msg)
+
+    def test_purge_dead_all(self, isolate):
+        self._seed_dead("a", 1000, "x")
+        self._seed_dead("b", 2000, "y")
+        assert inbox.purge_dead() == 2
+        assert inbox.list_dead("a") == [] and inbox.list_dead("b") == []
+
+    def test_purge_dead_scoped(self, isolate):
+        self._seed_dead("a", 1000, "x")
+        self._seed_dead("b", 2000, "y")
+        assert inbox.purge_dead("a") == 1
+        assert inbox.list_dead("a") == []
+        assert len(inbox.list_dead("b")) == 1  # other session untouched
+
+    def test_purge_dead_before_ms_keeps_recent(self, isolate):
+        self._seed_dead("a", 1_000, "old")
+        self._seed_dead("a", 9_000, "recent")
+        # cutoff 5_000: clears the old (died <5000), keeps the recent (>=5000)
+        assert inbox.purge_dead("a", before_ms=5_000) == 1
+        survivors = inbox.list_dead("a")
+        assert len(survivors) == 1 and survivors[0].dead_ts == 9_000
+
+    def test_purge_dead_before_ms_drops_preschema(self, isolate):
+        self._seed_dead("a", 0, "preschema")  # dead_ts 0 = infinitely old
+        assert inbox.purge_dead("a", before_ms=5_000) == 1
+        assert inbox.list_dead("a") == []
+
+    def test_purge_dead_nested_session(self, isolate):
+        self._seed_dead("proj/feature-x", 1000, "z")
+        assert inbox.purge_dead() == 1  # global rglob reaches nested dead/
+        assert inbox.list_dead("proj/feature-x") == []
+
+    def test_purge_dead_noop(self, isolate):
+        assert inbox.purge_dead() == 0
+        assert inbox.purge_dead("nobody") == 0
+
 
 class TestTick:
     def test_tick_drains_all(self, isolate, monkeypatch):
