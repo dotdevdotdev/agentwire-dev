@@ -162,6 +162,13 @@ class TestBroadcast:
 
 
 def _patch_delivery(monkeypatch, empty=True, deliver=(True, "delivered")):
+    from agentwire import usage_limit
+    monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
+    monkeypatch.setattr(
+        prompt_router, "input_box_content",
+        lambda vis: "" if empty else "draft content",
+    )
+    monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
     monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: empty)
     sent = []
     monkeypatch.setattr(
@@ -282,3 +289,74 @@ class TestTick:
         res = inbox.tick()
         assert len(res["flushed"]) == 2
         assert inbox.list_messages("a") == [] and inbox.list_messages("b") == []
+
+
+class TestEscalation:
+    def test_busy_screen_defers_target_busy(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: None)
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+
+        res = inbox.flush_session("s")
+        assert res["deferred"]
+        assert res["reason"] == "target_busy"
+        assert inbox.list_messages("s")[0].attempts == 1
+
+    def test_done_under_threshold_defers_box_not_empty(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+
+        res = inbox.flush_session("s")
+        assert res["deferred"]
+        assert res["reason"] == "box_not_empty"
+        assert inbox.list_messages("s")[0].attempts == 1
+
+    def test_done_over_threshold_escalates_and_delivers(self, isolate, monkeypatch):
+        msgs = inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        msg = msgs[0]
+        msg.attempts = 10
+        inbox._write_message(msg.path, msg)
+
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+        sent = []
+        monkeypatch.setattr(prompt_router, "safe_deliver", lambda s, p, text: (sent.append(text) or (True, "delivered")))
+
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1
+        assert len(sent) == 1
+        assert "[MSG from worker · done] PR done" in sent[0]
+
+    def test_done_over_threshold_but_busy_still_defers(self, isolate, monkeypatch):
+        msgs = inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        msg = msgs[0]
+        msg.attempts = 10
+        inbox._write_message(msg.path, msg)
+
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: None)
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+
+        res = inbox.flush_session("s")
+        assert res["deferred"]
+        assert res["reason"] == "target_busy"
+        assert inbox.list_messages("s")[0].attempts == 11
+
+    def test_done_over_threshold_on_non_agent_still_defers(self, isolate, monkeypatch):
+        msgs = inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        msg = msgs[0]
+        msg.attempts = 10
+        inbox._write_message(msg.path, msg)
+
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: False)
+
+        res = inbox.flush_session("s")
+        assert res["deferred"]
+        assert res["reason"] == "box_not_empty"
+        assert inbox.list_messages("s")[0].attempts == 11

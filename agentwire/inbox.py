@@ -61,6 +61,11 @@ BROADCAST_TOKEN = "@all"
 # being permanently busy/typed-in).
 MAX_ATTEMPTS = 40
 
+# Report-back / escalation messages of kind "done" / "escalation" are escalated
+# to a driving delivery (bypassing the empty input box guard) after this many
+# polite deferrals.
+ESCALATE_THRESHOLD = 10
+
 _RESERVED_DIRS = {"dead", "sent", ".lock", "ingest"}
 
 
@@ -396,7 +401,27 @@ def flush_session(session: str) -> dict:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
 
         # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
-        if not prompt_router.prompt_is_empty(session, 0):
+        should_escalate = any(
+            m.kind in ("done", "escalation") and m.attempts >= ESCALATE_THRESHOLD
+            for m in messages
+        )
+
+        from .usage_limit import _capture
+        visible = _capture(f"{session}.0")
+        box_content = prompt_router.input_box_content(visible)
+
+        if box_content is None:
+            # Target is busy (input box not located). Defer.
+            dead = _bump_attempts(messages, "target_busy")
+            _log_event("deferred", to=session, count=len(messages), reason="target_busy")
+            return {
+                "session": session, "delivered": 0, "deferred": True,
+                "reason": "target_busy", "dead": dead,
+            }
+
+        is_agent = prompt_router.is_agent_pane(session, 0)
+        if box_content != "" and not (should_escalate and is_agent):
+            # Box is not empty, and we aren't escalating to an agent session. Defer.
             dead = _bump_attempts(messages, "box_not_empty")
             _log_event("deferred", to=session, count=len(messages), reason="box_not_empty")
             return {
