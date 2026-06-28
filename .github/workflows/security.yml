@@ -5,9 +5,10 @@
 #                       (quoting/escaping, $VAR, substitution, tilde/$HOME secret
 #                       reads, non-rm deletion) stay BLOCK/ASK and a corpus of
 #                       safe everyday commands keeps PASSing. Merges gate on this.
-#   2. bandit         — advisory (non-blocking) static scan. There are intentional
-#                       `shell=True` sites (scheduler gates, service healthchecks),
-#                       so this informs review rather than blocking it.
+#   2. bandit         — static scan tuned to a meaningful green gate. Intentional
+#                       `shell=True` / localhost `verify=False` sites are skipped in
+#                       pyproject [tool.bandit]; the step fails only on NEW
+#                       high-severity high-confidence findings.
 #   3. pip-audit      — known-vuln scan over the resolved dependency set, on PRs
 #                       and a weekly cron.
 name: security
@@ -41,17 +42,20 @@ jobs:
           tests/unit/test_control_plane_protection.py
 
   bandit:
-    name: bandit (advisory)
+    name: bandit
     runs-on: ubuntu-latest
-    continue-on-error: true  # intentional shell=True sites — advisory only
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+      # Meaningful green gate: tuned config (pyproject [tool.bandit]) skips the
+      # intentional-by-design test-IDs (subprocess/shell, localhost verify=False,
+      # asserts), and we fail only on high-severity high-confidence findings.
+      # Green on the clean tree today; red only on NEW genuinely-dangerous code.
       - name: Run bandit
-        run: uvx bandit -r agentwire -ll
+        run: uvx bandit -c pyproject.toml -r agentwire --severity-level high --confidence-level high
 
   pip-audit:
     name: pip-audit (advisory)
