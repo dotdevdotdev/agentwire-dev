@@ -988,46 +988,6 @@ class AgentWireServer:
             pass
         return False, {"error": stderr.decode().strip() or f"Command failed with exit code {proc.returncode}"}
 
-    async def _run_ssh_command(self, machine_id: str, command: str) -> str:
-        """Run command on remote machine via SSH.
-
-        Args:
-            machine_id: The machine ID from machines.json
-            command: Shell command to run remotely
-
-        Returns:
-            stdout output if successful, empty string on failure
-        """
-        machines_file = self.config.machines.file
-        if not machines_file.exists():
-            return ""
-
-        try:
-            with open(machines_file) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return ""
-
-        machine = next((m for m in data.get("machines", []) if m.get("id") == machine_id), None)
-        if not machine:
-            return ""
-
-        host = machine.get("host", "")
-        user = machine.get("user", "")
-        ssh_target = f"{user}@{host}" if user else host
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ssh", *ssh_base_opts(), "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-                ssh_target, command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            return stdout.decode() if proc.returncode == 0 else ""
-        except Exception:
-            return ""
-
     # HTTP Handlers
 
     async def handle_health(self, request: web.Request) -> web.Response:
@@ -3235,49 +3195,21 @@ class AgentWireServer:
                 "current_branch": None
             })
 
-        if machine and machine != "local":
-            # Remote path check via SSH
-            result = await self._run_ssh_command(
-                machine,
-                f"test -d {shlex.quote(path)} && echo exists"
+        # Thin wrapper: the git/SSH logic lives in the CLI (SSOT).
+        success, result = await self.run_agentwire_cmd(
+            ["repo-info", "--path", path, "--machine", machine]
+        )
+        if not success:
+            logger.error(f"repo-info failed for {path} on {machine}: {result.get('error')}")
+            return web.json_response(
+                {"exists": False, "is_git": False, "current_branch": None},
+                status=500,
             )
-            exists = "exists" in result
-            is_git = False
-            current_branch = None
-
-            if exists:
-                result = await self._run_ssh_command(
-                    machine,
-                    f"test -d {shlex.quote(path)}/.git && echo git"
-                )
-                is_git = "git" in result
-
-                if is_git:
-                    result = await self._run_ssh_command(
-                        machine,
-                        f"cd {shlex.quote(path)} && git rev-parse --abbrev-ref HEAD"
-                    )
-                    current_branch = result.strip() if result else None
-        else:
-            # Local path check
-            expanded = Path(path).expanduser().resolve()
-            exists = expanded.exists() and expanded.is_dir()
-            is_git = exists and (expanded / ".git").exists()
-            current_branch = None
-
-            if is_git:
-                result = subprocess.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=expanded,
-                    capture_output=True,
-                    text=True
-                )
-                current_branch = result.stdout.strip() if result.returncode == 0 else None
 
         return web.json_response({
-            "exists": exists,
-            "is_git": is_git,
-            "current_branch": current_branch
+            "exists": result.get("exists", False),
+            "is_git": result.get("is_git", False),
+            "current_branch": result.get("current_branch"),
         })
 
     async def api_check_branches(self, request: web.Request) -> web.Response:
@@ -3298,29 +3230,15 @@ class AgentWireServer:
         if not path:
             return web.json_response({"existing": []})
 
-        if machine and machine != "local":
-            # Remote branch check via SSH
-            cmd = f"cd {shlex.quote(path)} && git branch --list {shlex.quote(prefix + '*')} --format='%(refname:short)'"
-            result = await self._run_ssh_command(machine, cmd)
-            branches = result.strip().split('\n') if result else []
-        else:
-            # Local branch check
-            expanded = Path(path).expanduser().resolve()
-            if not expanded.exists():
-                return web.json_response({"existing": []})
+        # Thin wrapper: the git/SSH logic lives in the CLI (SSOT).
+        success, result = await self.run_agentwire_cmd(
+            ["branches", "--path", path, "--machine", machine, "--prefix", prefix]
+        )
+        if not success:
+            logger.error(f"branches failed for {path} on {machine}: {result.get('error')}")
+            return web.json_response({"existing": []}, status=500)
 
-            result = subprocess.run(
-                ["git", "branch", "--list", f"{prefix}*", "--format=%(refname:short)"],
-                cwd=expanded,
-                capture_output=True,
-                text=True
-            )
-            branches = result.stdout.strip().split('\n') if result.returncode == 0 else []
-
-        # Filter out empty strings
-        branches = [b for b in branches if b]
-
-        return web.json_response({"existing": branches})
+        return web.json_response({"existing": result.get("existing", [])})
 
     async def api_active_session(self, request: web.Request) -> web.Response:
         """Record which session the portal desktop is currently focused on.
