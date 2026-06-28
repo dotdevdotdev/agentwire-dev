@@ -1,0 +1,1745 @@
+"""CLI for session lifecycle — ``agentwire new / fork / worktree / recreate / session-defaults``.
+
+Part of #495 (Phase 1, Wave 1): these five top-level commands were extracted
+verbatim from ``agentwire/__main__.py``. Shared stateless helpers live in
+``agentwire.core``; the domain-private worktree-registry helpers move here with
+the commands. Pure relocation — the CLI surface is unchanged.
+"""
+
+from __future__ import annotations
+
+import datetime
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from . import pane_manager, worktree_registry
+from .core import (
+    KIND_DEFAULT_POSTURE,
+    _build_tmux_env_flags,
+    _build_tmux_env_flags_shell,
+    _check_tmux_installed,
+    _get_machine_config,
+    _notify_portal_sessions_changed,
+    _output_json,
+    _output_result,
+    _record_session_creator,
+    _resolve_session_type_from_args,
+    _run_remote,
+    _set_session_name_env,
+    build_agent_command,
+    load_config,
+    parse_env_args,
+    tmux_session_exists,
+)
+from .project_config import (
+    DEFAULT_HARNESS,
+    POSTURES,
+    ProjectConfig,
+    SessionType,
+    compose_session_type,
+    detect_default_agent_type,
+    load_project_config,
+    normalize_session_type,
+    save_project_config,
+)
+from .roles import (
+    RoleConfig,
+    derive_session_kind,
+    inject_soul,
+    load_roles,
+    resolve_roles,
+)
+from .worktree import (
+    apply_naming,
+    default_base_branch,
+    ensure_worktree,
+    git_root,
+    is_valid_branch_name,
+    parse_session_name,
+    remove_worktree,
+    worktree_status,
+)
+
+
+def cmd_session_defaults(args) -> int:
+    """Resolve what a new session would get — backs the portal resolver endpoint.
+
+    Given a spawn verb's KIND (default: orchestrator, i.e. `agentwire new`)
+    and optional posture/harness, returns the composed session type and the
+    intrinsic etiquette roles. The portal reads this instead of hardcoding —
+    one resolver, one source of truth.
+    """
+    kind = getattr(args, 'kind', None) or 'orchestrator'
+    posture = getattr(args, 'posture', None)
+    harness = getattr(args, 'harness', None)
+    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
+    try:
+        session_type = compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture)
+    except ValueError as e:
+        return _output_result(False, True, str(e))
+    _output_json({
+        "success": True,
+        "kind": kind,
+        "posture": posture or default_posture,
+        "harness": harness or DEFAULT_HARNESS,
+        "session_type": session_type,
+        "roles": resolve_roles(kind),  # intrinsic etiquette (chips); user roles layer on top
+        "postures": list(POSTURES),
+    })
+    return 0
+
+
+def cmd_new(args) -> int:
+    """Create a new agent session.
+
+    Supports:
+    - "project" -> simple session in ~/projects/project/
+    - "project/branch" -> worktree session in ~/projects/project-worktrees/branch/
+    - "project@machine" -> remote session
+    - "project/branch@machine" -> remote worktree session
+    """
+    json_mode = getattr(args, 'json', False)
+
+    if not _check_tmux_installed():
+        return 1 if not json_mode else _output_result(False, json_mode, "tmux is required but not installed")
+
+    name = args.session
+    path = args.path
+
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire new -s <name> [-p path] [-f]")
+
+    # Parse session name: project, branch, machine. Done early so the session
+    # KIND can be derived from whether a worktree is being created.
+    project, branch, machine_id = parse_session_name(name)
+
+    # --- Role resolution (two distinct phases) -----------------------------
+    # Phase 1 — resolve. The session KIND is derived from the spawn verb:
+    # cmd_worktree passes kind="worktree-session" explicitly; for `new` we
+    # derive it — a project/branch name (or any worktree dispatch from the
+    # scheduler / portal) IS a worktree-session, a plain name is an
+    # orchestrator. Safety-rail kinds (worker, worktree-session) STACK their
+    # intrinsic etiquette under user roles; orchestrator is a replaceable
+    # persona. All precedence lives in resolve_roles — one greppable function.
+    kind = derive_session_kind(bool(branch), getattr(args, 'kind', None))
+    roles_arg = getattr(args, 'roles', None)
+    cli_roles = [r.strip() for r in roles_arg.split(",") if r.strip()] if roles_arg else None
+
+    project_path_for_config = Path(path).expanduser().resolve() if path else None
+    project_roles = None
+    if project_path_for_config:
+        existing = load_project_config(project_path_for_config)
+        if existing and existing.roles:
+            project_roles = existing.roles
+
+    role_names = resolve_roles(kind, cli_roles=cli_roles, project_roles=project_roles)
+
+    # Phase 2 — auto-append: the soul personality role rides last (recency
+    # weight). Kept visibly separate from resolution above.
+    role_names = inject_soul(role_names, load_config(), no_soul=getattr(args, 'no_soul', False))
+
+    # Load and validate roles
+    roles: list[RoleConfig] = []
+    if role_names:
+        roles, missing = load_roles(role_names, project_path_for_config)
+        if missing:
+            return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
+
+    # Flag-relevance guard: --base / --pull-first only mean something when
+    # `new` is creating a worktree (a project/branch name). Error loudly
+    # rather than silently ignoring them on a plain session. For a custom
+    # base on a standalone branch, use the `worktree` verb.
+    if not branch:
+        if getattr(args, 'base', None) is not None:
+            return _output_result(False, json_mode, "--base only applies to worktree sessions (use a project/branch name, or the `worktree` verb)")
+        if getattr(args, 'pull_first', None) is not None:
+            return _output_result(False, json_mode, "--pull-first/--no-pull-first only apply to worktree sessions (a project/branch name)")
+
+    first_message = getattr(args, 'first_message', None)
+    if first_message and machine_id:
+        return _output_result(False, json_mode, "--first-message is local-only (readiness capture doesn't span SSH)")
+
+    # Build the tmux session name (convert dots to underscores, preserve slashes)
+    if branch:
+        session_name = f"{project}/{branch}".replace(".", "_")
+    else:
+        session_name = project.replace(".", "_")
+
+    # Load config
+    config = load_config()
+    projects_dir = Path(config.get("projects", {}).get("dir", "~/projects")).expanduser()
+    worktrees_config = config.get("projects", {}).get("worktrees", {})
+    worktrees_enabled = worktrees_config.get("enabled", True)
+    worktree_suffix = worktrees_config.get("suffix", "-worktrees")
+    auto_create_branch = worktrees_config.get("auto_create_branch", True)
+
+    # Handle remote session
+    if machine_id:
+        machine = _get_machine_config(machine_id)
+        if machine is None:
+            return _output_result(False, json_mode, f"Machine '{machine_id}' not found in machines.json")
+
+        remote_projects_dir = machine.get("projects_dir", "~/projects")
+
+        # Build remote path
+        if path:
+            remote_path = path
+        elif branch:
+            remote_path = f"{remote_projects_dir}/{project}{worktree_suffix}/{branch}"
+        else:
+            remote_path = f"{remote_projects_dir}/{project}"
+
+        # If branch specified, create worktree on remote
+        if branch:
+            # Create worktree on remote
+            project_path = f"{remote_projects_dir}/{project}"
+            worktree_path = remote_path
+
+            # Check if worktree already exists
+            check_cmd = f"test -d {shlex.quote(worktree_path)}"
+            result = _run_remote(machine_id, check_cmd)
+
+            if result.returncode != 0:
+                # Create worktree
+                # First check if branch exists
+                branch_check = f"cd {shlex.quote(project_path)} && git rev-parse --verify refs/heads/{shlex.quote(branch)} 2>/dev/null"
+                result = _run_remote(machine_id, branch_check)
+
+                if result.returncode == 0:
+                    # Branch exists, create worktree
+                    create_cmd = f"cd {shlex.quote(project_path)} && mkdir -p $(dirname {shlex.quote(worktree_path)}) && git worktree add {shlex.quote(worktree_path)} {shlex.quote(branch)}"
+                elif auto_create_branch:
+                    # Create branch with worktree
+                    create_cmd = f"cd {shlex.quote(project_path)} && mkdir -p $(dirname {shlex.quote(worktree_path)}) && git worktree add -b {shlex.quote(branch)} {shlex.quote(worktree_path)}"
+                else:
+                    return _output_result(False, json_mode, f"Branch '{branch}' does not exist and auto_create_branch is disabled")
+
+                result = _run_remote(machine_id, create_cmd)
+                if result.returncode != 0:
+                    return _output_result(False, json_mode, f"Failed to create remote worktree: {result.stderr}")
+
+        # Check if remote session already exists
+        check_cmd = f"tmux has-session -t ={shlex.quote(session_name)} 2>/dev/null"
+        result = _run_remote(machine_id, check_cmd)
+        if result.returncode == 0:
+            if args.force:
+                # Kill existing session
+                kill_cmd = f"tmux send-keys -t {shlex.quote(session_name)} /exit Enter && sleep 2 && tmux kill-session -t {shlex.quote(session_name)} 2>/dev/null"
+                _run_remote(machine_id, kill_cmd)
+            else:
+                return _output_result(False, json_mode, f"Session '{session_name}' already exists on {machine_id}. Use -f to replace.")
+
+        # Create remote tmux session — resolve posture × harness (shared core)
+        session_type, st_err = _resolve_session_type_from_args(args, kind)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
+
+        # Build agent command
+        agent = build_agent_command(session_type, roles if roles else None, model=getattr(args, 'model', None))
+        agent.env.update(parse_env_args(getattr(args, 'env', None)))
+
+        agent_cmd = agent.command
+
+        # If agent command uses a local temp file, write content to remote
+        if agent.temp_file and agent_cmd:
+            try:
+                with open(agent.temp_file, 'r') as f:
+                    content = f.read()
+                # Create remote temp file with same content
+                remote_temp = f"/tmp/agentwire-prompt-{session_name.replace('/', '-')}.txt"
+                write_cmd = f"cat > {shlex.quote(remote_temp)} << 'AGENTWIRE_EOF'\n{content}\nAGENTWIRE_EOF"
+                result = _run_remote(machine_id, write_cmd)
+                if result.returncode == 0:
+                    # Replace local path with remote path in command
+                    agent_cmd = agent_cmd.replace(agent.temp_file, remote_temp)
+            except Exception as e:
+                print(f"Warning: Failed to write system prompt to remote: {e}", file=sys.stderr)
+
+        env_flags = _build_tmux_env_flags_shell(agent.env)
+
+        # Create session - Agent starts immediately if not bare.
+        # `-e K=V` on new-session places env in the session environment BEFORE
+        # the initial shell starts, so send-keys'd agent command sees it.
+        if agent_cmd:
+            create_cmd = (
+                f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(remote_path)} {env_flags}&& "
+                f"tmux send-keys -t {shlex.quote(session_name)} 'cd {shlex.quote(remote_path)}' Enter && "
+                f"sleep 0.1 && "
+                f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(agent_cmd)} Enter"
+            )
+        else:
+            # Bare session - just create tmux
+            create_cmd = (
+                f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(remote_path)} {env_flags}&& "
+                f"tmux send-keys -t {shlex.quote(session_name)} 'cd {shlex.quote(remote_path)}' Enter"
+            )
+
+        result = _run_remote(machine_id, create_cmd)
+        if result.returncode != 0:
+            return _output_result(False, json_mode, f"Failed to create remote session: {result.stderr}")
+
+        if json_mode:
+            _output_json({
+                "success": True,
+                "session": f"{session_name}@{machine_id}",
+                "path": remote_path,
+                "branch": branch,
+                "machine": machine_id,
+            })
+        else:
+            print(f"Created session '{session_name}' on {machine_id} in {remote_path}")
+            print(f"Attach via portal or: ssh {machine.get('host', machine_id)} -t tmux attach -t {session_name}")
+
+        _notify_portal_sessions_changed()
+        return 0
+
+    # Local session
+    # Resolve path
+    base_branch = getattr(args, 'base', None) or 'main'
+    _pull_first = getattr(args, 'pull_first', None)
+    pull_first = True if _pull_first is None else _pull_first
+
+    def _spawn_worktree(project_path: Path, session_path: Path) -> tuple[bool, str | None]:
+        """Fetch origin/<base> if requested, then create worktree starting at that ref."""
+        worktree_commit: str | None = None
+        if pull_first:
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", base_branch],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+            )
+            if fetch.returncode != 0:
+                stderr = (fetch.stderr or fetch.stdout or "").strip()
+                return False, f"git fetch origin {base_branch} failed: {stderr}"
+            worktree_commit = f"origin/{base_branch}"
+        ok = ensure_worktree(
+            project_path,
+            branch,
+            session_path,
+            auto_create_branch=auto_create_branch,
+            commit=worktree_commit,
+        )
+        if not ok:
+            return False, f"Failed to create worktree for branch '{branch}' in {project_path}"
+        return True, None
+
+    if path and branch and worktrees_enabled:
+        # Path + branch: use provided path as main repo, create worktree from it
+        project_path = Path(path).expanduser().resolve()
+        session_path = project_path.parent / f"{project_path.name}{worktree_suffix}" / branch
+
+        # Ensure worktree exists
+        if not session_path.exists():
+            if not project_path.exists():
+                return _output_result(False, json_mode, f"Project path does not exist: {project_path}")
+            ok, err = _spawn_worktree(project_path, session_path)
+            if not ok:
+                return _output_result(False, json_mode, err or "worktree creation failed")
+    elif path:
+        session_path = Path(path).expanduser().resolve()
+    elif branch and worktrees_enabled:
+        # Worktree session: ~/projects/project-worktrees/branch/
+        project_path = projects_dir / project
+        session_path = projects_dir / f"{project}{worktree_suffix}" / branch
+
+        # Ensure worktree exists
+        if not session_path.exists():
+            if not project_path.exists():
+                return _output_result(False, json_mode, f"Project path does not exist: {project_path}")
+            ok, err = _spawn_worktree(project_path, session_path)
+            if not ok:
+                return _output_result(False, json_mode, err or "worktree creation failed")
+    else:
+        # Simple session: ~/projects/project/
+        session_path = projects_dir / project
+
+    # Safety: refuse to attach a new session to a path that is already the working
+    # directory of another active session. Two agents sharing the same working tree
+    # is the dangerous footgun (one's dirty state visible to the other, branches
+    # mixing). Worktree sessions (project/branch) get unique paths and won't trip
+    # this. --force overrides; --allow-shared-dir bypasses ONLY this guard
+    # (without --force's kill-replace of an existing same-name session — service
+    # respawns must never destroy a concurrently-created healthy instance).
+    if not args.force and not getattr(args, "allow_shared_dir", False):
+        target = str(session_path.resolve()) if session_path.exists() else str(session_path)
+        panes_result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"],
+            capture_output=True, text=True,
+        )
+        if panes_result.returncode == 0:
+            conflicting: set[str] = set()
+            for line in panes_result.stdout.splitlines():
+                if "\t" not in line:
+                    continue
+                sess, p = line.split("\t", 1)
+                if sess == session_name:
+                    continue
+                try:
+                    if str(Path(p).resolve()) == target:
+                        conflicting.add(sess)
+                except (OSError, RuntimeError):
+                    continue
+            if conflicting:
+                others = ", ".join(sorted(conflicting))
+                hint = (
+                    f"Refusing to attach session '{session_name}' to {session_path}: "
+                    f"already the working directory of active session(s): {others}. "
+                    "Use a 'project/branch' name to create an isolated worktree, "
+                    "pick a different path, or pass --force to override."
+                )
+                return _output_result(False, json_mode, hint)
+
+    if not session_path.exists():
+        if args.force or path:
+            # Auto-create directory with -f flag or when custom path explicitly provided
+            session_path.mkdir(parents=True, exist_ok=True)
+        else:
+            return _output_result(False, json_mode, f"Path does not exist: {session_path}")
+
+    # Check if session already exists
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", f"={session_name}"],
+        capture_output=True
+    )
+    if result.returncode == 0:
+        if args.force:
+            # Kill existing session
+            subprocess.run(["tmux", "send-keys", "-t", session_name, "/exit", "Enter"])
+            time.sleep(2)
+            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+        else:
+            return _output_result(False, json_mode, f"Session '{session_name}' already exists. Use -f to replace.")
+
+    # Determine agent type and normalize session type BEFORE creating the
+    # tmux session, so we can inject secrets via `tmux new-session -e K=V`
+    # (the only way to make the initial pane's shell see them — post-hoc
+    # `tmux set-environment` only affects shells spawned AFTER the call).
+    agent_type = detect_default_agent_type()
+
+    # Determine session type. Precedence: explicit posture/harness/type/legacy
+    # booleans (shared core) → existing .agentwire.yml type → kind default.
+    persist = getattr(args, 'persist', False)
+    type_arg = getattr(args, 'type', None)
+    type_explicit = bool(
+        type_arg
+        or getattr(args, 'posture', None)
+        or getattr(args, 'harness', None)
+        or getattr(args, 'bare', False)
+        or getattr(args, 'restricted', False)
+        or getattr(args, 'prompted', False)
+    )
+    if type_explicit:
+        session_type, st_err = _resolve_session_type_from_args(args, kind)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
+    else:
+        existing_config = load_project_config(session_path)
+        if existing_config and existing_config.type:
+            session_type = normalize_session_type(existing_config.type.value, agent_type)
+        else:
+            # Kind default posture × claude (no global default-role lookup).
+            session_type, _ = _resolve_session_type_from_args(args, kind)
+
+    # Build agent command
+    model_override = getattr(args, 'model', None)
+    agent = build_agent_command(session_type, roles if roles else None, model=model_override)
+    agent.env.update(parse_env_args(getattr(args, 'env', None)))
+    _set_session_name_env(agent, session_name)
+
+    agent_cmd = agent.command
+
+    # Create new tmux session with env vars injected at creation time.
+    # `-e K=V` places vars in the session environment before the initial
+    # shell starts, so the agent command (run via send-keys below) sees them.
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session_name, "-c", str(session_path),
+         *_build_tmux_env_flags(agent.env)],
+        check=True
+    )
+
+    # Ensure Claude starts in correct directory
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session_name, f"cd {shlex.quote(str(session_path))}", "Enter"],
+        check=True
+    )
+    time.sleep(0.1)
+
+    # Start agent command if not bare
+    if agent_cmd:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session_name, agent_cmd, "Enter"],
+            check=True
+        )
+
+    # Update project config (.agentwire.yml) - only if --persist is given.
+    # Persist USER roles (--roles) only — the intrinsic etiquette and soul are
+    # derived/auto-appended each run, never written into project config.
+    if persist:
+        existing_config = load_project_config(session_path)
+        if existing_config:
+            # Preserve existing settings if not overridden by CLI
+            project_config = ProjectConfig(
+                type=SessionType.from_str(session_type),
+                roles=cli_roles if cli_roles else existing_config.roles,
+                voice=existing_config.voice,
+                parent=existing_config.parent,
+                shell=existing_config.shell,
+                tasks=existing_config.tasks,
+            )
+        else:
+            # Create new config
+            project_config = ProjectConfig(
+                type=SessionType.from_str(session_type),
+                roles=cli_roles if cli_roles else [],
+                voice=None,
+            )
+        save_project_config(project_config, session_path)
+
+    # Deliver the first message once the agent is ready (verified paste).
+    # Delivery failure doesn't fail the command — the session exists.
+    first_message_delivered = None
+    if first_message and agent_cmd:
+        from agentwire.session_ready import send_verified, wait_for_session_ready
+
+        if not json_mode:
+            print("Waiting for agent to deliver first message...")
+        first_message_delivered = (
+            wait_for_session_ready(session_name, timeout=60)
+            and send_verified(session_name, first_message)
+        )
+        if not first_message_delivered and not json_mode:
+            print(f"Warning: first message not delivered to '{session_name}' — paste it manually", file=sys.stderr)
+
+    # Record the creating session as parent for prompt routing. --created-by
+    # overrides; empty string opts out; default = the calling tmux session.
+    created_by = getattr(args, 'created_by', None)
+    if created_by is None:
+        created_by = pane_manager.get_current_session()
+    _record_session_creator(session_name, created_by, via="new")
+
+    if json_mode:
+        result = {
+            "success": True,
+            "session": session_name,
+            "path": str(session_path),
+            "branch": branch,
+            "machine": None,
+        }
+        if first_message:
+            result["first_message_delivered"] = bool(first_message_delivered)
+        _output_json(result)
+    else:
+        print(f"Created session '{session_name}' in {session_path}")
+        print(f"Attach with: tmux attach -t {session_name}")
+
+    _notify_portal_sessions_changed()
+    return 0
+
+
+def cmd_recreate(args) -> int:
+    """Destroy and recreate a session with fresh worktree.
+
+    Steps:
+    1. Kill existing session (local or remote)
+    2. Remove worktree
+    3. Pull latest on main repo
+    4. Create new worktree with timestamp branch
+    5. Create new session
+
+    Supports remote sessions with session@machine format.
+    """
+    session_full = args.session
+    json_mode = getattr(args, 'json', False)
+
+    if not session_full:
+        return _output_result(False, json_mode, "Usage: agentwire recreate -s <session>")
+
+    # Parse session name
+    project, branch, machine_id = parse_session_name(session_full)
+
+    # Load config
+    config = load_config()
+    projects_dir = Path(config.get("projects", {}).get("dir", "~/projects")).expanduser()
+    worktrees_config = config.get("projects", {}).get("worktrees", {})
+    worktree_suffix = worktrees_config.get("suffix", "-worktrees")
+
+    # Build session name for tmux (preserve slashes, convert dots to underscores)
+    if branch:
+        session_name = f"{project}/{branch}".replace(".", "_")
+    else:
+        session_name = project.replace(".", "_")
+
+    if machine_id:
+        # Remote recreate
+        machine = _get_machine_config(machine_id)
+        if machine is None:
+            return _output_result(False, json_mode, f"Machine '{machine_id}' not found in machines.json")
+
+        remote_projects_dir = machine.get("projects_dir", "~/projects")
+
+        # Step 1: Kill existing session
+        kill_cmd = f"tmux send-keys -t {shlex.quote(session_name)} /exit Enter 2>/dev/null; sleep 2; tmux kill-session -t {shlex.quote(session_name)} 2>/dev/null"
+        _run_remote(machine_id, kill_cmd)
+
+        # Determine paths
+        project_path = f"{remote_projects_dir}/{project}"
+        if branch:
+            worktree_path = f"{remote_projects_dir}/{project}{worktree_suffix}/{branch}"
+        else:
+            worktree_path = project_path
+
+        # Step 2: Remove worktree (if branch session)
+        if branch:
+            remove_cmd = f"cd {shlex.quote(project_path)} && git worktree remove {shlex.quote(worktree_path)} --force 2>/dev/null; rm -rf {shlex.quote(worktree_path)}"
+            _run_remote(machine_id, remove_cmd)
+
+        # Step 3: Pull latest on main repo
+        pull_cmd = f"cd {shlex.quote(project_path)} && git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true"
+        _run_remote(machine_id, pull_cmd)
+
+        # Step 4: Create new worktree with timestamp branch
+        if branch:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            new_branch = f"{branch}-{timestamp}"
+
+            create_wt_cmd = f"cd {shlex.quote(project_path)} && mkdir -p $(dirname {shlex.quote(worktree_path)}) && git worktree add -b {shlex.quote(new_branch)} {shlex.quote(worktree_path)}"
+            result = _run_remote(machine_id, create_wt_cmd)
+            if result.returncode != 0:
+                return _output_result(False, json_mode, f"Failed to create worktree: {result.stderr}")
+
+        # Step 5: Create new session
+        session_path = worktree_path if branch else project_path
+
+        # Determine session type from --type flag or detect default
+        agent_type = detect_default_agent_type()
+        type_arg = getattr(args, 'type', None)
+        if type_arg:
+            session_type_str = normalize_session_type(type_arg, agent_type)
+        else:
+            # Fall back to agent-bypass
+            session_type_str = f"{agent_type}-bypass"
+
+        # Inject the kind's intrinsic etiquette — a remote project/branch
+        # recreate is still a worktree-session and must carry the safety
+        # contract. The remote project_config isn't readable here, so we
+        # resolve from the derived kind alone; the bundled etiquette roles
+        # resolve locally and are baked into the agent command.
+        kind = derive_session_kind(bool(branch))
+        role_names = resolve_roles(kind)
+        role_names = inject_soul(role_names, load_config())
+        roles = None
+        if role_names:
+            roles, _ = load_roles(role_names)
+
+        # Build agent command using the standard function
+        agent = build_agent_command(session_type_str, roles)
+        agent.env.update(parse_env_args(getattr(args, 'env', None)))
+        agent_cmd = agent.command
+        env_flags = _build_tmux_env_flags_shell(agent.env)
+
+        create_cmd = (
+            f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(session_path)} {env_flags}&& "
+            f"tmux send-keys -t {shlex.quote(session_name)} 'cd {shlex.quote(session_path)}' Enter && "
+            f"sleep 0.1 && "
+            f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(agent_cmd)} Enter"
+        )
+
+        result = _run_remote(machine_id, create_cmd)
+        if result.returncode != 0:
+            return _output_result(False, json_mode, f"Failed to create session: {result.stderr}")
+
+        if json_mode:
+            _output_json({
+                "success": True,
+                "session": session_name,
+                "path": session_path,
+                "branch": new_branch if branch else None,
+                "machine": machine_id,
+            })
+        else:
+            print(f"Recreated session '{session_name}' on {machine_id} in {session_path}")
+
+        return 0
+
+    # Local recreate
+    # Step 1: Kill existing session
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", f"={session_name}"],
+        capture_output=True
+    )
+    if result.returncode == 0:
+        subprocess.run(["tmux", "send-keys", "-t", session_name, "/exit", "Enter"])
+        time.sleep(2)
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+
+    # Determine paths
+    project_path = projects_dir / project
+    if branch:
+        worktree_path = projects_dir / f"{project}{worktree_suffix}" / branch
+    else:
+        worktree_path = project_path
+
+    # Step 2: Remove worktree (if branch session)
+    if branch and worktree_path.exists():
+        remove_worktree(project_path, worktree_path)
+        # Force remove if git worktree remove failed
+        if worktree_path.exists():
+            shutil.rmtree(worktree_path, ignore_errors=True)
+
+    # Step 3: Pull latest on main repo
+    if project_path.exists():
+        subprocess.run(
+            ["git", "pull", "origin", "main"],
+            cwd=project_path,
+            capture_output=True
+        )
+
+    # Step 4: Create new worktree with timestamp branch
+    if branch:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        new_branch = f"{branch}-{timestamp}"
+
+        success = ensure_worktree(
+            project_path,
+            new_branch,
+            worktree_path,
+            auto_create_branch=True,
+        )
+        if not success:
+            return _output_result(False, json_mode, f"Failed to create worktree for branch '{new_branch}'")
+
+    session_path = worktree_path if branch else project_path
+
+    if not session_path.exists():
+        return _output_result(False, json_mode, f"Path does not exist: {session_path}")
+
+    # Determine session type from CLI --type flag or existing config
+    agent_type = detect_default_agent_type()
+    type_arg = getattr(args, 'type', None)
+    project_config = load_project_config(session_path)
+
+    if type_arg:
+        # CLI flag specified - use it directly and normalize (session-level only, not saved)
+        session_type_str = normalize_session_type(type_arg, agent_type)
+    elif project_config:
+        # Use existing config
+        session_type_str = normalize_session_type(project_config.type.value, agent_type)
+    else:
+        # Default to agent-bypass based on detected agent
+        session_type_str = f"{agent_type}-bypass"
+
+    # Route through resolve_roles with a derived kind so the recreated session
+    # carries its kind's intrinsic etiquette — recreating a project/branch
+    # (worktree) session re-injects the worktree-session safety contract
+    # (isolation / verify / draft-PR / notify), which a raw project_config.roles
+    # copy would silently drop. Same contract as cmd_new/cmd_worktree.
+    kind = derive_session_kind(bool(branch))
+    project_roles = list(project_config.roles) if project_config and project_config.roles else None
+    role_names = resolve_roles(kind, project_roles=project_roles)
+    role_names = inject_soul(role_names, load_config())
+    roles = None
+    if role_names:
+        roles, _ = load_roles(role_names, session_path)
+
+    # Build agent command
+    agent = build_agent_command(session_type_str, roles)
+    agent.env.update(parse_env_args(getattr(args, 'env', None)))
+
+    agent_cmd = agent.command
+
+    # Step 5: Create new session with env vars injected at creation time so
+    # the initial shell sees them (post-hoc set-environment doesn't reach the
+    # already-running shell — see _build_tmux_env_flags docstring).
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session_name, "-c", str(session_path),
+         *_build_tmux_env_flags(agent.env)],
+        check=True
+    )
+
+    # Ensure agent starts in correct directory
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session_name, f"cd {shlex.quote(str(session_path))}", "Enter"],
+        check=True
+    )
+    time.sleep(0.1)
+
+    # Start the agent with appropriate command
+    if agent_cmd:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session_name, agent_cmd, "Enter"],
+            check=True
+        )
+
+    if json_mode:
+        _output_json({
+            "success": True,
+            "session": session_name,
+            "path": str(session_path),
+            "branch": new_branch if branch else None,
+            "machine": None,
+        })
+    else:
+        print(f"Recreated session '{session_name}' in {session_path}")
+        print(f"Attach with: tmux attach -t {session_name}")
+
+    return 0
+
+
+def cmd_worktree(args) -> int:
+    """Create a git worktree + agentwire session in one command.
+
+    Three modes:
+    - Default: new branch from base. `agentwire worktree fix-bug`
+    - --existing: checkout existing branch. `agentwire worktree feature/auth --existing`
+    - --ref: detached at a ref. `agentwire worktree review-v2 --ref v2.0.0`
+
+    If the worktree already exists, reattaches to the existing session.
+
+    The session's KIND is "worktree-session" — a safety-rail kind. Its
+    intrinsic etiquette (isolation, no live-tool mutation, in-worktree
+    verification, draft-PR + notify-back) is auto-injected by resolve_roles
+    for every dispatch and is non-overridable: it's always present, no
+    opt-out, no templating. `--roles` / `.agentwire.yml roles:` ADD to it,
+    they never replace it.
+    """
+    json_mode = getattr(args, 'json', False)
+    name = getattr(args, 'name', None)
+    use_existing = getattr(args, 'existing', False)
+    ref = getattr(args, 'ref', None)
+
+    from .config import load_config as load_config_typed
+    wt_config = load_config_typed().worktree
+
+    # Resolve the repo: explicit --project → config default → git root of cwd
+    # (so a worktree session can be spawned from any subdir of a monorepo).
+    project_arg = getattr(args, 'project', None)
+    if project_arg:
+        project_base = Path(project_arg).expanduser().resolve()
+    elif wt_config.default_project:
+        project_base = Path(wt_config.default_project).expanduser().resolve()
+    else:
+        project_base = Path(os.getcwd())
+    project_path = git_root(project_base) or project_base
+
+    worktree_dir = wt_config.worktree_dir
+
+    # Registry management flags (name is optional for these).
+    if getattr(args, 'list', False):
+        return _worktree_list(args, project_path, json_mode)
+    if getattr(args, 'watch', False):
+        return _worktree_watch(args, project_path, json_mode)
+    if getattr(args, 'prune', False):
+        return _worktree_prune(args, project_path, json_mode)
+    if getattr(args, 'status', False):
+        return _worktree_status(args, project_path, worktree_dir, json_mode)
+    if getattr(args, 'remove', False):
+        return _worktree_remove(args, project_path, worktree_dir, json_mode)
+
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree <name> (or --list / --remove <name> / --prune)")
+
+    if not _check_tmux_installed():
+        return _output_result(False, json_mode, "tmux is required but not installed")
+
+    if not (project_path / ".git").exists():
+        return _output_result(False, json_mode, f"Not a git repo: {project_path}")
+
+    project_name = project_path.name
+    # Session/worktree-dir key stays the raw CLI name made tmux-safe; the git
+    # branch may be templated separately via worktree.naming.
+    safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+    session_name = f"{project_name}-{safe_name}"
+    worktree_path = worktree_dir / session_name
+
+    # --base wins; else config default; else the repo's actual default branch
+    # (origin/HEAD, not a hardcoded 'main'). --current handled per-mode below.
+    default_base = getattr(args, 'base', None) or wt_config.default_base
+
+    # The branch created in default mode honors the naming template.
+    templated_branch = apply_naming(wt_config.naming, name)
+
+    def _launch_session():
+        # kind="worktree-session" → worktree-session etiquette is injected
+        # intrinsically by cmd_new's resolver. Posture/harness/model/roles
+        # forward through the shared flag core.
+        return cmd_new(type('Args', (), {
+            'session': session_name, 'path': str(worktree_path), 'json': json_mode,
+            'force': False, 'bare': False, 'restricted': False, 'prompted': False,
+            'kind': 'worktree-session',
+            'type': getattr(args, 'type', None),
+            'posture': getattr(args, 'posture', None),
+            'harness': getattr(args, 'harness', None),
+            'model': getattr(args, 'model', None),
+            'roles': getattr(args, 'roles', None),
+            'instructions': None, 'persist': False,
+            'first_message': getattr(args, 'prompt', None),
+            'env': getattr(args, 'env', None),
+        })())
+
+    # If worktree already exists, reattach (and heal the registry entry).
+    if worktree_path.exists():
+        # --ref is a detached ref, not a branch → record null. --existing
+        # checks out a real branch (name). Default mode → the templated branch.
+        if ref:
+            reattach_branch = None
+        elif use_existing:
+            reattach_branch = name
+        else:
+            reattach_branch = templated_branch
+        worktree_registry.register(
+            project_path, branch=reattach_branch,
+            session=session_name, base=default_base,
+            worktree_path=worktree_path,
+        )
+        if tmux_session_exists(session_name):
+            # Already live. For automation/json, report and return (never paste
+            # into a live session); for a human, attach interactively.
+            if json_mode:
+                _output_json({"success": True, "session": session_name,
+                              "path": str(worktree_path), "reattached": True})
+                return 0
+            print(f"Worktree exists: {worktree_path}")
+            subprocess.run(["tmux", "attach-session", "-t", session_name])
+            return 0
+        # Worktree dir exists but no live session → relaunch (cmd_new emits the
+        # single authoritative json; don't print a second block here).
+        if not json_mode:
+            print(f"Worktree exists: {worktree_path}")
+        return _launch_session()
+
+    # Resolve the git ref to create the worktree from
+    base_branch = None
+    if ref:
+        # --ref mode: detached at a specific ref (tag, commit, branch)
+        git_ref = ref
+        new_branch = None
+        mode_label = f"detached at {ref}"
+    elif use_existing:
+        # --existing mode: checkout an existing branch
+        git_ref = name
+        new_branch = None
+        mode_label = f"existing branch {name}"
+    else:
+        # Default mode: new branch from base.
+        # Precedence: explicit --base > --current > config default > repo-derived.
+        explicit_base = getattr(args, 'base', None)
+        if explicit_base:
+            base_branch = explicit_base
+        elif getattr(args, 'current', False):
+            result = subprocess.run(
+                ["git", "-C", str(project_path), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return _output_result(False, json_mode, f"Failed to detect current branch in {project_path}")
+            base_branch = result.stdout.strip()
+        elif wt_config.default_base:
+            base_branch = wt_config.default_base
+        else:
+            base_branch = default_base_branch(project_path)
+        git_ref = f"origin/{base_branch}"
+        new_branch = templated_branch
+
+        # Validate the generated branch name BEFORE touching the working tree,
+        # so a bad name (spaces, '..', leading '-', from the verbatim default
+        # or a naming template) fails cleanly instead of leaving an orphaned
+        # detached worktree on disk after `git worktree add` succeeds.
+        if not is_valid_branch_name(new_branch, project_path):
+            via = f" (from naming template '{wt_config.naming}')" if wt_config.naming else ""
+            return _output_result(
+                False, json_mode,
+                f"Invalid git branch name '{new_branch}'{via}: not a valid ref. "
+                f"Use a name without spaces, '..', or a leading '-', or set worktree.naming.",
+            )
+        mode_label = f"new branch {new_branch} from {git_ref}"
+
+        # Fetch the base branch
+        if not json_mode:
+            print(f"Fetching origin/{base_branch}...")
+        fetch_result = subprocess.run(
+            ["git", "-C", str(project_path), "fetch", "origin", base_branch, "--quiet"],
+            capture_output=True, text=True,
+        )
+        if fetch_result.returncode != 0:
+            return _output_result(False, json_mode, f"Failed to fetch origin/{base_branch}: {fetch_result.stderr.strip()}")
+
+    # Create worktree
+    worktree_dir.mkdir(parents=True, exist_ok=True)
+    wt_cmd = ["git", "-C", str(project_path), "worktree", "add"]
+    if new_branch:
+        wt_cmd += [str(worktree_path), git_ref, "--detach", "--quiet"]
+    elif use_existing:
+        wt_cmd += [str(worktree_path), git_ref, "--quiet"]
+    else:
+        wt_cmd += [str(worktree_path), git_ref, "--detach", "--quiet"]
+
+    wt_result = subprocess.run(wt_cmd, capture_output=True, text=True)
+    if wt_result.returncode != 0:
+        return _output_result(False, json_mode, f"Failed to create worktree: {wt_result.stderr.strip()}")
+
+    # Create new branch if in default mode
+    if new_branch:
+        branch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "checkout", "-b", new_branch, "--quiet"],
+            capture_output=True, text=True,
+        )
+        if branch_result.returncode != 0:
+            # Don't leave an orphaned detached worktree behind (belt-and-braces;
+            # is_valid_branch_name above should already have caught bad names).
+            remove_worktree(project_path, worktree_path)
+            if worktree_path.exists():
+                subprocess.run(
+                    ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
+                    capture_output=True,
+                )
+            return _output_result(False, json_mode, f"Failed to create branch '{new_branch}': {branch_result.stderr.strip()}")
+
+    # Record the branch↔session association in the local registry.
+    worktree_registry.register(
+        project_path,
+        branch=new_branch if new_branch else (name if use_existing else None),
+        session=session_name,
+        base=base_branch,
+        worktree_path=worktree_path,
+    )
+
+    # cmd_new (via _launch_session) emits the single authoritative json
+    # (session, path, branch, first_message_delivered) — don't print a second
+    # block here or run_agentwire_cmd's json.loads chokes on two objects.
+    if not json_mode:
+        print(f"Created worktree: {worktree_path}")
+        print(f"Mode: {mode_label}")
+
+    return _launch_session()
+
+
+def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
+    """List worktree-session registry entries (--list)."""
+    show_all = getattr(args, 'all', False)
+    from agentwire import inbox
+    if show_all:
+        rows = worktree_registry.all_entries()
+    else:
+        rows = [dict(e, project=str(project_path)) for e in worktree_registry.entries(project_path)]
+
+    for r in rows:
+        r["alive"] = tmux_session_exists(r.get("session", ""))
+        r["exists"] = Path(r.get("worktree_path", "")).exists()
+        # Fold in read-only git status so the portal can badge the whole list
+        # without N round-trips. Local git only (no network) — cheap per entry.
+        if r["exists"]:
+            r["git"] = worktree_status(Path(r.get("worktree_path", "")))
+        dead_msgs = inbox.list_dead(r.get("session", ""))
+        r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
+
+    if json_mode:
+        _output_json({"success": True, "entries": rows})
+        return 0
+
+    if not rows:
+        scope = "any repo" if show_all else str(project_path)
+        print(f"No worktree sessions registered for {scope}.")
+        return 0
+
+    for r in rows:
+        live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
+        dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
+        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}{dead_warn}")
+        print(f"      {r.get('worktree_path')}")
+    return 0
+
+
+def _worktree_watch(args, project_path: Path, json_mode: bool) -> int:
+    """Watch registered worktree sessions in a loop and report status."""
+    import datetime
+    import sys
+    import time
+
+    from agentwire import inbox
+    try:
+        while True:
+            show_all = getattr(args, 'all', False)
+            if show_all:
+                rows = worktree_registry.all_entries()
+            else:
+                rows = [dict(e, project=str(project_path)) for e in worktree_registry.entries(project_path)]
+
+            for r in rows:
+                r["alive"] = tmux_session_exists(r.get("session", ""))
+                r["exists"] = Path(r.get("worktree_path", "")).exists()
+                if r["exists"]:
+                    r["git"] = worktree_status(Path(r.get("worktree_path", "")))
+                dead_msgs = inbox.list_dead(r.get("session", ""))
+                r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
+
+            if json_mode:
+                _output_json({"success": True, "entries": rows})
+                sys.stdout.flush()
+            else:
+                # Clear screen: \033[H\033[2J
+                print("\033[H\033[2J", end="")
+                scope = "all repos" if show_all else project_path.name
+                print(f"=== Watching Worktree Sessions ({scope}) ===")
+                print(f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                if not rows:
+                    print("No worktree sessions registered.")
+                for r in rows:
+                    live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
+                    dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
+                    print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}{dead_warn}")
+                    print(f"      {r.get('worktree_path')}")
+                print("\nPress Ctrl+C to stop.")
+                sys.stdout.flush()
+            time.sleep(5)
+    except KeyboardInterrupt:
+        if not json_mode:
+            print("\nStopped watching.")
+        return 0
+
+
+def _git_badge(git: dict | None) -> str:
+    """One-line human summary of a worktree's git status (dirty/ahead/behind)."""
+    if not git or not git.get("exists"):
+        return ""
+    parts = []
+    if git.get("dirty"):
+        parts.append(f"dirty(+{git['staged']}/~{git['unstaged']}/?{git['untracked']})")
+    else:
+        parts.append("clean")
+    if not git.get("upstream"):
+        parts.append("no-upstream")
+    else:
+        if git.get("ahead"):
+            parts.append(f"↑{git['ahead']}")
+        if git.get("behind"):
+            parts.append(f"↓{git['behind']}")
+        if git.get("pushed") and not git.get("ahead"):
+            parts.append("pushed")
+    return " ".join(parts)
+
+
+def _worktree_status(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
+    """Read-only git status for one worktree session (--status). Never mutates."""
+    name = getattr(args, 'name', None)
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree --status <name|session>")
+
+    project_name = project_path.name
+    candidates = {name, f"{project_name}-{name}"}
+    entry = None
+    for e in worktree_registry.entries(project_path):
+        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
+            entry = e
+            break
+
+    if entry:
+        session_name = entry.get("session")
+        worktree_path = Path(entry.get("worktree_path"))
+    else:
+        safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+        session_name = name if name.startswith(f"{project_name}-") else f"{project_name}-{safe_name}"
+        worktree_path = worktree_dir / session_name
+
+    git = worktree_status(worktree_path)
+
+    if json_mode:
+        _output_json({"success": True, "session": session_name,
+                      "worktree_path": str(worktree_path),
+                      "alive": tmux_session_exists(session_name), **git})
+        return 0
+
+    if not git.get("exists"):
+        print(f"Worktree path missing: {worktree_path}")
+        return 0
+    print(f"{session_name}  branch={git.get('branch')}  {_git_badge(git)}")
+    return 0
+
+
+def _worktree_prune(args, project_path: Path, json_mode: bool) -> int:
+    """Drop registry entries whose worktree path is gone; git worktree prune."""
+    removed = []
+    for e in worktree_registry.entries(project_path):
+        if not Path(e.get("worktree_path", "")).exists():
+            worktree_registry.unregister(project_path, session=e.get("session"))
+            removed.append(e.get("session"))
+    subprocess.run(["git", "-C", str(project_path), "worktree", "prune"],
+                   capture_output=True)
+    if json_mode:
+        _output_json({"success": True, "pruned": removed})
+    else:
+        if removed:
+            print(f"Pruned {len(removed)} stale registry entr{'y' if len(removed) == 1 else 'ies'}: {', '.join(removed)}")
+        else:
+            print("Nothing to prune.")
+    return 0
+
+
+def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
+    """Cleanup/recovery: kill the session, remove the worktree, unregister."""
+    name = getattr(args, 'name', None)
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree --remove <name|session>")
+
+    project_name = project_path.name
+    candidates = {name, f"{project_name}-{name}"}
+    entry = None
+    for e in worktree_registry.entries(project_path):
+        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
+            entry = e
+            break
+
+    if entry:
+        session_name = entry.get("session")
+        worktree_path = Path(entry.get("worktree_path"))
+    else:
+        # Not in registry — fall back to the conventional layout so recovery
+        # still works on hand-created or pre-registry worktrees.
+        safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+        session_name = name if name.startswith(f"{project_name}-") else f"{project_name}-{safe_name}"
+        worktree_path = worktree_dir / session_name
+
+    # Kill the tmux session if it's alive.
+    killed = False
+    if tmux_session_exists(session_name):
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+        killed = True
+
+    # Remove the git worktree (force), then sweep any leftover dir.
+    removed = remove_worktree(project_path, worktree_path)
+    if not removed and worktree_path.exists():
+        subprocess.run(
+            ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
+            capture_output=True,
+        )
+        removed = not worktree_path.exists()
+
+    worktree_registry.unregister(project_path, session=session_name, worktree_path=worktree_path)
+
+    if json_mode:
+        _output_json({"success": True, "session": session_name, "path": str(worktree_path),
+                      "killed": killed, "worktree_removed": removed})
+    else:
+        print(f"Removed worktree session '{session_name}'"
+              + (" (killed live session)" if killed else "")
+              + (f"; worktree {worktree_path} removed" if removed else f"; worktree {worktree_path} left in place"))
+    return 0
+
+
+def cmd_fork(args) -> int:
+    """Fork a session into a new worktree with copied Claude context.
+
+    Creates a new worktree from current branch state and optionally
+    copies Claude session file for conversation continuity.
+
+    Supports remote sessions with session@machine format.
+    """
+    source_full = args.source
+    target_full = args.target
+    json_mode = getattr(args, 'json', False)
+
+    if not source_full or not target_full:
+        return _output_result(False, json_mode, "Usage: agentwire fork -s <source> -t <target>")
+
+    # Parse session names
+    source_project, source_branch, source_machine = parse_session_name(source_full)
+    target_project, target_branch, target_machine = parse_session_name(target_full)
+
+    # Non-worktree fork: both have no branch (same directory, fork Claude context)
+    # Worktree fork: at least one has a branch (create new worktree)
+    is_non_worktree_fork = not source_branch and not target_branch
+
+    # For worktree forks, validate project names match and target has a branch
+    if not is_non_worktree_fork:
+        if source_project != target_project:
+            return _output_result(False, json_mode, f"For worktree forks, source and target must be same project (got {source_project} vs {target_project})")
+        if not target_branch:
+            return _output_result(False, json_mode, "For worktree forks, target must include a branch name (e.g., project/new-branch)")
+
+    # Machines must match
+    if source_machine != target_machine:
+        return _output_result(False, json_mode, f"Source and target must be on same machine (got {source_machine} vs {target_machine})")
+
+    machine_id = source_machine
+
+    # Load config
+    config = load_config()
+    projects_dir = Path(config.get("projects", {}).get("dir", "~/projects")).expanduser()
+    worktrees_config = config.get("projects", {}).get("worktrees", {})
+    worktree_suffix = worktrees_config.get("suffix", "-worktrees")
+
+    # Build session names (preserve slashes, convert dots to underscores)
+    if source_branch:
+        source_session = f"{source_project}/{source_branch}".replace(".", "_")
+    else:
+        source_session = source_project.replace(".", "_")
+
+    if target_branch:
+        target_session = f"{target_project}/{target_branch}".replace(".", "_")
+    else:
+        # Non-worktree fork: use target project name directly
+        target_session = target_project.replace(".", "_")
+
+    if machine_id:
+        # Remote fork
+        machine = _get_machine_config(machine_id)
+        if machine is None:
+            return _output_result(False, json_mode, f"Machine '{machine_id}' not found in machines.json")
+
+        remote_projects_dir = machine.get("projects_dir", "~/projects")
+
+        # Build paths
+        project_path = f"{remote_projects_dir}/{source_project}"
+        if source_branch:
+            source_path = f"{remote_projects_dir}/{source_project}{worktree_suffix}/{source_branch}"
+        else:
+            source_path = project_path
+        target_path = f"{remote_projects_dir}/{target_project}{worktree_suffix}/{target_branch}"
+
+        # Check if target already exists
+        check_cmd = f"test -d {shlex.quote(target_path)}"
+        result = _run_remote(machine_id, check_cmd)
+        if result.returncode == 0:
+            return _output_result(False, json_mode, f"Target worktree already exists: {target_path}")
+
+        # Create new worktree from source
+        create_cmd = f"cd {shlex.quote(source_path)} && mkdir -p $(dirname {shlex.quote(target_path)}) && git worktree add -b {shlex.quote(target_branch)} {shlex.quote(target_path)}"
+        result = _run_remote(machine_id, create_cmd)
+        if result.returncode != 0:
+            return _output_result(False, json_mode, f"Failed to create worktree: {result.stderr}")
+
+        # Determine session type from --type flag or source config
+        agent_type = detect_default_agent_type()
+        type_arg = getattr(args, 'type', None)
+        source_config = load_project_config(Path(source_path))
+
+        if type_arg:
+            # CLI flag specified - use it directly
+            session_type_str = normalize_session_type(type_arg, agent_type)
+        elif source_config:
+            # Use source config
+            session_type_str = normalize_session_type(source_config.type.value, agent_type)
+        else:
+            # Default to agent-bypass based on detected agent
+            session_type_str = f"{agent_type}-bypass"
+
+        # The fork target is a worktree (project/branch) → worktree-session
+        # kind, so resolve_roles stacks the non-overridable safety etiquette
+        # under the source's roles instead of copying them raw (which dropped
+        # the kind's intrinsic contract). Kind derived from the target name.
+        kind = derive_session_kind(bool(target_branch))
+        project_roles = list(source_config.roles) if source_config and source_config.roles else None
+        role_names = resolve_roles(kind, project_roles=project_roles)
+        role_names = inject_soul(role_names, load_config())
+        roles = None
+        if role_names:
+            roles, _ = load_roles(role_names, Path(source_path))
+
+        # Build agent command
+        agent = build_agent_command(session_type_str, roles)
+        agent.env.update(parse_env_args(getattr(args, 'env', None)))
+
+        agent_cmd = agent.command
+        env_flags = _build_tmux_env_flags_shell(agent.env)
+
+        create_session_cmd = (
+            f"tmux new-session -d -s {shlex.quote(target_session)} -c {shlex.quote(target_path)} {env_flags}&& "
+            f"tmux send-keys -t {shlex.quote(target_session)} 'cd {shlex.quote(target_path)}' Enter && "
+            f"sleep 0.1 && "
+            f"tmux send-keys -t {shlex.quote(target_session)} {shlex.quote(agent_cmd)} Enter"
+        )
+
+        result = _run_remote(machine_id, create_session_cmd)
+        if result.returncode != 0:
+            return _output_result(False, json_mode, f"Failed to create session: {result.stderr}")
+
+        if json_mode:
+            _output_json({
+                "success": True,
+                "session": f"{target_session}@{machine_id}",
+                "path": target_path,
+                "branch": target_branch,
+                "machine": machine_id,
+                "forked_from": source_full,
+            })
+        else:
+            print(f"Forked '{source_full}' to '{target_session}' on {machine_id}")
+            print(f"  Path: {target_path}")
+
+        return 0
+
+    # Local fork
+    # Build paths
+    project_path = projects_dir / source_project
+
+    # Handle non-worktree fork (same directory, different Claude session)
+    if is_non_worktree_fork:
+        # Check if source session exists
+        check_source = subprocess.run(
+            ["tmux", "has-session", "-t", source_session],
+            capture_output=True
+        )
+        if check_source.returncode != 0:
+            return _output_result(False, json_mode, f"Source session '{source_session}' does not exist")
+
+        # For non-worktree forks, use the source session's actual CWD.
+        # The session name may not match the project directory name (e.g., a session
+        # named "aw-context-source" running in ~/projects/aw-feature-test/).
+        cwd_result = subprocess.run(
+            ["tmux", "display-message", "-t", source_session, "-p", "#{pane_current_path}"],
+            capture_output=True, text=True,
+        )
+        if cwd_result.returncode == 0 and cwd_result.stdout.strip():
+            fork_path = Path(cwd_result.stdout.strip())
+        else:
+            fork_path = project_path
+
+        if not fork_path.exists():
+            return _output_result(False, json_mode, f"Source path does not exist: {fork_path}")
+
+        # Check if target session already exists
+        check_target = subprocess.run(
+            ["tmux", "has-session", "-t", target_session],
+            capture_output=True
+        )
+        if check_target.returncode == 0:
+            return _output_result(False, json_mode, f"Target session '{target_session}' already exists")
+
+        # Determine session type from --type flag or source config (before
+        # session creation, so we can inject env via `tmux new-session -e K=V`).
+        agent_type = detect_default_agent_type()
+        type_arg = getattr(args, 'type', None)
+        source_project_config = load_project_config(fork_path)
+
+        if type_arg:
+            # CLI flag specified - use it directly
+            session_type_str = normalize_session_type(type_arg, agent_type)
+        elif source_project_config:
+            # Use source config
+            session_type_str = normalize_session_type(source_project_config.type.value, agent_type)
+        else:
+            # Default to agent-bypass based on detected agent
+            session_type_str = f"{agent_type}-bypass"
+
+        # Non-worktree fork: target has no branch → orchestrator kind (a
+        # replaceable persona), so source roles take precedence as usual.
+        # Routed through resolve_roles for one consistent precedence path.
+        kind = derive_session_kind(bool(target_branch))
+        project_roles = list(source_project_config.roles) if source_project_config and source_project_config.roles else None
+        role_names = resolve_roles(kind, project_roles=project_roles)
+        role_names = inject_soul(role_names, load_config())
+        roles = None
+        if role_names:
+            roles, _ = load_roles(role_names, fork_path)
+
+        # Find the conversation JSONL for the source session to enable context inheritance.
+        # Uses history.jsonl filtered by the source tmux session's creation time to identify
+        # the correct JSONL even when multiple sessions share the same project directory.
+        import json as _json
+        resume_session_id = None
+
+        # Get source session creation timestamp
+        created_result = subprocess.run(
+            ["tmux", "display-message", "-t", source_session, "-p", "#{session_created}"],
+            capture_output=True, text=True,
+        )
+        session_created_unix = int(created_result.stdout.strip() or 0) if created_result.returncode == 0 else 0
+        session_created_ms = session_created_unix * 1000
+
+        history_file = Path.home() / ".claude" / "history.jsonl"
+        if session_created_ms > 0 and history_file.exists():
+            # Find sessions for this project that started AFTER the source tmux session was created.
+            # The session whose first message is closest to (and after) creation time is the source.
+            first_seen: dict[str, int] = {}
+            for line in history_file.read_text().strip().splitlines():
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    if entry.get("project") != str(fork_path):
+                        continue
+                    sid = entry.get("sessionId", "")
+                    ts = entry.get("timestamp", 0)
+                    if sid and (sid not in first_seen or ts < first_seen[sid]):
+                        first_seen[sid] = ts
+                except _json.JSONDecodeError:
+                    continue
+
+            # Pick the session with earliest first_seen >= session_created_ms
+            candidates = [(sid, ts) for sid, ts in first_seen.items() if ts >= session_created_ms]
+            if candidates:
+                candidates.sort(key=lambda x: x[1])
+                resume_session_id = candidates[0][0]
+
+        if not resume_session_id:
+            # Fallback: most recently modified JSONL in the project dir
+            claude_projects_dir = Path.home() / ".claude" / "projects"
+            from .history import encode_project_path as _encode_project_path
+            encoded_path = _encode_project_path(str(fork_path))
+            session_dir = claude_projects_dir / encoded_path
+            if session_dir.exists():
+                jsonl_files = sorted(session_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+                if jsonl_files:
+                    resume_session_id = jsonl_files[0].stem
+
+        # Build agent command
+        agent = build_agent_command(session_type_str, roles)
+        agent.env.update(parse_env_args(getattr(args, 'env', None)))
+
+        # Create new tmux session with env injected at creation time so the
+        # initial shell sees the vars (see _build_tmux_env_flags docstring).
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", target_session, "-c", str(fork_path),
+             *_build_tmux_env_flags(agent.env)],
+            check=True
+        )
+
+        # Ensure Claude starts in correct directory
+        subprocess.run(
+            ["tmux", "send-keys", "-t", target_session, f"cd {shlex.quote(str(fork_path))}", "Enter"],
+            check=True
+        )
+        time.sleep(0.1)
+
+        agent_cmd = agent.command
+        if agent_cmd:
+            # Inject --resume <id> --fork-session right after the 'claude' binary
+            # so the forked session starts with the source conversation in context
+            if resume_session_id:
+                claude_pos = agent_cmd.rfind("claude")
+                if claude_pos >= 0:
+                    insert_pos = claude_pos + len("claude")
+                    agent_cmd = (
+                        agent_cmd[:insert_pos]
+                        + f" --resume {resume_session_id} --fork-session"
+                        + agent_cmd[insert_pos:]
+                    )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", target_session, agent_cmd, "Enter"],
+                check=True
+            )
+
+        if json_mode:
+            _output_json({
+                "success": True,
+                "session": target_session,
+                "path": str(fork_path),
+                "branch": None,
+                "machine": None,
+                "forked_from": source_full,
+                "resumed_from": resume_session_id,
+            })
+        else:
+            print(f"Forked '{source_full}' to '{target_session}' (same directory)")
+            print(f"  Path: {fork_path}")
+            if resume_session_id:
+                print(f"  Resumed from: {resume_session_id}")
+
+        return 0
+
+    # Worktree fork logic
+    if source_branch:
+        source_path = projects_dir / f"{source_project}{worktree_suffix}" / source_branch
+    else:
+        source_path = project_path
+    target_path = projects_dir / f"{target_project}{worktree_suffix}" / target_branch
+
+    # Check if target already exists
+    if target_path.exists():
+        return _output_result(False, json_mode, f"Target worktree already exists: {target_path}")
+
+    # Check source exists
+    if not source_path.exists():
+        return _output_result(False, json_mode, f"Source path does not exist: {source_path}")
+
+    # Create new worktree from source
+    fork_commit = getattr(args, "commit", None) or None
+    success = ensure_worktree(
+        source_path,  # Use source as base for the worktree
+        target_branch,
+        target_path,
+        auto_create_branch=True,
+        commit=fork_commit,
+    )
+    if not success:
+        # Try from project path instead
+        if project_path.exists():
+            success = ensure_worktree(
+                project_path,
+                target_branch,
+                target_path,
+                auto_create_branch=True,
+                commit=fork_commit,
+            )
+
+    if not success:
+        return _output_result(False, json_mode, f"Failed to create worktree for branch '{target_branch}'")
+
+    # Determine session type from --type flag or source config (before
+    # session creation, so we can inject env via `tmux new-session -e K=V`).
+    agent_type = detect_default_agent_type()
+    type_arg = getattr(args, 'type', None)
+    config_path = source_path if source_path != project_path else project_path
+    source_config = load_project_config(config_path)
+
+    if type_arg:
+        # CLI flag specified - use it directly
+        session_type_str = normalize_session_type(type_arg, agent_type)
+    elif source_config:
+        # Use source config
+        session_type_str = normalize_session_type(source_config.type.value, agent_type)
+    else:
+        # Default to agent-bypass based on detected agent
+        session_type_str = f"{agent_type}-bypass"
+
+    # Worktree fork: target is project/branch → worktree-session kind, so
+    # resolve_roles stacks the non-overridable isolation/verify/draft-PR/notify
+    # etiquette under the source's roles. Kind derived from the target name.
+    kind = derive_session_kind(bool(target_branch))
+    project_roles = list(source_config.roles) if source_config and source_config.roles else None
+    role_names = resolve_roles(kind, project_roles=project_roles)
+    role_names = inject_soul(role_names, load_config())
+    roles = None
+    if role_names:
+        roles, _ = load_roles(role_names, config_path)
+
+    # Build agent command
+    agent = build_agent_command(session_type_str, roles)
+    agent.env.update(parse_env_args(getattr(args, 'env', None)))
+    agent_cmd = agent.command
+
+    # Create new session with env injected at creation time so the initial
+    # shell sees the vars (see _build_tmux_env_flags docstring).
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", target_session, "-c", str(target_path),
+         *_build_tmux_env_flags(agent.env)],
+        check=True
+    )
+
+    # Ensure agent starts in correct directory
+    subprocess.run(
+        ["tmux", "send-keys", "-t", target_session, f"cd {shlex.quote(str(target_path))}", "Enter"],
+        check=True
+    )
+    time.sleep(0.1)
+
+    if agent_cmd:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", target_session, agent_cmd, "Enter"],
+            check=True
+        )
+
+    if json_mode:
+        _output_json({
+            "success": True,
+            "session": target_session,
+            "path": str(target_path),
+            "branch": target_branch,
+            "machine": None,
+            "forked_from": source_full,
+        })
+    else:
+        print(f"Forked '{source_full}' to '{target_session}'")
+        print(f"  Path: {target_path}")
+        print(f"Attach with: tmux attach -t {target_session}")
+
+    return 0
+
+
+def register_session_parser(subparsers) -> None:
+    """Register the session-lifecycle commands (new/fork/worktree/recreate/session-defaults)."""
+    from .core import _add_posture_harness_flags
+
+    # === new command (top-level) ===
+    new_parser = subparsers.add_parser("new", help="Create new Claude Code session")
+    new_parser.add_argument("-s", "--session", required=True, help="Session name (project, project/branch, or project/branch@machine)")
+    new_parser.add_argument("-p", "--path", help="Working directory (default: ~/projects/<name>)")
+    new_parser.add_argument("-f", "--force", action="store_true", help="Replace existing session")
+    new_parser.add_argument("--allow-shared-dir", action="store_true",
+                            help="Allow attaching to a directory that already has active sessions "
+                                 "(unlike --force, never replaces an existing same-name session)")
+    # Session type — posture × harness are canonical; --type is a legacy alias.
+    _add_posture_harness_flags(new_parser)
+    new_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not the primary surface): "
+                                           "bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>[-restricted|-readonly], standard, worker, voice")
+    # Roles
+    new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
+    new_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"],
+                            help="Override the derived session kind (advanced). A project/branch name "
+                                 "normally derives 'worktree-session' (draft-PR + notify etiquette). Pass "
+                                 "'orchestrator' for a worktree that is finalized externally — e.g. the "
+                                 "scheduler, which opens/reaps the PR itself, so the task agent must NOT "
+                                 "open its own.")
+    new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
+    new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
+    new_parser.add_argument("--persist", action="store_true", help="Write the resolved type/--roles to .agentwire.yml (default: session-level override only)")
+    new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
+    # Worktree-only flags (default None so they can be rejected unless the
+    # session name is a project/branch worktree).
+    new_parser.add_argument("--base", default=None, help="Worktree sessions only (project/branch name): base branch to fork from (default: main)")
+    new_parser.add_argument("--pull-first", dest="pull_first", action="store_true", default=None, help="Worktree sessions only: fetch origin/<base> before branching (default)")
+    new_parser.add_argument("--no-pull-first", dest="pull_first", action="store_false", help="Skip the fetch — branch from the local copy of <base> as-is")
+    new_parser.add_argument("--first-message", dest="first_message",
+                            help="After the agent boots, deliver this as its first message (verified; local sessions only)")
+    new_parser.add_argument("--created-by", dest="created_by",
+                            help="Record this session as the creator/parent for prompt routing "
+                                 "(default: the calling tmux session; pass '' to opt out)")
+    new_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    new_parser.set_defaults(func=cmd_new)
+
+    # === session-defaults command (resolver — backs the portal endpoint) ===
+    sd_parser = subparsers.add_parser("session-defaults", help="Resolve a new session's composed type + intrinsic roles (JSON)")
+    sd_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"], default="orchestrator",
+                           help="Spawn-verb kind (default: orchestrator = `agentwire new`)")
+    _add_posture_harness_flags(sd_parser)
+    sd_parser.add_argument("--json", action="store_true", default=True, help="Output as JSON (default)")
+    sd_parser.set_defaults(func=cmd_session_defaults)
+
+    # === recreate command (top-level) ===
+    recreate_parser = subparsers.add_parser("recreate", help="Destroy and recreate session with fresh worktree")
+    recreate_parser.add_argument("-s", "--session", required=True, help="Session name (project/branch or project/branch@machine)")
+    # Session type
+    recreate_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
+    recreate_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
+    recreate_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    recreate_parser.set_defaults(func=cmd_recreate)
+
+    # === fork command (top-level) ===
+    fork_parser = subparsers.add_parser("fork", help="Fork a session into a new worktree")
+    fork_parser.add_argument("-s", "--source", required=True, help="Source session (project or project/branch)")
+    fork_parser.add_argument("-t", "--target", required=True, help="Target session (must include branch: project/new-branch)")
+    # Session type
+    fork_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
+    fork_parser.add_argument("--commit", metavar="REF", help="Fork from this commit/ref instead of HEAD (e.g. abc123, main~5)")
+    fork_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
+    fork_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    fork_parser.set_defaults(func=cmd_fork)
+
+    # === worktree command ===
+    wt_parser = subparsers.add_parser("worktree", help="Create a git worktree + session in one command")
+    wt_parser.add_argument("name", nargs="?", help="Name (becomes branch name in default mode, session suffix always)")
+    wt_parser.add_argument("--base", "-b", help="Base branch to fork from (default: config worktree.default_base, else the repo's origin/HEAD default branch)")
+    wt_parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch (used when --base is not given)")
+    wt_parser.add_argument("--existing", "-e", action="store_true", help="Checkout an existing branch (no new branch created)")
+    wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
+    wt_parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")
+    wt_parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
+    wt_parser.add_argument("--watch", action="store_true", help="Watch registered worktree sessions in a loop and report status")
+    wt_parser.add_argument("--status", action="store_true", help="Show read-only git status (dirty/ahead/behind/pushed) for a worktree session")
+    wt_parser.add_argument("--remove", action="store_true", help="Kill the session, remove the worktree, and unregister (cleanup/recovery)")
+    wt_parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
+    wt_parser.add_argument("--all", action="store_true", help="With --list: include worktree sessions across every repo")
+    _add_posture_harness_flags(wt_parser)
+    wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
+    wt_parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worktree-session etiquette")
+    wt_parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
+    wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
+    wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
+    wt_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    wt_parser.set_defaults(func=cmd_worktree)
