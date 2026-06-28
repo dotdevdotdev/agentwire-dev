@@ -321,6 +321,11 @@ def input_box_content(visible: str) -> "str | None":
     return text[1:].strip()
 
 
+def capture(target_session: str, target_pane: int = 0) -> str:
+    """Capture the live screen text of a pane."""
+    return _capture(f"{target_session}.{target_pane}")
+
+
 def prompt_is_empty(target_session: str, target_pane: int = 0) -> bool:
     """True iff the target's input box holds no uncommitted text.
 

@@ -61,11 +61,6 @@ BROADCAST_TOKEN = "@all"
 # being permanently busy/typed-in).
 MAX_ATTEMPTS = 40
 
-# Report-back / escalation messages of kind "done" / "escalation" are escalated
-# to a driving delivery (bypassing the empty input box guard) after this many
-# polite deferrals.
-ESCALATE_THRESHOLD = 10
-
 _RESERVED_DIRS = {"dead", "sent", ".lock", "ingest"}
 
 
@@ -360,8 +355,9 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
         if msg.path is None:
             continue
         if reason == "target_busy":
-            # A busy orchestrator shouldn't be penalized for running long commands.
-            # We record the reason but do not increment attempts or dead-letter.
+            # A busy/unparseable orchestrator shouldn't be penalized for running long commands.
+            # Keeping messages pending forever while busy is intentional since they are surfaced
+            # via `doctor` / `worktree --watch` (they will deliver once the prompt is empty/idle).
             msg.reason = reason
             try:
                 _write_message(msg.path, msg)
@@ -411,8 +407,7 @@ def flush_session(session: str) -> dict:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
 
         # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
-        from .usage_limit import _capture
-        visible = _capture(f"{session}.0")
+        visible = prompt_router.capture(session, 0)
         box_content = prompt_router.input_box_content(visible)
 
         if box_content is None:

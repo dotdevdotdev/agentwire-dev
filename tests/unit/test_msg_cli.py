@@ -45,7 +45,9 @@ class TestDeadLister:
         from agentwire import prompt_router
 
         inbox.enqueue(session, "stuck", sender="x")
-        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: False)
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
         for _ in range(inbox.MAX_ATTEMPTS):
             inbox.flush_session(session)
 
