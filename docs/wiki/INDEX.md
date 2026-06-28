@@ -87,6 +87,7 @@ and `custom` (any model behind a small HTTP shim).
 Implementation reference for contributors and advanced users.
 
 - **[Portal](internals/portal.md)** — modes, REST API, WebSocket events
+- **[Large parallel refactors](internals/parallel-refactor.md)** — splitting a huge file across parallel worktrees: positional-interleaving conflicts, regenerate-against-fresh-base + sequential merges, foundation-first, verification discipline
 - **[Window collage](internals/window-collage.md)** — Mission Control overlay: preview-tile architecture + why mutating real WinBox windows can never work
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries
 - **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
