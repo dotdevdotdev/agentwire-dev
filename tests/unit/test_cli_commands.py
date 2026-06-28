@@ -190,10 +190,10 @@ class TestCmdSendWaitReady:
 
     def test_happy_path_verified(self, capsys, monkeypatch):
         from agentwire import session_ready
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: True)
 
@@ -204,10 +204,10 @@ class TestCmdSendWaitReady:
 
     def test_not_ready_fails(self, capsys, monkeypatch):
         from agentwire import session_ready
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: False)
 
         assert cmd_send(self._args()) == 1
@@ -217,10 +217,10 @@ class TestCmdSendWaitReady:
 
     def test_unverified_fails(self, capsys, monkeypatch):
         from agentwire import session_ready
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
 
@@ -229,14 +229,14 @@ class TestCmdSendWaitReady:
         assert payload["verified"] is False
 
     def test_remote_rejected(self, capsys):
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         assert cmd_send(self._args(session="proj@gpu")) == 1
         payload = self._payload(capsys)
         assert "local-only" in payload["error"]
 
     def test_pane_combo_rejected(self, capsys):
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         assert cmd_send(self._args(pane=1)) == 1
         payload = self._payload(capsys)
