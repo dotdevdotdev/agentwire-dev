@@ -10,7 +10,7 @@ from argparse import Namespace
 
 import pytest
 
-from agentwire import __main__ as m
+from agentwire import session_cli as m
 from agentwire import worktree_registry as reg
 from agentwire.config import Config, WorktreeConfig
 
