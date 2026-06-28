@@ -354,6 +354,17 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     for msg in messages:
         if msg.path is None:
             continue
+        if reason == "target_busy":
+            # A busy/unparseable orchestrator shouldn't be penalized for running long commands.
+            # Keeping messages pending forever while busy is intentional since they are surfaced
+            # via `doctor` / `worktree --watch` (they will deliver once the prompt is empty/idle).
+            msg.reason = reason
+            try:
+                _write_message(msg.path, msg)
+            except OSError:
+                pass
+            continue
+
         msg.attempts += 1
         msg.reason = reason
         if msg.attempts >= MAX_ATTEMPTS:
@@ -396,7 +407,20 @@ def flush_session(session: str) -> dict:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
 
         # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
-        if not prompt_router.prompt_is_empty(session, 0):
+        visible = prompt_router.capture(session, 0)
+        box_content = prompt_router.input_box_content(visible)
+
+        if box_content is None:
+            # Target is busy (input box not located). Defer.
+            dead = _bump_attempts(messages, "target_busy")
+            _log_event("deferred", to=session, count=len(messages), reason="target_busy")
+            return {
+                "session": session, "delivered": 0, "deferred": True,
+                "reason": "target_busy", "dead": dead,
+            }
+
+        if box_content != "":
+            # Box is not empty. We never bypass this to protect human drafts. Defer.
             dead = _bump_attempts(messages, "box_not_empty")
             _log_event("deferred", to=session, count=len(messages), reason="box_not_empty")
             return {

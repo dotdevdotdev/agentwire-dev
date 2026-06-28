@@ -5241,6 +5241,8 @@ def cmd_worktree(args) -> int:
     # Registry management flags (name is optional for these).
     if getattr(args, 'list', False):
         return _worktree_list(args, project_path, json_mode)
+    if getattr(args, 'watch', False):
+        return _worktree_watch(args, project_path, json_mode)
     if getattr(args, 'prune', False):
         return _worktree_prune(args, project_path, json_mode)
     if getattr(args, 'status', False):
@@ -5429,6 +5431,7 @@ def cmd_worktree(args) -> int:
 def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
     """List worktree-session registry entries (--list)."""
     show_all = getattr(args, 'all', False)
+    from agentwire import inbox
     if show_all:
         rows = worktree_registry.all_entries()
     else:
@@ -5441,6 +5444,8 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
         # without N round-trips. Local git only (no network) — cheap per entry.
         if r["exists"]:
             r["git"] = worktree_status(Path(r.get("worktree_path", "")))
+        dead_msgs = inbox.list_dead(r.get("session", ""))
+        r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
 
     if json_mode:
         _output_json({"success": True, "entries": rows})
@@ -5453,9 +5458,58 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
 
     for r in rows:
         live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
-        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}")
+        dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
+        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}{dead_warn}")
         print(f"      {r.get('worktree_path')}")
     return 0
+
+
+def _worktree_watch(args, project_path: Path, json_mode: bool) -> int:
+    """Watch registered worktree sessions in a loop and report status."""
+    import datetime
+    import sys
+    import time
+
+    from agentwire import inbox
+    try:
+        while True:
+            show_all = getattr(args, 'all', False)
+            if show_all:
+                rows = worktree_registry.all_entries()
+            else:
+                rows = [dict(e, project=str(project_path)) for e in worktree_registry.entries(project_path)]
+
+            for r in rows:
+                r["alive"] = tmux_session_exists(r.get("session", ""))
+                r["exists"] = Path(r.get("worktree_path", "")).exists()
+                if r["exists"]:
+                    r["git"] = worktree_status(Path(r.get("worktree_path", "")))
+                dead_msgs = inbox.list_dead(r.get("session", ""))
+                r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
+
+            if json_mode:
+                _output_json({"success": True, "entries": rows})
+                sys.stdout.flush()
+            else:
+                # Clear screen: \033[H\033[2J
+                print("\033[H\033[2J", end="")
+                scope = "all repos" if show_all else project_path.name
+                print(f"=== Watching Worktree Sessions ({scope}) ===")
+                print(f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                if not rows:
+                    print("No worktree sessions registered.")
+                for r in rows:
+                    live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
+                    dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
+                    print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}{dead_warn}")
+                    print(f"      {r.get('worktree_path')}")
+                print("\nPress Ctrl+C to stop.")
+                sys.stdout.flush()
+            time.sleep(5)
+    except KeyboardInterrupt:
+        if not json_mode:
+            print("\nStopped watching.")
+        return 0
 
 
 def _git_badge(git: dict | None) -> str:
@@ -7782,6 +7836,29 @@ def cmd_doctor(args) -> int:
                     print("    [..] say: not found (optional, use 'agentwire say' directly)")
             except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
                 print("    [..] say: not found (optional, use 'agentwire say' directly)")
+
+    # 10. Check for dead-lettered messages
+    print("\nChecking for dead-lettered messages...")
+    from agentwire import inbox
+    try:
+        dead_sess = inbox.dead_sessions()
+        done_or_esc_found = False
+        if not dead_sess:
+            print("  [ok] No dead-lettered messages found")
+        else:
+            for ds in dead_sess:
+                dead_msgs = inbox.list_dead(ds)
+                done_or_esc = [m for m in dead_msgs if m.kind in ("done", "escalation")]
+                if done_or_esc:
+                    done_or_esc_found = True
+                    print(f"  [!!] Session '{ds}' has {len(done_or_esc)} dead-lettered report-back/escalation message(s):")
+                    for m in done_or_esc:
+                        print(f"       - Kind: {m.kind}, Sender: {m.sender}, Text: {m.text}, Reason: {m.reason}")
+                    issues_found += 1
+            if not done_or_esc_found:
+                print("  [ok] No dead-lettered done/escalation messages found (any dead-letters are informational)")
+    except Exception as e:
+        print(f"  [..] Could not check dead-lettered messages: {e}")
 
     # Summary
     print()
@@ -11913,6 +11990,7 @@ Command Categories:
     wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
     wt_parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")
     wt_parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
+    wt_parser.add_argument("--watch", action="store_true", help="Watch registered worktree sessions in a loop and report status")
     wt_parser.add_argument("--status", action="store_true", help="Show read-only git status (dirty/ahead/behind/pushed) for a worktree session")
     wt_parser.add_argument("--remove", action="store_true", help="Kill the session, remove the worktree, and unregister (cleanup/recovery)")
     wt_parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
