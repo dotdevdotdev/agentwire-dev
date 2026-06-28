@@ -1,6 +1,5 @@
 """Integration tests for portal API handlers via aiohttp TestClient."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1435,13 +1434,12 @@ class TestMonitorInProcessCapture:
         return server
 
     async def _run_one_tick(self, server):
-        task = asyncio.create_task(server.monitor_all_sessions())
-        await asyncio.sleep(0.05)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        # Drive exactly one deterministic tick: awaiting _monitor_tick returns
+        # only after every listed session's get_output has completed, so there
+        # is no wall-clock sampling race (the old fixed-sleep + cancel approach
+        # intermittently cancelled mid-tick before the 2nd session was polled).
+        threshold = server.config.server.activity_threshold_seconds
+        await server._monitor_tick({}, threshold)
 
     async def test_captures_in_process_no_output_subprocess(self, tmp_path):
         server = self._server(tmp_path)
