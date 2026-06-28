@@ -210,6 +210,26 @@ markers = [
 ]
 asyncio_mode = "auto"
 
+[tool.bandit]
+# Make bandit a meaningful green gate rather than perpetual red noise. CI runs
+# `bandit -c pyproject.toml -r agentwire --severity-level high --confidence-level high`,
+# so the build only fails on NEW high-severity high-confidence findings. The
+# skips below are test-IDs that are intentional-by-design for this codebase —
+# suppressed here (with justification) instead of via scattered `# nosec`:
+#
+#   B101 assert_used                  — asserts in non-test helpers are sanity checks.
+#   B404 import subprocess            — driving subprocesses (tmux, git, claude) IS the product.
+#   B602/B603/B607 subprocess/shell   — scheduler gates, service healthchecks and task
+#                                       pre-commands run user-authored shell commands by
+#                                       design; the threat model is the user's own machine,
+#                                       and damage-control hooks gate dangerous ops upstream.
+#   B501 request verify=False         — every site targets the LOCAL portal over its
+#                                       self-signed cert (localhost only); there is no
+#                                       remote TLS trust decision to get wrong here.
+#
+# Genuine weak-crypto (B324 hashlib) was FIXED, not skipped (usedforsecurity=False).
+skips = ["B101", "B404", "B602", "B603", "B607", "B501"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

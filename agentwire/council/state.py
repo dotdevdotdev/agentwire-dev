@@ -108,7 +108,8 @@ def default_name(cwd: Path | None = None) -> str:
     slug = worktree.slugify(root.name)
     if len(slug) <= _NAME_MAX:
         return slug
-    digest = hashlib.sha1(str(root).encode()).hexdigest()[:6]
+    # Non-cryptographic: a short stable suffix to disambiguate long slugs.
+    digest = hashlib.sha1(str(root).encode(), usedforsecurity=False).hexdigest()[:6]
     return f"{slug[: _NAME_MAX - 7].rstrip('-')}-{digest}"
 
 
