@@ -7,7 +7,7 @@ import pytest
 
 from agentwire.roles import RoleConfig
 
-# Mock for load_config() in __main__ used by the pi-* branch.
+# Mock for load_config() in core used by build_agent_command's pi-* branch.
 # Keys are env-only (~/.agentwire/.env) — config holds the env var NAME.
 FAKE_CONFIG = {
     "pi": {
@@ -28,7 +28,7 @@ FAKE_CONFIG = {
 
 @pytest.fixture(autouse=True)
 def mock_main_load_config():
-    with patch("agentwire.__main__.load_config", return_value=FAKE_CONFIG):
+    with patch("agentwire.core.load_config", return_value=FAKE_CONFIG):
         yield
 
 
@@ -219,7 +219,7 @@ class TestBuildAgentCommand:
             },
         }
         monkeypatch.setenv("ZAI_API_KEY", "env-key")
-        with patch("agentwire.__main__.load_config", return_value=config):
+        with patch("agentwire.core.load_config", return_value=config):
             cmd = self._build("pi-zai")
         assert cmd.env == {"ZAI_API_KEY": "env-key"}
         assert "stale-yaml-key" not in str(cmd.env)
@@ -246,7 +246,7 @@ class TestBuildAgentCommand:
                 },
             },
         }
-        with patch("agentwire.__main__.load_config", return_value=config):
+        with patch("agentwire.core.load_config", return_value=config):
             cmd = self._build("pi-zai")
         assert cmd.env["ZAI_API_KEY"] == "test-key-123"
         assert cmd.env["MY_EXTRA_VAR"] == "test-extra"
@@ -266,7 +266,7 @@ class TestBuildAgentCommand:
             },
         }
         roles = [RoleConfig(name="worker", instructions="ROLE_INSTRUCTIONS")]
-        with patch("agentwire.__main__.load_config", return_value=config):
+        with patch("agentwire.core.load_config", return_value=config):
             cmd = self._build("pi-zai", roles=roles)
         assert cmd.temp_file is not None
         with open(cmd.temp_file) as f:
@@ -291,7 +291,7 @@ class TestBuildAgentCommand:
                 },
             },
         }
-        with patch("agentwire.__main__.load_config", return_value=config):
+        with patch("agentwire.core.load_config", return_value=config):
             cmd = self._build("pi-zai")
         assert cmd.temp_file is not None
         with open(cmd.temp_file) as f:
@@ -312,7 +312,7 @@ class TestBuildAgentCommand:
                 },
             },
         }
-        with patch("agentwire.__main__.load_config", return_value=config):
+        with patch("agentwire.core.load_config", return_value=config):
             cmd = self._build("pi-zai-restricted")
         assert "--append-system-prompt" not in cmd.command
         assert cmd.temp_file is None

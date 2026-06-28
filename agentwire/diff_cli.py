@@ -50,7 +50,7 @@ _GIT_HEADER_RE = re.compile(r"diff --git a/(.*) b/(.*)")
 
 def _resolve_path(session: str) -> "Path | None":
     """The session's working directory — same resolver the rest of the CLI uses."""
-    from .__main__ import _get_session_project_path
+    from .core import _get_session_project_path
 
     return _get_session_project_path(session)
 

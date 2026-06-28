@@ -306,7 +306,7 @@ class TestParseAskOptions:
 class TestResolveParent:
     @pytest.fixture(autouse=True)
     def _isolate(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(prompt_router, "_SESSIONS_META_DIR", tmp_path / "sessions")
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
         monkeypatch.setattr(prompt_router, "_parent_from_config", lambda p: None)
         self.tmp_path = tmp_path
@@ -771,7 +771,7 @@ class TestRecordSessionCreator:
     def test_records_and_merges(self, tmp_path, monkeypatch):
         import agentwire.__main__ as cli
 
-        monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         cli.store_session_metadata("child", {"existing": "kept"})
         cli._record_session_creator("child", "orch", via="new")
         meta = cli.load_session_metadata("child")
@@ -782,7 +782,7 @@ class TestRecordSessionCreator:
     def test_self_and_empty_creator_skipped(self, tmp_path, monkeypatch):
         import agentwire.__main__ as cli
 
-        monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         cli._record_session_creator("child", "child", via="new")
         cli._record_session_creator("child", "", via="new")
         cli._record_session_creator("child", None, via="new")
