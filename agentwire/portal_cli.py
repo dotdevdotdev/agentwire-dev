@@ -469,10 +469,9 @@ def cmd_portal_restart(args) -> int:
 
 
 def register_portal_parser(subparsers) -> None:
-    # ``portal generate-certs`` wires to cmd_generate_certs, which still lives in
-    # __main__ (not a portal-domain command). Deferred import at build time —
-    # __main__ is fully loaded by the time build_parser() calls this registrar.
-    from .__main__ import cmd_generate_certs
+    # ``portal generate-certs`` wires to cmd_generate_certs, which lives in
+    # system_cli (not a portal-domain command). Deferred import at build time.
+    from .system_cli import cmd_generate_certs
 
     portal_parser = subparsers.add_parser("portal", help="Manage the web portal")
     portal_subparsers = portal_parser.add_subparsers(dest="portal_command")

@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.__main__ import _git_behind_origin, cmd_rebuild
+from agentwire.core import _git_behind_origin
+from agentwire.system_cli import cmd_rebuild
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -88,12 +89,12 @@ class TestRebuildGuard:
         clone, _ = behind_checkout
         # Make a pyproject so cmd_rebuild treats the clone as the source root.
         (clone / "pyproject.toml").write_text("[project]\nname='x'\n")
-        import agentwire.__main__ as main_mod
+        import agentwire.system_cli as sys_mod
         # __file__.parent.parent must resolve to the clone.
-        fake_file = clone / "agentwire" / "__main__.py"
+        fake_file = clone / "agentwire" / "system_cli.py"
         fake_file.parent.mkdir(parents=True, exist_ok=True)
         fake_file.write_text("")
-        monkeypatch.setattr(main_mod, "__file__", str(fake_file))
+        monkeypatch.setattr(sys_mod, "__file__", str(fake_file))
         self.clone = clone
 
     def test_refuses_when_behind(self, monkeypatch, capsys):

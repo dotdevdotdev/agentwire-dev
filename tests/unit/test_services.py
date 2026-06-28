@@ -246,7 +246,7 @@ class TestServicesCLI:
 
     @pytest.fixture
     def cli(self, state_file, monkeypatch):
-        from agentwire import __main__ as main_mod
+        from agentwire import system_cli as main_mod
         monkeypatch.setattr(services, "notifications_session_name", lambda: "notif")
         monkeypatch.setattr(services, "_source_dir", lambda: "/tmp/src")
         cfg = Config(services=ServicesConfig(custom=[CustomServiceConfig(name="tracker")]))
