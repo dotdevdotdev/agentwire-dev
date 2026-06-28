@@ -1384,6 +1384,26 @@ class TestStaticAssets:
         assert "max-age=604800" in resp.headers["Cache-Control"]
         assert resp.content_type == "image/webp"
 
+    async def test_webp_served_with_bare_aiohttp_mime_db(self, portal_client):
+        """Regression for #525: hermetic CI runners have a bare system mime DB,
+        so aiohttp's private mimetypes instance doesn't know .webp and would
+        serve octet-stream. The handler must pass Content-Type explicitly."""
+        import aiohttp.web_fileresponse as fr
+
+        client, _ = portal_client
+        saved = {
+            ext: fr.CONTENT_TYPES.types_map[1].pop(ext, None)
+            for ext in (".webp",)
+        }
+        try:
+            resp = await client.get("/static/icons/sessions/fox.webp")
+            assert resp.status == 200
+            assert resp.content_type == "image/webp"
+        finally:
+            for ext, ct in saved.items():
+                if ct is not None:
+                    fr.CONTENT_TYPES.types_map[1][ext] = ct
+
     async def test_no_gzip_without_accept_encoding(self, portal_client):
         client, _ = portal_client
         resp = await client.get(

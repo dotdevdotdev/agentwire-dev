@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 # Static asset serving (#488): gzip text on the fly + Cache-Control headers.
 mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("image/avif", ".avif")
+mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 STATIC_ROOT = (Path(__file__).parent / "static").resolve()
@@ -3635,7 +3637,13 @@ class AgentWireServer:
                 },
             )
 
-        return web.FileResponse(target, headers={"Cache-Control": cache})
+        # Pass Content-Type explicitly: web.FileResponse otherwise guesses via
+        # aiohttp's private mimetypes instance, which (unlike our module-level
+        # add_type registrations) lacks .webp/.avif/.woff2 on hermetic CI
+        # runners whose system mime DB is bare — serving octet-stream (#525).
+        return web.FileResponse(
+            target, headers={"Cache-Control": cache, "Content-Type": content_type}
+        )
 
     def _gzipped_static(self, path: Path) -> bytes:
         """Return gzipped bytes for a static file, cached by path + mtime."""
