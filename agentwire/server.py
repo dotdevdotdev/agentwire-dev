@@ -1817,90 +1817,9 @@ class AgentWireServer:
 
         logger.info(f"[Monitor] Starting session monitor (threshold: {threshold}s)")
 
-        loop = asyncio.get_event_loop()
-
         while True:
             try:
-                # Get list of all sessions (local and remote)
-                session_names = []
-
-                # Local sessions
-                success, result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-                if success:
-                    for s in result.get("sessions", []):
-                        if s.get("name"):
-                            session_names.append(s["name"])
-
-                # Remote sessions (names already include @machine suffix)
-                success, result = await self.run_agentwire_cmd(["list", "--remote", "--sessions"])
-                if success:
-                    for s in result.get("sessions", []):
-                        if s.get("name"):
-                            session_names.append(s["name"])
-
-                # Poll each session
-                for session_name in session_names:
-                    try:
-                        # Capture output in-process (no subprocess / CLI re-import).
-                        current_output = await loop.run_in_executor(
-                            None,
-                            lambda n=session_name: self.agent.get_output(n, lines=50),
-                        )
-
-                        # Initialize state for new sessions
-                        if session_name not in session_states:
-                            session_states[session_name] = {
-                                "last_output": "",
-                                "last_active": False
-                            }
-
-                        state = session_states[session_name]
-
-                        # Check if output changed
-                        if current_output != state["last_output"]:
-                            state["last_output"] = current_output
-                            # Update global activity tracking
-                            self.session_activity[session_name] = {
-                                "last_output_timestamp": time.time(),
-                                "last_output": current_output[-500:] if current_output else "",
-                            }
-
-                        # Calculate current activity state
-                        activity_info = self.session_activity.get(session_name, {})
-                        last_timestamp = activity_info.get("last_output_timestamp", 0.0)
-                        time_since = time.time() - last_timestamp if last_timestamp else float('inf')
-                        is_active = time_since <= threshold
-
-                        # Broadcast if state changed
-                        if is_active != state["last_active"]:
-                            state["last_active"] = is_active
-                            logger.debug(f"[Monitor] {session_name} activity: {'active' if is_active else 'idle'}")
-                            await self.broadcast_dashboard("session_activity", {
-                                "session": session_name,
-                                "active": is_active
-                            })
-
-                    except Exception as e:
-                        logger.debug(f"[Monitor] Error polling {session_name}: {e}")
-
-                # Clean up state for sessions that no longer exist
-                current_names = set(session_names)
-                removed_sessions = []
-                for name in list(session_states.keys()):
-                    if name not in current_names:
-                        del session_states[name]
-                        self.session_activity.pop(name, None)
-                        removed_sessions.append(name)
-
-                # Notify dashboard about removed sessions
-                if removed_sessions:
-                    for name in removed_sessions:
-                        logger.info(f"[Monitor] Session '{name}' no longer exists, notifying dashboard")
-                        await self.broadcast_dashboard("session_closed", {"session": name})
-                    # Send updated sessions list
-                    sessions_data = await self._get_sessions_data()
-                    await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
-
+                await self._monitor_tick(session_states, threshold)
                 await asyncio.sleep(0.5)  # Poll every 500ms
 
             except asyncio.CancelledError:
@@ -1909,6 +1828,98 @@ class AgentWireServer:
             except Exception as e:
                 logger.debug(f"[Monitor] Error in monitor loop: {e}")
                 await asyncio.sleep(2)  # Back off on errors
+
+    async def _monitor_tick(self, session_states: dict[str, dict], threshold: float):
+        """Run exactly one monitor pass over all sessions.
+
+        Lists sessions (local + remote), captures each one's output in-process
+        via ``agent.get_output``, broadcasts ``session_activity`` only on state
+        change, and prunes vanished sessions. Mutates ``session_states`` in
+        place. Extracted from the poll loop so tests can drive a single,
+        fully-deterministic tick — awaiting this coroutine guarantees every
+        listed session has been polled, with no wall-clock sampling race.
+        """
+        loop = asyncio.get_event_loop()
+
+        # Get list of all sessions (local and remote)
+        session_names = []
+
+        # Local sessions
+        success, result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
+        if success:
+            for s in result.get("sessions", []):
+                if s.get("name"):
+                    session_names.append(s["name"])
+
+        # Remote sessions (names already include @machine suffix)
+        success, result = await self.run_agentwire_cmd(["list", "--remote", "--sessions"])
+        if success:
+            for s in result.get("sessions", []):
+                if s.get("name"):
+                    session_names.append(s["name"])
+
+        # Poll each session
+        for session_name in session_names:
+            try:
+                # Capture output in-process (no subprocess / CLI re-import).
+                current_output = await loop.run_in_executor(
+                    None,
+                    lambda n=session_name: self.agent.get_output(n, lines=50),
+                )
+
+                # Initialize state for new sessions
+                if session_name not in session_states:
+                    session_states[session_name] = {
+                        "last_output": "",
+                        "last_active": False
+                    }
+
+                state = session_states[session_name]
+
+                # Check if output changed
+                if current_output != state["last_output"]:
+                    state["last_output"] = current_output
+                    # Update global activity tracking
+                    self.session_activity[session_name] = {
+                        "last_output_timestamp": time.time(),
+                        "last_output": current_output[-500:] if current_output else "",
+                    }
+
+                # Calculate current activity state
+                activity_info = self.session_activity.get(session_name, {})
+                last_timestamp = activity_info.get("last_output_timestamp", 0.0)
+                time_since = time.time() - last_timestamp if last_timestamp else float('inf')
+                is_active = time_since <= threshold
+
+                # Broadcast if state changed
+                if is_active != state["last_active"]:
+                    state["last_active"] = is_active
+                    logger.debug(f"[Monitor] {session_name} activity: {'active' if is_active else 'idle'}")
+                    await self.broadcast_dashboard("session_activity", {
+                        "session": session_name,
+                        "active": is_active
+                    })
+
+            except Exception as e:
+                logger.debug(f"[Monitor] Error polling {session_name}: {e}")
+
+        # Clean up state for sessions that no longer exist
+        current_names = set(session_names)
+        removed_sessions = []
+        for name in list(session_states.keys()):
+            if name not in current_names:
+                del session_states[name]
+                self.session_activity.pop(name, None)
+                removed_sessions.append(name)
+
+        # Notify dashboard about removed sessions
+        if removed_sessions:
+            for name in removed_sessions:
+                logger.info(f"[Monitor] Session '{name}' no longer exists, notifying dashboard")
+                await self.broadcast_dashboard("session_closed", {"session": name})
+            # Send updated sessions list
+            sessions_data = await self._get_sessions_data()
+            await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
 
     async def idle_nag_loop(self):
         """Background task: periodically check for idle sessions.
