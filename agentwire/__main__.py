@@ -16,7 +16,6 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,6 +29,43 @@ from . import (  # noqa: E402  # must follow load_dotenv() above
     cli_safety,
     pane_manager,
     worktree_registry,
+)
+from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401: re-exported moved helpers
+    _UNATTENDED_ENV_KEYS,
+    CONFIG_DIR,
+    AgentCommand,
+    _build_tmux_env_flags,
+    _build_tmux_env_flags_shell,
+    _check_tmux_installed,
+    _display_parent,
+    _get_all_machines,
+    _get_machine_config,
+    _get_session_project_path,
+    _output_json,
+    _output_result,
+    _parse_session_target,
+    _record_session_creator,
+    _set_session_name_env,
+    _tmux_global_option,
+    _with_unattended_env,
+    build_agent_command,
+    check_pip_environment,
+    check_python_version,
+    format_relative_time,
+    generate_certs,
+    get_kokoro_session_name,
+    get_portal_session_name,
+    get_source_dir,
+    get_stt_session_name,
+    get_tts_session_name,
+    inject_session_env,
+    load_config,
+    load_session_metadata,
+    parse_env_args,
+    store_session_metadata,
+    tmux_session_exists,
+    tmux_session_has_agent,
+    wait_for_shell_prompt,
 )
 from .project_config import (  # noqa: E402  # must follow load_dotenv() above
     DEFAULT_HARNESS,
@@ -62,550 +98,6 @@ from .worktree import (  # noqa: E402  # must follow load_dotenv() above
     remove_worktree,
     worktree_status,
 )
-
-# Default config directory
-CONFIG_DIR = Path.home() / ".agentwire"
-
-
-def _check_tmux_installed() -> bool:
-    """Check tmux is on PATH; print install hint if not. Returns False on miss."""
-    if shutil.which("tmux") is None:
-        print("Error: tmux is required but not installed.", file=sys.stderr)
-        print(file=sys.stderr)
-        if sys.platform == "darwin":
-            print("Install with: brew install tmux", file=sys.stderr)
-        else:
-            print("Install with: sudo apt install tmux", file=sys.stderr)
-        print(file=sys.stderr)
-        print("More info: https://github.com/tmux/tmux", file=sys.stderr)
-        return False
-    return True
-
-
-def _tmux_global_option(name: str) -> str | None:
-    """Read a global tmux option from the running server.
-
-    Returns the option value ("on"/"off"/...), or None when no server is
-    running or the option can't be read.
-    """
-    try:
-        r = subprocess.run(
-            ["tmux", "show-option", "-gv", name],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
-    except Exception:
-        pass
-    return None
-
-
-@dataclass
-class AgentCommand:
-    """Result of building an agent command."""
-    command: str  # The shell command to execute
-    temp_file: str | None = None  # Temp file to clean up after agent starts
-    env: dict[str, str] = field(default_factory=dict)  # Secrets to inject via tmux set-environment (keeps keys out of `ps`)
-
-
-_UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
-
-
-def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
-    """Propagate the unattended marker into a session being created.
-
-    The scheduler is the single place that decides a dispatch is unattended —
-    it seeds ``AGENTWIRE_UNATTENDED[=1]`` (and any per-task
-    ``AGENTWIRE_UNATTENDED_ALLOW``) into the dispatch subprocess environment.
-    Every session-creation path funnels its env through here on the way to
-    ``tmux new-session -e K=V``, so the marker lands in the new session BEFORE
-    the agent launches and the damage-control hook can read it. A child session
-    an unattended agent spawns inherits the marker too (defense in depth).
-
-    No leak into interactive sessions: a human's ``agentwire new`` has no such
-    var in its environment, so nothing is propagated.
-    """
-    merged = dict(env)
-    for key in _UNATTENDED_ENV_KEYS:
-        val = os.environ.get(key)
-        if val and key not in merged:
-            merged[key] = val
-    return merged
-
-
-def _build_tmux_env_flags(env: dict[str, str]) -> list[str]:
-    """Build `-e KEY=VAL` flag pairs for `tmux new-session`.
-
-    Prefer this over post-creation `inject_session_env` when creating a fresh
-    session with secrets: `tmux new-session -e K=V` places the var in the
-    session environment BEFORE the initial shell starts, so that shell sees
-    it. `tmux set-environment` on an existing session only affects shells
-    spawned AFTER the call, which leaves the initial pane's shell without
-    the var — and the agent command runs in that initial shell.
-    """
-    flags: list[str] = []
-    for key, value in _with_unattended_env(env).items():
-        flags.extend(["-e", f"{key}={value}"])
-    return flags
-
-
-def _build_tmux_env_flags_shell(env: dict[str, str]) -> str:
-    """Shell-quoted `-e 'K=V' …` fragment for inlining via SSH. Trailing space when non-empty."""
-    merged = _with_unattended_env(env)
-    if not merged:
-        return ""
-    parts = [f"-e {shlex.quote(f'{k}={v}')}" for k, v in merged.items()]
-    return " ".join(parts) + " "
-
-
-def _set_session_name_env(agent: "AgentCommand", session_name: str) -> None:
-    """Stamp ``AGENTWIRE_SESSION_NAME`` onto an ``AgentCommand.env``.
-
-    Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
-    / ``cmd_fork`` / scheduler-spawn paths gets this so downstream tooling
-    (notably the worker damage-control rules in ``safety/_core.py``)
-    can identify which agentwire session the running tool is part of.
-    """
-    agent.env["AGENTWIRE_SESSION_NAME"] = session_name
-
-
-def inject_session_env(session: str, env: dict[str, str], remote_host: str | None = None) -> None:
-    """Set env vars on an existing tmux session for FUTURE shells in that session.
-
-    Does NOT update the initial pane's shell — that shell was already started
-    when the session was created and has a fixed env. Use
-    `_build_tmux_env_flags(env)` with `tmux new-session -e K=V` instead if
-    the agent command runs in the initial shell.
-    """
-    if not env:
-        return
-    for key, value in env.items():
-        if remote_host:
-            subprocess.run(
-                ["ssh", remote_host, "tmux", "set-environment", "-t",
-                 shlex.quote(session), shlex.quote(key), shlex.quote(value)],
-                check=False,
-            )
-        else:
-            subprocess.run(
-                ["tmux", "set-environment", "-t", session, key, value],
-                check=False,
-            )
-
-
-def parse_env_args(env_args: list[str] | None) -> dict[str, str]:
-    """Parse repeated `--env KEY=VAL` flags into a dict.
-
-    Raises SystemExit via argparse pattern if an entry lacks `=`.
-    """
-    if not env_args:
-        return {}
-    result: dict[str, str] = {}
-    for entry in env_args:
-        if "=" not in entry:
-            print(f"Error: --env expects KEY=VAL, got {entry!r}", file=sys.stderr)
-            sys.exit(2)
-        key, value = entry.split("=", 1)
-        if not key:
-            print(f"Error: --env KEY cannot be empty (got {entry!r})", file=sys.stderr)
-            sys.exit(2)
-        result[key] = value
-    return result
-
-
-def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None, model: str | None = None) -> AgentCommand:
-    """Build the shell command + injected env for the given session type."""
-    if session_type == "bare":
-        return AgentCommand(command="")
-
-    merged = merge_roles(roles) if roles else None
-
-    # === Pi coding agent (any provider) ===
-    # Session type: pi-<provider>[-restricted|-readonly], e.g. pi-zai, pi-deepseek
-    if session_type.startswith("pi-"):
-        remainder = session_type[3:]
-        if remainder.endswith("-restricted"):
-            provider = remainder[:-11]
-            variant = "restricted"
-        elif remainder.endswith("-readonly"):
-            provider = remainder[:-9]
-            variant = "readonly"
-        else:
-            provider = remainder
-            variant = None
-
-        config = load_config()
-        pi_config = config.get("pi", {})
-        pi_binary = pi_config.get("binary", "pi")
-
-        provider_cfg = pi_config.get("providers", {}).get(provider)
-        if not provider_cfg:
-            raise ValueError(
-                f"No config for pi provider '{provider}'. "
-                f"Add pi.providers.{provider} to ~/.agentwire/config.yaml "
-                f"with at least env_var and default_model, and put the key "
-                f"itself in ~/.agentwire/.env (docs/wiki/security/secrets.md)."
-            )
-        env_var = provider_cfg.get("env_var", f"{provider.upper().replace('-', '_')}_API_KEY")
-        if provider_cfg.get("api_key"):
-            print(
-                f"Warning: pi.providers.{provider}.api_key in config.yaml is "
-                f"ignored — put {env_var}=... in ~/.agentwire/.env instead "
-                f"(docs/wiki/security/secrets.md)",
-                file=sys.stderr,
-            )
-        # The key comes from the process environment — ~/.agentwire/.env is
-        # loaded on every entry point, so one line there is all it takes.
-        api_key = os.environ.get(env_var, "")
-        default_model = provider_cfg.get("default_model", "")
-
-        # Merge provider key + any global pi extra_env
-        env: dict[str, str] = {}
-        if api_key:
-            env[env_var] = api_key
-        env.update(pi_config.get("extra_env", {}))
-
-        parts = [pi_binary, "--provider", provider]
-        resolved_model = model or default_model
-        if resolved_model:
-            parts.extend(["--model", resolved_model])
-
-        # Permission variants (pi has no permission system to bypass; variants
-        # translate to pi's --tools whitelist instead)
-        temp_file = None
-        if variant == "restricted":
-            parts.extend(["--tools", "read,grep,find,bash"])
-        elif variant == "readonly":
-            parts.extend(["--tools", "read,grep,find"])
-        elif merged and merged.tools:
-            # Translate Claude tool names to pi's lowercase tool names.
-            # Pi only supports: read, bash, edit, write, grep, find, ls
-            pi_valid = {"read", "bash", "edit", "write", "grep", "find", "ls"}
-            pi_tools = [t.lower() for t in merged.tools if t.lower() in pi_valid]
-            if pi_tools:
-                parts.extend(["--tools", ",".join(pi_tools)])
-
-        # System prompt: combine global pi.system_prompt + role instructions.
-        # Skipped for restricted/readonly — those are curated contexts.
-        if variant not in ("restricted", "readonly"):
-            global_prompt = pi_config.get("system_prompt", "")
-            role_prompt = merged.instructions if merged and merged.instructions else ""
-            combined = "\n\n".join(filter(None, [global_prompt, role_prompt]))
-            if combined:
-                f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-                f.write(combined)
-                f.close()
-                temp_file = f.name
-                parts.append(f'--append-system-prompt "$(<{temp_file})"')
-
-        return AgentCommand(
-            command=" ".join(parts),
-            temp_file=temp_file,
-            env=env,
-        )
-
-    # === Claude Code ===
-    if session_type.startswith("claude"):
-        parts = ["claude"]
-
-        # Permission flags
-        if session_type == "claude-bypass":
-            parts.append("--dangerously-skip-permissions")
-        elif session_type == "claude-auto":
-            parts.extend(["--enable-auto-mode", "--permission-mode", "auto"])
-            # Inject core allows that bypass the classifier entirely (zero token cost)
-            core_allows = [
-                "Bash(agentwire *)", "Bash(tmux *)", "Bash(git *)",
-                "Bash(gh pr create*)", "Bash(gh pr view*)",
-                "Read(*)", "Edit(*)", "Write(*)", "Glob(*)", "Grep(*)",
-            ]
-            parts.extend(["--allowedTools", shlex.quote(",".join(core_allows))])
-        elif session_type == "claude-restricted":
-            parts.append("--tools Bash")
-        # claude-prompted has no special flags
-
-        # Model override
-        if model:
-            parts.append(f"--model {model}")
-
-        # Role-based flags (not for restricted mode)
-        temp_file = None
-        if merged and session_type != "claude-restricted":
-            if merged.tools:
-                parts.append(f"--tools {','.join(merged.tools)}")
-
-            if merged.disallowed_tools:
-                parts.append(f"--disallowedTools {','.join(merged.disallowed_tools)}")
-
-            if merged.instructions:
-                # Write to temp file to avoid shell escaping issues
-                # See docs/wiki/internals/shell-escaping.md for details
-                # MUST be last flag — multiline content can break subsequent args
-                f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-                f.write(merged.instructions)
-                f.close()
-                temp_file = f.name
-                parts.append(f'--append-system-prompt "$(<{temp_file})"')
-
-        return AgentCommand(
-            command=" ".join(parts),
-            temp_file=temp_file,
-        )
-
-    # Unknown session type - return empty
-    return AgentCommand(command="")
-
-
-def check_python_version() -> bool:
-    """Verify Python is >= 3.10. Returns False after printing install hint."""
-    min_version = (3, 10)
-    current_version = sys.version_info[:2]
-
-    if current_version < min_version:
-        print(f"⚠️  Python {current_version[0]}.{current_version[1]} detected")
-        print(f"   AgentWire requires Python {min_version[0]}.{min_version[1]} or higher")
-        print()
-
-        if sys.platform == "darwin":
-            print("Install Python 3.12 on macOS:")
-            print("  brew install python@3.12")
-            print("  # or")
-            print("  pyenv install 3.12.0 && pyenv global 3.12.0")
-        elif sys.platform.startswith("linux"):
-            print("Install Python 3.12 on Ubuntu/Debian:")
-            print("  sudo apt update && sudo apt install python3.12")
-        else:
-            print("Install Python 3.12 from:")
-            print("  https://www.python.org/downloads/")
-
-        print()
-        return False
-
-    return True
-
-
-def check_pip_environment() -> bool:
-    """Detect Ubuntu 24.04+ EXTERNALLY-MANAGED marker; return False if user must act."""
-    if not sys.platform.startswith('linux'):
-        return True
-
-    # Check for EXTERNALLY-MANAGED marker
-    marker = Path(sys.prefix) / "EXTERNALLY-MANAGED"
-    if marker.exists():
-        print("⚠️  Externally-managed Python environment detected (Ubuntu 24.04+)")
-        print()
-        print("Ubuntu prevents pip from installing packages system-wide to avoid conflicts.")
-        print()
-        print("Recommended approach - Use venv:")
-        print("  python3 -m venv ~/.agentwire-venv")
-        print("  source ~/.agentwire-venv/bin/activate")
-        print("  pip install agentwire-dev")
-        print()
-        print("  Add to ~/.bashrc for persistence:")
-        print("  echo 'source ~/.agentwire-venv/bin/activate' >> ~/.bashrc")
-        print()
-        print("Alternative (not recommended):")
-        print("  pip3 install --break-system-packages agentwire-dev")
-        print()
-        return False
-
-    return True
-
-
-def generate_certs() -> int:
-    """Generate self-signed SSL certificates."""
-    cert_dir = CONFIG_DIR
-    cert_dir.mkdir(parents=True, exist_ok=True)
-
-    cert_path = cert_dir / "cert.pem"
-    key_path = cert_dir / "key.pem"
-
-    if cert_path.exists() and key_path.exists():
-        print(f"Certificates already exist at {cert_dir}")
-        response = input("Overwrite? [y/N] ").strip().lower()
-        if response != "y":
-            print("Aborted.")
-            return 1
-
-    print(f"Generating self-signed certificates in {cert_dir}...")
-
-    try:
-        subprocess.run(
-            [
-                "openssl",
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:4096",
-                "-keyout",
-                str(key_path),
-                "-out",
-                str(cert_path),
-                "-days",
-                "365",
-                "-nodes",
-                "-subj",
-                "/CN=localhost",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to generate certificates: {e.stderr}", file=sys.stderr)
-        return 1
-    except FileNotFoundError:
-        print("openssl not found. Please install OpenSSL.", file=sys.stderr)
-        return 1
-
-    print(f"Created: {cert_path}")
-    print(f"Created: {key_path}")
-    return 0
-
-
-def tmux_session_exists(name: str) -> bool:
-    """Check if a tmux session exists (exact match)."""
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", f"={name}"],  # = prefix for exact match
-        capture_output=True,
-    )
-    return result.returncode == 0
-
-
-def wait_for_shell_prompt(target: str, timeout: float = 2.0) -> None:
-    """Poll tmux capture-pane until the shell has drawn a prompt.
-
-    Prevents a race where send-keys fires before the shell is ready, causing
-    the command to appear in the pre-prompt buffer and again after the prompt
-    renders (looks like it ran twice).
-    """
-    import time
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            ["tmux", "capture-pane", "-t", target, "-p"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 and any(
-            c in result.stdout for c in ("$", "%", "#", "❯", "➜", ">")
-        ):
-            return
-        time.sleep(0.05)
-
-
-def _get_session_project_path(session: str) -> Path | None:
-    """Get a session's project path from tmux cwd, falling back to session name parsing."""
-    if tmux_session_exists(session):
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", session, "-p", "#{pane_current_path}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return Path(result.stdout.strip())
-
-    # Fallback: derive from session name
-    config = load_config()
-    projects_dir = Path(config.get("projects", {}).get("dir", "~/projects")).expanduser()
-    project, _, _ = parse_session_name(session)
-    return projects_dir / project
-
-
-def tmux_session_has_agent(name: str) -> bool:
-    """Check if a tmux session has an agent running (not just a bare shell).
-
-    Returns True if any pane is running claude or similar agent.
-    Returns False if all panes are just zsh/bash (agent died or never started).
-    """
-    result = subprocess.run(
-        ["tmux", "list-panes", "-t", f"={name}", "-F", "#{pane_current_command}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return False
-
-    bare_shells = {"zsh", "bash", "sh", "fish", "tcsh", "csh"}
-    for line in result.stdout.strip().split("\n"):
-        if line.strip().lower() not in bare_shells:
-            return True
-
-    return False
-
-
-def load_config() -> dict:
-    """Load configuration from ~/.agentwire/config.yaml."""
-    config_path = CONFIG_DIR / "config.yaml"
-    if config_path.exists():
-        try:
-            import yaml
-            with open(config_path) as f:
-                return yaml.safe_load(f) or {}
-        except Exception:
-            pass
-    return {}
-
-
-def get_source_dir() -> Path:
-    """Get the agentwire source directory from config.
-
-    Reads dev.source_dir from config.yaml, defaults to ~/projects/agentwire-dev.
-    """
-    config = load_config()
-    source_dir = config.get("dev", {}).get("source_dir", "~/projects/agentwire-dev")
-    return Path(source_dir).expanduser()
-
-
-def get_portal_session_name() -> str:
-    """Get portal tmux session name from config."""
-    config = load_config()
-    return config.get("services", {}).get("portal", {}).get("session_name", "agentwire-portal")
-
-
-def get_tts_session_name() -> str:
-    """Get TTS tmux session name from config."""
-    config = load_config()
-    return config.get("services", {}).get("tts", {}).get("session_name", "agentwire-tts")
-
-
-def get_stt_session_name() -> str:
-    """Get STT tmux session name from config."""
-    config = load_config()
-    return config.get("services", {}).get("stt", {}).get("session_name", "agentwire-stt")
-
-
-def get_kokoro_session_name() -> str:
-    """Get default-tier Kokoro TTS shim tmux session name from config."""
-    config = load_config()
-    return config.get("services", {}).get("kokoro", {}).get("session_name", "agentwire-kokoro")
-
-
-# === Wave 2: Remote Infrastructure Helpers ===
-
-
-def _get_machine_config(machine_id: str) -> dict | None:
-    """Load machine config from machines.json.
-
-    Returns:
-        Machine dict with id, host, user, projects_dir, etc.
-        None if machine not found.
-    """
-    machines_file = CONFIG_DIR / "machines.json"
-    if not machines_file.exists():
-        return None
-
-    try:
-        with open(machines_file) as f:
-            machines_data = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return None
-
-    machines = machines_data.get("machines", [])
-    for m in machines:
-        if m.get("id") == machine_id:
-            return m
-
-    return None
 
 
 def _portal_auth_curl_args() -> list[str]:
@@ -671,21 +163,6 @@ def _portal_api(method: str, path: str, data: dict | None = None, timeout: int =
         return None
 
 
-
-def _parse_session_target(name: str) -> tuple[str, str | None]:
-    """Parse 'session@machine' into (session, machine_id).
-
-    Examples:
-        "myapp" -> ("myapp", None)
-        "myapp@gpu-server" -> ("myapp", "gpu-server")
-        "myapp/feature@gpu-server" -> ("myapp/feature", "gpu-server")
-    """
-    if "@" in name:
-        session, machine = name.rsplit("@", 1)
-        return session, machine
-    return name, None
-
-
 def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:
     """Run command on remote machine via SSH.
 
@@ -737,56 +214,6 @@ def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:
             stdout="",
             stderr=f"SSH connection to {machine_id} timed out",
         )
-
-
-def _get_all_machines() -> list[dict]:
-    """Get list of all registered machines from machines.json."""
-    machines_file = CONFIG_DIR / "machines.json"
-    if not machines_file.exists():
-        return []
-
-    try:
-        with open(machines_file) as f:
-            machines_data = json.load(f)
-            return machines_data.get("machines", [])
-    except (json.JSONDecodeError, IOError):
-        return []
-
-
-def _output_json(data: dict) -> None:
-    """Output JSON to stdout."""
-    print(json.dumps(data, indent=2))
-
-
-def _output_result(success: bool, json_mode: bool, message: str = "", exit_code: int | None = None, **kwargs) -> int:
-    """Output result in text or JSON mode.
-
-    Args:
-        success: Whether the operation succeeded
-        json_mode: Output JSON if True
-        message: Message to display
-        exit_code: Custom exit code (default: 0 if success, 1 otherwise)
-        **kwargs: Additional JSON fields
-
-    Returns:
-        exit_code if provided, else 0 if success, 1 otherwise
-    """
-    if json_mode:
-        result = {"success": success, **kwargs}
-        if not success and "error" not in result:
-            result["error"] = message
-        if exit_code is not None:
-            result["exit_code"] = exit_code
-        _output_json(result)
-    else:
-        if message:
-            if success:
-                print(message)
-            else:
-                print(message, file=sys.stderr)
-    if exit_code is not None:
-        return exit_code
-    return 0 if success else 1
 
 
 def _notify_portal_sessions_changed():
@@ -3049,93 +2476,6 @@ def cmd_wiki(args) -> int:
         return _output_result(True, json_mode, f"Archived → {dest}", path=str(dest))
 
     return _output_result(False, json_mode, f"Unknown wiki subcommand: {sub}")
-
-
-def load_session_metadata(session_name: str) -> dict:
-    """Load session metadata from storage.
-
-    Args:
-        session_name: The session name (without @machine suffix if present)
-
-    Returns:
-        Dictionary of metadata (empty dict if not found)
-    """
-    # Parse session name to extract just the name part (remove @machine)
-    clean_name = session_name.split("@")[0]
-
-    metadata_file = CONFIG_DIR / "sessions" / clean_name / "metadata.json"
-
-    if not metadata_file.exists():
-        return {}
-
-    try:
-        with open(metadata_file) as f:
-            return json.load(f) or {}
-    except (json.JSONDecodeError, IOError):
-        return {}
-
-
-def store_session_metadata(session_name: str, metadata: dict) -> None:
-    """Store session metadata to disk.
-
-    Args:
-        session_name: The session name (without @machine suffix if present)
-        metadata: Dictionary of metadata to store
-    """
-    # Parse session name to extract just the name part (remove @machine)
-    clean_name = session_name.split("@")[0]
-
-    metadata_dir = CONFIG_DIR / "sessions" / clean_name
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-
-    metadata_file = metadata_dir / "metadata.json"
-
-    try:
-        with open(metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
-    except (IOError, TypeError):
-        pass
-
-
-def _record_session_creator(session_name: str, created_by: str | None, via: str) -> None:
-    """Record which session created this one (merge-preserving).
-
-    The creator becomes the session's parent for prompt routing
-    (prompt_router.resolve_parent), winning over .agentwire.yml `parent:`.
-    """
-    if not created_by or created_by == session_name.split("@")[0]:
-        return
-    metadata = load_session_metadata(session_name)
-    metadata.update({
-        "created_by": created_by,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "created_via": via,
-    })
-    store_session_metadata(session_name, metadata)
-
-
-def _display_parent(session_name: str, path: str = "") -> "str | None":
-    """The session that should visually own this one in the sidebar.
-
-    Display-only relationship (powers sidebar nesting, issue #448) — NOT a
-    lifecycle coupling. Mirrors prompt_router.resolve_parent's precedence for
-    pane-0 sessions, minus the liveness check (the sidebar decides whether to
-    nest based on whether the parent is actually in the list):
-      1. Creator recorded at `agentwire new` time (session metadata).
-      2. `.agentwire.yml` `parent:` field (from the session's path).
-    Returns None for top-level sessions (no recorded parent).
-    """
-    bare = session_name.split("@")[0]
-    creator = load_session_metadata(bare).get("created_by")
-    if isinstance(creator, str) and creator and creator != bare:
-        return creator
-    try:
-        parent = get_parent_from_config(Path(path) if path else None)
-    except Exception:
-        parent = None
-    if parent and parent != bare:
-        return parent
-    return None
 
 
 def cmd_notify(args) -> int:
@@ -6061,31 +5401,6 @@ def cmd_fork(args) -> int:
 
 
 # === History Commands ===
-
-def format_relative_time(timestamp_ms: int) -> str:
-    """Format timestamp as relative time (e.g., '2 hours ago')."""
-    from datetime import datetime
-
-    dt = datetime.fromtimestamp(timestamp_ms / 1000)
-    delta = datetime.now() - dt
-
-    seconds = delta.total_seconds()
-
-    if seconds < 60:
-        return "just now"
-    elif seconds < 3600:
-        minutes = int(seconds / 60)
-        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-    elif seconds < 86400:
-        hours = int(seconds / 3600)
-        return f"{hours} hour{'s' if hours != 1 else ''} ago"
-    elif seconds < 604800:
-        days = int(seconds / 86400)
-        return f"{days} day{'s' if days != 1 else ''} ago"
-    else:
-        weeks = int(seconds / 604800)
-        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
-
 
 def cmd_history_list(args) -> int:
     """List conversation history for a project."""
@@ -12623,71 +11938,23 @@ Command Categories:
     sched_report.add_argument("--json", action="store_true", help="Output JSON")
     sched_report.set_defaults(func=cmd_scheduler_report)
 
-    # === limits command group (usage-limit recovery) ===
-    from . import limits_cli
+    # === Extracted command groups (each registrar owns its own subparser) ===
+    # Phase 1 of #495 appends one entry here per extracted domain.
+    #   - limits: usage-limit recovery (detect dialog, park, auto-resume)
+    #   - diff:   structured git diff for the mobile Review window
+    #   - prompts: prompt routing (rides the limits watchdog)
+    #   - msg:    polite agent-to-agent inbox (rides the watchdog)
+    from . import diff_cli, limits_cli, msg_cli, prompts_cli
     from .council import cli as council_cli
 
-    limits_parser = subparsers.add_parser(
-        "limits",
-        help="Usage-limit recovery: detect the limit dialog, park, auto-resume",
-        description=(
-            "Deterministic recovery from Claude Code usage-limit dialogs: a "
-            "launchd watchdog ticks every minute, parks sessions sitting on "
-            "the dialog (option 1: stop and wait), emails the owner, and "
-            "nudges the session back to work after the limit resets. "
-            "See docs/wiki/usage-limit-recovery.md."
-        ),
-    )
-    limits_subparsers = limits_parser.add_subparsers(dest="limits_command")
-
-    # limits tick
-    l_tick = limits_subparsers.add_parser(
-        "tick", help="One watchdog pass: sweep panes, resume what's due"
-    )
-    l_tick.add_argument("--json", action="store_true", help="Output JSON")
-    l_tick.set_defaults(func=limits_cli.cmd_limits_tick)
-
-    # limits status
-    l_status = limits_subparsers.add_parser("status", help="Show parked sessions")
-    l_status.add_argument("--json", action="store_true", help="Output JSON")
-    l_status.set_defaults(func=limits_cli.cmd_limits_status)
-
-    # limits resume
-    l_resume = limits_subparsers.add_parser(
-        "resume", help="Manually resume a parked session now"
-    )
-    l_resume.add_argument("-s", "--session", required=True, help="Parked session name")
-    l_resume.add_argument(
-        "--force", action="store_true",
-        help="Archive the park state even if nudge delivery can't be verified",
-    )
-    l_resume.set_defaults(func=limits_cli.cmd_limits_resume)
-
-    # limits install / uninstall
-    l_install = limits_subparsers.add_parser(
-        "install", help="Install + load the launchd watchdog (60s tick)"
-    )
-    l_install.add_argument(
-        "--dry-run", action="store_true", help="Print the plist without installing"
-    )
-    l_install.set_defaults(func=limits_cli.cmd_limits_install)
-
-    l_uninstall = limits_subparsers.add_parser(
-        "uninstall", help="Unload + remove the launchd watchdog"
-    )
-    l_uninstall.set_defaults(func=limits_cli.cmd_limits_uninstall)
-
-    # === diff command (structured git diff for the mobile Review window) ===
-    from . import diff_cli
-    diff_cli.register_diff_parser(subparsers)
-
-    # === prompts command group (prompt routing, rides the limits watchdog) ===
-    from . import prompts_cli
-    prompts_cli.register_prompts_parser(subparsers)
-
-    # === msg command group (polite agent-to-agent inbox, rides the watchdog) ===
-    from . import msg_cli
-    msg_cli.register_msg_parser(subparsers)
+    _REGISTRARS = [  # noqa: N806  # registry constant; Phase 1 of #495 appends here
+        diff_cli.register_diff_parser,
+        prompts_cli.register_prompts_parser,
+        msg_cli.register_msg_parser,
+        limits_cli.register_limits_parser,
+    ]
+    for _reg in _REGISTRARS:
+        _reg(subparsers)
 
     # === council command group ===
     council_parser = subparsers.add_parser(
