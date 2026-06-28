@@ -9,8 +9,8 @@ Before submitting, please make sure:
 4. For bug fixes: include a test that would have caught the bug
 5. For new features: include tests and update docs if needed
 
-By submitting this PR, you agree to the Contributor License Agreement:
-https://github.com/dotdevdotdev/agentwire-dev/blob/main/CLA.md
+By submitting this PR, you certify the Developer Certificate of Origin
+(https://developercertificate.org/) — sign off your commits with `git commit -s`.
 -->
 
 ## Summary
