@@ -1,29 +1,27 @@
 # Sponsors
 
 AgentWire is made possible by these generous supporters.
-[Become a sponsor](https://github.com/sponsors/dotdevdotdev) to support AgentWire development.
+[Become a sponsor](https://github.com/sponsors/dotdevdotdev) to support the open-source work.
 
-## Founding Sponsors
+> Everything I build in the open is free forever — sponsoring is a thank-you, not a way to buy features or support. If your team needs hands-on training or integration, that's what **[dotdev](https://dotdev.dev)** does.
+>
+> GitHub Sponsors is account-level (@dotdevdotdev); this file is the per-repo thank-you list. Every perk below is attribution and gratitude only — the tool is byte-identical and support is community best-effort for sponsors and non-sponsors alike. No tier grants priority support, early/beta access, roadmap influence, or private calls; those aren't sponsor perks, because the tool and its community support are the same for everyone.
 
-*Be the first — [become a Founding Sponsor](https://github.com/sponsors/dotdevdotdev)*
+## Organizations
 
-## Enterprise
+*Be the first — [sponsor as an Organization](https://github.com/sponsors/dotdevdotdev) to get your logo here.*
 
-<!-- $500/month sponsors -->
-
-## Team
-
-<!-- $100/month sponsors -->
-
-## Pro
-
-<!-- $35/month sponsors -->
+<!-- $100/month sponsors: company logo + link -->
 
 ## Backers
 
-<!-- $15/month sponsors -->
+*Be the first — [become a Backer](https://github.com/sponsors/dotdevdotdev).*
+
+<!-- $25/month sponsors: name + link to profile/site -->
 
 ## Supporters
+
+*Be the first — [become a Supporter](https://github.com/sponsors/dotdevdotdev).*
 
 <!-- $5/month sponsors and one-time contributors -->
 
@@ -35,18 +33,12 @@ AgentWire is made possible by these generous supporters.
 
 | Tier | Amount | What you get |
 |---|---|---|
-| **Supporter** | $5/mo | Name in SPONSORS.md |
-| **Backer** | $15/mo | Everything in Supporter · Priority responses on your GitHub issues · Input on what gets built next |
-| **Pro** | $35/mo | Everything in Backer · Early access to new features · Vote on roadmap priorities · Beta branch access |
-| **Team** | $100/mo | Everything in Pro · Logo in README · Monthly 30-minute support call · Priority bug fixes |
-| **Enterprise** | $500/mo | Everything in Team · 48-hour bug response · Quarterly roadmap review · Featured logo placement |
+| **Supporter** | $5/mo | Thanks for backing the open-source work. Your name on the sponsors list + the automatic GitHub sponsor badge. |
+| **Backer** | $25/mo | Everything above, listed higher, with a link to your profile or site. Appreciation, not access. |
+| **Organization** | $100/mo | Your company logo + link on the sponsors profile — attribution for teams that rely on what we ship. |
 
 ### One-Time
 
 | Tier | Amount | What you get |
 |---|---|---|
-| **Coffee** | $10 | Shoutout on X/Twitter |
-| **Lunch** | $50 | Permanent name in SPONSORS.md · Shoutout on X/Twitter |
-| **Dinner** | $150 | Permanent name · Logo in README for 3 months · Shoutout on X/Twitter |
-| **Champion** | $500 | Permanent name · Logo in README for 1 year · Featured shoutout · 30-minute call |
-| **Founding Sponsor** | $2000 | Permanent logo in README · Name in repo description · "Founding Sponsor" badge · 1-hour strategy call · Direct line for feature requests |
+| **Tip jar** | $25 suggested (custom amount on) | A one-off thank-you. $50+ earns a permanent spot on the sponsors list. |
