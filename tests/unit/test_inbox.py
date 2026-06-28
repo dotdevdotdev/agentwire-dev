@@ -301,7 +301,8 @@ class TestEscalation:
         res = inbox.flush_session("s")
         assert res["deferred"]
         assert res["reason"] == "target_busy"
-        assert inbox.list_messages("s")[0].attempts == 1
+        # attempts must NOT increment for target_busy
+        assert inbox.list_messages("s")[0].attempts == 0
 
     def test_done_under_threshold_defers_box_not_empty(self, isolate, monkeypatch):
         inbox.enqueue("s", "PR done", kind="done", sender="worker")
@@ -314,7 +315,7 @@ class TestEscalation:
         assert res["reason"] == "box_not_empty"
         assert inbox.list_messages("s")[0].attempts == 1
 
-    def test_done_over_threshold_escalates_and_delivers(self, isolate, monkeypatch):
+    def test_done_on_occupied_box_always_defers_to_protect_drafts(self, isolate, monkeypatch):
         msgs = inbox.enqueue("s", "PR done", kind="done", sender="worker")
         msg = msgs[0]
         msg.attempts = 10
@@ -327,9 +328,10 @@ class TestEscalation:
         monkeypatch.setattr(prompt_router, "safe_deliver", lambda s, p, text: (sent.append(text) or (True, "delivered")))
 
         res = inbox.flush_session("s")
-        assert res["delivered"] == 1
-        assert len(sent) == 1
-        assert "[MSG from worker · done] PR done" in sent[0]
+        assert res["deferred"]
+        assert res["reason"] == "box_not_empty"
+        assert len(sent) == 0
+        assert inbox.list_messages("s")[0].attempts == 11
 
     def test_done_over_threshold_but_busy_still_defers(self, isolate, monkeypatch):
         msgs = inbox.enqueue("s", "PR done", kind="done", sender="worker")
@@ -344,7 +346,8 @@ class TestEscalation:
         res = inbox.flush_session("s")
         assert res["deferred"]
         assert res["reason"] == "target_busy"
-        assert inbox.list_messages("s")[0].attempts == 11
+        # attempts must NOT increment for target_busy
+        assert inbox.list_messages("s")[0].attempts == 10
 
     def test_done_over_threshold_on_non_agent_still_defers(self, isolate, monkeypatch):
         msgs = inbox.enqueue("s", "PR done", kind="done", sender="worker")

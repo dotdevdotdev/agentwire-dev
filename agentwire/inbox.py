@@ -359,6 +359,16 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     for msg in messages:
         if msg.path is None:
             continue
+        if reason == "target_busy":
+            # A busy orchestrator shouldn't be penalized for running long commands.
+            # We record the reason but do not increment attempts or dead-letter.
+            msg.reason = reason
+            try:
+                _write_message(msg.path, msg)
+            except OSError:
+                pass
+            continue
+
         msg.attempts += 1
         msg.reason = reason
         if msg.attempts >= MAX_ATTEMPTS:
@@ -401,11 +411,6 @@ def flush_session(session: str) -> dict:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
 
         # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
-        should_escalate = any(
-            m.kind in ("done", "escalation") and m.attempts >= ESCALATE_THRESHOLD
-            for m in messages
-        )
-
         from .usage_limit import _capture
         visible = _capture(f"{session}.0")
         box_content = prompt_router.input_box_content(visible)
@@ -419,9 +424,8 @@ def flush_session(session: str) -> dict:
                 "reason": "target_busy", "dead": dead,
             }
 
-        is_agent = prompt_router.is_agent_pane(session, 0)
-        if box_content != "" and not (should_escalate and is_agent):
-            # Box is not empty, and we aren't escalating to an agent session. Defer.
+        if box_content != "":
+            # Box is not empty. We never bypass this to protect human drafts. Defer.
             dead = _bump_attempts(messages, "box_not_empty")
             _log_event("deferred", to=session, count=len(messages), reason="box_not_empty")
             return {
