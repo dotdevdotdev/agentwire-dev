@@ -669,21 +669,31 @@ def rules_drift() -> Dict[str, str]:
 
 
 def missing_damage_control_matchers() -> List[str]:
-    """Damage-control matchers not registered in ``~/.claude/settings.json``."""
+    """Damage-control matchers not registered in ``~/.claude/settings.json``.
+
+    Checks the (matcher, command) PAIR, mirroring
+    ``register_damage_control_in_settings``'s dedup. Several matchers
+    (Read/Grep/Glob) legitimately share one hook script, so a command-only
+    check would treat all three as present the moment *any* one is registered —
+    silently hiding a real gap in a security hook (e.g. Read guarded but
+    Grep/Glob not).
+    """
     settings_file = Path.home() / ".claude" / "settings.json"
     try:
         settings = json.loads(settings_file.read_text())
     except (OSError, json.JSONDecodeError):
         settings = {}
     pre = settings.get("hooks", {}).get("PreToolUse", []) if isinstance(settings, dict) else []
-    registered = {
-        h.get("command")
-        for entry in pre
-        for h in (entry.get("hooks", []) if isinstance(entry, dict) else [])
+    registered_pairs = {
+        (entry.get("matcher"), h.get("command"))
+        for entry in pre if isinstance(entry, dict)
+        for h in (entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else [])
+        if isinstance(h, dict)
     }
     missing = []
     for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
-        if f"~/.agentwire/hooks/damage-control/{hook_file}" not in registered:
+        command = f"~/.agentwire/hooks/damage-control/{hook_file}"
+        if (matcher, command) not in registered_pairs:
             missing.append(matcher)
     return missing
 
