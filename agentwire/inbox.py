@@ -245,6 +245,42 @@ def dead_sessions() -> list[str]:
     return sorted(found)
 
 
+def purge_dead(session: "str | None" = None, before_ms: "int | None" = None) -> int:
+    """Delete dead-lettered corpses; return the number removed.
+
+    With *session* None, clears every recipient's ``dead/`` dir (the whole
+    graveyard); otherwise just that one session's. *before_ms* is an epoch-ms
+    cutoff — any corpse that died at-or-after it is kept, so pass ``now - age``
+    to clear only stale ones. A corpse with no ``dead_ts`` (pre-schema) counts
+    as infinitely old and is always purged when a cutoff is given.
+
+    The dead-letter store holds failed messages a recipient never accepted;
+    purging is a human/ops cleanup, never part of the drain.
+    """
+    if session is not None:
+        ddir = dead_dir(session)
+        paths = sorted(ddir.glob("*.json")) if ddir.is_dir() else []
+    elif INBOX_ROOT.exists():
+        paths = sorted(INBOX_ROOT.rglob("dead/*.json"))
+    else:
+        paths = []
+
+    removed = 0
+    for path in paths:
+        if before_ms is not None:
+            msg = _read_message(path)
+            if msg is not None and msg.dead_ts and msg.dead_ts >= before_ms:
+                continue  # died at/after the cutoff — keep it
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        _log_event("purged_dead", session=session or "@all", count=removed)
+    return removed
+
+
 # =============================================================================
 # Enqueue + broadcast
 # =============================================================================
