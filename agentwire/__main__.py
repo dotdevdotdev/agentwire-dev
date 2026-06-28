@@ -33,18 +33,30 @@ from . import (  # noqa: E402  # must follow load_dotenv() above
 from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401: re-exported moved helpers
     _UNATTENDED_ENV_KEYS,
     CONFIG_DIR,
+    KIND_DEFAULT_POSTURE,
     AgentCommand,
+    _add_posture_harness_flags,
     _build_tmux_env_flags,
     _build_tmux_env_flags_shell,
+    _check_portal_health,
     _check_tmux_installed,
+    _default_portal_url,
     _display_parent,
+    _get_agentwire_path,
     _get_all_machines,
     _get_machine_config,
+    _get_portal_url,
     _get_session_project_path,
+    _git_behind_origin,
+    _notify_portal_sessions_changed,
     _output_json,
     _output_result,
     _parse_session_target,
+    _portal_auth_headers,
+    _post_desktop_notification,
     _record_session_creator,
+    _resolve_session_type_from_args,
+    _run_remote,
     _set_session_name_env,
     _tmux_global_option,
     _with_unattended_env,
@@ -108,27 +120,6 @@ def _portal_auth_curl_args() -> list[str]:
     return ["-H", f"Authorization: Bearer {token}"] if token else []
 
 
-def _portal_auth_headers() -> dict:
-    """Headers carrying the portal auth token, if one is configured."""
-    from .security import get_local_portal_token
-
-    token = get_local_portal_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
-def _default_portal_url() -> str:
-    """Default portal URL — scheme mirrors the typed config's logic: https
-    only when server.ssl cert/key are configured AND exist on disk."""
-    ssl_cfg = load_config().get("server", {}).get("ssl", {})
-    cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
-    enabled = bool(
-        cert and key
-        and Path(os.path.expanduser(cert)).exists()
-        and Path(os.path.expanduser(key)).exists()
-    )
-    return f"{'https' if enabled else 'http'}://localhost:8765"
-
-
 def _portal_api(method: str, path: str, data: dict | None = None, timeout: int = 10) -> dict | None:
     """Make an API request to the portal using curl (reliable with self-signed certs).
 
@@ -161,85 +152,6 @@ def _portal_api(method: str, path: str, data: dict | None = None, timeout: int =
         return json.loads(body) if body.strip() else {}
     except Exception:
         return None
-
-
-def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:
-    """Run command on remote machine via SSH.
-
-    Args:
-        machine_id: Machine ID from machines.json
-        command: Shell command to run
-
-    Returns:
-        subprocess.CompletedProcess with stdout, stderr, returncode
-    """
-    machine = _get_machine_config(machine_id)
-    if machine is None:
-        # Return a failed result
-        result = subprocess.CompletedProcess(
-            args=["ssh", machine_id, command],
-            returncode=1,
-            stdout="",
-            stderr=f"Machine '{machine_id}' not found in machines.json",
-        )
-        return result
-
-    host = machine.get("host", machine_id)
-    user = machine.get("user")
-    port = machine.get("port")
-
-    # Build SSH target
-    if user:
-        ssh_target = f"{user}@{host}"
-    else:
-        ssh_target = host
-
-    # Build SSH command with optional port and connection timeout
-    ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
-    if port:
-        ssh_cmd.extend(["-p", str(port)])
-    ssh_cmd.extend([ssh_target, command])
-
-    try:
-        return subprocess.run(
-            ssh_cmd,
-            capture_output=True,
-            text=True,
-            timeout=10,  # Hard timeout for command execution
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            args=ssh_cmd,
-            returncode=1,
-            stdout="",
-            stderr=f"SSH connection to {machine_id} timed out",
-        )
-
-
-def _notify_portal_sessions_changed():
-    """Notify portal that sessions have changed so it can broadcast to clients.
-
-    This is fire-and-forget - failures are silently ignored since the portal
-    may not be running.
-    """
-    import ssl
-
-    try:
-        # Create SSL context that doesn't verify (localhost self-signed cert)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        req = urllib.request.Request(
-            f"{_default_portal_url()}/api/sessions/refresh",
-            method="POST",
-            data=b"",
-            headers=_portal_auth_headers(),
-        )
-        urllib.request.urlopen(req, timeout=2, context=ctx)
-    except Exception:
-        # Portal may not be running - that's fine
-        pass
 
 
 # === Portal Commands ===
@@ -399,21 +311,6 @@ def _stop_portal_remote(ssh_target: str, machine_id: str) -> int:
 
     print(f"Portal stopped on {machine_id}.")
     return 0
-
-
-def _check_portal_health(url: str, timeout: int = 2) -> bool:
-    """Check if portal is responding at URL."""
-    import ssl
-
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        req = urllib.request.urlopen(f"{url}/health", context=ctx, timeout=timeout)
-        return req.status == 200
-    except Exception:
-        return False
 
 
 def cmd_portal_start(args) -> int:
@@ -1425,58 +1322,6 @@ def cmd_channels_list(args) -> int:
 
 # === Say Command ===
 
-def _get_portal_url() -> str:
-    """Get portal URL from config, with smart fallbacks.
-
-    Uses NetworkContext to determine the best URL:
-    - If portal is local: use localhost
-    - If portal is remote with tunnel: use localhost (tunnel port)
-    - If portal is remote without tunnel: use direct URL
-    """
-    from .network import NetworkContext
-
-    ctx = NetworkContext.from_config()
-
-    if ctx.is_local("portal"):
-        # Portal runs locally — scheme comes from services.portal.scheme
-        # (http unless SSL certs exist or explicitly configured)
-        return ctx.get_service_url("portal")
-
-    # Portal is remote - check if tunnel exists by testing localhost first
-    tunnel_url = ctx.get_service_url("portal", use_tunnel=True)
-    direct_url = ctx.get_service_url("portal", use_tunnel=False)
-
-    # Try tunnel first (more common setup)
-    if _check_portal_health(tunnel_url):
-        return tunnel_url
-
-    # Fall back to direct connection
-    return direct_url
-
-
-def _get_agentwire_path() -> str:
-    """Get the full path to the agentwire executable.
-
-    Checks config first, then falls back to shutil.which() to find it in PATH.
-    This ensures tmux hooks work even when run-shell has a minimal PATH.
-    """
-    import shutil
-
-    config = load_config()
-    configured_path = config.get("executables", {}).get("agentwire")
-
-    if configured_path:
-        return os.path.expanduser(configured_path)
-
-    # Find agentwire in PATH
-    found = shutil.which("agentwire")
-    if found:
-        return found
-
-    # Fallback to common location
-    return os.path.expanduser("~/.local/bin/agentwire")
-
-
 def _install_global_tmux_hooks() -> None:
     """Install global tmux hooks for portal sync.
 
@@ -2365,32 +2210,6 @@ def _remote_say(text: str, session: str, portal_url: str) -> int:
         return 1
 
 
-def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal") -> bool:
-    """POST a toast to the portal's desktop-notification endpoint. Best-effort.
-
-    Shared by `agentwire notify-user` and the `say --display` path. Returns True
-    on a 2xx, False on any failure (no portal, network error) — never raises.
-    """
-    import ssl
-
-    body: dict = {"text": text, "priority": priority}
-    if session:
-        body["session"] = session
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(
-            f"{_get_portal_url()}/api/desktop/notification",
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", **_portal_auth_headers()},
-        )
-        with urllib.request.urlopen(req, context=ctx, timeout=5):
-            return True
-    except Exception:
-        return False
-
-
 def cmd_notify_user(args) -> int:
     """Show the human a desktop toast on the portal (notify-user)."""
     text = " ".join(args.text) if args.text else ""
@@ -2931,61 +2750,6 @@ def cmd_list(args) -> int:
 
 # Default POSTURE per session KIND (the spawn verb). Harness defaults to
 # claude. These are the floor when no --posture/--harness/--type is given.
-KIND_DEFAULT_POSTURE = {
-    "orchestrator": "bypass",      # agentwire new — you drive it, full access
-    "worktree-session": "bypass",  # agentwire worktree — autonomous, full access
-    "worker": "restricted",        # agentwire spawn — locked-down executor
-}
-
-
-def _resolve_session_type_from_args(args, kind: str) -> tuple[str | None, str | None]:
-    """Resolve the internal fused session type from the shared flag core.
-
-    Posture × harness are the canonical axes; legacy --type (fused strings or
-    intent presets) and the internal --bare/--restricted/--prompted booleans
-    are accepted on input but never the primary surface.
-
-    Precedence: explicit --posture/--harness compose first; else legacy
-    --type; else legacy booleans; else the kind's default posture × claude.
-
-    Returns ``(session_type, error)`` — error is a message string when an
-    invalid posture was given, session_type is None in that case.
-    """
-    posture = getattr(args, 'posture', None)
-    harness = getattr(args, 'harness', None)
-    type_arg = getattr(args, 'type', None)
-    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
-
-    if posture or harness:
-        try:
-            return compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture), None
-        except ValueError as e:
-            return None, str(e)
-    if type_arg:
-        return normalize_session_type(type_arg, detect_default_agent_type()), None
-    # Internal legacy booleans (set by cmd_worktree / cmd_recreate callers).
-    if getattr(args, 'bare', False):
-        return "bare", None
-    if getattr(args, 'restricted', False):
-        return f"{detect_default_agent_type()}-restricted", None
-    if getattr(args, 'prompted', False):
-        return f"{detect_default_agent_type()}-prompted", None
-    return compose_session_type(DEFAULT_HARNESS, default_posture), None
-
-
-def _add_posture_harness_flags(parser) -> None:
-    """Register the shared posture × harness axes on a spawn-verb parser.
-
-    These are the canonical session-type surface across new/worktree/spawn;
-    legacy --type (fused strings, intent presets) stays accepted but secondary.
-    """
-    parser.add_argument("--posture", choices=list(POSTURES),
-                        help="How much the agent may do unprompted: bypass/prompted/restricted/readonly "
-                             "(default depends on the verb: new/worktree → bypass, spawn → restricted)")
-    parser.add_argument("--harness",
-                        help="Agent backend: claude (default), pi-<provider> (e.g. pi-zai, pi-deepseek), or bare")
-
-
 def cmd_session_defaults(args) -> int:
     """Resolve what a new session would get — backs the portal resolver endpoint.
 
@@ -7285,34 +7049,6 @@ def cmd_voiceclone_delete(args) -> int:
 # === Rebuild/Uninstall Commands ===
 
 UV_CACHE_DIR = Path.home() / ".cache" / "uv"
-
-
-def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):
-    """How many commits ``origin/<base>`` is ahead of the checkout's HEAD.
-
-    Returns ``(behind, error)``: ``behind`` is the commit count (0 = up to date),
-    or ``None`` with a human-readable ``error`` string when the comparison can't
-    be made (not a git repo, no remote, offline fetch failure, etc.).
-    """
-    if not (repo / ".git").exists():
-        return None, "not a git checkout"
-    if do_fetch:
-        fetch = subprocess.run(
-            ["git", "fetch", "origin", base],
-            cwd=repo, capture_output=True, text=True,
-        )
-        if fetch.returncode != 0:
-            return None, (fetch.stderr or fetch.stdout or "git fetch failed").strip()
-    count = subprocess.run(
-        ["git", "rev-list", "--count", f"HEAD..origin/{base}"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    if count.returncode != 0:
-        return None, (count.stderr or count.stdout or "git rev-list failed").strip()
-    try:
-        return int(count.stdout.strip()), None
-    except ValueError:
-        return None, f"unexpected rev-list output: {count.stdout.strip()!r}"
 
 
 def cmd_rebuild(args) -> int:
