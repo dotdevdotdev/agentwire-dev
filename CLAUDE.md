@@ -38,6 +38,15 @@ All session/machine logic lives in CLI commands (`agentwire/__main__.py`). The p
 2. Portal calls CLI, doesn't duplicate logic
 3. Never bypass CLI with direct tmux/subprocess calls
 
+**CLI layout (#495):** the old `__main__.py` monolith is split per-domain. Shared
+helpers (machine config, SSH `_run_remote`, JSON output, session resolution, etc.)
+live in `agentwire/core.py`; each command group lives in its own `agentwire/<domain>_cli.py`
+module exposing a `register_<domain>_parser(subparsers)` registrar. `build_parser()`
+imports them and runs the `_REGISTRARS` loop — adding a command means writing a new
+`*_cli.py` + appending its registrar, not editing a god-file. Example: the portal git
+endpoints (`api_check_path` / `api_check_branches`) shell out to `agentwire repo-info`
+and `agentwire branches` (in `repo_cli.py`) rather than embedding their own git/SSH logic.
+
 Full CLI command reference lives in the `agentwire-cli` skill.
 
 ## MCP Server (For Agents)

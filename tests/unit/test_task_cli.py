@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from agentwire.__main__ import cmd_ensure, cmd_task_show
+from agentwire.ensure_cli import cmd_ensure, cmd_task_show
 
 
 @pytest.fixture

@@ -79,8 +79,8 @@ class TestStorage:
 class TestCLI:
     @pytest.fixture(autouse=True)
     def no_portal_ping(self, monkeypatch):
-        from agentwire import __main__ as main_mod
-        monkeypatch.setattr(main_mod, "_ping_scratchpad_changed", lambda: None)
+        from agentwire import system_cli as sys_mod
+        monkeypatch.setattr(sys_mod, "_ping_scratchpad_changed", lambda: None)
 
     def _args(self, **kw):
         import argparse
@@ -89,7 +89,7 @@ class TestCLI:
         return argparse.Namespace(**defaults)
 
     def test_add_then_list(self, capsys):
-        from agentwire.__main__ import cmd_scratchpad_add, cmd_scratchpad_list
+        from agentwire.system_cli import cmd_scratchpad_add, cmd_scratchpad_list
         assert cmd_scratchpad_add(self._args(text="hello pad", source="test")) == 0
         capsys.readouterr()
         assert cmd_scratchpad_list(self._args()) == 0
@@ -97,18 +97,18 @@ class TestCLI:
         assert data["notes"][0]["text"] == "hello pad"
 
     def test_remove(self, capsys):
-        from agentwire.__main__ import cmd_scratchpad_add, cmd_scratchpad_remove
+        from agentwire.system_cli import cmd_scratchpad_add, cmd_scratchpad_remove
         cmd_scratchpad_add(self._args(text="to delete", source=None))
         note_id = json.loads(capsys.readouterr().out)["note"]["id"]
         assert cmd_scratchpad_remove(self._args(id=note_id)) == 0
         assert scratchpad.load_notes() == []
 
     def test_remove_unknown_fails(self, capsys):
-        from agentwire.__main__ import cmd_scratchpad_remove
+        from agentwire.system_cli import cmd_scratchpad_remove
         assert cmd_scratchpad_remove(self._args(id="missing")) == 1
 
     def test_clear(self, capsys):
-        from agentwire.__main__ import cmd_scratchpad_add, cmd_scratchpad_clear
+        from agentwire.system_cli import cmd_scratchpad_add, cmd_scratchpad_clear
         cmd_scratchpad_add(self._args(text="a", source=None))
         cmd_scratchpad_add(self._args(text="b", source=None))
         capsys.readouterr()

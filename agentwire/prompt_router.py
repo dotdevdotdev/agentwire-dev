@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .core import load_session_metadata
 from .usage_limit import (
     PARK_OPTION,
     _atomic_write,
@@ -194,17 +195,9 @@ def _detect_question(clean: str, norm: str) -> "PromptInfo | None":
 # (e.g. "2.1.170"); pi panes report node.
 _AGENT_COMMAND_RE = re.compile(r"^(node|claude|\d+\.\d+\.\d+\S*)$")
 
-_SESSIONS_META_DIR = Path.home() / ".agentwire" / "sessions"
-
-
 def _read_creator(session: str) -> "str | None":
     """The session recorded as creator at `agentwire new` time, if any."""
-    metadata_file = _SESSIONS_META_DIR / session.split("@")[0] / "metadata.json"
-    try:
-        metadata = json.loads(metadata_file.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    creator = metadata.get("created_by")
+    creator = load_session_metadata(session).get("created_by")
     return creator if isinstance(creator, str) and creator else None
 
 

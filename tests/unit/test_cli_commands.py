@@ -11,7 +11,7 @@ import yaml
 
 class TestRecentActivity:
     def test_keeps_outcome_events_newest_first(self):
-        from agentwire.__main__ import _recent_activity
+        from agentwire.scheduler_cli import _recent_activity
 
         events = [
             {"ts": "2026-06-15T10:00:00+00:00", "event": "scheduler_sleeping"},
@@ -28,7 +28,7 @@ class TestRecentActivity:
         assert "complete" in out[1]["detail"]
 
     def test_respects_limit(self):
-        from agentwire.__main__ import _recent_activity
+        from agentwire.scheduler_cli import _recent_activity
 
         events = [
             {"ts": f"2026-06-15T10:0{i}:00+00:00", "event": "task_completed",
@@ -190,10 +190,10 @@ class TestCmdSendWaitReady:
 
     def test_happy_path_verified(self, capsys, monkeypatch):
         from agentwire import session_ready
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: True)
 
@@ -204,10 +204,10 @@ class TestCmdSendWaitReady:
 
     def test_not_ready_fails(self, capsys, monkeypatch):
         from agentwire import session_ready
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: False)
 
         assert cmd_send(self._args()) == 1
@@ -217,10 +217,10 @@ class TestCmdSendWaitReady:
 
     def test_unverified_fails(self, capsys, monkeypatch):
         from agentwire import session_ready
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.__main__.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
 
@@ -229,14 +229,14 @@ class TestCmdSendWaitReady:
         assert payload["verified"] is False
 
     def test_remote_rejected(self, capsys):
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         assert cmd_send(self._args(session="proj@gpu")) == 1
         payload = self._payload(capsys)
         assert "local-only" in payload["error"]
 
     def test_pane_combo_rejected(self, capsys):
-        from agentwire.__main__ import cmd_send
+        from agentwire.send_cli import cmd_send
 
         assert cmd_send(self._args(pane=1)) == 1
         payload = self._payload(capsys)
@@ -247,9 +247,9 @@ class TestCmdSendWaitReady:
 
 class TestCmdNewFirstMessage:
     def test_remote_rejected(self, capsys, monkeypatch):
-        from agentwire.__main__ import cmd_new
+        from agentwire.session_cli import cmd_new
 
-        monkeypatch.setattr("agentwire.__main__._check_tmux_installed", lambda: True)
+        monkeypatch.setattr("agentwire.session_cli._check_tmux_installed", lambda: True)
         args = argparse.Namespace(
             session="proj@gpu", path=None, force=False, json=True,
             roles=None, no_soul=True, first_message="an idea",
@@ -283,7 +283,8 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
     """
     from types import SimpleNamespace
 
-    import agentwire.__main__ as mod
+    import agentwire.session_cli as mod
+    from agentwire.core import AgentCommand
 
     cap = _RoleCapture()
 
@@ -299,7 +300,7 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
     })
     monkeypatch.setattr(mod, "load_project_config", lambda p: cfg)
     monkeypatch.setattr(mod, "detect_default_agent_type", lambda: "claude")
-    monkeypatch.setattr(mod, "build_agent_command", lambda *a, **k: mod.AgentCommand(command=""))
+    monkeypatch.setattr(mod, "build_agent_command", lambda *a, **k: AgentCommand(command=""))
 
     def fake_ensure_worktree(base, branch, wt, **kw):
         Path(wt).mkdir(parents=True, exist_ok=True)
@@ -340,7 +341,7 @@ class TestRecreateRoutesThroughResolveRoles:
     def test_worktree_recreate_reinjects_etiquette_even_without_saved_roles(
         self, monkeypatch, tmp_path
     ):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         (projects / "proj").mkdir(parents=True)
@@ -359,7 +360,7 @@ class TestRecreateRoutesThroughResolveRoles:
     def test_worktree_recreate_stacks_saved_roles_under_etiquette(
         self, monkeypatch, tmp_path
     ):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         (projects / "proj").mkdir(parents=True)
@@ -375,7 +376,7 @@ class TestRecreateRoutesThroughResolveRoles:
         assert "domain" in cap.role_names
 
     def test_plain_recreate_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         (projects / "proj").mkdir(parents=True)
@@ -389,7 +390,7 @@ class TestRecreateRoutesThroughResolveRoles:
         assert "custom" in cap.role_names
 
     def test_plain_recreate_zero_config_is_orchestrator(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         (projects / "proj").mkdir(parents=True)
@@ -403,7 +404,7 @@ class TestRecreateRoutesThroughResolveRoles:
 
 class TestForkRoutesThroughResolveRoles:
     def test_worktree_fork_injects_worktree_session_etiquette(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         (projects / "proj").mkdir(parents=True)  # source_path (no source branch)
@@ -419,7 +420,7 @@ class TestForkRoutesThroughResolveRoles:
         assert cap.role_names[0] == "worktree-session"
 
     def test_worktree_fork_stacks_source_roles_under_etiquette(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         (projects / "proj").mkdir(parents=True)
@@ -435,7 +436,7 @@ class TestForkRoutesThroughResolveRoles:
         assert "domain" in cap.role_names
 
     def test_non_worktree_fork_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
         projects.mkdir(parents=True)
@@ -471,8 +472,8 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
     """
     from types import SimpleNamespace
 
-    import agentwire.__main__ as mod
     import agentwire.history as hist
+    import agentwire.history_cli as mod
 
     cap = _RoleCapture()
 
@@ -510,7 +511,7 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
 
 class TestHistoryResumeRoutesThroughResolveRoles:
     def test_zero_config_resume_is_orchestrator(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.history_cli as mod
 
         cap, project_dir = _patch_history_resume(
             monkeypatch, tmp_path, project_config_roles=None
@@ -526,7 +527,7 @@ class TestHistoryResumeRoutesThroughResolveRoles:
         assert "soul" in cap.role_names
 
     def test_saved_roles_replace_orchestrator_persona(self, monkeypatch, tmp_path):
-        import agentwire.__main__ as mod
+        import agentwire.history_cli as mod
 
         cap, project_dir = _patch_history_resume(
             monkeypatch, tmp_path, project_config_roles=["custom"]

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.__main__ import (
+from agentwire.hooks_cli import (
     _install_managed_file,
     _managed_file_state,
     _managed_hook_files,
@@ -119,7 +119,7 @@ class TestInstallHooks:
 
     @pytest.fixture
     def env(self, tmp_path, monkeypatch):
-        from agentwire import __main__ as main_mod
+        from agentwire import hooks_cli as main_mod
 
         home = tmp_path / "home"
         home.mkdir()
@@ -206,7 +206,7 @@ class TestPackagedHooksPresent:
     """The managed-files table must match what actually ships in the package."""
 
     def test_all_managed_files_exist_in_source(self):
-        from agentwire.__main__ import get_hooks_source
+        from agentwire.hooks_cli import get_hooks_source
         hooks_source = get_hooks_source()
         for name, _dir, _event in _managed_hook_files():
             assert (hooks_source / name).exists(), f"{name} missing from agentwire/hooks/"
