@@ -132,12 +132,27 @@ artifacts = [
     "agentwire/hooks/**/*.sh",
 ]
 exclude = [
-    "agentwire/static/*.xcf",
-    "agentwire/static/*-blue.*",
-    "agentwire/static/agentwire-logo-splash.jpeg",
-    "agentwire/static/agentwire-logo-splash-dark.jpeg",
-    "agentwire/static/agentwire-logo-splash-green.jpeg",
-    "agentwire/static/agentwire-logo-splash-green-dark.jpeg",
+    # Never-served source art kept in-repo for regen only. The portal serves
+    # WebP exclusively (server.py list_images suffix filter), so the heavyweight
+    # .jpeg session icons and full-res custom .png originals are pure regen
+    # source — don't ship them in the wheel.
+    "agentwire/static/icons/**/*.jpeg",
+    "agentwire/static/icons/**/custom/*.png",
+    # Unreferenced root splash/Echo/banner source PNGs (0 refs across
+    # templates/static/js/css/server.py). The wallpaper uses only the 5
+    # decomposed --tree/--telephone/--echo/--echo-claw-fg/--agentwire-text
+    # layers; email banner/Echo default to config-driven PUBLIC urls, not
+    # these local copies. Kept in-repo as source, not shipped.
+    "agentwire/static/agentwire-Echo.png",
+    "agentwire/static/agentwire-Echo--black.png",
+    "agentwire/static/agentwire-Echo--transparent.png",
+    "agentwire/static/agentwire-email-banner.png",
+    "agentwire/static/agentwire-splash-logo-layers.png",
+    "agentwire/static/agentwire-splash-logo-layers--full--transparent-top.png",
+    "agentwire/static/agentwire-splash-logo-layers--full-black.png",
+    "agentwire/static/agentwire-splash-logo-layers--telephone-fg.png",
+    "agentwire/static/agentwire-splash-logo-layers--transparent-top.png",
+    "agentwire/static/agentwire-splash-logo-layers--transparent.png",
 ]
 
 # Ship the agentwire-owned GLOBAL skill into the package so get_skills_source()
@@ -172,13 +187,21 @@ exclude = [
     # Dev examples and scripts
     "examples/",
     "scripts/",
-    # Static file dev assets
-    "agentwire/static/*.xcf",
-    "agentwire/static/*-blue.*",
-    "agentwire/static/agentwire-logo-splash.jpeg",
-    "agentwire/static/agentwire-logo-splash-dark.jpeg",
-    "agentwire/static/agentwire-logo-splash-green.jpeg",
-    "agentwire/static/agentwire-logo-splash-green-dark.jpeg",
+    # Never-served source art (see wheel exclude above): .jpeg session icons
+    # and full-res custom .png originals are regen source, not shipped.
+    "agentwire/static/icons/**/*.jpeg",
+    "agentwire/static/icons/**/custom/*.png",
+    # Unreferenced root splash/Echo/banner source PNGs (see wheel exclude).
+    "agentwire/static/agentwire-Echo.png",
+    "agentwire/static/agentwire-Echo--black.png",
+    "agentwire/static/agentwire-Echo--transparent.png",
+    "agentwire/static/agentwire-email-banner.png",
+    "agentwire/static/agentwire-splash-logo-layers.png",
+    "agentwire/static/agentwire-splash-logo-layers--full--transparent-top.png",
+    "agentwire/static/agentwire-splash-logo-layers--full-black.png",
+    "agentwire/static/agentwire-splash-logo-layers--telephone-fg.png",
+    "agentwire/static/agentwire-splash-logo-layers--transparent-top.png",
+    "agentwire/static/agentwire-splash-logo-layers--transparent.png",
 ]
 
 # The sdist excludes .claude/, but the wheel force-includes .claude/skills/wiki
