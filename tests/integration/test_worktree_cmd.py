@@ -70,7 +70,7 @@ def _run(monkeypatch, cfg, **arg_overrides):
         name=None, base=None, current=False, existing=False, ref=None,
         project=None, list=False, remove=False, prune=False, all=False,
         json=True, type=None, posture=None, harness=None, model=None,
-        roles=None, env=None,
+        roles=None, env=None, created_by=None,
     )
     base.update(arg_overrides)
     return m.cmd_worktree(Namespace(**base))
@@ -96,6 +96,32 @@ def test_default_base_is_repo_derived(tmp_path, monkeypatch, wt_env):
     assert len(entries) == 1
     assert entries[0]["base"] == "develop"
     assert entries[0]["session"] == "clone-repo-fix-bug"
+
+
+def test_created_by_forwarded_to_cmd_new(tmp_path, monkeypatch, wt_env):
+    """--created-by (the spawner) flows through to cmd_new so the worktree
+    session records its creator → notify-parent / resolve_parent resolves (#578)."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone),
+              created_by="orchestrator")
+    assert rc == 0
+    # The captured cmd_new Args carries the creator through unchanged.
+    assert wt_env["args"].created_by == "orchestrator"
+
+
+def test_record_session_creator_persists_creator(tmp_path, monkeypatch):
+    """The creator-registry mechanism cmd_new uses records the spawner so
+    _display_parent (and resolve_parent) returns it for a worktree session."""
+    from agentwire import core
+
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
+    monkeypatch.setattr(core, "get_parent_from_config", lambda *_a, **_k: None)
+
+    core._record_session_creator("clone-repo-fix-bug", "orchestrator", via="worktree")
+    assert core.load_session_metadata("clone-repo-fix-bug")["created_by"] == "orchestrator"
+    assert core._display_parent("clone-repo-fix-bug") == "orchestrator"
 
 
 def test_base_flag_overrides(tmp_path, monkeypatch, wt_env):

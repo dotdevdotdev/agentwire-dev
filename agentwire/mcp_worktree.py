@@ -1,6 +1,7 @@
 """MCP tools — worktree domain."""
 
 from .mcp_core import (
+    get_caller_session,
     mcp,
     run_agentwire_cmd,
 )
@@ -44,6 +45,13 @@ def worktree_create(
         args += ["--base", base]
     if prompt:
         args += ["--prompt", prompt]
+    # Forward the calling session as the new worktree's creator so prompt
+    # routing (resolve_parent) and notify-parent resolve back to the spawner.
+    # The CLI's own get_current_session() can't see the caller through the MCP
+    # subprocess boundary, so we pass it explicitly (issue #578).
+    caller = get_caller_session()
+    if caller:
+        args += ["--created-by", caller]
     # Seeding waits for agent boot (~up to 60s); give the CLI room to finish.
     data = run_agentwire_cmd(args, timeout=90)
     if not data.get("success"):

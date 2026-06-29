@@ -881,6 +881,7 @@ def cmd_worktree(args) -> int:
             'instructions': None, 'persist': False,
             'first_message': getattr(args, 'prompt', None),
             'env': getattr(args, 'env', None),
+            'created_by': getattr(args, 'created_by', None),
         })())
 
     # If worktree already exists, reattach (and heal the registry entry).
@@ -1741,5 +1742,9 @@ def register_session_parser(subparsers) -> None:
     wt_parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
     wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
+    wt_parser.add_argument("--created-by", dest="created_by",
+                           help="Record this session as the creator/parent for prompt routing "
+                                "(default: the calling tmux session; pass '' to opt out). "
+                                "MCP forwards the caller here so notify-parent resolves.")
     wt_parser.add_argument("--json", action="store_true", help="Output as JSON")
     wt_parser.set_defaults(func=cmd_worktree)
