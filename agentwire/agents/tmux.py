@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -13,28 +12,8 @@ from .base import AgentBackend
 
 logger = logging.getLogger(__name__)
 
-# Pattern to match env var prefix: VAR='value' or VAR="value" or VAR=value
-ENV_VAR_PREFIX_PATTERN = re.compile(r'^([A-Z_][A-Z0-9_]*)=([\'"]?)(.+?)\2\s+(.+)$')
-
 # Base command without permission flags - flags added based on bypass_permissions option
 DEFAULT_AGENT_COMMAND = "claude"
-
-
-def parse_env_var_prefix(command: str) -> tuple[str | None, str | None, str]:
-    """Parse env var prefix from a command string.
-
-    Handles commands like: VAR='value' some_command --args
-    Returns: (var_name, var_value, remaining_command)
-
-    If no env var prefix, returns (None, None, original_command)
-    """
-    match = ENV_VAR_PREFIX_PATTERN.match(command)
-    if match:
-        var_name = match.group(1)
-        var_value = match.group(3)  # The value without quotes
-        remaining = match.group(4)
-        return var_name, var_value, remaining
-    return None, None, command
 
 
 def _tmux_path() -> str:
@@ -183,107 +162,6 @@ class TmuxAgent(AgentBackend):
             return name, None
         return name, None
 
-    def _format_agent_command(self, name: str, path: Path, options: dict | None = None) -> str:
-        """Format the agent command with placeholders.
-
-        Args:
-            name: Session name
-            path: Working directory
-            options: Additional options including:
-                - model: Model to use
-                - session_id: Claude Code session UUID
-                - fork_from: Session ID to fork from (uses --resume --fork-session)
-                - bypass_permissions: If True, add --dangerously-skip-permissions flag
-
-        Returns:
-            Formatted command string
-        """
-        options = options or {}
-        model = options.get("model", self.default_model)
-        session_id = options.get("session_id")
-        fork_from = options.get("fork_from")
-        bypass_permissions = options.get("bypass_permissions", True)
-
-        cmd = self.agent_command
-        cmd = cmd.replace("{name}", name)
-        cmd = cmd.replace("{path}", str(path))
-        cmd = cmd.replace("{model}", model)
-
-        # Add permission bypass flag if requested
-        if bypass_permissions:
-            cmd = f"{cmd} --dangerously-skip-permissions"
-
-        # Add session ID if provided (for new sessions)
-        if session_id and not fork_from:
-            cmd = f"{cmd} --session-id {session_id}"
-
-        # Fork from existing session
-        if fork_from:
-            cmd = f"{cmd} --resume {fork_from} --fork-session"
-            # Also set the new session ID if provided
-            if session_id:
-                cmd = f"{cmd} --session-id {session_id}"
-
-        return cmd
-
-    def create_session(self, name: str, path: Path, options: dict | None = None) -> bool:
-        """Create a new tmux session and start the agent."""
-        options = options or {}
-        session_name, machine = self._parse_session_name(name)
-        agent_cmd = self._format_agent_command(session_name, path, options)
-
-        if machine:
-            projects_dir = machine.get("projects_dir", "~/projects")
-            remote_path = f"{projects_dir}/{path.name}" if not str(path).startswith("/") else str(path)
-
-            # Parse env var prefix (e.g., ANTHROPIC_AUTH_TOKEN='...' claude)
-            # Must use tmux set-environment for remote sessions since shlex.quote
-            # would break the env var assignment
-            env_var, env_val, actual_cmd = parse_env_var_prefix(agent_cmd)
-
-            cmd_parts = [
-                f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(remote_path)}"
-            ]
-
-            if env_var:
-                # Set env var in tmux session environment
-                cmd_parts.append(
-                    f"tmux set-environment -t {shlex.quote(session_name)} {env_var} {shlex.quote(env_val)}"
-                )
-
-            # Send the actual command (without env var prefix if it was extracted)
-            cmd_parts.append(
-                f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(actual_cmd)} Enter"
-            )
-
-            cmd = " && ".join(cmd_parts)
-            result = self._run_remote(machine, cmd)
-        else:
-            # Create session
-            result = self._run_local([
-                "tmux", "new-session", "-d",
-                "-s", session_name,
-                "-c", str(path),
-            ])
-
-            if result.returncode != 0:
-                logger.error(f"Failed to create session: {result.stderr}")
-                return False
-
-            # Start agent
-            result = self._run_local([
-                "tmux", "send-keys",
-                "-t", session_name,
-                agent_cmd, "Enter",
-            ])
-
-        if result.returncode != 0:
-            logger.error(f"Failed to start agent: {result.stderr}")
-            return False
-
-        logger.info(f"Created session '{name}' at {path}")
-        return True
-
     def session_exists(self, name: str) -> bool:
         """Check if a tmux session exists."""
         session_name, machine = self._parse_session_name(name)
@@ -414,25 +292,6 @@ class TmuxAgent(AgentBackend):
             logger.error(f"Failed to send input: {result.stderr}")
             return False
 
-        return True
-
-    def kill_session(self, name: str) -> bool:
-        """Terminate a tmux session."""
-        session_name, machine = self._parse_session_name(name)
-
-        if machine:
-            cmd = f"tmux kill-session -t {shlex.quote(session_name)}"
-            result = self._run_remote(machine, cmd)
-        else:
-            result = self._run_local([
-                "tmux", "kill-session", "-t", session_name,
-            ])
-
-        if result.returncode != 0:
-            logger.error(f"Failed to kill session: {result.stderr}")
-            return False
-
-        logger.info(f"Killed session '{name}'")
         return True
 
     def list_sessions(self) -> list[str]:
