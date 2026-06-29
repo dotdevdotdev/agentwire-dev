@@ -50,6 +50,7 @@ from .routes.push import PushRoutesMixin, register_push_routes
 from .routes.safety import SafetyRoutesMixin, register_safety_routes
 from .routes.scheduler import SchedulerRoutesMixin, register_scheduler_routes
 from .routes.scratchpad import ScratchpadRoutesMixin, register_scratchpad_routes
+from .routes.sessions import SessionsRoutesMixin, register_sessions_routes
 from .routes.voice import VoiceRoutesMixin, register_voice_routes
 from .security import (
     WS_PROTOCOL_PREFIX,
@@ -236,6 +237,7 @@ class AgentWireServer(
     SafetyRoutesMixin,
     SchedulerRoutesMixin,
     ScratchpadRoutesMixin,
+    SessionsRoutesMixin,
     VoiceRoutesMixin,
 ):
     """Main server managing sessions, WebSockets, and agent backends."""
@@ -303,15 +305,11 @@ class AgentWireServer(
         self.app.router.add_get("/ws", self.handle_dashboard_ws)
         self.app.router.add_get("/ws/{name:.+}", self.handle_websocket)
         self.app.router.add_get("/ws/terminal/{name:.+}", self.handle_terminal_ws)
-        self.app.router.add_get("/api/sessions", self.api_sessions)
-        self.app.router.add_get("/api/sessions/local", self.api_sessions_local)
-        self.app.router.add_get("/api/sessions/remote", self.api_sessions_remote)
-        self.app.router.add_get("/api/worktrees", self.api_worktrees)
+        register_sessions_routes(self, self.app)
         self.app.router.add_post("/api/create", self.api_create_session)
         self.app.router.add_post("/api/active-session", self.api_active_session)
         self.app.router.add_post("/api/session/{name:.+}/config", self.api_session_config)
         self.app.router.add_post("/upload", self.handle_upload)
-        self.app.router.add_get("/api/sessions/{name:.+}/connections", self.api_session_connections)
         # Voice domain: TTS/STT HTTP endpoints (transcribe, send, say, local-tts,
         # answer, voices, voice-status)
         register_voice_routes(self, self.app)
@@ -643,7 +641,6 @@ class AgentWireServer(
         Returns:
             Working directory path, or None if session not found
         """
-        import socket
         local_hostname = socket.gethostname().split('.')[0]
 
         # Check if this is a local session
@@ -701,7 +698,6 @@ class AgentWireServer(
         Returns:
             Parsed YAML dict, or None if not found/invalid
         """
-        import socket
 
         local_hostname = socket.gethostname().split('.')[0]
 
@@ -751,7 +747,6 @@ class AgentWireServer(
         Returns:
             True if written successfully, False otherwise
         """
-        import socket
 
         local_hostname = socket.gethostname().split('.')[0]
 
@@ -2251,112 +2246,6 @@ class AgentWireServer(
 
     # API Handlers
 
-    async def api_sessions(self, request: web.Request) -> web.Response:
-        """List all active sessions grouped by machine via CLI."""
-        try:
-            # Get local sessions via CLI
-            local_success, local_result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-            local_sessions = local_result.get("sessions", []) if local_success else []
-
-            # Get remote sessions via CLI (includes SSH checks)
-            remote_success, remote_result = await self.run_agentwire_cmd(["list", "--remote", "--sessions"])
-            remote_sessions = remote_result.get("sessions", []) if remote_success else []
-
-            # Combine and add activity status
-            all_sessions = local_sessions + remote_sessions
-            for s in all_sessions:
-                s["activity"] = self._get_global_session_activity(s.get("name", ""))
-
-            # Group sessions by machine
-            machine_sessions = {}
-            for s in all_sessions:
-                machine_id = s.get("machine") or "local"  # Handle null/None
-                if machine_id not in machine_sessions:
-                    machine_sessions[machine_id] = []
-                machine_sessions[machine_id].append(s)
-
-            # Build machine list
-            machines = []
-            for machine_id, sessions_list in machine_sessions.items():
-                machines.append({
-                    "id": machine_id,
-                    "host": machine_id,
-                    "status": "online",  # If we got sessions, machine is online
-                    "session_count": len(sessions_list),
-                    "sessions": sessions_list,
-                })
-
-            # Sort machines: local first, then others alphabetically
-            machines.sort(key=lambda m: (m["id"] != "local" and not m["id"].endswith(socket.gethostname().split('.')[0]), m["id"]))
-
-            return web.json_response({"machines": machines})
-        except Exception as e:
-            logger.error(f"Failed to list sessions: {e}")
-            return web.json_response({"machines": []})
-
-    async def api_worktrees(self, request: web.Request) -> web.Response:
-        """List worktree sessions (across all repos) with read-only git status.
-
-        Thin wrapper over `agentwire worktree --list --all --json`; the CLI
-        folds in local-only git status (dirty/ahead/behind/pushed) per entry so
-        the sidebar can badge worktree sessions without per-session round-trips.
-        """
-        try:
-            success, result = await self.run_agentwire_cmd(["worktree", "--list", "--all"])
-            entries = result.get("entries", []) if success else []
-            return web.json_response({"entries": entries})
-        except Exception as e:
-            logger.error(f"Failed to list worktrees: {e}")
-            return web.json_response({"entries": []})
-
-    async def api_sessions_local(self, request: web.Request) -> web.Response:
-        """Fast endpoint for local sessions only (no SSH checks)."""
-        try:
-            success, result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-            if not success:
-                return web.json_response({"sessions": []})
-
-            sessions = result.get("sessions", [])
-            # Add activity status
-            for s in sessions:
-                s["activity"] = self._get_global_session_activity(s.get("name", ""))
-
-            # Computed state (off/needs_input/working/idle) — shells out to
-            # tmux per session, so keep it off the event loop.
-            await asyncio.to_thread(self._compute_session_states, sessions)
-
-            return web.json_response({"sessions": sessions})
-        except Exception as e:
-            logger.error(f"Failed to list local sessions: {e}")
-            return web.json_response({"sessions": []})
-
-    async def api_sessions_remote(self, request: web.Request) -> web.Response:
-        """Endpoint for remote sessions grouped by machine (progressive loading)."""
-        try:
-            # Get list of configured machines
-            machines_file = self.config.machines.file
-            if not machines_file.exists():
-                return web.json_response({"machines": []})
-
-            with open(machines_file) as f:
-                data = json.load(f)
-                remote_machines = [
-                    {"id": m.get("id"), "host": m.get("host")}
-                    for m in data.get("machines", [])
-                ]
-
-            # Progressive loading: returns cached or "checking" status
-            machines = await self.remote_sessions_checker.get_with_status(
-                remote_machines,
-                check_fn=self._fetch_remote_machine_sessions,
-                id_field='id'
-            )
-
-            return web.json_response({"machines": machines})
-        except Exception as e:
-            logger.error(f"Failed to list remote sessions: {e}")
-            return web.json_response({"machines": []})
-
     async def _fetch_remote_machine_sessions(self, machine: dict) -> dict:
         """Fetch sessions for a specific remote machine. Used by CachedStatusChecker."""
         try:
@@ -2895,27 +2784,6 @@ class AgentWireServer(
     async def _say_to_room(self, session_name: str, text: str):
         """Generate TTS audio and send to session clients (internal)."""
         await self.speak(session_name, text)
-
-    async def api_session_connections(self, request: web.Request) -> web.Response:
-        """GET /api/sessions/{session}/connections - Check if session has active browser connections."""
-        name = request.match_info["name"]
-        try:
-            has_connections = False
-            connection_count = 0
-
-            if name in self.active_sessions:
-                session = self.active_sessions[name]
-                connection_count = len(session.clients)
-                has_connections = connection_count > 0
-
-            return web.json_response({
-                "has_connections": has_connections,
-                "connection_count": connection_count
-            })
-
-        except Exception as e:
-            logger.error(f"Session connections check failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
 
     async def api_recreate_session(self, request: web.Request) -> web.Response:
         """POST /api/session/{name}/recreate - Destroy session/worktree and create fresh one via CLI.
