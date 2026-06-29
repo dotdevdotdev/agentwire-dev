@@ -1209,6 +1209,145 @@ body {
     border-radius: 4px;
 }
 
+/* ── Help modal (F1 / "?") ─────────────────────────────────────────────── */
+.help-overlay {
+    z-index: 9500;  /* above the sidebar (9001) so the cheat sheet is never clipped */
+    animation: announcement-fade 180ms ease-out;
+}
+
+.help-overlay .help-modal {
+    width: 760px;
+    max-width: 94vw;
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 26px 16px;
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--chrome-border));
+    border-radius: 12px;
+    animation: announcement-rise 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.help-dismiss {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 15px;
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 4px;
+}
+.help-dismiss:hover { color: var(--text); background: var(--chrome-border); }
+
+.help-title {
+    margin: 0 0 16px;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.help-content {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 24px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+@media (max-width: 640px) {
+    .help-content { grid-template-columns: 1fr; }
+}
+
+.help-group { margin-bottom: 16px; }
+
+.help-group-title {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.help-row {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 4px 0;
+}
+
+.help-keys {
+    flex: 0 0 132px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+}
+
+.help-desc { font-size: 13px; color: var(--text); line-height: 1.4; }
+
+.help-modal kbd,
+.help-footer kbd {
+    display: inline-block;
+    min-width: 16px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--text);
+    background: var(--background);
+    border: 1px solid var(--chrome-border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+}
+
+.help-or, .help-hold {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin: 0 2px;
+}
+.help-hold { font-style: italic; }
+
+.help-feature {
+    display: flex;
+    gap: 10px;
+    padding: 6px 0;
+}
+
+.help-feature-icon { font-size: 16px; line-height: 1.3; flex: 0 0 auto; }
+
+.help-feature-text { display: flex; flex-direction: column; gap: 1px; }
+
+.help-feature-name { font-size: 13px; font-weight: 600; color: var(--text); }
+
+.help-feature-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+.help-footer {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--chrome-border);
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+/* Sidebar header "?" help button — mirrors .sidebar-quicktask */
+.sidebar-help {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 7px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+}
+.sidebar-help:hover { color: var(--accent); background: var(--chrome-border); }
+
 .announcement-dismiss:hover {
     color: var(--text);
     background: var(--background);

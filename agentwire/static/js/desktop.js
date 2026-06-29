@@ -32,6 +32,7 @@ import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
 import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppressor.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
+import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import * as browserStt from './voice/browser-stt.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
@@ -83,6 +84,11 @@ async function init() {
         sidebar.close();
         openCommandPalette({ view: 'new-idea' });
     });
+    document.getElementById('sidebarHelp')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        sidebar.close();
+        openHelp();
+    });
     sidebar.addSection('sessions', sessionsSection);
     sidebar.addSection('services', servicesSection);
     sidebar.addSection('machines', machinesSection);
@@ -98,6 +104,7 @@ async function init() {
     setupWindowCycling();
     setupWindowSwipeCycling();
     setupCollage();
+    setupHelp();
 
     // Set up event listeners BEFORE fetching data
     desktop.on('disconnect', () => updateConnectionStatus(false));
@@ -449,7 +456,7 @@ function setupCollage() {
         const isF3 = e.code === 'F3';
         const isAltBacktick = e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'Backquote';
         if (!isF3 && !isAltBacktick) return;
-        if (isCommandPaletteOpen()) return;
+        if (isCommandPaletteOpen() || isHelpOpen()) return;
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;  // ignore auto-repeat while the key is held
@@ -1009,7 +1016,7 @@ function setupGlobalPtt() {
         // always intercepted.
         if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
             e.preventDefault();
-            if (!isCommandPaletteOpen()) openCommandPalette();
+            if (!isCommandPaletteOpen() && !isHelpOpen()) openCommandPalette();
         }
     });
     document.addEventListener('keyup', (e) => {
