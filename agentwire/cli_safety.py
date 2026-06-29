@@ -43,7 +43,6 @@ from agentwire.safety._core import (  # noqa: F401
     matches_path_in_command,
 )
 
-
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
 HOOKS_DIR = CONFIG_DIR / "hooks" / "damage-control"
