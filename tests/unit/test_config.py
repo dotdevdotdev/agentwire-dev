@@ -158,22 +158,6 @@ class TestWorktreeConfig:
         assert config.worktree.naming == "{user}/{slug}"
         assert config.worktree.worktree_dir.name == "wt"
 
-    def test_quicktask_alias(self, tmp_path):
-        # `quicktask:` is the documented legacy alias for `worktree:`.
-        path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"quicktask": {"default_base": "trunk"}}))
-        config = load_config(path)
-        assert config.worktree.default_base == "trunk"
-
-    def test_worktree_key_wins_over_alias(self, tmp_path):
-        path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({
-            "worktree": {"default_base": "main"},
-            "quicktask": {"default_base": "old"},
-        }))
-        config = load_config(path)
-        assert config.worktree.default_base == "main"
-
 
 # --- two-tier voice backends ---
 

@@ -607,9 +607,8 @@ def _dict_to_config(data: dict) -> Config:
         extra=projects_data.get("extra", []),
     )
 
-    # Worktree-session orchestration (`worktree:` key). `quicktask:` is a
-    # documented legacy alias — the canonical key is `worktree:`.
-    worktree_data = data.get("worktree", data.get("quicktask", {})) or {}
+    # Worktree-session orchestration (`worktree:` key).
+    worktree_data = data.get("worktree", {}) or {}
     worktree = WorktreeConfig(
         default_base=worktree_data.get("default_base"),
         default_project=worktree_data.get("default_project"),
