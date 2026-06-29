@@ -282,5 +282,3 @@ export class IconManager {
 
 // Singleton instances for each category
 export const sessionIcons = new IconManager('sessions');
-export const machineIcons = new IconManager('machines');
-export const projectIcons = new IconManager('projects');
