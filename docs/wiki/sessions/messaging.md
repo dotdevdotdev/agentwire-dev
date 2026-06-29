@@ -51,6 +51,23 @@ lands in a durable inbox and is injected only at a safe boundary.
    `dead_letter` event is logged — no infinite retry. `msg dead` surfaces these
    so the drop is never silent.
 
+   Two refinements keep the penalty honest:
+
+   - **No-penalty busy reasons.** `target_busy` (the box can't be parsed — the
+     agent is running a long command) and `queued_placeholder` (the box shows
+     Claude Code's *"Press up to edit queued messages"* — the agent is generating
+     with human-queued input) are *busy*, not refusals. They defer **without**
+     bumping `attempts`, so a legitimately-busy session never burns a report-back
+     toward dead-letter; the message waits and delivers once the box frees up.
+     The placeholder is matched loosely, and only the *penalty* changes — a
+     non-empty box is still never pasted into (see the collision detector below).
+   - **Out-of-band escalation.** When a **load-bearing** kind (`done` / `request`
+     / `escalation`) does dead-letter, the owner is emailed via the shared Resend
+     wiring (the same channel usage-limit parking uses) so the loss is surfaced
+     even if nobody runs `msg dead`. `note` is fire-and-forget and `ingest` never
+     auto-delivers, so neither is escalated. Escalation is best-effort — a send
+     failure is logged (`dead_letter_escalate_failed`) and never breaks the drain.
+
 ### `prompt_is_empty` — the collision detector
 
 The one genuinely new building block (`prompt_router.prompt_is_empty`). It reads
@@ -62,6 +79,12 @@ It is **conservative by design**: any non-empty content (a human draft *or* a
 busy-state placeholder like "Press up to edit queued messages") and any screen
 it can't parse as a clean empty box return `False`. A delayed message is fine; a
 clobbered draft is not.
+
+The queued-message placeholder is non-empty here too, so `prompt_is_empty` stays
+`False` and the box is never pasted into — the distinction between a *draft* and
+the *placeholder* lives one layer up, in the drain's penalty decision
+(`prompt_router.is_queued_placeholder`), not in this guard. That keeps the
+collision detector simple and the no-clobber guarantee absolute.
 
 ## Typed messages
 

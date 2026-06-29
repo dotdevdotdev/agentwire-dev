@@ -6,6 +6,7 @@ and the flush drain (gating, batch coalescing, broadcast, attempt cap).
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -78,6 +79,15 @@ class TestInputBox:
     def test_queued_placeholder_treated_as_content(self):
         # Busy-state placeholder is NOT empty → defer, not clobber.
         assert prompt_router.input_box_content(QUEUED_BOX) == "Press up to edit queued messages"
+
+    def test_is_queued_placeholder(self):
+        # Loose match: catches singular/plural and a reworded "↑/N" variant.
+        assert prompt_router.is_queued_placeholder("Press up to edit queued messages")
+        assert prompt_router.is_queued_placeholder("Press ↑ to edit 2 queued messages")
+        assert prompt_router.is_queued_placeholder("1 queued message")
+        # A real human draft is NOT a placeholder (so it still penalizes/protects).
+        assert not prompt_router.is_queued_placeholder("this is my half typed message")
+        assert not prompt_router.is_queued_placeholder("")
 
     def test_wrapped_draft_non_empty(self):
         content = prompt_router.input_box_content(WRAPPED_DRAFT)
@@ -409,3 +419,108 @@ class TestEscalation:
         assert res["deferred"]
         assert res["reason"] == "box_not_empty"
         assert inbox.list_messages("s")[0].attempts == 11
+
+
+class TestQueuedPlaceholderDefer:
+    """B: the 'Press up to edit queued messages' placeholder is a BUSY signal,
+    not a human draft — it defers WITHOUT penalty (like target_busy), so a
+    generating-with-queued session never burns report-backs toward dead-letter.
+    The collision guard is untouched: we still never paste into a non-empty box."""
+
+    def _placeholder_box(self, monkeypatch):
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(
+            prompt_router, "input_box_content",
+            lambda vis: "Press up to edit queued messages",
+        )
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+
+    def test_placeholder_defers_without_penalty(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        self._placeholder_box(monkeypatch)
+        res = inbox.flush_session("s")
+        assert res["deferred"]
+        assert res["reason"] == "queued_placeholder"
+        assert inbox.list_messages("s")[0].attempts == 0  # never penalized
+
+    def test_placeholder_never_dead_letters(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        self._placeholder_box(monkeypatch)
+        for _ in range(inbox.MAX_ATTEMPTS + 5):
+            inbox.flush_session("s")
+        pending = inbox.list_messages("s")
+        assert len(pending) == 1 and pending[0].attempts == 0
+        assert inbox.list_dead("s") == []  # stayed pending, surfaced by doctor
+
+    def test_placeholder_never_pastes(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        self._placeholder_box(monkeypatch)
+        sent = []
+        monkeypatch.setattr(
+            prompt_router, "safe_deliver",
+            lambda s, p, text: (sent.append(text) or (True, "delivered")),
+        )
+        inbox.flush_session("s")
+        assert sent == []  # box non-empty → never delivered into
+
+
+class TestDeadLetterEscalation:
+    """A: a load-bearing report-back (done/request/escalation) that dead-letters
+    emails the owner out-of-band; note does not. Escalation is best-effort and
+    must never break the drain."""
+
+    def _occupied_agent(self, monkeypatch):
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "human draft")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+
+    def _capture_email(self, monkeypatch, sink):
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: sink.append(kw) or SimpleNamespace(success=True),
+        )
+
+    def test_done_dead_letter_emails_owner(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR #312 merged", kind="done", sender="worker")
+        self._occupied_agent(monkeypatch)
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        assert len(sent) == 1
+        assert "done" in sent[0]["subject"] and "worker" in sent[0]["subject"]
+        assert "PR #312 merged" in sent[0]["body"]
+        assert len(inbox.list_dead("s")) == 1  # still archived for audit
+
+    def test_request_and_escalation_also_email(self, isolate, monkeypatch):
+        inbox.enqueue("s", "need creds", kind="request", sender="w")
+        inbox.enqueue("s", "stuck!", kind="escalation", sender="w")
+        self._occupied_agent(monkeypatch)
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        kinds = sorted(k["subject"].split("undelivered ")[1].split(":")[0] for k in sent)
+        assert kinds == ["escalation", "request"]
+
+    def test_note_dead_letter_does_not_email(self, isolate, monkeypatch):
+        inbox.enqueue("s", "fyi", kind="note", sender="worker")
+        self._occupied_agent(monkeypatch)
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        assert sent == []  # note is fire-and-forget
+        assert len(inbox.list_dead("s")) == 1  # still dead-lettered, just silent
+
+    def test_escalation_failure_never_breaks_drain(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR merged", kind="done", sender="worker")
+        self._occupied_agent(monkeypatch)
+
+        def boom(**kw):
+            raise RuntimeError("resend down")
+
+        monkeypatch.setattr("agentwire.channels.email.send_email", boom)
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        assert len(inbox.list_dead("s")) == 1  # drain survived; corpse archived

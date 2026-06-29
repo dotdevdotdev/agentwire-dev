@@ -61,6 +61,18 @@ BROADCAST_TOKEN = "@all"
 # being permanently busy/typed-in).
 MAX_ATTEMPTS = 40
 
+# Defer reasons that DON'T penalize: the target is legitimately busy — running a
+# long command (unparseable box → "target_busy") or generating with human-queued
+# input (the "queued messages" placeholder → "queued_placeholder"). Such messages
+# stay pending forever instead of burning toward dead-letter; doctor /
+# worktree --watch surface them, and they deliver once the box frees up.
+_NO_PENALTY_REASONS = frozenset({"target_busy", "queued_placeholder"})
+
+# Load-bearing kinds: a silently-dropped one is a real loss, so on dead-letter it
+# is escalated out-of-band (owner email). note is fire-and-forget and ingest
+# never auto-delivers, so neither is worth an owner email.
+ESCALATE_KINDS = ("done", "request", "escalation")
+
 _RESERVED_DIRS = {"dead", "sent", ".lock", "ingest"}
 
 
@@ -379,6 +391,62 @@ def _release_lock(lock: "Path | None") -> None:
         pass
 
 
+def _fmt_ts(ms: int) -> str:
+    if not ms:
+        return "unknown"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ms / 1000))
+
+
+def _escalate_dead_letter(msg: Message, reason: str) -> None:
+    """Email the owner when a load-bearing report-back dead-letters.
+
+    ``done`` / ``request`` / ``escalation`` are load-bearing — a silently-dropped
+    one is a real loss, so we surface it out-of-band via the shared Resend wiring
+    (the same owner-escalation channel usage-limit parking uses). ``note`` and
+    ``ingest`` are not escalated. Best-effort: a missing key or send failure must
+    never break the drain — the corpse already sits in ``dead/`` for
+    ``agentwire msg dead``.
+    """
+    if msg.kind not in ESCALATE_KINDS:
+        return
+    try:
+        import socket
+
+        from .channels.email import send_email
+
+        host = socket.gethostname()
+        subject = (
+            f"[agentwire] undelivered {msg.kind}: {msg.sender} → {msg.to} (dead-lettered)"
+        )
+        body = "\n".join([
+            f"A **{msg.kind}** message from **{msg.sender}** to **{msg.to}** on "
+            f"`{host}` was never delivered after {msg.attempts} attempts and has "
+            f"been dead-lettered.",
+            "",
+            f"- **Kind:** {msg.kind}",
+            f"- **From:** {msg.sender}",
+            f"- **To:** {msg.to}",
+            f"- **Last defer reason:** {reason}",
+            f"- **Sent:** {_fmt_ts(msg.ts)}",
+            f"- **Dead-lettered:** {_fmt_ts(msg.dead_ts)}",
+            "",
+            "Message text:",
+            "",
+            "```",
+            msg.text,
+            "```",
+            "",
+            f"Saved in the dead-letter store — review with `agentwire msg dead -s {msg.to}`.",
+        ])
+        result = send_email(subject=subject, body=body)
+        _log_event(
+            "dead_letter_escalated", id=msg.id, to=msg.to, kind=msg.kind,
+            ok=bool(getattr(result, "success", False)),
+        )
+    except Exception as exc:  # escalation is best-effort; never break the drain
+        _log_event("dead_letter_escalate_failed", id=msg.id, to=msg.to, error=str(exc))
+
+
 def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     """Increment attempts on each pending message; dead-letter over the cap.
 
@@ -390,10 +458,10 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     for msg in messages:
         if msg.path is None:
             continue
-        if reason == "target_busy":
-            # A busy/unparseable orchestrator shouldn't be penalized for running long commands.
-            # Keeping messages pending forever while busy is intentional since they are surfaced
-            # via `doctor` / `worktree --watch` (they will deliver once the prompt is empty/idle).
+        if reason in _NO_PENALTY_REASONS:
+            # Target is busy (long command, or generating with human-queued input),
+            # not refusing — never penalize. Surfaced via `doctor` / `worktree
+            # --watch`; delivers once the prompt is empty/idle.
             msg.reason = reason
             try:
                 _write_message(msg.path, msg)
@@ -415,6 +483,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
                     attempts=msg.attempts, reason=reason,
                 )
                 dead += 1
+                _escalate_dead_letter(msg, reason)
             except OSError:
                 pass
         else:
@@ -456,12 +525,18 @@ def flush_session(session: str) -> dict:
             }
 
         if box_content != "":
-            # Box is not empty. We never bypass this to protect human drafts. Defer.
-            dead = _bump_attempts(messages, "box_not_empty")
-            _log_event("deferred", to=session, count=len(messages), reason="box_not_empty")
+            # Box is not empty. We never bypass this to protect human drafts. But
+            # the "queued messages" placeholder is a BUSY signal, not a draft:
+            # defer WITHOUT penalty (like target_busy) so a generating-with-queued
+            # session doesn't burn report-backs toward dead-letter. Either way we
+            # never paste — only the penalty decision differs.
+            placeholder = prompt_router.is_queued_placeholder(box_content)
+            reason = "queued_placeholder" if placeholder else "box_not_empty"
+            dead = _bump_attempts(messages, reason)
+            _log_event("deferred", to=session, count=len(messages), reason=reason)
             return {
                 "session": session, "delivered": 0, "deferred": True,
-                "reason": "box_not_empty", "dead": dead,
+                "reason": reason, "dead": dead,
             }
 
         rendered = "\n".join(m.render() for m in messages)

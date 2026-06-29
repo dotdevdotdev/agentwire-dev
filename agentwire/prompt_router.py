@@ -332,6 +332,26 @@ def prompt_is_empty(target_session: str, target_pane: int = 0) -> bool:
     return content == ""
 
 
+# Claude Code renders this in the input box while the agent is generating and the
+# human has queued one or more messages (e.g. "Press up to edit queued messages").
+# It is a BUSY-state placeholder, not a human draft. Matched loosely on purpose:
+# if a future Claude Code reworded it, a non-match degrades to the SAFE default
+# (treated as a real draft → defer with penalty), never to anything that pastes.
+_QUEUED_PLACEHOLDER = re.compile(r"queued\s+messages?", re.IGNORECASE)
+
+
+def is_queued_placeholder(content: str) -> bool:
+    """True if *content* is Claude Code's queued-message busy placeholder.
+
+    The inbox drain uses this to defer WITHOUT penalty (like ``target_busy``)
+    when a session is generating with human-queued input, instead of burning the
+    message toward dead-letter. It NEVER widens delivery: a placeholder is still
+    non-empty, so ``prompt_is_empty`` stays False and we never paste into the box
+    — only the dead-letter penalty decision changes.
+    """
+    return bool(content) and bool(_QUEUED_PLACEHOLDER.search(content))
+
+
 def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[bool, str]":
     """Deliver *text* to the target pane, refusing unsafe targets.
 
