@@ -117,7 +117,6 @@ include = [
     # Role/prompt content bundled with the CLI
     "agentwire/roles/*.md",
     "agentwire/commands/*.md",
-    "agentwire/prompts/*.md",
     # Hooks and auxiliary scripts/configs
     "agentwire/hooks/**/*.py",
     "agentwire/hooks/**/*.yaml",
@@ -149,6 +148,7 @@ exclude = [
 # rebuild — the same posture as hooks/roles/prompts bundled inside the package.
 [tool.hatch.build.targets.wheel.force-include]
 ".claude/skills/wiki" = "agentwire/skills/wiki"
+".claude/commands/handoff.md" = "agentwire/commands/handoff.md"
 
 [tool.hatch.version]
 path = "agentwire/__init__.py"
@@ -189,6 +189,7 @@ exclude = [
 # resolve the wheel's force-include and fails.
 [tool.hatch.build.targets.sdist.force-include]
 ".claude/skills/wiki" = ".claude/skills/wiki"
+".claude/commands/handoff.md" = ".claude/commands/handoff.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
