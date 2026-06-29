@@ -81,16 +81,6 @@ source .venv-chatterbox/bin/activate
 pip install chatterbox-tts torch torchaudio fastapi uvicorn faster-whisper pydantic
 ```
 
-### Creating the Qwen venv
-
-```bash
-cd ~/projects/agentwire-dev
-uv venv .venv-qwen
-source .venv-qwen/bin/activate
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install qwen-tts fastapi uvicorn faster-whisper pydantic
-```
-
 ### Creating the Zonos venv
 
 Zonos must be installed in **editable mode** from a local clone due to a packaging bug (`backbone/` sub-package is omitted by the standard pip install):
