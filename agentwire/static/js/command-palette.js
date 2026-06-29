@@ -44,6 +44,11 @@ const COMMANDS = [
         const { collage } = await import('./collage.js');
         collage.enter();
     } },
+    { id: 'help', icon: '⌨', label: 'Keyboard shortcuts & help', keywords: 'help shortcuts keys keyboard cheat sheet f1 bindings features guide', run: async () => {
+        closeCommandPalette();
+        const { openHelp } = await import('./help-modal.js');
+        openHelp();
+    } },
 ];
 
 // ---------------------------------------------------------------------------
