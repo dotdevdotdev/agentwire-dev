@@ -736,9 +736,7 @@ def cmd_doctor(args) -> int:
     if channels_cfg.get("email"):
         expected_keys.append(("channels.email (Resend)", ["RESEND_API_KEY"]))
     if channels_cfg.get("quo"):
-        expected_keys.append(
-            ("channels.quo (OpenPhone)", ["QUO_API_KEY", "OPENPHONE_API_KEY"])
-        )
+        expected_keys.append(("channels.quo (OpenPhone)", ["QUO_API_KEY"]))
     for pname, pcfg in (raw_cfg.get("pi", {}).get("providers", {}) or {}).items():
         p_env_var = (pcfg or {}).get(
             "env_var", f"{pname.upper().replace('-', '_')}_API_KEY"

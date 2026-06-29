@@ -201,52 +201,6 @@ def resolve_name(args) -> tuple[str | None, str | None]:
     )
 
 
-# --- first-run legacy zombie sweep ----------------------------------------------
-
-
-def _sweep_legacy_once() -> list[str]:
-    """Tear down the pre-namespace global layout, exactly once.
-
-    Pre-namespace, the council was a singleton: orchestrator ``agentwire-council``,
-    lens sessions ``council-<lens>``, a global ``~/.agentwire/council/sitting.json``
-    + ``workspace/``. After upgrade those panes keep burning tokens invisibly —
-    this exact zombie state has been hit live. Kill them and remove the orphaned
-    global state; ``prompts/`` history is kept. Marker-guarded so it runs once.
-    """
-    marker = state.COUNCIL_ROOT / ".namespaced"
-    if marker.exists():
-        return []
-
-    legacy_sitting = state.COUNCIL_ROOT / "sitting.json"
-    targets: set[str] = {"agentwire-council"}
-    targets.update(f"council-{lens}" for lens in state.DEFAULT_ROSTER)
-    if legacy_sitting.exists():
-        try:
-            data = json.loads(legacy_sitting.read_text())
-            if isinstance(data, dict):
-                targets.update(
-                    v for v in data.get("sessions", {}).values() if isinstance(v, str)
-                )
-                orch = data.get("orchestrator")
-                if isinstance(orch, str):
-                    targets.add(orch)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    live = list_live_sessions()
-    killed = [t for t in sorted(targets) if t and t in live and kill_session(t)]
-
-    for orphan in (legacy_sitting, state.COUNCIL_ROOT / "workspace" / ".agentwire.yml"):
-        try:
-            orphan.unlink()
-        except (FileNotFoundError, OSError):
-            pass
-
-    state.COUNCIL_ROOT.mkdir(parents=True, exist_ok=True)
-    marker.write_text(state.now_iso())
-    return killed
-
-
 # --- workspace ------------------------------------------------------------------
 
 
@@ -267,8 +221,6 @@ def _write_workspace(name: str, session_type: str) -> None:
 
 
 def cmd_council_start(args) -> int:
-    _sweep_legacy_once()
-
     explicit = getattr(args, "name", None)
     name = explicit or state.default_name()
     if not state.valid_name(name):
@@ -371,7 +323,6 @@ def cmd_council_start(args) -> int:
 
 
 def cmd_council_stop(args) -> int:
-    _sweep_legacy_once()
     name, err = resolve_name(args)
     if err:
         return _emit_error(args, err)
@@ -399,7 +350,6 @@ def cmd_council_stop(args) -> int:
 
 
 def cmd_council_status(args) -> int:
-    _sweep_legacy_once()
     name, err = resolve_name(args)
     if err:
         return _emit(args, {"success": True, "running": False, "error": err}, err)
@@ -467,7 +417,6 @@ def _prompt_text_from(args) -> str | None:
 
 
 def cmd_council_ask(args) -> int:
-    _sweep_legacy_once()
     name, err = resolve_name(args)
     if err:
         return _emit_error(args, err)
@@ -530,7 +479,6 @@ def cmd_council_ask(args) -> int:
 
 
 def cmd_council_collect(args) -> int:
-    _sweep_legacy_once()
     name, err = resolve_name(args)
     if err:
         return _emit_error(args, err)
@@ -577,7 +525,6 @@ def _infer_soul(sitting: state.Sitting, session: str | None) -> str | None:
 
 
 def cmd_council_reply(args) -> int:
-    _sweep_legacy_once()
     kinds = [k for k in inbox.KINDS if getattr(args, k.replace("-", "_"), False)]
     if len(kinds) != 1:
         return _emit_error(args, "specify exactly one of --take / --ack / --pass")
@@ -659,7 +606,6 @@ def _age(iso: str) -> str:
 
 
 def cmd_council_list(args) -> int:
-    _sweep_legacy_once()
     live = list_live_sessions()
     rows = []
     for name in state.list_sittings():

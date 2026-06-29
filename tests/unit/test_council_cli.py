@@ -392,22 +392,3 @@ class TestReply:
         sent_before = len(mocks["sent"])
         self._reply(take=True, soul="brain", text="x")
         assert len(mocks["sent"]) == sent_before
-
-
-class TestLegacySweep:
-    def test_kills_legacy_singleton_once(self, mocks, capsys, monkeypatch):
-        # A live pre-namespace global sitting + orphaned global state.
-        mocks["live"].update({"agentwire-council", "council-brain"})
-        global_sitting = state.COUNCIL_ROOT / "sitting.json"
-        global_sitting.parent.mkdir(parents=True, exist_ok=True)
-        global_sitting.write_text(
-            json.dumps(
-                {"orchestrator": "agentwire-council", "sessions": {"brain": "council-brain"}}
-            )
-        )
-        killed = cli._sweep_legacy_once()
-        assert "agentwire-council" in killed and "council-brain" in killed
-        assert not global_sitting.exists()
-        assert (state.COUNCIL_ROOT / ".namespaced").exists()
-        # Idempotent — second call is a no-op.
-        assert cli._sweep_legacy_once() == []

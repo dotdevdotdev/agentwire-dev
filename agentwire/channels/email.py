@@ -160,7 +160,7 @@ def _render_email_template(
 
 
 def _get_email_config() -> EmailConfig:
-    """Get email config from channels registry or legacy path."""
+    """Get email config from channels registry."""
     from agentwire.config import get_config
 
     config = get_config()

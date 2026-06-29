@@ -30,8 +30,8 @@ class QuoConfigError(NotificationError):
 class QuoConfig:
     """Quo (OpenPhone) SMS configuration.
 
-    The API key is env-only: QUO_API_KEY (or legacy OPENPHONE_API_KEY),
-    normally a line in ~/.agentwire/.env (docs/wiki/security/secrets.md).
+    The API key is env-only: QUO_API_KEY, normally a line in
+    ~/.agentwire/.env (docs/wiki/security/secrets.md).
     It is never read from config.yaml.
     """
 
@@ -40,7 +40,7 @@ class QuoConfig:
     api_key: str = field(init=False, default="")
 
     def __post_init__(self):
-        self.api_key = os.environ.get("QUO_API_KEY", "") or os.environ.get("OPENPHONE_API_KEY", "")
+        self.api_key = os.environ.get("QUO_API_KEY", "")
 
 
 API_URL = "https://api.openphone.com/v1/messages"
