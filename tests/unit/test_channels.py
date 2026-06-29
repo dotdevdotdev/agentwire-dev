@@ -180,14 +180,6 @@ class TestQuoChannel:
         config = QuoConfig()
         assert config.api_key == "quo-key-123"
 
-    def test_quo_config_openphone_env_fallback(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("QUO_API_KEY", raising=False)
-        monkeypatch.setenv("OPENPHONE_API_KEY", "op-key-456")
-        from agentwire.channels.quo import QuoConfig
-        config = QuoConfig()
-        assert config.api_key == "op-key-456"
-
     def test_quo_config_rejects_explicit_key(self):
         """Keys are env-only (~/.agentwire/.env) — not a config field."""
         from agentwire.channels.quo import QuoConfig
@@ -202,7 +194,6 @@ class TestQuoChannel:
 
     def test_send_quo_no_api_key(self, tmp_path, monkeypatch):
         monkeypatch.delenv("QUO_API_KEY", raising=False)
-        monkeypatch.delenv("OPENPHONE_API_KEY", raising=False)
         config_data = {"channels": {"quo": {}}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config_data))

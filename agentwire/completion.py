@@ -220,13 +220,10 @@ def clear_task_context(session: str) -> None:
         session: tmux session name
     """
     context_file = TASKS_DIR / f"{session}.json"
-    complete_file = TASKS_DIR / f"{session}.complete"
-
-    for f in [context_file, complete_file]:
-        try:
-            f.unlink(missing_ok=True)
-        except OSError:
-            pass
+    try:
+        context_file.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def wait_for_completion_signal(
@@ -253,8 +250,6 @@ def wait_for_completion_signal(
     Raises:
         CompletionTimeout: If session dies before task completed
     """
-    complete_file = TASKS_DIR / f"{session}.complete"
-
     # Build glob pattern for fuzzy summary detection (agents sometimes
     # invent their own timestamp instead of using the provided filename).
     summary_glob = None
@@ -303,14 +298,6 @@ def wait_for_completion_signal(
                     "summary_file": str(found_summary),
                 }
             except CompletionError:
-                pass  # File may be partially written, retry
-
-        # Fallback: check for legacy .complete signal file
-        if complete_file.exists():
-            try:
-                signal = json.loads(complete_file.read_text())
-                return signal
-            except (json.JSONDecodeError, OSError):
                 pass  # File may be partially written, retry
 
         # Usage-limit dialog: park deterministically (zero-LLM) and report a

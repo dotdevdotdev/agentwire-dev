@@ -3,7 +3,6 @@
 import pytest
 
 from agentwire.cli_safety import (
-    _match_allowed_path,
     _parse_allowed_entry,
     check_command_safety,
     glob_to_regex,
@@ -11,6 +10,7 @@ from agentwire.cli_safety import (
     is_glob_pattern,
     is_path_allowed_for_op,
     load_allowed_paths,
+    match_path,
     matches_path_in_command,
 )
 
@@ -139,7 +139,7 @@ class TestCheckCommandSafety:
         assert result["command"] == "ls -la"
 
 
-# --- _match_allowed_path ---
+# --- match_path ---
 
 class TestMatchAllowedPath:
     @pytest.mark.parametrize("path,pattern,expected", [
@@ -154,7 +154,7 @@ class TestMatchAllowedPath:
         ("/home/user/project/pkg.egg-info/top_level.txt", "*.egg-info/*", True),
     ])
     def test_match(self, path, pattern, expected):
-        assert _match_allowed_path(path, pattern) is expected
+        assert match_path(path, pattern) is expected
 
 
 # --- is_command_path_allowed ---
