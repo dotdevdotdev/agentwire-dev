@@ -144,7 +144,7 @@ def validate_config(config: Config) -> tuple[list[ConfigError], list[ConfigWarni
 
 ## CLI First
 
-All session/machine logic lives in CLI commands (`__main__.py`). The web portal is a thin wrapper that:
+All session/machine logic lives in the CLI. The command tree is split per-domain (#495): shared helpers (machine config, SSH, JSON output, session resolution, etc.) live in `core.py`; each command group lives in its own `agentwire/<domain>_cli.py` exposing a `register_<domain>_parser(subparsers)` registrar, and `build_parser()` imports them and runs the `_REGISTRARS` loop. `__main__.py` is just the entry point. Adding a command means writing a new `*_cli.py` + appending its registrar, not editing a god-file. The web portal is a thin wrapper that:
 
 1. Calls CLI via `run_agentwire_cmd(["command", "args"])`
 2. Parses JSON output (`--json` flag)
@@ -159,7 +159,9 @@ When adding new functionality:
 
 ```
 agentwire/
-├── __main__.py      # CLI commands (entry point)
+├── __main__.py      # CLI entry point (imports + runs the registrar loop)
+├── core.py          # Shared CLI helpers (machine config, SSH, JSON, session resolution)
+├── *_cli.py         # Per-domain command groups, each with a register_<domain>_parser()
 ├── server.py        # WebSocket server
 ├── config.py        # Configuration dataclasses
 ├── errors.py        # Structured error classes
