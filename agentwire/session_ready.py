@@ -18,9 +18,18 @@ import time
 # 60 lines) so a submitted prompt that scrolled up is still found.
 VERIFY_SCROLLBACK_LINES = 200
 
-# Delay for the early snapshot — catches the placeholder/fragment before a fast
-# agent scrolls it away. The remaining settle gives a slow agent time to render.
-EARLY_SETTLE = 0.15
+# Adaptive submit tuning (replaces the old fixed pre-Enter sleep). Delivery is a
+# two-phase poll: wait for the paste to land in the input box, then press Enter
+# and wait for the box to clear — re-pressing Enter a bounded number of times if
+# the first keystroke is swallowed under load (or a large paste needs a second
+# Enter to dismiss its ``[Pasted text]`` banner before submitting).
+POLL_INTERVAL = 0.15
+# Max wait for a paste to appear in the input box before giving up on this try.
+LAND_TIMEOUT = 5.0
+# Max wait, after an Enter, for the box to clear (the keystroke to register).
+SUBMIT_TIMEOUT = 3.0
+# Bounded Enter re-presses before declaring a hard failure.
+MAX_ENTER_ATTEMPTS = 4
 
 # Substrings that mean "Claude is actively working" — a spinner footer, the
 # token counter, the esc-to-interrupt hint, or tool-output glyphs. A
@@ -39,11 +48,27 @@ ACTIVITY_MARKERS = (
 )
 
 
-def send_to_session(session: str, message: str, pane_index: int = 0) -> None:
-    """Inject a message into a session's pane (pane 0 by default)."""
+def paste_no_enter(session: str, message: str, pane_index: int = 0) -> None:
+    """Paste a message into a session's pane WITHOUT pressing Enter.
+
+    Decoupling the paste from the Enter is the whole point of the adaptive
+    submit: it lets us poll the input box and confirm the text actually landed
+    before we commit it. Pressing Enter in the same breath (the old behavior)
+    fires the keystroke on a fixed delay that, under load, lands before the
+    paste does — Enter is swallowed and the message sits unsent.
+    """
     from agentwire import pane_manager
 
-    pane_manager.send_to_target(f"{session}.{pane_index}", message, enter=True)
+    pane_manager.send_to_target(f"{session}.{pane_index}", message, enter=False)
+
+
+def press_enter(session: str, pane_index: int = 0) -> None:
+    """Send a single Enter keystroke to a session's pane."""
+    from agentwire import pane_manager
+
+    pane_manager.run_command(
+        ["tmux", "send-keys", "-t", f"{session}.{pane_index}", "Enter"], timeout=5
+    )
 
 
 def capture_session(session: str, lines: int = 60, pane_index: int = 0) -> str:
@@ -58,22 +83,66 @@ def pane_shows_activity(capture: str) -> bool:
     return any(marker.lower() in lowered for marker in ACTIVITY_MARKERS)
 
 
-def consumed_and_working(session: str, capture: str, pane_index: int = 0) -> bool:
-    """Positive "consumed" signal: input box empty AND pane shows activity.
+def input_box(capture: str) -> "str | None":
+    """The input-box content for *capture*, or None if it can't be parsed.
 
-    A submitted prompt leaves the input box empty while the agent works. We
-    require *both* — empty alone is also the idle/never-received state, so an
-    empty box with no activity is NOT treated as delivered (guards the genuine
-    vanish case against a false positive).
+    Thin pass-through to :func:`prompt_router.input_box_content` so the verified
+    submit can reason about exactly one thing: is our pasted text still sitting
+    unsent in the box, or has it cleared?
     """
-    if not pane_shows_activity(capture):
-        return False
     from agentwire import prompt_router
 
-    try:
-        return prompt_router.prompt_is_empty(session, pane_index)
-    except Exception:
+    return prompt_router.input_box_content(capture)
+
+
+def text_landed(capture: str, message: str) -> bool:
+    """Has *message* landed in the input box, ready to submit?
+
+    True iff the box is parseable and shows the message fragment (or Claude's
+    ``[Pasted text …]`` placeholder for a large paste).
+    """
+    box = input_box(capture)
+    if box is None:
         return False
+    return message_visible(box, message)
+
+
+def submitted(capture: str, message: str, marker: str | None = None) -> bool:
+    """Did the paste actually get *submitted* (Enter registered)?
+
+    The discriminating signal is the input box: if our text still sits in a
+    readable box, it is NOT submitted — this is the exact false-positive the old
+    check made (treating "text visible anywhere" as success while it sat unsent).
+
+    Once the box no longer holds our text, we confirm with positive evidence:
+      - *marker* given → the marker line is present in scrollback.
+      - empty box → the pane shows activity OR the message scrolled into history
+        (an empty box with neither is the idle/never-received vanish case).
+      - unparseable box (tool output / dialog covering it) → activity AND the
+        message visible in scrollback.
+    """
+    box = input_box(capture)
+    if box is not None and message_visible(box, message):
+        return False  # still sitting unsent in the box
+    if marker is not None:
+        return marker in capture
+    if box == "":
+        return pane_shows_activity(capture) or message_visible(capture, message)
+    return pane_shows_activity(capture) and message_visible(capture, message)
+
+
+def _poll(predicate, timeout: float) -> bool:
+    """Poll *predicate* until it returns truthy or *timeout* elapses."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(POLL_INTERVAL)
 
 
 def wait_for_session_ready(
@@ -168,6 +237,43 @@ def message_visible(capture: str, message: str) -> bool:
     return "[Pasted text" in capture
 
 
+def _snapshot(session: str, pane_index: int) -> str:
+    return capture_session(
+        session, lines=VERIFY_SCROLLBACK_LINES, pane_index=pane_index
+    )
+
+
+def _deliver_once(
+    session: str, message: str, marker: str | None, pane_index: int
+) -> bool:
+    """One adaptive paste→land→submit attempt. True iff the message submitted."""
+    paste_no_enter(session, message, pane_index=pane_index)
+
+    # Phase 1 — wait for the paste to actually land in the input box (or for a
+    # very fast bypass agent to have already consumed AND submitted it). If it
+    # never lands, the paste vanished — let the caller retry the whole send.
+    def landed_or_done() -> bool:
+        cap = _snapshot(session, pane_index)
+        return submitted(cap, message, marker) or text_landed(cap, message)
+
+    if not _poll(landed_or_done, LAND_TIMEOUT):
+        return False
+
+    # Phase 2 — press Enter and confirm the box cleared. Bounded re-press: a
+    # single Enter can be swallowed under load, and a large paste needs a second
+    # Enter (dismiss the ``[Pasted text]`` banner, then submit).
+    for _ in range(MAX_ENTER_ATTEMPTS):
+        if submitted(_snapshot(session, pane_index), message, marker):
+            return True
+        press_enter(session, pane_index=pane_index)
+        if _poll(
+            lambda: submitted(_snapshot(session, pane_index), message, marker),
+            SUBMIT_TIMEOUT,
+        ):
+            return True
+    return False
+
+
 def send_verified(
     session: str,
     message: str,
@@ -176,50 +282,30 @@ def send_verified(
     settle: float = 2.0,
     pane_index: int = 0,
 ) -> bool:
-    """Send a message and verify it actually landed in the pane.
+    """Paste a message and verify it was actually *submitted* — adaptively.
 
-    After sending, confirm the message is visible in the pane — via
-    *marker* if given (council's explicit-marker pattern), otherwise via
-    :func:`message_visible` on the message itself. Retry once if not.
+    Replaces the old blind fixed-delay-then-Enter with a verified, two-phase
+    submit (the same compare-and-send rigor ``agentwire prompts answer`` uses):
 
-    Verification reads *scrollback* (not just the visible tail) and snapshots
-    twice — once ~150ms after the paste (to catch the ``[Pasted text …]``
-    placeholder / fragment before a fast agent scrolls it away) and once after
-    *settle*. A hit at *either* time counts. For the markerless case a positive
-    "consumed" signal (input box went empty AND the pane shows activity) also
-    counts — a submitted-and-working agent is delivery, not failure. The
-    genuine vanish case (empty box, no activity, nothing in scrollback) still
-    returns False.
+    1. Paste WITHOUT Enter, then poll the input box (bounded, ``LAND_TIMEOUT``)
+       until the pasted text is actually visible there — never press Enter on a
+       box that hasn't received the paste yet.
+    2. Press Enter and poll (bounded, ``SUBMIT_TIMEOUT``) until the box clears.
+       If a keystroke is swallowed, re-press up to ``MAX_ENTER_ATTEMPTS`` times.
 
+    Returns True once submission is confirmed. Returns False — a hard, surfaced
+    failure the caller must handle — only after exhausting *retries* whole-send
+    attempts; it NEVER silently leaves text sitting unsent.
+
+    *marker* uses council's explicit-marker scrollback check; otherwise the
+    message's own fragment is used. *settle* is retained for signature
+    stability — the adaptive poll supersedes the old fixed pre-Enter sleep.
     *pane_index* targets a worker pane (1+) instead of the session's pane 0.
     """
-
-    def confirmed() -> bool:
-        capture = capture_session(
-            session, lines=VERIFY_SCROLLBACK_LINES, pane_index=pane_index
-        )
-        if marker is not None:
-            return marker in capture
-        if message_visible(capture, message):
-            return True
-        return consumed_and_working(session, capture, pane_index=pane_index)
-
+    del settle  # superseded by adaptive polling; kept for signature stability
     for _ in range(retries + 1):
-        send_to_session(session, message, pane_index=pane_index)
-        # Early snapshot — placeholder/fragment still on screen before the
-        # agent consumes and scrolls it away.
-        time.sleep(EARLY_SETTLE)
         try:
-            if confirmed():
-                return True
-        except Exception:
-            pass
-        # Late snapshot — gives a slow agent time to render the paste.
-        remaining = settle - EARLY_SETTLE
-        if remaining > 0:
-            time.sleep(remaining)
-        try:
-            if confirmed():
+            if _deliver_once(session, message, marker, pane_index):
                 return True
         except Exception:
             pass

@@ -97,67 +97,108 @@ class TestMessageVisible:
         assert not session_ready.message_visible("❯ \nBypassing Permissions", "my unique idea")
 
 
-class TestSendVerified:
-    def _quiet(self, monkeypatch):
-        monkeypatch.setattr(session_ready.time, "sleep", lambda _: None)
+RULE = "─" * 20
 
+
+def render_box(content: str = "") -> str:
+    """A parseable Claude input box wrapped in horizontal rules."""
+    glyph = f"❯ {content}" if content else "❯"
+    return f"{RULE}\n{glyph}\n{RULE}"
+
+
+def render_working(content: str = "") -> str:
+    """An empty input box plus a visible activity marker (submitted+working)."""
+    return "✶ Working… (esc to interrupt)\n" + render_box(content)
+
+
+def _fake_clock(monkeypatch, step: float = 0.5):
+    """No-op sleep + a monotonically advancing clock so bounded polls time out
+    fast in tests instead of busy-waiting real wall-clock seconds."""
+    t = {"v": 0.0}
+
+    def now():
+        t["v"] += step
+        return t["v"]
+
+    monkeypatch.setattr(session_ready.time, "sleep", lambda _: None)
+    monkeypatch.setattr(session_ready.time, "time", now)
+
+
+def _env(monkeypatch, frame):
+    """Wire paste/enter/capture stubs. *frame(actions)* returns the current
+    capture given the running tally of pastes/enters/captures."""
+    actions = {"pastes": 0, "enters": 0, "caps": 0}
+
+    def paste(s, m, pane_index=0):
+        actions["pastes"] += 1
+        actions["paste_pane"] = pane_index
+
+    def enter(s, pane_index=0):
+        actions["enters"] += 1
+        actions["enter_pane"] = pane_index
+
+    def capture(s, lines=60, pane_index=0):
+        actions["caps"] += 1
+        actions["cap_lines"] = lines
+        actions["cap_pane"] = pane_index
+        return frame(actions)
+
+    monkeypatch.setattr(session_ready, "paste_no_enter", paste)
+    monkeypatch.setattr(session_ready, "press_enter", enter)
+    monkeypatch.setattr(session_ready, "capture_session", capture)
+    return actions
+
+
+class TestSendVerified:
     def test_marker_mode_confirms(self, monkeypatch):
-        self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-        monkeypatch.setattr(
-            session_ready, "capture_session",
-            lambda s, lines=60, pane_index=0: "...[COUNCIL PROMPT #1]...")
+        _fake_clock(monkeypatch)
+        # Marker already in scrollback, box cleared → submitted, no Enter needed.
+        _env(monkeypatch, lambda a: "...[COUNCIL PROMPT #1]...\n" + render_box())
         assert session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
 
     def test_marker_mode_retries_then_fails(self, monkeypatch):
-        self._quiet(monkeypatch)
-        sends = []
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: sends.append(s))
-        monkeypatch.setattr(
-            session_ready, "capture_session", lambda s, lines=60, pane_index=0: "no marker here")
+        _fake_clock(monkeypatch)
+        # Marker never appears and the box never shows our text → never lands,
+        # so each whole-send attempt times out. Two pastes (initial + 1 retry).
+        actions = _env(monkeypatch, lambda a: "no marker here\n" + render_box())
         assert not session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
-        assert len(sends) == 2  # initial + one retry
+        assert actions["pastes"] == 2
 
-    def test_markerless_uses_message_visible(self, monkeypatch):
-        self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-        monkeypatch.setattr(
-            session_ready, "capture_session",
-            lambda s, lines=60, pane_index=0: "❯ build a voice diary app")
+    def test_markerless_lands_then_submits(self, monkeypatch):
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box("build a voice diary app")  # landed, unsent
+            return render_working()  # Enter registered, box cleared, working
+
+        actions = _env(monkeypatch, frame)
         assert session_ready.send_verified("s", "build a voice diary app")
-
-    def test_markerless_confirms_on_retry(self, monkeypatch):
-        self._quiet(monkeypatch)
-        sends = []
-        captures = ["", "❯ my idea text"]
-
-        def fake_capture(s, lines=60, pane_index=0):
-            return captures[min(len(sends) - 1, 1)]
-
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: sends.append(s))
-        monkeypatch.setattr(session_ready, "capture_session", fake_capture)
-        assert session_ready.send_verified("s", "my idea text")
-        assert len(sends) == 2
+        assert actions["enters"] == 1
 
     def test_capture_exception_counts_as_miss(self, monkeypatch):
-        self._quiet(monkeypatch)
+        _fake_clock(monkeypatch)
 
-        def boom(s, lines=60, pane_index=0):
+        def boom(a):
             raise RuntimeError("gone")
 
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-        monkeypatch.setattr(session_ready, "capture_session", boom)
+        actions = _env(monkeypatch, boom)
         assert not session_ready.send_verified("s", "msg")
+        assert actions["pastes"] == 2  # retried, still failed
 
     def test_pane_index_threads_through(self, monkeypatch):
-        self._quiet(monkeypatch)
-        seen = {}
-        monkeypatch.setattr(session_ready, "send_to_session",
-                            lambda s, m, pane_index=0: seen.update(send=pane_index))
-        monkeypatch.setattr(session_ready, "capture_session",
-                            lambda s, lines=60, pane_index=0: seen.update(cap=pane_index) or "❯ hi there")
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box("hi there")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
         assert session_ready.send_verified("s", "hi there", pane_index=2)
-        assert seen == {"send": 2, "cap": 2}
+        assert actions["paste_pane"] == 2
+        assert actions["enter_pane"] == 2
+        assert actions["cap_pane"] == 2
 
 
 class TestPaneShowsActivity:
@@ -174,58 +215,78 @@ class TestPaneShowsActivity:
         assert not session_ready.pane_shows_activity("❯ \nBypassing Permissions")
 
 
-class TestSendVerifiedRegression:
-    """Pins #478 — fast bypass agent submits + scrolls the paste away."""
+class TestSendVerifiedAdaptive:
+    """#579 — paste/Enter is decoupled; Enter waits for the paste to land and
+    re-presses if swallowed, never leaving text unsent."""
 
-    def _quiet(self, monkeypatch):
-        monkeypatch.setattr(session_ready.time, "sleep", lambda _: None)
+    def test_paste_lands_late_enter_waits(self, monkeypatch):
+        # The paste hasn't rendered for the first few polls (empty box, no
+        # activity). Enter must NOT fire until the text actually lands.
+        _fake_clock(monkeypatch)
 
-    def test_scrolled_out_but_working_is_delivered(self, monkeypatch):
-        # Prompt fragment/placeholder has scrolled OUT of the capture, the
-        # input box is empty, and the agent is visibly working → DELIVERED.
-        self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-        monkeypatch.setattr(
-            session_ready, "capture_session",
-            lambda s, lines=60, pane_index=0: "⏺ Read(foo.py)\n  ⎿ 42 lines\n✶ Working… (esc to interrupt)")
-        from agentwire import prompt_router
-        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+        def frame(a):
+            if a["enters"] == 0:
+                if a["caps"] <= 3:
+                    return render_box()  # empty: paste not landed yet
+                return render_box("seed prompt")  # landed
+            return render_working()  # submitted + working
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "seed prompt")
+        # Enter was pressed exactly once, and only after the paste landed.
+        assert actions["enters"] == 1
+
+    def test_swallowed_enter_is_re_pressed(self, monkeypatch):
+        # Text lands, but the first Enter is swallowed (box still holds it).
+        # The bounded retry must re-press until the box clears.
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] < 2:
+                return render_box("resilient prompt")  # still sitting unsent
+            return render_working()  # second Enter registered
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "resilient prompt")
+        assert actions["enters"] == 2
+
+    def test_fast_agent_already_submitted(self, monkeypatch):
+        # A fast bypass agent consumed+submitted before our first poll: empty
+        # box + visible activity → delivered, no Enter needed.
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_working())
         assert session_ready.send_verified("s", "my unique multiline prompt")
+        assert actions["enters"] == 0
 
-    def test_placeholder_in_scrollback_is_delivered(self, monkeypatch):
-        # Large paste renders only as the placeholder, still in scrollback.
-        self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-        monkeypatch.setattr(
-            session_ready, "capture_session",
-            lambda s, lines=60, pane_index=0: "older output...\n❯ [Pasted text #1 +40 lines]\nmore")
+    def test_large_paste_placeholder_lands(self, monkeypatch):
+        # Large paste renders as the [Pasted text] placeholder in the box; that
+        # counts as landed, then submits.
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box("[Pasted text #1 +40 lines]")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
         assert session_ready.send_verified("s", "line one\nline two\n...forty lines")
+        assert actions["enters"] == 1
 
-    def test_genuine_vanish_is_not_delivered(self, monkeypatch):
-        # Empty input box, no activity, nothing in scrollback → NOT delivered.
-        self._quiet(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-        monkeypatch.setattr(
-            session_ready, "capture_session",
-            lambda s, lines=60, pane_index=0: "❯ \nBypassing Permissions")
-        from agentwire import prompt_router
-        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+    def test_genuine_failure_returns_false_not_silent(self, monkeypatch):
+        # Empty box, no activity, never lands → hard False (caller learns), and
+        # Enter is never blindly pressed into a box that never received the paste.
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_box())
         assert not session_ready.send_verified("s", "this prompt vanished entirely")
+        assert actions["enters"] == 0
+        assert actions["pastes"] == 2  # initial + one retry
 
     def test_verification_reads_scrollback(self, monkeypatch):
-        # send_verified must request scrollback, not just the visible tail.
-        self._quiet(monkeypatch)
-        seen = {}
-        monkeypatch.setattr(session_ready, "send_to_session", lambda s, m, pane_index=0: None)
-
-        def fake_capture(s, lines=60, pane_index=0):
-            seen["lines"] = lines
-            return ""
-        monkeypatch.setattr(session_ready, "capture_session", fake_capture)
-        from agentwire import prompt_router
-        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+        # Submission verification must request scrollback, not just the tail.
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_working())
         session_ready.send_verified("s", "anything")
-        assert seen["lines"] == session_ready.VERIFY_SCROLLBACK_LINES
+        assert actions["cap_lines"] == session_ready.VERIFY_SCROLLBACK_LINES
 
 
 class TestCouncilDelegation:
