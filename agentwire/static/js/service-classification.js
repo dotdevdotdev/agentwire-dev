@@ -11,6 +11,7 @@ const SERVICE_SESSIONS = new Set([
     'agentwire-portal',
     'agentwire-tts',
     'agentwire-stt',
+    'agentwire-kokoro',  // default-tier Kokoro TTS shim subprocess (:8102)
     'agentwire-scheduler',
     'agentwire-notifications',
 ]);
