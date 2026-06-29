@@ -31,7 +31,7 @@ structurally can't match:
   the machine.
 - **Voice-native, not voice-bolted-on.** Push-to-talk in, **neural TTS out on plain
   CPU** (Kokoro, no GPU). Want your agents to talk back in a **cloned voice**? Run a
-  self-hosted GPU shim (Chatterbox / Qwen / Zonos) — same machine, still your keys.
+  self-hosted GPU shim (Chatterbox / Zonos) — same machine, still your keys.
 - **Built to orchestrate _many_ agents, not watch one.** Council (multi-soul
   deliberation), a recurring scheduler, briefing mode, and worktree-parallel
   workers — tmux- and Claude-Code-native from the ground up.
@@ -210,7 +210,7 @@ Two tiers, both sides:
 # ~/.agentwire/config.yaml
 tts:
   backend: "custom"
-  url: "http://localhost:8100"     # agentwire tts start (kokoro CPU / chatterbox GPU / qwen / zonos)
+  url: "http://localhost:8100"     # agentwire tts start (kokoro CPU / chatterbox GPU / zonos)
   options:
     backend: kokoro
 stt:
