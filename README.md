@@ -33,7 +33,7 @@ structurally can't match:
   CPU** (Kokoro, no GPU). Want your agents to talk back in a **cloned voice**? Run a
   self-hosted GPU shim (Chatterbox / Qwen / Zonos) — same machine, still your keys.
 - **Built to orchestrate _many_ agents, not watch one.** Council (multi-soul
-  deliberation), an overnight scheduler, briefing mode, and worktree-parallel
+  deliberation), a recurring scheduler, briefing mode, and worktree-parallel
   workers — tmux- and Claude-Code-native from the ground up.
 
 > **Use the official app to watch one session; use AgentWire to orchestrate many,
@@ -124,7 +124,7 @@ pip install agentwire-dev
 | **Voice Control** | Push-to-talk from any device on your network |
 | **Neural Voice + Cloning** | Kokoro neural TTS on CPU out of the box; voice cloning via a self-hosted GPU shim |
 | **Council** | Fan a prompt to multiple "soul" sessions (brain, conscience, critic…), synthesize with attribution |
-| **Scheduler** | Overnight / recurring autonomous tasks with gates, priorities, and usage-limit recovery |
+| **Scheduler** | Recurring autonomous tasks with gates, priorities, and usage-limit recovery |
 | **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
 | **Multi-Session** | Run multiple agents on different projects simultaneously |
 | **Git Worktrees** | Same project, multiple branches, parallel agents |
