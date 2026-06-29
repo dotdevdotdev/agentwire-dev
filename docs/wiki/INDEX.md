@@ -50,6 +50,8 @@ Headless and scheduled execution.
 - **[Secrets & API keys](security/secrets.md)** — `~/.agentwire/.env` is the one place every key lives; which vars each feature reads; the `api_key_env` pattern for new integrations
 - **[Remote-access hardening](security/remote-access-hardening.md)** — threat model for the any-device→tunnel→portal→shell path; network footprint map (what agentwire owns vs BYO tunnels); the portal auth boundary and the per-device / capability-scope / freeze-config hardening plan (#396, #420, #423–#425)
 - **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
+- **[Damage-control matcher hardening](security/damage-control-hardening.md)** — consolidated note for the matcher hardening shipped in PR #500
+- **[pip-audit](security/pip-audit.md)** — dependency CVE triage workflow
 
 ## Integrations
 
@@ -69,6 +71,7 @@ Running AgentWire across machines and exposing the portal.
 Recon notes and evaluations that inform direction (not yet implemented).
 
 - **[Orchestration transport alternatives](research/orchestration-transport-alternatives.md)** — the "we don't use SSH" competitor pitch, evaluated: claims-vs-reality on faster/more-secure, and why the cheap wins are SSH `ControlMaster` multiplexing + a Tailscale mesh underlay rather than a new transport ([#297](https://github.com/dotdevdotdev/agentwire-dev/issues/297))
+- **[Briefing Mode feasibility](research/briefing-mode-feasibility.md)** — asymmetric-verbosity orchestration evaluation that informed the shipped Briefing Mode
 
 ## Voice (TTS & STT)
 

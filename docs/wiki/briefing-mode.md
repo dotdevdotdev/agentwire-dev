@@ -22,7 +22,7 @@ The anchor is the calm funnel: pushed only by the human, pulling from correspond
 | **`anchor`** | `agentwire new -s <name> --roles anchor` | Replaces the orchestrator persona. Terse with the human; fans out correspondents; **acts only on the human's cue**; briefs asymmetrically; tears down. |
 | **`correspondent`** | `worktree_create(name, roles="correspondent", prompt=…)` (or `agentwire worktree <name> --roles correspondent`) | Stacks on the worktree-session safety rail. Exhaustive; files a report to the dropbox; signals passively. |
 
-`anchor` *replaces* the persona (persona kind); `correspondent` *adds to* the worktree-session etiquette (safety-rail kind) — see [roles](roles.md).
+`anchor` *replaces* the persona (persona kind); `correspondent` *adds to* the worktree-session etiquette (safety-rail kind) — see the role docs in the `agentwire-project-config` skill and CLAUDE.md.
 
 ## The two channels (asymmetric brief)
 
