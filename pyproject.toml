@@ -87,7 +87,6 @@ tts = [
     # chatterbox-tts pins numpy<2 on Python <=3.12, which conflicts with the
     # base install's kokoro-onnx (numpy>=2.0.2). Chatterbox venvs need py3.13+.
     "chatterbox-tts>=0.1.6; python_version >= '3.13'",
-    "runpod>=1.6.0",
 ]
 
 [project.scripts]
@@ -164,7 +163,6 @@ exclude = [
     ".claude/",
     ".agentwire.yml",
     "uv.lock",
-    "requirements-runpod.txt",
     "CLAUDE.md",
     # Build artifacts
     "dist/",
