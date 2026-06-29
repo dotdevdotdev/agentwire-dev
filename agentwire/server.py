@@ -26,9 +26,7 @@ import termios
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Dict
 
 import aiohttp
 import aiohttp_jinja2
@@ -39,19 +37,21 @@ from aiohttp import web
 from . import prompt_router, security
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
+from .routes.artifacts import ArtifactsRoutesMixin, register_artifacts_routes
+from .routes.config import ConfigRoutesMixin, register_config_routes
 from .routes.desktop import DesktopRoutesMixin, register_desktop_routes
+from .routes.history import HistoryRoutesMixin, register_history_routes
 from .routes.machines import MachinesRoutesMixin, register_machines_routes
 from .routes.projects import ProjectsRoutesMixin, register_projects_routes
 from .routes.push import PushRoutesMixin, register_push_routes
+from .routes.safety import SafetyRoutesMixin, register_safety_routes
 from .routes.scratchpad import ScratchpadRoutesMixin, register_scratchpad_routes
 from .security import (
     WS_PROTOCOL_PREFIX,
     create_security_middleware,
     ensure_auth_token,
-    frozen_config_violations,
     is_loopback_host,
     resolve_auth_token,
-    restore_redactions,
     validate_startup_security,
 )
 from .ssh import ssh_base_opts
@@ -217,7 +217,17 @@ class Session:
     is_active: bool = False  # Current active/idle state for transition detection
 
 
-class AgentWireServer(MachinesRoutesMixin, ScratchpadRoutesMixin, PushRoutesMixin, DesktopRoutesMixin, ProjectsRoutesMixin):
+class AgentWireServer(
+    ArtifactsRoutesMixin,
+    ConfigRoutesMixin,
+    DesktopRoutesMixin,
+    HistoryRoutesMixin,
+    MachinesRoutesMixin,
+    ProjectsRoutesMixin,
+    PushRoutesMixin,
+    SafetyRoutesMixin,
+    ScratchpadRoutesMixin,
+):
     """Main server managing sessions, WebSockets, and agent backends."""
 
     def __init__(self, config: Config):
@@ -308,13 +318,8 @@ class AgentWireServer(MachinesRoutesMixin, ScratchpadRoutesMixin, PushRoutesMixi
         self.app.router.add_get("/api/voices", self.api_voices)
         self.app.router.add_get("/api/voice-status", self.api_voice_status)
         self.app.router.add_delete("/api/sessions/{name:.+}", self.api_close_session)
-        self.app.router.add_get("/api/config", self.api_get_config)
-        self.app.router.add_post("/api/config", self.api_save_config)
-        self.app.router.add_post("/api/config/reload", self.api_reload_config)
-        self.app.router.add_get("/api/safety/status", self.api_safety_status)
-        self.app.router.add_get("/api/safety/logs", self.api_safety_logs)
-        self.app.router.add_get("/api/safety/rules", self.api_safety_rules)
-        self.app.router.add_post("/api/safety/config", self.api_safety_config_post)
+        register_config_routes(self, self.app)
+        register_safety_routes(self, self.app)
         self.app.router.add_post("/api/sessions/refresh", self.api_refresh_sessions)
         # Icon listing for dynamic icon picker
         self.app.router.add_get("/api/icons/{category}", self.api_icons)
@@ -323,9 +328,7 @@ class AgentWireServer(MachinesRoutesMixin, ScratchpadRoutesMixin, PushRoutesMixi
         self.app.router.add_post("/api/permission/{name:.+}/respond", self.api_permission_respond)
         self.app.router.add_post("/api/permission/{name:.+}", self.api_permission_request)
         # History endpoints
-        self.app.router.add_get("/api/history", self.api_history_list)
-        self.app.router.add_get("/api/history/{session_id}", self.api_history_detail)
-        self.app.router.add_post("/api/history/{session_id}/resume", self.api_history_resume)
+        register_history_routes(self, self.app)
         # Tmux hook notifications
         self.app.router.add_post("/api/notify", self.api_notify)
         register_desktop_routes(self, self.app)
@@ -357,12 +360,7 @@ class AgentWireServer(MachinesRoutesMixin, ScratchpadRoutesMixin, PushRoutesMixi
         self.app.router.add_post("/api/council/stop", self.api_council_stop)
         self.app.router.add_post("/api/council/ask", self.api_council_ask)
         # Artifact windows: upload and serve agent-generated HTML
-        self.app.router.add_post("/api/artifacts/upload", self.api_artifacts_upload)
-        self.app.router.add_get("/api/artifacts", self.api_artifacts_list)
-        self.app.router.add_delete("/api/artifacts/{filename:.+}", self.api_artifacts_delete)
-        artifacts_dir = self.config.artifacts.dir
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.app.router.add_static("/artifacts", artifacts_dir)
+        register_artifacts_routes(self, self.app)
         # Custom static handler: gzip text assets on the fly + Cache-Control so
         # phone first-load and repeat loads aren't crippled by the static
         # payload (aiohttp's add_static does neither). See _handle_static.
@@ -1310,106 +1308,6 @@ class AgentWireServer(MachinesRoutesMixin, ScratchpadRoutesMixin, PushRoutesMixi
         except Exception as e:
             logger.error(f"Failed to get machines data: {e}")
             return []
-
-    # =========================================================================
-    # Desktop UI Control API (for MCP agents)
-    # =========================================================================
-
-    async def api_artifacts_upload(self, request):
-        """POST /api/artifacts/upload — write HTML content to the artifacts directory."""
-        try:
-            data = await request.json()
-            filename = data.get("filename")
-            content = data.get("content")
-
-            if not filename or not content:
-                return web.json_response(
-                    {"success": False, "error": "filename and content required"}, status=400
-                )
-
-            # Sanitize filename — only allow safe characters
-            import re
-            if not re.match(r'^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*\.html$', filename):
-                return web.json_response(
-                    {"success": False, "error": "filename must be alphanumeric with .html extension"},
-                    status=400,
-                )
-
-            # Check size
-            max_bytes = self.config.artifacts.max_size_mb * 1024 * 1024
-            if len(content.encode('utf-8')) > max_bytes:
-                return web.json_response(
-                    {"success": False, "error": f"content too large (max {self.config.artifacts.max_size_mb}MB)"},
-                    status=400,
-                )
-
-            # Ensure artifacts directory exists
-            artifacts_dir = self.config.artifacts.dir
-            artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-            # Write file atomically (write to temp, rename)
-            filepath = artifacts_dir / filename
-            tmp_path = filepath.with_suffix('.tmp')
-            tmp_path.write_text(content, encoding='utf-8')
-            tmp_path.rename(filepath)
-
-            logger.info(f"Artifact written: {filepath}")
-            return web.json_response({
-                "success": True,
-                "path": str(filepath),
-                "url": f"/artifacts/{filename}",
-            })
-
-        except Exception as e:
-            logger.error(f"Artifact upload failed: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
-
-    async def api_artifacts_list(self, request):
-        """GET /api/artifacts — list files in the artifacts directory."""
-        try:
-            artifacts_dir = self.config.artifacts.dir
-            if not artifacts_dir.exists():
-                return web.json_response([])
-
-            files = []
-            for f in sorted(artifacts_dir.iterdir()):
-                if f.is_file() and not f.name.startswith('.'):
-                    stat = f.stat()
-                    files.append({
-                        "name": f.name,
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime,
-                    })
-            return web.json_response(files)
-
-        except Exception as e:
-            logger.error(f"Artifacts list failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_artifacts_delete(self, request):
-        """DELETE /api/artifacts/{filename} — delete a file from the artifacts directory."""
-        import re
-        filename = request.match_info["filename"]
-
-        # Sanitize — prevent path traversal
-        if not re.match(r'^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$', filename):
-            return web.json_response(
-                {"success": False, "error": "invalid filename"}, status=400
-            )
-
-        filepath = self.config.artifacts.dir / filename
-        if not filepath.exists():
-            return web.json_response(
-                {"success": False, "error": "file not found"}, status=404
-            )
-
-        try:
-            filepath.unlink()
-            logger.info(f"Artifact deleted: {filepath}")
-            return web.json_response({"success": True})
-        except Exception as e:
-            logger.error(f"Artifact delete failed: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def broadcast_dashboard(self, msg_type: str, data: dict):
         """Broadcast a message to all connected dashboard clients."""
@@ -2935,231 +2833,6 @@ class AgentWireServer(MachinesRoutesMixin, ScratchpadRoutesMixin, PushRoutesMixi
 
         return web.json_response({"custom": custom_icons, "default": default_icons})
 
-    async def api_get_config(self, request: web.Request) -> web.Response:
-        """Get config file contents or display format.
-
-        Query params:
-            format=display - Return key/value pairs for UI display
-        """
-        # Check if display format requested
-        if request.query.get("format") == "display":
-            # Return flattened key/value pairs from current config
-            items = [
-                {"key": "TTS Backend", "value": self.config.tts.backend},
-                {"key": "TTS URL", "value": self.config.tts.url or "—"},
-                {"key": "TTS Default Voice", "value": self.config.tts.default_voice},
-                {"key": "STT Backend", "value": self.config.stt.backend},
-                {"key": "STT URL", "value": self.config.stt.url or "—"},
-                {"key": "Server Host", "value": self.config.server.host},
-                {"key": "Server Port", "value": self.config.server.port},
-                {"key": "SSL Enabled", "value": self.config.server.ssl.enabled},
-                {"key": "Projects Directory", "value": str(self.config.projects.dir)},
-                {"key": "Worktrees Enabled", "value": self.config.projects.worktrees.enabled},
-                {"key": "Worktrees Suffix", "value": self.config.projects.worktrees.suffix},
-                {"key": "Agent Command", "value": self.config.agent.command},
-                {"key": "Machines File", "value": str(self.config.machines.file)},
-            ]
-            return web.json_response({"items": items})
-
-        # Default: return raw config file contents
-        config_path = Path.home() / ".agentwire" / "config.yaml"
-        content = ""
-        if config_path.exists():
-            try:
-                content = config_path.read_text()
-                # SECURITY: Redact sensitive fields before returning
-                # Matches patterns like: api_key: "secret" or auth_token: secret
-                content = re.sub(
-                    r'((?:api_key|auth_token)\s*:\s*)["\']?[^"\'\n]+["\']?',
-                    r'\1"[REDACTED]"',
-                    content
-                )
-            except IOError as e:
-                return web.json_response({"error": str(e)})
-        else:
-            # Return default config template (instant mode: browser voice, loopback)
-            content = """# AgentWire Configuration
-server:
-  host: "127.0.0.1"
-  port: 8765
-
-tts:
-  backend: "default"  # browser voice — or "custom" with url: pointing at your shim
-  # url: "http://localhost:8100"
-
-stt:
-  backend: "default"  # browser speech recognition — or "cloud" (hosted API),
-                      # or "custom" with url:
-  # url: "http://localhost:8101"
-  # cloud:  # any OpenAI-compatible transcription API; key from env, never in config
-  #   base_url: "https://api.openai.com/v1"
-  #   model: "gpt-4o-mini-transcribe"
-  #   api_key_env: "OPENAI_API_KEY"
-
-projects:
-  dir: "~/projects"
-  worktrees:
-    enabled: true
-    suffix: "-worktrees"
-"""
-        return web.json_response({
-            "path": str(config_path),
-            "content": content,
-            "exists": config_path.exists(),
-        })
-
-    async def api_save_config(self, request: web.Request) -> web.Response:
-        """Save config file contents.
-
-        Security-critical keys are frozen (#425): even a valid token cannot use
-        this endpoint to disable auth, move the bind host, rewrite the
-        executables/services that run as RCE, or turn off the damage-control
-        rules. Those are host-file-edit-only.
-        """
-        try:
-            data = await request.json()
-            content = data.get("content", "")
-
-            # Validate YAML syntax
-            import yaml
-            try:
-                yaml.safe_load(content)
-            except yaml.YAMLError as e:
-                return web.json_response({"error": f"Invalid YAML: {e}"})
-
-            config_path = Path.home() / ".agentwire" / "config.yaml"
-            old_content = config_path.read_text() if config_path.exists() else ""
-
-            # Reverse the read-side secret redaction so saving the editor's text
-            # back doesn't overwrite real secrets with "[REDACTED]" (and so the
-            # frozen-key check below sees the true auth_token, not the marker).
-            content = restore_redactions(content, old_content)
-
-            violations = frozen_config_violations(content, old_content)
-            if violations:
-                return web.json_response(
-                    {
-                        "error": (
-                            "These keys are frozen and can only be changed by "
-                            "editing ~/.agentwire/config.yaml on the host: "
-                            + ", ".join(violations)
-                        ),
-                        "frozen_keys": violations,
-                    },
-                    status=403,
-                )
-
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(content)
-
-            return web.json_response({"success": True})
-        except Exception as e:
-            return web.json_response({"error": str(e)})
-
-    async def api_reload_config(self, request: web.Request) -> web.Response:
-        """Reload configuration from disk."""
-        try:
-            from .config import reload_config
-            self.config = reload_config()
-
-            # Reinitialize backends with new config
-            await self.init_backends()
-
-            return web.json_response({"success": True})
-        except Exception as e:
-            return web.json_response({"error": str(e)})
-
-    async def api_safety_status(self, request: web.Request) -> web.Response:
-        """Damage-control current state: master enable, disabled rules, today's counts."""
-        try:
-            from .safety_commands import LOGS_DIR, load_patterns
-            patterns = load_patterns()
-            today = datetime.now().strftime("%Y-%m-%d")
-            log_file = LOGS_DIR / f"{today}.jsonl"
-            counts: Dict[str, int] = {}
-            if log_file.exists():
-                try:
-                    with open(log_file, "r") as f:
-                        for line in f:
-                            try:
-                                entry = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
-                            d = entry.get("decision", "")
-                            counts[d] = counts.get(d, 0) + 1
-                except Exception:
-                    pass
-            # Read the kill switch + disabled rules from the agent-unwritable
-            # damage-control policy files (#466), not from config.yaml.
-            from .safety._core import load_safety_config
-            safety_cfg = load_safety_config()
-            return web.json_response({
-                "enabled": safety_cfg.get("enabled", True),
-                "disabled_rules": list(safety_cfg.get("disabled_rules", []) or []),
-                "rule_count": len(patterns.get("bashToolPatterns", [])),
-                "today_counts": counts,
-            })
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_safety_logs(self, request: web.Request) -> web.Response:
-        """Recent safety audit log entries with optional filters."""
-        try:
-            from .safety_commands import query_audit_logs
-            limit = int(request.query.get("limit", "200"))
-            decision = request.query.get("decision")
-            entries = query_audit_logs()  # all entries, newest-first by file
-            if decision:
-                wanted = {d.strip() for d in decision.split(",") if d.strip()}
-                entries = [e for e in entries if e.get("decision") in wanted]
-            if limit > 0:
-                entries = entries[-limit:]
-            return web.json_response({"entries": entries})
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_safety_rules(self, request: web.Request) -> web.Response:
-        """Flat list of bash-rule IDs with their patterns/reasons."""
-        try:
-            from .safety_commands import load_patterns
-            patterns = load_patterns()
-            rules = []
-            for p in patterns.get("bashToolPatterns", []):
-                if not isinstance(p, dict):
-                    continue
-                rules.append({
-                    "id": p.get("id"),
-                    "pattern": p.get("pattern"),
-                    "reason": p.get("reason"),
-                    "ask": bool(p.get("ask", False)),
-                    "bypassable": bool(p.get("bypassable", False)),
-                    "source": p.get("source"),
-                })
-            return web.json_response({"rules": rules})
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_safety_config_post(self, request: web.Request) -> web.Response:
-        """Frozen (#425): the safety block is host-file-edit-only.
-
-        Disabling the damage-control rules with the same token that the rules are
-        meant to contain defeats defense-in-depth. The master switch and
-        disabled-rules list can now only be changed by editing
-        ~/.agentwire/damagecontrol.yml on the host — itself a protected,
-        agent-unwritable control-plane file (#466). GET /api/safety/* still works
-        for viewing status, rules and logs.
-        """
-        return web.json_response(
-            {
-                "error": (
-                    "Safety configuration is frozen and can only be changed by "
-                    "editing ~/.agentwire/damagecontrol.yml on the host, then "
-                    "reloading the portal."
-                ),
-                "frozen_keys": ["safety"],
-            },
-            status=403,
-        )
 
     async def api_refresh_sessions(self, request: web.Request) -> web.Response:
         """Refresh sessions and broadcast update to all dashboard clients.
@@ -4235,130 +3908,6 @@ projects:
 
         except Exception as e:
             logger.error(f"Restart service API failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_history_list(self, request: web.Request) -> web.Response:
-        """GET /api/history - List session history.
-
-        Query params:
-            project: Project path (required)
-            machine: Machine ID (default "local")
-            limit: Max number of entries (default 20)
-
-        Response:
-            {history: [{sessionId, firstMessage, lastSummary, timestamp, messageCount}, ...]}
-        """
-        try:
-            project = request.query.get("project")
-            if not project:
-                return web.json_response(
-                    {"error": "project parameter is required"},
-                    status=400
-                )
-
-            machine = request.query.get("machine", "local")
-            limit = request.query.get("limit", "20")
-
-            args = [
-                "history", "list",
-                "--project", project,
-                "--machine", machine,
-                "--limit", str(limit)
-            ]
-
-            success, result = await self.run_agentwire_cmd(args)
-            if not success:
-                error_msg = result.get("error", "Failed to list history") if isinstance(result, dict) else "Failed to list history"
-                return web.json_response({"error": error_msg}, status=500)
-
-            # CLI returns list directly, wrap it
-            history = result if isinstance(result, list) else result.get("history", [])
-            return web.json_response({"history": history})
-
-        except Exception as e:
-            logger.error(f"History list API failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_history_detail(self, request: web.Request) -> web.Response:
-        """GET /api/history/{session_id} - Get session history details.
-
-        URL params:
-            session_id: The session ID to get details for
-
-        Query params:
-            machine: Machine ID (default "local")
-
-        Response:
-            {sessionId, summaries: [], firstMessage, timestamps: {start, end}, gitBranch, messageCount}
-        """
-        try:
-            session_id = request.match_info["session_id"]
-            machine = request.query.get("machine", "local")
-
-            args = [
-                "history", "show",
-                session_id,
-                "--machine", machine
-            ]
-
-            success, result = await self.run_agentwire_cmd(args)
-            if not success:
-                error_msg = result.get("error", "Failed to get history detail") if isinstance(result, dict) else "Failed to get history detail"
-                return web.json_response({"error": error_msg}, status=500)
-
-            return web.json_response(result)
-
-        except Exception as e:
-            logger.error(f"History detail API failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def api_history_resume(self, request: web.Request) -> web.Response:
-        """POST /api/history/{session_id}/resume - Resume a session from history.
-
-        URL params:
-            session_id: The session ID to resume
-
-        Request body:
-            name: Optional custom session name
-            projectPath: Project path (required)
-            machine: Machine ID (required)
-
-        Response:
-            {session: "<new-tmux-session-name>"}
-        """
-        try:
-            session_id = request.match_info["session_id"]
-            data = await request.json()
-
-            project_path = data.get("projectPath")
-            if not project_path:
-                return web.json_response(
-                    {"error": "projectPath is required"},
-                    status=400
-                )
-
-            machine = data.get("machine", "local")
-            name = data.get("name")
-
-            args = [
-                "history", "resume",
-                session_id,
-                "--project", project_path,
-                "--machine", machine
-            ]
-            if name:
-                args.extend(["--name", name])
-
-            success, result = await self.run_agentwire_cmd(args)
-            if not success:
-                error_msg = result.get("error", "Failed to resume session") if isinstance(result, dict) else "Failed to resume session"
-                return web.json_response({"error": error_msg}, status=500)
-
-            session_name = result.get("session") if isinstance(result, dict) else None
-            return web.json_response({"session": session_name})
-
-        except Exception as e:
-            logger.error(f"History resume API failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
     async def api_services_custom(self, request: web.Request) -> web.Response:
