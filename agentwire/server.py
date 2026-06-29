@@ -40,6 +40,8 @@ from . import prompt_router, security
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
 from .routes.scratchpad import ScratchpadRoutesMixin, register_scratchpad_routes
+from .routes.push import PushRoutesMixin, register_push_routes
+from .routes.desktop import DesktopRoutesMixin, register_desktop_routes
 from .security import (
     WS_PROTOCOL_PREFIX,
     create_security_middleware,
@@ -213,7 +215,7 @@ class Session:
     is_active: bool = False  # Current active/idle state for transition detection
 
 
-class AgentWireServer(ScratchpadRoutesMixin):
+class AgentWireServer(ScratchpadRoutesMixin, PushRoutesMixin, DesktopRoutesMixin):
     """Main server managing sessions, WebSockets, and agent backends."""
 
     def __init__(self, config: Config):
@@ -272,9 +274,7 @@ class AgentWireServer(ScratchpadRoutesMixin):
         # the SW controls scope "/"; public so the browser can install the app.
         self.app.router.add_get("/manifest.webmanifest", self.handle_manifest)
         self.app.router.add_get("/service-worker.js", self.handle_service_worker)
-        self.app.router.add_get("/api/push/config", self.api_push_config)
-        self.app.router.add_post("/api/push/subscribe", self.api_push_subscribe)
-        self.app.router.add_post("/api/push/unsubscribe", self.api_push_unsubscribe)
+        register_push_routes(self, self.app)
         self.app.router.add_get("/mobile", self.handle_mobile)
         self.app.router.add_get("/pair", self.handle_pair_page)
         self.app.router.add_post("/api/pair", self.api_pair)
@@ -337,19 +337,7 @@ class AgentWireServer(ScratchpadRoutesMixin):
         self.app.router.add_post("/api/history/{session_id}/resume", self.api_history_resume)
         # Tmux hook notifications
         self.app.router.add_post("/api/notify", self.api_notify)
-        # Desktop UI control (for MCP agents)
-        self.app.router.add_get("/api/desktop/windows", self.api_desktop_windows)
-        self.app.router.add_post("/api/desktop/window/open", self.api_desktop_open)
-        self.app.router.add_post("/api/desktop/window/close", self.api_desktop_close)
-        self.app.router.add_post("/api/desktop/window/focus", self.api_desktop_focus)
-        self.app.router.add_post("/api/desktop/window/tile", self.api_desktop_tile)
-        self.app.router.add_post("/api/desktop/window/minimize-all", self.api_desktop_minimize_all)
-        self.app.router.add_post("/api/desktop/collage", self.api_desktop_collage)
-        self.app.router.add_post("/api/desktop/layout", self.api_desktop_layout)
-        # Desktop notifications
-        self.app.router.add_post("/api/desktop/notification", self.api_desktop_notification)
-        self.app.router.add_post("/api/desktop/notification/dismiss", self.api_desktop_notification_dismiss)
-        self.app.router.add_get("/api/desktop/notifications", self.api_desktop_notifications_list)
+        register_desktop_routes(self, self.app)
         # Services registry (custom service sessions from config)
         self.app.router.add_get("/api/services/custom", self.api_services_custom)
 
@@ -1027,48 +1015,6 @@ class AgentWireServer(ScratchpadRoutesMixin):
             },
         )
 
-    async def api_push_config(self, request: web.Request) -> web.Response:
-        """GET /api/push/config — public-key + enabled flag for the push client (#483)."""
-        from .channels.push import _get_push_config, push_ready
-
-        cfg = _get_push_config()
-        ready, _reason = push_ready()
-        return web.json_response(
-            {"enabled": bool(ready), "vapidPublicKey": cfg.vapid_public_key or ""}
-        )
-
-    async def api_push_subscribe(self, request: web.Request) -> web.Response:
-        """POST /api/push/subscribe — persist a browser's Web Push subscription (#483)."""
-        from . import push_store
-
-        try:
-            data = await request.json()
-        except Exception:
-            data = {}
-        endpoint = (data.get("endpoint") or "").strip()
-        keys = data.get("keys") or {}
-        if not endpoint or not isinstance(keys, dict) or not keys.get("p256dh") or not keys.get("auth"):
-            return web.json_response(
-                {"success": False, "error": "endpoint and keys{p256dh,auth} required"},
-                status=400,
-            )
-        push_store.add(endpoint=endpoint, keys=keys, device=str(data.get("device", "")))
-        return web.json_response({"success": True})
-
-    async def api_push_unsubscribe(self, request: web.Request) -> web.Response:
-        """POST /api/push/unsubscribe — drop a stored subscription (#483)."""
-        from . import push_store
-
-        try:
-            data = await request.json()
-        except Exception:
-            data = {}
-        endpoint = (data.get("endpoint") or "").strip()
-        if not endpoint:
-            return web.json_response({"success": False, "error": "endpoint required"}, status=400)
-        removed = push_store.remove(endpoint)
-        return web.json_response({"success": True, "removed": removed})
-
     async def _fanout_push(self, text: str, session: str | None = None,
                            priority: str = "normal") -> None:
         """Best-effort Web Push fan-out for a toast (#483).
@@ -1374,214 +1320,6 @@ class AgentWireServer(ScratchpadRoutesMixin):
     # =========================================================================
     # Desktop UI Control API (for MCP agents)
     # =========================================================================
-
-    async def api_desktop_windows(self, request):
-        """GET /api/desktop/windows — query browser clients for open windows."""
-        # We don't track window state server-side; broadcast a request
-        # and let the browser respond. For now, return what we can infer
-        # from recent broadcasts. A simple approach: ask clients to report.
-        import asyncio
-        import uuid
-
-        request_id = str(uuid.uuid4())[:8]
-
-        # Set up a future to collect responses
-        if not hasattr(self, '_desktop_window_responses'):
-            self._desktop_window_responses = {}
-
-        future = asyncio.get_event_loop().create_future()
-        self._desktop_window_responses[request_id] = future
-
-        # Ask all dashboard clients to report their windows
-        await self.broadcast_dashboard("desktop_report_windows", {
-            "request_id": request_id,
-        })
-
-        # Wait for a response (first client to respond wins)
-        try:
-            windows = await asyncio.wait_for(future, timeout=3.0)
-        except asyncio.TimeoutError:
-            windows = []
-        finally:
-            self._desktop_window_responses.pop(request_id, None)
-
-        return web.json_response({"success": True, "windows": windows})
-
-    async def api_desktop_open(self, request):
-        """POST /api/desktop/window/open — open a window in the portal."""
-        data = await request.json()
-        window_type = data.get("type", "session")
-        window_id = None
-
-        if window_type == "session":
-            session = data.get("session")
-            mode = data.get("mode", "monitor")
-            if not session:
-                return web.json_response({"success": False, "error": "session required"}, status=400)
-            window_id = session
-            await self.broadcast_dashboard("desktop_open_window", {
-                "window_type": "session",
-                "session": session,
-                "mode": mode,
-            })
-        elif window_type == "panel":
-            panel = data.get("panel")
-            if not panel:
-                return web.json_response({"success": False, "error": "panel required"}, status=400)
-            window_id = panel
-            await self.broadcast_dashboard("desktop_open_window", {
-                "window_type": "panel",
-                "panel": panel,
-            })
-        elif window_type == "artifact":
-            url = data.get("url")
-            title = data.get("title", "Artifact")
-            if not url:
-                return web.json_response({"success": False, "error": "url required"}, status=400)
-            window_id = data.get("artifact_id") or f"artifact-{url.replace('/', '-').replace('.', '-')}"
-            await self.broadcast_dashboard("desktop_open_window", {
-                "window_type": "artifact",
-                "url": url,
-                "title": title,
-                "artifact_id": window_id,
-            })
-        else:
-            return web.json_response({"success": False, "error": f"unknown type: {window_type}"}, status=400)
-
-        return web.json_response({"success": True, "window_id": window_id})
-
-    async def api_desktop_close(self, request):
-        """POST /api/desktop/window/close — close a window."""
-        data = await request.json()
-        window_id = data.get("window_id")
-        if not window_id:
-            return web.json_response({"success": False, "error": "window_id required"}, status=400)
-
-        await self.broadcast_dashboard("desktop_close_window", {
-            "window_id": window_id,
-        })
-        return web.json_response({"success": True})
-
-    async def api_desktop_focus(self, request):
-        """POST /api/desktop/window/focus — bring a window to front."""
-        data = await request.json()
-        window_id = data.get("window_id")
-        if not window_id:
-            return web.json_response({"success": False, "error": "window_id required"}, status=400)
-
-        await self.broadcast_dashboard("desktop_focus_window", {
-            "window_id": window_id,
-        })
-        return web.json_response({"success": True})
-
-    async def api_desktop_tile(self, request):
-        """POST /api/desktop/window/tile — tile a window to a zone."""
-        data = await request.json()
-        window_id = data.get("window_id")
-        zone = data.get("zone")
-        if not window_id or not zone:
-            return web.json_response({"success": False, "error": "window_id and zone required"}, status=400)
-
-        valid_zones = ["left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"]
-        if zone not in valid_zones:
-            return web.json_response({"success": False, "error": f"invalid zone: {zone}. Valid: {valid_zones}"}, status=400)
-
-        await self.broadcast_dashboard("desktop_tile_window", {
-            "window_id": window_id,
-            "zone": zone,
-        })
-        return web.json_response({"success": True})
-
-    async def api_desktop_minimize_all(self, request):
-        """POST /api/desktop/window/minimize-all — minimize all windows."""
-        await self.broadcast_dashboard("desktop_minimize_all", {})
-        return web.json_response({"success": True})
-
-    async def api_desktop_collage(self, request):
-        """POST /api/desktop/collage — toggle the window collage overlay."""
-        await self.broadcast_dashboard("desktop_collage", {})
-        return web.json_response({"success": True})
-
-    async def api_desktop_layout(self, request):
-        """POST /api/desktop/layout — apply a multi-window layout."""
-        data = await request.json()
-        windows = data.get("windows", [])
-        if not windows:
-            return web.json_response({"success": False, "error": "windows list required"}, status=400)
-
-        await self.broadcast_dashboard("desktop_apply_layout", {
-            "windows": windows,
-        })
-        return web.json_response({"success": True})
-
-    # =========================================================================
-    # Desktop Notifications API
-    # =========================================================================
-
-    async def api_desktop_notification(self, request):
-        """POST /api/desktop/notification — post a toast notification to the portal.
-
-        One toast per session: if a toast with the same `session` is already
-        active, it is dismissed before the new one is posted. Keeps the nagger
-        from stacking N toasts for the same idle session across nag cycles.
-        """
-        data = await request.json()
-        text = data.get("text", "")
-        if not text:
-            return web.json_response({"success": False, "error": "text required"}, status=400)
-
-        import uuid
-        notification_id = data.get("id") or str(uuid.uuid4())[:8]
-        session = data.get("session")
-        priority = data.get("priority", "normal")
-
-        if session:
-            stale_ids = [
-                nid for nid, n in self.active_notifications.items()
-                if n.get("session") == session
-            ]
-            for nid in stale_ids:
-                self.active_notifications.pop(nid, None)
-                await self.broadcast_dashboard("notification_dismiss", {"id": nid})
-
-        notification = {
-            "id": notification_id,
-            "text": text,
-            "session": session,
-            "priority": priority,
-            "timestamp": time.time(),
-        }
-
-        self.active_notifications[notification_id] = notification
-
-        clients = len(self.dashboard_clients)
-        await self.broadcast_dashboard("notification", notification)
-        await self._fanout_push(text, session=session, priority=priority)
-
-        # Report how many dashboards saw it live. 0 isn't a failure — the toast
-        # is persisted in active_notifications and restored on the next page
-        # load — but the caller deserves to know nobody is watching right now.
-        return web.json_response({"success": True, "id": notification_id, "clients": clients})
-
-    async def api_desktop_notification_dismiss(self, request):
-        """POST /api/desktop/notification/dismiss — dismiss a notification."""
-        data = await request.json()
-        notification_id = data.get("id")
-        if not notification_id:
-            return web.json_response({"success": False, "error": "id required"}, status=400)
-
-        self.active_notifications.pop(notification_id, None)
-
-        await self.broadcast_dashboard("notification_dismiss", {"id": notification_id})
-
-        return web.json_response({"success": True})
-
-    async def api_desktop_notifications_list(self, request):
-        """GET /api/desktop/notifications — list active notifications (for page load restore)."""
-        return web.json_response({
-            "success": True,
-            "notifications": list(self.active_notifications.values()),
-        })
 
     async def api_artifacts_upload(self, request):
         """POST /api/artifacts/upload — write HTML content to the artifacts directory."""
