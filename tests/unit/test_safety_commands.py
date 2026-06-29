@@ -1,8 +1,8 @@
-"""Tests for agentwire/cli_safety.py — Glob patterns, command safety checks."""
+"""Tests for agentwire/safety_commands.py — Glob patterns, command safety checks."""
 
 import pytest
 
-from agentwire.cli_safety import (
+from agentwire.safety_commands import (
     _parse_allowed_entry,
     check_command_safety,
     glob_to_regex,
@@ -121,14 +121,14 @@ class TestIsPathAllowedForOp:
 class TestCheckCommandSafety:
     def test_allowed_with_empty_patterns(self, tmp_path, monkeypatch):
         """If RULES_DIR has no yaml files, everything is allowed."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         monkeypatch.setattr(mod, "RULES_DIR", tmp_path / "empty-rules")
 
         result = check_command_safety("echo hello")
         assert result["decision"] == "allow"
 
     def test_result_structure(self, tmp_path, monkeypatch):
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         monkeypatch.setattr(mod, "RULES_DIR", tmp_path / "empty-rules")
 
         result = check_command_safety("ls -la")
@@ -230,7 +230,7 @@ class TestCheckCommandSafetyAllowlist:
         return rules_dir
 
     def test_allowlist_bypasses_readonly(self, tmp_path, monkeypatch):
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "readOnlyPaths": ["dist/"],
             "allowedPaths": [{"path": "*/dist/*", "allow": "all"}],
@@ -241,7 +241,7 @@ class TestCheckCommandSafetyAllowlist:
         assert result["decision"] == "allow"
 
     def test_allowlist_bypasses_nodelete(self, tmp_path, monkeypatch):
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "noDeletePaths": [".git/"],
             "allowedPaths": [],  # .git/ not allowlisted
@@ -254,7 +254,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_hard_blocked_rm_rf_never_bypassed(self, tmp_path, monkeypatch):
         """rm -rf is hard-blocked even with all perms on target path."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "bashToolPatterns": [
                 {"pattern": r"\brm\s+(-[^\s]*)*-[rRf]", "reason": "rm with flags"},
@@ -268,7 +268,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_bypassable_rm_with_delete_permission(self, tmp_path, monkeypatch):
         """Plain rm (bypassable) should be allowed if target has delete permission."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "bashToolPatterns": [
                 {"pattern": r"\brm\s+[^-]", "reason": "rm file deletion", "bypassable": True},
@@ -282,7 +282,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_bypassable_rm_without_delete_permission(self, tmp_path, monkeypatch):
         """Plain rm (bypassable) should block if target only has read/write."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "bashToolPatterns": [
                 {"pattern": r"\brm\s+[^-]", "reason": "rm file deletion", "bypassable": True},
@@ -296,7 +296,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_bypassable_rm_non_allowed_path(self, tmp_path, monkeypatch):
         """Plain rm (bypassable) should block if target is not in allowlist at all."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "bashToolPatterns": [
                 {"pattern": r"\brm\s+[^-]", "reason": "rm file deletion", "bypassable": True},
@@ -310,7 +310,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_read_only_permission_blocks_delete(self, tmp_path, monkeypatch):
         """Path with only read permission should not bypass noDelete."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "noDeletePaths": ["README.md"],
             "allowedPaths": [{"path": "README.md", "allow": ["read"]}],
@@ -322,7 +322,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_multiple_paths_all_must_match(self, tmp_path, monkeypatch):
         """Security: ALL paths in command must be allowed for bypass."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "bashToolPatterns": [
                 {"pattern": r"\brm\s+[^-]", "reason": "rm file deletion", "bypassable": True},
@@ -337,7 +337,7 @@ class TestCheckCommandSafetyAllowlist:
 
     def test_empty_allowedpaths_no_change(self, tmp_path, monkeypatch):
         """With empty allowedPaths, behavior is unchanged."""
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = self._make_rules_dir(tmp_path, {
             "readOnlyPaths": ["dist/"],
             "allowedPaths": [],
@@ -357,7 +357,7 @@ class TestCheckCommandSafetyDecisionPaths:
     def _rules(self, tmp_path, monkeypatch, patterns):
         import yaml
 
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = tmp_path / "rules"
         rd.mkdir(exist_ok=True)
         (rd / "patterns.yaml").write_text(yaml.safe_dump(patterns))
@@ -476,7 +476,7 @@ class TestCheckCommandSafetyDecisionPaths:
     ("", "write"),  # empty reason → write
 ])
 def test_infer_operation_from_reason(reason, expected_op):
-    from agentwire.cli_safety import _infer_operation_from_reason
+    from agentwire.safety_commands import _infer_operation_from_reason
     assert _infer_operation_from_reason(reason) == expected_op
 
 
@@ -484,7 +484,7 @@ def test_infer_operation_from_reason(reason, expected_op):
 
 class TestExtractCommandPaths:
     def _extract(self, cmd):
-        from agentwire.cli_safety import _extract_command_paths
+        from agentwire.safety_commands import _extract_command_paths
         return _extract_command_paths(cmd)
 
     def test_absolute_path(self):
@@ -519,7 +519,7 @@ class TestReadOnlyPathMutationOperators:
     def _rules(self, tmp_path, monkeypatch, patterns):
         import yaml
 
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         rd = tmp_path / "rules"
         rd.mkdir(exist_ok=True)
         (rd / "patterns.yaml").write_text(yaml.safe_dump(patterns))
@@ -557,7 +557,7 @@ class TestReadOnlyPathMutationOperators:
         assert check_command_safety(cmd)["decision"] == "allow"
 
     @pytest.mark.parametrize("cmd", [
-        # Operators newly caught after #164 (cli_safety adopted the hook's regex set)
+        # Operators newly caught after #164 (safety_commands adopted the hook's regex set)
         "chmod 777 /readonly/file",
         "chown root /readonly/file",
         "chgrp staff /readonly/file",
@@ -569,6 +569,6 @@ class TestReadOnlyPathMutationOperators:
         "unlink /readonly/file",
     ])
     def test_richer_mutation_operators_caught(self, cmd, tmp_path, monkeypatch):
-        """After #164, cli_safety uses the same regex pattern set as the bash hook."""
+        """After #164, safety_commands uses the same regex pattern set as the bash hook."""
         self._rules(tmp_path, monkeypatch, {"readOnlyPaths": ["/readonly/"]})
         assert check_command_safety(cmd)["decision"] == "block"

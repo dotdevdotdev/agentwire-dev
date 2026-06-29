@@ -1,7 +1,7 @@
 """Escape hatch: `# allow: <reason>` makes the hook skip pattern checks and log it."""
 
-from agentwire.cli_safety import load_patterns
 from agentwire.safety._core import check_command, detect_escape_hatch
+from agentwire.safety_commands import load_patterns
 
 
 def test_detect_escape_hatch_basic():

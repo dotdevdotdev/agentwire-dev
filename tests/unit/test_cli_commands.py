@@ -71,14 +71,14 @@ class TestCmdRolesList:
 
 class TestCmdSafetyCheck:
     def test_allowed_command(self, tmp_path, monkeypatch):
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
         monkeypatch.setattr(mod, "RULES_DIR", tmp_path / "empty-rules")
 
         result = mod.check_command_safety("echo hello")
         assert result["decision"] == "allow"
 
     def test_blocked_by_pattern(self, tmp_path, monkeypatch):
-        import agentwire.cli_safety as mod
+        import agentwire.safety_commands as mod
 
         # Create a rules dir with a blocking pattern
         rules_dir = tmp_path / "rules"

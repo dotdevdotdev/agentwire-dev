@@ -184,7 +184,7 @@ def skill_drift() -> dict[str, str]:
     """Drift state of agentwire-owned global skills.
 
     Returns {name: ok|stale|missing|source-unavailable}. Mirrors
-    cli_safety.*_drift() so `agentwire doctor` can flag a hand-placed or drifted
+    safety_commands.*_drift() so `agentwire doctor` can flag a hand-placed or drifted
     skill the same way it flags hook drift.
 
     `source-unavailable` means the packaged skill can't be resolved in the
@@ -355,7 +355,7 @@ def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
     # after a rebuild, so it must actually sync the DC files/rules — drift-aware,
     # never clobbering a customized rule.
     try:
-        from agentwire.cli_safety import heal_damage_control
+        from agentwire.safety_commands import heal_damage_control
         heal_damage_control(quiet=True)
     except Exception:
         pass
