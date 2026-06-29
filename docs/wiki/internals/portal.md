@@ -1,6 +1,6 @@
 # AgentWire Portal
 
-> Web portal documentation. For project overview, see [CLAUDE.md](../CLAUDE.md).
+> Web portal documentation. For project overview, see [CLAUDE.md](../../../CLAUDE.md).
 
 ## Architecture: CLI-First
 

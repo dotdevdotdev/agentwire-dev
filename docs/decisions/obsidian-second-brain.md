@@ -3,6 +3,8 @@
 > Decision record for [issue #183](https://github.com/dotdevdotdev/agentwire-dev/issues/183).
 > Research/decision task — **no code shipped in this PR**. This file records yes/no/defer
 > for each proposed direction and resolves the open questions for the ones we accept.
+>
+> **Superseded:** the `wiki-ingest` batch task was retired in #473; wiki authoring is now in-context via the `agentwire wiki` CLI.
 
 ## Context
 
