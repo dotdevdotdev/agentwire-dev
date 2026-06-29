@@ -53,7 +53,7 @@ agentwire worktree --prune         # drop entries whose worktree is gone + `git 
 ## Config
 
 ```yaml
-worktree:                         # `quicktask:` is a legacy alias for this key — prefer `worktree:`
+worktree:
   worktree_dir: ~/worktrees
   default_base: develop           # omit → repo-derived (origin/HEAD)
   default_project: ~/projects/my-repo
