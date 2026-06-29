@@ -1,6 +1,23 @@
 {
   "announcements": [
     {
+      "id": "2026-06-help-modal",
+      "placement": "modal",
+      "emoji": "⌨️",
+      "title": "Press F1 — there's more than you think",
+      "date": "2026-06-29",
+      "body": "AgentWire has a pile of keyboard shortcuts and features that were easy to miss. Now there's one place to see them all: press F1 (or ?) anytime for a cheat sheet of every shortcut, plus a quick tour of features worth knowing — council, push-to-talk, window collage, worktrees, scratchpad, and more. There's also a ? button in the sidebar header if you'd rather click.",
+      "highlights": [
+        "F1 or ? — keyboard shortcut cheat sheet, from anywhere",
+        "Doubles as a feature tour: discover what you're not using yet",
+        "Also in the sidebar header (?) and the command palette"
+      ],
+      "cta": {
+        "label": "Press F1 to try it",
+        "url": "https://github.com/dotdevdotdev/agentwire-dev/releases/tag/v1.49.0"
+      }
+    },
+    {
       "id": "2026-06-worktree-sessions",
       "placement": "modal",
       "emoji": "🌳",
