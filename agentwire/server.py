@@ -39,9 +39,9 @@ from aiohttp import web
 from . import prompt_router, security
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
-from .routes.scratchpad import ScratchpadRoutesMixin, register_scratchpad_routes
-from .routes.push import PushRoutesMixin, register_push_routes
 from .routes.desktop import DesktopRoutesMixin, register_desktop_routes
+from .routes.push import PushRoutesMixin, register_push_routes
+from .routes.scratchpad import ScratchpadRoutesMixin, register_scratchpad_routes
 from .security import (
     WS_PROTOCOL_PREFIX,
     create_security_middleware,
