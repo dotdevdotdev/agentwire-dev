@@ -26,14 +26,14 @@ class TestFormatEmpty:
     """All formatters return their empty message for [] and missing-key input."""
 
     def test_empty_list(self, fn_name, list_key, empty_substring):
-        from agentwire import mcp_server
+        from agentwire import mcp_core as mcp_server
         fn = getattr(mcp_server, fn_name)
         # format_panes also reads "session" key — provide it harmlessly
         result = fn({list_key: [], "session": "test"})
         assert empty_substring in result
 
     def test_missing_key(self, fn_name, list_key, empty_substring):
-        from agentwire import mcp_server
+        from agentwire import mcp_core as mcp_server
         fn = getattr(mcp_server, fn_name)
         result = fn({"session": "test"})
         assert empty_substring in result
@@ -63,7 +63,7 @@ class TestFormatEmpty:
 )
 def test_format_multiple_produces_header_plus_one_line_per_entry(fn_name, list_key, extra, entries):
     """All listing formatters emit a header line then one line per entry."""
-    from agentwire import mcp_server
+    from agentwire import mcp_core as mcp_server
     fn = getattr(mcp_server, fn_name)
     result = fn({list_key: entries, **extra})
     lines = result.split("\n")
@@ -83,7 +83,7 @@ def test_format_multiple_produces_header_plus_one_line_per_entry(fn_name, list_k
 )
 def test_format_missing_optional_fields_shows_unknown(fn_name, list_key, extra, entry):
     """Missing optional fields produce 'unknown' rather than crash or empty string."""
-    from agentwire import mcp_server
+    from agentwire import mcp_core as mcp_server
     fn = getattr(mcp_server, fn_name)
     entries = entry if isinstance(entry, list) else [entry]
     result = fn({list_key: entries, **extra})
@@ -94,7 +94,7 @@ def test_format_missing_optional_fields_shows_unknown(fn_name, list_key, extra, 
 
 class TestFormatSessionsBehavior:
     def test_all_fields_render(self):
-        from agentwire.mcp_server import format_sessions
+        from agentwire.mcp_core import format_sessions
         result = format_sessions({"sessions": [
             {"name": "my-app", "machine": "gpu-box", "windows": 3, "path": "/p", "type": "claude-bypass"},
         ]})
@@ -104,26 +104,26 @@ class TestFormatSessionsBehavior:
         assert "type=claude-bypass" in result
 
     def test_null_machine_shows_local(self):
-        from agentwire.mcp_server import format_sessions
+        from agentwire.mcp_core import format_sessions
         assert "local" in format_sessions({"sessions": [{"name": "x", "machine": None}]})
 
 
 class TestFormatPanesBehavior:
     def test_pane_0_is_orchestrator_active_marked(self):
-        from agentwire.mcp_server import format_panes
+        from agentwire.mcp_core import format_panes
         result = format_panes({"panes": [{"index": 0, "command": "claude", "active": True}], "session": "s"})
         assert "[orchestrator]" in result
         assert "(active)" in result
 
     def test_pane_nonzero_is_worker(self):
-        from agentwire.mcp_server import format_panes
+        from agentwire.mcp_core import format_panes
         result = format_panes({"panes": [{"index": 1, "command": "bash"}], "session": "s"})
         assert "[worker]" in result
 
 
 class TestFormatMachinesBehavior:
     def test_user_at_host_format(self):
-        from agentwire.mcp_server import format_machines
+        from agentwire.mcp_core import format_machines
         result = format_machines({"machines": [
             {"id": "gpu", "host": "10.0.0.1", "user": "root", "status": "online"}
         ]})
@@ -131,7 +131,7 @@ class TestFormatMachinesBehavior:
         assert "status: online" in result
 
     def test_blank_user_omits_at_sign(self):
-        from agentwire.mcp_server import format_machines
+        from agentwire.mcp_core import format_machines
         result = format_machines({"machines": [
             {"id": "m1", "host": "h", "user": "", "status": "unknown"}
         ]})
@@ -141,19 +141,19 @@ class TestFormatMachinesBehavior:
 
 class TestFormatProjectsBehavior:
     def test_has_config_marker(self):
-        from agentwire.mcp_server import format_projects
+        from agentwire.mcp_core import format_projects
         result = format_projects({"projects": [{"name": "app", "path": "/app", "has_config": True}]})
         assert "(has .agentwire.yml)" in result
 
     def test_no_config_no_marker(self):
-        from agentwire.mcp_server import format_projects
+        from agentwire.mcp_core import format_projects
         result = format_projects({"projects": [{"name": "app", "path": "/app", "has_config": False}]})
         assert ".agentwire.yml" not in result
 
 
 class TestFormatRolesBehavior:
     def test_full_role_format(self):
-        from agentwire.mcp_server import format_roles
+        from agentwire.mcp_core import format_roles
         result = format_roles({"roles": [{"name": "voice", "description": "Voice comms", "source": "bundled"}]})
         assert "voice: Voice comms (bundled)" in result
 
@@ -165,7 +165,7 @@ class TestFormatVoicesBehavior:
         [{"name": "alice"}, "bob"],
     ])
     def test_dict_string_and_mixed_entries_all_render(self, voices):
-        from agentwire.mcp_server import format_voices
+        from agentwire.mcp_core import format_voices
         result = format_voices({"voices": voices})
         assert "alice" in result
         assert "bob" in result
@@ -178,10 +178,10 @@ class TestFormatVoicesBehavior:
 
 class TestRunAgentwireCmd:
     def setup_method(self):
-        from agentwire.mcp_server import run_agentwire_cmd
+        from agentwire.mcp_core import run_agentwire_cmd
         self.fn = run_agentwire_cmd
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_successful_json(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -194,7 +194,7 @@ class TestRunAgentwireCmd:
         cmd = mock_run.call_args[0][0]
         assert cmd == ["agentwire", "list", "--json"]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_json_array_wrapping(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -205,7 +205,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is True
         assert result["items"] == [{"id": 1}, {"id": 2}]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_json_without_success_key(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -216,7 +216,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is True
         assert result["data"] == "hello"
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_json_parse_failure_falls_back(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -227,7 +227,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is True
         assert result["output"] == "not json"
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_nonzero_returncode(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=1,
@@ -238,7 +238,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is False
         assert "session not found" in result["error"]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_json_output_false(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -251,41 +251,41 @@ class TestRunAgentwireCmd:
         cmd = mock_run.call_args[0][0]
         assert "--json" not in cmd
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_timeout_expired(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="agentwire", timeout=30)
         result = self.fn(["long-cmd"])
         assert result["success"] is False
         assert "timed out" in result["error"]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_file_not_found(self, mock_run):
         mock_run.side_effect = FileNotFoundError()
         result = self.fn(["list"])
         assert result["success"] is False
         assert "not found" in result["error"]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_command_construction(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
         self.fn(["new", "-s", "test"])
         cmd = mock_run.call_args[0][0]
         assert cmd == ["agentwire", "new", "-s", "test", "--json"]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_custom_timeout(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
         self.fn(["spawn"], timeout=120)
         assert mock_run.call_args[1]["timeout"] == 120
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_generic_exception(self, mock_run):
         mock_run.side_effect = OSError("permission denied")
         result = self.fn(["list"])
         assert result["success"] is False
         assert "permission denied" in result["error"]
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_empty_stdout_nonzero(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         result = self.fn(["x"])
@@ -299,7 +299,7 @@ class TestRunAgentwireCmd:
 
 class TestGetPortalUrl:
     def setup_method(self):
-        from agentwire.mcp_server import get_portal_url
+        from agentwire.mcp_core import get_portal_url
         self.fn = get_portal_url
 
     def test_env_var(self, monkeypatch):
@@ -348,32 +348,32 @@ class TestGetPortalUrl:
 
 class TestGetCallerSession:
     def setup_method(self):
-        from agentwire.mcp_server import get_caller_session
+        from agentwire.mcp_core import get_caller_session
         self.fn = get_caller_session
 
     def test_no_tmux_pane(self, monkeypatch):
         monkeypatch.delenv("TMUX_PANE", raising=False)
         assert self.fn() is None
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_returns_session_name(self, mock_run, monkeypatch):
         monkeypatch.setenv("TMUX_PANE", "%5")
         mock_run.return_value = MagicMock(returncode=0, stdout="my-session\n")
         assert self.fn() == "my-session"
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_empty_stdout(self, mock_run, monkeypatch):
         monkeypatch.setenv("TMUX_PANE", "%5")
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         assert self.fn() is None
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_nonzero_returncode(self, mock_run, monkeypatch):
         monkeypatch.setenv("TMUX_PANE", "%5")
         mock_run.return_value = MagicMock(returncode=1, stdout="")
         assert self.fn() is None
 
-    @patch("agentwire.mcp_server.subprocess.run")
+    @patch("agentwire.mcp_core.subprocess.run")
     def test_timeout_expired(self, mock_run, monkeypatch):
         monkeypatch.setenv("TMUX_PANE", "%5")
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="tmux", timeout=2)
@@ -387,11 +387,11 @@ class TestGetCallerSession:
 
 class TestPortalRequest:
     def setup_method(self):
-        from agentwire.mcp_server import _portal_request
+        from agentwire.mcp_desktop import _portal_request
         self.fn = _portal_request
 
     @patch("agentwire.security.get_local_portal_token", return_value="tok123")
-    @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
+    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.get")
     def test_get_request(self, mock_get, mock_url, mock_token):
         mock_resp = MagicMock()
@@ -407,7 +407,7 @@ class TestPortalRequest:
             timeout=10,
         )
 
-    @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
+    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.post")
     def test_post_request(self, mock_post, mock_url):
         mock_resp = MagicMock()
@@ -418,7 +418,7 @@ class TestPortalRequest:
         assert result["success"] is True
         mock_post.assert_called_once()
 
-    @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
+    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.get")
     def test_non_200_status(self, mock_get, mock_url):
         mock_resp = MagicMock()
@@ -428,7 +428,7 @@ class TestPortalRequest:
         assert result["success"] is False
         assert "500" in result["error"]
 
-    @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
+    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.get")
     def test_connection_error(self, mock_get, mock_url):
         import requests
@@ -437,7 +437,7 @@ class TestPortalRequest:
         assert result["success"] is False
         assert "not reachable" in result["error"]
 
-    @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
+    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.get")
     def test_generic_exception(self, mock_get, mock_url):
         mock_get.side_effect = Exception("timeout")
@@ -445,7 +445,7 @@ class TestPortalRequest:
         assert result["success"] is False
         assert "timeout" in result["error"]
 
-    @patch("agentwire.mcp_server.get_portal_url", return_value="https://localhost:8765")
+    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
     @patch("requests.post")
     def test_post_default_empty_body(self, mock_post, mock_url):
         mock_resp = MagicMock()
@@ -459,14 +459,14 @@ class TestPortalRequest:
 
 class TestTtsToolPromptFetch:
     def test_default_tier_returns_empty(self, tmp_path, monkeypatch):
-        from agentwire import mcp_server
+        from agentwire import mcp_voice as mcp_server
         from agentwire.config import load_config
         cfg = load_config(tmp_path / "nonexistent.yaml")  # default tier
         monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
         assert mcp_server._fetch_tts_tool_prompt() == ""
 
     def test_unreachable_shim_fails_soft(self, tmp_path, monkeypatch):
-        from agentwire import mcp_server
+        from agentwire import mcp_voice as mcp_server
         from agentwire.config import load_config
         cfg = load_config(tmp_path / "nonexistent.yaml")
         cfg.tts.backend = "custom"
@@ -477,7 +477,7 @@ class TestTtsToolPromptFetch:
     def test_custom_shim_prompt_returned(self, tmp_path, monkeypatch):
         import io
 
-        from agentwire import mcp_server
+        from agentwire import mcp_voice as mcp_server
         from agentwire.config import load_config
         cfg = load_config(tmp_path / "nonexistent.yaml")
         cfg.tts.backend = "custom"
@@ -497,7 +497,7 @@ class TestTtsToolPromptFetch:
         assert mcp_server._fetch_tts_tool_prompt() == "Use [laugh] sparingly."
 
     def test_say_description_carries_core_text(self):
-        from agentwire import mcp_server
+        from agentwire import mcp_voice as mcp_server
         assert "Speak text via TTS" in mcp_server._SAY_DESCRIPTION
         # With no shim prompt at import time, no capabilities section
         if not mcp_server._TTS_TOOL_PROMPT:
