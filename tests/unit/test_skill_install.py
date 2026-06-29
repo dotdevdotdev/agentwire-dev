@@ -175,7 +175,7 @@ def test_install_hooks_installs_skills(env, tmp_path, monkeypatch):
     # Stub out the hook half so we exercise only the skill wiring, and keep
     # damage-control healing from touching the real machine.
     monkeypatch.setattr(m, "get_hooks_source", lambda: tmp_path / "no-hooks")
-    import agentwire.cli_safety as cs
+    import agentwire.safety_commands as cs
     monkeypatch.setattr(cs, "heal_damage_control", lambda quiet=True: None)
 
     _, target_root = env

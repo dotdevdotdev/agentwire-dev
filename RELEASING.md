@@ -34,10 +34,13 @@ unzip -l dist/agentwire_dev-{VERSION}-py3-none-any.whl | grep -E "templates/|sta
 
 ### 4. Publish to PyPI
 
-The `PYPI_TOKEN` lives in `~/.agentwire/.env`. Pass it explicitly:
+The `PYPI_TOKEN` lives in `~/.agentwire/.env`. Don't `source` the file — it can
+contain unquoted `&` in other values (e.g. a URL with query params), which makes
+the shell hit a parse error before `uv publish` ever runs. Grep the token out
+directly:
 
 ```bash
-source ~/.agentwire/.env && uv publish --token "$PYPI_TOKEN" dist/agentwire_dev-{VERSION}*
+uv publish --token "$(grep '^PYPI_TOKEN=' ~/.agentwire/.env | cut -d= -f2-)" dist/agentwire_dev-{VERSION}*
 ```
 
 ### 5. Create GitHub release

@@ -1,6 +1,6 @@
 """Disabled rules in safety config skip the matching pattern."""
 
-from agentwire.cli_safety import load_patterns
+from agentwire.safety_commands import load_patterns
 from agentwire.safety._core import check_command
 
 

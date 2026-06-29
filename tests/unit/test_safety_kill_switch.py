@@ -1,6 +1,6 @@
 """Global kill switch (safety.enabled = false) short-circuits all blocks."""
 
-from agentwire.cli_safety import load_patterns
+from agentwire.safety_commands import load_patterns
 from agentwire.safety._core import check_command, check_path
 
 

@@ -1,30 +1,30 @@
 """CLI for damage control — ``agentwire safety ...``.
 
-Thin command wrappers; the actual logic lives in ``cli_safety`` (the same
+Thin command wrappers; the actual logic lives in ``safety_commands`` (the same
 module the PreToolUse hooks invoke), so the CLI surface and the hook surface
 share one implementation.
 """
 
 from __future__ import annotations
 
-from . import cli_safety
+from . import safety_commands
 
 
 def cmd_safety_check(args) -> int:
     """CLI command: agentwire safety check"""
     command = args.command
     verbose = getattr(args, 'verbose', False)
-    return cli_safety.safety_check_cmd(command, verbose)
+    return safety_commands.safety_check_cmd(command, verbose)
 
 
 def cmd_safety_status(args) -> int:
     """CLI command: agentwire safety status"""
-    return cli_safety.safety_status_cmd()
+    return safety_commands.safety_status_cmd()
 
 
 def cmd_safety_notify_unattended_block(args) -> int:
     """CLI command: agentwire safety notify-unattended-block (hook-invoked)"""
-    return cli_safety.safety_notify_unattended_block_cmd(
+    return safety_commands.safety_notify_unattended_block_cmd(
         getattr(args, "reason", "") or "",
         getattr(args, "rule_id", "") or "",
         getattr(args, "command", "") or "",
@@ -37,22 +37,22 @@ def cmd_safety_logs(args) -> int:
     session = getattr(args, 'session', None)
     today = getattr(args, 'today', False)
     pattern = getattr(args, 'pattern', None)
-    return cli_safety.safety_logs_cmd(tail, session, today, pattern)
+    return safety_commands.safety_logs_cmd(tail, session, today, pattern)
 
 
 def cmd_safety_install(args) -> int:
     """CLI command: agentwire safety install"""
-    return cli_safety.safety_install_cmd(assume_yes=getattr(args, "yes", False))
+    return safety_commands.safety_install_cmd(assume_yes=getattr(args, "yes", False))
 
 
 def cmd_safety_tooldefs_list(args) -> int:
     """CLI command: agentwire safety tooldefs list"""
-    return cli_safety.safety_tooldefs_list_cmd()
+    return safety_commands.safety_tooldefs_list_cmd()
 
 
 def cmd_safety_tooldefs_show(args) -> int:
     """CLI command: agentwire safety tooldefs show <tool>"""
-    return cli_safety.safety_tooldefs_show_cmd(args.tool)
+    return safety_commands.safety_tooldefs_show_cmd(args.tool)
 
 
 def register_safety_parser(subparsers) -> None:

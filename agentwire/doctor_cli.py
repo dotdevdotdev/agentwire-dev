@@ -286,13 +286,13 @@ def _render_damage_control_section() -> int:
         print("  [ok] Damage control enabled (enabled: true)")
 
     try:
-        from . import cli_safety
+        from . import safety_commands
     except Exception as e:
         print(f"  [..] Could not load safety module: {e}")
         return issues
 
     # DC hook-script staleness (bash/edit/write/mcp-tool + audit_logger).
-    hook_drift = cli_safety.damage_control_hook_drift()
+    hook_drift = safety_commands.damage_control_hook_drift()
     stale_hooks = [f for f, s in hook_drift.items() if s == "stale"]
     missing_hooks = [f for f, s in hook_drift.items() if s == "missing"]
     if stale_hooks or missing_hooks:
@@ -306,7 +306,7 @@ def _render_damage_control_section() -> int:
         print("  [ok] DC hook scripts current")
 
     # Installed-rules drift vs bundled rules (the incident's missing files).
-    rule_drift = cli_safety.rules_drift()
+    rule_drift = safety_commands.rules_drift()
     missing_rules = [f for f, s in rule_drift.items() if s == "missing"]
     stale_rules = [f for f, s in rule_drift.items() if s == "stale"]
     if missing_rules:
@@ -322,7 +322,7 @@ def _render_damage_control_section() -> int:
         print("  [ok] Damage-control rules installed and match bundled")
 
     # Matcher presence in ~/.claude/settings.json.
-    missing_matchers = cli_safety.missing_damage_control_matchers()
+    missing_matchers = safety_commands.missing_damage_control_matchers()
     if missing_matchers:
         print(f"  [!!] PreToolUse matchers not registered: {', '.join(missing_matchers)}")
         print("       Fix: agentwire safety install --yes")

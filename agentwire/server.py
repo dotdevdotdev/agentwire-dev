@@ -4001,7 +4001,7 @@ projects:
     async def api_safety_status(self, request: web.Request) -> web.Response:
         """Damage-control current state: master enable, disabled rules, today's counts."""
         try:
-            from .cli_safety import LOGS_DIR, load_patterns
+            from .safety_commands import LOGS_DIR, load_patterns
             patterns = load_patterns()
             today = datetime.now().strftime("%Y-%m-%d")
             log_file = LOGS_DIR / f"{today}.jsonl"
@@ -4034,7 +4034,7 @@ projects:
     async def api_safety_logs(self, request: web.Request) -> web.Response:
         """Recent safety audit log entries with optional filters."""
         try:
-            from .cli_safety import query_audit_logs
+            from .safety_commands import query_audit_logs
             limit = int(request.query.get("limit", "200"))
             decision = request.query.get("decision")
             entries = query_audit_logs()  # all entries, newest-first by file
@@ -4050,7 +4050,7 @@ projects:
     async def api_safety_rules(self, request: web.Request) -> web.Response:
         """Flat list of bash-rule IDs with their patterns/reasons."""
         try:
-            from .cli_safety import load_patterns
+            from .safety_commands import load_patterns
             patterns = load_patterns()
             rules = []
             for p in patterns.get("bashToolPatterns", []):
