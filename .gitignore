@@ -57,3 +57,6 @@ htmlcov/
 
 # pytest-textual-snapshot diff page (regenerated each run)
 snapshot_report.html
+
+# Node
+node_modules/
