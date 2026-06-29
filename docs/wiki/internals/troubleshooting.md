@@ -184,7 +184,7 @@ tts:
   default_voice: "default"
   options:
     backend: kokoro          # bundled-shim engine: kokoro | chatterbox |
-                             # chatterbox-streaming | qwen-* | zonos-*
+                             # chatterbox-streaming | zonos-*
 ```
 
 **Default tier (Kokoro) quirks:** the model lives in `~/.cache/kokoro_onnx/`

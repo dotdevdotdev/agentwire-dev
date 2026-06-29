@@ -4,17 +4,13 @@
 Supported backends:
   - chatterbox: Chatterbox Turbo TTS (default, fastest)
   - chatterbox-streaming: Chatterbox with streaming support
-  - qwen-base-0.6b: Qwen3-TTS 0.6B (voice cloning)
-  - qwen-base-1.7b: Qwen3-TTS 1.7B (voice cloning, higher quality)
-  - qwen-design: Qwen3-TTS VoiceDesign (generate voices from descriptions)
-  - qwen-custom: Qwen3-TTS CustomVoice (preset voices with emotion control)
   - zonos-hybrid: Zonos v0.1 SSM-Hybrid (<4 GB VRAM, emotion control, 5 languages)
   - zonos-transformer: Zonos v0.1 Transformer (standard arch variant)
   - kokoro: Kokoro 82M ONNX (CPU-only, ~170 MB, 30+ voices, streaming)
 
 Run via:
     agentwire tts start                      # Start with default backend
-    agentwire tts start --backend qwen-base-1.7b  # Start with specific backend
+    agentwire tts start --backend zonos-hybrid    # Start with specific backend
     agentwire tts stop                       # Stop the server
     agentwire tts status                     # Check status
 
@@ -22,7 +18,7 @@ Or run directly:
     DEFAULT_BACKEND=chatterbox uvicorn agentwire.tts_server:app --host 0.0.0.0 --port 8100
 
 Hot-swap backends via API:
-    POST /engines/qwen-base-1.7b/load        # Switch to Qwen 1.7B
+    POST /engines/zonos-hybrid/load          # Switch to Zonos hybrid
     GET /engines                             # List available engines
 """
 
@@ -63,10 +59,6 @@ VOICES_DIR = Path(os.environ.get("VOICES_DIR", str(Path.home() / ".agentwire" / 
 BACKEND_FAMILIES = {
     "chatterbox": "chatterbox",
     "chatterbox-streaming": "chatterbox",
-    "qwen-base-0.6b": "qwen",
-    "qwen-base-1.7b": "qwen",
-    "qwen-design": "qwen",
-    "qwen-custom": "qwen",
     "zonos-hybrid": "zonos",
     "zonos-transformer": "zonos",
     "kokoro": "kokoro",
@@ -137,23 +129,6 @@ def register_engines():
         from .tts.engines.chatterbox import ChatterboxStreamingEngine
         return ChatterboxStreamingEngine(voices_dir=VOICES_DIR)
 
-    # Qwen engines
-    def make_qwen_base_06b():
-        from .tts.engines.qwen_base import QwenBaseEngine
-        return QwenBaseEngine(model_size="0.6b", voices_dir=VOICES_DIR)
-
-    def make_qwen_base_17b():
-        from .tts.engines.qwen_base import QwenBaseEngine
-        return QwenBaseEngine(model_size="1.7b", voices_dir=VOICES_DIR)
-
-    def make_qwen_design():
-        from .tts.engines.qwen_design import QwenDesignEngine
-        return QwenDesignEngine(voices_dir=VOICES_DIR)
-
-    def make_qwen_custom():
-        from .tts.engines.qwen_custom import QwenCustomEngine
-        return QwenCustomEngine(voices_dir=VOICES_DIR)
-
     # Zonos engines
     def make_zonos_hybrid():
         from .tts.engines.zonos import ZonosHybridEngine
@@ -166,10 +141,6 @@ def register_engines():
     # Register all engines
     registry.register("chatterbox", make_chatterbox)
     registry.register("chatterbox-streaming", make_chatterbox_streaming)
-    registry.register("qwen-base-0.6b", make_qwen_base_06b)
-    registry.register("qwen-base-1.7b", make_qwen_base_17b)
-    registry.register("qwen-design", make_qwen_design)
-    registry.register("qwen-custom", make_qwen_custom)
     registry.register("zonos-hybrid", make_zonos_hybrid)
     registry.register("zonos-transformer", make_zonos_transformer)
 
@@ -391,7 +362,7 @@ async def upload_voice(name: str, file: UploadFile = File(...)):
     if torchaudio is None:
         raise HTTPException(
             status_code=400,
-            detail="Voice upload requires torchaudio (chatterbox/qwen/zonos venvs); "
+            detail="Voice upload requires torchaudio (chatterbox/zonos venvs); "
                    "the torch-free kokoro venv uses preset voices only",
         )
 

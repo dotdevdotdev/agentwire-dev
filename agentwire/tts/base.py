@@ -34,7 +34,7 @@ class TTSRequest(BaseModel):
     exaggeration: float = 0.5
     cfg_weight: float = 0.5
 
-    # Emotion/style instruction (contract envelope field; Qwen engines use it)
+    # Emotion/style instruction (contract envelope field; emotion-capable engines use it)
     instructions: str | None = None
     language: str = "English"
 

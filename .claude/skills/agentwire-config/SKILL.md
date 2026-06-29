@@ -71,7 +71,7 @@ tts:
   voices_dir: "~/.agentwire/voices"  # Custom voice samples for cloning
   instructions: ""  # free-text prompt passed through to the shim
   options:  # opaque JSON passed to the shim; the bundled shim reads:
-    backend: kokoro  # engine: kokoro | chatterbox | chatterbox-streaming | qwen-base-0.6b | qwen-base-1.7b | qwen-custom | qwen-design | zonos-transformer | zonos-hybrid
+    backend: kokoro  # engine: kokoro | chatterbox | chatterbox-streaming | zonos-transformer | zonos-hybrid
   exaggeration: 0.5  # Voice expressiveness (0-1, Chatterbox)
   cfg_weight: 0.5  # CFG weight (0-1, Chatterbox)
   timeout: 60

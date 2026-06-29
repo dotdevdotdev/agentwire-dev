@@ -269,7 +269,7 @@ agentwire uninstall             # uninstall the tool
 the portal or any service. Use `agentwire up` after a reboot to bring up the
 full stack. `up` brings up portal → TTS → STT → autostart custom services, then
 runs `dev`; the scheduler rides along via the portal's `scheduler.autostart`.
-TTS is skipped for `none`/`runpod` backends; STT is skipped without `stt.url`.
+TTS only starts a local service for the `custom` tier (the `default` tier uses browser/OS voice — no service); STT is skipped without `stt.url`.
 
 Session formats: `name`, `project/branch` (worktree), `name@machine` (remote)
 Pane targeting: `--pane N` auto-detects session from `$TMUX_PANE`
