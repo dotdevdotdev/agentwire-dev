@@ -132,12 +132,12 @@ artifacts = [
     "agentwire/hooks/**/*.sh",
 ]
 exclude = [
-    "agentwire/static/*.xcf",
-    "agentwire/static/*-blue.*",
-    "agentwire/static/agentwire-logo-splash.jpeg",
-    "agentwire/static/agentwire-logo-splash-dark.jpeg",
-    "agentwire/static/agentwire-logo-splash-green.jpeg",
-    "agentwire/static/agentwire-logo-splash-green-dark.jpeg",
+    # Never-served source art kept in-repo for regen only. The portal serves
+    # WebP exclusively (server.py list_images suffix filter), so the heavyweight
+    # .jpeg session icons and full-res custom .png originals are pure regen
+    # source — don't ship them in the wheel.
+    "agentwire/static/icons/**/*.jpeg",
+    "agentwire/static/icons/**/custom/*.png",
 ]
 
 # Ship the agentwire-owned GLOBAL skill into the package so get_skills_source()
@@ -172,13 +172,10 @@ exclude = [
     # Dev examples and scripts
     "examples/",
     "scripts/",
-    # Static file dev assets
-    "agentwire/static/*.xcf",
-    "agentwire/static/*-blue.*",
-    "agentwire/static/agentwire-logo-splash.jpeg",
-    "agentwire/static/agentwire-logo-splash-dark.jpeg",
-    "agentwire/static/agentwire-logo-splash-green.jpeg",
-    "agentwire/static/agentwire-logo-splash-green-dark.jpeg",
+    # Never-served source art (see wheel exclude above): .jpeg session icons
+    # and full-res custom .png originals are regen source, not shipped.
+    "agentwire/static/icons/**/*.jpeg",
+    "agentwire/static/icons/**/custom/*.png",
 ]
 
 # The sdist excludes .claude/, but the wheel force-includes .claude/skills/wiki
