@@ -99,6 +99,20 @@ class TestDriftDetectors:
         cli_safety.heal_damage_control(quiet=True)
         assert cli_safety.missing_damage_control_matchers() == []
 
+    def test_partial_shared_command_matcher_still_flagged(self, fake_env):
+        """Read/Grep/Glob share one hook script. Registering only Read must NOT
+        mark Grep/Glob as present — a command-only check would (the bug); the
+        (matcher, command) check catches the gap."""
+        settings = Path.home() / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        cmd = "~/.agentwire/hooks/damage-control/read-tool-damage-control.py"
+        settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Read", "hooks": [{"type": "command", "command": cmd}]},
+        ]}}))
+        missing = set(cli_safety.missing_damage_control_matchers())
+        assert "Read" not in missing            # the one we registered
+        assert {"Grep", "Glob"} <= missing      # genuinely absent, must be flagged
+
 
 class TestInstallCmdNonInteractive:
     def test_yes_does_not_prompt(self, fake_env, monkeypatch):
