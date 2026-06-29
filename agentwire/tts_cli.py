@@ -34,13 +34,11 @@ from .core import (
 
 def _get_venv_for_backend(backend: str) -> str:
     """Get the venv family required for a backend."""
-    if backend.startswith("chatterbox"):
-        return "chatterbox"
     if backend.startswith("zonos"):
         return "zonos"
     if backend == "kokoro":
         return "kokoro"
-    return "qwen"
+    return "chatterbox"
 
 
 def _get_tts_engine(args, tts_config: dict) -> str:
@@ -902,8 +900,8 @@ def cmd_voiceclone_delete(args) -> int:
 # === Parser registration ===
 
 _TTS_BACKEND_CHOICES = [
-    "kokoro", "chatterbox", "chatterbox-streaming", "qwen-base-0.6b",
-    "qwen-base-1.7b", "qwen-design", "qwen-custom", "zonos-transformer", "zonos-hybrid",
+    "kokoro", "chatterbox", "chatterbox-streaming",
+    "zonos-transformer", "zonos-hybrid",
 ]
 
 
@@ -929,7 +927,7 @@ def register_tts_parser(subparsers) -> None:
                            choices=_TTS_BACKEND_CHOICES,
                            help="TTS backend (default: chatterbox)")
     tts_serve.add_argument("--venv", type=str,
-                           choices=["kokoro", "chatterbox", "qwen", "zonos"],
+                           choices=["kokoro", "chatterbox", "zonos"],
                            help="Which venv family is running (for hot-swap detection)")
     tts_serve.set_defaults(func=cmd_tts_serve)
 
@@ -945,7 +943,7 @@ def register_tts_parser(subparsers) -> None:
                              choices=_TTS_BACKEND_CHOICES,
                              help="TTS backend")
     tts_restart.add_argument("--venv", type=str,
-                             choices=["kokoro", "chatterbox", "qwen", "zonos"],
+                             choices=["kokoro", "chatterbox", "zonos"],
                              help="Force specific venv family")
     tts_restart.set_defaults(func=cmd_tts_restart)
 

@@ -534,7 +534,7 @@ def register_channels_parser(subparsers) -> None:
     say_parser.add_argument("-s", "--session", type=str, help="Session name (auto-detected from .agentwire.yml or tmux)")
     say_parser.add_argument("--exaggeration", type=float, help="Voice exaggeration (0-1, Chatterbox)")
     say_parser.add_argument("--cfg", type=float, help="CFG weight (0-1, Chatterbox)")
-    say_parser.add_argument("--backend", type=str, help="TTS backend (chatterbox, qwen-base-1.7b, qwen-design, qwen-custom)")
+    say_parser.add_argument("--backend", type=str, help="TTS backend (chatterbox, zonos-hybrid, zonos-transformer, kokoro)")
     say_parser.add_argument("--instructions", type=str, help="Free-text style instructions passed to the TTS shim (e.g. 'speak warmly')")
     say_parser.add_argument("--language", type=str, default="English", help="Language (default: English)")
     say_parser.add_argument("--stream", action="store_true", help="Use streaming mode (if backend supports)")

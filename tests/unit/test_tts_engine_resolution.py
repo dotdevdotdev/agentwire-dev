@@ -36,13 +36,13 @@ class TestGetTtsEngine:
         assert _get_tts_engine(Namespace(backend=None), {}) == "chatterbox"
 
     def test_args_without_backend_attr(self):
-        tts_config = {"options": {"backend": "qwen-base-0.6b"}}
-        assert _get_tts_engine(Namespace(), tts_config) == "qwen-base-0.6b"
+        tts_config = {"options": {"backend": "zonos-hybrid"}}
+        assert _get_tts_engine(Namespace(), tts_config) == "zonos-hybrid"
 
 
 class TestVenvForResolvedEngine:
     def test_kokoro_engine_maps_to_kokoro_venv(self):
-        # The #261 failure: custom tier + kokoro engine landed in the qwen venv
+        # The #261 failure: custom tier + kokoro engine landed in the wrong venv
         engine = _get_tts_engine(
             Namespace(backend=None),
             {"backend": "custom", "options": {"backend": "kokoro"}},

@@ -2,15 +2,12 @@
 
 Engines resolve lazily (PEP 562) so importing one engine never pulls in the
 others' dependencies — the torch-free kokoro path must stay importable in the
-base install, where torch (chatterbox/qwen/zonos) is absent.
+base install, where torch (chatterbox/zonos) is absent.
 """
 
 _ENGINES = {
     "ChatterboxEngine": ".chatterbox",
     "KokoroEngine": ".kokoro",
-    "QwenBaseEngine": ".qwen_base",
-    "QwenCustomEngine": ".qwen_custom",
-    "QwenDesignEngine": ".qwen_design",
     "ZonosHybridEngine": ".zonos",
     "ZonosTransformerEngine": ".zonos",
 }

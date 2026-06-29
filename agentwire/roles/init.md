@@ -32,7 +32,7 @@ TTS converts agent responses to spoken audio that plays in the browser or local 
 
 **Two tiers:**
 - `default` — zero setup. **Kokoro-82M in-process** (good CPU neural voice, 32 presets, 8 languages). The ~200MB model auto-downloads in the background on first portal start; browser speechSynthesis covers the wait and stays as the last-resort fallback. **This is what an empty config gets — most users should start here.**
-- `custom` — any HTTP shim implementing the contract (`docs/wiki/voice/shim-contract.md`). Voice cloning, GPU engines, emotion control. The bundled multi-engine server (kokoro, chatterbox GPU cloning, qwen, zonos) is the reference shim.
+- `custom` — any HTTP shim implementing the contract (`docs/wiki/voice/shim-contract.md`). Voice cloning, GPU engines, emotion control. The bundled multi-engine server (kokoro, chatterbox GPU cloning, zonos) is the reference shim.
 
 **If default:** nothing to do — it already works. Optionally pre-download the model (`agentwire tts warm`) or pick a preset voice (`default_voice: af_bella`).
 

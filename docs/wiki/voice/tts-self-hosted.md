@@ -29,10 +29,6 @@ curl -X POST http://localhost:8100/engines/zonos-transformer/load
 | `kokoro` | Kokoro 82M ONNX | **CPU only** | No | No | No | 8 languages | Yes |
 | `chatterbox` | Chatterbox Turbo (350M) | ~4–8 GB | Yes | No | Yes (`[laugh]` etc.) | English | No |
 | `chatterbox-streaming` | Chatterbox Streaming | ~4–8 GB | Yes | No | Yes | English | Yes |
-| `qwen-base-0.6b` | Qwen3-TTS 0.6B | ~4 GB | Yes | No | No | 10 languages | Yes |
-| `qwen-base-1.7b` | Qwen3-TTS 1.7B | ~8 GB | Yes | No | No | 10 languages | Yes |
-| `qwen-custom` | Qwen3-TTS CustomVoice | ~8 GB | Yes | Yes (instruct) | No | 10 languages | Yes |
-| `qwen-design` | Qwen3-TTS VoiceDesign | ~8 GB | From text desc | Yes (instruct) | No | 10 languages | Yes |
 | `zonos-transformer` | Zonos v0.1 Transformer | ~4 GB | Yes | Yes (7 sliders) | No | 5 languages | No |
 | `zonos-hybrid` | Zonos v0.1 Hybrid (SSM) | ~4 GB | Yes | Yes (7 sliders) | No | 5 languages | No |
 
@@ -41,9 +37,8 @@ curl -X POST http://localhost:8100/engines/zonos-transformer/load
 - **No GPU / CPU only** → you likely don't need this server at all: the `default` tier already runs kokoro in its own portal-managed shim (`agentwire-kokoro`, `:8102`). Run `kokoro` behind *this* multi-engine shim only when serving TTS to other machines or hot-swapping engines.
 - **Best voice quality + emotion control** → `zonos-transformer`
 - **Mid-sentence sounds** (laugh, sigh, cough) → `chatterbox` or `chatterbox-streaming`
-- **Multilingual** (10 languages) → `qwen-base-1.7b` or `qwen-custom`
-- **Generate a voice from a text description** → `qwen-design`
-- **Low VRAM / fast** → `qwen-base-0.6b` or `zonos-transformer`
+- **Multilingual** (5 languages) → `zonos-transformer` or `zonos-hybrid`
+- **Low VRAM / fast** → `zonos-transformer`
 
 ## Venv Setup
 
@@ -53,7 +48,6 @@ Each backend family runs in its own Python venv to avoid dependency conflicts.
 |------|---------------|
 | `.venv-kokoro` | `kokoro` |
 | `.venv-chatterbox` | `chatterbox`, `chatterbox-streaming` |
-| `.venv-qwen` | `qwen-base-0.6b`, `qwen-base-1.7b`, `qwen-custom`, `qwen-design` |
 | `.venv-zonos` | `zonos-transformer`, `zonos-hybrid` |
 
 `agentwire tts start` automatically selects the correct venv for the requested backend. If the venv doesn't exist, it will error with instructions.
@@ -79,16 +73,6 @@ cd ~/projects/agentwire-dev
 uv venv .venv-chatterbox --python 3.13
 source .venv-chatterbox/bin/activate
 pip install chatterbox-tts torch torchaudio fastapi uvicorn faster-whisper pydantic
-```
-
-### Creating the Qwen venv
-
-```bash
-cd ~/projects/agentwire-dev
-uv venv .venv-qwen
-source .venv-qwen/bin/activate
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install qwen-tts fastapi uvicorn faster-whisper pydantic
 ```
 
 ### Creating the Zonos venv
@@ -126,8 +110,7 @@ tts:
   default_voice: "default"
   options:
     backend: zonos-transformer  # engine: kokoro | chatterbox | chatterbox-streaming
-                                # | qwen-base-0.6b | qwen-base-1.7b | qwen-custom
-                                # | qwen-design | zonos-transformer | zonos-hybrid
+                                # | zonos-transformer | zonos-hybrid
   # Chatterbox-style knobs (ignored by other engines)
   exaggeration: 0.5
   cfg_weight: 0.5

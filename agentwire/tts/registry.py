@@ -35,7 +35,7 @@ class EngineRegistry:
         """Register an engine factory.
 
         Args:
-            name: Unique engine identifier (e.g., "chatterbox", "qwen-base-1.7b")
+            name: Unique engine identifier (e.g., "chatterbox", "zonos-hybrid")
             factory: Callable that creates an engine instance
         """
         self._factories[name] = factory

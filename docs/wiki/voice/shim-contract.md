@@ -151,7 +151,7 @@ examples for this contract:
 
 | Shim | Source | Run | Models |
 |---|---|---|---|
-| TTS | `agentwire/tts_server.py` | `agentwire tts start` (port 8100) | kokoro (CPU), chatterbox (GPU cloning), qwen (emotion via `instructions`), zonos |
+| TTS | `agentwire/tts_server.py` | `agentwire tts start` (port 8100) | kokoro (CPU), chatterbox (GPU cloning), zonos (emotion via `instructions`) |
 | STT | `agentwire/stt/stt_server.py` | `agentwire stt start` (port 8101) | moonshine ONNX (fast CPU), faster-whisper |
 
 Smoke-test either with curl:
@@ -212,9 +212,9 @@ if __name__ == "__main__":
 Point config at it (`stt: {backend: custom, url: http://localhost:8101}`),
 restart the portal — done.
 
-## Emotion-tag walkthrough (the Qwen example)
+## Emotion-tag walkthrough (the Zonos example)
 
-1. Run the bundled shim with a Qwen engine: `tts.options.backend: qwen-custom`.
+1. Run the bundled shim with an emotion-capable engine: `tts.options.backend: zonos-transformer`.
 2. The shim's `/capabilities` reports `emotion_control: true` and a
    `tool_prompt` describing the `instructions` field and any inline tags.
 3. On MCP-server start, that prompt lands in the `say` tooldef; on session

@@ -81,7 +81,7 @@ install gets; browser speechSynthesis covers the one-time model download),
 and `custom` (any model behind a small HTTP shim).
 
 - **[Shim contract](voice/shim-contract.md)** — the tiers, the envelope (instructions/options pass-through), capabilities + tool_prompt injection, a from-scratch shim example
-- **[Self-hosted TTS](voice/tts-self-hosted.md)** — the bundled reference shim's engines (Kokoro, Chatterbox, Qwen, Zonos)
+- **[Self-hosted TTS](voice/tts-self-hosted.md)** — the bundled reference shim's engines (Kokoro, Chatterbox, Zonos)
 - **[Cloud STT](voice/stt-cloud.md)** — `stt.backend: cloud`, portal → any OpenAI-compatible transcription API, no shim daemon
 - **[Self-hosted STT](voice/stt-self-hosted.md)** — moonshine / faster-whisper reference shim, push-to-talk latency knobs
 
