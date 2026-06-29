@@ -1,7 +1,7 @@
 """Disabled rules in safety config skip the matching pattern."""
 
-from agentwire.safety_commands import load_patterns
 from agentwire.safety._core import check_command
+from agentwire.safety_commands import load_patterns
 
 
 def test_rule_ids_are_populated():

@@ -11,7 +11,6 @@ import os
 
 import pytest
 
-from agentwire.safety_commands import load_patterns
 from agentwire.safety._core import (
     check_command,
     check_path,
@@ -19,6 +18,7 @@ from agentwire.safety._core import (
     load_allowed_paths,
     load_safety_config,
 )
+from agentwire.safety_commands import load_patterns
 
 CONTROL_PLANE_FILES = [
     os.path.expanduser("~/.agentwire/damagecontrol.yml"),
