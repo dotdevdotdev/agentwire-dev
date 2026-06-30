@@ -722,6 +722,15 @@ def cmd_kill(args) -> int:
         except OSError:
             pass
 
+    # GC this sender's still-pending outbound across every recipient inbox (#621)
+    # so report-backs it left undelivered don't accumulate. Load-bearing kinds
+    # dead-letter (and escalate via owner email); the rest are dropped.
+    try:
+        from . import inbox
+        inbox.gc_sender(session)
+    except Exception:
+        pass
+
     _notify_portal_sessions_changed()
 
     if json_mode:

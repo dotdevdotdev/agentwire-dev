@@ -184,16 +184,44 @@ def msg_dead(session: str | None = None) -> str:
 
 
 @mcp.tool()
-def msg_flush(session: str | None = None) -> str:
-    """Attempt a polite-message drain now (still gated on an empty box + safe target).
+def msg_purge(session: str | None = None) -> str:
+    """Drop a session's PENDING polite messages — the self-heal escape hatch.
+
+    Use this to un-wedge a recipient stuck re-seeing the same messages (or to
+    clear an inbox you know is stale). It drops the active drain queue outright —
+    no empty-box gate, no delivery. Dead-lettered (`msg_dead`) and passive
+    `ingest` messages are untouched; this is strictly the pending queue.
+
+    Args:
+        session: Session whose pending queue to drop (default: the caller).
+
+    Returns:
+        How many pending messages were dropped.
+    """
+    caller = session or get_caller_session()
+    args = ["msg", "purge"]
+    if caller:
+        args.append(caller)
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to purge: {data.get('error', 'Unknown error')}"
+    return f"Purged {data.get('purged', 0)} pending message(s) from {data.get('session')}."
+
+
+@mcp.tool()
+def msg_flush(session: str | None = None, force: bool = False) -> str:
+    """Attempt a polite-message drain now (gated on an empty box + safe target).
 
     Messages drain automatically every ≤60s via the watchdog; use this to force a
-    pass without waiting. It does NOT bypass the safety gates — a busy/parked/
-    non-agent recipient is still deferred. Passive `ingest` messages are never
-    drained (pull them with msg_pull).
+    pass without waiting. By default it does NOT bypass the safety gates — a
+    busy/parked/non-agent recipient is still deferred. Passive `ingest` messages
+    are never drained (pull them with msg_pull).
 
     Args:
         session: Session to flush (default: all sessions with queued messages).
+        force: Bypass the empty-box gate and paste anyway (requires `session`;
+            may land mid-draft). For un-wedging a stuck queue. Safety guards
+            (gone/parked/non-agent/live-dialog) are never bypassed.
 
     Returns:
         What was delivered or deferred.
@@ -201,6 +229,8 @@ def msg_flush(session: str | None = None) -> str:
     args = ["msg", "flush"]
     if session:
         args += ["-s", session]
+    if force:
+        args.append("--force")
     data = run_agentwire_cmd(args)
     if not data.get("success"):
         return f"Failed to flush: {data.get('error', 'Unknown error')}"

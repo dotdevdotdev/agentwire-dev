@@ -524,3 +524,147 @@ class TestDeadLetterEscalation:
         for _ in range(inbox.MAX_ATTEMPTS):
             inbox.flush_session("s")
         assert len(inbox.list_dead("s")) == 1  # drain survived; corpse archived
+
+
+class TestIdempotentDelivery:
+    """#621: a delivery_unverified false-negative must NOT re-inject a landed
+    paste. If the rendered message is on scrollback, treat it as delivered and
+    consume it — per-message, so a partial landing consumes only the visible
+    subset."""
+
+    def _patch(self, monkeypatch, deliver, scrollback):
+        from agentwire import session_ready, usage_limit
+        monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        sent = []
+        monkeypatch.setattr(
+            prompt_router, "safe_deliver",
+            lambda s, p, text: (sent.append(text) or deliver),
+        )
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: scrollback)
+        return sent
+
+    def test_unverified_but_landed_is_consumed(self, isolate, monkeypatch):
+        msgs = inbox.enqueue("s", "PR drafted", kind="done", sender="w")
+        cap = msgs[0].render()  # the paste landed on scrollback
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"), scrollback=cap)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and not res["deferred"]
+        assert inbox.list_messages("s") == []  # consumed, not re-injected
+
+    def test_unverified_and_not_landed_stays_pending(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR drafted", kind="done", sender="w")
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"),
+                    scrollback="nothing relevant here")
+        res = inbox.flush_session("s")
+        assert res["deferred"] and res["reason"] == "delivery_unverified"
+        msgs = inbox.list_messages("s")
+        assert len(msgs) == 1 and msgs[0].attempts == 1  # penalized, retried
+
+    def test_per_message_keying_consumes_only_visible(self, isolate, monkeypatch):
+        a = inbox.enqueue("s", "alpha report", kind="done", sender="w")[0]
+        inbox.enqueue("s", "beta report", kind="done", sender="w")
+        # Only the first message's fragment is on scrollback.
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"),
+                    scrollback=a.render())
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and res["deferred"]
+        remaining = inbox.list_messages("s")
+        assert len(remaining) == 1 and "beta" in remaining[0].text
+
+    def test_placeholder_does_not_falsely_consume(self, isolate, monkeypatch):
+        # A bare "[Pasted text ...]" placeholder must NOT mark every message
+        # visible (the message_visible fallback is intentionally skipped).
+        inbox.enqueue("s", "PR drafted", kind="done", sender="w")
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"),
+                    scrollback="[Pasted text #1 +40 lines]")
+        res = inbox.flush_session("s")
+        assert res["deferred"] and not res.get("delivered")
+        assert len(inbox.list_messages("s")) == 1
+
+    def test_predelivery_dedup_consumes_without_pasting(self, isolate, monkeypatch):
+        # A prior tick landed the paste; on the next tick the message is already
+        # on scrollback, so we consume it WITHOUT pasting again.
+        m = inbox.enqueue("s", "PR drafted", kind="done", sender="w")[0]
+        sent = self._patch(monkeypatch, deliver=(True, "delivered"),
+                           scrollback=m.render())
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and not res["deferred"]
+        assert sent == []  # never re-pasted
+        assert inbox.list_messages("s") == []
+
+
+class TestPurgePending:
+    def test_purge_drops_pending(self, isolate):
+        inbox.enqueue("s", "one", sender="x")
+        inbox.enqueue("s", "two", sender="x")
+        assert inbox.purge_pending("s") == 2
+        assert inbox.list_messages("s") == []
+
+    def test_purge_leaves_ingest_and_dead(self, isolate, monkeypatch):
+        inbox.enqueue("s", "active", sender="x")
+        inbox.enqueue("s", "passive", kind="ingest", sender="x")
+        # dead-letter one
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        msgs = inbox.enqueue("s", "doomed", kind="done", sender="x")
+        msgs[0].attempts = inbox.MAX_ATTEMPTS - 1
+        inbox._write_message(msgs[0].path, msgs[0])
+        inbox.flush_session("s")
+        assert len(inbox.list_dead("s")) == 1
+        # purge clears only the active queue
+        removed = inbox.purge_pending("s")
+        assert removed == 1  # only the "active" note
+        assert inbox.list_ingest("s")  # ingest untouched
+        assert len(inbox.list_dead("s")) == 1  # dead untouched
+
+    def test_purge_noop(self, isolate):
+        assert inbox.purge_pending("nobody") == 0
+
+
+class TestForceFlush:
+    def test_force_pastes_despite_nonempty_box(self, isolate, monkeypatch):
+        inbox.enqueue("s", "urgent", kind="done", sender="w")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        sent = []
+        monkeypatch.setattr(
+            prompt_router, "safe_deliver",
+            lambda s, p, text: (sent.append(text) or (True, "delivered")),
+        )
+        res = inbox.flush_session("s", force=True)
+        assert res["delivered"] == 1 and len(sent) == 1
+        assert inbox.list_messages("s") == []
+
+
+class TestGcSender:
+    def test_gc_dead_letters_load_bearing(self, isolate, monkeypatch):
+        emailed = []
+        monkeypatch.setattr(inbox, "_escalate_dead_letter",
+                            lambda m, r: emailed.append((m.kind, r)))
+        inbox.enqueue("orch", "PR drafted", kind="done", sender="worker")
+        inbox.enqueue("orch", "need review", kind="request", sender="worker")
+        res = inbox.gc_sender("worker")
+        assert res["dead"] == 2 and res["dropped"] == 0
+        assert inbox.list_messages("orch") == []
+        assert len(inbox.list_dead("orch")) == 2
+        assert emailed and all(r == "sender_exited" for _, r in emailed)
+
+    def test_gc_drops_non_load_bearing(self, isolate, monkeypatch):
+        monkeypatch.setattr(inbox, "_escalate_dead_letter", lambda m, r: None)
+        inbox.enqueue("orch", "fyi", kind="note", sender="worker")
+        res = inbox.gc_sender("worker")
+        assert res["dropped"] == 1 and res["dead"] == 0
+        assert inbox.list_messages("orch") == []
+        assert inbox.list_dead("orch") == []
+
+    def test_gc_ignores_other_senders_and_ingest(self, isolate):
+        inbox.enqueue("orch", "keep me", kind="done", sender="other")
+        inbox.enqueue("orch", "passive", kind="ingest", sender="worker")
+        res = inbox.gc_sender("worker")
+        assert res == {"dead": 0, "dropped": 0}
+        assert len(inbox.list_messages("orch")) == 1  # other sender's done kept
+        assert inbox.list_ingest("orch")  # ingest untouched

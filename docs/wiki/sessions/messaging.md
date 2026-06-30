@@ -43,6 +43,24 @@ lands in a durable inbox and is injected only at a safe boundary.
    (`session_ready.send_verified`), each rendered as
    `[MSG from <sender> · <kind>] <text>`.
 
+   **Idempotent delivery (the load-bearing #621 guard).** `send_verified`
+   confirms submission by polling the input box back to empty; under host load
+   that confirm can **false-negative even though the paste landed** and the
+   recipient saw it. Retaining a landed message re-injects it on every idle tick
+   — forever (the field repro: ~11 report-backs replayed all session). So the
+   drain treats delivery as **idempotent**: before and after a paste it checks
+   the recipient's 200-line scrollback **per message** (each message's own
+   first-line fragment, via `session_ready.fragment_on_scrollback` — a strict
+   match that ignores the generic `[Pasted text]` placeholder), and any message
+   already visible is consumed (unlinked) instead of re-pasted. A
+   `delivery_unverified` for a paste that genuinely vanished still penalizes
+   normally. The same hardening lives one layer down: `send_verified`'s Phase-2
+   confirm now keys on *"the box no longer holds our text"* (Phase 1 already
+   proved it landed) rather than demanding a spinner / echoed turn — so a quiet
+   or fast agent no longer makes a landed-and-submitted paste look unverified.
+   That one fix covers the polite-msg loop, `notify-parent` (which also routes
+   through `safe_deliver` → `send_verified`), and `session_send`.
+
 4. **Defer or drop.** If either gate fails, the messages stay put, their
    `attempts` counter bumps, and the defer `reason` (`box_not_empty`,
    `target_parked`, …) is stamped on each message. After `MAX_ATTEMPTS`
@@ -134,7 +152,8 @@ agentwire msg inbox [-s <session>]   # peek pending + passive (does not drain/co
 agentwire msg pull  [-s <session>]   # read + REMOVE passive (ingest) messages
 agentwire msg dead  [-s <session>]   # list dropped (dead-lettered) msgs + why
 agentwire msg dead  --purge [-s <session>] [--older-than 7d]  # clear the graveyard
-agentwire msg flush [-s <session>]   # attempt a drain now (still gated; never touches passive)
+agentwire msg flush [-s <session>] [--force]  # attempt a drain now (gated unless --force)
+agentwire msg purge [<session>]      # drop a session's PENDING queue (self-heal a wedged inbox)
 ```
 
 `msg dead` with `-s` scopes to one session; outside a session it lists every
@@ -150,6 +169,21 @@ corpses that died before the cutoff, so you can drop stale ones and keep recent
 report-backs you haven't read. Pre-schema corpses (no `dead_ts`) count as
 infinitely old.
 
+`msg purge <session>` is the **self-heal escape hatch** (#621): it drops the
+session's *pending* (undelivered) queue outright — no empty-box gate, no
+delivery — so a wedged recipient can be un-stuck without hand-moving JSON files
+(which the recipient's own Bash hook blocks via `rm`). It never touches `dead/`
+or passive `ingest/`. `msg flush --force` is the complement: it force-drains the
+pending queue *past* the empty-box gate (it may land mid-draft, so it's an
+operator action; `--force` requires `-s` and never bypasses the `safe_deliver`
+gone/parked/non-agent/live-dialog guards).
+
+**GC on sender exit.** When a session is killed via `agentwire kill`, the drain
+GCs that sender's still-pending outbound across every recipient inbox so exited-
+sender report-backs don't accumulate: load-bearing kinds (`done`/`request`/
+`escalation`) dead-letter (and escalate via the owner-email path); the rest are
+dropped. Passive `ingest` is left for the recipient to pull.
+
 `--from` defaults to the current session. All commands take `--json`. The CLI is
 the single source of truth; the portal and MCP call it.
 
@@ -160,7 +194,10 @@ the single source of truth; the portal and MCP call it.
   pointer.
 - `msg_inbox(session=None)` — peek pending + passive messages (does not consume).
 - `msg_pull(session=None)` — read + remove passive (`ingest`) messages.
-- `msg_flush(session=None)` — force a (still-gated) drain of the driving queue.
+- `msg_flush(session=None, force=False)` — force a drain of the driving queue
+  (gated unless `force=True`, which requires `session`).
+- `msg_purge(session=None)` — drop a session's pending queue (self-heal a wedged
+  inbox); never touches `dead/` or passive `ingest/`.
 - `msg_dead(session=None)` — list dead-lettered messages with their drop reason
   + timestamp (omit `session` to list every session that has any).
 

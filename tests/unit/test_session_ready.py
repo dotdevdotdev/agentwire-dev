@@ -289,6 +289,44 @@ class TestSendVerifiedAdaptive:
         assert actions["cap_lines"] == session_ready.VERIFY_SCROLLBACK_LINES
 
 
+class TestSubmitConfirmed:
+    """#621 — Phase-2 confirm keys on 'the box no longer holds our text', since
+    Phase 1 already proved the paste landed. The old `submitted` additionally
+    demanded a spinner or the echoed turn, which false-negatived a landed-and-
+    submitted paste under a quiet/fast agent (→ inbox redelivery loop / notify
+    'sat there unsent')."""
+
+    def test_quiet_cleared_box_is_confirmed(self):
+        # Box cleared, NO activity marker, message already scrolled out of view.
+        cap = render_box()  # empty box, nothing else
+        assert session_ready.submit_confirmed(cap, "report text")
+        # The old, over-strict check would NOT confirm this — the regression.
+        assert not session_ready.submitted(cap, "report text")
+
+    def test_text_still_in_box_is_not_confirmed(self):
+        cap = render_box("report text")
+        assert not session_ready.submit_confirmed(cap, "report text")
+
+    def test_unparseable_box_falls_back_to_marker(self):
+        cap = "tool output everywhere, no box at all\n[MARKER-LINE]"
+        assert session_ready.submit_confirmed(cap, "zzz", marker="[MARKER-LINE]")
+        assert not session_ready.submit_confirmed(cap, "zzz", marker="[ABSENT]")
+
+    def test_quiet_submit_no_activity_delivers(self, monkeypatch):
+        # End-to-end: paste lands in the box, one Enter clears it, and the pane
+        # goes quiet (no spinner, message scrolled off). Must report delivered.
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box("quiet prompt")  # landed, sitting unsent
+            return render_box()  # submitted: box cleared, no activity at all
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "quiet prompt")
+        assert actions["enters"] == 1
+
+
 class TestCouncilDelegation:
     """council.cli.send_verified / wait_ready now delegate here."""
 
