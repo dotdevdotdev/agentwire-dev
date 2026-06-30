@@ -186,13 +186,17 @@ def cmd_send(args) -> int:
 
     if verify:
         # Same delivery verification as --wait-ready, but without waiting for a
-        # fresh-boot banner — for an already-running session, just confirm the
-        # paste landed and report verified vs unconfirmed. retries=0: send ONCE
-        # and report — a re-paste on a false miss (a busy session that scrolled
-        # the echo past the capture window) would deliver the message twice.
+        # fresh-boot banner — for an already-running session, confirm the paste
+        # landed AND submitted. retries=1: a whole-send retry only fires when the
+        # paste never landed in the box (phase 1 of _deliver_once) — i.e. it
+        # genuinely vanished, so re-pasting can't double-deliver. Once text has
+        # landed, _deliver_once re-presses Enter in place (never re-pastes), so
+        # the old double-delivery worry the retries=0 choice guarded against
+        # can't happen anymore. Staying patient here is what keeps a laggy host
+        # from surfacing a false failure the parent has to clean up by hand.
         from agentwire.session_ready import send_verified
 
-        ok = send_verified(session, prompt, retries=0)
+        ok = send_verified(session, prompt, retries=1)
         if json_mode:
             print(json.dumps({"success": True, "session": session_full, "machine": None,
                               "verified": ok,

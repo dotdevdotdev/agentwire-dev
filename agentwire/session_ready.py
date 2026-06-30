@@ -25,11 +25,21 @@ VERIFY_SCROLLBACK_LINES = 200
 # Enter to dismiss its ``[Pasted text]`` banner before submitting).
 POLL_INTERVAL = 0.15
 # Max wait for a paste to appear in the input box before giving up on this try.
-LAND_TIMEOUT = 5.0
-# Max wait, after an Enter, for the box to clear (the keystroke to register).
-SUBMIT_TIMEOUT = 3.0
-# Bounded Enter re-presses before declaring a hard failure.
-MAX_ENTER_ATTEMPTS = 4
+# Generous because under host load tmux ``capture-pane`` itself lags and a large
+# paste renders slowly — a tight budget here is the #1 cause of "the text landed
+# but delivery reported failure" on a bogged-down machine.
+LAND_TIMEOUT = 8.0
+# Max wait, after a single Enter, for the box to clear (the keystroke to
+# register). Per-press, not the whole submit phase — see SUBMIT_BUDGET.
+SUBMIT_TIMEOUT = 4.0
+# Wall-clock ceiling on the whole press-Enter-and-confirm phase. Re-pressing is
+# driven by this deadline rather than a fixed count so a laggy box is waited out
+# (each idle Enter on an already-submitted/empty box is a harmless no-op), but a
+# genuinely wedged session still fails in bounded time instead of hanging.
+SUBMIT_BUDGET = 20.0
+# Floor on re-presses regardless of how fast the budget burns (slow snapshots
+# can eat the wall-clock before we've pressed Enter enough times).
+MIN_ENTER_ATTEMPTS = 4
 
 # Substrings that mean "Claude is actively working" — a spinner footer, the
 # token counter, the esc-to-interrupt hint, or tool-output glyphs. A
@@ -259,19 +269,27 @@ def _deliver_once(
     if not _poll(landed_or_done, LAND_TIMEOUT):
         return False
 
-    # Phase 2 — press Enter and confirm the box cleared. Bounded re-press: a
-    # single Enter can be swallowed under load, and a large paste needs a second
-    # Enter (dismiss the ``[Pasted text]`` banner, then submit).
-    for _ in range(MAX_ENTER_ATTEMPTS):
+    # Phase 2 — press Enter and confirm the box cleared. Re-press is driven by a
+    # wall-clock budget, not a fixed count: a single Enter can be swallowed under
+    # load, a large paste needs a second Enter (dismiss the ``[Pasted text]``
+    # banner, then submit), and on a bogged-down host the box renders slowly. We
+    # keep pressing until the box clears or SUBMIT_BUDGET elapses — an idle Enter
+    # on an already-submitted/empty box is a harmless no-op, so over-pressing is
+    # safe, while a tight count would give up before a laggy box ever caught up.
+    deadline = time.time() + SUBMIT_BUDGET
+    attempts = 0
+    while True:
         if submitted(_snapshot(session, pane_index), message, marker):
             return True
         press_enter(session, pane_index=pane_index)
+        attempts += 1
         if _poll(
             lambda: submitted(_snapshot(session, pane_index), message, marker),
             SUBMIT_TIMEOUT,
         ):
             return True
-    return False
+        if attempts >= MIN_ENTER_ATTEMPTS and time.time() >= deadline:
+            return False
 
 
 def send_verified(
