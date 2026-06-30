@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted, voice-native control for Claude Code — your machine, your keys, no cloud account.</strong>
+  <strong>A self-hosted, keyboard-driven cockpit for running a whole <em>fleet</em> of Claude Code agents at once.</strong>
 </p>
 
 <p align="center">
-  Orchestrate many agents by voice — neural TTS on your CPU, voice cloning via a self-hosted GPU shim.
+  From a wall of tmux panes to one cockpit. Worktrees, command palette, scheduler, voice — every layer stacks, so you ship far more than you ever could hand-juggling terminals. Your machine, your keys, no telemetry.
 </p>
 
 <p align="center">
@@ -22,39 +22,51 @@
 
 ## Why AgentWire
 
-Remote access to a coding agent is now table stakes — first-party and hosted tools
-all let you reach an agent from your phone. AgentWire competes on what those
-structurally can't match:
+Running several Claude Code agents by hand means a wall of tmux panes: constant
+context-switching, copy-pasting between sessions, tracking which branch each agent
+sits on, babysitting every one. It doesn't scale past one or two before **your
+attention** — not the model — becomes the bottleneck. AgentWire turns that wall into
+one cockpit, and its capabilities **compound**:
 
-- **Self-hosted, keys-local.** Runs entirely on your hardware. No cloud account, no
-  third party in the loop, no telemetry — your code and your API keys never leave
-  the machine.
-- **Voice-native, not voice-bolted-on.** Push-to-talk in, **neural TTS out on plain
-  CPU** (Kokoro, no GPU). Want your agents to talk back in a **cloned voice**? Run a
-  self-hosted GPU shim (Chatterbox / Zonos) — same machine, still your keys.
-- **Built to orchestrate _many_ agents, not watch one.** Council (multi-soul
-  deliberation), a recurring scheduler, briefing mode, and worktree-parallel
-  workers — tmux- and Claude-Code-native from the ground up.
+- **It compounds.** Worktrees + command palette + quick-action keys + tab-switching
+  + scheduler + voice each stack on the others to multiply how much one person can
+  run at once. That's the whole point — not any single feature.
+- **Orchestrate _many_ agents, not watch one.** Every session is a window; **F3**
+  fans them into a Mission-Control collage; **Tab** cycles between them; **Cmd/Ctrl+K**
+  runs any action. Council deliberates, briefing mode fans out, worktree sessions
+  isolate parallel work — tmux- and Claude-Code-native from the ground up.
+- **Autonomous and unattended.** A scheduler runs recurring jobs (research, test runs,
+  cleanup, doc-drift); gates verify *real work happened*; repo tasks open *draft PRs,
+  not commits to main*; reliability plumbing (verified delivery, dead-letter,
+  email-on-fail, usage-limit recovery) means nothing silently fails.
+- **Your machine, your keys, no telemetry.** Runs entirely on your hardware, loopback
+  by default. No cloud account, no third party in the loop — your code and your API
+  keys never leave the machine. 300+ damage-control blocks make running unattended sane.
 
-> **Use the official app to watch one session; use AgentWire to orchestrate many,
-> by voice, on your own hardware.**
+> **Use the official app to watch one session; use AgentWire to command a whole
+> fleet — on your own hardware, by keyboard, with voice layered on top.**
 
 ---
 
 ## What It Does
 
-Push-to-talk voice control for [Claude Code](https://github.com/anthropics/claude-code) or any AI coding assistant running in tmux.
+A self-hosted, desktop-style portal where **every agent session is a window** —
+reachable from any device on your LAN, running on your own hardware with your own keys.
 
 ```
-Phone → AgentWire Portal → tmux session → Claude Code
- 🎤        (WebSocket)         📺           🤖
+You → AgentWire Portal → tmux sessions → a fleet of Claude Code agents
+ ⌨️🎤      (WebSocket)         📺                    🤖🤖🤖
 ```
 
-**From your phone, tablet, or laptop on your network:**
-- Hold to speak, release to send
-- Watch agents work in real-time
-- Hear responses via TTS
-- Manage multiple projects simultaneously
+**From your laptop, phone, or tablet on your network:**
+- Every session is a draggable window; **F3** collage, **Tab** to cycle
+- Command palette (**Cmd/Ctrl+K**) runs any action; quick-action keys throughout
+- Branch a session into an isolated git worktree for parallel work
+- Put repeat work on a scheduler; hand hard calls to a council
+- Push-to-talk in, spoken summaries back — drive sessions by ear while off-tab
+
+**The outcome:** the whole fleet feels like one machine. You go from babysitting one
+session to commanding many.
 
 ---
 
@@ -69,7 +81,7 @@ agentwire init
 
 # Run
 agentwire portal start
-# Open http://127.0.0.1:8765 in Chrome — voice works immediately
+# Open http://127.0.0.1:8765 in Chrome — your cockpit is live (voice works immediately too)
 ```
 
 **Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code
@@ -119,18 +131,20 @@ pip install agentwire-dev
 
 ## Features
 
+The cockpit, then the layers that stack on it:
+
 | Feature | Description |
 |---------|-------------|
-| **Voice Control** | Push-to-talk from any device on your network |
-| **Neural Voice + Cloning** | Kokoro neural TTS on CPU out of the box; voice cloning via a self-hosted GPU shim |
-| **Council** | Fan a prompt to multiple "soul" sessions (brain, conscience, critic…), synthesize with attribution |
-| **Scheduler** | Recurring autonomous tasks with gates, priorities, and usage-limit recovery |
-| **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
+| **Desktop UI** | Every session is a draggable window; **F3** collage grid, **Tab** to cycle, **Cmd/Ctrl+K** command palette |
 | **Multi-Session** | Run multiple agents on different projects simultaneously |
-| **Git Worktrees** | Same project, multiple branches, parallel agents |
+| **Git Worktrees** | Same project, multiple branches, parallel agents — each in an isolated worktree session |
+| **Worker Orchestration** | Spawn worker panes, coordinate tasks, auto-reap when idle |
+| **Council** | Fan a prompt to multiple "soul" sessions (brain, conscience, critic…), synthesize with attribution |
+| **Scheduler** | Recurring autonomous tasks with gates, priorities, and usage-limit recovery — draft PRs, not commits to main |
+| **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
+| **Voice** | Push-to-talk in, neural TTS out on CPU (Kokoro); voice cloning via a self-hosted GPU shim; global macOS hotkeys dictate to a background session from any app |
 | **Remote Machines** | SSH into GPU servers and talk to agents there |
-| **Worker Orchestration** | Spawn worker panes, coordinate tasks, voice commands |
-| **Safety Hooks** | 300+ dangerous commands blocked (rm -rf, force push, etc.) |
+| **Safety Hooks** | 300+ dangerous commands blocked (rm -rf, force push, etc.), all logged |
 | **Outbound Channels** | Email (Resend) + SMS (Quo / OpenPhone) for cross-device notifications |
 | **Session Roles** | Leader/worker patterns for multi-agent workflows |
 
@@ -144,13 +158,13 @@ agentwire new -s myproject -p ~/projects/myproject
 ```
 
 **2. Open the portal:**
-Visit `http://127.0.0.1:8765` in Chrome (or your phone/tablet with LAN access configured)
+Visit `http://127.0.0.1:8765` in Chrome (or your phone/tablet with LAN access configured). Each session is a window — open as many as you want and **Tab** between them, or **F3** for the collage grid.
 
-**3. Talk:**
-Hold the mic button, speak your request, release. In instant mode the transcript appears for a quick glance — Enter sends it to Claude Code.
+**3. Drive it by keyboard:**
+**Cmd/Ctrl+K** runs any action; quick-action keys send to the focused session; branch a session into a worktree for parallel work; put repeat jobs on the scheduler.
 
-**4. Listen:**
-Agent responses are spoken back — Kokoro neural voice out of the box, or any TTS model behind a custom shim.
+**4. Add voice on top:**
+Hold the mic to speak (in instant mode the transcript appears for a quick glance — Enter sends it), and agent responses are spoken back — Kokoro neural voice out of the box, so you can drive sessions and hear summaries by ear while your eyes are elsewhere.
 
 ---
 
