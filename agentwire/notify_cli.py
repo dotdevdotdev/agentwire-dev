@@ -51,6 +51,17 @@ def cmd_notify_parent(args) -> int:
     current_session = pane_manager.get_current_session()
     current_pane = pane_manager.get_current_pane_index()
 
+    # --on-idle: the idle hook is reporting that a pane-0 session went idle.
+    # Infrastructure services (portal, tts/stt, scheduler, the idle-nag bridge,
+    # custom services) cycle active→idle constantly and are NOT delegated work,
+    # so they must never fire a "child finished" ping at their parent. A
+    # worktree / `agentwire new` child is not a service and is unaffected.
+    if getattr(args, 'on_idle', False) and current_session:
+        from agentwire import services
+
+        if services.is_service_session(current_session):
+            return _output_result(True, json_mode, "", skipped="service-session")
+
     # If no explicit target, resolve the parent through the SAME precedence the
     # prompt router uses (worker pane → pane 0; else creator recorded at
     # `agentwire new` time; else `.agentwire.yml parent:`). The old path looked
@@ -263,6 +274,9 @@ def register_notify_parser(subparsers) -> None:
     notify_cmd_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     notify_cmd_parser.add_argument("--raw", action="store_true",
                                    help="Send the message verbatim (no [NOTIFY from ...] prefix)")
+    notify_cmd_parser.add_argument("--on-idle", dest="on_idle", action="store_true",
+                                   help="Idle-hook mode: suppress the notify if the current session "
+                                        "is an infrastructure service (they cycle idle constantly)")
     notify_cmd_parser.add_argument("--json", action="store_true", help="Output as JSON")
     notify_cmd_parser.set_defaults(func=cmd_notify_parent)
 
