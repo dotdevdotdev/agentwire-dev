@@ -141,7 +141,8 @@ class TestEnqueue:
 
     def test_render_prefix(self, isolate):
         msg = inbox.enqueue("s", "PR drafted", kind="done", sender="worker")[0]
-        assert msg.render() == "[MSG from worker · done] PR drafted"
+        assert msg.render() == f"[MSG from worker · done] PR drafted  ⟨#{msg.short_id()}⟩"
+        assert msg.render().startswith("[MSG from worker · done] PR drafted")
 
     def test_worktree_name_nests(self, isolate):
         inbox.enqueue("proj/feature-x", "hi", sender="x")
@@ -589,6 +590,34 @@ class TestIdempotentDelivery:
         assert len(remaining) == 1, "second same-sender message must NOT be dropped"
         assert "second report beta" in remaining[0].text
         assert remaining[0].attempts == 1  # penalized/retried, not silently lost
+
+    def test_prefix_text_does_not_substring_collide(self, isolate, monkeypatch):
+        # A.text is a strict prefix of B.text (same sender + kind). B is on
+        # scrollback; A's full rendered line would be a substring of B's WITHOUT
+        # the unique id token. The token must keep A from being consumed.
+        sender = "agentwire-dev-fix-621-inbox"
+        inbox.enqueue("orch", "done: phase 1", kind="done", sender=sender)
+        b = inbox.enqueue("orch", "done: phase 1 and 2 complete", kind="done", sender=sender)[0]
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"),
+                    scrollback=b.render())  # only the LONGER message is visible
+        inbox.flush_session("orch")
+        remaining = inbox.list_messages("orch")
+        assert len(remaining) == 1, "the prefix message must NOT be substring-consumed"
+        assert remaining[0].text == "done: phase 1"
+        assert remaining[0].attempts == 1
+
+    def test_identical_text_messages_dont_collide(self, isolate, monkeypatch):
+        # Two byte-identical report-backs from one sender. Only the first is on
+        # scrollback; the unique id token must keep the second distinct so it
+        # isn't deduped to nothing.
+        a = inbox.enqueue("orch", "PR drafted", kind="done", sender="worker")[0]
+        inbox.enqueue("orch", "PR drafted", kind="done", sender="worker")
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"),
+                    scrollback=a.render())
+        inbox.flush_session("orch")
+        remaining = inbox.list_messages("orch")
+        assert len(remaining) == 1, "the second identical message must survive"
+        assert remaining[0].id != a.id and remaining[0].attempts == 1
 
     def test_placeholder_does_not_falsely_consume(self, isolate, monkeypatch):
         # A bare "[Pasted text ...]" placeholder must NOT mark every message

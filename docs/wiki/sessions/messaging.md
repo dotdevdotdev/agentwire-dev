@@ -41,7 +41,10 @@ lands in a durable inbox and is injected only at a safe boundary.
 3. **Inject.** When the box is clear, queued messages are coalesced into a
    single paste (one submit) and delivered via the verified-delivery path
    (`session_ready.send_verified`), each rendered as
-   `[MSG from <sender> · <kind>] <text>`.
+   `[MSG from <sender> · <kind>] <text>  ⟨#<id6>⟩`. The trailing `⟨#id6⟩` token
+   (the message's short uuid) makes every delivered line **unique on screen**, so
+   the idempotent-redelivery dedup below can full-line match without a shorter
+   message substring-colliding against a longer same-sender/kind one.
 
    **Idempotent delivery (the load-bearing #621 guard).** `send_verified`
    confirms submission by polling the input box back to empty; under host load
