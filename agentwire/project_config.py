@@ -193,13 +193,19 @@ class ProjectConfig:
 
 
 def find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
-    """Find .agentwire.yml by walking up from start_path.
+    """Find project config by walking up from start_path.
+
+    At each directory level, a local untracked ``.agentwire.yml`` wins over a
+    committed ``.agentwire.yml.example`` template. The ``.example`` fallback lets
+    a repo (e.g. agentwire-dev itself) ship a sensible default config that a
+    fresh clone uses out of the box, while the owner's personal, gitignored
+    ``.agentwire.yml`` overrides it when present. See #620.
 
     Args:
         start_path: Directory to start searching from. Defaults to cwd.
 
     Returns:
-        Path to .agentwire.yml if found, None otherwise.
+        Path to the resolved config file if found, None otherwise.
     """
     if start_path is None:
         start_path = Path.cwd()
@@ -207,16 +213,16 @@ def find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
         start_path = Path(start_path).resolve()
 
     current = start_path
-    while current != current.parent:
-        config_file = current / ".agentwire.yml"
-        if config_file.exists():
-            return config_file
+    while True:
+        live = current / ".agentwire.yml"
+        if live.exists():
+            return live
+        example = current / ".agentwire.yml.example"
+        if example.exists():
+            return example
+        if current == current.parent:
+            break
         current = current.parent
-
-    # Check root
-    config_file = current / ".agentwire.yml"
-    if config_file.exists():
-        return config_file
 
     return None
 
@@ -234,7 +240,10 @@ def load_project_config(path: Optional[Path] = None) -> Optional[ProjectConfig]:
     if path is None:
         config_path = find_project_config()
     elif path.is_dir():
-        config_path = path / ".agentwire.yml"
+        # Local .agentwire.yml wins over a committed .agentwire.yml.example (#620).
+        live = path / ".agentwire.yml"
+        example = path / ".agentwire.yml.example"
+        config_path = live if live.exists() else example
     else:
         config_path = path
 

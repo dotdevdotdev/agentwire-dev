@@ -233,6 +233,36 @@ class TestProjectConfigIO:
         found = find_project_config(tmp_path)
         assert found is None
 
+    def test_find_falls_back_to_example(self, tmp_path):
+        # Only the committed template exists → use it (#620).
+        example = tmp_path / ".agentwire.yml.example"
+        with open(example, "w") as f:
+            yaml.safe_dump({"type": "claude-bypass", "roles": ["contributor"]}, f)
+
+        found = find_project_config(tmp_path)
+        assert found == example
+
+    def test_find_live_wins_over_example(self, tmp_path):
+        # A local .agentwire.yml overrides the committed .example at the same level.
+        live = tmp_path / ".agentwire.yml"
+        example = tmp_path / ".agentwire.yml.example"
+        with open(live, "w") as f:
+            yaml.safe_dump({"type": "bare"}, f)
+        with open(example, "w") as f:
+            yaml.safe_dump({"type": "claude-bypass", "roles": ["contributor"]}, f)
+
+        found = find_project_config(tmp_path)
+        assert found == live
+
+    def test_load_from_directory_uses_example(self, tmp_path):
+        with open(tmp_path / ".agentwire.yml.example", "w") as f:
+            yaml.safe_dump({"type": "claude-bypass", "roles": ["contributor"]}, f)
+
+        config = load_project_config(tmp_path)
+        assert config is not None
+        assert config.type == SessionType.CLAUDE_BYPASS
+        assert config.roles == ["contributor"]
+
 
 # --- ProjectConfig holds no safety config (#466/#467) ---
 

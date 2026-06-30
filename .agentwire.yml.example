@@ -1,0 +1,14 @@
+# agentwire-dev project config — committed template (#620).
+#
+# This `.agentwire.yml.example` is the default config a fresh clone uses out of
+# the box: `agentwire new` here spawns a contributor session (repo-aware
+# onboarding + issue-filing + fork-based PR coaching).
+#
+# To override locally, create a real `.agentwire.yml` next to this file. It is
+# gitignored, so it stays personal and never ships — and it WINS over this
+# template (a live `.agentwire.yml` is resolved before the `.example` fallback).
+# The repo owner uses this to layer an untracked owner-override role:
+#   roles: [contributor, owner-override]
+type: claude-bypass
+roles:
+  - contributor

@@ -82,6 +82,10 @@ agentwire init
 # Run
 agentwire portal start
 # Open http://127.0.0.1:8765 in Chrome — your cockpit is live (voice works immediately too)
+
+# New here? Start a guided helper session — it walks you through setup,
+# wires up your projects, explains the system, and helps you file issues or fork.
+agentwire dev
 ```
 
 **Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code

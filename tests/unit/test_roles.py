@@ -125,7 +125,7 @@ class TestMergeRoles:
 class TestDiscoverRole:
     def test_bundled_roles_found(self):
         """All bundled roles should be discoverable."""
-        for name in ["agentwire", "voice", "worker", "task-runner", "chatbot", "init", "soul"]:
+        for name in ["agentwire", "contributor", "voice", "worker", "task-runner", "chatbot", "init", "soul"]:
             path = discover_role(name)
             assert path is not None, f"Bundled role '{name}' not found"
 

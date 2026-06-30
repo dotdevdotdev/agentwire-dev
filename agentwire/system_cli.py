@@ -31,8 +31,8 @@ from .core import (
     tmux_session_exists,
     wait_for_shell_prompt,
 )
-from .project_config import detect_default_agent_type
-from .roles import inject_soul, load_roles
+from .project_config import detect_default_agent_type, load_project_config
+from .roles import inject_soul, load_roles, resolve_roles
 
 UV_CACHE_DIR = Path.home() / ".cache" / "uv"
 
@@ -53,8 +53,22 @@ def cmd_dev(args) -> int:
         print(f"Project directory not found: {project_dir}", file=sys.stderr)
         return 1
 
-    # Dev session uses agentwire role by default, plus the soul personality
-    role_names = inject_soul(["agentwire"], load_config(), no_soul=getattr(args, 'no_soul', False))
+    # Resolve the dev session's roles. Precedence (highest first):
+    #   --roles  >  the repo's local .agentwire.yml roles:  >  ["contributor"].
+    # `contributor` is the universal helper persona (#620): repo-aware onboarding,
+    # easy issue-filing, and the fork-based PR flow for non-owners. The owner makes
+    # `agentwire dev` skip forking by dropping a local, untracked .agentwire.yml with
+    # `roles: [contributor, owner-override]` — honored here via load_project_config,
+    # so the override actually reaches the dev session (not just `agentwire new`).
+    cli_roles = None
+    if getattr(args, 'roles', None):
+        cli_roles = [r.strip() for r in args.roles.split(",") if r.strip()]
+    project_roles = None
+    project_config = load_project_config(project_dir)
+    if project_config and project_config.roles:
+        project_roles = project_config.roles
+    base_roles = resolve_roles(None, cli_roles=cli_roles, project_roles=project_roles) or ["contributor"]
+    role_names = inject_soul(base_roles, load_config(), no_soul=getattr(args, 'no_soul', False))
     roles, missing = load_roles(role_names, project_dir)
     if missing:
         print(f"Warning: Roles not found: {', '.join(missing)}", file=sys.stderr)
@@ -570,6 +584,7 @@ def register_system_parser(subparsers) -> None:
         "dev", help="Start/attach to dev agentwire session"
     )
     dev_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
+    dev_parser.add_argument("--roles", dest="roles", help="Comma-separated roles for the dev session (overrides the local .agentwire.yml and the contributor default)")
     dev_parser.set_defaults(func=cmd_dev)
 
     # === up command ===

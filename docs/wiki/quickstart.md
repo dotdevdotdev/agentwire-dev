@@ -68,6 +68,16 @@ set -g window-size largest
 
 ---
 
+## New here? `agentwire dev`
+
+```bash
+agentwire dev
+```
+
+Starts (or re-attaches to) a guided **helper session** — an agent running the `contributor` role that walks you through setup, wires up your own projects, explains how sessions/panes/orchestration work, and helps you file a clean issue or fork the repo to contribute. It's the fastest way to get oriented before diving into the steps below.
+
+---
+
 ## 2. Your first session
 
 ```bash
