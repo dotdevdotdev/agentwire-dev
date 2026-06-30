@@ -20,7 +20,6 @@ from .core import (
     _portal_auth_headers,
     _post_desktop_notification,
 )
-from .project_config import get_parent_from_config
 
 
 def cmd_notify_parent(args) -> int:
