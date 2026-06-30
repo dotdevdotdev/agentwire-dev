@@ -141,6 +141,35 @@ def submitted(capture: str, message: str, marker: str | None = None) -> bool:
     return pane_shows_activity(capture) and message_visible(capture, message)
 
 
+def submit_confirmed(capture: str, message: str, marker: str | None = None) -> bool:
+    """Phase-2 confirm: did the (already-landed) paste actually *submit*? (#621)
+
+    Distinct from :func:`submitted`, which also has to defend Phase 1's "did the
+    paste even land?" question and so demands positive activity/scrollback
+    evidence before trusting an empty box. By Phase 2 we have ALREADY proven the
+    text landed in the input box, so the submission signal is simply: **the box
+    no longer holds our text.** Requiring a spinner or the echoed turn on top of
+    that is what false-negatived a landed-and-submitted paste under a quiet or
+    very fast agent — reporting ``delivery_unverified`` (→ inbox redelivery loop)
+    or an unconfirmed Enter (→ notify-parent "sat there unsent").
+
+    - Box parseable → submitted iff our message is no longer visible in it. An
+      empty box, or a box now showing a different/next prompt, both count. While
+      a multi-line paste's ``[Pasted text …]`` placeholder (or the expanded text)
+      still occupies the box, it reads as not-yet-submitted, so the caller keeps
+      pressing Enter (dismiss-then-submit).
+    - Box unparseable (tool output / dialog covering it) → fall back to positive
+      evidence: the explicit marker line, the message echoed in scrollback, or
+      visible activity.
+    """
+    box = input_box(capture)
+    if box is not None:
+        return not message_visible(box, message)
+    if marker is not None and marker in capture:
+        return True
+    return pane_shows_activity(capture) or message_visible(capture, message)
+
+
 def _poll(predicate, timeout: float) -> bool:
     """Poll *predicate* until it returns truthy or *timeout* elapses."""
     deadline = time.time() + timeout
@@ -247,6 +276,34 @@ def message_visible(capture: str, message: str) -> bool:
     return "[Pasted text" in capture
 
 
+def message_on_scrollback(capture: str, rendered: str) -> bool:
+    """Strict per-message scrollback check for idempotent redelivery (#621).
+
+    Matches the message's **full** whitespace-normalized rendered line against
+    the pane scrollback — NOT a fixed-length prefix. A short prefix collides on
+    the shared ``[MSG from <sender> · <kind>] `` header (a worktree sender name
+    alone can fill 32 chars), which would consume a *different* same-sender
+    message that never actually delivered — silent loss of exactly the
+    report-backs #621 protects. The full rendered line is distinct per distinct
+    message. tmux wraps long lines at pane width, so both sides are
+    whitespace-stripped before the substring test.
+
+    Deliberately does NOT fall back to the generic ``"[Pasted text"`` placeholder
+    (which would mark EVERY queued message visible). A message that scrolled past
+    the window returns False — the safe direction: keep it pending and retry
+    rather than silently drop it.
+    """
+    needle = "".join(rendered.split())
+    if not needle:
+        return False
+    return needle in "".join(capture.split())
+
+
+def scrollback(session: str, pane_index: int = 0) -> str:
+    """Public capture of a pane's verify-window scrollback (#621 dedup)."""
+    return _snapshot(session, pane_index)
+
+
 def _snapshot(session: str, pane_index: int) -> str:
     return capture_session(
         session, lines=VERIFY_SCROLLBACK_LINES, pane_index=pane_index
@@ -279,12 +336,12 @@ def _deliver_once(
     deadline = time.time() + SUBMIT_BUDGET
     attempts = 0
     while True:
-        if submitted(_snapshot(session, pane_index), message, marker):
+        if submit_confirmed(_snapshot(session, pane_index), message, marker):
             return True
         press_enter(session, pane_index=pane_index)
         attempts += 1
         if _poll(
-            lambda: submitted(_snapshot(session, pane_index), message, marker),
+            lambda: submit_confirmed(_snapshot(session, pane_index), message, marker),
             SUBMIT_TIMEOUT,
         ):
             return True

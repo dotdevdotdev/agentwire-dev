@@ -244,11 +244,35 @@ def cmd_msg_dead(args) -> int:
     return 0
 
 
+def cmd_msg_purge(args) -> int:
+    """Drop a session's pending (undelivered) messages — the self-heal escape hatch."""
+    session = getattr(args, "session", None) or _current_session()
+    if not session:
+        print("No session (use the session name, or run inside one)")
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": "no session"}))
+        return 1
+    removed = inbox.purge_pending(session)
+    if getattr(args, "json", False):
+        print(json.dumps({"success": True, "session": session, "purged": removed}))
+        return 0
+    print(f"Purged {removed} pending message(s) from {session}")
+    return 0
+
+
 def cmd_msg_flush(args) -> int:
-    """Attempt a drain now (still gated on an empty box + safe target)."""
+    """Attempt a drain now (gated on an empty box + safe target unless --force)."""
     session = getattr(args, "session", None)
+    force = getattr(args, "force", False)
+    if force and not session:
+        msg = "--force requires -s <session> (refuses to force-drain every inbox)"
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": msg}))
+        else:
+            print(msg)
+        return 1
     if session:
-        result = inbox.flush_session(session)
+        result = inbox.flush_session(session, force=force)
         payload = {"success": True, **result}
     else:
         result = inbox.tick()
@@ -340,9 +364,24 @@ def register_msg_parser(subparsers) -> None:
     dead_parser.add_argument("--json", action="store_true", help="Output JSON")
     dead_parser.set_defaults(func=cmd_msg_dead)
 
-    flush_parser = msg_sub.add_parser("flush", help="Attempt a drain now (still gated)")
+    purge_parser = msg_sub.add_parser(
+        "purge",
+        help="Drop a session's pending messages (self-heal a wedged inbox)",
+    )
+    purge_parser.add_argument(
+        "session", nargs="?", default=None,
+        help="Session to purge (default: current)",
+    )
+    purge_parser.add_argument("--json", action="store_true", help="Output JSON")
+    purge_parser.set_defaults(func=cmd_msg_purge)
+
+    flush_parser = msg_sub.add_parser("flush", help="Attempt a drain now (gated unless --force)")
     flush_parser.add_argument(
         "-s", "--session", default=None, help="Session to flush (default: all)"
+    )
+    flush_parser.add_argument(
+        "--force", action="store_true",
+        help="Bypass the empty-box gate and paste anyway (requires -s; may land mid-draft)",
     )
     flush_parser.add_argument("--json", action="store_true", help="Output JSON")
     flush_parser.set_defaults(func=cmd_msg_flush)

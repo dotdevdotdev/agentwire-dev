@@ -114,9 +114,23 @@ class Message:
             "ref": self.ref,
         }
 
+    def short_id(self) -> str:
+        """The 6-char uuid tail of ``id`` (the ``{epoch_ns}-{uuid6}`` suffix)."""
+        return self.id.rsplit("-", 1)[-1]
+
     def render(self) -> str:
-        """The one-line prefix injected on delivery (mirrors [NOTIFY from …])."""
-        return f"[MSG from {self.sender} · {self.kind}] {self.text}"
+        """The one-line message injected on delivery (mirrors [NOTIFY from …]).
+
+        The trailing ``⟨#id6⟩`` token makes every delivered line UNIQUE on the
+        recipient's screen (#621). Idempotent-redelivery dedup matches the full
+        rendered line on scrollback; without a unique tail a shorter message
+        whose text is a prefix of a longer same-sender/kind one (or two
+        identical-text report-backs) would substring-collide and be consumed
+        without delivery. The token is appended at the END so the prefix-based
+        landing checks (``derive_check_fragment`` / ``message_visible``) are
+        unchanged.
+        """
+        return f"[MSG from {self.sender} · {self.kind}] {self.text}  ⟨#{self.short_id()}⟩"
 
 
 def _now_ms() -> int:
@@ -291,6 +305,111 @@ def purge_dead(session: "str | None" = None, before_ms: "int | None" = None) -> 
     if removed:
         _log_event("purged_dead", session=session or "@all", count=removed)
     return removed
+
+
+def purge_pending(session: str) -> int:
+    """Drop a session's *pending* (undelivered) messages; return how many.
+
+    The self-heal escape hatch (#621): when a recipient is wedged into a
+    redelivery loop, the only prior recovery was hand-moving JSON files — which
+    the recipient's own Bash hook blocks (``rm``). This drops the pending queue
+    outright, no empty-box gate, no delivery. Passive (``ingest/``) and dead
+    (``dead/``) messages are untouched — this is strictly the active drain queue.
+    """
+    # Serialize against an in-flight flush_session via the per-session drain lock
+    # so we don't yank a file mid-delivery. If a flush holds the lock we still
+    # proceed (the operator wants the queue gone) — unlinking under it is benign
+    # because flush copies messages into memory first and its own unlink is
+    # missing_ok.
+    lock = _acquire_lock(session)
+    try:
+        paths = pending_files(session)
+        removed = 0
+        for path in paths:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+        if removed:
+            _log_event("purged_pending", session=session, count=removed)
+        return removed
+    finally:
+        _release_lock(lock)
+
+
+def gc_sender(sender: str) -> dict:
+    """Garbage-collect an exited sender's still-pending outbound (#621).
+
+    Messages live keyed by *recipient*, so when a worktree/session exits nothing
+    reaps the report-backs it left undelivered across every inbox — they
+    accumulate. This scans all pending queues for that sender and clears them:
+    load-bearing kinds (``done``/``request``/``escalation``) are dead-lettered
+    (which escalates via the owner-email path so the loss is never silent); the
+    rest are dropped. Passive (``ingest``) messages are never auto-delivered, so
+    they're left for the recipient to pull. Returns ``{dead, dropped}`` counts.
+    """
+    dead = dropped = 0
+    if not INBOX_ROOT.exists():
+        return {"dead": dead, "dropped": dropped}
+
+    # Group this sender's pending files by recipient so each inbox is mutated
+    # under its per-session drain lock — serializing against an in-flight
+    # flush_session. Without it a kill landing mid-delivery could dead-letter +
+    # email "never delivered" for a message that WAS just delivered.
+    by_recipient: dict[str, list[Path]] = {}
+    for path in INBOX_ROOT.rglob("*.json"):
+        parts = path.relative_to(INBOX_ROOT).parts
+        if any(p in _RESERVED_DIRS for p in parts[:-1]):
+            continue  # skip dead/ sent/ ingest/ .lock/
+        msg = _read_message(path)
+        if msg is None or msg.sender != sender:
+            continue
+        recipient = "/".join(parts[:-1])
+        if recipient:
+            by_recipient.setdefault(recipient, []).append(path)
+
+    for recipient, paths in by_recipient.items():
+        lock = _acquire_lock(recipient)
+        if lock is None:
+            # A flush is draining this inbox right now — its messages are being
+            # delivered, not lost. Skip GC for this recipient this round.
+            continue
+        try:
+            for path in paths:
+                if not path.exists():
+                    continue  # delivered + unlinked just before we locked
+                msg = _read_message(path)
+                if msg is None or msg.sender != sender:
+                    continue
+                if msg.kind in ESCALATE_KINDS:
+                    msg.dead_ts = _now_ms()
+                    msg.reason = "sender_exited"
+                    target = dead_dir(msg.to or "unknown") / path.name
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        _write_message(target, msg)
+                        path.unlink(missing_ok=True)
+                        _log_event(
+                            "dead_letter", id=msg.id, to=msg.to, kind=msg.kind,
+                            attempts=msg.attempts, reason="sender_exited",
+                        )
+                        dead += 1
+                        _escalate_dead_letter(msg, "sender_exited")
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        path.unlink()
+                        dropped += 1
+                    except OSError:
+                        pass
+        finally:
+            _release_lock(lock)
+
+    if dead or dropped:
+        _log_event("gc_sender", sender=sender, dead=dead, dropped=dropped)
+    return {"dead": dead, "dropped": dropped}
 
 
 # =============================================================================
@@ -494,12 +613,52 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     return dead
 
 
-def flush_session(session: str) -> dict:
+def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
+    """Consume (unlink) every message whose render() is already on scrollback.
+
+    The load-bearing #621 fix. ``safe_deliver`` confirms submission by polling
+    the input box back to empty; under host load that confirm false-negatives
+    even though the paste *landed* and the recipient saw it. Retaining a landed
+    message re-injects it on every idle tick — forever. So before (and after) a
+    paste we check the recipient's scrollback per-message: any message whose own
+    first-line fragment is visible has demonstrably landed → unlink it. Only
+    truly-absent messages stay pending.
+
+    Per-message keying (not the coalesced blob) so a partial landing consumes
+    exactly the visible subset. A strict fragment check (never the generic
+    ``"[Pasted text"`` placeholder fallback) so a stray placeholder can't mark
+    every message delivered. A message that scrolled past the 200-line window
+    reads as not-visible → kept (safe direction: retry, never silent-drop).
+    """
+    from .session_ready import message_on_scrollback, scrollback
+
+    capture = scrollback(session, 0)
+    consumed: list[Message] = []
+    for msg in messages:
+        if msg.path is None:
+            continue
+        if message_on_scrollback(capture, msg.render()):
+            msg.path.unlink(missing_ok=True)
+            consumed.append(msg)
+    if consumed:
+        _log_event(
+            "delivered_dedup", to=session, count=len(consumed),
+            kinds=[m.kind for m in consumed],
+        )
+    return consumed
+
+
+def flush_session(session: str, force: bool = False) -> dict:
     """Attempt to drain one session's inbox now.
 
     Delivers oldest-first, coalescing all queued messages into a single paste
     (one submit) when the box is empty. On any refusal the messages stay put,
     their ``attempts`` bump, and over the cap they dead-letter. Never raises.
+
+    *force* (the ``msg flush --force`` escape hatch) bypasses the empty-box /
+    busy gate and pastes regardless — for an operator un-wedging a stuck queue,
+    accepting that it may land mid-draft. The ``safe_deliver`` safety guards
+    (gone / parked / non-agent / live-dialog) are never bypassed.
     """
     from . import prompt_router
 
@@ -511,42 +670,74 @@ def flush_session(session: str) -> dict:
         if not messages:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
 
-        # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
-        visible = prompt_router.capture(session, 0)
-        box_content = prompt_router.input_box_content(visible)
+        pre_consumed = 0
+        if not force:
+            # Collision guard FIRST (cheap, and refuses dialogs/busy too via None).
+            # But first: a prior tick may have LANDED these and false-negatived the
+            # confirm (#621). If they're already on scrollback, consume them now
+            # instead of waiting for the box to free up to re-paste a duplicate.
+            consumed = _dedup_landed(session, messages)
+            if consumed:
+                pre_consumed = len(consumed)
+                messages = [m for m in messages if m.path is not None and m.path.exists()]
+                if not messages:
+                    return {
+                        "session": session, "delivered": pre_consumed,
+                        "deferred": False, "reason": "delivered",
+                    }
 
-        if box_content is None:
-            # Target is busy (input box not located). Defer.
-            dead = _bump_attempts(messages, "target_busy")
-            _log_event("deferred", to=session, count=len(messages), reason="target_busy")
-            return {
-                "session": session, "delivered": 0, "deferred": True,
-                "reason": "target_busy", "dead": dead,
-            }
+            visible = prompt_router.capture(session, 0)
+            box_content = prompt_router.input_box_content(visible)
 
-        if box_content != "":
-            # Box is not empty. We never bypass this to protect human drafts. But
-            # the "queued messages" placeholder is a BUSY signal, not a draft:
-            # defer WITHOUT penalty (like target_busy) so a generating-with-queued
-            # session doesn't burn report-backs toward dead-letter. Either way we
-            # never paste — only the penalty decision differs.
-            placeholder = prompt_router.is_queued_placeholder(box_content)
-            reason = "queued_placeholder" if placeholder else "box_not_empty"
-            dead = _bump_attempts(messages, reason)
-            _log_event("deferred", to=session, count=len(messages), reason=reason)
-            return {
-                "session": session, "delivered": 0, "deferred": True,
-                "reason": reason, "dead": dead,
-            }
+            if box_content is None:
+                # Target is busy (input box not located). Defer.
+                dead = _bump_attempts(messages, "target_busy")
+                _log_event("deferred", to=session, count=len(messages), reason="target_busy")
+                return {
+                    "session": session, "delivered": pre_consumed, "deferred": True,
+                    "reason": "target_busy", "dead": dead,
+                }
+
+            if box_content != "":
+                # Box is not empty. We never bypass this to protect human drafts. But
+                # the "queued messages" placeholder is a BUSY signal, not a draft:
+                # defer WITHOUT penalty (like target_busy) so a generating-with-queued
+                # session doesn't burn report-backs toward dead-letter. Either way we
+                # never paste — only the penalty decision differs.
+                placeholder = prompt_router.is_queued_placeholder(box_content)
+                reason = "queued_placeholder" if placeholder else "box_not_empty"
+                dead = _bump_attempts(messages, reason)
+                _log_event("deferred", to=session, count=len(messages), reason=reason)
+                return {
+                    "session": session, "delivered": pre_consumed, "deferred": True,
+                    "reason": reason, "dead": dead,
+                }
 
         rendered = "\n".join(m.render() for m in messages)
         delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
         if not delivered:
-            dead = _bump_attempts(messages, reason)
-            _log_event("deferred", to=session, count=len(messages), reason=reason)
+            # delivery_unverified means the box-cleared confirm failed — but the
+            # paste may have LANDED. Consume any message now visible on scrollback
+            # (idempotent delivery) so a false-negative can't cause re-injection.
+            # Other reasons (gone/parked/non-agent/dialog) never pasted, so there's
+            # nothing to dedup.
+            consumed = (
+                _dedup_landed(session, messages)
+                if reason == "delivery_unverified"
+                else []
+            )
+            consumed_ids = {m.id for m in consumed}
+            remaining = [m for m in messages if m.id not in consumed_ids]
+            if not remaining:
+                return {
+                    "session": session, "delivered": pre_consumed + len(consumed),
+                    "deferred": False, "reason": "delivered",
+                }
+            dead = _bump_attempts(remaining, reason)
+            _log_event("deferred", to=session, count=len(remaining), reason=reason)
             return {
-                "session": session, "delivered": 0, "deferred": True,
-                "reason": reason, "dead": dead,
+                "session": session, "delivered": pre_consumed + len(consumed),
+                "deferred": True, "reason": reason, "dead": dead,
             }
 
         for msg in messages:
@@ -557,7 +748,7 @@ def flush_session(session: str) -> dict:
             kinds=[m.kind for m in messages],
         )
         return {
-            "session": session, "delivered": len(messages),
+            "session": session, "delivered": pre_consumed + len(messages),
             "deferred": False, "reason": "delivered",
         }
     except Exception as exc:  # draining must never break the watchdog
