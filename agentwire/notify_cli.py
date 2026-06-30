@@ -51,11 +51,19 @@ def cmd_notify_parent(args) -> int:
     current_session = pane_manager.get_current_session()
     current_pane = pane_manager.get_current_pane_index()
 
-    # If no explicit target, try parent from config
-    if not target_session:
-        parent = get_parent_from_config()
-        if parent:
-            target_session = parent
+    # If no explicit target, resolve the parent through the SAME precedence the
+    # prompt router uses (worker pane → pane 0; else creator recorded at
+    # `agentwire new` time; else `.agentwire.yml parent:`). The old path looked
+    # only at `.agentwire.yml`, so a worktree/`agentwire new` child — whose
+    # parent lives in session metadata, not config — resolved to nothing and its
+    # idle notification silently dropped (the parent never heard the child go
+    # idle). resolve_parent reads the creator metadata, closing that gap.
+    if not target_session and current_session is not None and current_pane is not None:
+        from agentwire import prompt_router
+
+        resolved = prompt_router.resolve_parent(current_session, current_pane)
+        if resolved:
+            target_session = resolved[0]
 
     # Build notification message (--raw sends verbatim — queued messages
     # already carry their own [WORKER SUMMARY ...] / [PROMPT ...] headers)
