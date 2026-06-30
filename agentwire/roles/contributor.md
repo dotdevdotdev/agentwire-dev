@@ -58,9 +58,14 @@ git checkout -b my-change
 # 3. Commit + push to THEIR fork (origin)
 git push -u origin my-change
 
-# 4. Open a PR into upstream main
+# 4. Open a PR into upstream main (heredoc keeps the body's blank line + Closes #N real)
 gh pr create --repo dotdevdotdev/agentwire-dev --base main --head <their-user>:my-change \
-  --title "..." --body "Closes #N\n\n..."
+  --title "..." --body "$(cat <<'BODY'
+Short description of the change.
+
+Closes #N
+BODY
+)"
 ```
 
 **Never** assume you can push to `dotdevdotdev/agentwire-dev` directly, write labels on upstream issues/PRs, or merge a PR. If a command fails with a permissions error, that's expected — route through the fork. Maintainers review and merge.
