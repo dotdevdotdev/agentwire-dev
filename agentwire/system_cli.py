@@ -53,8 +53,11 @@ def cmd_dev(args) -> int:
         print(f"Project directory not found: {project_dir}", file=sys.stderr)
         return 1
 
-    # Dev session uses agentwire role by default, plus the soul personality
-    role_names = inject_soul(["agentwire"], load_config(), no_soul=getattr(args, 'no_soul', False))
+    # Dev session uses the contributor role by default, plus the soul personality.
+    # `contributor` is the universal helper persona (#620): repo-aware onboarding,
+    # easy issue-filing, and the fork-based PR flow for non-owners. The owner layers
+    # a local, untracked owner-override role on top (see the contributor role doc).
+    role_names = inject_soul(["contributor"], load_config(), no_soul=getattr(args, 'no_soul', False))
     roles, missing = load_roles(role_names, project_dir)
     if missing:
         print(f"Warning: Roles not found: {', '.join(missing)}", file=sys.stderr)

@@ -470,6 +470,7 @@ services:
         print(f"{BOLD}Next steps:{RESET}")
         print(f"  1. {CYAN}agentwire portal start{RESET}")
         print(f"  2. Open {CYAN}{portal_open_url}{RESET} in Chrome — voice works immediately")
+        print(f"  3. {CYAN}agentwire dev{RESET} — a helper session that walks you through setup, wires up your projects, and explains the system")
         print()
         print_info("Run 'agentwire init --assisted' to configure TTS/STT with Claude's help.")
         return 0
