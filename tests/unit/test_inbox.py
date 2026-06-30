@@ -573,6 +573,23 @@ class TestIdempotentDelivery:
         remaining = inbox.list_messages("s")
         assert len(remaining) == 1 and "beta" in remaining[0].text
 
+    def test_long_sender_prefix_does_not_collide(self, isolate, monkeypatch):
+        # Worktree senders fill the old 32-char fragment entirely with the
+        # "[MSG from <sender> · <kind>] " header, so two same-sender same-kind
+        # messages shared a fragment and the 2nd was silently consumed against
+        # the 1st's scrollback line. Full-line keying keeps them distinct: only
+        # the first (on scrollback) is consumed; the second stays pending.
+        sender = "agentwire-dev-fix-621-inbox"  # 27 chars — blows the 32 budget
+        a = inbox.enqueue("orch", "first report alpha", kind="done", sender=sender)[0]
+        inbox.enqueue("orch", "second report beta", kind="done", sender=sender)
+        self._patch(monkeypatch, deliver=(False, "delivery_unverified"),
+                    scrollback=a.render())  # only the FIRST line is visible
+        inbox.flush_session("orch")
+        remaining = inbox.list_messages("orch")
+        assert len(remaining) == 1, "second same-sender message must NOT be dropped"
+        assert "second report beta" in remaining[0].text
+        assert remaining[0].attempts == 1  # penalized/retried, not silently lost
+
     def test_placeholder_does_not_falsely_consume(self, isolate, monkeypatch):
         # A bare "[Pasted text ...]" placeholder must NOT mark every message
         # visible (the message_visible fallback is intentionally skipped).
@@ -660,6 +677,22 @@ class TestGcSender:
         assert res["dropped"] == 1 and res["dead"] == 0
         assert inbox.list_messages("orch") == []
         assert inbox.list_dead("orch") == []
+
+    def test_gc_skips_recipient_with_held_lock(self, isolate, monkeypatch):
+        # A flush draining this inbox holds the per-session lock; gc must NOT
+        # dead-letter (and email) a message that flush is mid-delivery on.
+        emailed = []
+        monkeypatch.setattr(inbox, "_escalate_dead_letter",
+                            lambda m, r: emailed.append(m.id))
+        inbox.enqueue("orch", "in flight", kind="done", sender="worker")
+        held = inbox._acquire_lock("orch")  # simulate an in-flight flush
+        try:
+            res = inbox.gc_sender("worker")
+        finally:
+            inbox._release_lock(held)
+        assert res == {"dead": 0, "dropped": 0}
+        assert emailed == []  # no false "never delivered" escalation
+        assert len(inbox.list_messages("orch")) == 1  # left for flush to deliver
 
     def test_gc_ignores_other_senders_and_ingest(self, isolate):
         inbox.enqueue("orch", "keep me", kind="done", sender="other")

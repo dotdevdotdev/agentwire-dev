@@ -302,17 +302,26 @@ def purge_pending(session: str) -> int:
     outright, no empty-box gate, no delivery. Passive (``ingest/``) and dead
     (``dead/``) messages are untouched — this is strictly the active drain queue.
     """
-    paths = pending_files(session)
-    removed = 0
-    for path in paths:
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            pass
-    if removed:
-        _log_event("purged_pending", session=session, count=removed)
-    return removed
+    # Serialize against an in-flight flush_session via the per-session drain lock
+    # so we don't yank a file mid-delivery. If a flush holds the lock we still
+    # proceed (the operator wants the queue gone) — unlinking under it is benign
+    # because flush copies messages into memory first and its own unlink is
+    # missing_ok.
+    lock = _acquire_lock(session)
+    try:
+        paths = pending_files(session)
+        removed = 0
+        for path in paths:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+        if removed:
+            _log_event("purged_pending", session=session, count=removed)
+        return removed
+    finally:
+        _release_lock(lock)
 
 
 def gc_sender(sender: str) -> dict:
@@ -329,6 +338,12 @@ def gc_sender(sender: str) -> dict:
     dead = dropped = 0
     if not INBOX_ROOT.exists():
         return {"dead": dead, "dropped": dropped}
+
+    # Group this sender's pending files by recipient so each inbox is mutated
+    # under its per-session drain lock — serializing against an in-flight
+    # flush_session. Without it a kill landing mid-delivery could dead-letter +
+    # email "never delivered" for a message that WAS just delivered.
+    by_recipient: dict[str, list[Path]] = {}
     for path in INBOX_ROOT.rglob("*.json"):
         parts = path.relative_to(INBOX_ROOT).parts
         if any(p in _RESERVED_DIRS for p in parts[:-1]):
@@ -336,28 +351,48 @@ def gc_sender(sender: str) -> dict:
         msg = _read_message(path)
         if msg is None or msg.sender != sender:
             continue
-        if msg.kind in ESCALATE_KINDS:
-            msg.dead_ts = _now_ms()
-            msg.reason = "sender_exited"
-            target = dead_dir(msg.to or "unknown") / path.name
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _write_message(target, msg)
-                path.unlink(missing_ok=True)
-                _log_event(
-                    "dead_letter", id=msg.id, to=msg.to, kind=msg.kind,
-                    attempts=msg.attempts, reason="sender_exited",
-                )
-                dead += 1
-                _escalate_dead_letter(msg, "sender_exited")
-            except OSError:
-                pass
-        else:
-            try:
-                path.unlink()
-                dropped += 1
-            except OSError:
-                pass
+        recipient = "/".join(parts[:-1])
+        if recipient:
+            by_recipient.setdefault(recipient, []).append(path)
+
+    for recipient, paths in by_recipient.items():
+        lock = _acquire_lock(recipient)
+        if lock is None:
+            # A flush is draining this inbox right now — its messages are being
+            # delivered, not lost. Skip GC for this recipient this round.
+            continue
+        try:
+            for path in paths:
+                if not path.exists():
+                    continue  # delivered + unlinked just before we locked
+                msg = _read_message(path)
+                if msg is None or msg.sender != sender:
+                    continue
+                if msg.kind in ESCALATE_KINDS:
+                    msg.dead_ts = _now_ms()
+                    msg.reason = "sender_exited"
+                    target = dead_dir(msg.to or "unknown") / path.name
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        _write_message(target, msg)
+                        path.unlink(missing_ok=True)
+                        _log_event(
+                            "dead_letter", id=msg.id, to=msg.to, kind=msg.kind,
+                            attempts=msg.attempts, reason="sender_exited",
+                        )
+                        dead += 1
+                        _escalate_dead_letter(msg, "sender_exited")
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        path.unlink()
+                        dropped += 1
+                    except OSError:
+                        pass
+        finally:
+            _release_lock(lock)
+
     if dead or dropped:
         _log_event("gc_sender", sender=sender, dead=dead, dropped=dropped)
     return {"dead": dead, "dropped": dropped}
@@ -581,14 +616,14 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
     every message delivered. A message that scrolled past the 200-line window
     reads as not-visible → kept (safe direction: retry, never silent-drop).
     """
-    from .session_ready import fragment_on_scrollback, scrollback
+    from .session_ready import message_on_scrollback, scrollback
 
     capture = scrollback(session, 0)
     consumed: list[Message] = []
     for msg in messages:
         if msg.path is None:
             continue
-        if fragment_on_scrollback(capture, msg.render()):
+        if message_on_scrollback(capture, msg.render()):
             msg.path.unlink(missing_ok=True)
             consumed.append(msg)
     if consumed:

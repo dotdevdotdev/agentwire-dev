@@ -50,7 +50,7 @@ lands in a durable inbox and is injected only at a safe boundary.
    — forever (the field repro: ~11 report-backs replayed all session). So the
    drain treats delivery as **idempotent**: before and after a paste it checks
    the recipient's 200-line scrollback **per message** (each message's own
-   first-line fragment, via `session_ready.fragment_on_scrollback` — a strict
+   full rendered line, via `session_ready.message_on_scrollback` — a strict
    match that ignores the generic `[Pasted text]` placeholder), and any message
    already visible is consumed (unlinked) instead of re-pasted. A
    `delivery_unverified` for a paste that genuinely vanished still penalizes

@@ -276,22 +276,27 @@ def message_visible(capture: str, message: str) -> bool:
     return "[Pasted text" in capture
 
 
-def fragment_on_scrollback(capture: str, message: str) -> bool:
+def message_on_scrollback(capture: str, rendered: str) -> bool:
     """Strict per-message scrollback check for idempotent redelivery (#621).
 
-    Unlike :func:`message_visible`, this does NOT fall back to the generic
-    ``"[Pasted text"`` placeholder. That fallback is correct when verifying a
-    *single* large paste landed, but it's poison for per-message dedup: one
-    placeholder on screen would mark EVERY queued message as visible and we'd
-    drop them all. Here we require the message's own distinctive first-line
-    fragment to actually be present (whitespace-normalized, since tmux wraps
-    long lines). A message that scrolled past the window returns False — the
-    safe direction: we keep it pending and retry rather than silently drop it.
+    Matches the message's **full** whitespace-normalized rendered line against
+    the pane scrollback — NOT a fixed-length prefix. A short prefix collides on
+    the shared ``[MSG from <sender> · <kind>] `` header (a worktree sender name
+    alone can fill 32 chars), which would consume a *different* same-sender
+    message that never actually delivered — silent loss of exactly the
+    report-backs #621 protects. The full rendered line is distinct per distinct
+    message. tmux wraps long lines at pane width, so both sides are
+    whitespace-stripped before the substring test.
+
+    Deliberately does NOT fall back to the generic ``"[Pasted text"`` placeholder
+    (which would mark EVERY queued message visible). A message that scrolled past
+    the window returns False — the safe direction: keep it pending and retry
+    rather than silently drop it.
     """
-    frag = derive_check_fragment(message)
-    if not frag:
+    needle = "".join(rendered.split())
+    if not needle:
         return False
-    return "".join(frag.split()) in "".join(capture.split())
+    return needle in "".join(capture.split())
 
 
 def scrollback(session: str, pane_index: int = 0) -> str:
