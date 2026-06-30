@@ -78,6 +78,42 @@ def notifications_session_name() -> str:
     )
 
 
+# Built-in infrastructure sessions — the Python mirror of the frontend's
+# SERVICE_SESSIONS allowlist (static/js/service-classification.js). These are
+# long-lived services, not delegated work, so they must never fire a
+# "child finished" idle notification at a parent (the idle-nag bridge alone
+# cycles active→idle ~1440×/day). Kept in lockstep with the JS set.
+_BUILTIN_SERVICE_SESSIONS = frozenset({
+    "agentwire-portal",
+    "agentwire-tts",
+    "agentwire-stt",
+    "agentwire-kokoro",
+    "agentwire-scheduler",
+})
+
+
+def is_service_session(name: str) -> bool:
+    """Is *name* an infrastructure service session (vs. a working session)?
+
+    True for the built-in infra sessions, the configurable idle-nag bridge, and
+    any user-defined custom service. Used to suppress idle parent-notifications
+    for services — a worktree / `agentwire new` child is NOT a service and still
+    notifies. Name-only and dependency-light so the idle hook can call it cheaply
+    on every idle event.
+    """
+    bare = (name or "").split("@")[0]
+    if not bare:
+        return False
+    if bare in _BUILTIN_SERVICE_SESSIONS or bare == notifications_session_name():
+        return True
+    try:
+        from .config import load_config
+
+        return any(s.name == bare for s in load_config().services.custom)
+    except Exception:
+        return False
+
+
 def _source_dir() -> str:
     """agentwire source dir (dev.source_dir), project for built-in services."""
     try:
