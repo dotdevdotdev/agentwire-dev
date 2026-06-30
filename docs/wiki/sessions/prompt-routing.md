@@ -37,6 +37,18 @@ Depth-1 and local-machine only. Remote (`@machine`) parents are out of scope:
 each machine's own watchdog sweeps its panes; cross-machine delivery falls
 back to human-only.
 
+**Idle notifications use the same resolution.** When a pane-0 session goes idle,
+`idle-handler.sh` calls `agentwire notify-parent --on-idle`, which resolves the
+parent through the precedence above — so a worktree / `agentwire new` child whose
+parent lives in **creator metadata** (not `.agentwire.yml`) now correctly pings
+its spawner on completion. Earlier the idle hook read only the `.agentwire.yml`
+`parent:` field and silently dropped the notification when it was empty.
+`--on-idle` additionally suppresses the ping when the source is an infrastructure
+**service** (`services.is_service_session` — portal/tts/stt/kokoro/scheduler, the
+idle-nag bridge, custom services); those cycle active→idle constantly and aren't
+delegated work. Worker-pane (`notify-parent` from pane > 0) and explicit `--to`
+callers skip the service check.
+
 ## Delivery safety
 
 Every delivery goes through `safe_deliver()` (also used by
