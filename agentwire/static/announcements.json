@@ -1,6 +1,24 @@
 {
   "announcements": [
     {
+      "id": "2026-06-cockpit-positioning",
+      "placement": "modal",
+      "emoji": "🛩️",
+      "title": "Stop babysitting one agent. Command a fleet.",
+      "date": "2026-06-29",
+      "body": "Here's how to think about AgentWire: it's a self-hosted, keyboard-driven cockpit for running a whole fleet of Claude Code agents at once — not a voice toy with sessions bolted on. The capabilities compound. Every session is a window (F3 collage, Tab to cycle); the command palette (Cmd/Ctrl+K) runs any action; worktree sessions isolate parallel work; the scheduler runs recurring jobs unattended as draft PRs. Voice is a layer that stacks on all of it — push-to-talk in, spoken summaries by ear while you're off-tab, and global macOS hotkeys to dictate to a background session from any app. One person commands many agents instead of babysitting one.",
+      "highlights": [
+        "From a wall of tmux panes to one cockpit — the pieces compound",
+        "Every session is a window: F3 collage, Tab to cycle, Cmd/Ctrl+K for any action",
+        "Worktrees + scheduler + council run parallel and unattended work",
+        "Voice is a compounding layer, not the headline"
+      ],
+      "cta": {
+        "label": "Press F1 for the full tour",
+        "url": "https://github.com/dotdevdotdev/agentwire-dev"
+      }
+    },
+    {
       "id": "2026-06-help-modal",
       "placement": "modal",
       "emoji": "⌨️",
