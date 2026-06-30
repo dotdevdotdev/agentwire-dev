@@ -370,10 +370,17 @@ complete | incomplete | error
           echo "[$(date -Iseconds)] TASK-ORPHAN: killing tmux session" >> "$dlog"
           tmux kill-session -t "$tmux_session" 2>/dev/null &
         ) &
-      elif [[ -n "$parent_session" ]]; then
-        # Orchestrator pane with parent: notify parent
-        message="${session_name} is idle"
-        $AGENTWIRE notify-parent -q --to "$parent_session" "$message" 2>/dev/null &
+      else
+        # Pane-0 session went idle: tell its parent. Resolution lives inside
+        # notify-parent (prompt_router.resolve_parent) so all three precedence
+        # sources are honored — worker pane → pane 0, creator recorded at
+        # `agentwire new` time (session metadata), then `.agentwire.yml parent:`.
+        # The old code passed only the .agentwire.yml value and skipped the call
+        # entirely when it was empty, so worktree / `agentwire new` children
+        # (whose parent lives in metadata, not config) never notified anyone.
+        # TMUX_PANE is inherited, so the CLI knows which session this is; a
+        # top-level session resolves to no parent and this is a harmless no-op.
+        $AGENTWIRE notify-parent -q "is idle and done working" 2>/dev/null &
       fi
     fi
   fi
