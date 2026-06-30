@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import pane_manager, worktree_registry
+from . import pane_manager, services, worktree_registry
 from .core import (
     KIND_DEFAULT_POSTURE,
     _build_tmux_env_flags,
@@ -93,6 +93,32 @@ def cmd_session_defaults(args) -> int:
         "postures": list(POSTURES),
     })
     return 0
+
+
+def _shared_dir_conflicts(panes_output: str, session_name: str, target: str) -> set[str]:
+    """Sessions (excluding *session_name* and infra services) whose cwd is *target*.
+
+    *panes_output* is `tmux list-panes -a -F '#{session_name}\t#{pane_current_path}'`.
+    Infrastructure service sessions (portal/tts/stt/kokoro/scheduler/notifications)
+    run from the repo root but never edit the tree, so they co-reside with an agent
+    without conflict and are excluded via the SSOT classifier. Non-service agent
+    sessions (including the hardcoded `agentwire` dev session) still count.
+    """
+    conflicting: set[str] = set()
+    for line in panes_output.splitlines():
+        if "\t" not in line:
+            continue
+        sess, p = line.split("\t", 1)
+        if sess == session_name:
+            continue
+        if services.is_service_session(sess):
+            continue
+        try:
+            if str(Path(p).resolve()) == target:
+                conflicting.add(sess)
+        except (OSError, RuntimeError):
+            continue
+    return conflicting
 
 
 def cmd_new(args) -> int:
@@ -374,18 +400,7 @@ def cmd_new(args) -> int:
             capture_output=True, text=True,
         )
         if panes_result.returncode == 0:
-            conflicting: set[str] = set()
-            for line in panes_result.stdout.splitlines():
-                if "\t" not in line:
-                    continue
-                sess, p = line.split("\t", 1)
-                if sess == session_name:
-                    continue
-                try:
-                    if str(Path(p).resolve()) == target:
-                        conflicting.add(sess)
-                except (OSError, RuntimeError):
-                    continue
+            conflicting = _shared_dir_conflicts(panes_result.stdout, session_name, target)
             if conflicting:
                 others = ", ".join(sorted(conflicting))
                 hint = (
