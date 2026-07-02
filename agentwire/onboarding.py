@@ -252,7 +252,7 @@ def run_onboarding(skip_session: bool = True, force: bool = False) -> int:
     # Check ffmpeg (optional)
     ffmpeg_ok, ffmpeg_path = check_ffmpeg()
     if not ffmpeg_ok:
-        print_warning("ffmpeg not found (voice input won't work)")
+        print_warning("ffmpeg not found (optional — needed for host-mic push-to-talk and voice cloning; browser voice input works without it)")
         print_info(f"Install with: {instructions['ffmpeg']}")
     else:
         print_success(f"ffmpeg: {ffmpeg_path}")

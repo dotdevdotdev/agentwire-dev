@@ -2,7 +2,7 @@
 
 > Living document. Update this, don't create new versions.
 
-A 5-minute path from `pip install` to "I have a session with voice working." For the conceptual *why*, read [Concepts](concepts.md). For the full feature set, browse the [INDEX](INDEX.md).
+A 5-minute path from install to "I have a session with voice working." For the conceptual *why*, read [Concepts](concepts.md). For the full feature set, browse the [INDEX](INDEX.md).
 
 This page assumes you're on macOS or Linux with Python 3.10+ already installed. If anything errors, jump to [Troubleshooting](internals/troubleshooting.md).
 
@@ -12,14 +12,18 @@ This page assumes you're on macOS or Linux with Python 3.10+ already installed. 
 
 ```bash
 # macOS
-brew install tmux ffmpeg
-pip install agentwire-dev
+brew install tmux uv
+uv tool install agentwire-dev
 
 # Ubuntu / Debian
-sudo apt install tmux ffmpeg python3-pip python3-venv
-python3 -m venv ~/.agentwire-venv && source ~/.agentwire-venv/bin/activate
-pip install agentwire-dev
+sudo apt install tmux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install agentwire-dev
 ```
+
+`uv tool install` (or `pipx install agentwire-dev`) puts agentwire in its own isolated environment, so it works on PEP 668 "externally-managed" Pythons — bare `pip install agentwire-dev` fails there (Homebrew Python 3.12+, Debian/Ubuntu system Python). If you'd rather use pip, do it inside a venv.
+
+ffmpeg is **optional**: browser voice input works without it (WebM/Opus uploads are decoded in-process via PyAV). Install it only if you want host-mic push-to-talk capture (`agentwire listen`) or voice cloning — `brew install ffmpeg` / `sudo apt install ffmpeg`.
 
 You'll also want **Claude Code** installed (`claude --version`) since the default session type runs through it.
 
