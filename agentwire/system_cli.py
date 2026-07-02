@@ -8,7 +8,6 @@ session: ``up`` (boot all services then the dev session), ``dev``, ``init``,
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import urllib.request
@@ -34,7 +33,23 @@ from .core import (
 from .project_config import detect_default_agent_type, load_project_config
 from .roles import inject_soul, load_roles, resolve_roles
 
-UV_CACHE_DIR = Path.home() / ".cache" / "uv"
+
+def _clean_uv_cache_for_agentwire() -> None:
+    """Drop only agentwire-dev's entries from the uv cache.
+
+    The uv cache (~/.cache/uv) is shared by every uv tool and project on the
+    machine — never rmtree it wholesale. `uv cache clean <package>` evicts just
+    this package's wheels/sdists so the next install rebuilds from source.
+    """
+    result = subprocess.run(
+        ["uv", "cache", "clean", "agentwire-dev"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  ✓ Cleared agentwire-dev entries from uv cache")
+    else:
+        print(f"  - uv cache clean skipped: {result.stderr.strip() or 'unknown error'}")
 
 
 # === Dev Command ===
@@ -464,10 +479,14 @@ def cmd_listen_toggle(args) -> int:
 # === Rebuild / Uninstall Commands ===
 
 def cmd_rebuild(args) -> int:
-    """Rebuild: clear uv cache, uninstall, reinstall from source.
+    """Rebuild: reinstall from source, bypassing cached wheels.
 
     This is the correct way to pick up source changes when developing.
-    `uv tool install . --force` does NOT work - it uses cached wheels.
+    Plain `uv tool install . --force` does NOT work - it uses cached wheels -
+    so agentwire-dev's cache entries are evicted first (never the whole cache),
+    then a single install --force --reinstall atomically replaces the old
+    install. There is no separate uninstall step: a failed install leaves the
+    existing tool untouched.
     """
     force = getattr(args, "force", False)
 
@@ -479,6 +498,13 @@ def cmd_rebuild(args) -> int:
     project_root = Path(__file__).parent.parent
     if not (project_root / "pyproject.toml").exists():
         project_root = get_source_dir()
+    if not (project_root / "pyproject.toml").exists():
+        print(
+            f"  ✗ No source checkout at {project_root} (pyproject.toml missing).\n"
+            "    Rebuild needs the agentwire-dev repo. Nothing was changed.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Git-drift guard: rebuild is otherwise git-blind and will happily reinstall
     # stale code when local main was never pulled after a remote merge. Refuse
@@ -499,37 +525,23 @@ def cmd_rebuild(args) -> int:
         print("  ✓ Checkout up to date with origin/main")
     print()
 
-    # Step 1: Clear uv cache
-    if UV_CACHE_DIR.exists():
-        print(f"Clearing uv cache ({UV_CACHE_DIR})...")
-        shutil.rmtree(UV_CACHE_DIR)
-        print("  ✓ Cache cleared")
-    else:
-        print("  - No cache to clear")
+    # Step 1: Evict only agentwire-dev's cached wheels so the reinstall
+    # rebuilds from source.
+    print("Clearing agentwire-dev from uv cache...")
+    _clean_uv_cache_for_agentwire()
 
-    # Step 2: Uninstall
-    print("Uninstalling agentwire-dev...")
-    result = subprocess.run(
-        ["uv", "tool", "uninstall", "agentwire-dev"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        print("  ✓ Uninstalled")
-    else:
-        # Might not be installed, that's fine
-        print("  - Not installed (continuing)")
-
-    # Step 3: Reinstall from the source checkout resolved above.
+    # Step 2: Install-then-swap. --force --reinstall atomically replaces the
+    # existing install; on failure the old install is still in place.
     print(f"Installing from {project_root}...")
     result = subprocess.run(
-        ["uv", "tool", "install", "."],
+        ["uv", "tool", "install", ".", "--force", "--reinstall"],
         cwd=project_root,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         print(f"  ✗ Install failed: {result.stderr}", file=sys.stderr)
+        print("    Existing install was left untouched.", file=sys.stderr)
         return 1
 
     print("  ✓ Installed")
@@ -539,17 +551,13 @@ def cmd_rebuild(args) -> int:
 
 
 def cmd_uninstall(args) -> int:
-    """Uninstall: clear uv cache and remove agentwire-dev tool."""
+    """Uninstall: drop agentwire-dev's cache entries and remove the tool."""
     print("Uninstalling agentwire-dev...")
     print()
 
-    # Step 1: Clear uv cache
-    if UV_CACHE_DIR.exists():
-        print(f"Clearing uv cache ({UV_CACHE_DIR})...")
-        shutil.rmtree(UV_CACHE_DIR)
-        print("  ✓ Cache cleared")
-    else:
-        print("  - No cache to clear")
+    # Step 1: Evict only agentwire-dev's entries from the shared uv cache.
+    print("Clearing agentwire-dev from uv cache...")
+    _clean_uv_cache_for_agentwire()
 
     # Step 2: Uninstall
     print("Uninstalling tool...")
