@@ -127,9 +127,9 @@ class Message:
         rendered line on scrollback; without a unique tail a shorter message
         whose text is a prefix of a longer same-sender/kind one (or two
         identical-text report-backs) would substring-collide and be consumed
-        without delivery. The token is appended at the END so the prefix-based
-        landing checks (``derive_check_fragment`` / ``message_visible``) are
-        unchanged.
+        without delivery. Landing checks (``message_visible``) key on the full
+        whitespace-normalized message (#667), so the tail participates in the
+        match rather than weakening it.
         """
         return f"[MSG from {self.sender} · {self.kind}] {self.text}  ⟨#{self.short_id()}⟩"
 

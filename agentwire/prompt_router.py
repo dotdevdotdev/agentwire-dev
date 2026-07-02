@@ -361,9 +361,10 @@ def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[boo
       target_not_agent  pane runs a shell/editor — pasted text could EXECUTE
       target_dialog     pane shows its own live menu — Enter would answer it
 
-    Delivery itself is session_ready.send_verified (marker = the message's
-    own [PROMPT ...] prefix line), so a silent tmux paste failure reports
-    as not-delivered instead of being assumed sent.
+    Delivery itself is session_ready.send_verified, keyed on the FULL
+    whitespace-normalized message (#667) — never a fixed-length prefix, which
+    collided across same-prefix ``[NOTIFY from …]`` pile-ups — so a silent
+    tmux paste failure reports as not-delivered instead of being assumed sent.
     """
     if not _session_exists(target_session):
         return False, "target_gone"
@@ -374,10 +375,9 @@ def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[boo
     if screen_shows_live_menu(_capture(f"{target_session}.{target_pane}")):
         return False, "target_dialog"
 
-    from .session_ready import derive_check_fragment, send_verified
+    from .session_ready import send_verified
 
-    marker = derive_check_fragment(text)
-    ok = send_verified(target_session, text, marker=marker or None)
+    ok = send_verified(target_session, text)
     return (ok, "delivered" if ok else "delivery_unverified")
 
 
