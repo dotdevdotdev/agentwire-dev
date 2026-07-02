@@ -144,10 +144,8 @@ def transcribe(audio_base64: str, format: str = "webm") -> str:
         Transcribed text or error description.
     """
     import requests
-    import urllib3
 
-    # Suppress SSL warnings for self-signed certs
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    from .core import portal_request
 
     # Decode base64 audio
     try:
@@ -172,15 +170,10 @@ def transcribe(audio_base64: str, format: str = "webm") -> str:
     portal_url = get_portal_url()
     url = f"{portal_url}/transcribe"
 
-    from .security import get_local_portal_token
-
-    token = get_local_portal_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-
     try:
         # Create multipart form data
         files = {"audio": (f"audio.{format}", audio_bytes, mime_type)}
-        response = requests.post(url, files=files, headers=headers, verify=False, timeout=60)
+        response = portal_request("POST", url, files=files, timeout=60)
 
         if response.status_code != 200:
             return f"Transcription request failed: HTTP {response.status_code}"

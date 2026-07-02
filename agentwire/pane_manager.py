@@ -396,39 +396,6 @@ def focus_pane(session: str | None, pane_index: int) -> None:
     run_command(["tmux", "select-pane", "-t", target], timeout=5)
 
 
-def get_pane_info(tmux_pane_id: str) -> PaneInfo | None:
-    """Get info about a specific pane by its tmux ID.
-
-    Args:
-        tmux_pane_id: The pane ID (e.g., %37)
-
-    Returns:
-        PaneInfo if found, None otherwise.
-    """
-    result = run_command(
-        [
-            "tmux", "display", "-t", tmux_pane_id,
-            "-p", "#{pane_index}:#{pane_id}:#{pane_pid}:#{pane_current_command}:#{pane_active}"
-        ],
-        timeout=5,
-    )
-
-    if not result.success:
-        return None
-
-    parts = result.stdout.strip().split(":")
-    if len(parts) >= 5:
-        return PaneInfo(
-            index=int(parts[0]),
-            pane_id=parts[1],
-            pid=int(parts[2]),
-            command=parts[3],
-            active=parts[4] == "1"
-        )
-
-    return None
-
-
 # === Worktree Support ===
 
 
@@ -532,40 +499,3 @@ def create_worker_worktree(branch_name: str, cwd: str | None = None) -> str:
         raise RuntimeError(f"Failed to create worktree: {result.stderr}")
 
     return worktree_path
-
-
-def remove_worker_worktree(worktree_path: str) -> bool:
-    """Remove a worker worktree.
-
-    Args:
-        worktree_path: Path to the worktree to remove
-
-    Returns:
-        True if removed successfully, False otherwise.
-    """
-    if not os.path.exists(worktree_path):
-        return True
-
-    # Get the main repo to run worktree remove from
-    repo = get_repo_info(worktree_path)
-    if repo is None:
-        return False
-
-    # Find the main worktree (not this one)
-    result = run_command(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=worktree_path,
-        timeout=10,
-    )
-
-    if not result.success:
-        return False
-
-    # Remove the worktree
-    result = run_command(
-        ["git", "worktree", "remove", worktree_path],
-        cwd=worktree_path,
-        timeout=30,
-    )
-
-    return result.success

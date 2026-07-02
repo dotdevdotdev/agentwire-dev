@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from .config import get_config
+from .core import _atomic_write, portal_request
 from .utils.event_log import append_event
 
 
@@ -321,29 +322,6 @@ def _rotate_backups(path: Path, keep: int) -> None:
         shutil.copy2(path, _backup_path(path, 1))
     except OSError:
         pass
-
-
-def _atomic_write(path: Path, text: str, validate=None) -> None:
-    """Write `text` to `path` atomically: temp file -> fsync -> validate -> rename.
-
-    The file is never left half-written: a crash mid-write leaves the original
-    intact and only a discardable .tmp behind. `validate(tmp_path)` (if given)
-    must raise on bad content — the rename is skipped and the temp removed,
-    so corrupt content can never replace a good file (#449).
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        if validate is not None:
-            validate(tmp)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 def _state_to_dict(board: Board) -> dict:
@@ -866,26 +844,12 @@ def _write_live_state(**fields) -> None:
         pass
 
 
-def _portal_auth_headers() -> dict:
-    """Headers carrying the portal auth token, if one is configured."""
-    from .security import get_local_portal_token
-
-    token = get_local_portal_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
 def _notify_portal(task_name: str, status: str, duration: int, summary: str) -> None:
     """POST a scheduler_task_complete notification to the portal."""
     try:
-        import requests
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-        portal_url = get_config().portal.url
-        timeout = _sched_config().portal_notify_timeout
-
-        requests.post(
-            f"{portal_url}/api/notify",
+        portal_request(
+            "POST",
+            f"{get_config().portal.url}/api/notify",
             json={
                 "event": "scheduler_task_complete",
                 "task": task_name,
@@ -893,9 +857,7 @@ def _notify_portal(task_name: str, status: str, duration: int, summary: str) -> 
                 "duration": duration,
                 "summary": summary,
             },
-            headers=_portal_auth_headers(),
-            verify=False,
-            timeout=timeout,
+            timeout=_sched_config().portal_notify_timeout,
         )
     except Exception:
         pass  # Portal may not be running
@@ -904,23 +866,15 @@ def _notify_portal(task_name: str, status: str, duration: int, summary: str) -> 
 def _notify_portal_state() -> None:
     """Push full scheduler live state to the portal via /api/notify."""
     try:
-        import requests
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
         state = read_live_state()
         if not state:
             return
 
-        portal_url = get_config().portal.url
-        timeout = _sched_config().portal_notify_timeout
-
-        requests.post(
-            f"{portal_url}/api/notify",
+        portal_request(
+            "POST",
+            f"{get_config().portal.url}/api/notify",
             json={"event": "scheduler_state", "running": True, **state},
-            headers=_portal_auth_headers(),
-            verify=False,
-            timeout=timeout,
+            timeout=_sched_config().portal_notify_timeout,
         )
     except Exception:
         pass  # Portal may not be running

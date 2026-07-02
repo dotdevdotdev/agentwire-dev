@@ -1,10 +1,11 @@
 """CLI for usage-limit recovery — ``agentwire limits ...``.
 
-The watchdog is a stateless launchd job running ``agentwire limits tick``
+The watchdog is a stateless scheduled job running ``agentwire limits tick``
 every minute: sweep all tmux panes for the usage-limit dialog, park what's
 found, and nudge parked sessions whose reset time has passed. ``install``
-writes and loads the LaunchAgent; the plist is generated here (single
-source of truth — no template file to drift).
+picks the platform backend — a launchd LaunchAgent on macOS, a systemd
+--user timer+service on Linux — and the unit content is generated here
+(single source of truth — no template file to drift).
 """
 
 from __future__ import annotations
@@ -22,6 +23,13 @@ LAUNCHD_LABEL = "dev.agentwire.usage-limit-watchdog"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 LOG_PATH = Path.home() / "Library" / "Logs" / "agentwire-usage-limit-watchdog.log"
 TICK_INTERVAL = 60  # seconds — limits don't keep office hours
+
+# Linux equivalent: a systemd --user timer + oneshot service (generated here,
+# same single-source-of-truth stance as the plist).
+SYSTEMD_UNIT = "agentwire-usage-limit-watchdog"
+SYSTEMD_DIR = Path.home() / ".config" / "systemd" / "user"
+SERVICE_PATH = SYSTEMD_DIR / f"{SYSTEMD_UNIT}.service"
+TIMER_PATH = SYSTEMD_DIR / f"{SYSTEMD_UNIT}.timer"
 
 
 def _plist_content(agentwire_bin: str) -> str:
@@ -72,6 +80,42 @@ def _plist_content(agentwire_bin: str) -> str:
     <true/>
 </dict>
 </plist>
+"""
+
+
+def _systemd_service_content(agentwire_bin: str) -> str:
+    home = str(Path.home())
+    return f"""# Usage-limit watchdog — detects the Claude Code usage-limit dialog in any
+# tmux pane, parks the session (option 1: stop and wait), and nudges it
+# back to work after the limit resets. Deterministic plain code, no agent.
+#
+# Managed by `agentwire limits install` / `agentwire limits uninstall`.
+# Logs: journalctl --user -u {SYSTEMD_UNIT}
+[Unit]
+Description=AgentWire usage-limit watchdog tick
+
+[Service]
+Type=oneshot
+ExecStart={agentwire_bin} limits tick
+WorkingDirectory={home}
+Environment=PATH={home}/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME={home}
+"""
+
+
+def _systemd_timer_content() -> str:
+    return f"""# Fires the usage-limit watchdog tick every {TICK_INTERVAL}s.
+# Managed by `agentwire limits install` / `agentwire limits uninstall`.
+[Unit]
+Description=AgentWire usage-limit watchdog ({TICK_INTERVAL}s tick)
+
+[Timer]
+OnBootSec={TICK_INTERVAL}
+OnUnitActiveSec={TICK_INTERVAL}
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
 """
 
 
@@ -231,16 +275,11 @@ def cmd_limits_resume(args) -> int:
     return 1
 
 
-def cmd_limits_install(args) -> int:
-    """Install + load the launchd watchdog."""
-    if sys.platform != "darwin":
-        print("limits install is macOS-only (launchd)", file=sys.stderr)
-        return 1
-
+def _install_launchd(dry_run: bool) -> int:
     agentwire_bin = _find_agentwire()
     content = _plist_content(agentwire_bin)
 
-    if getattr(args, "dry_run", False):
+    if dry_run:
         print(f"# would write: {PLIST_PATH}")
         print(f"# then: launchctl unload/load {PLIST_PATH}")
         print(content)
@@ -264,18 +303,84 @@ def cmd_limits_install(args) -> int:
     return 0
 
 
-def cmd_limits_uninstall(args) -> int:
-    """Unload + remove the launchd watchdog."""
-    if sys.platform != "darwin":
-        print("limits uninstall is macOS-only (launchd)", file=sys.stderr)
+def _install_systemd(dry_run: bool) -> int:
+    agentwire_bin = _find_agentwire()
+    service = _systemd_service_content(agentwire_bin)
+    timer = _systemd_timer_content()
+
+    if dry_run:
+        print(f"# would write: {SERVICE_PATH}")
+        print(service)
+        print(f"# would write: {TIMER_PATH}")
+        print(timer)
+        print(f"# then: systemctl --user daemon-reload && systemctl --user enable --now {SYSTEMD_UNIT}.timer")
+        return 0
+
+    if shutil.which("systemctl") is None:
+        print("systemctl not found — limits install needs systemd --user on Linux",
+              file=sys.stderr)
         return 1
-    if PLIST_PATH.exists():
-        subprocess.run(["launchctl", "unload", str(PLIST_PATH)], capture_output=True)
-        PLIST_PATH.unlink()
-        print(f"Uninstalled {LAUNCHD_LABEL}")
-    else:
-        print("Watchdog not installed")
+
+    SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+    SERVICE_PATH.write_text(service)
+    TIMER_PATH.write_text(timer)
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    result = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", f"{SYSTEMD_UNIT}.timer"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"systemctl enable failed: {result.stderr.strip()}", file=sys.stderr)
+        return 1
+
+    print(f"Installed {SYSTEMD_UNIT}.timer (tick every {TICK_INTERVAL}s)")
+    print(f"  units: {SERVICE_PATH}")
+    print(f"         {TIMER_PATH}")
+    print(f"  logs:  journalctl --user -u {SYSTEMD_UNIT} -f")
     return 0
+
+
+def cmd_limits_install(args) -> int:
+    """Install + start the watchdog scheduler (launchd on macOS, systemd --user on Linux)."""
+    dry_run = getattr(args, "dry_run", False)
+    if sys.platform == "darwin":
+        return _install_launchd(dry_run)
+    if sys.platform.startswith("linux"):
+        return _install_systemd(dry_run)
+    print(f"limits install has no scheduler backend for {sys.platform} "
+          "(supported: macOS launchd, Linux systemd --user)", file=sys.stderr)
+    return 1
+
+
+def cmd_limits_uninstall(args) -> int:
+    """Stop + remove the watchdog scheduler for this platform."""
+    if sys.platform == "darwin":
+        if PLIST_PATH.exists():
+            subprocess.run(["launchctl", "unload", str(PLIST_PATH)], capture_output=True)
+            PLIST_PATH.unlink()
+            print(f"Uninstalled {LAUNCHD_LABEL}")
+        else:
+            print("Watchdog not installed")
+        return 0
+    if sys.platform.startswith("linux"):
+        if not (SERVICE_PATH.exists() or TIMER_PATH.exists()):
+            print("Watchdog not installed")
+            return 0
+        if shutil.which("systemctl"):
+            subprocess.run(
+                ["systemctl", "--user", "disable", "--now", f"{SYSTEMD_UNIT}.timer"],
+                capture_output=True,
+            )
+        for path in (TIMER_PATH, SERVICE_PATH):
+            if path.exists():
+                path.unlink()
+        if shutil.which("systemctl"):
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        print(f"Uninstalled {SYSTEMD_UNIT}")
+        return 0
+    print(f"limits uninstall has no scheduler backend for {sys.platform}", file=sys.stderr)
+    return 1
 
 
 def register_limits_parser(subparsers) -> None:
@@ -285,7 +390,8 @@ def register_limits_parser(subparsers) -> None:
         help="Usage-limit recovery: detect the limit dialog, park, auto-resume",
         description=(
             "Deterministic recovery from Claude Code usage-limit dialogs: a "
-            "launchd watchdog ticks every minute, parks sessions sitting on "
+            "watchdog (launchd on macOS, systemd --user timer on Linux) ticks "
+            "every minute, parks sessions sitting on "
             "the dialog (option 1: stop and wait), emails the owner, and "
             "nudges the session back to work after the limit resets. "
             "See docs/wiki/usage-limit-recovery.md."
@@ -318,14 +424,15 @@ def register_limits_parser(subparsers) -> None:
 
     # limits install / uninstall
     l_install = limits_subparsers.add_parser(
-        "install", help="Install + load the launchd watchdog (60s tick)"
+        "install", help="Install + start the watchdog (launchd / systemd --user, 60s tick)"
     )
     l_install.add_argument(
-        "--dry-run", action="store_true", help="Print the plist without installing"
+        "--dry-run", action="store_true",
+        help="Print the plist / systemd units without installing",
     )
     l_install.set_defaults(func=cmd_limits_install)
 
     l_uninstall = limits_subparsers.add_parser(
-        "uninstall", help="Unload + remove the launchd watchdog"
+        "uninstall", help="Stop + remove the watchdog scheduler"
     )
     l_uninstall.set_defaults(func=cmd_limits_uninstall)

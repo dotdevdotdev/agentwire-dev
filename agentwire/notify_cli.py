@@ -127,8 +127,8 @@ def cmd_open(args) -> int:
         agentwire open test.html --artifact-id my-test --json
     """
     import requests
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    from .core import portal_request
 
     url = args.url
     title = args.title
@@ -146,12 +146,10 @@ def cmd_open(args) -> int:
         body["artifact_id"] = artifact_id
 
     try:
-        resp = requests.post(
+        resp = portal_request(
+            "POST",
             f"{portal_url}/api/desktop/window/open",
             json=body,
-            headers=_portal_auth_headers(),
-            verify=False,
-            timeout=10,
         )
         data = resp.json()
 
