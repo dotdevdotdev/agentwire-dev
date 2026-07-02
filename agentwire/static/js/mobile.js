@@ -16,7 +16,7 @@
 import { apiFetch, wsProtocols } from './api.js';
 import { attachHorizontalSwipe } from './utils/swipe.js';
 import { isService, isCouncil, loadCustomServices } from './service-classification.js';
-import * as browserStt from './voice/browser-stt.js';
+import { PttController } from './ptt.js';
 import * as browserTts from './voice/browser-tts.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
@@ -44,10 +44,7 @@ let voiceStatus = null;
 let sessions = [];
 let selectedSession = null;
 let activeTab = 'sessions'; // 'sessions' | 'services' — classification shared with the desktop sidebar
-let pttState = 'idle'; // idle | recording | processing
-let sttCancelled = false;
-let mediaRecorder = null;
-let audioChunks = [];
+let pttState = 'idle'; // idle | recording | processing (mirrors ptt controller)
 
 // ---------------------------------------------------------------------------
 // Status + transcript
@@ -399,11 +396,21 @@ function setupPtt() {
     els.ptt.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
-function usesBrowserStt() {
-    // Server-side tiers (cloud, custom, default-with-Moonshine) upload audio to
-    // /transcribe; otherwise recognition happens in the browser.
-    return !browserStt.serverTranscribes(voiceStatus);
-}
+const ptt = new PttController({
+    getVoiceStatus: () => voiceStatus,
+    onState: setPttState,
+    onResult: (text) => {
+        if (isAutoSend()) sendText(text);
+        else showEditBar(text);
+    },
+    onError: (kind, message) => {
+        if (kind === 'unsupported') {
+            setStatus('No speech recognition in this browser — set stt.backend: cloud or custom for phone STT', true);
+            return;
+        }
+        setStatus(message, true);
+    },
+});
 
 function setPttState(state) {
     pttState = state;
@@ -422,97 +429,18 @@ function setPttState(state) {
     }
 }
 
-async function startRecording() {
+function startRecording() {
     if (pttState !== 'idle' || !selectedSession) return;
     hideEditBar();
-
-    if (usesBrowserStt()) {
-        if (!browserStt.isSupported()) {
-            setStatus('No speech recognition in this browser — set stt.backend: cloud or custom for phone STT', true);
-            return;
-        }
-        sttCancelled = false;
-        const ok = browserStt.start({
-            onFinal: (text) => {
-                setPttState('idle');
-                if (sttCancelled || !text) return;
-                if (isAutoSend()) sendText(text);
-                else showEditBar(text);
-            },
-            onError: (err) => {
-                setStatus(`Speech recognition failed: ${err}`, true);
-                setPttState('idle');
-            },
-        }, voiceStatus?.corrections || {});
-        if (ok) setPttState('recording');
-        return;
-    }
-
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioChunks = [];
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-            ? 'audio/webm;codecs=opus'
-            : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
-        mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-        mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) audioChunks.push(e.data);
-        };
-        mediaRecorder.onstop = () => {
-            stream.getTracks().forEach(track => track.stop());
-            if (audioChunks.length > 0 && pttState === 'processing') {
-                transcribeUpload(new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' }));
-            }
-        };
-        mediaRecorder.start();
-        setPttState('recording');
-    } catch (err) {
-        console.error('[Mobile] Failed to start recording:', err);
-        setStatus('Microphone access denied', true);
-        setPttState('idle');
-    }
+    ptt.start();
 }
 
 function stopRecording() {
-    if (pttState !== 'recording') return;
-    setPttState('processing');
-    if (usesBrowserStt()) {
-        browserStt.stop(); // onFinal fires from onend
-        return;
-    }
-    mediaRecorder?.stop();
+    ptt.stop();
 }
 
 function cancelRecording() {
-    if (usesBrowserStt()) {
-        sttCancelled = true;
-        browserStt.stop();
-        setPttState('idle');
-        return;
-    }
-    audioChunks = [];
-    mediaRecorder?.stop();
-    setPttState('idle');
-}
-
-async function transcribeUpload(blob) {
-    try {
-        const formData = new FormData();
-        formData.append('audio', blob, 'recording.webm');
-        const res = await apiFetch('/transcribe', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        const text = data.text?.trim();
-        if (text) {
-            if (isAutoSend()) sendText(text);
-            else showEditBar(text);
-        } else setStatus('No speech detected', true);
-    } catch (err) {
-        console.error('[Mobile] Transcription failed:', err);
-        setStatus(err.message || 'Transcription failed', true);
-    } finally {
-        setPttState('idle');
-    }
+    ptt.cancel();
 }
 
 // ---------------------------------------------------------------------------

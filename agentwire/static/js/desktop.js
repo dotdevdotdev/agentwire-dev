@@ -33,7 +33,7 @@ import { scratchpad } from './scratchpad.js';
 import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppressor.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
-import * as browserStt from './voice/browser-stt.js';
+import { PttController } from './ptt.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
 import { initAnnouncements } from './announcement-modal.js';
@@ -45,9 +45,7 @@ const reviewWindows = new Map();  // windowId -> ReviewWindow instance
 let councilWindow = null;  // single CouncilWindow instance (one board at a time)
 
 // Global PTT state
-let globalPttState = 'idle';  // idle | recording | processing
-let globalMediaRecorder = null;
-let globalAudioChunks = [];
+let globalPttState = 'idle';  // idle | recording | processing (mirrors globalPttCtl)
 
 // AgentWire session activity state
 let agentwireSessionActive = false;
@@ -1027,75 +1025,31 @@ function setupGlobalPtt() {
     });
 }
 
-function usesBrowserStt() {
-    // Server-side tiers (cloud, custom, default-with-Moonshine) upload audio to
-    // the portal's /transcribe; otherwise recognition happens in the browser.
-    return !browserStt.serverTranscribes(desktop.voiceStatus);
-}
-
-let globalSttCancelled = false;
-
-async function startGlobalRecording() {
-    if (globalPttState !== 'idle') return;
-
-    // Default tier: browser speech recognition → edit-before-send bar
-    if (usesBrowserStt()) {
-        if (!browserStt.isSupported()) {
+const globalPttCtl = new PttController({
+    getVoiceStatus: () => desktop.voiceStatus,
+    onState: updateGlobalPttState,
+    onResult: (text) => {
+        if (isAutoSend()) sendGlobalVoiceText(text);
+        else showGlobalTranscript(text);
+    },
+    onError: (kind, message) => {
+        if (kind === 'unsupported') {
             console.warn('[GlobalPTT] SpeechRecognition unsupported — use Chrome or set stt.backend: cloud/custom');
             const icon = elements.globalPtt?.querySelector('.ptt-icon');
             if (icon) icon.textContent = '🚫';
-            elements.globalPtt.title = 'Browser voice input requires Chrome (or set stt.backend: cloud/custom)';
+            elements.globalPtt.title = message;
             return;
         }
-        globalSttCancelled = false;
-        const ok = browserStt.start({
-            onFinal: (text) => {
-                updateGlobalPttState('idle');
-                if (globalSttCancelled || !text) return;
-                if (isAutoSend()) sendGlobalVoiceText(text);
-                else showGlobalTranscript(text);
-            },
-            onError: () => updateGlobalPttState('idle'),
-        }, desktop.voiceStatus?.corrections || {});
-        if (ok) updateGlobalPttState('recording');
-        return;
-    }
+        console.warn(`[GlobalPTT] ${message}`);
+    },
+});
 
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        globalMediaRecorder = new MediaRecorder(stream, {
-            mimeType: 'audio/webm;codecs=opus'
-        });
-
-        globalAudioChunks = [];
-        globalMediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) globalAudioChunks.push(e.data);
-        };
-
-        globalMediaRecorder.onstop = async () => {
-            stream.getTracks().forEach(t => t.stop());
-            if (globalAudioChunks.length > 0) {
-                await processGlobalRecording();
-            }
-        };
-
-        globalMediaRecorder.start();
-        updateGlobalPttState('recording');
-    } catch (err) {
-        console.error('[GlobalPTT] Failed to start recording:', err);
-    }
+function startGlobalRecording() {
+    globalPttCtl.start();
 }
 
 function stopGlobalRecording() {
-    if (globalPttState !== 'recording') return;
-    if (usesBrowserStt()) {
-        updateGlobalPttState('processing');
-        browserStt.stop();  // onFinal fires from onend
-        return;
-    }
-    if (!globalMediaRecorder) return;
-    globalMediaRecorder.stop();
-    updateGlobalPttState('processing');
+    globalPttCtl.stop();
 }
 
 async function sendGlobalVoiceText(text) {
@@ -1110,30 +1064,7 @@ async function sendGlobalVoiceText(text) {
     }
 }
 
-async function processGlobalRecording() {
-    try {
-        const blob = new Blob(globalAudioChunks, { type: 'audio/webm' });
-        const formData = new FormData();
-        formData.append('audio', blob, 'recording.webm');
-
-        // Transcribe
-        const transcribeRes = await apiFetch('/transcribe', {
-            method: 'POST',
-            body: formData
-        });
-        const { text } = await transcribeRes.json();
-
-        if (text && text.trim()) {
-            await sendGlobalVoiceText(text.trim());
-        }
-    } catch (err) {
-        console.error('[GlobalPTT] Processing failed:', err);
-    } finally {
-        updateGlobalPttState('idle');
-    }
-}
-
-// --- Edit-before-send transcript bar (default STT tier) ---
+// --- Edit-before-send transcript bar ---
 
 function setupTranscriptBar() {
     const { transcriptBar, transcriptInput, transcriptSend, transcriptDismiss } = elements;
