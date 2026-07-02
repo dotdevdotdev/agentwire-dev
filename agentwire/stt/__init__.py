@@ -11,6 +11,7 @@ from .server_backend import STTServerBackend
 
 __all__ = [
     "CloudSTTBackend",
+    "NullSTTBackend",
     "STTBackend",
     "STTServerBackend",
     "get_stt_backend",
@@ -20,6 +21,17 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 DEFAULT_STT_URL = "http://localhost:8101"
+
+
+class NullSTTBackend(STTBackend):
+    """No-op backend for ``stt.backend: none`` (server STT disabled)."""
+
+    @property
+    def name(self) -> str:
+        return "NullSTT"
+
+    async def transcribe(self, audio_path) -> str | None:
+        raise RuntimeError("STT is disabled (stt.backend 'none')")
 
 
 def _default_stt_url(stt_config: Any) -> str:
@@ -45,6 +57,13 @@ def get_stt_backend(config: Any) -> STTBackend:
     """
     stt_config = getattr(config, "stt", None)
     backend = getattr(stt_config, "backend", "default") if stt_config is not None else "default"
+
+    if backend == "none":
+        # STT disabled (--no-stt / stt.backend: none). The browser's
+        # SpeechRecognition fallback still works client-side; server
+        # transcription just isn't available.
+        logger.info("STT disabled (backend 'none')")
+        return NullSTTBackend()
 
     if backend == "cloud":
         cloud = getattr(stt_config, "cloud", None) or {}

@@ -969,6 +969,59 @@ class TestEnsureManagedStt:
 
 
 # ---------------------------------------------------------------------------
+# CLI overrides (--no-stt / --no-tts) — apply_cli_overrides
+# ---------------------------------------------------------------------------
+
+
+class TestApplyCliOverrides:
+    @staticmethod
+    def _config():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            server=SimpleNamespace(host="127.0.0.1", port=8000),
+            tts=SimpleNamespace(backend="default", url=None),
+            stt=SimpleNamespace(backend="default", url=None),
+        )
+
+    def test_no_stt_disables_backend_and_shim_gate(self):
+        from agentwire.server import apply_cli_overrides
+
+        config = self._config()
+        apply_cli_overrides(config, {"no_stt": True})
+        assert config.stt.backend == "none"
+        assert config.stt.url is None
+        # This is the run_server autostart gate for ensure_managed_stt —
+        # with backend "none" the Moonshine shim must not be scheduled.
+        assert not (config.stt.backend == "default")
+
+    def test_no_tts_unchanged(self):
+        from agentwire.server import apply_cli_overrides
+
+        config = self._config()
+        apply_cli_overrides(config, {"no_tts": True})
+        assert config.tts.backend == "none"
+        assert config.stt.backend == "default"
+
+    def test_both_disabled(self):
+        from agentwire.server import apply_cli_overrides
+
+        config = self._config()
+        apply_cli_overrides(config, {"no_tts": True, "no_stt": True})
+        assert config.tts.backend == "none"
+        assert config.stt.backend == "none"
+
+    def test_no_overrides_is_noop(self):
+        from agentwire.server import apply_cli_overrides
+
+        config = self._config()
+        apply_cli_overrides(config, {})
+        assert config.stt.backend == "default"
+        assert config.tts.backend == "default"
+        assert config.server.port == 8000
+
+
+# ---------------------------------------------------------------------------
 # Default-tier managed Kokoro TTS shim lifecycle (ensure_managed_tts)
 # ---------------------------------------------------------------------------
 

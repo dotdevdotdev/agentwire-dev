@@ -8,7 +8,9 @@ standalone shim subprocess and talks to it over HTTP. So both ``default`` and
 
 from types import SimpleNamespace
 
-from agentwire.stt import STTServerBackend, _default_stt_url, get_stt_backend
+import pytest
+
+from agentwire.stt import NullSTTBackend, STTServerBackend, _default_stt_url, get_stt_backend
 
 
 def _cfg(backend: str, url: str | None = None, timeout: int = 30):
@@ -36,6 +38,24 @@ class TestGetSttBackend:
         backend = get_stt_backend(SimpleNamespace())
         assert isinstance(backend, STTServerBackend)
         assert backend.url == "http://localhost:8101"
+
+
+class TestNoneTier:
+    def test_none_tier_returns_null_backend(self):
+        backend = get_stt_backend(_cfg("none"))
+        assert isinstance(backend, NullSTTBackend)
+        assert backend.name == "NullSTT"
+
+    def test_none_tier_with_null_url_does_not_crash(self):
+        # --no-stt sets backend="none" AND url=None; the factory must not
+        # fall through to STTServerBackend(url=None).
+        backend = get_stt_backend(_cfg("none", url=None))
+        assert isinstance(backend, NullSTTBackend)
+
+    async def test_null_backend_transcribe_raises(self, tmp_path):
+        backend = get_stt_backend(_cfg("none"))
+        with pytest.raises(RuntimeError, match="disabled"):
+            await backend.transcribe(tmp_path / "x.wav")
 
 
 class TestDefaultSttUrl:

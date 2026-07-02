@@ -2849,6 +2849,25 @@ async def run_server(config: Config):
         await runner.cleanup()
 
 
+def apply_cli_overrides(config, overrides: dict) -> None:
+    """Apply portal CLI flag overrides onto the loaded config.
+
+    ``--no-tts`` / ``--no-stt`` both flip the backend to ``"none"`` — the
+    backend field is what gates the default-tier shim autostarts in
+    ``run_server``, so nulling only ``stt.url`` would leave the Moonshine
+    shim spawning anyway.
+    """
+    if overrides.get("port"):
+        config.server.port = overrides["port"]
+    if overrides.get("host"):
+        config.server.host = overrides["host"]
+    if overrides.get("no_tts"):
+        config.tts.backend = "none"
+    if overrides.get("no_stt"):
+        config.stt.backend = "none"
+        config.stt.url = None
+
+
 def main(config_path: str | None = None, **overrides) -> None:
     """Entry point for running the server."""
     logging.basicConfig(
@@ -2857,16 +2876,7 @@ def main(config_path: str | None = None, **overrides) -> None:
     )
 
     config = load_config(config_path)
-
-    # Apply CLI overrides
-    if overrides.get("port"):
-        config.server.port = overrides["port"]
-    if overrides.get("host"):
-        config.server.host = overrides["host"]
-    if overrides.get("no_tts"):
-        config.tts.backend = "none"
-    if overrides.get("no_stt"):
-        config.stt.url = None
+    apply_cli_overrides(config, overrides)
 
     try:
         asyncio.run(run_server(config))
