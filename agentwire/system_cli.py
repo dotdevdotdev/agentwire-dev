@@ -33,6 +33,7 @@ from .core import (
 from .project_config import detect_default_agent_type, load_project_config
 from .roles import inject_soul, load_roles, resolve_roles
 
+
 def _clean_uv_cache_for_agentwire() -> None:
     """Drop only agentwire-dev's entries from the uv cache.
 
