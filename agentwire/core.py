@@ -515,11 +515,42 @@ def load_config() -> dict:
 def get_source_dir() -> Path:
     """Get the agentwire source directory from config.
 
-    Reads dev.source_dir from config.yaml, defaults to ~/projects/agentwire-dev.
+    Precedence: AGENTWIRE_SOURCE_DIR env var, then dev.source_dir from
+    config.yaml, then ~/projects/agentwire-dev. The path is not validated —
+    use find_source_checkout() when the caller needs a real checkout.
     """
+    env_dir = os.environ.get("AGENTWIRE_SOURCE_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
     config = load_config()
     source_dir = config.get("dev", {}).get("source_dir", "~/projects/agentwire-dev")
     return Path(source_dir).expanduser()
+
+
+# Where a git clone of agentwire-dev conventionally lives. Checked in order
+# after the explicit env/config location; a pip/uv-tool-only install has none
+# of these, and callers must degrade clearly rather than crash.
+_SOURCE_SEARCH_DIRS = (
+    "~/projects/agentwire-dev",
+    "~/agentwire-dev",
+    "~/src/agentwire-dev",
+    "~/code/agentwire-dev",
+)
+
+
+def find_source_checkout() -> Path | None:
+    """Locate an agentwire-dev source checkout, or None on a package-only install.
+
+    A directory counts as a checkout when it holds a pyproject.toml. The
+    explicitly configured location (env var / config) wins; otherwise the
+    conventional clone locations are searched.
+    """
+    candidates = [get_source_dir()]
+    candidates += [Path(p).expanduser() for p in _SOURCE_SEARCH_DIRS]
+    for candidate in candidates:
+        if (candidate / "pyproject.toml").exists():
+            return candidate
+    return None
 
 
 def get_portal_session_name() -> str:

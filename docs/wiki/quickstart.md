@@ -68,13 +68,16 @@ set -g window-size largest
 
 ---
 
-## New here? `agentwire dev`
+## Have the repo cloned? `agentwire dev`
 
 ```bash
+git clone https://github.com/dotdevdotdev/agentwire-dev ~/projects/agentwire-dev
 agentwire dev
 ```
 
-Starts (or re-attaches to) a guided **helper session** — an agent running the `contributor` role that walks you through setup, wires up your own projects, explains how sessions/panes/orchestration work, and helps you file a clean issue or fork the repo to contribute. It's the fastest way to get oriented before diving into the steps below.
+Starts (or re-attaches to) a guided **helper session** — an agent running the `contributor` role that walks you through setup, wires up your own projects, explains how sessions/panes/orchestration work, and helps you file a clean issue or fork the repo to contribute.
+
+It **requires a source checkout** of the agentwire-dev repo (the session runs inside it); a pip/uv-tool install alone doesn't need or include one, and everything else on this page works without it. `agentwire dev` searches `~/projects/agentwire-dev`, `~/agentwire-dev`, `~/src/agentwire-dev`, and `~/code/agentwire-dev`; cloned somewhere else, point at it with `dev.source_dir` in `~/.agentwire/config.yaml` or the `AGENTWIRE_SOURCE_DIR` env var.
 
 ---
 

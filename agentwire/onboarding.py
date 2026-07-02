@@ -531,7 +531,12 @@ services:
         print(f"{BOLD}Next steps:{RESET}")
         print(f"  1. {CYAN}agentwire portal start{RESET}")
         print(f"  2. Open {CYAN}{portal_open_url}{RESET} in Chrome — voice works immediately")
-        print(f"  3. {CYAN}agentwire dev{RESET} — a helper session that walks you through setup, wires up your projects, and explains the system")
+        from .core import find_source_checkout
+        if find_source_checkout():
+            print(f"  3. {CYAN}agentwire dev{RESET} — a helper session that walks you through setup, wires up your projects, and explains the system")
+        else:
+            print(f"  3. {CYAN}agentwire new -s <name> -p <project-path>{RESET} — start your first agent session")
+            print(f"     {DIM}(optional: clone the agentwire-dev repo to unlock the `agentwire dev` helper session){RESET}")
         print()
         print_info("Run 'agentwire init --assisted' to configure TTS/STT with Claude's help.")
         return 0
