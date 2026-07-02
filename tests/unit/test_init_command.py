@@ -11,14 +11,15 @@ def _run(assisted: bool) -> dict:
     the skip_session value passed to run_onboarding."""
     captured = {}
 
-    def fake_onboarding(skip_session: bool = True) -> int:
+    def fake_onboarding(skip_session: bool = True, force: bool = False) -> int:
         captured["skip_session"] = skip_session
+        captured["force"] = force
         return 0
 
     with patch("agentwire.system_cli.check_python_version", return_value=True), \
          patch("agentwire.system_cli.check_pip_environment", return_value=True), \
          patch("agentwire.onboarding.run_onboarding", side_effect=fake_onboarding):
-        rc = cmd_init(Namespace(assisted=assisted))
+        rc = cmd_init(Namespace(assisted=assisted, force=False))
 
     captured["rc"] = rc
     return captured
