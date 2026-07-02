@@ -33,8 +33,8 @@ WORKDIR /app
 
 # Install Python dependencies for HTTP server
 RUN pip install --no-cache-dir \
-    torch>=2.0.0 \
-    torchaudio>=2.0.0 \
+    "torch>=2.0.0" \
+    "torchaudio>=2.0.0" \
     fastapi \
     uvicorn[standard] \
     faster-whisper \

@@ -73,8 +73,8 @@ session to commanding many.
 ## Quick Start
 
 ```bash
-# Install
-pip install agentwire-dev
+# Install (isolated tool env — works on any Python, including Homebrew/Debian PEP 668 setups)
+uv tool install agentwire-dev
 
 # Setup (interactive)
 agentwire init
@@ -89,7 +89,7 @@ agentwire new -s hello -p ~/projects/hello
 
 > **Optional:** clone this repo (`git clone https://github.com/dotdevdotdev/agentwire-dev ~/projects/agentwire-dev`) and `agentwire dev` opens a guided helper session inside it — setup walkthrough, project wiring, issue filing, forking. It requires the source checkout; everything above works without one.
 
-**Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code
+**Requirements:** Python 3.10+, tmux, Claude Code. Optional: ffmpeg (only for host-mic push-to-talk capture and voice cloning — browser voice input works without it).
 
 **Honest setup time:** under a minute to a working voice portal with a genuinely good voice — Kokoro-82M runs on CPU out of the box (one-time ~200 MB model download in the background; the browser voice covers the wait). ~15 minutes for the full experience: cloned voices via a self-hosted TTS shim, Whisper-grade transcription, phone-from-anywhere (certs + token).
 
@@ -115,16 +115,20 @@ Origin checks reject cross-site browser requests on every bind. Keep the portal 
 
 **macOS:**
 ```bash
-brew install tmux ffmpeg
-pip install agentwire-dev
+brew install tmux uv        # ffmpeg optional: only for host-mic PTT + voice cloning
+uv tool install agentwire-dev
 ```
+
+> Bare `pip install agentwire-dev` fails on Homebrew Python 3.12+ with `error: externally-managed-environment` (PEP 668). `uv tool install` (or `pipx install agentwire-dev`) sidesteps that by installing into its own isolated environment.
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install tmux ffmpeg python3-pip python3-venv
-python3 -m venv ~/.agentwire-venv && source ~/.agentwire-venv/bin/activate
-pip install agentwire-dev
+sudo apt install tmux       # ffmpeg optional: only for host-mic PTT + voice cloning
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install agentwire-dev
 ```
+
+`pipx install agentwire-dev` works everywhere too. Prefer plain pip? Use a venv: `python3 -m venv ~/.agentwire-venv && source ~/.agentwire-venv/bin/activate && pip install agentwire-dev`.
 
 **WSL2:** Same as Ubuntu. Audio is limited; use as remote worker with portal on Windows host.
 
