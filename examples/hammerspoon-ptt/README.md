@@ -42,4 +42,4 @@ Tap once to start recording, tap the **same** key to stop. For ⌥⌘Space you c
 | ⌥Space sends to the wrong/default session | `cat ~/.agentwire/active-session`; focus a session window in the portal |
 | Chooser shows "No sessions running" | `agentwire list --sessions` from a normal shell |
 | `agentwire: not found` | Fix the `agentwire` path or `PATH` at the top of `init.lua` |
-| Debug the CLI side | `tail -f /tmp/agentwire-listen.log` |
+| Debug the CLI side | `tail -f ~/.agentwire/logs/listen.log` |

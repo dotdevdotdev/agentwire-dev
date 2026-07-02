@@ -85,4 +85,4 @@ To rebind, edit the two `hs.hotkey.bind` calls at the bottom of `init.lua` (e.g.
 | ⌥Space sends to the wrong/default session | `cat ~/.agentwire/active-session`; focus a session window in the portal |
 | Chooser shows "No sessions running" | `agentwire list --sessions` from a normal shell |
 | `agentwire: not found` | Fix the `agentwire` path or `PATH` at the top of `init.lua` |
-| Debug the CLI side | `tail -f /tmp/agentwire-listen.log` |
+| Debug the CLI side | `tail -f ~/.agentwire/logs/listen.log` |
