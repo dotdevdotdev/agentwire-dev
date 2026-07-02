@@ -13,7 +13,7 @@ import { sessionIcons } from './icon-manager.js';
 import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
 import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
 import { ansiToHtml } from './utils/ansi.js';
-import * as browserStt from './voice/browser-stt.js';
+import { PttController } from './ptt.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
 
@@ -75,9 +75,16 @@ export class SessionWindow {
 
         // PTT (Push-to-talk) state
         this.pttButton = null;
-        this.mediaRecorder = null;
-        this.audioChunks = [];
-        this.pttState = 'idle'; // idle | recording | processing
+        this.pttState = 'idle'; // idle | recording | processing (mirrors this.ptt)
+        this.ptt = new PttController({
+            getVoiceStatus: () => desktop.voiceStatus,
+            onState: (state) => this._setPTTState(state),
+            onResult: (text) => {
+                if (isAutoSend()) this._sendVoiceText(text);
+                else this._showTranscriptBar(text);
+            },
+            onError: (kind, message) => this._updateStatus('error', message),
+        });
 
         // Activity indicator state
         this.activityIndicator = null;
@@ -199,7 +206,7 @@ export class SessionWindow {
         }
 
         // Cancel any active recording
-        if (this.mediaRecorder && this.pttState === 'recording') {
+        if (this.pttState === 'recording') {
             this._cancelRecording();
         }
 
@@ -1158,102 +1165,16 @@ export class SessionWindow {
         document.addEventListener('keyup', this._pttKeyHandler);
     }
 
-    _usesBrowserStt() {
-        // Server-side tiers (cloud, custom, default-with-Moonshine) upload audio
-        // to /transcribe; otherwise recognition happens in the browser.
-        return !browserStt.serverTranscribes(desktop.voiceStatus);
-    }
-
-    async _startRecording() {
-        if (this.pttState !== 'idle') return;
-
-        // Default tier: recognition happens in the browser (Chrome),
-        // transcript lands in an edit-before-send bar — no audio upload.
-        if (this._usesBrowserStt()) {
-            if (!browserStt.isSupported()) {
-                this._updateStatus('error', 'Browser voice input requires Chrome (or set stt.backend: cloud/custom)');
-                return;
-            }
-            this._sttCancelled = false;
-            const ok = browserStt.start({
-                onFinal: (text) => {
-                    this._setPTTState('idle');
-                    if (this._sttCancelled || !text) return;
-                    if (isAutoSend()) this._sendVoiceText(text);
-                    else this._showTranscriptBar(text);
-                },
-                onError: (err) => {
-                    this._updateStatus('error', `Speech recognition failed: ${err}`);
-                    this._setPTTState('idle');
-                },
-            }, desktop.voiceStatus?.corrections || {});
-            if (ok) this._setPTTState('recording');
-            return;
-        }
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.audioChunks = [];
-
-            // Use webm/opus for efficient transfer
-            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                ? 'audio/webm;codecs=opus'
-                : 'audio/webm';
-
-            this.mediaRecorder = new MediaRecorder(stream, { mimeType });
-
-            this.mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) {
-                    this.audioChunks.push(e.data);
-                }
-            };
-
-            this.mediaRecorder.onstop = () => {
-                // Stop all tracks to release microphone
-                stream.getTracks().forEach(track => track.stop());
-
-                if (this.audioChunks.length > 0 && this.pttState === 'processing') {
-                    const blob = new Blob(this.audioChunks, { type: mimeType });
-                    this._processRecording(blob);
-                }
-            };
-
-            this.mediaRecorder.start();
-            this._setPTTState('recording');
-
-        } catch (err) {
-            console.error('[SessionWindow] Failed to start recording:', err);
-            this._updateStatus('error', 'Microphone access denied');
-            this._setPTTState('idle');
-        }
+    _startRecording() {
+        this.ptt.start();
     }
 
     _stopRecording() {
-        if (this.pttState !== 'recording') return;
-
-        if (this._usesBrowserStt()) {
-            this._setPTTState('processing');
-            browserStt.stop();  // onFinal fires from onend
-            return;
-        }
-
-        if (!this.mediaRecorder) return;
-        this._setPTTState('processing');
-        this.mediaRecorder.stop();
+        this.ptt.stop();
     }
 
     _cancelRecording() {
-        if (this._usesBrowserStt()) {
-            this._sttCancelled = true;
-            browserStt.stop();
-            this._setPTTState('idle');
-            return;
-        }
-
-        if (!this.mediaRecorder) return;
-        this.audioChunks = [];
-        this.mediaRecorder.stop();
-        this._setPTTState('idle');
+        this.ptt.cancel();
     }
 
     /**
@@ -1317,41 +1238,6 @@ export class SessionWindow {
         } catch (err) {
             console.error('[SessionWindow] Voice send failed:', err);
             this._updateStatus('error', err.message || 'Voice input failed');
-        }
-    }
-
-    async _processRecording(blob) {
-        try {
-            // Step 1: Transcribe audio
-            const formData = new FormData();
-            formData.append('audio', blob, 'recording.webm');
-
-            const transcribeRes = await apiFetch('/transcribe', {
-                method: 'POST',
-                body: formData,
-            });
-
-            const transcribeData = await transcribeRes.json();
-
-            if (transcribeData.error) {
-                throw new Error(transcribeData.error);
-            }
-
-            const text = transcribeData.text?.trim();
-            if (!text) {
-                this._updateStatus('error', 'No speech detected');
-                this._setPTTState('idle');
-                return;
-            }
-
-            // Step 2: Send to session with voice prompt hint
-            await this._sendVoiceText(text);
-
-        } catch (err) {
-            console.error('[SessionWindow] PTT processing failed:', err);
-            this._updateStatus('error', err.message || 'Voice input failed');
-        } finally {
-            this._setPTTState('idle');
         }
     }
 
