@@ -421,6 +421,40 @@ class TestSecurityHeaders:
         # pair.html ships an inline <script type="module"> block.
         assert security._inline_script_hashes()
 
+    @staticmethod
+    def _stamp(secure: bool, hsts_enabled: bool, path: str = "/"):
+        request = SimpleNamespace(secure=secure, path=path)
+        response = SimpleNamespace(headers={})
+        security._stamp_security_headers(request, response, "default-csp", hsts_enabled)
+        return response.headers
+
+    def test_hsts_off_by_default_even_on_secure_request(self):
+        headers = self._stamp(secure=True, hsts_enabled=False)
+        assert "Strict-Transport-Security" not in headers
+
+    def test_hsts_emitted_when_enabled_and_secure(self):
+        headers = self._stamp(secure=True, hsts_enabled=True)
+        assert headers["Strict-Transport-Security"] == "max-age=31536000"
+
+    def test_hsts_never_on_plain_http(self):
+        headers = self._stamp(secure=False, hsts_enabled=True)
+        assert "Strict-Transport-Security" not in headers
+
+    def test_other_headers_unchanged_by_hsts_gate(self):
+        headers = self._stamp(secure=True, hsts_enabled=False)
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert headers["Referrer-Policy"] == "same-origin"
+        assert headers["Content-Security-Policy"] == "default-csp"
+
+    def test_artifacts_csp_unaffected(self):
+        headers = self._stamp(secure=True, hsts_enabled=True, path="/artifacts/x.html")
+        assert headers["Content-Security-Policy"] == security._ARTIFACTS_CSP
+
+    def test_server_hsts_config_defaults_false(self, tmp_path):
+        config = load_config(tmp_path / "nonexistent.yaml")
+        assert config.server.hsts is False
+
 
 # ---------------------------------------------------------------------------
 # Bounded multipart reads

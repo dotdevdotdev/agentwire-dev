@@ -74,6 +74,12 @@ class ServerConfig:
     # bearer token then transits in cleartext. Required to start a non-loopback
     # bind without TLS — the BYO-tunnel case where the tunnel terminates TLS.
     allow_insecure: bool = False
+    # Emit HTTP Strict-Transport-Security. Leave OFF for self-signed /
+    # localhost / LAN — HSTS + a self-signed cert locks the browser out of the
+    # portal if the cert ever rotates. Enable ONLY when serving a real
+    # (CA-signed) cert directly. Behind Cloudflare Tunnel / a reverse proxy,
+    # set HSTS at the edge instead.
+    hsts: bool = False
 
 
 @dataclass
@@ -590,6 +596,7 @@ def _dict_to_config(data: dict) -> Config:
         # "" (explicit disable) must survive — don't collapse it to None.
         auth_token=server_data.get("auth_token"),
         allow_insecure=bool(server_data.get("allow_insecure", False)),
+        hsts=bool(server_data.get("hsts", False)),
     )
 
     # Projects
