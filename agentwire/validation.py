@@ -125,11 +125,6 @@ def _validate_url(url: str, service_name: str, config_path: str) -> List[ConfigW
     return warnings
 
 
-def _get_machine_ids(machines: List[dict]) -> set:
-    """Extract machine IDs from machines list."""
-    return {m.get("id") for m in machines if m.get("id")}
-
-
 def validate_config(
     config: Config,
     machines_file: Path,

@@ -170,25 +170,6 @@ def write_task_context(
     return context_file
 
 
-def read_task_context(session: str) -> dict | None:
-    """Read task context file.
-
-    Args:
-        session: tmux session name
-
-    Returns:
-        Context dict or None if not found
-    """
-    context_file = TASKS_DIR / f"{session}.json"
-    if not context_file.exists():
-        return None
-
-    try:
-        return json.loads(context_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
 def clear_task_context(session: str) -> None:
     """Remove task context and completion signal files.
 
@@ -433,40 +414,3 @@ def status_to_exit_code(status: str) -> int:
         return 7
     else:
         return 2
-
-
-# =============================================================================
-# Loop mode helpers
-# =============================================================================
-
-# Directory for iteration review files (relative to project root)
-ITERATIONS_DIR = ".agentwire/iterations"
-
-
-# Prompt sent between loop iterations to get a review
-ITERATION_REVIEW_PROMPT = """Review your progress so far. Write a brief status report to {iter_file}:
-
-# Iteration {iteration} Review
-
-## Status
-complete | incomplete
-
-## What Was Done
-[Brief description of work in this iteration]
-
-## Remaining Work
-[What still needs to be done, or "none" if complete]
-
-Use "complete" if the task is fully done. Use "incomplete" if more work is needed.
-Write the file now."""
-
-
-# Prompt sent to continue the loop with context
-ITERATION_CONTINUE_PROMPT = """Continue working on the task. This is iteration {iteration} of {max_iterations}.
-
-Previous iteration reviews are in {iterations_dir}/ — read them for context on what's been done.
-
-Original task:
-{original_prompt}
-
-Continue where you left off. Focus on remaining work identified in previous reviews."""
