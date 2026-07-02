@@ -415,9 +415,11 @@ def _build_csp() -> str:
     return "; ".join([
         "default-src 'self'",
         f"script-src {script_src}",
-        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+        # fonts.googleapis.com: the Council window injects a Google Fonts
+        # stylesheet (council-window.js); fonts.gstatic.com serves the woff2s.
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
         "img-src 'self' data: blob:",
-        "font-src 'self' data:",
+        "font-src 'self' data: https://fonts.gstatic.com",
         "connect-src 'self' ws: wss: https://raw.githubusercontent.com",
         "media-src 'self' blob: data:",
         "worker-src 'self' blob:",
