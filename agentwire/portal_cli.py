@@ -9,7 +9,6 @@ and curl helpers travel with this module.
 
 from __future__ import annotations
 
-import json
 import shlex
 import subprocess
 import sys
@@ -25,48 +24,6 @@ from .core import (
     load_config,
     tmux_session_exists,
 )
-
-
-def _portal_auth_curl_args() -> list[str]:
-    """curl args carrying the portal auth token, if one is configured."""
-    from .security import get_local_portal_token
-
-    token = get_local_portal_token()
-    return ["-H", f"Authorization: Bearer {token}"] if token else []
-
-
-def _portal_api(method: str, path: str, data: dict | None = None, timeout: int = 10) -> dict | None:
-    """Make an API request to the portal using curl (reliable with self-signed certs).
-
-    Returns parsed JSON dict on success, None on failure.
-    """
-    config = load_config()
-    portal_url = config.get("portal", {}).get("url", _default_portal_url())
-    url = f"{portal_url}{path}"
-
-    cmd = ["curl", "-sk", "--max-time", str(timeout), "-o", "-", "-w", "\n%{http_code}"]
-    cmd.extend(_portal_auth_curl_args())
-    if method == "POST":
-        cmd.extend(["-X", "POST", "-H", "Content-Type: application/json"])
-        if data is not None:
-            cmd.extend(["-d", json.dumps(data)])
-    elif method == "DELETE":
-        cmd.extend(["-X", "DELETE"])
-    cmd.append(url)
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
-        if result.returncode != 0:
-            return None
-        lines = result.stdout.rsplit("\n", 1)
-        if len(lines) < 2:
-            return None
-        body, status_code = lines[0], lines[1].strip()
-        if not status_code.startswith("2"):
-            return None
-        return json.loads(body) if body.strip() else {}
-    except Exception:
-        return None
 
 
 def _start_portal_remote(ssh_target: str, machine_id: str, args) -> int:

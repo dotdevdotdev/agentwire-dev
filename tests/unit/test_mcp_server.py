@@ -392,68 +392,71 @@ class TestPortalRequest:
 
     @patch("agentwire.security.get_local_portal_token", return_value="tok123")
     @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.get")
-    def test_get_request(self, mock_get, mock_url, mock_token):
+    @patch("requests.request")
+    def test_get_request(self, mock_req, mock_url, mock_token):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"success": True, "windows": []}
-        mock_get.return_value = mock_resp
+        mock_req.return_value = mock_resp
         result = self.fn("GET", "/api/desktop/windows")
         assert result == {"success": True, "windows": []}
-        mock_get.assert_called_once_with(
+        mock_req.assert_called_once_with(
+            "GET",
             "https://localhost:8765/api/desktop/windows",
+            json=None,
+            files=None,
             headers={"Authorization": "Bearer tok123"},
             verify=False,
             timeout=10,
         )
 
     @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.post")
-    def test_post_request(self, mock_post, mock_url):
+    @patch("requests.request")
+    def test_post_request(self, mock_req, mock_url):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"success": True}
-        mock_post.return_value = mock_resp
+        mock_req.return_value = mock_resp
         result = self.fn("POST", "/api/desktop/window/open", {"type": "session"})
         assert result["success"] is True
-        mock_post.assert_called_once()
+        mock_req.assert_called_once()
 
     @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.get")
-    def test_non_200_status(self, mock_get, mock_url):
+    @patch("requests.request")
+    def test_non_200_status(self, mock_req, mock_url):
         mock_resp = MagicMock()
         mock_resp.status_code = 500
-        mock_get.return_value = mock_resp
+        mock_req.return_value = mock_resp
         result = self.fn("GET", "/api/health")
         assert result["success"] is False
         assert "500" in result["error"]
 
     @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.get")
-    def test_connection_error(self, mock_get, mock_url):
+    @patch("requests.request")
+    def test_connection_error(self, mock_req, mock_url):
         import requests
-        mock_get.side_effect = requests.exceptions.ConnectionError()
+        mock_req.side_effect = requests.exceptions.ConnectionError()
         result = self.fn("GET", "/api/health")
         assert result["success"] is False
         assert "not reachable" in result["error"]
 
     @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.get")
-    def test_generic_exception(self, mock_get, mock_url):
-        mock_get.side_effect = Exception("timeout")
+    @patch("requests.request")
+    def test_generic_exception(self, mock_req, mock_url):
+        mock_req.side_effect = Exception("timeout")
         result = self.fn("GET", "/api/health")
         assert result["success"] is False
         assert "timeout" in result["error"]
 
     @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.post")
-    def test_post_default_empty_body(self, mock_post, mock_url):
+    @patch("requests.request")
+    def test_post_default_empty_body(self, mock_req, mock_url):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"success": True}
-        mock_post.return_value = mock_resp
+        mock_req.return_value = mock_resp
         self.fn("POST", "/api/path")
-        _, kwargs = mock_post.call_args
+        _, kwargs = mock_req.call_args
         assert kwargs["json"] == {}
 
 

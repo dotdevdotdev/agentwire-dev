@@ -93,11 +93,6 @@ def detect_platform() -> str:
     return "unknown"
 
 
-def check_command_exists(cmd: str) -> bool:
-    """Check if a command exists in PATH."""
-    return shutil.which(cmd) is not None
-
-
 # ─────────────────────────────────────────────────────────────
 # Dependency Checks
 # ─────────────────────────────────────────────────────────────

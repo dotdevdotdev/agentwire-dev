@@ -87,14 +87,3 @@ def hooks_dir() -> Path:
     path = agentwire_dir() / "hooks"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def damage_control_dir() -> Path:
-    """Return ~/.agentwire/hooks/damage-control/, creating if needed.
-
-    Returns:
-        Path to damage control hooks directory.
-    """
-    path = hooks_dir() / "damage-control"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
