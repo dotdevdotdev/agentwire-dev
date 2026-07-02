@@ -78,6 +78,12 @@ class TestResolveVoiceName:
 # ---------------------------------------------------------------------------
 
 
+import hashlib
+
+# SHA-256 of the b"model-bytes" fixture used throughout TestEnsureFile
+GOOD_SHA = hashlib.sha256(b"model-bytes").hexdigest()
+
+
 class TestEnsureFile:
     @pytest.fixture(autouse=True)
     def fake_home(self, tmp_path, monkeypatch):
@@ -91,7 +97,7 @@ class TestEnsureFile:
 
         with patch("urllib.request.urlretrieve", side_effect=boom):
             with pytest.raises(OSError):
-                KokoroEngine._ensure_file("model.onnx", "http://x/model.onnx")
+                KokoroEngine._ensure_file("model.onnx", "http://x/model.onnx", GOOD_SHA)
 
         assert not (self.cache_dir / "model.onnx").exists()
         assert not (self.cache_dir / "model.onnx.part").exists()
@@ -106,7 +112,7 @@ class TestEnsureFile:
         progress_calls = []
         with patch("urllib.request.urlretrieve", side_effect=ok):
             dest = KokoroEngine._ensure_file(
-                "model.onnx", "http://x/model.onnx",
+                "model.onnx", "http://x/model.onnx", GOOD_SHA,
                 progress_cb=lambda f, d, t: progress_calls.append((f, d, t)),
             )
 
@@ -118,8 +124,30 @@ class TestEnsureFile:
         self.cache_dir.mkdir(parents=True)
         (self.cache_dir / "model.onnx").write_bytes(b"cached")
         with patch("urllib.request.urlretrieve") as mock_dl:
-            KokoroEngine._ensure_file("model.onnx", "http://x/model.onnx")
+            KokoroEngine._ensure_file("model.onnx", "http://x/model.onnx", GOOD_SHA)
         mock_dl.assert_not_called()
+
+    def test_sha256_mismatch_rejected_and_no_file_left(self):
+        def ok(url, dest, reporthook=None):
+            from pathlib import Path
+            Path(dest).write_bytes(b"tampered-bytes")
+
+        with patch("urllib.request.urlretrieve", side_effect=ok):
+            with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+                KokoroEngine._ensure_file("model.onnx", "http://x/model.onnx", GOOD_SHA)
+
+        assert not (self.cache_dir / "model.onnx").exists()
+        assert not (self.cache_dir / "model.onnx.part").exists()
+
+    def test_sha256_match_accepted(self):
+        def ok(url, dest, reporthook=None):
+            from pathlib import Path
+            Path(dest).write_bytes(b"model-bytes")
+
+        with patch("urllib.request.urlretrieve", side_effect=ok):
+            dest = KokoroEngine._ensure_file("model.onnx", "http://x/model.onnx", GOOD_SHA)
+
+        assert dest.read_bytes() == b"model-bytes"
 
     def test_model_files_cached(self):
         assert KokoroEngine.model_files_cached() is False
