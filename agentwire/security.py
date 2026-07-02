@@ -23,11 +23,15 @@ Two layers, both enforced by a single aiohttp middleware:
 disable auth (loopback binds only); any other string → explicit override.
 """
 
+import base64
+import hashlib
 import hmac
 import ipaddress
 import logging
+import os
 import re
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -80,10 +84,29 @@ def read_token_file() -> Optional[str]:
 
 
 def write_token_file(token: str) -> None:
-    """Write the token file with owner-only permissions."""
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(token + "\n")
-    TOKEN_FILE.chmod(0o600)
+    """Write the token file with owner-only permissions.
+
+    Atomic and never wider than 0600: the token is written to a same-directory
+    temp file created at 0600 (fchmod before any bytes land), then renamed over
+    the destination — there is no window where the god-token is group/world
+    readable, even on first creation under a permissive umask. The config dir
+    itself is created 0700 when missing. Rotation over an existing 0600 file
+    keeps 0600 (os.replace swaps the inode; the new one is already 0600).
+    """
+    parent = TOKEN_FILE.parent
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".portal.token.")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token + "\n")
+        os.replace(tmp_path, TOKEN_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def resolve_auth_token(config) -> Optional[str]:
@@ -345,6 +368,138 @@ def resolve_device(provided: Optional[str], auth_token: Optional[str]) -> Option
     if auth_token and hmac.compare_digest(provided.encode(), auth_token.encode()):
         return BOOTSTRAP_DEVICE
     return devices_mod.load_registry_cached().resolve(provided)
+
+
+# ---------------------------------------------------------------------------
+# Security response headers (CSP & friends)
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_INLINE_SCRIPT_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+
+
+def _inline_script_hashes() -> list[str]:
+    """CSP sha256 sources for inline <script> blocks in the bundled templates.
+
+    The pair page ships a small inline module (no Jinja interpolation inside
+    it), so ``script-src 'self'`` alone would break pairing. Hashing the blocks
+    at startup keeps script-src locked down while auto-healing when a template's
+    inline script changes.
+    """
+    hashes: list[str] = []
+    try:
+        for tpl in sorted(_TEMPLATES_DIR.glob("*.html")):
+            for m in _INLINE_SCRIPT_RE.finditer(tpl.read_text()):
+                body = m.group(1)
+                if not body.strip():
+                    continue
+                digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+                hashes.append(f"'sha256-{digest}'")
+    except OSError:
+        pass
+    return hashes
+
+
+def _build_csp() -> str:
+    """Portal-wide Content-Security-Policy.
+
+    Constraints baked in from the real UI:
+    - xterm.js / marked load from cdn.jsdelivr.net (script + css).
+    - Inline <style> attributes are used throughout (and WinBox injects a
+      style element) → style-src needs 'unsafe-inline'.
+    - WinBox uses data: SVG background images; uploads render as blobs.
+    - The dashboard/session/terminal WebSockets need ws:/wss:, and the
+      announcement modal fetches raw.githubusercontent.com.
+    - Voice playback uses blob: audio; browser STT records via MediaRecorder.
+    """
+    script_src = " ".join(["'self'", "https://cdn.jsdelivr.net"] + _inline_script_hashes())
+    return "; ".join([
+        "default-src 'self'",
+        f"script-src {script_src}",
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self' ws: wss: https://raw.githubusercontent.com",
+        "media-src 'self' blob: data:",
+        "worker-src 'self' blob:",
+        "frame-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "frame-ancestors 'self'",
+    ])
+
+
+# Artifacts are agent-generated HTML rendered in sandboxed iframes; they may
+# legitimately carry inline scripts/styles and pull CDN libraries, so the
+# policy stays permissive on content while locking embedding (frame-ancestors)
+# and plugins. The iframe sandbox attribute remains the primary containment.
+_ARTIFACTS_CSP = "; ".join([
+    "default-src 'self' 'unsafe-inline' data: blob: https:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'self'",
+])
+
+
+def create_security_headers_middleware():
+    """Middleware stamping security response headers on every response.
+
+    HSTS is emitted only on TLS requests (an HSTS header over plain HTTP is
+    ignored by browsers, and pinning localhost dev to HTTPS would be wrong).
+    """
+    csp = _build_csp()
+
+    @web.middleware
+    async def security_headers_middleware(request: web.Request, handler):
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            _stamp_security_headers(request, exc, csp)
+            raise
+        _stamp_security_headers(request, response, csp)
+        return response
+
+    return security_headers_middleware
+
+
+def _stamp_security_headers(request: web.Request, response, csp: str) -> None:
+    headers = response.headers
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    headers.setdefault("Referrer-Policy", "same-origin")
+    if request.path.startswith("/artifacts/"):
+        headers["Content-Security-Policy"] = _ARTIFACTS_CSP
+    else:
+        headers.setdefault("Content-Security-Policy", csp)
+    if request.secure:
+        headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+
+
+# ---------------------------------------------------------------------------
+# Bounded multipart reads (upload DoS guard)
+
+
+async def read_multipart_field_limited(field, max_bytes: int) -> bytes:
+    """Read a multipart field, aborting with 413 once ``max_bytes`` is exceeded.
+
+    ``await field.read()`` buffers the entire part into RAM before any size
+    check can run (aiohttp's ``client_max_size`` does not bound the streaming
+    ``request.multipart()`` path) — an oversized upload would balloon the
+    portal's memory before being rejected. Streaming chunk-by-chunk caps the
+    buffered amount at ``max_bytes`` + one chunk.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        chunk = await field.read_chunk()
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > max_bytes:
+            raise web.HTTPRequestEntityTooLarge(
+                max_size=max_bytes, actual_size=size,
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ---------------------------------------------------------------------------

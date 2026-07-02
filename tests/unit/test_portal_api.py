@@ -1493,3 +1493,88 @@ class TestMonitorInProcessCapture:
             if c.args[0] == "session_activity" and c.args[1].get("active") is True
         }
         assert {"watched", "headless"} <= active
+
+
+# ---------------------------------------------------------------------------
+# Security response headers (CSP & friends)
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityHeaders:
+    async def test_headers_on_index(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/")
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert resp.headers["Referrer-Policy"] == "same-origin"
+        csp = resp.headers["Content-Security-Policy"]
+        assert "script-src 'self' https://cdn.jsdelivr.net" in csp
+        assert "connect-src 'self' ws: wss: https://raw.githubusercontent.com" in csp
+        # Plain-HTTP test transport: no HSTS.
+        assert "Strict-Transport-Security" not in resp.headers
+
+    async def test_headers_on_api_route(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/api/artifacts")
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert "Content-Security-Policy" in resp.headers
+
+    async def test_artifacts_get_stricter_csp(self, portal_client, tmp_path):
+        client, server = portal_client
+        (server.config.artifacts.dir / "t.html").write_text("<h1>hi</h1>")
+        resp = await client.get("/artifacts/t.html")
+        assert resp.status == 200
+        csp = resp.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'self'" in csp
+        assert "object-src 'none'" in csp
+
+    async def test_headers_on_error_response(self, portal_client_with_token):
+        client, _ = portal_client_with_token
+        resp = await client.get("/api/artifacts")  # 401: no token
+        assert resp.status == 401
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# ---------------------------------------------------------------------------
+# Bounded multipart uploads (413 before buffering)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadSizeLimits:
+    async def test_upload_over_limit_413(self, portal_client, tmp_path):
+        client, server = portal_client
+        server.config.uploads = type(server.config.uploads)(
+            dir=tmp_path / "uploads", max_size_mb=1
+        )
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field("image", b"\x89PNG" + b"x" * (2 * 1024 * 1024),
+                       filename="big.png", content_type="image/png")
+        resp = await client.post("/upload", data=form)
+        assert resp.status == 413
+
+    async def test_upload_under_limit_succeeds(self, portal_client, tmp_path):
+        client, server = portal_client
+        server.config.uploads = type(server.config.uploads)(
+            dir=tmp_path / "uploads", max_size_mb=1
+        )
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field("image", b"\x89PNGsmall",
+                       filename="small.png", content_type="image/png")
+        resp = await client.post("/upload", data=form)
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["filename"].endswith(".png")
+
+    async def test_transcribe_over_limit_413(self, portal_client, tmp_path):
+        client, server = portal_client
+        server.config.uploads = type(server.config.uploads)(
+            dir=tmp_path / "uploads", max_size_mb=1
+        )
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field("audio", b"a" * (2 * 1024 * 1024),
+                       filename="rec.webm", content_type="audio/webm")
+        resp = await client.post("/transcribe", data=form)
+        assert resp.status == 413
