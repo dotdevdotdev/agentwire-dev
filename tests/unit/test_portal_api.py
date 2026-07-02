@@ -6,7 +6,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from agentwire.config import load_config
-from agentwire.server import AgentWireServer, Session
+from agentwire.server import AgentWireServer, Session, SessionConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -122,10 +122,12 @@ class TestPwaSurface:
 class TestApiSessions:
     async def test_sessions_list(self, portal_client):
         client, server = portal_client
-        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
-            mock_cmd.return_value = (True, {"sessions": [
+        with patch.object(server, "_list_local_sessions", new_callable=AsyncMock) as mock_local, \
+             patch.object(server, "_list_remote_sessions", new_callable=AsyncMock) as mock_remote:
+            mock_local.return_value = [
                 {"name": "app", "machine": None, "windows": 1, "path": "/app", "type": "claude-bypass"},
-            ]})
+            ]
+            mock_remote.return_value = {}
             resp = await client.get("/api/sessions")
         assert resp.status == 200
         data = await resp.json()
@@ -133,27 +135,27 @@ class TestApiSessions:
 
     async def test_sessions_empty(self, portal_client):
         client, server = portal_client
-        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
-            mock_cmd.return_value = (True, {"sessions": []})
+        with patch.object(server, "_list_local_sessions", new_callable=AsyncMock) as mock_local, \
+             patch.object(server, "_list_remote_sessions", new_callable=AsyncMock) as mock_remote:
+            mock_local.return_value = []
+            mock_remote.return_value = {}
             resp = await client.get("/api/sessions")
         data = await resp.json()
         machines = data.get("machines", [])
         assert isinstance(machines, list)
 
-    async def test_sessions_cli_failure(self, portal_client):
+    async def test_sessions_listing_failure(self, portal_client):
         client, server = portal_client
-        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
-            mock_cmd.return_value = (False, {"error": "tmux not running"})
+        with patch.object(server, "_list_local_sessions", new_callable=AsyncMock) as mock_local:
+            mock_local.side_effect = RuntimeError("tmux not running")
             resp = await client.get("/api/sessions")
         data = await resp.json()
         assert data.get("machines") == []
 
     async def test_local_sessions_endpoint(self, portal_client):
         client, server = portal_client
-        with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
-            mock_cmd.return_value = (True, {"sessions": [
-                {"name": "test", "machine": None},
-            ]})
+        with patch.object(server, "_list_local_sessions", new_callable=AsyncMock) as mock_local:
+            mock_local.return_value = [{"name": "test", "machine": None}]
             resp = await client.get("/api/sessions/local")
         assert resp.status == 200
         data = await resp.json()
@@ -1500,24 +1502,21 @@ class TestMonitorInProcessCapture:
     async def test_captures_in_process_no_output_subprocess(self, tmp_path):
         server = self._server(tmp_path)
 
-        cli_calls = []
-
-        async def fake_cmd(args):
-            cli_calls.append(args)
-            if args[:1] == ["list"] and "--local" in args:
-                return True, {"sessions": [{"name": "alpha"}, {"name": "beta"}]}
-            return True, {"sessions": []}
-
-        server.run_agentwire_cmd = AsyncMock(side_effect=fake_cmd)
+        server._list_local_sessions = AsyncMock(
+            return_value=[{"name": "alpha"}, {"name": "beta"}]
+        )
+        server._list_remote_sessions = AsyncMock(return_value={})
+        server.run_agentwire_cmd = AsyncMock()
         server.broadcast_dashboard = AsyncMock()
+        server.dashboard_clients.add(object())  # tick is skipped with no clients (#627)
 
         await self._run_one_tick(server)
 
         # Output captured in-process for every listed session...
         captured = {c.args[0] for c in server.agent.get_output.call_args_list}
         assert {"alpha", "beta"} <= captured
-        # ...and NEVER via an `agentwire output` subprocess.
-        assert not any(a[:1] == ["output"] for a in cli_calls), cli_calls
+        # ...and NEVER via any CLI subprocess (listing or output — #627).
+        server.run_agentwire_cmd.assert_not_awaited()
 
     async def test_dashboard_activity_broadcast_for_all_sessions(self, tmp_path):
         """A session with fresh output gets active:true on the dashboard,
@@ -1528,12 +1527,10 @@ class TestMonitorInProcessCapture:
             side_effect=lambda name, lines=50: f"output-for-{name}"
         )
 
-        async def fake_cmd(args):
-            if args[:1] == ["list"] and "--local" in args:
-                return True, {"sessions": [{"name": "watched"}, {"name": "headless"}]}
-            return True, {"sessions": []}
-
-        server.run_agentwire_cmd = AsyncMock(side_effect=fake_cmd)
+        server._list_local_sessions = AsyncMock(
+            return_value=[{"name": "watched"}, {"name": "headless"}]
+        )
+        server._list_remote_sessions = AsyncMock(return_value={})
         server.broadcast_dashboard = AsyncMock()
 
         # "watched" has an open window; "headless" does not. Both must broadcast.
@@ -1549,6 +1546,105 @@ class TestMonitorInProcessCapture:
             if c.args[0] == "session_activity" and c.args[1].get("active") is True
         }
         assert {"watched", "headless"} <= active
+
+
+class TestMonitorLifecycle:
+    """#627 — tick is skipped with no clients; #629 — active_sessions is
+    reconciled against the live tmux list each tick."""
+
+    def _server(self, tmp_path):
+        server = AgentWireServer(_make_config(tmp_path))
+        server.agent = MagicMock()
+        server.agent.get_output = MagicMock(return_value="scrollback")
+        server._list_local_sessions = AsyncMock(return_value=[{"name": "alive"}])
+        server._list_remote_sessions = AsyncMock(return_value={})
+        server.broadcast_dashboard = AsyncMock()
+        return server
+
+    async def _tick(self, server):
+        await server._monitor_tick({}, server.config.server.activity_threshold_seconds)
+
+    async def test_tick_skipped_with_no_clients(self, tmp_path):
+        server = self._server(tmp_path)
+        await self._tick(server)
+        server._list_local_sessions.assert_not_awaited()
+        server.agent.get_output.assert_not_called()
+
+    async def test_evicts_vanished_session_and_closes_ws(self, tmp_path):
+        server = self._server(tmp_path)
+        server.dashboard_clients.add(object())
+
+        dead = Session(name="dead", config=SessionConfig())
+        dead.created_at = 0.0  # long past the grace window
+        ws = AsyncMock()
+        dead.clients.add(ws)
+        server.active_sessions["dead"] = dead
+
+        alive = Session(name="alive", config=SessionConfig())
+        alive.created_at = 0.0
+        server.active_sessions["alive"] = alive
+
+        await self._tick(server)
+
+        assert "dead" not in server.active_sessions
+        assert "alive" in server.active_sessions
+        # Clients are told the session truly ended BEFORE the close — a bare
+        # close reads as a transient drop and the frontends auto-reconnect,
+        # recreating the Session in an endless evict/reconnect cycle.
+        ws.send_json.assert_awaited_with({"type": "local_session_ended", "session": "dead"})
+        ws.close.assert_awaited()
+
+    async def test_notify_session_created_invalidates_listing_caches(self, tmp_path):
+        """#662 review: the sessions_update broadcast after a session_created
+        notify must not serve a TTL-stale list that omits the new session."""
+        import time as _time
+        server = self._server(tmp_path)
+        server._local_list_cache = (_time.monotonic(), [{"name": "old-only"}])
+        server._remote_list_cache = (_time.monotonic(), {})
+
+        async with TestClient(TestServer(server.app)) as client:
+            resp = await client.post(
+                "/api/notify", json={"event": "session_created", "session": "foo"}
+            )
+            assert resp.status == 200
+        assert server._local_list_cache is None
+        assert server._remote_list_cache is None
+
+    async def test_grace_window_protects_new_sessions(self, tmp_path):
+        server = self._server(tmp_path)
+        server.dashboard_clients.add(object())
+        fresh = Session(name="starting", config=SessionConfig())
+        server.active_sessions["starting"] = fresh  # created_at = now
+
+        await self._tick(server)
+
+        assert "starting" in server.active_sessions
+
+    async def test_remote_session_kept_when_machine_unreachable(self, tmp_path):
+        server = self._server(tmp_path)
+        server.dashboard_clients.add(object())
+        remote = Session(name="dev@pc", config=SessionConfig())
+        remote.created_at = 0.0
+        server.active_sessions["dev@pc"] = remote
+
+        # Machine "pc" absent from the remote listing = unreachable → no verdict.
+        await self._tick(server)
+        assert "dev@pc" in server.active_sessions
+
+        # Machine reachable and the session is gone → evict.
+        server._list_remote_sessions = AsyncMock(return_value={"pc": []})
+        await self._tick(server)
+        assert "dev@pc" not in server.active_sessions
+
+    async def test_dashboard_pseudo_session_never_evicted(self, tmp_path):
+        server = self._server(tmp_path)
+        server.dashboard_clients.add(object())
+        dash = Session(name="dashboard", config=SessionConfig())
+        dash.created_at = 0.0
+        server.active_sessions["dashboard"] = dash
+
+        await self._tick(server)
+        assert "dashboard" in server.active_sessions
 
 
 # ---------------------------------------------------------------------------

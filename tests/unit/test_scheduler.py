@@ -1,4 +1,4 @@
-"""Tests for agentwire/scheduler.py — Format helpers, pick logic, board I/O."""
+"""Tests for the agentwire.scheduler package — Format helpers, pick logic, board I/O."""
 
 import time
 from datetime import datetime, timezone

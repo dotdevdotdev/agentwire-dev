@@ -55,7 +55,7 @@ jobs:
       # asserts), and we fail only on high-severity high-confidence findings.
       # Green on the clean tree today; red only on NEW genuinely-dangerous code.
       - name: Run bandit
-        run: uvx bandit -c pyproject.toml -r agentwire --severity-level high --confidence-level high
+        run: uvx bandit==1.9.4 -c pyproject.toml -r agentwire --severity-level high --confidence-level high
 
   pip-audit:
     name: pip-audit (advisory)
@@ -87,7 +87,7 @@ jobs:
       # chatterbox-tts relax the ceiling. See docs/wiki/security/pip-audit.md.
       - name: Audit runtime dependencies
         run: >
-          uvx pip-audit -r requirements.txt
+          uvx pip-audit==2.10.1 -r requirements.txt
           --ignore-vuln PYSEC-2026-161
           --ignore-vuln CVE-2026-48818
           --ignore-vuln CVE-2026-48817
@@ -101,4 +101,4 @@ jobs:
         run: uv export --no-emit-project --all-extras --format requirements-txt -o requirements-all.txt
       - name: Full audit (weekly cron, optional extras)
         if: github.event_name == 'schedule'
-        run: uvx pip-audit -r requirements-all.txt
+        run: uvx pip-audit==2.10.1 -r requirements-all.txt

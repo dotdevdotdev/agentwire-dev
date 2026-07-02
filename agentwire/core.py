@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import urllib.request
 from dataclasses import dataclass, field
@@ -351,27 +352,32 @@ def check_python_version() -> bool:
 
 
 def check_pip_environment() -> bool:
-    """Detect Ubuntu 24.04+ EXTERNALLY-MANAGED marker; return False if user must act."""
-    if not sys.platform.startswith('linux'):
+    """Detect a PEP 668 externally-managed interpreter; return False if user must act.
+
+    Applies to Homebrew Python on macOS and Debian/Ubuntu system Python alike.
+    Inside a virtualenv (or a uv tool / pipx environment) the marker check is
+    skipped — installs there are always fine.
+    """
+    # Virtualenvs are never externally managed.
+    if sys.prefix != sys.base_prefix:
         return True
 
-    # Check for EXTERNALLY-MANAGED marker
-    marker = Path(sys.prefix) / "EXTERNALLY-MANAGED"
+    # PEP 668: the marker lives in the interpreter's stdlib sysconfig dir.
+    marker = Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED"
     if marker.exists():
-        print("⚠️  Externally-managed Python environment detected (Ubuntu 24.04+)")
+        print("⚠️  Externally-managed Python environment detected (PEP 668)")
         print()
-        print("Ubuntu prevents pip from installing packages system-wide to avoid conflicts.")
+        print("This Python (e.g. Homebrew on macOS, Debian/Ubuntu system Python)")
+        print("blocks bare `pip install` to protect its own packages.")
         print()
-        print("Recommended approach - Use venv:")
+        print("Recommended - install as an isolated tool:")
+        print("  uv tool install agentwire-dev")
+        print("  # or: pipx install agentwire-dev")
+        print()
+        print("Alternative - a dedicated venv:")
         print("  python3 -m venv ~/.agentwire-venv")
         print("  source ~/.agentwire-venv/bin/activate")
         print("  pip install agentwire-dev")
-        print()
-        print("  Add to ~/.bashrc for persistence:")
-        print("  echo 'source ~/.agentwire-venv/bin/activate' >> ~/.bashrc")
-        print()
-        print("Alternative (not recommended):")
-        print("  pip3 install --break-system-packages agentwire-dev")
         print()
         return False
 
