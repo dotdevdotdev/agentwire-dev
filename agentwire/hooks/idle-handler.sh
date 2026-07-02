@@ -380,7 +380,15 @@ complete | incomplete | error
         # (whose parent lives in metadata, not config) never notified anyone.
         # TMUX_PANE is inherited, so the CLI knows which session this is; a
         # top-level session resolves to no parent and this is a harmless no-op.
-        $AGENTWIRE notify-parent --on-idle -q "is idle and done working" 2>/dev/null &
+        # --queued (#667): ride the polite msg inbox (kind=done) instead of a
+        # direct paste — a busy orchestrator defers the message instead of
+        # accumulating unsubmitted notify lines in its input box, and an
+        # undeliverable one dead-letters + emails the owner instead of
+        # vanishing. Failures are logged, never discarded.
+        (
+          out=$($AGENTWIRE notify-parent --on-idle --queued -q "is idle and done working" 2>&1) \
+            || log "notify-parent --queued failed: $out"
+        ) &
       fi
     fi
   fi

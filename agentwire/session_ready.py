@@ -249,29 +249,23 @@ def wait_for_session_ready(
     return False
 
 
-def derive_check_fragment(message: str, length: int = 32) -> str:
-    """A distinctive fragment of *message* to look for in pane output.
-
-    First non-empty line, first *length* characters.
-    """
-    for line in message.splitlines():
-        line = line.strip()
-        if line:
-            return line[:length]
-    return ""
-
-
 def message_visible(capture: str, message: str) -> bool:
     """Did *message* land in the pane?
 
-    Whitespace-normalized substring check — tmux ``capture-pane`` wraps long
-    lines at pane width mid-word, so both sides are compared with all
-    whitespace stripped. Large multiline pastes may render only as Claude's
-    ``[Pasted text #N +M lines]`` placeholder, which counts as landed (the
-    failure mode being defended against is the paste vanishing entirely).
+    Keys on the **full** whitespace-normalized message, never a fixed-length
+    prefix (#667): all worktree idle notifications share a long
+    ``[NOTIFY from agentwire-dev-issue-…`` prefix, so a 32-char fragment
+    false-matched a *pile* of other sessions' notifications sitting in the box
+    — Phase 1 passed against text that wasn't ours, and Phase 2's
+    "box no longer shows our text" could never come true. tmux
+    ``capture-pane`` wraps long lines at pane width mid-word, so both sides
+    are compared with all whitespace stripped. Large multiline pastes may
+    render only as Claude's ``[Pasted text #N +M lines]`` placeholder, which
+    counts as landed (the failure mode being defended against is the paste
+    vanishing entirely).
     """
-    frag = derive_check_fragment(message)
-    if frag and "".join(frag.split()) in "".join(capture.split()):
+    needle = "".join(message.split())
+    if needle and needle in "".join(capture.split()):
         return True
     return "[Pasted text" in capture
 
@@ -314,7 +308,22 @@ def _deliver_once(
     session: str, message: str, marker: str | None, pane_index: int
 ) -> bool:
     """One adaptive paste→land→submit attempt. True iff the message submitted."""
-    paste_no_enter(session, message, pane_index=pane_index)
+    # Idempotent paste guard (#667): a previous attempt (an earlier whole-send
+    # retry, or a prior tick) may have left this exact message sitting in the
+    # box — landed but unsubmitted. Blindly pasting again doubles the draft
+    # (the observed "issue-659 twice" pile). So first look: already submitted →
+    # done; already landed → skip the paste and retry only the SUBMIT.
+    already_landed = False
+    try:
+        cap = _snapshot(session, pane_index)
+        if submitted(cap, message, marker):
+            return True
+        already_landed = text_landed(cap, message)
+    except Exception:
+        pass
+
+    if not already_landed:
+        paste_no_enter(session, message, pane_index=pane_index)
 
     # Phase 1 — wait for the paste to actually land in the input box (or for a
     # very fast bypass agent to have already consumed AND submitted it). If it

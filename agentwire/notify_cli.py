@@ -96,6 +96,36 @@ def cmd_notify_parent(args) -> int:
             False, json_mode,
             "No target session (set 'parent' in .agentwire.yml or use --to)")
 
+    # --queued (#667): route through the polite msg inbox (kind=done) instead
+    # of a direct paste. The drain owns everything the direct path lacks — the
+    # empty-box gate (never appends to a busy orchestrator's draft), busy
+    # deferral without dead-letter penalty, full-line scrollback dedup, and
+    # email-on-dead-letter — so an idle report-back can neither pile up
+    # unsubmitted nor vanish silently. Non-queued callers are unchanged.
+    if getattr(args, 'queued', False):
+        from agentwire import inbox
+
+        try:
+            msgs = inbox.enqueue(
+                to=target_session, text=text, kind="done",
+                sender=current_session or "unknown",
+            )
+        except (ValueError, OSError) as e:
+            if json_mode:
+                _output_json({"success": False, "target": target_session,
+                              "queued": False, "error": str(e)})
+                return 1
+            print(f"Failed to queue notification for {target_session}: {e}",
+                  file=sys.stderr)
+            return 1
+        if json_mode:
+            _output_json({"success": True, "target": target_session,
+                          "queued": True, "id": msgs[0].id if msgs else None})
+            return 0
+        if not getattr(args, 'quiet', False):
+            print(f"Queued for {target_session}")
+        return 0
+
     # safe_deliver refuses targets where a paste could do damage (live
     # dialog on screen, bare shell, parked session) and verifies the paste
     # actually landed. Callers (queue processor) retry on failure.
@@ -271,6 +301,10 @@ def register_notify_parser(subparsers) -> None:
     notify_cmd_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     notify_cmd_parser.add_argument("--raw", action="store_true",
                                    help="Send the message verbatim (no [NOTIFY from ...] prefix)")
+    notify_cmd_parser.add_argument("--queued", action="store_true",
+                                   help="Deliver via the polite msg inbox (kind=done) instead of a direct "
+                                        "paste — waits for an empty input box, defers while the target is "
+                                        "busy, dead-letters + emails the owner on exhaustion (#667)")
     notify_cmd_parser.add_argument("--on-idle", dest="on_idle", action="store_true",
                                    help="Idle-hook mode: suppress the notify if the current session "
                                         "is an infrastructure service (they cycle idle constantly)")

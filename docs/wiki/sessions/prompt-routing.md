@@ -38,8 +38,15 @@ each machine's own watchdog sweeps its panes; cross-machine delivery falls
 back to human-only.
 
 **Idle notifications use the same resolution.** When a pane-0 session goes idle,
-`idle-handler.sh` calls `agentwire notify-parent --on-idle`, which resolves the
-parent through the precedence above — so a worktree / `agentwire new` child whose
+`idle-handler.sh` calls `agentwire notify-parent --on-idle --queued`, which
+resolves the parent through the precedence above and then (#667) **enqueues the
+report-back on the [polite msg inbox](messaging.md) as `kind=done`** instead of
+direct-pasting: the drain's empty-box gate means a busy orchestrator defers the
+message rather than accumulating unsubmitted `[NOTIFY …]` lines in its input
+box, busy deferral carries no dead-letter penalty, and an undeliverable
+report-back dead-letters + emails the owner instead of vanishing (the hook logs
+CLI failures instead of discarding them). Non-queued `notify-parent` calls
+still direct-paste via `safe_deliver`. Resolution itself is unchanged — so a worktree / `agentwire new` child whose
 parent lives in **creator metadata** (not `.agentwire.yml`) now correctly pings
 its spawner on completion. Earlier the idle hook read only the `.agentwire.yml`
 `parent:` field and silently dropped the notification when it was empty.
@@ -60,7 +67,11 @@ Every delivery goes through `safe_deliver()` (also used by
 - **target_parked** — usage-limit parked; a paste would corrupt the resume.
 - **target_gone** — session died.
 - Sends are verified (`send_verified`): a silent tmux paste failure reports
-  as undelivered and retries.
+  as undelivered and retries. Verification keys on the **full**
+  whitespace-normalized message (#667), never a fixed-length prefix — so a
+  pile of same-prefix drafts can't false-match — and a retry that finds its
+  own copy already landed in the box retries only the *submit*, never pasting
+  a duplicate.
 
 The message itself is paraphrased — no `❯`, no option block, no dialog footer
 text — so it can never be re-detected as a dialog.

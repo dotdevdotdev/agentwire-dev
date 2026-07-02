@@ -64,6 +64,16 @@ lands in a durable inbox and is injected only at a safe boundary.
    That one fix covers the polite-msg loop, `notify-parent` (which also routes
    through `safe_deliver` → `send_verified`), and `session_send`.
 
+   Two further #667 hardenings live in the same layer, for every
+   `send_verified` caller: **(a) full-message identity** — the land/confirm
+   checks key on the full whitespace-normalized message, never a fixed-length
+   prefix (all worktree idle notifications share a >32-char
+   `[NOTIFY from agentwire-dev-issue-…` prefix, so a fragment false-matched a
+   *pile* of other sessions' notifications sitting in the box); and **(b) no
+   blind re-paste** — before pasting, each attempt checks whether the message
+   already sits landed-but-unsubmitted in the box, and if so retries only the
+   *submit*, so a whole-send retry can never double the draft.
+
 4. **Defer or drop.** If either gate fails, the messages stay put, their
    `attempts` counter bumps, and the defer `reason` (`box_not_empty`,
    `target_parked`, …) is stamped on each message. After `MAX_ATTEMPTS`
@@ -114,7 +124,7 @@ collision detector simple and the no-clobber guarantee absolute.
 | kind | meaning |
 |---|---|
 | `note` | default — informational |
-| `done` | a worker finished |
+| `done` | a worker finished — also what idle report-backs ride: `agentwire notify-parent --queued` (used by `idle-handler.sh`, #667) enqueues here instead of direct-pasting |
 | `request` | asking for something |
 | `escalation` | needs attention |
 | `ingest` | **passive** — awareness only; never auto-delivered (see below) |
