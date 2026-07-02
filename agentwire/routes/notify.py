@@ -56,6 +56,8 @@ class NotifyRoutesMixin:
 
             # Broadcast to dashboard clients based on event type
             if event == "session_closed":
+                # Session membership changed — the TTL listing caches are stale
+                self._invalidate_session_caches()
                 await self.broadcast_dashboard("session_closed", {"session": session})
                 # Clean up stale state for this session
                 self.session_client_counts.pop(session, None)
@@ -64,6 +66,7 @@ class NotifyRoutesMixin:
                 await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
 
             elif event == "session_created":
+                self._invalidate_session_caches()
                 await self.broadcast_dashboard("session_created", {"session": session})
                 sessions_data = await self._get_sessions_data()
                 await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
@@ -109,6 +112,7 @@ class NotifyRoutesMixin:
 
             elif event == "session_renamed":
                 # Handle session rename - old_name and new_name in data
+                self._invalidate_session_caches()
                 old_name = data.get("old_name")
                 new_name = data.get("new_name") or session
                 # Transfer client count to new name
