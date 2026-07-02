@@ -730,3 +730,51 @@ class TestGcSender:
         assert res == {"dead": 0, "dropped": 0}
         assert len(inbox.list_messages("orch")) == 1  # other sender's done kept
         assert inbox.list_ingest("orch")  # ingest untouched
+
+
+# =============================================================================
+# Session-name validation — path-traversal hardening
+# =============================================================================
+
+
+class TestSessionNameValidation:
+    BAD = ["../../x", "/etc/x", "a/../../b", "..", "a/..", "", "a//b", "a/", "/a",
+           "a b", "a\x00b", "~root"]
+
+    @pytest.mark.parametrize("name", BAD)
+    def test_session_dir_rejects_traversal(self, isolate, name):
+        with pytest.raises(ValueError):
+            inbox.session_dir(name)
+        assert not isolate.exists() or all(
+            p.resolve().is_relative_to(isolate.resolve()) for p in isolate.rglob("*")
+        )
+
+    @pytest.mark.parametrize("name", BAD)
+    def test_helpers_reject_traversal(self, isolate, name):
+        for fn in (inbox.dead_dir, inbox.ingest_dir, inbox.pending_files,
+                   inbox.list_messages, inbox.list_dead, inbox.list_ingest,
+                   inbox.purge_pending):
+            with pytest.raises(ValueError):
+                fn(name)
+
+    @pytest.mark.parametrize("name", ["orchestrator", "myproj-fix", "proj/child",
+                                      "a.b_c@host-1", "p/c/grandchild"])
+    def test_valid_names_accepted(self, isolate, name):
+        assert inbox.session_dir(name) == isolate / name
+
+    def test_enqueue_traversal_raises_before_any_write(self, isolate, tmp_path):
+        with pytest.raises(ValueError):
+            inbox.enqueue("../../evil", "pwned", sender="attacker")
+        assert not isolate.exists()  # nothing created at all
+        assert not (tmp_path / "evil").exists()
+
+    def test_enqueue_absolute_path_raises(self, isolate):
+        with pytest.raises(ValueError):
+            inbox.enqueue("/tmp/evil", "pwned", sender="attacker")
+        assert not isolate.exists()
+
+    def test_nested_worktree_delivery_still_works(self, isolate):
+        msgs = inbox.enqueue("proj/child", "hello", sender="orch")
+        assert len(msgs) == 1
+        assert msgs[0].path.is_relative_to(isolate / "proj" / "child")
+        assert [m.text for m in inbox.list_messages("proj/child")] == ["hello"]

@@ -30,6 +30,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -148,8 +149,28 @@ def _short_uuid() -> str:
     return uuid.uuid4().hex[:6]
 
 
+# Session names are agent-controlled (msg_send `to`), so they must never be
+# able to path-traverse out of INBOX_ROOT. Worktree session names legitimately
+# contain `/` (they nest one directory level per segment — see module
+# docstring), so segments are validated individually; `..`, absolute paths,
+# and empty names/segments are rejected.
+_SESSION_RE = re.compile(r"^[A-Za-z0-9._@-]+(?:/[A-Za-z0-9._@-]+)*$")
+
+
+def _validate_session(session: str) -> str:
+    if not session or not _SESSION_RE.match(session) or ".." in session.split("/"):
+        raise ValueError(f"invalid session name: {session!r}")
+    return session
+
+
 def session_dir(session: str) -> Path:
-    return INBOX_ROOT / session
+    _validate_session(session)
+    path = INBOX_ROOT / session
+    # Belt and braces: the regex already forbids traversal, but confine the
+    # result to INBOX_ROOT so a validator regression can't escape it.
+    if not path.resolve().is_relative_to(INBOX_ROOT.resolve()):
+        raise ValueError(f"invalid session name: {session!r}")
+    return path
 
 
 def dead_dir(session: str) -> Path:
@@ -440,7 +461,7 @@ def resolve_targets(to: str, sender: "str | None") -> list[str]:
     """
     if to == BROADCAST_TOKEN:
         return [s for s in _live_agent_sessions() if s != sender]
-    return [to]
+    return [_validate_session(to)]
 
 
 def enqueue(
