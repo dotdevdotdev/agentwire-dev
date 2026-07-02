@@ -5,6 +5,7 @@ the LocalKokoro state machine, the portal's WAV duration parser, and the CLI
 tier dispatch. No real model files or network involved.
 """
 
+import hashlib
 import importlib.util
 import subprocess
 import sys
@@ -77,8 +78,6 @@ class TestResolveVoiceName:
 # Atomic model download
 # ---------------------------------------------------------------------------
 
-
-import hashlib
 
 # SHA-256 of the b"model-bytes" fixture used throughout TestEnsureFile
 GOOD_SHA = hashlib.sha256(b"model-bytes").hexdigest()
