@@ -8,14 +8,13 @@ Part of the #560 server.py split. Handlers moved verbatim from
 server class.
 
 Review and permission are grouped because the Review window's ``_live_prompt``
-helper is unique to ``api_review``. ``Session`` / ``PendingPermission`` /
+helper is unique to ``api_review``. ``PendingPermission`` /
 ``_is_allowed_in_restricted_mode`` live on the base server module and are
 imported lazily inside the handlers to avoid a circular import.
 """
 
 import asyncio
 import logging
-import subprocess
 from pathlib import Path
 
 from aiohttp import web
@@ -114,7 +113,7 @@ class PermissionRoutesMixin:
         In restricted mode, only say commands are auto-allowed,
         everything else is auto-denied silently.
         """
-        from ..server import PendingPermission, Session, _is_allowed_in_restricted_mode
+        from ..server import PendingPermission, _is_allowed_in_restricted_mode
 
         name = request.match_info["name"]
         try:
@@ -126,10 +125,7 @@ class PermissionRoutesMixin:
             logger.info(f"[{name}] Permission request: {tool_name}")
 
             # Ensure session exists
-            if name not in self.active_sessions:
-                self.active_sessions[name] = Session(name=name, config=self._get_session_config(name))
-
-            session = self.active_sessions[name]
+            session = await self._get_or_create_session(name)
 
             # Check restricted mode - auto-handle without user interaction
             if session.config.type == "claude-restricted":
@@ -146,29 +142,25 @@ class PermissionRoutesMixin:
                     # Only send keystroke for Bash commands (say)
                     # AskUserQuestion doesn't need permission keystroke
                     if tool_name == "Bash":
-                        try:
-                            # Use CLI for consistent behavior (handles local and remote)
-                            # Send "1" to select "Yes" option in permission prompt
-                            session_target = f"{tmux_session}@{machine}" if machine else tmux_session
-                            subprocess.run(
-                                ["agentwire", "send-keys", "-s", session_target, "1"],
-                                check=True, capture_output=True
-                            )
-                        except Exception as e:
-                            logger.error(f"[{name}] Failed to send allow keystroke: {e}")
+                        # Use CLI for consistent behavior (handles local and remote)
+                        # Send "1" to select "Yes" option in permission prompt
+                        session_target = f"{tmux_session}@{machine}" if machine else tmux_session
+                        result = await self._run_subprocess(
+                            ["agentwire", "send-keys", "-s", session_target, "1"]
+                        )
+                        if result is None or result[0] != 0:
+                            logger.error(f"[{name}] Failed to send allow keystroke")
                     return web.json_response({"decision": "allow_always"})
                 else:
                     # Auto-deny: send "Escape" keystroke (deny silently)
                     logger.info(f"[{name}] Restricted mode: auto-denying {tool_name}")
-                    try:
-                        # Use CLI for consistent behavior (handles local and remote)
-                        session_target = f"{tmux_session}@{machine}" if machine else tmux_session
-                        subprocess.run(
-                            ["agentwire", "send-keys", "-s", session_target, "Escape"],
-                            check=True, capture_output=True
-                        )
-                    except Exception as e:
-                        logger.error(f"[{name}] Failed to send deny keystroke: {e}")
+                    # Use CLI for consistent behavior (handles local and remote)
+                    session_target = f"{tmux_session}@{machine}" if machine else tmux_session
+                    result = await self._run_subprocess(
+                        ["agentwire", "send-keys", "-s", session_target, "Escape"]
+                    )
+                    if result is None or result[0] != 0:
+                        logger.error(f"[{name}] Failed to send deny keystroke")
                     return web.json_response({
                         "decision": "deny",
                         "message": "Restricted mode: only say commands are allowed"
@@ -276,8 +268,6 @@ class PermissionRoutesMixin:
             # input box, and a late Escape would abort the child's next turn.
             # Re-capture and only send if a live menu is still on screen.
             try:
-                import subprocess
-
                 dialog_live = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: prompt_router.screen_shows_live_menu(
@@ -293,11 +283,12 @@ class PermissionRoutesMixin:
                     custom_message = data.get("message", "")
                     if custom_message:
                         # send-keys handles pauses between key groups
-                        subprocess.run(
+                        result = await self._run_subprocess(
                             ["agentwire", "send-keys", "-s", tmux_name,
-                             "--pane", str(pane_index), "3", custom_message, "Enter"],
-                            check=True, capture_output=True
+                             "--pane", str(pane_index), "3", custom_message, "Enter"]
                         )
+                        if result is None or result[0] != 0:
+                            raise RuntimeError("send-keys failed")
                         logger.info(f"[{name}] Sent custom feedback: {custom_message[:50]}...")
                 else:
                     # Map decision to keystroke: allow=1, allow_always=2, deny=Escape
@@ -307,11 +298,12 @@ class PermissionRoutesMixin:
                         "deny": "Escape",
                     }
                     keystroke = keystroke_map.get(decision, "Escape")
-                    subprocess.run(
+                    result = await self._run_subprocess(
                         ["agentwire", "send-keys", "-s", tmux_name,
-                         "--pane", str(pane_index), keystroke],
-                        check=True, capture_output=True
+                         "--pane", str(pane_index), keystroke]
                     )
+                    if result is None or result[0] != 0:
+                        raise RuntimeError("send-keys failed")
                     logger.info(f"[{name}] Sent keystroke '{keystroke}' to {tmux_name}.{pane_index}")
             except Exception as e:
                 logger.error(f"[{name}] Failed to send keystroke: {e}")

@@ -20,7 +20,6 @@ import signal
 import socket
 import ssl
 import struct
-import subprocess
 import tempfile
 import termios
 import time
@@ -603,7 +602,32 @@ class AgentWireServer(
         if cleaned > 0:
             logger.info(f"Cleaned up {cleaned} old upload(s)")
 
-    def _get_session_config(self, name: str) -> SessionConfig:
+    async def _run_subprocess(
+        self, argv: list[str], timeout: float | None = None
+    ) -> tuple[int, str, str] | None:
+        """Run a subprocess without blocking the event loop.
+
+        Returns (returncode, stdout, stderr), or None on timeout/spawn failure.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            return None
+        except Exception:
+            return None
+
+    async def _get_session_config(self, name: str) -> SessionConfig:
         """Get session config dynamically from .agentwire.yml in session's working directory.
 
         Uses cached config from active_sessions if available, otherwise looks up
@@ -620,12 +644,12 @@ class AgentWireServer(
             base_name, machine_id = name.rsplit("@", 1)
 
         # Get working directory from tmux
-        cwd = self._get_session_cwd(base_name, machine_id)
+        cwd = await self._get_session_cwd(base_name, machine_id)
         if not cwd:
             return SessionConfig(voice=self.config.tts.default_voice)
 
         # Read .agentwire.yml from that path
-        yaml_config = self._read_agentwire_yaml(cwd, machine_id)
+        yaml_config = await self._read_agentwire_yaml(cwd, machine_id)
         if not yaml_config:
             return SessionConfig(voice=self.config.tts.default_voice)
 
@@ -635,7 +659,25 @@ class AgentWireServer(
             voice=yaml_config.get("voice", self.config.tts.default_voice),
         )
 
-    def _get_session_cwd(self, session_name: str, machine_id: str | None = None) -> str | None:
+    async def _get_or_create_session(self, name: str) -> "Session":
+        """Get-or-create an active_sessions entry without a TOCTOU race.
+
+        The config fetch awaits (possibly a 5s SSH probe), so a naive
+        check-then-assign around it lets a concurrent handler register the
+        same session first — clobbering its clients and pending_permission.
+        Re-check after the await and keep whichever Session landed first.
+        """
+        session = self.active_sessions.get(name)
+        if session is not None:
+            return session
+        config = await self._get_session_config(name)
+        session = self.active_sessions.get(name)
+        if session is None:
+            session = Session(name=name, config=config)
+            self.active_sessions[name] = session
+        return session
+
+    async def _get_session_cwd(self, session_name: str, machine_id: str | None = None) -> str | None:
         """Get working directory of a tmux session.
 
         Args:
@@ -652,13 +694,11 @@ class AgentWireServer(
 
         if is_local:
             # Local tmux lookup
-            result = subprocess.run(
+            result = await self._run_subprocess(
                 ["tmux", "display-message", "-t", session_name, "-p", "#{pane_current_path}"],
-                capture_output=True,
-                text=True,
             )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+            if result and result[0] == 0 and result[1].strip():
+                return result[1].strip()
             return None
         else:
             # Remote tmux lookup via SSH
@@ -670,18 +710,13 @@ class AgentWireServer(
             user = machine.get("user", "")
             ssh_target = f"{user}@{host}" if user else host
 
-            try:
-                cmd = f"tmux display-message -t {shlex.quote(session_name)} -p '#{{pane_current_path}}'"
-                result = subprocess.run(
-                    ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-            except (subprocess.TimeoutExpired, Exception):
-                pass
+            cmd = f"tmux display-message -t {shlex.quote(session_name)} -p '#{{pane_current_path}}'"
+            result = await self._run_subprocess(
+                ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
+                timeout=5,
+            )
+            if result and result[0] == 0 and result[1].strip():
+                return result[1].strip()
             return None
 
     def _get_machine_config(self, machine_id: str) -> dict | None:
@@ -692,7 +727,7 @@ class AgentWireServer(
                     return m
         return None
 
-    def _read_agentwire_yaml(self, cwd: str, machine_id: str | None = None) -> dict | None:
+    async def _read_agentwire_yaml(self, cwd: str, machine_id: str | None = None) -> dict | None:
         """Read .agentwire.yml from a directory.
 
         Args:
@@ -726,21 +761,19 @@ class AgentWireServer(
             user = machine.get("user", "")
             ssh_target = f"{user}@{host}" if user else host
 
-            try:
-                yaml_path = f"{cwd}/.agentwire.yml"
-                result = subprocess.run(
-                    ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, f"cat {shlex.quote(yaml_path)}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return yaml.safe_load(result.stdout) or {}
-            except (subprocess.TimeoutExpired, Exception):
-                pass
+            yaml_path = f"{cwd}/.agentwire.yml"
+            result = await self._run_subprocess(
+                ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, f"cat {shlex.quote(yaml_path)}"],
+                timeout=5,
+            )
+            if result and result[0] == 0 and result[1].strip():
+                try:
+                    return yaml.safe_load(result[1]) or {}
+                except Exception:
+                    pass
             return None
 
-    def _write_agentwire_yaml(self, cwd: str, data: dict, machine_id: str | None = None) -> bool:
+    async def _write_agentwire_yaml(self, cwd: str, data: dict, machine_id: str | None = None) -> bool:
         """Write .agentwire.yml to a directory.
 
         Args:
@@ -777,22 +810,19 @@ class AgentWireServer(
             user = machine.get("user", "")
             ssh_target = f"{user}@{host}" if user else host
 
-            try:
-                yaml_content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
-                yaml_path = f"{cwd}/.agentwire.yml"
-                # Use base64 encoding for safe content transmission (avoids heredoc injection)
-                encoded = base64.b64encode(yaml_content.encode()).decode()
-                cmd = f"echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(yaml_path)}"
-                result = subprocess.run(
-                    ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                return result.returncode == 0
-            except (subprocess.TimeoutExpired, Exception) as e:
-                logger.warning(f"Failed to write remote yaml: {e}")
+            yaml_content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+            yaml_path = f"{cwd}/.agentwire.yml"
+            # Use base64 encoding for safe content transmission (avoids heredoc injection)
+            encoded = base64.b64encode(yaml_content.encode()).decode()
+            cmd = f"echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(yaml_path)}"
+            result = await self._run_subprocess(
+                ["ssh", *ssh_base_opts(), "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", ssh_target, cmd],
+                timeout=5,
+            )
+            if result is None:
+                logger.warning("Failed to write remote yaml: ssh timed out or failed to spawn")
                 return False
+            return result[0] == 0
 
     async def _get_voices(self) -> list[str]:
         """Available TTS voices: Kokoro presets on the default tier (once
@@ -1719,10 +1749,7 @@ class AgentWireServer(
         await ws.prepare(request)
 
         # Get or create session
-        if name not in self.active_sessions:
-            self.active_sessions[name] = Session(name=name, config=self._get_session_config(name))
-
-        session = self.active_sessions[name]
+        session = await self._get_or_create_session(name)
         client_id = str(id(ws))
         session.clients.add(ws)
         logger.info(f"[{name}] Client connected (total: {len(session.clients)})")
@@ -1783,9 +1810,7 @@ class AgentWireServer(
         ws_to_tmux_task = None
 
         # Track this connection for TTS routing (so audio goes to browser, not local speakers)
-        if session_name not in self.active_sessions:
-            self.active_sessions[session_name] = Session(name=session_name, config=self._get_session_config(session_name))
-        session = self.active_sessions[session_name]
+        session = await self._get_or_create_session(session_name)
         session.clients.add(ws)
         logger.info(f"[Terminal] Client connected to {session_name} (total: {len(session.clients)})")
 
@@ -2596,12 +2621,7 @@ class AgentWireServer(
             True if audio was sent to clients, False if no clients connected.
         """
         # Get or create session
-        if session_name not in self.active_sessions:
-            self.active_sessions[session_name] = Session(
-                name=session_name, config=self._get_session_config(session_name)
-            )
-
-        session = self.active_sessions[session_name]
+        session = await self._get_or_create_session(session_name)
 
         # Notifications session: fan out to whichever session(s) the user
         # currently has open, since this session itself rarely has listeners.

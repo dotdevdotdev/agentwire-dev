@@ -186,9 +186,9 @@ class SessionsAdminRoutesMixin:
                     _, machine_id = session_name.rsplit("@", 1)
 
                 # Read and update .agentwire.yml
-                yaml_config = self._read_agentwire_yaml(session_path, machine_id) or {}
+                yaml_config = await self._read_agentwire_yaml(session_path, machine_id) or {}
                 yaml_config["voice"] = voice
-                self._write_agentwire_yaml(session_path, yaml_config, machine_id)
+                await self._write_agentwire_yaml(session_path, yaml_config, machine_id)
 
             # Broadcast session created to dashboard clients
             await self.broadcast_dashboard("session_created", {"session": session_name})
@@ -273,18 +273,18 @@ class SessionsAdminRoutesMixin:
                 base_name, machine_id = name.rsplit("@", 1)
 
             # Get session's working directory
-            cwd = self._get_session_cwd(base_name, machine_id)
+            cwd = await self._get_session_cwd(base_name, machine_id)
             if not cwd:
                 return web.json_response({"error": "Session working directory not found"}, status=404)
 
             # Read existing .agentwire.yml (or create new)
-            yaml_config = self._read_agentwire_yaml(cwd, machine_id) or {}
+            yaml_config = await self._read_agentwire_yaml(cwd, machine_id) or {}
 
             # Update voice
             yaml_config["voice"] = voice
 
             # Write back
-            if not self._write_agentwire_yaml(cwd, yaml_config, machine_id):
+            if not await self._write_agentwire_yaml(cwd, yaml_config, machine_id):
                 return web.json_response({"error": "Failed to write .agentwire.yml"}, status=500)
 
             # Update live session if exists
@@ -322,7 +322,7 @@ class SessionsAdminRoutesMixin:
             logger.info(f"[{name}] Recreating session...")
 
             # Get old config for inheriting settings (before CLI deletes it)
-            old_config = self._get_session_config(name)
+            old_config = await self._get_session_config(name)
 
             # Build CLI args
             args = ["recreate", "-s", name]
@@ -351,9 +351,9 @@ class SessionsAdminRoutesMixin:
                 machine_id = None
                 if "@" in new_session_name:
                     _, machine_id = new_session_name.rsplit("@", 1)
-                yaml_config = self._read_agentwire_yaml(session_path, machine_id) or {}
+                yaml_config = await self._read_agentwire_yaml(session_path, machine_id) or {}
                 yaml_config["voice"] = old_config.voice
-                self._write_agentwire_yaml(session_path, yaml_config, machine_id)
+                await self._write_agentwire_yaml(session_path, yaml_config, machine_id)
 
             logger.info(f"[{name}] Session recreated as '{new_session_name}'")
             return web.json_response({"success": True, "session": new_session_name})
@@ -379,7 +379,7 @@ class SessionsAdminRoutesMixin:
             project, _, machine = parse_session_name(name)
 
             # Get old config for inheriting settings
-            old_config = self._get_session_config(name)
+            old_config = await self._get_session_config(name)
 
             # Build new session name: project/session-<timestamp>[@machine]
             new_branch = f"session-{int(time.time())}"
@@ -405,9 +405,9 @@ class SessionsAdminRoutesMixin:
             # CLI writes .agentwire.yml with type; update voice if the old session had one
             if session_path and old_config.voice != self.config.tts.default_voice:
                 machine_id = machine
-                yaml_config = self._read_agentwire_yaml(session_path, machine_id) or {}
+                yaml_config = await self._read_agentwire_yaml(session_path, machine_id) or {}
                 yaml_config["voice"] = old_config.voice
-                self._write_agentwire_yaml(session_path, yaml_config, machine_id)
+                await self._write_agentwire_yaml(session_path, yaml_config, machine_id)
 
             logger.info(f"[{name}] Sibling session created: '{session_name}'")
             return web.json_response({"success": True, "session": session_name})
@@ -427,7 +427,7 @@ class SessionsAdminRoutesMixin:
         name = request.match_info["name"]
         try:
             # Get current session config for inheriting settings
-            session_config = self._get_session_config(name)
+            session_config = await self._get_session_config(name)
 
             logger.info(f"[{name}] Forking session...")
 
@@ -469,9 +469,9 @@ class SessionsAdminRoutesMixin:
             # CLI writes .agentwire.yml with type; update voice if the old session had one
             if session_path and session_config.voice != self.config.tts.default_voice:
                 machine_id = machine
-                yaml_config = self._read_agentwire_yaml(session_path, machine_id) or {}
+                yaml_config = await self._read_agentwire_yaml(session_path, machine_id) or {}
                 yaml_config["voice"] = session_config.voice
-                self._write_agentwire_yaml(session_path, yaml_config, machine_id)
+                await self._write_agentwire_yaml(session_path, yaml_config, machine_id)
 
             logger.info(f"[{name}] Session forked as '{session_name}'")
             return web.json_response({"success": True, "session": session_name})
@@ -488,8 +488,6 @@ class SessionsAdminRoutesMixin:
         Request body: JSON with at least a "type" field.
         Common types: "alert" (text), "question" (question, options), "audio" (audio base64).
         """
-        from ..server import Session
-
         name = request.match_info["name"]
         try:
             data = await request.json()
@@ -497,10 +495,7 @@ class SessionsAdminRoutesMixin:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
         # Find or create a session object to broadcast through
-        session = self.active_sessions.get(name)
-        if not session:
-            session = Session(name=name, config=self._get_session_config(name))
-            self.active_sessions[name] = session
+        session = await self._get_or_create_session(name)
 
         await self._broadcast(session, data)
         return web.json_response({"success": True})
@@ -535,20 +530,17 @@ class SessionsAdminRoutesMixin:
                     await asyncio.sleep(1)
                     logger.info("Portal restarting...")
                     # Kill the tmux session (which kills us)
-                    subprocess.run(
-                        ["tmux", "kill-session", "-t", portal_session],
-                        capture_output=True
+                    await self._run_subprocess(
+                        ["tmux", "kill-session", "-t", portal_session]
                     )
                     await asyncio.sleep(0.5)
                     # Create new tmux session with portal serve command
-                    subprocess.run(
-                        ["tmux", "new-session", "-d", "-s", portal_session],
-                        capture_output=True
+                    await self._run_subprocess(
+                        ["tmux", "new-session", "-d", "-s", portal_session]
                     )
-                    subprocess.run(
+                    await self._run_subprocess(
                         ["tmux", "send-keys", "-t", portal_session,
-                         "agentwire portal serve", "Enter"],
-                        capture_output=True
+                         "agentwire portal serve", "Enter"]
                     )
 
                 asyncio.create_task(delayed_restart())
@@ -559,10 +551,7 @@ class SessionsAdminRoutesMixin:
 
             elif base_name == tts_session:
                 # Restart TTS server
-                subprocess.run(
-                    ["agentwire", "tts", "stop"],
-                    capture_output=True, text=True
-                )
+                await self._run_subprocess(["agentwire", "tts", "stop"])
                 await asyncio.sleep(0.5)
                 subprocess.Popen(
                     ["agentwire", "tts", "start"],
