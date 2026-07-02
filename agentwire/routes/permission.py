@@ -8,7 +8,7 @@ Part of the #560 server.py split. Handlers moved verbatim from
 server class.
 
 Review and permission are grouped because the Review window's ``_live_prompt``
-helper is unique to ``api_review``. ``Session`` / ``PendingPermission`` /
+helper is unique to ``api_review``. ``PendingPermission`` /
 ``_is_allowed_in_restricted_mode`` live on the base server module and are
 imported lazily inside the handlers to avoid a circular import.
 """
@@ -113,7 +113,7 @@ class PermissionRoutesMixin:
         In restricted mode, only say commands are auto-allowed,
         everything else is auto-denied silently.
         """
-        from ..server import PendingPermission, Session, _is_allowed_in_restricted_mode
+        from ..server import PendingPermission, _is_allowed_in_restricted_mode
 
         name = request.match_info["name"]
         try:
@@ -125,10 +125,7 @@ class PermissionRoutesMixin:
             logger.info(f"[{name}] Permission request: {tool_name}")
 
             # Ensure session exists
-            if name not in self.active_sessions:
-                self.active_sessions[name] = Session(name=name, config=await self._get_session_config(name))
-
-            session = self.active_sessions[name]
+            session = await self._get_or_create_session(name)
 
             # Check restricted mode - auto-handle without user interaction
             if session.config.type == "claude-restricted":

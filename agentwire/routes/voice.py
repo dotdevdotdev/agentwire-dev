@@ -251,12 +251,7 @@ class VoiceRoutesMixin:
                 return web.json_response({"error": "No text provided"}, status=400)
 
             # Ensure session exists (create if not)
-            if name not in self.active_sessions:
-                from ..server import Session
-
-                self.active_sessions[name] = Session(name=name, config=await self._get_session_config(name))
-
-            session = self.active_sessions[name]
+            session = await self._get_or_create_session(name)
 
             # Track this text to avoid duplicate TTS from output polling
             session.played_says.add(text)

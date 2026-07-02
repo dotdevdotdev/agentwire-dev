@@ -659,6 +659,24 @@ class AgentWireServer(
             voice=yaml_config.get("voice", self.config.tts.default_voice),
         )
 
+    async def _get_or_create_session(self, name: str) -> "Session":
+        """Get-or-create an active_sessions entry without a TOCTOU race.
+
+        The config fetch awaits (possibly a 5s SSH probe), so a naive
+        check-then-assign around it lets a concurrent handler register the
+        same session first — clobbering its clients and pending_permission.
+        Re-check after the await and keep whichever Session landed first.
+        """
+        session = self.active_sessions.get(name)
+        if session is not None:
+            return session
+        config = await self._get_session_config(name)
+        session = self.active_sessions.get(name)
+        if session is None:
+            session = Session(name=name, config=config)
+            self.active_sessions[name] = session
+        return session
+
     async def _get_session_cwd(self, session_name: str, machine_id: str | None = None) -> str | None:
         """Get working directory of a tmux session.
 
@@ -1731,10 +1749,7 @@ class AgentWireServer(
         await ws.prepare(request)
 
         # Get or create session
-        if name not in self.active_sessions:
-            self.active_sessions[name] = Session(name=name, config=await self._get_session_config(name))
-
-        session = self.active_sessions[name]
+        session = await self._get_or_create_session(name)
         client_id = str(id(ws))
         session.clients.add(ws)
         logger.info(f"[{name}] Client connected (total: {len(session.clients)})")
@@ -1795,9 +1810,7 @@ class AgentWireServer(
         ws_to_tmux_task = None
 
         # Track this connection for TTS routing (so audio goes to browser, not local speakers)
-        if session_name not in self.active_sessions:
-            self.active_sessions[session_name] = Session(name=session_name, config=await self._get_session_config(session_name))
-        session = self.active_sessions[session_name]
+        session = await self._get_or_create_session(session_name)
         session.clients.add(ws)
         logger.info(f"[Terminal] Client connected to {session_name} (total: {len(session.clients)})")
 
@@ -2608,12 +2621,7 @@ class AgentWireServer(
             True if audio was sent to clients, False if no clients connected.
         """
         # Get or create session
-        if session_name not in self.active_sessions:
-            self.active_sessions[session_name] = Session(
-                name=session_name, config=await self._get_session_config(session_name)
-            )
-
-        session = self.active_sessions[session_name]
+        session = await self._get_or_create_session(session_name)
 
         # Notifications session: fan out to whichever session(s) the user
         # currently has open, since this session itself rarely has listeners.

@@ -488,8 +488,6 @@ class SessionsAdminRoutesMixin:
         Request body: JSON with at least a "type" field.
         Common types: "alert" (text), "question" (question, options), "audio" (audio base64).
         """
-        from ..server import Session
-
         name = request.match_info["name"]
         try:
             data = await request.json()
@@ -497,10 +495,7 @@ class SessionsAdminRoutesMixin:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
         # Find or create a session object to broadcast through
-        session = self.active_sessions.get(name)
-        if not session:
-            session = Session(name=name, config=await self._get_session_config(name))
-            self.active_sessions[name] = session
+        session = await self._get_or_create_session(name)
 
         await self._broadcast(session, data)
         return web.json_response({"success": True})
