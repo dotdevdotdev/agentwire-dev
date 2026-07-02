@@ -223,6 +223,8 @@ class Session:
     pending_permission: PendingPermission | None = None  # Active permission request
     last_output_timestamp: float = 0.0  # Last time output changed (server-side activity tracking)
     is_active: bool = False  # Current active/idle state for transition detection
+    created_at: float = field(default_factory=time.monotonic)  # Grace window for #629 eviction
+    hidden_clients: set = field(default_factory=set)  # Clients whose tab is hidden (poll backoff)
 
 
 class AgentWireServer(
@@ -254,6 +256,19 @@ class AgentWireServer(
         self.active_notifications: dict[str, dict] = {}  # id -> notification for persistence across refresh
         self._background_tasks: set[asyncio.Task] = set()  # strong refs so create_task work isn't GC'd
         self._gzip_cache: dict[Path, tuple[float, bytes]] = {}  # static gzip cache: path -> (mtime, bytes)
+        # Session-listing caches (#627): one in-process listing shared between
+        # the monitor loop and the HTTP routes instead of a CLI subprocess (or
+        # an SSH round-trip) per tick/request. {scope: (monotonic_ts, data)}
+        self._local_list_cache: tuple[float, list] | None = None
+        self._remote_list_cache: tuple[float, dict] | None = None
+        self._local_list_lock = asyncio.Lock()
+        self._remote_list_lock = asyncio.Lock()
+        # Shared per-session capture (#628): monitor tick and window streams
+        # read the same tmux capture instead of each shelling out independently.
+        self._capture_cache: dict[str, tuple[float, str]] = {}
+        # Last time an HTTP client polled the session list (mobile page) —
+        # keeps the monitor alive for HTTP-only clients when no WS is open.
+        self._last_sessions_poll: float = 0.0
         # Rate-limit state for the public, unauthenticated POST /api/pair (#423 S1).
         # Per-IP and global sliding-window attempt logs (monotonic timestamps).
         self._pair_attempts: dict[str, list[float]] = {}
@@ -626,6 +641,80 @@ class AgentWireServer(
             return None
         except Exception:
             return None
+
+    # Session-listing cache TTLs (#627). Local listing is one cheap tmux
+    # subprocess; remote is an SSH round-trip per machine, so it gets a much
+    # longer window shared by the monitor loop and every HTTP client.
+    LOCAL_LIST_TTL = 1.0
+    REMOTE_LIST_TTL = 10.0
+    # One tmux capture serves both the monitor tick and the window stream
+    # within this window (#628) — just under both loops' 500ms cadence.
+    CAPTURE_TTL = 0.4
+
+    async def _list_local_sessions(self, max_age: float | None = None) -> list[dict]:
+        """In-process local session listing with a short shared TTL cache.
+
+        Returns fresh dict copies — callers annotate entries in place.
+        """
+        max_age = self.LOCAL_LIST_TTL if max_age is None else max_age
+        async with self._local_list_lock:
+            cached = self._local_list_cache
+            if cached and time.monotonic() - cached[0] < max_age:
+                return [dict(s) for s in cached[1]]
+            from .pane_cli import list_local_sessions
+            try:
+                sessions = await asyncio.to_thread(list_local_sessions)
+            except Exception as e:
+                logger.debug(f"[Sessions] Local listing failed: {e}")
+                return []
+            self._local_list_cache = (time.monotonic(), sessions)
+            return [dict(s) for s in sessions]
+
+    async def _list_remote_sessions(self, max_age: float | None = None) -> dict[str, list[dict]]:
+        """In-process remote session listing, grouped by machine, TTL-cached.
+
+        Only machines that answered over SSH appear as keys (reachable but
+        session-less machines map to an empty list) — the #629 eviction guard
+        relies on this to never evict sessions on an unreachable machine.
+        """
+        max_age = self.REMOTE_LIST_TTL if max_age is None else max_age
+        async with self._remote_list_lock:
+            cached = self._remote_list_cache
+            if cached and time.monotonic() - cached[0] < max_age:
+                return {m: [dict(s) for s in ss] for m, ss in cached[1].items()}
+            from .pane_cli import list_remote_sessions
+            try:
+                by_machine = await asyncio.to_thread(list_remote_sessions)
+            except Exception as e:
+                logger.debug(f"[Sessions] Remote listing failed: {e}")
+                return {}
+            self._remote_list_cache = (time.monotonic(), by_machine)
+            return {m: [dict(s) for s in ss] for m, ss in by_machine.items()}
+
+    def _invalidate_session_caches(self) -> None:
+        """Drop the TTL session-listing caches.
+
+        Called on session lifecycle events (created/closed/renamed via
+        /api/notify) so the sessions_update broadcast that follows reflects
+        the change immediately instead of serving a ≤TTL-stale list.
+        """
+        self._local_list_cache = None
+        self._remote_list_cache = None
+
+    async def _capture_session_output(self, name: str, max_age: float | None = None) -> str:
+        """Capture a session's pane output, deduped across consumers (#628).
+
+        The monitor tick and each open window's poll loop run on the same
+        500ms cadence; within CAPTURE_TTL they share one tmux capture instead
+        of shelling out independently.
+        """
+        max_age = self.CAPTURE_TTL if max_age is None else max_age
+        cached = self._capture_cache.get(name)
+        if cached and time.monotonic() - cached[0] < max_age:
+            return cached[1]
+        output = await asyncio.to_thread(self.agent.get_output, name, lines=100)
+        self._capture_cache[name] = (time.monotonic(), output)
+        return output
 
     async def _get_session_config(self, name: str) -> SessionConfig:
         """Get session config dynamically from .agentwire.yml in session's working directory.
@@ -1206,18 +1295,9 @@ class AgentWireServer(
     async def _get_sessions_data(self) -> list:
         """Get all sessions list for dashboard (local + remote + SDK)."""
         try:
-            # Get local sessions
-            success, result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-            if not success:
-                return []
-
-            sessions = result.get("sessions", [])
-
-            # Get remote sessions
-            remote_success, remote_result = await self.run_agentwire_cmd(["list", "--remote", "--sessions"])
-            if remote_success:
-                remote_sessions = remote_result.get("sessions", [])
-                sessions.extend(remote_sessions)
+            sessions = await self._list_local_sessions()
+            for machine_sessions in (await self._list_remote_sessions()).values():
+                sessions.extend(machine_sessions)
 
             session_names = set()
             for s in sessions:
@@ -1410,33 +1490,36 @@ class AgentWireServer(
         fully-deterministic tick — awaiting this coroutine guarantees every
         listed session has been polled, with no wall-clock sampling race.
         """
-        loop = asyncio.get_event_loop()
+        # Skip the whole tick when nobody is watching (#627): no dashboard WS,
+        # no session-window WS, and no recent HTTP session-list poll (mobile).
+        has_clients = (
+            bool(self.dashboard_clients)
+            or any(s.clients for s in self.active_sessions.values())
+            or time.monotonic() - self._last_sessions_poll < 15
+        )
+        if not has_clients:
+            return
 
-        # Get list of all sessions (local and remote)
+        # Get list of all sessions (local and remote), in-process + TTL-cached
+        # (shared with the HTTP routes — no CLI subprocess per tick, #627).
         session_names = []
+        for s in await self._list_local_sessions():
+            if s.get("name"):
+                session_names.append(s["name"])
 
-        # Local sessions
-        success, result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-        if success:
-            for s in result.get("sessions", []):
-                if s.get("name"):
-                    session_names.append(s["name"])
-
-        # Remote sessions (names already include @machine suffix)
-        success, result = await self.run_agentwire_cmd(["list", "--remote", "--sessions"])
-        if success:
-            for s in result.get("sessions", []):
+        # Remote sessions (names already include @machine suffix). Machines
+        # absent from the dict were unreachable this round.
+        remote_by_machine = await self._list_remote_sessions()
+        for machine_sessions in remote_by_machine.values():
+            for s in machine_sessions:
                 if s.get("name"):
                     session_names.append(s["name"])
 
         # Poll each session
         for session_name in session_names:
             try:
-                # Capture output in-process (no subprocess / CLI re-import).
-                current_output = await loop.run_in_executor(
-                    None,
-                    lambda n=session_name: self.agent.get_output(n, lines=50),
-                )
+                # Capture output in-process, shared with window streams (#628).
+                current_output = await self._capture_session_output(session_name)
 
                 # Initialize state for new sessions
                 if session_name not in session_states:
@@ -1481,7 +1564,13 @@ class AgentWireServer(
             if name not in current_names:
                 del session_states[name]
                 self.session_activity.pop(name, None)
+                self._capture_cache.pop(name, None)
                 removed_sessions.append(name)
+
+        # Reconcile active_sessions against tmux ground truth (#629): evict
+        # Session objects whose tmux session vanished outside the portal
+        # (tmux kill, crash, worker auto-reap), closing their websockets.
+        await self._reconcile_active_sessions(current_names, remote_by_machine)
 
         # Notify dashboard about removed sessions
         if removed_sessions:
@@ -1491,6 +1580,51 @@ class AgentWireServer(
             # Send updated sessions list
             sessions_data = await self._get_sessions_data()
             await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
+
+    # Newly-created Session objects get this long before eviction applies —
+    # a session the portal just spawned may not be in tmux's list yet.
+    RECONCILE_GRACE_SECONDS = 10.0
+
+    async def _reconcile_active_sessions(
+        self, live_names: set[str], remote_by_machine: dict[str, list]
+    ) -> None:
+        """Evict active_sessions entries whose tmux session is gone (#629).
+
+        Guards:
+        - "dashboard" is a pseudo-session (never a tmux session) — skip.
+        - Remote names (``name@machine``) are only evicted when their machine
+          answered the SSH listing this round; an unreachable machine must
+          not read as "all its sessions died".
+        - A grace window covers just-created sessions racing the listing.
+        """
+        now = time.monotonic()
+        for name in list(self.active_sessions.keys()):
+            if name == "dashboard" or name in live_names:
+                continue
+            session = self.active_sessions.get(name)
+            if session is None or now - session.created_at < self.RECONCILE_GRACE_SECONDS:
+                continue
+            if "@" in name:
+                machine_id = name.rsplit("@", 1)[1]
+                if machine_id not in remote_by_machine:
+                    continue  # machine unreachable — no verdict on the session
+            logger.info(f"[Monitor] Evicting stale session object '{name}' (tmux session gone)")
+            self.active_sessions.pop(name, None)
+            self._capture_cache.pop(name, None)
+            if session.output_task and not session.output_task.done():
+                session.output_task.cancel()
+            # Tell clients the session truly ended BEFORE closing — a bare
+            # close reads as a transient drop and both frontends would
+            # auto-reconnect, recreating the Session in an endless
+            # evict/reconnect cycle.
+            ended_type = "remote_session_ended" if "@" in name else "local_session_ended"
+            await self._broadcast(session, {"type": ended_type, "session": name})
+            for ws in list(session.clients):
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            session.clients.clear()
 
     async def idle_nag_loop(self):
         """Background task: periodically check for idle sessions.
@@ -1760,9 +1894,9 @@ class AgentWireServer(
         # Send current output immediately on connect (if this is a real session)
         if is_real_session:
             try:
-                output = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: self.agent.get_output(name, lines=100)
-                )
+                # Fresh capture on connect (max_age=0) — a cached frame could
+                # miss output produced while no client was attached.
+                output = await self._capture_session_output(name, max_age=0)
                 if output:
                     session.last_output = output
                     await ws.send_json({"type": "output", "data": output})
@@ -1785,6 +1919,7 @@ class AgentWireServer(
                     logger.error(f"WebSocket error: {ws.exception()}")
         finally:
             session.clients.discard(ws)
+            session.hidden_clients.discard(ws)
             if session.locked_by == client_id:
                 session.locked_by = None
                 await self._broadcast(session, {"type": "session_unlocked"})
@@ -2147,6 +2282,14 @@ class AgentWireServer(
             # Unlock will happen after TTS completes or on disconnect
             pass
 
+        elif msg_type == "visibility":
+            # Client tab visibility — when every client of a session is hidden,
+            # _poll_output backs its cadence off (#628).
+            if data.get("visible"):
+                session.hidden_clients.discard(ws)
+            else:
+                session.hidden_clients.add(ws)
+
         elif msg_type == "resize":
             # Resize tmux pane for monitor mode (so captured output fits the viewer)
             cols = data.get("cols", 80)
@@ -2172,10 +2315,8 @@ class AgentWireServer(
         """Poll agent output and broadcast to session clients."""
         while session.clients:
             try:
-                # Run sync get_output in thread pool to avoid blocking
-                output = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: self.agent.get_output(session.name, lines=100)
-                )
+                # Shared capture — dedupes with the monitor tick (#628).
+                output = await self._capture_session_output(session.name)
                 if output != session.last_output:
                     old_output = session.last_output
                     session.last_output = output
@@ -2260,7 +2401,11 @@ class AgentWireServer(
             except Exception as e:
                 logger.debug(f"Output poll error for {session.name}: {e}")
 
-            await asyncio.sleep(0.5)
+            # Back off when every connected client reports a hidden tab (#628).
+            all_hidden = bool(session.clients) and all(
+                c in session.hidden_clients for c in session.clients
+            )
+            await asyncio.sleep(2.0 if all_hidden else 0.5)
 
     async def _broadcast(self, session: Session, message: dict):
         """Broadcast message to all session clients."""
@@ -2278,16 +2423,14 @@ class AgentWireServer(
     async def _fetch_remote_machine_sessions(self, machine: dict) -> dict:
         """Fetch sessions for a specific remote machine. Used by CachedStatusChecker."""
         try:
-            # Try to get sessions from this specific machine
+            # Shared TTL-cached remote listing (#627) — one SSH sweep serves
+            # the monitor loop and every machine's status check.
             machine_id = machine.get("id")
-            success, result = await self.run_agentwire_cmd(
-                ["list", "--remote", "--sessions", "--machine", machine_id]
-            )
-
-            if not success:
+            remote_by_machine = await self._list_remote_sessions()
+            if machine_id not in remote_by_machine:
                 return {"status": "offline", "sessions": []}
 
-            sessions = result.get("sessions", [])
+            sessions = remote_by_machine[machine_id]
             # Add activity status to each session
             for s in sessions:
                 s["activity"] = self._get_global_session_activity(s.get("name", ""))
