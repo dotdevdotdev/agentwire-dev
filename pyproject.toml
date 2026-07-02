@@ -120,8 +120,6 @@ include = [
     "agentwire/hooks/**/*.py",
     "agentwire/hooks/**/*.yaml",
     "agentwire/hooks/**/*.sh",
-    # Optional bundled voice samples
-    "agentwire/voices/*.wav",
     # Top-level docs to ship in wheel
     "LICENSE",
     "README.md",
