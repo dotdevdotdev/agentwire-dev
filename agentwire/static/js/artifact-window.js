@@ -5,7 +5,7 @@
  * in a sandboxed iframe within a WinBox window.
  */
 
-import { apiFetch, getToken } from './api.js';
+import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 
 // If the iframe's `load` event hasn't fired by now, treat it as stuck and flip
@@ -35,7 +35,6 @@ export class ArtifactWindow {
         this.winbox = null;
         this.iframe = null;
         this.isOpen = false;
-        this._objectUrl = null; // blob URL for token-authed artifact loads
         this._loadTimer = null; // stuck-spinner watchdog
     }
 
@@ -64,10 +63,10 @@ export class ArtifactWindow {
 
         // Remove iframe to stop any running scripts
         if (this.iframe) {
+            this.iframe.removeAttribute('srcdoc');
             this.iframe.src = 'about:blank';
             this.iframe = null;
         }
-        this._revokeObjectUrl();
 
         if (this.winbox) {
             const wb = this.winbox;
@@ -221,36 +220,29 @@ export class ArtifactWindow {
         return this.url.startsWith('http://') || this.url.startsWith('https://');
     }
 
-    _revokeObjectUrl() {
-        if (this._objectUrl) {
-            URL.revokeObjectURL(this._objectUrl);
-            this._objectUrl = null;
-        }
-    }
-
     /**
      * Point the iframe at the artifact. Plain iframe GETs can't carry the
-     * Authorization header, so when token auth is active we fetch the
-     * portal-served artifact with credentials and load it as a blob URL.
+     * Authorization header, so local artifacts are fetched with credentials
+     * (apiFetch) and rendered via `srcdoc`. Under `sandbox="allow-scripts"`
+     * (no allow-same-origin) the srcdoc document gets a null/opaque origin:
+     * its scripts run, but it cannot read the portal's localStorage (bearer
+     * token) or make authenticated same-origin API calls. Artifacts are
+     * agent-written arbitrary HTML/JS — this isolation is load-bearing.
      * Note: relative sub-resources inside multi-file artifacts won't resolve
-     * under a blob URL — self-contained HTML is the supported shape there.
+     * under srcdoc — self-contained HTML is the supported shape there.
      */
     async _setIframeSrc() {
         const resolved = this._resolveUrl();
-        if (this._isExternalUrl() || !getToken()) {
+        if (this._isExternalUrl()) {
             this.iframe.src = resolved;
             return;
         }
         try {
             const resp = await apiFetch(resolved);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const blob = await resp.blob();
-            this._revokeObjectUrl();
-            this._objectUrl = URL.createObjectURL(blob);
-            this.iframe.src = this._objectUrl;
+            this.iframe.srcdoc = await resp.text();
         } catch (e) {
-            // Fall back to a direct load; the iframe error handler reports it.
-            this.iframe.src = resolved;
+            this._showLoadError(`Failed to load: ${this.url}`);
         }
     }
 
@@ -268,13 +260,18 @@ export class ArtifactWindow {
         this.iframe = document.createElement('iframe');
         this.iframe.className = 'artifact-iframe';
 
-        // Smart sandboxing:
-        // - Local files: allow-scripts allow-same-origin (needed for local JS/CSS)
-        // - External URLs: allow-scripts allow-forms allow-popups (no same-origin for security)
+        // Sandboxing:
+        // - Local artifacts: allow-scripts ONLY. SECURITY: never add
+        //   allow-same-origin here — local artifacts are agent-generated HTML
+        //   rendered via srcdoc, and allow-same-origin would run their scripts
+        //   in the portal origin, letting a poisoned artifact steal the bearer
+        //   token from localStorage and drive every authenticated portal API.
+        // - External URLs: allow-scripts allow-forms allow-popups (real origin,
+        //   but cross-origin to the portal).
         if (this._isExternalUrl()) {
             this.iframe.sandbox = 'allow-scripts allow-forms allow-popups';
         } else {
-            this.iframe.sandbox = 'allow-scripts allow-same-origin';
+            this.iframe.sandbox = 'allow-scripts';
         }
 
         this.iframe.addEventListener('load', () => {
