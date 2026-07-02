@@ -117,11 +117,22 @@ class KokoroEngine(TTSEngine):
     _VOICES_FILE = "voices-v1.0.bin"
     _VOICES_URL = f"https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/{_VOICES_FILE}"
 
+    # Pinned SHA-256 digests for the release assets above. GitHub release
+    # assets are mutable, so downloads are verified against these before
+    # being cached. Obtained 2026-07-02 by hashing the files downloaded
+    # from the model-files-v1.0 release (shasum -a 256).
+    _MODEL_SHA256 = "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204"
+    _VOICES_SHA256 = "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+
     def __init__(self, voices_dir: Path | None = None):
         from kokoro_onnx import Kokoro
 
-        model_path = self._ensure_file(self._MODEL_FILE, self._MODEL_URL)
-        voices_path = self._ensure_file(self._VOICES_FILE, self._VOICES_URL)
+        model_path = self._ensure_file(
+            self._MODEL_FILE, self._MODEL_URL, self._MODEL_SHA256
+        )
+        voices_path = self._ensure_file(
+            self._VOICES_FILE, self._VOICES_URL, self._VOICES_SHA256
+        )
 
         print("Loading Kokoro ONNX model...")
         self._model = Kokoro(str(model_path), str(voices_path))
@@ -138,8 +149,8 @@ class KokoroEngine(TTSEngine):
         Public entry point for the portal's background warm-up and the
         `agentwire tts warm` CLI command.
         """
-        cls._ensure_file(cls._MODEL_FILE, cls._MODEL_URL, progress_cb)
-        cls._ensure_file(cls._VOICES_FILE, cls._VOICES_URL, progress_cb)
+        cls._ensure_file(cls._MODEL_FILE, cls._MODEL_URL, cls._MODEL_SHA256, progress_cb)
+        cls._ensure_file(cls._VOICES_FILE, cls._VOICES_URL, cls._VOICES_SHA256, progress_cb)
 
     @classmethod
     def model_files_cached(cls) -> bool:
@@ -153,17 +164,21 @@ class KokoroEngine(TTSEngine):
     def _ensure_file(
         filename: str,
         url: str,
+        sha256: str,
         progress_cb: Callable[[str, int, int], None] | None = None,
     ) -> Path:
         """Download file to ~/.cache/kokoro_onnx/ if not already present.
 
-        Downloads to a .part file and renames atomically so an interrupted
-        download never leaves a truncated file that passes the exists() check.
+        Downloads to a .part file, verifies its SHA-256 against the pinned
+        digest, and renames atomically — so an interrupted or tampered
+        download never leaves a file that passes the exists() check.
 
         Args:
+            sha256: Expected hex digest; mismatch deletes the download and raises.
             progress_cb: Optional callback(filename, downloaded_bytes, total_bytes)
                 invoked as the download progresses (total is 0 if unknown).
         """
+        import hashlib
         import urllib.request
 
         cache_dir = Path.home() / ".cache" / "kokoro_onnx"
@@ -187,6 +202,14 @@ class KokoroEngine(TTSEngine):
             socket.setdefaulttimeout(60)
             try:
                 urllib.request.urlretrieve(url, part, reporthook=_hook)
+                actual = hashlib.sha256(part.read_bytes()).hexdigest()
+                if actual != sha256:
+                    part.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"SHA-256 mismatch for {filename}: expected {sha256}, "
+                        f"got {actual}. The downloaded file was discarded — "
+                        f"the release asset at {url} may have been tampered with."
+                    )
                 part.replace(dest)
             except BaseException:
                 part.unlink(missing_ok=True)
