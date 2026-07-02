@@ -236,11 +236,11 @@ class TmuxAgent(AgentBackend):
                 # Use base64 + load-buffer on remote to avoid PTY flooding
                 import base64
                 encoded = base64.b64encode(text.encode()).decode()
+                # Pipe straight into the tmux buffer — no on-disk temp that could
+                # expose message content or be pre-planted on the remote host
                 cmd = (
-                    f"echo {shlex.quote(encoded)} | base64 -d > /tmp/aw-send-$$.txt && "
-                    f"tmux load-buffer /tmp/aw-send-$$.txt && "
+                    f"echo {shlex.quote(encoded)} | base64 -d | tmux load-buffer - && "
                     f"tmux paste-buffer -t {shlex.quote(session_name)} && "
-                    f"rm -f /tmp/aw-send-$$.txt && "
                     f"sleep 0.2 && "
                     f"tmux send-keys -t {shlex.quote(session_name)} Enter"
                 )
