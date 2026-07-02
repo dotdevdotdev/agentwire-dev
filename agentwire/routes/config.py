@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from ..core import _atomic_write
 from ..security import frozen_config_violations, restore_redactions
 
 logger = logging.getLogger(__name__)
@@ -131,8 +132,7 @@ projects:
                     status=403,
                 )
 
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(content)
+            _atomic_write(config_path, content)
 
             return web.json_response({"success": True})
         except Exception as e:

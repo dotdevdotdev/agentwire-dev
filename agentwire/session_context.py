@@ -200,29 +200,6 @@ def _list_local_sessions() -> list[str]:
     return [s for s in result.stdout.strip().splitlines() if s]
 
 
-def all_session_contexts(
-    warn_threshold: int | None = None,
-) -> list[SessionContext]:
-    """Context state for every local session (pane 0), sorted bloated-first.
-
-    Pane 0 is the orchestrator / main conversation — the long-lived surface
-    that accumulates. Daemons fall out as ``is_agent=False`` and sort last.
-    """
-    threshold = warn_threshold if warn_threshold is not None else _warn_threshold()
-    contexts = [
-        session_context(name, 0, threshold) for name in _list_local_sessions()
-    ]
-    # Bloated agents first (lowest remaining), then other agents, then daemons.
-    contexts.sort(
-        key=lambda c: (
-            not c.is_agent,
-            c.remaining_pct if c.remaining_pct is not None else 999,
-            c.session,
-        )
-    )
-    return contexts
-
-
 def _warn_threshold() -> int:
     """The remaining-% warn threshold from config (best-effort default)."""
     try:

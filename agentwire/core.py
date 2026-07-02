@@ -955,6 +955,59 @@ def _portal_auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def portal_request(
+    method: str,
+    url: str,
+    *,
+    json: dict | None = None,
+    files: dict | None = None,
+    headers: dict | None = None,
+    timeout: float = 10,
+):
+    """The one canonical portal HTTP call (#632).
+
+    Attaches the portal auth token and talks to the localhost self-signed
+    cert (verify=False, warnings suppressed). Returns the `requests`
+    Response; raises `requests` exceptions — callers own error handling.
+    """
+    import requests
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    return requests.request(
+        method,
+        url,
+        json=json,
+        files=files,
+        headers={**_portal_auth_headers(), **(headers or {})},
+        verify=False,
+        timeout=timeout,
+    )
+
+
+def _atomic_write(path: Path, text: str, validate=None) -> None:
+    """Write `text` to `path` atomically: temp file -> fsync -> validate -> rename.
+
+    The file is never left half-written: a crash mid-write leaves the original
+    intact and only a discardable .tmp behind. `validate(tmp_path)` (if given)
+    must raise on bad content — the rename is skipped and the temp removed,
+    so corrupt content can never replace a good file (#449).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if validate is not None:
+            validate(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _check_portal_health(url: str, timeout: int = 2) -> bool:
     """Check if portal is responding at URL."""
     import ssl

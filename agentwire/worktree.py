@@ -262,56 +262,6 @@ def _seed_worktree_files(
             pass  # best-effort — a missing seed file shouldn't fail dispatch
 
 
-def list_worktrees(project_path: Path) -> list[dict]:
-    """List all worktrees for a git repository.
-
-    Returns:
-        List of dicts with keys: path, branch, head
-    """
-    if not is_git_repo(project_path):
-        return []
-
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=project_path,
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        return []
-
-    worktrees: list[dict] = []
-    current: dict = {}
-
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            if current:
-                worktrees.append(current)
-                current = {}
-            continue
-
-        if line.startswith("worktree "):
-            current["path"] = line[9:]
-        elif line.startswith("HEAD "):
-            current["head"] = line[5:]
-        elif line.startswith("branch "):
-            # refs/heads/branch-name -> branch-name
-            ref = line[7:]
-            if ref.startswith("refs/heads/"):
-                current["branch"] = ref[11:]
-            else:
-                current["branch"] = ref
-        elif line == "detached":
-            current["branch"] = None
-
-    # Don't forget the last entry
-    if current:
-        worktrees.append(current)
-
-    return worktrees
-
-
 def remove_worktree(project_path: Path, worktree_path: Path) -> bool:
     """Remove a git worktree.
 

@@ -18,22 +18,15 @@ def _portal_request(method: str, path: str, body: dict | None = None) -> dict:
         Response data as dict.
     """
     import requests
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    from .security import get_local_portal_token
-
-    token = get_local_portal_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    from .core import portal_request
 
     url = f"{get_portal_url()}{path}"
     try:
-        if method == "GET":
-            resp = requests.get(url, headers=headers, verify=False, timeout=10)
-        elif method == "DELETE":
-            resp = requests.delete(url, headers=headers, verify=False, timeout=10)
+        if method in ("GET", "DELETE"):
+            resp = portal_request(method, url)
         else:
-            resp = requests.post(url, json=body or {}, headers=headers, verify=False, timeout=10)
+            resp = portal_request(method, url, json=body or {})
 
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}"}

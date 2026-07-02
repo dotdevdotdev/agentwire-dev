@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from .config import Config, load_config
+from .config import Config
 
 
 @dataclass
@@ -123,11 +123,6 @@ def _validate_url(url: str, service_name: str, config_path: str) -> List[ConfigW
         ))
 
     return warnings
-
-
-def _get_machine_ids(machines: List[dict]) -> set:
-    """Extract machine IDs from machines list."""
-    return {m.get("id") for m in machines if m.get("id")}
 
 
 def validate_config(
@@ -251,114 +246,3 @@ def validate_config(
                 ))
 
     return warnings, errors
-
-
-def validate_machine_reference(
-    machine_id: str,
-    service_name: str,
-    machines_file: Path,
-) -> Optional[ConfigError]:
-    """
-    Validate that a machine reference exists in machines.json.
-
-    Used for services that reference machines (e.g., TTS on remote machine).
-
-    Args:
-        machine_id: The machine ID being referenced
-        service_name: Name of the service referencing the machine
-        machines_file: Path to machines.json
-
-    Returns:
-        ConfigError if machine not found, None if valid
-    """
-    machines, load_error = _load_machines(machines_file)
-
-    if load_error:
-        return ConfigError(
-            message=f"Cannot validate machine reference: {load_error}",
-            context={
-                "machine": machine_id,
-                "service": service_name,
-                "file": str(machines_file),
-            },
-            fix_steps=[
-                "Run: agentwire init",
-                f"Or fix the file manually: {machines_file}",
-            ],
-        )
-
-    machine_ids = _get_machine_ids(machines) if machines else set()
-
-    if machine_id not in machine_ids:
-        # Build helpful error with available machines
-        available = ", ".join(sorted(machine_ids)) if machine_ids else "(none registered)"
-
-        return ConfigError(
-            message=f"Unknown machine '{machine_id}' in services.{service_name}.machine",
-            context={
-                "service": service_name,
-                "machine": machine_id,
-                "config_path": "~/.agentwire/config.yaml",
-                "available_machines": available,
-            },
-            fix_steps=[
-                f"Add the machine:    agentwire machine add {machine_id} --host <ip-or-hostname>",
-                f"Fix the config:     Edit ~/.agentwire/config.yaml services.{service_name}.machine",
-            ],
-        )
-
-    return None
-
-
-def cmd_config_validate(args=None) -> int:
-    """Run all config validation checks.
-
-    Args:
-        args: Optional argparse namespace (for CLI integration)
-
-    Returns:
-        0 if no errors, 1 if errors found
-    """
-    # Load config
-    try:
-        config = load_config()
-    except Exception as e:
-        print(f"ERROR: Failed to load config: {e}")
-        print("")
-        print("To fix:")
-        print("  1. Run: agentwire init")
-        print("  2. Or check ~/.agentwire/config.yaml for syntax errors")
-        return 1
-
-    # Run validation
-    warnings, errors = validate_config(config, config.machines.file)
-
-    # Print results
-    if not warnings and not errors:
-        print("Config validation passed. No issues found.")
-        print("")
-        print("Files checked:")
-        print("  - ~/.agentwire/config.yaml")
-        print(f"  - {config.machines.file}")
-        return 0
-
-    # Print warnings first
-    if warnings:
-        print(f"Found {len(warnings)} warning(s):\n")
-        for i, warning in enumerate(warnings, 1):
-            print(f"[{i}] {warning.format_message()}")
-            print("")
-
-    # Print errors
-    if errors:
-        print(f"Found {len(errors)} error(s):\n")
-        for i, error in enumerate(errors, 1):
-            print(f"[{i}] {error.format_message()}")
-            print("")
-        print("To see registered machines: agentwire machine list")
-
-    # Summary
-    print("---")
-    print(f"Summary: {len(warnings)} warning(s), {len(errors)} error(s)")
-
-    return 1 if errors else 0
