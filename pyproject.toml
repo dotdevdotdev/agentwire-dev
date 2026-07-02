@@ -222,10 +222,6 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["tests/snapshot/apps"]
-# Default: skip snapshot tests in the main run. Snapshots leave asyncio
-# state polluted in a way that breaks subsequent tests when interleaved.
-# Run them separately via `pytest tests/snapshot/ -m snapshots`.
 markers = [
     "slow: marks tests as slow",
     "integration: requires subprocess mocking",

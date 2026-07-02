@@ -6,7 +6,6 @@ tier dispatch. No real model files or network involved.
 """
 
 import hashlib
-import importlib.util
 import subprocess
 import sys
 import wave
@@ -311,10 +310,6 @@ class TestLocalSayDispatch:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("fastapi") is None,
-    reason="fastapi only ships in the stt/tts extras (the shim runs from the source venv)",
-)
 class TestKokoroServer:
     """The shim wraps one LocalKokoro and serves the contract envelope.
 
