@@ -138,6 +138,98 @@ def _get_remote_session_type(machine_id: str, path: str) -> str | None:
     return None
 
 
+def list_local_sessions(show_context: bool = False) -> list[dict]:
+    """List local tmux sessions in-process (no CLI subprocess).
+
+    Single source of truth for local session listing — used by ``cmd_list``
+    and imported directly by the portal server (#627) so the monitor loop and
+    HTTP routes don't spawn a fresh interpreter per tick/request.
+    """
+    from .usage_limit import is_parked as usage_limit_parked
+
+    sessions: list[dict] = []
+    result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}:#{pane_current_path}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return sessions
+
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split(":", 2)
+        if len(parts) < 2:
+            continue
+        path = parts[2] if len(parts) > 2 else ""
+        cfg = _get_session_config_from_path(path)
+        session_info = {
+            "name": parts[0],
+            "windows": int(parts[1]) if parts[1].isdigit() else 1,
+            "path": path,
+            "machine": None,
+            "type": cfg.get("type"),
+            "roles": cfg.get("roles", []),
+            "parent": _display_parent(parts[0], path),
+        }
+        if usage_limit_parked(parts[0]):
+            session_info["usage_limit"] = True
+        if show_context:
+            from .session_context import session_context as _sctx
+            ctx = _sctx(parts[0])
+            session_info["context"] = {
+                "is_agent": ctx.is_agent,
+                "remaining_pct": ctx.remaining_pct,
+                "model": ctx.model,
+                "flagged": ctx.flagged,
+                "note": ctx.note,
+            }
+        sessions.append(session_info)
+    return sessions
+
+
+def list_remote_sessions(machine_filter: str | None = None) -> dict[str, list[dict]]:
+    """List remote tmux sessions in-process, grouped by machine.
+
+    Returns ``{machine_id: [session_info, ...]}`` containing ONLY machines
+    that answered over SSH — an unreachable machine is absent from the dict
+    (vs. present with an empty list when reachable but session-less), so
+    callers can tell "machine down" from "no sessions" (#629 eviction guard).
+    Session names carry the ``@machine`` suffix.
+    """
+    remote_by_machine: dict[str, list[dict]] = {}
+    for machine in _get_all_machines():
+        machine_id = machine.get("id")
+        if not machine_id or machine_id == "local":
+            continue
+        if machine_filter and machine_id != machine_filter:
+            continue
+
+        cmd = "tmux list-sessions -F '#{session_name}:#{session_windows}:#{pane_current_path}' 2>/dev/null || echo ''"
+        result = _run_remote(machine_id, cmd)
+        if result.returncode != 0:
+            continue  # unreachable — omit entirely
+
+        machine_sessions = []
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split(":", 2)
+            if len(parts) < 2:
+                continue
+            remote_path = parts[2] if len(parts) > 2 else ""
+            machine_sessions.append({
+                "name": f"{parts[0]}@{machine_id}",
+                "windows": int(parts[1]) if parts[1].isdigit() else 1,
+                "path": remote_path,
+                "machine": machine_id,
+                "type": _get_remote_session_type(machine_id, remote_path),
+            })
+        remote_by_machine[machine_id] = machine_sessions
+    return remote_by_machine
+
+
 def cmd_list(args) -> int:
     """List tmux sessions or panes.
 
@@ -187,88 +279,12 @@ def cmd_list(args) -> int:
         return 0
 
     # Show sessions (original behavior)
-    from .usage_limit import is_parked as usage_limit_parked
+    local_sessions = [] if remote_only else list_local_sessions(show_context=show_context)
+    remote_by_machine = {} if local_only else list_remote_sessions(machine_filter)
 
-    all_sessions = []
-
-    # Get local sessions (skip if remote_only)
-    local_sessions = []
-    if not remote_only:
-        result = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}:#{pane_current_path}"],
-            capture_output=True,
-            text=True
-        )
-
-        if result.returncode == 0:
-            for line in result.stdout.strip().split("\n"):
-                if line:
-                    parts = line.split(":", 2)
-                    if len(parts) >= 2:
-                        path = parts[2] if len(parts) > 2 else ""
-                        cfg = _get_session_config_from_path(path)
-                        session_info = {
-                            "name": parts[0],
-                            "windows": int(parts[1]) if parts[1].isdigit() else 1,
-                            "path": path,
-                            "machine": None,
-                            "type": cfg.get("type"),
-                            "roles": cfg.get("roles", []),
-                            "parent": _display_parent(parts[0], path),
-                        }
-                        if usage_limit_parked(parts[0]):
-                            session_info["usage_limit"] = True
-                        if show_context:
-                            from .session_context import session_context as _sctx
-                            ctx = _sctx(parts[0])
-                            session_info["context"] = {
-                                "is_agent": ctx.is_agent,
-                                "remaining_pct": ctx.remaining_pct,
-                                "model": ctx.model,
-                                "flagged": ctx.flagged,
-                                "note": ctx.note,
-                            }
-                        local_sessions.append(session_info)
-                        all_sessions.append(session_info)
-
-    # Get remote sessions from all registered machines (skip if local_only)
-    remote_by_machine = {}
-    if not local_only:
-        machines = _get_all_machines()
-        for machine in machines:
-            machine_id = machine.get("id")
-            if not machine_id:
-                continue
-
-            # Skip "local" machine (reserved for future use)
-            if machine_id == "local":
-                continue
-
-            # Filter by specific machine if requested
-            if machine_filter and machine_id != machine_filter:
-                continue
-
-            cmd = "tmux list-sessions -F '#{session_name}:#{session_windows}:#{pane_current_path}' 2>/dev/null || echo ''"
-            result = _run_remote(machine_id, cmd)
-
-            machine_sessions = []
-            if result.returncode == 0 and result.stdout.strip():
-                for line in result.stdout.strip().split("\n"):
-                    if line:
-                        parts = line.split(":", 2)
-                        if len(parts) >= 2:
-                            remote_path = parts[2] if len(parts) > 2 else ""
-                            session_info = {
-                                "name": f"{parts[0]}@{machine_id}",
-                                "windows": int(parts[1]) if parts[1].isdigit() else 1,
-                                "path": remote_path,
-                                "machine": machine_id,
-                                "type": _get_remote_session_type(machine_id, remote_path),
-                            }
-                            machine_sessions.append(session_info)
-                            all_sessions.append(session_info)
-
-            remote_by_machine[machine_id] = machine_sessions
+    all_sessions = list(local_sessions)
+    for machine_sessions in remote_by_machine.values():
+        all_sessions.extend(machine_sessions)
 
     # Output
     if json_mode:

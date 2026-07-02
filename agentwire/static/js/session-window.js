@@ -72,6 +72,8 @@ export class SessionWindow {
         this._destroyed = false;       // set in close() so a stray onclose can't re-dial
         this._sessionEnded = false;    // true only when the tmux session truly ended (window closes)
         this._overlayKeyHandler = null;
+        this._visibilityHandler = null; // reports tab visibility so the server can back off polling
+        this._renderedLines = null;     // raw lines currently in the DOM (monitor-mode line diffing)
 
         // PTT (Push-to-talk) state
         this.pttButton = null;
@@ -157,6 +159,10 @@ export class SessionWindow {
         if (this._overlayKeyHandler) {
             document.removeEventListener('keydown', this._overlayKeyHandler, true);
             this._overlayKeyHandler = null;
+        }
+        if (this._visibilityHandler) {
+            document.removeEventListener('visibilitychange', this._visibilityHandler);
+            this._visibilityHandler = null;
         }
 
         // Clean up resize observer
@@ -720,6 +726,14 @@ export class SessionWindow {
 
             // Send initial terminal size (both modes need it for proper display)
             this._sendResize();
+
+            // Report tab visibility so the server backs off polling when the
+            // tab is hidden (#628). Listener registered once per window.
+            this._sendVisibility();
+            if (!this._visibilityHandler) {
+                this._visibilityHandler = () => this._sendVisibility();
+                document.addEventListener('visibilitychange', this._visibilityHandler);
+            }
         };
 
         this.ws.onmessage = (event) => {
@@ -784,8 +798,9 @@ export class SessionWindow {
                     } else if (msg.type === 'speak_text' && msg.text) {
                         desktop._speakText(msg.text, this.sessionId);
                     } else if (msg.type === 'output' && msg.data) {
-                        // Convert ANSI to HTML and display
-                        this.outputEl.innerHTML = ansiToHtml(msg.data);
+                        // Incremental line-diff render (#628) — only changed
+                        // lines touch the DOM instead of a full innerHTML swap
+                        this._renderOutput(msg.data);
                         this.outputEl.scrollTop = this.outputEl.scrollHeight;
                         // Mark activity when output received
                         this._markActivity();
@@ -793,6 +808,7 @@ export class SessionWindow {
                 } catch (e) {
                     // Fallback: display as plain text
                     this.outputEl.textContent = event.data;
+                    this._renderedLines = null;
                 }
             }
         };
@@ -825,6 +841,41 @@ export class SessionWindow {
                     this.ws.send(JSON.stringify({ type: 'input', data }));
                 }
             });
+        }
+    }
+
+    /**
+     * Monitor-mode incremental render (#628): keep one <div> per frame line
+     * and only rewrite lines whose raw text changed, instead of re-parsing
+     * the whole ~100-line frame via innerHTML on every update.
+     * (tmux capture-pane emits SGR codes per line, so lines convert
+     * independently.)
+     */
+    _renderOutput(data) {
+        const el = this.outputEl;
+        const lines = data.split('\n');
+        const prev = this._renderedLines;
+        if (!prev) el.textContent = '';  // clear any non-diffed content
+
+        while (el.childNodes.length > lines.length) {
+            el.removeChild(el.lastChild);
+        }
+        for (let i = 0; i < lines.length; i++) {
+            let div = el.childNodes[i];
+            if (!div) {
+                div = document.createElement('div');
+                el.appendChild(div);
+            } else if (prev && i < prev.length && prev[i] === lines[i]) {
+                continue;  // unchanged line — skip the DOM entirely
+            }
+            div.innerHTML = lines[i] ? ansiToHtml(lines[i]) : '<span> </span>';
+        }
+        this._renderedLines = lines;
+    }
+
+    _sendVisibility() {
+        if (this.mode !== 'terminal' && this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'visibility', visible: !document.hidden }));
         }
     }
 
