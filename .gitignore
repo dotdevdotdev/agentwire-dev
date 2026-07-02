@@ -60,3 +60,6 @@ snapshot_report.html
 
 # Node
 node_modules/
+
+# Private security-audit findings (never publish — see SECURITY.md)
+/security-audit/
