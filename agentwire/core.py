@@ -815,6 +815,81 @@ def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:
         )
 
 
+def _launch_tmux_session(
+    session_name: str,
+    session_path,
+    env: dict[str, str],
+    agent_cmd: str | None,
+    machine_id: str | None = None,
+) -> subprocess.CompletedProcess | None:
+    """Create a detached tmux session at *session_path* and start the agent.
+
+    The one launch sequence shared by ``new`` / ``recreate`` / ``fork`` (#630):
+    `tmux new-session -e K=V` injects *env* into the session environment
+    BEFORE the initial shell starts (post-hoc `set-environment` never reaches
+    it), then `send-keys` cd's into place and, if *agent_cmd* is non-empty,
+    starts the agent after a short settle.
+
+    Local (machine_id None): runs subprocess calls with check=True (raises on
+    tmux failure) and returns None. Remote: runs one composite shell command
+    over SSH and returns the CompletedProcess for the caller to check.
+    """
+    import time
+
+    path_str = str(session_path)
+    if machine_id:
+        env_flags = _build_tmux_env_flags_shell(env)
+        create_cmd = (
+            f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(path_str)} {env_flags}&& "
+            f"tmux send-keys -t {shlex.quote(session_name)} 'cd {shlex.quote(path_str)}' Enter"
+        )
+        if agent_cmd:
+            create_cmd += (
+                f" && sleep 0.1 && "
+                f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(agent_cmd)} Enter"
+            )
+        return _run_remote(machine_id, create_cmd)
+
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session_name, "-c", path_str,
+         *_build_tmux_env_flags(env)],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session_name, f"cd {shlex.quote(path_str)}", "Enter"],
+        check=True,
+    )
+    time.sleep(0.1)
+    if agent_cmd:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session_name, agent_cmd, "Enter"],
+            check=True,
+        )
+    return None
+
+
+def _graceful_kill(session_name: str, machine_id: str | None = None) -> None:
+    """Ask the agent to /exit, wait, then kill the tmux session.
+
+    The graceful-kill dance shared by ``new -f`` / ``recreate`` (#630).
+    Tolerant on every step — a missing session or dead agent never fails the
+    caller (kill-session errors are suppressed / captured).
+    """
+    import time
+
+    if machine_id:
+        kill_cmd = (
+            f"tmux send-keys -t {shlex.quote(session_name)} /exit Enter 2>/dev/null; "
+            f"sleep 2; "
+            f"tmux kill-session -t {shlex.quote(session_name)} 2>/dev/null"
+        )
+        _run_remote(machine_id, kill_cmd)
+        return
+    subprocess.run(["tmux", "send-keys", "-t", session_name, "/exit", "Enter"])
+    time.sleep(2)
+    subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+
+
 def _notify_portal_sessions_changed():
     """Notify portal that sessions have changed so it can broadcast to clients.
 
