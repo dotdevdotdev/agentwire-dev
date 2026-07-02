@@ -282,7 +282,7 @@ class AgentWireServer(
             client_max_size=max_body,
             middlewares=[
                 # Outermost so headers land on auth-rejected responses too.
-                create_security_headers_middleware(),
+                create_security_headers_middleware(hsts_enabled=config.server.hsts),
                 create_security_middleware(
                     config.server.auth_token,
                     config.server.allowed_origins,

@@ -442,11 +442,13 @@ _ARTIFACTS_CSP = "; ".join([
 ])
 
 
-def create_security_headers_middleware():
+def create_security_headers_middleware(hsts_enabled: bool = False):
     """Middleware stamping security response headers on every response.
 
-    HSTS is emitted only on TLS requests (an HSTS header over plain HTTP is
-    ignored by browsers, and pinning localhost dev to HTTPS would be wrong).
+    HSTS is opt-in (``server.hsts``) and emitted only on TLS requests: agentwire
+    commonly serves HTTPS with a self-signed cert, and a pinned HSTS policy
+    removes the cert-error click-through — a rotated/expired self-signed cert
+    would hard-lock the browser out of the portal.
     """
     csp = _build_csp()
 
@@ -455,15 +457,17 @@ def create_security_headers_middleware():
         try:
             response = await handler(request)
         except web.HTTPException as exc:
-            _stamp_security_headers(request, exc, csp)
+            _stamp_security_headers(request, exc, csp, hsts_enabled)
             raise
-        _stamp_security_headers(request, response, csp)
+        _stamp_security_headers(request, response, csp, hsts_enabled)
         return response
 
     return security_headers_middleware
 
 
-def _stamp_security_headers(request: web.Request, response, csp: str) -> None:
+def _stamp_security_headers(
+    request: web.Request, response, csp: str, hsts_enabled: bool
+) -> None:
     headers = response.headers
     headers.setdefault("X-Content-Type-Options", "nosniff")
     headers.setdefault("X-Frame-Options", "SAMEORIGIN")
@@ -472,7 +476,7 @@ def _stamp_security_headers(request: web.Request, response, csp: str) -> None:
         headers["Content-Security-Policy"] = _ARTIFACTS_CSP
     else:
         headers.setdefault("Content-Security-Policy", csp)
-    if request.secure:
+    if hsts_enabled and request.secure:
         headers.setdefault("Strict-Transport-Security", "max-age=31536000")
 
 
