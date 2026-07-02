@@ -1167,7 +1167,8 @@ class TestPermissionRouting:
             return_value=True,
         ), patch(
             "agentwire.server.prompt_router._capture", return_value=""
-        ), patch("subprocess.run") as run:
+        ):
+            run = server._run_subprocess = AsyncMock(return_value=(0, "", ""))
             task, sess = await self._start_request(client, server)
             assert sess.pending_permission.pane_index == 2
 
@@ -1208,7 +1209,8 @@ class TestPermissionRouting:
             return_value=False,
         ), patch(
             "agentwire.server.prompt_router._capture", return_value=""
-        ), patch("subprocess.run") as run:
+        ):
+            run = server._run_subprocess = AsyncMock(return_value=(0, "", ""))
             task, sess = await self._start_request(client, server)
             resp = await client.post(
                 "/api/permission/myproj/respond", json={"decision": "deny"}
@@ -1242,7 +1244,8 @@ class TestPermissionRouting:
             return_value=True,
         ), patch(
             "agentwire.server.prompt_router._capture", return_value=""
-        ), patch("subprocess.run"):
+        ):
+            server._run_subprocess = AsyncMock(return_value=(0, "", ""))
             task, sess = await self._start_request(client, server)
             requests = [m for m in broadcasts if m.get("type") == "permission_request"]
             assert requests and requests[0]["parent_notified"] == "orch"
@@ -1534,7 +1537,7 @@ class TestMonitorInProcessCapture:
         server.broadcast_dashboard = AsyncMock()
 
         # "watched" has an open window; "headless" does not. Both must broadcast.
-        sess = Session(name="watched", config=server._get_session_config("watched"))
+        sess = Session(name="watched", config=await server._get_session_config("watched"))
         sess.clients.add(object())
         server.active_sessions["watched"] = sess
 

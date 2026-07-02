@@ -254,7 +254,7 @@ class VoiceRoutesMixin:
             if name not in self.active_sessions:
                 from ..server import Session
 
-                self.active_sessions[name] = Session(name=name, config=self._get_session_config(name))
+                self.active_sessions[name] = Session(name=name, config=await self._get_session_config(name))
 
             session = self.active_sessions[name]
 
@@ -299,7 +299,7 @@ class VoiceRoutesMixin:
                 clean = strip_speech_tags(text)
                 if await self._kokoro_shim_ready():
                     try:
-                        session_config = self._get_session_config(name)
+                        session_config = await self._get_session_config(name)
                         wav = await self._tts_generate(
                             clean, voice or session_config.voice
                         )
@@ -318,7 +318,7 @@ class VoiceRoutesMixin:
                 )
 
             # Get session config for defaults
-            session_config = self._get_session_config(name)
+            session_config = await self._get_session_config(name)
             if voice is None:
                 voice = session_config.voice
             exaggeration = session_config.exaggeration

@@ -228,7 +228,7 @@ class TestSpeakDefaultTier:
         server.broadcast_dashboard = AsyncMock()
         # Session with a connected client
         from agentwire.server import Session
-        session = Session(name="dev", config=server._get_session_config("dev"))
+        session = Session(name="dev", config=await server._get_session_config("dev"))
         session.clients.add(_client())
         server.active_sessions["dev"] = session
 
@@ -278,7 +278,7 @@ class TestSpeakDefaultTier:
         server._kokoro_shim_ready = AsyncMock(return_value=True)
         server._tts_generate = AsyncMock(return_value=wav)
         from agentwire.server import Session
-        session = Session(name="dev", config=server._get_session_config("dev"))
+        session = Session(name="dev", config=await server._get_session_config("dev"))
         session.clients.add(_client())
         server.active_sessions["dev"] = session
 
@@ -299,7 +299,7 @@ class TestSpeakDefaultTier:
         server._kokoro_shim_ready = AsyncMock(return_value=True)
         server._tts_generate = AsyncMock(return_value=None)
         from agentwire.server import Session
-        session = Session(name="dev", config=server._get_session_config("dev"))
+        session = Session(name="dev", config=await server._get_session_config("dev"))
         session.clients.add(_client())
         server.active_sessions["dev"] = session
 
@@ -311,7 +311,7 @@ class TestSpeakDefaultTier:
         server._broadcast = AsyncMock()
         server.broadcast_dashboard = AsyncMock()
         from agentwire.server import Session
-        other = Session(name="dev", config=server._get_session_config("dev"))
+        other = Session(name="dev", config=await server._get_session_config("dev"))
         other.clients.add(_client())
         server.active_sessions["dev"] = other
 
