@@ -311,14 +311,31 @@ def _deliver_once(
     # Idempotent paste guard (#667): a previous attempt (an earlier whole-send
     # retry, or a prior tick) may have left this exact message sitting in the
     # box — landed but unsubmitted. Blindly pasting again doubles the draft
-    # (the observed "issue-659 twice" pile). So first look: already submitted →
-    # done; already landed → skip the paste and retry only the SUBMIT.
+    # (the observed "issue-659 twice" pile).
+    #
+    # The short-circuit demands POSITIVE full-message identity — the full
+    # whitespace-normalized message visible in the box (→ landed: skip the
+    # paste, retry only the submit) or on scrollback outside the box
+    # (→ already submitted). Nothing weaker counts before we have pasted:
+    # NOT empty-box+activity (real agent panes show ⏺/⎿/spinner glyphs in
+    # scrollback almost always — accepting that as "delivered" makes the msg
+    # drain unlink queued messages that were never sent: silent deletion),
+    # NOT the ``[Pasted text]`` placeholder (pre-paste it can only be someone
+    # ELSE's draft — skipping our paste and pressing Enter would force-submit
+    # a foreign draft; see message_on_scrollback), and NOT the caller marker
+    # (markers like council's are constant across messages, so a hit may be
+    # the PREVIOUS message). When identity is not provable, paste again — the
+    # existing full-line dedup makes duplicates recoverable; deletions aren't.
     already_landed = False
     try:
         cap = _snapshot(session, pane_index)
-        if submitted(cap, message, marker):
-            return True
-        already_landed = text_landed(cap, message)
+        box = input_box(cap)
+        needle = "".join(message.split())
+        if box is not None and needle:
+            if needle in "".join(box.split()):
+                already_landed = True
+            elif message_on_scrollback(cap, message):
+                return True
     except Exception:
         pass
 

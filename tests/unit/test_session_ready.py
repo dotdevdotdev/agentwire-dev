@@ -347,6 +347,81 @@ class TestNoDoublePaste:
         assert actions["enters"] == 0
 
 
+class TestPrePasteGuardIdentity:
+    """#668 review — the pre-paste short-circuit may fire ONLY on positive
+    full-message identity. Ambient evidence (activity glyphs beside an empty
+    box, a foreign [Pasted text] placeholder, a constant caller marker) must
+    never count as delivery before we have pasted: a false 'submitted' makes
+    the msg drain unlink queued messages that were never sent."""
+
+    def test_empty_box_with_transcript_glyphs_does_not_short_circuit(self, monkeypatch):
+        # A real agent pane: 200-line scrollback full of tool glyphs/spinner,
+        # empty input box. The old guard called submitted() pre-paste, which
+        # returned True on empty-box+activity → nothing pasted, reported sent.
+        _fake_clock(monkeypatch)
+        transcript = "⏺ Bash(ls)\n  ⎿ file.py\n✻ Thinking…\n· 1.2k tokens\n"
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return transcript + render_box()  # busy-looking, empty box
+            if a["enters"] == 0:
+                return transcript + render_box("fresh report")  # our paste landed
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "fresh report")
+        assert actions["pastes"] == 1  # the guard did NOT skip the paste
+
+    def test_constant_marker_on_scrollback_does_not_short_circuit(self, monkeypatch):
+        # Council-style constant marker already on scrollback from the PREVIOUS
+        # nudge: pre-paste it proves nothing about THIS message. The paste must
+        # happen (Phase 1 may then legitimately confirm via the marker).
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            return "[COUNCIL FOLLOW-UP]\nold nudge text\n" + render_box()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "second nudge", "[COUNCIL FOLLOW-UP]")
+        assert actions["pastes"] == 1
+
+    def test_foreign_pasted_placeholder_is_not_our_landing(self, monkeypatch):
+        # A human's half-composed large paste sits in the target box as
+        # [Pasted text ...]. Pre-paste that placeholder can only be someone
+        # ELSE's draft: we must not skip our paste, and we must never press
+        # Enter before pasting (which would force-submit the foreign draft).
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return render_box("[Pasted text #1 +57 lines]")
+            if a["enters"] == 0:
+                return render_box("our own report")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+
+        real_enter = session_ready.press_enter
+
+        def guarded_enter(s, pane_index=0):
+            assert actions["pastes"] > 0, "Enter pressed into a foreign draft before pasting"
+            real_enter(s, pane_index=pane_index)
+
+        monkeypatch.setattr(session_ready, "press_enter", guarded_enter)
+        assert session_ready.send_verified("s", "our own report")
+        assert actions["pastes"] == 1
+
+    def test_full_message_on_scrollback_short_circuits_as_submitted(self, monkeypatch):
+        # Positive identity: our FULL rendered message already on scrollback
+        # (not in the box) → a prior attempt submitted it. No paste, no Enter.
+        _fake_clock(monkeypatch)
+        msg = "[MSG from worker · done] finished  ⟨#abc123⟩"
+        actions = _env(monkeypatch, lambda a: f"{msg}\n" + render_box())
+        assert session_ready.send_verified("s", msg)
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 0
+
+
 class TestSubmitConfirmed:
     """#621 — Phase-2 confirm keys on 'the box no longer holds our text', since
     Phase 1 already proved the paste landed. The old `submitted` additionally
