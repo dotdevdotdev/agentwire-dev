@@ -313,7 +313,8 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
         return [], []
 
     monkeypatch.setattr(mod, "load_roles", fake_load_roles)
-    monkeypatch.setattr(mod.time, "sleep", lambda *a, **k: None)
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *a, **k: None)
     return cap
 
 
@@ -497,7 +498,8 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
 
     monkeypatch.setattr(mod, "load_roles", fake_load_roles)
     monkeypatch.setattr(mod, "_notify_portal_sessions_changed", lambda *a, **k: None)
-    monkeypatch.setattr(mod.time, "sleep", lambda *a, **k: None)
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *a, **k: None)
 
     def fake_run(cmd, *a, **k):
         joined = " ".join(str(x) for x in (cmd if isinstance(cmd, list) else [cmd]))
