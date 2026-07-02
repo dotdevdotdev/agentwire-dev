@@ -83,10 +83,11 @@ agentwire init
 agentwire portal start
 # Open http://127.0.0.1:8765 in Chrome — your cockpit is live (voice works immediately too)
 
-# New here? Start a guided helper session — it walks you through setup,
-# wires up your projects, explains the system, and helps you file issues or fork.
-agentwire dev
+# Start your first agent session
+agentwire new -s hello -p ~/projects/hello
 ```
+
+> **Optional:** clone this repo (`git clone https://github.com/dotdevdotdev/agentwire-dev ~/projects/agentwire-dev`) and `agentwire dev` opens a guided helper session inside it — setup walkthrough, project wiring, issue filing, forking. It requires the source checkout; everything above works without one.
 
 **Requirements:** Python 3.10+, tmux, ffmpeg, Claude Code
 

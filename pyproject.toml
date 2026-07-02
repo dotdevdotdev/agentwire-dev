@@ -45,6 +45,16 @@ dependencies = [
     "useful-moonshine-onnx>=20250101; python_version < '3.14'",
     # Used by agentwire.tts.base (TTSRequest); explicit rather than transitive via mcp.
     "pydantic>=2.0.0",
+    # Default-tier voice shim wrappers (#634): `agentwire kokoro start` /
+    # `agentwire stt start` run kokoro_server / stt_server with the installed
+    # package's own interpreter on a pip/uv-tool install, so their FastAPI
+    # wrapper (plus multipart uploads and the Moonshine warm-up's soundfile)
+    # must ship in the base install for the advertised out-of-the-box voice.
+    # All lightweight; starlette/uvicorn are already transitive via mcp.
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "python-multipart>=0.0.6",
+    "soundfile>=0.12.0; python_version < '3.14'",
     # Device-pairing QR codes in the terminal (`agentwire portal pair`). Pure
     # Python; ASCII output needs no Pillow. Import is guarded so it degrades to
     # a printed URL if absent.

@@ -24,6 +24,7 @@ from .core import (
     build_agent_command,
     check_pip_environment,
     check_python_version,
+    find_source_checkout,
     generate_certs,
     get_source_dir,
     load_config,
@@ -57,15 +58,25 @@ def _clean_uv_cache_for_agentwire() -> None:
 def cmd_dev(args) -> int:
     """Start or attach to the AgentWire dev/agentwire session."""
     session_name = "agentwire"
-    project_dir = get_source_dir()
 
     if tmux_session_exists(session_name):
         print(f"Dev session exists. Attaching to '{session_name}'...")
         subprocess.run(["tmux", "attach-session", "-t", session_name])
         return 0
 
-    if not project_dir.exists():
-        print(f"Project directory not found: {project_dir}", file=sys.stderr)
+    # The helper session runs inside the repo, so it needs a source checkout —
+    # a plain pip/uv-tool install doesn't have one. Search the conventional
+    # clone locations and gate with clear instructions rather than crash (#634).
+    project_dir = find_source_checkout()
+    if project_dir is None:
+        print("`agentwire dev` needs a source checkout of the agentwire-dev repo", file=sys.stderr)
+        print("(it opens a helper session inside the repo). None was found.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("  git clone https://github.com/dotdevdotdev/agentwire-dev ~/projects/agentwire-dev", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Cloned somewhere else? Point at it with dev.source_dir in", file=sys.stderr)
+        print("~/.agentwire/config.yaml or the AGENTWIRE_SOURCE_DIR env var.", file=sys.stderr)
+        print("Everything else (portal, sessions, voice) works without the checkout.", file=sys.stderr)
         return 1
 
     # Resolve the dev session's roles. Precedence (highest first):
@@ -497,7 +508,7 @@ def cmd_rebuild(args) -> int:
     # install step agree on which tree they're operating over.
     project_root = Path(__file__).parent.parent
     if not (project_root / "pyproject.toml").exists():
-        project_root = get_source_dir()
+        project_root = find_source_checkout() or get_source_dir()
     if not (project_root / "pyproject.toml").exists():
         print(
             f"  ✗ No source checkout at {project_root} (pyproject.toml missing).\n"

@@ -206,6 +206,7 @@ class TestRebuildSafety:
         fake_file.write_text("")
         monkeypatch.setattr(sys_mod, "__file__", str(fake_file))
         monkeypatch.setattr(sys_mod, "get_source_dir", lambda: tmp_path / "also-missing")
+        monkeypatch.setattr(sys_mod, "find_source_checkout", lambda: None)
         calls = []
         monkeypatch.setattr(
             subprocess, "run",

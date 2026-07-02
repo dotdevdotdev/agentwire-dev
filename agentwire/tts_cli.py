@@ -18,6 +18,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from .core import (
     _output_json,
@@ -427,6 +428,37 @@ def cmd_tts_status(args) -> int:
     return 0 if st.ready else 1
 
 
+def _resolve_shim_python() -> tuple[str | None, str | None, str | None]:
+    """(python, cwd, error) for running a default-tier shim server.
+
+    Prefers a source checkout's .venv (the dev workflow); otherwise the
+    installed package's own interpreter, provided the shim's web wrapper
+    (fastapi/uvicorn) is importable there. On a plain pip/uv-tool install
+    without those deps, returns an actionable error instead of assuming a
+    dev checkout exists (#634).
+    """
+    from .core import find_source_checkout
+
+    source_dir = find_source_checkout()
+    if source_dir:
+        venv_python = source_dir / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python), str(source_dir), None
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError:
+        return None, None, (
+            "the shim's web wrapper (fastapi/uvicorn) is not installed in this "
+            "environment.\n"
+            "Install it with:  uv tool install 'agentwire-dev[stt]' --force\n"
+            "  (pip: pip install 'agentwire-dev[stt]')\n"
+            "Or run from a source checkout: git clone "
+            "https://github.com/dotdevdotdev/agentwire-dev && cd agentwire-dev && uv sync"
+        )
+    return sys.executable, None, None
+
+
 # === STT Commands ===
 
 def cmd_stt_start(args) -> int:
@@ -446,21 +478,19 @@ def cmd_stt_start(args) -> int:
     backend = getattr(args, 'backend', None) or stt_config.get("engine", "auto")
     moonshine_model = stt_config.get("moonshine_model", "moonshine/base")
 
-    # Find agentwire source directory (for running from source venv)
-    source_dir = get_source_dir()
-    if not (source_dir / ".venv" / "bin" / "python").exists():
-        print("Error: Cannot find agentwire source directory with .venv", file=sys.stderr)
-        print(f"Configure dev.source_dir in ~/.agentwire/config.yaml (current: {source_dir})", file=sys.stderr)
+    # Resolve an interpreter that can run the shim: dev-checkout venv when one
+    # exists, otherwise the installed package's interpreter.
+    python_path, cwd, error = _resolve_shim_python()
+    if error:
+        print(f"Error: cannot start the STT shim — {error}", file=sys.stderr)
         return 1
-    agentwire_dir = source_dir
+    run_dir = cwd or str(Path.home())
 
-    # Build command using source venv
-    python_path = agentwire_dir / ".venv" / "bin" / "python"
-    cmd = f"cd {agentwire_dir} && WHISPER_MODEL={model} WHISPER_DEVICE=cpu STT_PORT={port} STT_HOST={host} STT_BACKEND={backend} MOONSHINE_MODEL={moonshine_model} {python_path} -m agentwire.stt.stt_server"
+    cmd = f"cd {run_dir} && WHISPER_MODEL={model} WHISPER_DEVICE=cpu STT_PORT={port} STT_HOST={host} STT_BACKEND={backend} MOONSHINE_MODEL={moonshine_model} {python_path} -m agentwire.stt.stt_server"
 
     # Create tmux session
     subprocess.run([
-        "tmux", "new-session", "-d", "-s", session_name, "-c", str(agentwire_dir)
+        "tmux", "new-session", "-d", "-s", session_name, "-c", run_dir
     ], check=True)
 
     subprocess.run([
@@ -561,19 +591,18 @@ def cmd_kokoro_start(args) -> int:
     port = args.port or 8102
     host = args.host or "0.0.0.0"
 
-    # Find agentwire source directory (for running from source venv)
-    source_dir = get_source_dir()
-    if not (source_dir / ".venv" / "bin" / "python").exists():
-        print("Error: Cannot find agentwire source directory with .venv", file=sys.stderr)
-        print(f"Configure dev.source_dir in ~/.agentwire/config.yaml (current: {source_dir})", file=sys.stderr)
+    # Resolve an interpreter that can run the shim: dev-checkout venv when one
+    # exists, otherwise the installed package's interpreter.
+    python_path, cwd, error = _resolve_shim_python()
+    if error:
+        print(f"Error: cannot start the Kokoro shim — {error}", file=sys.stderr)
         return 1
-    agentwire_dir = source_dir
+    run_dir = cwd or str(Path.home())
 
-    python_path = agentwire_dir / ".venv" / "bin" / "python"
-    cmd = f"cd {agentwire_dir} && KOKORO_PORT={port} KOKORO_HOST={host} {python_path} -m agentwire.tts.kokoro_server"
+    cmd = f"cd {run_dir} && KOKORO_PORT={port} KOKORO_HOST={host} {python_path} -m agentwire.tts.kokoro_server"
 
     subprocess.run([
-        "tmux", "new-session", "-d", "-s", session_name, "-c", str(agentwire_dir)
+        "tmux", "new-session", "-d", "-s", session_name, "-c", run_dir
     ], check=True)
 
     subprocess.run([
