@@ -395,33 +395,3 @@ def get_session_detail(session_id: str, machine: str = "local") -> dict | None:
         "gitBranch": git_branch,
         "messageCount": len(messages),
     }
-
-
-def get_project_sessions(project_path: str, machine: str = "local") -> list[str]:
-    """Get list of session IDs for a project.
-
-    This reads the session files directory rather than history.jsonl,
-    which may include sessions without user messages.
-
-    Args:
-        project_path: Absolute path to project directory
-        machine: Machine ID or 'local'
-
-    Returns:
-        List of session ID strings
-    """
-    if machine == "local":
-        projects_base = str(PROJECTS_DIR)
-    else:
-        projects_base = "~/.claude/projects"
-
-    encoded_path = encode_project_path(project_path)
-    session_dir = f"{projects_base}/{encoded_path}"
-
-    files = _list_directory(session_dir, machine)
-    session_ids = []
-    for f in files:
-        if f.endswith(".jsonl"):
-            session_ids.append(f[:-6])  # Remove .jsonl extension
-
-    return session_ids

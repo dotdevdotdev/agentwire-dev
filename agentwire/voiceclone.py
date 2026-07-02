@@ -331,37 +331,6 @@ def is_recording() -> bool:
     return LOCK_FILE.exists()
 
 
-def list_voices() -> int:
-    """List available voices from the custom TTS shim."""
-    if not is_custom_backend():
-        print("No cloned voices in default tier (browser voice). "
-              "Voice cloning requires tts.backend: custom.")
-        return 0
-    tts_url = get_tts_url()
-    try:
-        response = requests.get(f"{tts_url}/voices")
-        if response.status_code == 200:
-            data = response.json()
-            voices = data.get("voices", data) if isinstance(data, dict) else data
-
-            if not voices:
-                print("No voices available")
-                return 0
-
-            print(f"Available voices ({len(voices)}):")
-            for v in sorted(voices, key=lambda x: x.get("name", "")):
-                name = v.get("name", "?")
-                duration = v.get("duration", "?")
-                print(f"  {name}: {duration}s")
-            return 0
-        else:
-            print(f"Failed to list voices: {response.status_code}")
-            return 1
-    except requests.RequestException as e:
-        print(f"Connection failed: {e}")
-        return 1
-
-
 def delete_voice(voice_name: str) -> int:
     """Delete a voice from TTS server."""
     tts_url = get_tts_url()

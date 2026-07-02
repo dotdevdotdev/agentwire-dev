@@ -166,30 +166,6 @@ def is_session_locked(session: str) -> bool:
         return False
 
 
-def get_lock_holder(session: str) -> int | None:
-    """Get the PID of the process holding a lock (if any).
-
-    Args:
-        session: Session name
-
-    Returns:
-        PID of lock holder, or None if not locked or can't determine
-    """
-    lock_path = _get_lock_path(session)
-
-    if not lock_path.exists():
-        return None
-
-    try:
-        content = lock_path.read_text().strip()
-        if content:
-            return int(content)
-    except (ValueError, OSError):
-        pass
-
-    return None
-
-
 def _is_process_running(pid: int) -> bool:
     """Check if a process with given PID is running.
 
