@@ -372,6 +372,17 @@ function cycleWindow(direction) {
 // .xterm-helper-textarea) or any other text-input context, both Tab and
 // Shift+Tab pass through untouched — Claude Code uses Shift+Tab to cycle
 // permission modes and Tab for completion cycling (#659).
+//
+// One wrinkle: cycling itself focuses the landed-on terminal (cycleWindow →
+// SessionWindow.focus() → terminal.focus()), so without a carve-out the guard
+// would end every cycle chain after one hop — and a second Shift+Tab would
+// silently flip that Claude session's permission mode. So cycling is "sticky":
+// for a short grace window after a keyboard cycle, further Tab/Shift+Tab keep
+// cycling even though a terminal holds focus. Pause longer than the grace
+// window and the keys belong to the terminal again.
+const CYCLE_GRACE_MS = 1500;
+let lastKeyboardCycleTs = -Infinity;
+
 function tabBelongsToFocusedInput() {
     const el = document.activeElement;
     if (!el) return false;
@@ -383,9 +394,11 @@ function tabBelongsToFocusedInput() {
 function setupWindowCycling() {
     window.addEventListener('keydown', (e) => {
         if (e.key !== 'Tab') return;
-        if (tabBelongsToFocusedInput()) return;
+        const inCycleChain = performance.now() - lastKeyboardCycleTs < CYCLE_GRACE_MS;
+        if (!inCycleChain && tabBelongsToFocusedInput()) return;
         e.preventDefault();
         e.stopPropagation();
+        lastKeyboardCycleTs = performance.now();
         cycleWindow(e.shiftKey ? -1 : 1);
     }, true);  // capture phase — runs before xterm's handlers
 }
