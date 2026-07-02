@@ -419,7 +419,7 @@ def cmd_init(args) -> int:
 
     # Default ends on the portal-URL next steps; --assisted opts into the
     # interactive Claude setup session.
-    return run_onboarding(skip_session=not args.assisted)
+    return run_onboarding(skip_session=not args.assisted, force=args.force)
 
 
 def cmd_generate_certs(args) -> int:
@@ -576,6 +576,11 @@ def register_system_parser(subparsers) -> None:
         "--assisted", action="store_true",
         help="Spawn the interactive Claude setup session at the end "
              "(default: end on the portal-URL next steps)"
+    )
+    init_parser.add_argument(
+        "--force", action="store_true",
+        help="Reconfigure without prompting when a config already exists "
+             "(a timestamped config.yaml backup is written first)"
     )
     init_parser.set_defaults(func=cmd_init)
 

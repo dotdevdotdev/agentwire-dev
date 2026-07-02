@@ -6,6 +6,7 @@ Asks 3 questions, writes minimal config, then spawns Claude for interactive setu
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".agentwire"
@@ -149,11 +150,60 @@ def get_install_instructions(platform: str) -> dict[str, str]:
 
 
 # ─────────────────────────────────────────────────────────────
+# Re-init Safety
+# ─────────────────────────────────────────────────────────────
+
+
+def confirm_reinit(config_path: Path, force: bool = False) -> bool:
+    """Decide whether the wizard may proceed when a config already exists.
+
+    Returns True if it's safe to run (no existing config, --force, or the
+    user confirmed interactively). Non-interactive runs with an existing
+    config never proceed without --force.
+    """
+    if force or not config_path.exists():
+        return True
+
+    if not sys.stdin.isatty():
+        print_warning(f"Existing config found at {config_path}")
+        print_info("Refusing to overwrite in a non-interactive run.")
+        print_info("Re-run with --force to reconfigure (a timestamped .bak is written first).")
+        return False
+
+    print_warning(f"Existing config found at {config_path}")
+    print_info("Continuing will overwrite it (a timestamped .bak is written first).")
+    print()
+    answer = input("Overwrite existing config? [y/N]: ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def backup_config(config_path: Path) -> Path | None:
+    """Copy an existing config to a timestamped .bak next to it."""
+    if not config_path.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = config_path.with_name(f"{config_path.name}.{stamp}.bak")
+    shutil.copy2(config_path, backup_path)
+    return backup_path
+
+
+def ensure_machines_file(machines_path: Path) -> bool:
+    """Create an empty machines.json only if one doesn't exist.
+
+    Never resets an existing registry. Returns True if the file was created.
+    """
+    if machines_path.exists():
+        return False
+    machines_path.write_text('{"machines": []}\n')
+    return True
+
+
+# ─────────────────────────────────────────────────────────────
 # Main Onboarding
 # ─────────────────────────────────────────────────────────────
 
 
-def run_onboarding(skip_session: bool = True) -> int:
+def run_onboarding(skip_session: bool = True, force: bool = False) -> int:
     """Run the minimal onboarding wizard.
 
     Asks 3 questions:
@@ -168,7 +218,13 @@ def run_onboarding(skip_session: bool = True) -> int:
         skip_session: If True (the default), end the wizard on the portal-URL
             next-steps block. If False (--assisted), spawn the interactive
             Claude setup session at the end.
+        force: If True, skip the existing-config confirmation (a timestamped
+            .bak is still written before overwriting).
     """
+    if not confirm_reinit(CONFIG_DIR / "config.yaml", force=force):
+        print_info("Setup cancelled — existing config left untouched.")
+        return 0
+
     print()
     print(f"{BOLD}Welcome to AgentWire Setup!{RESET}")
     print()
@@ -338,13 +394,18 @@ services:
 """
 
     config_path = CONFIG_DIR / "config.yaml"
+    backup_path = backup_config(config_path)
+    if backup_path:
+        print_success(f"Backed up existing config to {backup_path}")
     config_path.write_text(config_content)
     print_success(f"Created {config_path}")
 
-    # Empty machines.json
+    # Empty machines.json — never reset an existing registry
     machines_path = CONFIG_DIR / "machines.json"
-    machines_path.write_text('{"machines": []}\n')
-    print_success(f"Created {machines_path}")
+    if ensure_machines_file(machines_path):
+        print_success(f"Created {machines_path}")
+    else:
+        print_info(f"Kept existing {machines_path}")
 
     if is_multi_machine:
         # Portal auth token — required because the config binds 0.0.0.0
