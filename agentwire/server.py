@@ -691,6 +691,16 @@ class AgentWireServer(
             self._remote_list_cache = (time.monotonic(), by_machine)
             return {m: [dict(s) for s in ss] for m, ss in by_machine.items()}
 
+    def _invalidate_session_caches(self) -> None:
+        """Drop the TTL session-listing caches.
+
+        Called on session lifecycle events (created/closed/renamed via
+        /api/notify) so the sessions_update broadcast that follows reflects
+        the change immediately instead of serving a ≤TTL-stale list.
+        """
+        self._local_list_cache = None
+        self._remote_list_cache = None
+
     async def _capture_session_output(self, name: str, max_age: float | None = None) -> str:
         """Capture a session's pane output, deduped across consumers (#628).
 
@@ -1603,6 +1613,12 @@ class AgentWireServer(
             self._capture_cache.pop(name, None)
             if session.output_task and not session.output_task.done():
                 session.output_task.cancel()
+            # Tell clients the session truly ended BEFORE closing — a bare
+            # close reads as a transient drop and both frontends would
+            # auto-reconnect, recreating the Session in an endless
+            # evict/reconnect cycle.
+            ended_type = "remote_session_ended" if "@" in name else "local_session_ended"
+            await self._broadcast(session, {"type": ended_type, "session": name})
             for ws in list(session.clients):
                 try:
                     await ws.close()

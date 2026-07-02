@@ -1588,7 +1588,27 @@ class TestMonitorLifecycle:
 
         assert "dead" not in server.active_sessions
         assert "alive" in server.active_sessions
+        # Clients are told the session truly ended BEFORE the close — a bare
+        # close reads as a transient drop and the frontends auto-reconnect,
+        # recreating the Session in an endless evict/reconnect cycle.
+        ws.send_json.assert_awaited_with({"type": "local_session_ended", "session": "dead"})
         ws.close.assert_awaited()
+
+    async def test_notify_session_created_invalidates_listing_caches(self, tmp_path):
+        """#662 review: the sessions_update broadcast after a session_created
+        notify must not serve a TTL-stale list that omits the new session."""
+        import time as _time
+        server = self._server(tmp_path)
+        server._local_list_cache = (_time.monotonic(), [{"name": "old-only"}])
+        server._remote_list_cache = (_time.monotonic(), {})
+
+        async with TestClient(TestServer(server.app)) as client:
+            resp = await client.post(
+                "/api/notify", json={"event": "session_created", "session": "foo"}
+            )
+            assert resp.status == 200
+        assert server._local_list_cache is None
+        assert server._remote_list_cache is None
 
     async def test_grace_window_protects_new_sessions(self, tmp_path):
         server = self._server(tmp_path)

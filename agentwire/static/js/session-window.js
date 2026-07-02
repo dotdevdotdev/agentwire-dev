@@ -797,6 +797,12 @@ export class SessionWindow {
                         desktop._playAudio(msg.data, this.sessionId);
                     } else if (msg.type === 'speak_text' && msg.text) {
                         desktop._speakText(msg.text, this.sessionId);
+                    } else if (msg.type === 'remote_session_ended' || msg.type === 'local_session_ended') {
+                        // tmux session truly ended (e.g. monitor-loop eviction) —
+                        // close the window instead of auto-reconnecting forever
+                        this._sessionEnded = true;
+                        this.close();
+                        return;
                     } else if (msg.type === 'output' && msg.data) {
                         // Incremental line-diff render (#628) — only changed
                         // lines touch the DOM instead of a full innerHTML swap

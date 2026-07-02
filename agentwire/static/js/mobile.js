@@ -268,6 +268,7 @@ function connectSessionWs(name) {
     ws = socket;
 
     let opened = false;
+    let sessionEnded = false;
     socket.onopen = () => {
         opened = true;
         wsReconnectDelay = 1000;
@@ -293,12 +294,20 @@ function connectSessionWs(name) {
             case 'audio':
                 if (msg.data && from === selectedSession) queueAudio(msg.data);
                 break;
+            case 'local_session_ended':
+            case 'remote_session_ended':
+                // tmux session truly ended (e.g. monitor-loop eviction) —
+                // don't auto-reconnect, or the server recreates the Session
+                // object forever in an evict/reconnect cycle
+                sessionEnded = true;
+                break;
             // `output` (terminal polling) and lock messages are irrelevant here
         }
     };
     socket.onclose = () => {
         if (ws !== socket) return;
         ws = null;
+        if (sessionEnded) return;
         // Handshake never completed — likely a 401. Probe the API once so
         // apiFetch raises the token modal (page reloads after entry).
         if (!opened && !tokenProbeFired) {
