@@ -1,5 +1,6 @@
 """Unit tests for agentwire.security — origin policy, token lifecycle, bind policy."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -372,3 +373,75 @@ class TestMiddlewareLockout:
             with pytest.raises(web.HTTPUnauthorized):
                 await mw(self._request("127.0.0.1"), self._handler)
         assert locked == []
+
+
+# ---------------------------------------------------------------------------
+# Token file hardening (atomic 0600 write, 0700 config dir)
+
+
+class TestWriteTokenFile:
+    def test_new_file_is_0600_and_dir_0700(self, tmp_path, monkeypatch):
+        path = tmp_path / "aw" / "portal.token"
+        monkeypatch.setattr(security, "TOKEN_FILE", path)
+        old_umask = os.umask(0o000)  # worst-case permissive umask
+        try:
+            security.write_token_file("tok-1")
+        finally:
+            os.umask(old_umask)
+        assert path.read_text() == "tok-1\n"
+        assert (path.stat().st_mode & 0o777) == 0o600
+        assert (path.parent.stat().st_mode & 0o777) == 0o700
+
+    def test_rotate_over_existing_stays_0600(self, tmp_path, monkeypatch):
+        path = tmp_path / "portal.token"
+        monkeypatch.setattr(security, "TOKEN_FILE", path)
+        security.write_token_file("tok-1")
+        security.write_token_file("tok-2")
+        assert path.read_text() == "tok-2\n"
+        assert (path.stat().st_mode & 0o777) == 0o600
+        # No leftover temp files from the atomic write.
+        assert list(path.parent.glob(".portal.token.*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Security response headers
+
+
+class TestSecurityHeaders:
+    def test_csp_covers_ui_requirements(self):
+        csp = security._build_csp()
+        assert "script-src 'self' https://cdn.jsdelivr.net" in csp
+        assert "ws: wss:" in csp
+        assert "https://raw.githubusercontent.com" in csp
+        assert "frame-ancestors 'self'" in csp
+        # pair.html's inline module must be hash-allowed, not broken.
+        assert "'sha256-" in csp
+
+    def test_inline_script_hashes_found(self):
+        # pair.html ships an inline <script type="module"> block.
+        assert security._inline_script_hashes()
+
+
+# ---------------------------------------------------------------------------
+# Bounded multipart reads
+
+
+class _FakeField:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read_chunk(self, size=None):
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class TestReadMultipartFieldLimited:
+    async def test_under_limit_returns_bytes(self):
+        field = _FakeField([b"aa", b"bb"])
+        assert await security.read_multipart_field_limited(field, 10) == b"aabb"
+
+    async def test_over_limit_raises_413_before_buffering_rest(self):
+        field = _FakeField([b"x" * 8, b"y" * 8, b"z" * 8])
+        with pytest.raises(web.HTTPRequestEntityTooLarge):
+            await security.read_multipart_field_limited(field, 10)
+        # The third chunk was never consumed — we aborted mid-stream.
+        assert field._chunks == [b"z" * 8]

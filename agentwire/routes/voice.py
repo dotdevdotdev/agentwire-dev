@@ -19,6 +19,8 @@ from pathlib import Path
 
 from aiohttp import web
 
+from ..security import read_multipart_field_limited
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +121,16 @@ class VoiceRoutesMixin:
             if audio_field is None:
                 return web.json_response({"error": "No audio data"})
 
-            audio_data = await audio_field.read()
+            # Stream with a size cap: abort 413 before buffering an over-limit
+            # body into RAM. Dedicated stt.max_upload_mb wins if configured,
+            # else reuse the general uploads cap.
+            max_mb = (
+                getattr(self.config.stt, "max_upload_mb", None)
+                or self.config.uploads.max_size_mb
+            )
+            audio_data = await read_multipart_field_limited(
+                audio_field, max_mb * 1024 * 1024
+            )
             if not audio_data:
                 return web.json_response({"error": "Empty audio data"})
 
@@ -148,6 +159,8 @@ class VoiceRoutesMixin:
             finally:
                 Path(wav_path).unlink(missing_ok=True)
 
+        except web.HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             return web.json_response({"error": str(e)})

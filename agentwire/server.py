@@ -55,9 +55,11 @@ from .routes.sessions_admin import SessionsAdminRoutesMixin, register_sessions_a
 from .routes.voice import VoiceRoutesMixin, register_voice_routes
 from .security import (
     WS_PROTOCOL_PREFIX,
+    create_security_headers_middleware,
     create_security_middleware,
     ensure_auth_token,
     is_loopback_host,
+    read_multipart_field_limited,
     resolve_auth_token,
     validate_startup_security,
 )
@@ -271,13 +273,21 @@ class AgentWireServer(
         # Origin + token enforcement. The middleware is a pure function of
         # config — run_server() resolves the token file into
         # config.server.auth_token before constructing the server.
+        # client_max_size is defense-in-depth for non-multipart bodies (JSON
+        # config saves, artifact uploads); the streaming multipart paths
+        # (/upload, /transcribe) enforce their own per-field limits because
+        # aiohttp does not apply client_max_size to request.multipart().
+        max_body = (max(config.uploads.max_size_mb, config.artifacts.max_size_mb) + 2) * 1024 * 1024
         self.app = web.Application(
+            client_max_size=max_body,
             middlewares=[
+                # Outermost so headers land on auth-rejected responses too.
+                create_security_headers_middleware(),
                 create_security_middleware(
                     config.server.auth_token,
                     config.server.allowed_origins,
                     on_lockout=self._on_auth_lockout,
-                )
+                ),
             ]
         )
         self._setup_jinja2()
@@ -2385,18 +2395,13 @@ class AgentWireServer(
             if not content_type.startswith("image/"):
                 return web.json_response({"error": f"File must be an image (got {content_type or 'unknown'})"})
 
-            # Read image data
-            image_data = await image_field.read()
+            # Read image data, aborting with 413 before buffering an
+            # over-limit body into RAM.
+            max_bytes = self.config.uploads.max_size_mb * 1024 * 1024
+            image_data = await read_multipart_field_limited(image_field, max_bytes)
 
             if not image_data:
                 return web.json_response({"error": "Empty image data"})
-
-            # Check file size
-            max_bytes = self.config.uploads.max_size_mb * 1024 * 1024
-            if len(image_data) > max_bytes:
-                return web.json_response({
-                    "error": f"File too large (max {self.config.uploads.max_size_mb}MB)"
-                })
 
             # Ensure uploads directory exists
             uploads_dir = self.config.uploads.dir
@@ -2418,6 +2423,8 @@ class AgentWireServer(
                 "filename": filename
             })
 
+        except web.HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Upload failed: {e}")
             return web.json_response({"error": str(e)})
