@@ -25,15 +25,20 @@ Add it automatically with `git commit -s` (use your real name and an email that 
 git clone https://github.com/dotdevdotdev/agentwire-dev.git
 cd agentwire-dev
 
-# Install in development mode
-uv pip install -e .
+# Install dependencies into a project venv (creates .venv automatically)
+uv sync --extra dev
+
+# Run the test suite
+uv run pytest
 
 # Run in development mode (picks up code changes instantly)
-agentwire portal start --dev
+uv run agentwire portal start --dev
 
-# After structural changes (pyproject.toml, new files)
-agentwire rebuild
+# After changing pyproject.toml or adding files, re-sync
+uv sync --extra dev
 ```
+
+If you also have agentwire installed as a tool (`uv tool install agentwire-dev`) and want that install to pick up your source changes, run `agentwire rebuild` (reinstalls from your checkout).
 
 ### Development Workflow
 
@@ -108,20 +113,6 @@ from agentwire.utils import agentwire_dir, config_path, logs_dir
 base = agentwire_dir()  # ~/.agentwire/
 ```
 
-### Error Handling
-
-Use the structured error classes in `agentwire/errors.py`:
-
-```python
-from agentwire.errors import AgentWireError
-
-raise AgentWireError(
-    what="Session not found",
-    why="No tmux session exists with that name",
-    how="Create a new session with 'agentwire new -s name'"
-)
-```
-
 ### Configuration
 
 Use dataclasses for configuration (see `agentwire/config.py`):
@@ -164,7 +155,6 @@ agentwire/
 ├── *_cli.py         # Per-domain command groups, each with a register_<domain>_parser()
 ├── server.py        # WebSocket server
 ├── config.py        # Configuration dataclasses
-├── errors.py        # Structured error classes
 ├── validation.py    # Config validation
 ├── utils/           # Shared utilities
 │   ├── subprocess.py  # Command execution

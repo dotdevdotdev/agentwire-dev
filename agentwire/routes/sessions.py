@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import socket
+import time
 
 from aiohttp import web
 
@@ -24,18 +25,13 @@ logger = logging.getLogger(__name__)
 
 class SessionsRoutesMixin:
     async def api_sessions(self, request: web.Request) -> web.Response:
-        """List all active sessions grouped by machine via CLI."""
+        """List all active sessions grouped by machine (in-process, cached)."""
         try:
-            # Get local sessions via CLI
-            local_success, local_result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-            local_sessions = local_result.get("sessions", []) if local_success else []
-
-            # Get remote sessions via CLI (includes SSH checks)
-            remote_success, remote_result = await self.run_agentwire_cmd(["list", "--remote", "--sessions"])
-            remote_sessions = remote_result.get("sessions", []) if remote_success else []
-
-            # Combine and add activity status
-            all_sessions = local_sessions + remote_sessions
+            # In-process, TTL-cached listings shared with the monitor loop (#627)
+            self._last_sessions_poll = time.monotonic()
+            all_sessions = await self._list_local_sessions()
+            for machine_sessions in (await self._list_remote_sessions()).values():
+                all_sessions.extend(machine_sessions)
             for s in all_sessions:
                 s["activity"] = self._get_global_session_activity(s.get("name", ""))
 
@@ -84,11 +80,10 @@ class SessionsRoutesMixin:
     async def api_sessions_local(self, request: web.Request) -> web.Response:
         """Fast endpoint for local sessions only (no SSH checks)."""
         try:
-            success, result = await self.run_agentwire_cmd(["list", "--local", "--sessions"])
-            if not success:
-                return web.json_response({"sessions": []})
-
-            sessions = result.get("sessions", [])
+            # In-process, TTL-cached listing shared with the monitor loop (#627);
+            # the poll timestamp keeps the monitor ticking for HTTP-only clients.
+            self._last_sessions_poll = time.monotonic()
+            sessions = await self._list_local_sessions()
             # Add activity status
             for s in sessions:
                 s["activity"] = self._get_global_session_activity(s.get("name", ""))

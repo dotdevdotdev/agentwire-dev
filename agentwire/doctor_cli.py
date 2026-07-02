@@ -440,7 +440,7 @@ def cmd_doctor(args) -> int:
     if ffmpeg_path:
         print(f"  [ok] ffmpeg: {ffmpeg_path}")
     else:
-        print("  [..] ffmpeg: not found (optional, needed for voice input)")
+        print("  [..] ffmpeg: not found (optional — needed for host-mic push-to-talk and voice cloning; browser voice input works without it)")
         print("     macOS: brew install ffmpeg")
         print("     Ubuntu: sudo apt install ffmpeg")
 
