@@ -367,10 +367,23 @@ function cycleWindow(direction) {
     saveTaskbarState();
 }
 
-// Tab / Shift+Tab to cycle open windows
+// Tab / Shift+Tab to cycle open windows.
+// Terminal input wins: when focus is inside an xterm (its hidden
+// .xterm-helper-textarea) or any other text-input context, both Tab and
+// Shift+Tab pass through untouched — Claude Code uses Shift+Tab to cycle
+// permission modes and Tab for completion cycling (#659).
+function tabBelongsToFocusedInput() {
+    const el = document.activeElement;
+    if (!el) return false;
+    if (el.closest('.xterm')) return true;  // xterm-helper-textarea et al.
+    const tag = el.tagName;
+    return tag === 'TEXTAREA' || tag === 'INPUT' || el.isContentEditable;
+}
+
 function setupWindowCycling() {
     window.addEventListener('keydown', (e) => {
         if (e.key !== 'Tab') return;
+        if (tabBelongsToFocusedInput()) return;
         e.preventDefault();
         e.stopPropagation();
         cycleWindow(e.shiftKey ? -1 : 1);
