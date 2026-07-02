@@ -116,11 +116,11 @@ def cmd_send(args) -> int:
 
         if use_buffer:
             encoded = base64.b64encode(prompt.encode()).decode()
+            # Pipe straight into the tmux buffer — no on-disk temp that could
+            # expose message content or be pre-planted on the remote host
             cmd = (
-                f"echo {shlex.quote(encoded)} | base64 -d > /tmp/aw-send-$$.txt && "
-                f"tmux load-buffer /tmp/aw-send-$$.txt && "
+                f"echo {shlex.quote(encoded)} | base64 -d | tmux load-buffer - && "
                 f"tmux paste-buffer -t {quoted_session} && "
-                f"rm -f /tmp/aw-send-$$.txt && "
                 f"sleep 0.5 && "
                 f"tmux send-keys -t {quoted_session} Enter"
             )

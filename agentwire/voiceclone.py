@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -11,16 +12,51 @@ import requests
 
 from agentwire.utils import config_path, load_yaml
 
-LOCK_FILE = Path("/tmp/agentwire-voiceclone.lock")
-PID_FILE = Path("/tmp/agentwire-voiceclone.pid")
-AUDIO_FILE = Path("/tmp/agentwire-voiceclone.wav")
-DEBUG_LOG = Path("/tmp/agentwire-voiceclone.log")
+# Runtime state lives under user-private dirs (0700), never world-writable /tmp:
+# fixed /tmp names are pre-plantable by co-tenants (CWE-377).
+RUN_DIR = Path.home() / ".agentwire" / "run"
+LOG_DIR = Path.home() / ".agentwire" / "logs"
+LOCK_FILE = RUN_DIR / "voiceclone.lock"
+PID_FILE = RUN_DIR / "voiceclone.pid"
+AUDIO_PATH_FILE = RUN_DIR / "voiceclone.audio-path"
+DEBUG_LOG = LOG_DIR / "voiceclone.log"
+
+
+def _ensure_private_dir(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 def log(msg: str) -> None:
-    """Log debug message."""
-    with open(DEBUG_LOG, "a") as f:
+    """Log debug message (O_NOFOLLOW so a planted symlink can't redirect writes)."""
+    _ensure_private_dir(LOG_DIR)
+    fd = os.open(DEBUG_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {msg}\n")
+
+
+def _new_audio_file() -> Path:
+    """Create an unpredictable 0600 audio temp file and record its path."""
+    _ensure_private_dir(RUN_DIR)
+    fd, path = tempfile.mkstemp(prefix="agentwire-voiceclone-", suffix=".wav", dir=RUN_DIR)
+    os.close(fd)
+    AUDIO_PATH_FILE.write_text(path)
+    return Path(path)
+
+
+def _current_audio_file() -> Path | None:
+    """Path of the in-flight recording, if any (spans start/stop invocations)."""
+    try:
+        text = AUDIO_PATH_FILE.read_text().strip()
+    except OSError:
+        return None
+    return Path(text) if text else None
+
+
+def _cleanup_audio_file() -> None:
+    audio = _current_audio_file()
+    if audio is not None:
+        audio.unlink(missing_ok=True)
+    AUDIO_PATH_FILE.unlink(missing_ok=True)
 
 
 def notify(msg: str) -> None:
@@ -93,12 +129,16 @@ def start_recording() -> int:
     # Clean up any stale recording
     subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-voiceclone"],
                    capture_output=True)
+    _ensure_private_dir(RUN_DIR)
     LOCK_FILE.unlink(missing_ok=True)
     PID_FILE.unlink(missing_ok=True)
-    AUDIO_FILE.unlink(missing_ok=True)
+    _cleanup_audio_file()
     time.sleep(0.1)
 
-    LOCK_FILE.touch()
+    # Exclusive create: a pre-planted lock file is an error, not silently reused
+    lock_fd = os.open(LOCK_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(lock_fd)
+    audio_file = _new_audio_file()
     beep("start")
 
     # Record audio at native sample rate, apply filters, resample to 24kHz before upload
@@ -122,7 +162,7 @@ def start_recording() -> int:
              "-af", audio_filter,
              "-ar", "44100", "-ac", "1",  # Native sample rate, mono
              "-acodec", "pcm_s16le",  # Uncompressed
-             str(AUDIO_FILE), "-y"],
+             str(audio_file), "-y"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     else:
@@ -133,7 +173,7 @@ def start_recording() -> int:
              "-af", audio_filter,
              "-ar", "44100", "-ac", "1",
              "-acodec", "pcm_s16le",
-             str(AUDIO_FILE), "-y"],
+             str(audio_file), "-y"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
@@ -172,7 +212,8 @@ def stop_recording(voice_name: str) -> int:
     # Wait for file to be written
     time.sleep(0.3)
 
-    if not AUDIO_FILE.exists():
+    audio_file = _current_audio_file()
+    if audio_file is None or not audio_file.exists():
         log("ERROR: No audio file")
         notify("Recording failed")
         beep("error")
@@ -181,7 +222,7 @@ def stop_recording(voice_name: str) -> int:
     # Check audio duration
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(AUDIO_FILE)],
+         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_file)],
         capture_output=True, text=True
     )
     try:
@@ -191,16 +232,20 @@ def stop_recording(voice_name: str) -> int:
             log("ERROR: Recording too short")
             notify("Recording too short (min 3 seconds)")
             beep("error")
-            AUDIO_FILE.unlink(missing_ok=True)
+            _cleanup_audio_file()
             return 1
     except (ValueError, AttributeError):
         log("WARNING: Could not determine audio duration")
 
     # Resample to 24kHz mono (required by Chatterbox TTS)
     log("Resampling to 24kHz...")
-    resampled_file = Path("/tmp/agentwire-voiceclone-24k.wav")
+    _ensure_private_dir(RUN_DIR)
+    resample_fd, resample_path = tempfile.mkstemp(
+        prefix="agentwire-voiceclone-24k-", suffix=".wav", dir=RUN_DIR)
+    os.close(resample_fd)
+    resampled_file = Path(resample_path)
     resample_result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(AUDIO_FILE),
+        ["ffmpeg", "-y", "-i", str(audio_file),
          "-ar", "24000", "-ac", "1",
          str(resampled_file)],
         capture_output=True, text=True
@@ -209,7 +254,8 @@ def stop_recording(voice_name: str) -> int:
         log(f"ERROR: Resample failed - {resample_result.stderr}")
         notify("Resample failed")
         beep("error")
-        AUDIO_FILE.unlink(missing_ok=True)
+        _cleanup_audio_file()
+        resampled_file.unlink(missing_ok=True)
         return 1
 
     # Use resampled file for upload
@@ -221,7 +267,7 @@ def stop_recording(voice_name: str) -> int:
 
     # Cleanup helper
     def cleanup():
-        AUDIO_FILE.unlink(missing_ok=True)
+        _cleanup_audio_file()
         upload_file.unlink(missing_ok=True)
 
     tts_url = get_tts_url()
@@ -272,7 +318,7 @@ def cancel_recording() -> int:
     subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-voiceclone"],
                    capture_output=True)
     LOCK_FILE.unlink(missing_ok=True)
-    AUDIO_FILE.unlink(missing_ok=True)
+    _cleanup_audio_file()
 
     beep("error")
     notify("Cancelled")

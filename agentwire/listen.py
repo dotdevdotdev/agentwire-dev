@@ -5,6 +5,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -57,16 +58,51 @@ AGENTWIRE_PATH = _find_executable("agentwire", [
     str(Path.home() / ".local" / "bin" / "agentwire"),
     "/usr/local/bin/agentwire",
 ])
-LOCK_FILE = Path("/tmp/agentwire-listen.lock")
-PID_FILE = Path("/tmp/agentwire-listen.pid")
-AUDIO_FILE = Path("/tmp/agentwire-listen.wav")
-DEBUG_LOG = Path("/tmp/agentwire-listen.log")
+# Runtime state lives under user-private dirs (0700), never world-writable /tmp:
+# fixed /tmp names are pre-plantable by co-tenants (CWE-377).
+RUN_DIR = Path.home() / ".agentwire" / "run"
+LOG_DIR = Path.home() / ".agentwire" / "logs"
+LOCK_FILE = RUN_DIR / "listen.lock"
+PID_FILE = RUN_DIR / "listen.pid"
+AUDIO_PATH_FILE = RUN_DIR / "listen.audio-path"
+DEBUG_LOG = LOG_DIR / "listen.log"
+
+
+def _ensure_private_dir(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 def log(msg: str) -> None:
-    """Log debug message."""
-    with open(DEBUG_LOG, "a") as f:
+    """Log debug message (O_NOFOLLOW so a planted symlink can't redirect writes)."""
+    _ensure_private_dir(LOG_DIR)
+    fd = os.open(DEBUG_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {msg}\n")
+
+
+def _new_audio_file() -> Path:
+    """Create an unpredictable 0600 audio temp file and record its path."""
+    _ensure_private_dir(RUN_DIR)
+    fd, path = tempfile.mkstemp(prefix="agentwire-listen-", suffix=".wav", dir=RUN_DIR)
+    os.close(fd)
+    AUDIO_PATH_FILE.write_text(path)
+    return Path(path)
+
+
+def _current_audio_file() -> Path | None:
+    """Path of the in-flight recording, if any (spans start/stop invocations)."""
+    try:
+        text = AUDIO_PATH_FILE.read_text().strip()
+    except OSError:
+        return None
+    return Path(text) if text else None
+
+
+def _cleanup_audio_file() -> None:
+    audio = _current_audio_file()
+    if audio is not None:
+        audio.unlink(missing_ok=True)
+    AUDIO_PATH_FILE.unlink(missing_ok=True)
 
 
 def notify(msg: str) -> None:
@@ -162,14 +198,18 @@ def start_recording() -> int:
     log("start_recording called")
 
     # Clean up any stale recording
-    subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-listen\\.wav"],
+    subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-listen-"],
                    capture_output=True)
+    _ensure_private_dir(RUN_DIR)
     LOCK_FILE.unlink(missing_ok=True)
     PID_FILE.unlink(missing_ok=True)
-    AUDIO_FILE.unlink(missing_ok=True)
+    _cleanup_audio_file()
     time.sleep(0.1)
 
-    LOCK_FILE.touch()
+    # Exclusive create: a pre-planted lock file is an error, not silently reused
+    lock_fd = os.open(LOCK_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(lock_fd)
+    audio_file = _new_audio_file()
     beep("start")
 
     # Record audio (16kHz mono for whisper)
@@ -186,7 +226,7 @@ def start_recording() -> int:
             [FFMPEG_PATH, "-f", "avfoundation", "-i", input_spec,
              "-ar", "16000", "-ac", "1",
              "-acodec", "pcm_s16le",  # Uncompressed for quality
-             str(AUDIO_FILE), "-y"],
+             str(audio_file), "-y"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     else:
@@ -195,7 +235,7 @@ def start_recording() -> int:
             ["ffmpeg", "-f", "pulse", "-i", "default",
              "-ar", "16000", "-ac", "1",
              "-acodec", "pcm_s16le",
-             str(AUDIO_FILE), "-y"],
+             str(audio_file), "-y"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
@@ -239,7 +279,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
         PID_FILE.unlink(missing_ok=True)
 
     # Force kill any remaining ffmpeg processes
-    subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-listen\\.wav"],
+    subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-listen-"],
                    capture_output=True)
     LOCK_FILE.unlink(missing_ok=True)
 
@@ -247,7 +287,8 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
     time.sleep(0.3)
 
     # Verify file exists and has content
-    if not AUDIO_FILE.exists():
+    audio_file = _current_audio_file()
+    if audio_file is None or not audio_file.exists():
         log("ERROR: No audio file")
         notify("Recording failed")
         beep("error")
@@ -256,14 +297,14 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
     # Wait for file to stabilize (size stops changing)
     last_size = 0
     for _ in range(10):  # Max 1 second wait
-        current_size = AUDIO_FILE.stat().st_size
+        current_size = audio_file.stat().st_size
         if current_size > 0 and current_size == last_size:
             break
         last_size = current_size
         time.sleep(0.1)
 
-    if AUDIO_FILE.stat().st_size < 1000:  # Less than 1KB is likely corrupt
-        log(f"ERROR: Audio file too small ({AUDIO_FILE.stat().st_size} bytes)")
+    if audio_file.stat().st_size < 1000:  # Less than 1KB is likely corrupt
+        log(f"ERROR: Audio file too small ({audio_file.stat().st_size} bytes)")
         notify("Recording too short")
         beep("error")
         return 1
@@ -285,7 +326,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
         return 1
     stt_url = stt_config.get("url", "http://localhost:8101")
 
-    text = transcribe_via_server(AUDIO_FILE, stt_url)
+    text = transcribe_via_server(audio_file, stt_url)
     if text:
         log(f"Used STT shim at {stt_url}")
     else:
@@ -298,7 +339,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
         log("ERROR: No speech detected")
         notify("No speech detected")
         beep("error")
-        AUDIO_FILE.unlink(missing_ok=True)
+        _cleanup_audio_file()
         return 1
 
     log(f"Transcribed: {text}")
@@ -310,7 +351,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
         beep("done")
         notify(f"Transcribed: {text[:30]}...")
         print(text)
-        AUDIO_FILE.unlink(missing_ok=True)
+        _cleanup_audio_file()
         return 0
 
     if type_at_cursor:
@@ -345,7 +386,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
             log(f"ERROR: Hammerspoon failed: {result.stderr}")
             notify("Failed to type text")
             beep("error")
-            AUDIO_FILE.unlink(missing_ok=True)
+            _cleanup_audio_file()
             return 1
 
         beep("done")
@@ -366,7 +407,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
             beep("error")
             print(f"Transcribed: {text}")
             print(f"But session '{session}' not running. Start with: agentwire dev")
-            AUDIO_FILE.unlink(missing_ok=True)
+            _cleanup_audio_file()
             return 1
 
         # Build message
@@ -388,14 +429,14 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
             log(f"ERROR: agentwire send raised exception: {e}")
             notify("Failed to send to session")
             beep("error")
-            AUDIO_FILE.unlink(missing_ok=True)
+            _cleanup_audio_file()
             return 1
 
         if result.returncode != 0:
             log(f"ERROR: agentwire send failed: {result.stderr}")
             notify("Failed to send to session")
             beep("error")
-            AUDIO_FILE.unlink(missing_ok=True)
+            _cleanup_audio_file()
             return 1
 
         beep("done")
@@ -403,7 +444,7 @@ def stop_recording(session: str, voice_prompt: bool = True, type_at_cursor: bool
         notify(f"Sent: {text[:30]}...")
         print(f"Sent to {session}: {text}")
 
-    AUDIO_FILE.unlink(missing_ok=True)
+    _cleanup_audio_file()
     return 0
 
 
@@ -417,10 +458,10 @@ def cancel_recording() -> int:
             pass
         PID_FILE.unlink(missing_ok=True)
 
-    subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-listen\\.wav"],
+    subprocess.run(["pkill", "-9", "-f", "ffmpeg.*agentwire-listen-"],
                    capture_output=True)
     LOCK_FILE.unlink(missing_ok=True)
-    AUDIO_FILE.unlink(missing_ok=True)
+    _cleanup_audio_file()
 
     beep("error")
     notify("Cancelled")
