@@ -48,8 +48,14 @@ class TestDeadLister:
         from agentwire import prompt_router
 
         inbox.enqueue(session, "stuck", sender="x")
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "dummy")
+        # Box content must CHANGE between sweeps to keep penalizing — identical
+        # content across sweeps is the no-penalty box_static path (#669).
+        drafts = iter(f"draft content {i}" for i in range(inbox.MAX_ATTEMPTS + 1))
+        monkeypatch.setattr(
+            prompt_router, "input_box_content_sgr", lambda vis: next(drafts)
+        )
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
         for _ in range(inbox.MAX_ATTEMPTS):
             inbox.flush_session(session)
