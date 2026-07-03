@@ -314,9 +314,76 @@ def input_box_content(visible: str) -> "str | None":
     return text[1:].strip()
 
 
-def capture(target_session: str, target_pane: int = 0) -> str:
-    """Capture the live screen text of a pane."""
-    return _capture(f"{target_session}.{target_pane}")
+# SGR (color/attribute) escape sequences, captured with tmux capture-pane -e.
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+# Non-SGR escapes that may survive an -e capture (OSC titles, cursor moves).
+_NON_SGR_ESCAPES = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-ln-z]")
+
+
+def _non_dim_lines(visible: str) -> list[str]:
+    """Per-line text with dim-rendered (``ESC[2m``) characters removed.
+
+    Walks an SGR-preserved capture tracking the dim/faint attribute (set by
+    param ``2``; cleared by ``0``, empty, or ``22``) — the attribute carries
+    across lines, matching terminal semantics. Ghost/autosuggest text is the
+    dim content; whatever survives is what a human actually typed.
+    """
+    visible = _NON_SGR_ESCAPES.sub("", visible)
+    lines: list[str] = []
+    cur: list[str] = []
+    dim = False
+    pos = 0
+
+    def emit(segment: str) -> None:
+        for ch in segment:
+            if ch == "\n":
+                lines.append("".join(cur))
+                cur.clear()
+            elif not dim:
+                cur.append(ch)
+
+    for m in _SGR_RE.finditer(visible):
+        emit(visible[pos:m.start()])
+        for param in (m.group(1) or "0").split(";"):
+            if param in ("", "0", "22"):
+                dim = False
+            elif param == "2":
+                dim = True
+        pos = m.end()
+    emit(visible[pos:])
+    lines.append("".join(cur))
+    return lines
+
+
+def input_box_content_sgr(visible: str) -> "str | None":
+    """SGR-aware ``input_box_content``: dim-only ghost text reads as empty.
+
+    *visible* must be an SGR-preserving capture (``capture-pane -e``). Claude
+    Code renders ghost/autosuggest text inside the input box dim (``ESC[2m``)
+    and human-typed drafts never dim, so content that is entirely dim is not a
+    draft — the box is deliverable. Any non-dim content is returned as usual
+    (defer). On any ambiguity (line-count mismatch, glyph itself dim, no
+    parseable box) this degrades to the plain parse — never wider than it.
+    """
+    plain = input_box_content(visible)  # ANSI_PATTERN strips SGR: same parse
+    if not plain:
+        return plain  # None (defer) or "" (empty) — nothing to reclassify
+    non_dim = _non_dim_lines(visible)
+    plain_lines = ANSI_PATTERN.sub("", _NON_SGR_ESCAPES.sub("", visible)).split("\n")
+    if len(non_dim) != len(plain_lines):
+        return plain
+    rules = [i for i, ln in enumerate(plain_lines) if _is_rule_line(ln)]
+    if len(rules) < 2:
+        return plain
+    text = "\n".join(non_dim[rules[-2] + 1:rules[-1]]).lstrip()
+    if not text or text[0] not in _PROMPT_GLYPHS:
+        return plain  # prompt glyph rendered dim/odd — stay conservative
+    return text[1:].strip()
+
+
+def capture(target_session: str, target_pane: int = 0, escapes: bool = False) -> str:
+    """Capture the live screen text of a pane (``escapes=True`` keeps SGR)."""
+    return _capture(f"{target_session}.{target_pane}", escapes=escapes)
 
 
 def prompt_is_empty(target_session: str, target_pane: int = 0) -> bool:
@@ -326,9 +393,12 @@ def prompt_is_empty(target_session: str, target_pane: int = 0) -> bool:
     is mid-typing. Conservative by design — any non-empty content (a draft OR
     a busy-state placeholder like "Press up to edit queued messages") and any
     screen we can't parse as a clean empty box returns False (defer). A delayed
-    message is fine; a clobbered human draft is not.
+    message is fine; a clobbered human draft is not. Captures with SGR escapes
+    so dim-rendered ghost/autosuggest text doesn't read as a draft (#669).
     """
-    content = input_box_content(_capture(f"{target_session}.{target_pane}"))
+    content = input_box_content_sgr(
+        _capture(f"{target_session}.{target_pane}", escapes=True)
+    )
     return content == ""
 
 

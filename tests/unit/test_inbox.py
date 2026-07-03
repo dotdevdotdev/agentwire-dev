@@ -102,12 +102,111 @@ class TestInputBox:
         assert prompt_router.input_box_content(colored) == ""
 
     def test_prompt_is_empty_gate(self, monkeypatch):
-        monkeypatch.setattr(prompt_router, "_capture", lambda t: EMPTY_BOX)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t, **kw: EMPTY_BOX)
         assert prompt_router.prompt_is_empty("s", 0) is True
-        monkeypatch.setattr(prompt_router, "_capture", lambda t: DRAFT_BOX)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t, **kw: DRAFT_BOX)
         assert prompt_router.prompt_is_empty("s", 0) is False
-        monkeypatch.setattr(prompt_router, "_capture", lambda t: DIALOG)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t, **kw: DIALOG)
         assert prompt_router.prompt_is_empty("s", 0) is False
+        monkeypatch.setattr(prompt_router, "_capture", lambda t, **kw: GHOST_BOX)
+        assert prompt_router.prompt_is_empty("s", 0) is True
+        monkeypatch.setattr(prompt_router, "_capture", lambda t, **kw: MIXED_BOX)
+        assert prompt_router.prompt_is_empty("s", 0) is False
+
+
+# SGR-preserved captures (tmux capture-pane -e). Claude Code renders the box
+# border colored, ghost/autosuggest text dim (ESC[2m), and typed text plain.
+DIM_RULE = f"\x1b[38;5;244m{RULE}\x1b[39m"
+
+SGR_EMPTY_BOX = f"""\
+some agent output above
+{DIM_RULE}
+❯
+{DIM_RULE}
+  status bar
+"""
+
+GHOST_BOX = f"""\
+some agent output above
+{DIM_RULE}
+❯ \x1b[2mTry "fix lint errors"\x1b[22m
+{DIM_RULE}
+  status bar
+"""
+
+# Ghost styled with a combined dim+color sequence and reset via ESC[0m.
+GHOST_BOX_COMBINED = f"""\
+output
+{DIM_RULE}
+❯ \x1b[2;38;5;242mhow can I help?\x1b[0m
+{DIM_RULE}
+  status bar
+"""
+
+SGR_DRAFT_BOX = f"""\
+output
+{DIM_RULE}
+❯ real typed draft
+{DIM_RULE}
+  status bar
+"""
+
+MIXED_BOX = f"""\
+output
+{DIM_RULE}
+❯ typed prefix\x1b[2m ghost completion tail\x1b[22m
+{DIM_RULE}
+  status bar
+"""
+
+SGR_QUEUED_BOX = f"""\
+output
+{DIM_RULE}
+❯ \x1b[2mPress up to edit queued messages\x1b[22m
+{DIM_RULE}
+  status bar
+"""
+
+
+class TestInputBoxSgr:
+    def test_sgr_empty_box(self):
+        assert prompt_router.input_box_content_sgr(SGR_EMPTY_BOX) == ""
+
+    def test_dim_only_ghost_reads_empty(self):
+        assert prompt_router.input_box_content_sgr(GHOST_BOX) == ""
+
+    def test_combined_dim_color_ghost_reads_empty(self):
+        assert prompt_router.input_box_content_sgr(GHOST_BOX_COMBINED) == ""
+
+    def test_real_draft_still_defers(self):
+        assert prompt_router.input_box_content_sgr(SGR_DRAFT_BOX) == "real typed draft"
+
+    def test_mixed_dim_and_typed_keeps_typed(self):
+        content = prompt_router.input_box_content_sgr(MIXED_BOX)
+        assert content == "typed prefix"
+
+    def test_dim_queued_placeholder_reads_empty(self):
+        # If a future build renders the queued placeholder dim it's ghost text;
+        # today's non-dim render still routes through is_queued_placeholder.
+        assert prompt_router.input_box_content_sgr(SGR_QUEUED_BOX) == ""
+
+    def test_plain_queued_placeholder_unchanged(self):
+        assert (
+            prompt_router.input_box_content_sgr(QUEUED_BOX)
+            == "Press up to edit queued messages"
+        )
+
+    def test_plain_captures_fall_back(self):
+        # No SGR at all — behaves exactly like the plain parse.
+        assert prompt_router.input_box_content_sgr(EMPTY_BOX) == ""
+        assert prompt_router.input_box_content_sgr(DRAFT_BOX).startswith("this is my")
+        assert prompt_router.input_box_content_sgr(DIALOG) is None
+
+    def test_dim_prompt_glyph_falls_back_to_plain(self):
+        # If the glyph itself renders dim the SGR parse can't find the box —
+        # degrade to the plain (conservative, defer-shaped) result.
+        weird = f"output\n{RULE}\n\x1b[2m❯ hint text\x1b[22m\n{RULE}\n status"
+        assert prompt_router.input_box_content_sgr(weird) == "hint text"
 
 
 # =============================================================================
@@ -172,13 +271,24 @@ class TestBroadcast:
 # =============================================================================
 
 
-def _patch_delivery(monkeypatch, empty=True, deliver=(True, "delivered")):
+def _patch_delivery(monkeypatch, empty=True, deliver=(True, "delivered"), box=None):
     from agentwire import usage_limit
-    monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
-    monkeypatch.setattr(
-        prompt_router, "input_box_content",
-        lambda vis: "" if empty else "draft content",
-    )
+    monkeypatch.setattr(usage_limit, "_capture", lambda s, **kw: "dummy screen")
+    monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "dummy screen")
+    # Default non-empty box content VARIES per sweep (an actively-edited draft);
+    # identical content across sweeps is the no-penalty box_static path (#669) —
+    # pass a fixed ``box=`` to exercise it.
+    calls = {"n": 0}
+
+    def _box(vis):
+        if empty:
+            return ""
+        if box is not None:
+            return box
+        calls["n"] += 1
+        return f"draft content {calls['n']}"
+
+    monkeypatch.setattr(prompt_router, "input_box_content_sgr", _box)
     monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
     monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: empty)
     sent = []
@@ -351,8 +461,8 @@ class TestTick:
 class TestEscalation:
     def test_busy_screen_defers_target_busy(self, isolate, monkeypatch):
         inbox.enqueue("s", "PR done", kind="done", sender="worker")
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: None)
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: None)
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
 
         res = inbox.flush_session("s")
@@ -363,8 +473,8 @@ class TestEscalation:
 
     def test_done_under_threshold_defers_box_not_empty(self, isolate, monkeypatch):
         inbox.enqueue("s", "PR done", kind="done", sender="worker")
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "draft content")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
 
         res = inbox.flush_session("s")
@@ -378,8 +488,8 @@ class TestEscalation:
         msg.attempts = 10
         inbox._write_message(msg.path, msg)
 
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "draft content")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
         sent = []
         monkeypatch.setattr(prompt_router, "safe_deliver", lambda s, p, text: (sent.append(text) or (True, "delivered")))
@@ -396,8 +506,8 @@ class TestEscalation:
         msg.attempts = 10
         inbox._write_message(msg.path, msg)
 
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: None)
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: None)
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
 
         res = inbox.flush_session("s")
@@ -412,8 +522,8 @@ class TestEscalation:
         msg.attempts = 10
         inbox._write_message(msg.path, msg)
 
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft content")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "draft content")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: False)
 
         res = inbox.flush_session("s")
@@ -429,9 +539,9 @@ class TestQueuedPlaceholderDefer:
     The collision guard is untouched: we still never paste into a non-empty box."""
 
     def _placeholder_box(self, monkeypatch):
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
         monkeypatch.setattr(
-            prompt_router, "input_box_content",
+            prompt_router, "input_box_content_sgr",
             lambda vis: "Press up to edit queued messages",
         )
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
@@ -465,14 +575,74 @@ class TestQueuedPlaceholderDefer:
         assert sent == []  # box non-empty → never delivered into
 
 
+class TestBoxStatic:
+    """Unrecognized-but-static box content (#669): identical across N sweeps →
+    defer WITHOUT penalty (like target_busy) instead of burning to dead-letter."""
+
+    def test_static_content_stops_penalizing(self, isolate, monkeypatch):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        sent = _patch_delivery(monkeypatch, empty=False, box='Try "fix lint errors"')
+        reasons = [
+            inbox.flush_session("s")["reason"]
+            for _ in range(inbox.MAX_ATTEMPTS + 5)
+        ]
+        # Pre-threshold sweeps penalize; from the Nth identical capture on, no penalty.
+        assert reasons[: inbox._BOX_STATIC_THRESHOLD - 1] == ["box_not_empty"] * (
+            inbox._BOX_STATIC_THRESHOLD - 1
+        )
+        assert set(reasons[inbox._BOX_STATIC_THRESHOLD - 1:]) == {"box_static"}
+        pending = inbox.list_messages("s")
+        assert len(pending) == 1
+        assert pending[0].attempts == inbox._BOX_STATIC_THRESHOLD - 1
+        assert inbox.list_dead("s") == []  # never dead-lettered
+        assert sent == []  # and never pasted
+
+    def test_changing_content_keeps_penalizing(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=False)  # default: varies per sweep
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        assert inbox.list_messages("s") == []
+        assert len(inbox.list_dead("s")) == 1
+
+    def test_box_static_counter_unit(self, isolate):
+        assert not inbox._box_static("s", "x")
+        assert not inbox._box_static("s", "x")
+        assert inbox._box_static("s", "x")  # third identical sweep
+        assert not inbox._box_static("s", "y")  # content change resets
+        inbox._clear_box_state("s")
+        assert not inbox._box_static("s", "y")
+        assert not inbox._box_static("s", "y")
+        assert inbox._box_static("s", "y")
+
+    def test_state_file_is_not_a_message(self, isolate):
+        inbox._box_static("s", "x")
+        assert inbox.list_messages("s") == []
+
+    def test_empty_box_clears_state(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        inbox._box_static("s", "stale")
+        _patch_delivery(monkeypatch, empty=True)
+        inbox.flush_session("s")
+        assert not inbox._box_state_path("s").exists()
+
+
 class TestDeadLetterEscalation:
     """A: a load-bearing report-back (done/request/escalation) that dead-letters
     emails the owner out-of-band; note does not. Escalation is best-effort and
     must never break the drain."""
 
     def _occupied_agent(self, monkeypatch):
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "human draft")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        # Varying draft per sweep — identical content would hit the no-penalty
+        # box_static path (#669) and never dead-letter.
+        calls = {"n": 0}
+
+        def _box(vis):
+            calls["n"] += 1
+            return f"human draft {calls['n']}"
+
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", _box)
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
 
     def _capture_email(self, monkeypatch, sink):
@@ -536,7 +706,7 @@ class TestIdempotentDelivery:
     def _patch(self, monkeypatch, deliver, scrollback):
         from agentwire import session_ready, usage_limit
         monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
         sent = []
         monkeypatch.setattr(
@@ -652,8 +822,8 @@ class TestPurgePending:
         inbox.enqueue("s", "active", sender="x")
         inbox.enqueue("s", "passive", kind="ingest", sender="x")
         # dead-letter one
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "draft")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
         msgs = inbox.enqueue("s", "doomed", kind="done", sender="x")
         msgs[0].attempts = inbox.MAX_ATTEMPTS - 1
@@ -673,8 +843,8 @@ class TestPurgePending:
 class TestForceFlush:
     def test_force_pastes_despite_nonempty_box(self, isolate, monkeypatch):
         inbox.enqueue("s", "urgent", kind="done", sender="w")
-        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s: "dummy")
-        monkeypatch.setattr(prompt_router, "input_box_content", lambda vis: "draft")
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "draft")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
         sent = []
         monkeypatch.setattr(

@@ -121,9 +121,15 @@ def _tmux(args: list[str], timeout: float = 5) -> subprocess.CompletedProcess:
     )
 
 
-def _capture(target: str, scrollback: int | None = None) -> str:
-    """Capture pane text. Visible screen only unless ``scrollback`` lines given."""
+def _capture(target: str, scrollback: int | None = None, escapes: bool = False) -> str:
+    """Capture pane text. Visible screen only unless ``scrollback`` lines given.
+
+    ``escapes=True`` adds ``-e`` (preserve SGR escape sequences) so callers can
+    distinguish dim-rendered ghost/autosuggest text from real typed text.
+    """
     cmd = ["capture-pane", "-t", target, "-p"]
+    if escapes:
+        cmd.append("-e")
     if scrollback:
         cmd += ["-S", f"-{scrollback}"]
     try:

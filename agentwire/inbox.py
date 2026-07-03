@@ -64,10 +64,18 @@ MAX_ATTEMPTS = 40
 
 # Defer reasons that DON'T penalize: the target is legitimately busy — running a
 # long command (unparseable box → "target_busy") or generating with human-queued
-# input (the "queued messages" placeholder → "queued_placeholder"). Such messages
-# stay pending forever instead of burning toward dead-letter; doctor /
-# worktree --watch surface them, and they deliver once the box frees up.
-_NO_PENALTY_REASONS = frozenset({"target_busy", "queued_placeholder"})
+# input (the "queued messages" placeholder → "queued_placeholder"), or the box
+# holds unrecognized-but-static content ("box_static": identical across
+# consecutive sweeps ≈ an unknown placeholder, not an actively-typed draft).
+# Such messages stay pending forever instead of burning toward dead-letter;
+# doctor / worktree --watch surface them, and they deliver once the box frees up.
+_NO_PENALTY_REASONS = frozenset({"target_busy", "queued_placeholder", "box_static"})
+
+# Consecutive sweeps the box must show byte-identical content before the defer
+# stops penalizing (see _box_static). Low enough that an unknown placeholder
+# costs only a couple of attempts; high enough that a paused human draft eats
+# at least a few penalty ticks before being classed as static.
+_BOX_STATIC_THRESHOLD = 3
 
 # Load-bearing kinds: a silently-dropped one is a real loss, so on dead-letter it
 # is escalated out-of-band (owner email). note is fire-and-forget and ingest
@@ -182,6 +190,42 @@ def ingest_dir(session: str) -> Path:
     never walks (it's in ``_RESERVED_DIRS`` and below the top-level glob), so
     these wait silently until pulled."""
     return session_dir(session) / "ingest"
+
+
+def _box_state_path(session: str) -> Path:
+    # No .json suffix so pending_files' *.json glob can never pick it up.
+    return session_dir(session) / ".box-state"
+
+
+def _box_static(session: str, content: str) -> bool:
+    """True if this recipient's box has shown identical content ≥ N sweeps.
+
+    Per-recipient last-seen box content persisted next to the inbox. Content
+    unchanged across ``_BOX_STATIC_THRESHOLD`` consecutive drain sweeps is not
+    an actively-typed human draft — most likely an unrecognized placeholder —
+    so the drain defers WITHOUT penalty (like ``target_busy``) instead of
+    burning messages toward dead-letter (#669). Never widens delivery: the
+    box is still non-empty, so nothing pastes — only the penalty changes.
+    """
+    path = _box_state_path(session)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        data = {}
+    count = int(data.get("count", 0)) + 1 if data.get("content") == content else 1
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"content": content, "count": count}))
+    except OSError:
+        pass
+    return count >= _BOX_STATIC_THRESHOLD
+
+
+def _clear_box_state(session: str) -> None:
+    try:
+        _box_state_path(session).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _log_event(event: str, **fields) -> None:
@@ -707,8 +751,10 @@ def flush_session(session: str, force: bool = False) -> dict:
                         "deferred": False, "reason": "delivered",
                     }
 
-            visible = prompt_router.capture(session, 0)
-            box_content = prompt_router.input_box_content(visible)
+            # SGR-preserving capture so dim ghost/autosuggest text inside the
+            # box reads as empty instead of starving delivery (#669).
+            visible = prompt_router.capture(session, 0, escapes=True)
+            box_content = prompt_router.input_box_content_sgr(visible)
 
             if box_content is None:
                 # Target is busy (input box not located). Defer.
@@ -725,14 +771,23 @@ def flush_session(session: str, force: bool = False) -> dict:
                 # defer WITHOUT penalty (like target_busy) so a generating-with-queued
                 # session doesn't burn report-backs toward dead-letter. Either way we
                 # never paste — only the penalty decision differs.
-                placeholder = prompt_router.is_queued_placeholder(box_content)
-                reason = "queued_placeholder" if placeholder else "box_not_empty"
+                if prompt_router.is_queued_placeholder(box_content):
+                    reason = "queued_placeholder"
+                elif _box_static(session, box_content):
+                    # Same unrecognized content for N straight sweeps — an
+                    # unknown placeholder, not an active draft. Still deferred
+                    # (never pasted), but no longer burning toward dead-letter.
+                    reason = "box_static"
+                else:
+                    reason = "box_not_empty"
                 dead = _bump_attempts(messages, reason)
                 _log_event("deferred", to=session, count=len(messages), reason=reason)
                 return {
                     "session": session, "delivered": pre_consumed, "deferred": True,
                     "reason": reason, "dead": dead,
                 }
+
+            _clear_box_state(session)  # box is empty — reset the static counter
 
         rendered = "\n".join(m.render() for m in messages)
         delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
