@@ -599,7 +599,6 @@ class TestDispatchWatchdog:
     def test_dead_child_with_held_pipes_reaped(self, monkeypatch):
         # Child exits immediately but a background grandchild inherits the
         # stdout pipe — bare communicate() would block on pipe EOF forever.
-        import subprocess as sp
         self._fast_watchdog(monkeypatch, 3600)
         from agentwire import scheduler
         start = time.time()
