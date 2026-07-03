@@ -28,6 +28,7 @@ EXECUTION_PLANE_PREFIXES = (
     "pi.",
     "hooks.",
     "dev.",
+    "palette.",  # user palette `run` templates feed the shell (#676)
 )
 
 # Value shapes that are command-shaped regardless of section.
