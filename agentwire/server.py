@@ -450,6 +450,26 @@ class AgentWireServer(
             # shim's /health and surfaces server_transcribe promptly.
             self._voice_status_cache = None
 
+    async def stop_managed_stt(self) -> None:
+        """Stop the managed Moonshine shim when server STT is disabled.
+
+        ``--no-stt`` / ``stt.backend: none`` must actually silence the ``:8101``
+        shim, not just skip spawning a new one (#679) — otherwise a shim left
+        over from a previous portal run keeps serving. Delegates to the CLI
+        (single source of truth): ``agentwire stt stop`` kills the
+        ``agentwire-stt`` tmux session and is a quiet no-op (exit 1,
+        "not running") when there is nothing to stop.
+        """
+        try:
+            success, result = await self.run_agentwire_cmd(["stt", "stop"], json_output=False)
+            if success:
+                logger.info("[STT] Stopped managed Moonshine shim (STT disabled)")
+            # Failure here almost always means "not running" — nothing to do.
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[STT] Managed shim stop error: %s", e)
+
     async def ensure_managed_tts(self) -> None:
         """Ensure the default-tier Kokoro TTS shim subprocess is running.
 
@@ -2968,6 +2988,10 @@ async def run_server(config: Config):
 
     if config.stt.backend == "default" and moonshine_importable():
         asyncio.create_task(server.ensure_managed_stt())
+    elif config.stt.backend == "none":
+        # --no-stt / stt.backend: none — actually turn STT off: stop a shim
+        # left running by a previous portal, don't just skip the spawn (#679).
+        asyncio.create_task(server.stop_managed_stt())
 
     # Cleanup old uploads on startup
     await server.cleanup_old_uploads()

@@ -970,6 +970,32 @@ class TestEnsureManagedStt:
         assert moonshine_importable() is True
 
 
+class TestStopManagedStt:
+    """--no-stt must stop a shim left running by a previous portal (#679)."""
+
+    async def test_delegates_to_stt_stop_cli(self, portal_client):
+        client, server = portal_client
+        calls = []
+
+        async def fake_cmd(args, json_output=True):
+            calls.append((args, json_output))
+            return True, {"output": "STT server stopped."}
+
+        server.run_agentwire_cmd = fake_cmd
+        await server.stop_managed_stt()
+        assert calls == [(["stt", "stop"], False)]
+
+    async def test_not_running_is_soft(self, portal_client):
+        client, server = portal_client
+
+        async def fake_cmd(args, json_output=True):
+            return False, {"error": "STT server is not running."}
+
+        server.run_agentwire_cmd = fake_cmd
+        # Must not raise — nothing to stop is the common case.
+        await server.stop_managed_stt()
+
+
 # ---------------------------------------------------------------------------
 # CLI overrides (--no-stt / --no-tts) — apply_cli_overrides
 # ---------------------------------------------------------------------------
