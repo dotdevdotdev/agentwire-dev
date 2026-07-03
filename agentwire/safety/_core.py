@@ -471,6 +471,9 @@ def load_write_patterns_from_tooldefs(tooldefs_dir: Optional[Path]) -> List[Dict
                     "pattern": regex,
                     "reason": f"{tool_name}: {cmd_def.get('description', cmd_str)}",
                     "ask": True,
+                    # Command-prefix rule: match command position only, never
+                    # quoted argument/message content (#675).
+                    "anchored": True,
                 }
                 # An explicit ``id:`` on the tooldef command yields a stable
                 # rule ID (e.g. ``git.push``) that survives description edits —
@@ -908,6 +911,165 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
     return subs, None
 
 
+#
+# CONTENT MASKING (#675)
+#
+# Tooldef rules are COMMAND-PREFIX rules (``\bgh\s+pr\s+comment\b``), but the
+# haystacks above include quoted argument text — so a commit message that
+# merely *mentions* "gh pr comment" false-matches the rule. Anchored rules are
+# therefore matched against MASKED subcommands instead: quoted spans that can
+# only be content (a quoted token containing whitespace — a message, an echo
+# string, a heredoc body) are replaced with a placeholder, while quoted
+# single words are kept (``"gh" pr comment`` is still a real command) and
+# ``sh -c "…"`` payloads are recursively re-scanned as commands.
+
+_MASK = "\x00"
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w+)\1")
+_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc body lines (``<<EOF … EOF``) — they are content."""
+    m = _HEREDOC_RE.search(command)
+    if not m:
+        return command
+    delim = m.group(2)
+    nl = command.find("\n", m.end())
+    if nl == -1:
+        return command
+    lines = command[nl + 1:].split("\n")
+    for i, line in enumerate(lines):
+        if line.strip() == delim:
+            rest = "\n".join(lines[i + 1:])
+            return command[:nl + 1] + _strip_heredoc_bodies(rest)
+    # Unterminated heredoc: everything after the marker is body.
+    return command[:nl + 1]
+
+
+def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
+    """Split ``command`` into subcommands of ``(token_text, fully_quoted)``.
+
+    Quotes/escapes are resolved into the token text (so ``g''h`` -> ``gh``);
+    ``fully_quoted`` is True when no character of the token was unquoted.
+    """
+    subs: List[List[Tuple[str, bool]]] = []
+    cur: List[Tuple[str, bool]] = []
+    buf: List[str] = []
+    has_unquoted = False
+    has_any = False
+
+    def end_token() -> None:
+        nonlocal buf, has_unquoted, has_any
+        if has_any:
+            cur.append(("".join(buf), not has_unquoted))
+        buf, has_unquoted, has_any = [], False, False
+
+    def end_sub() -> None:
+        nonlocal cur
+        end_token()
+        if cur:
+            subs.append(cur)
+            cur = []
+
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "'":
+            j = command.find("'", i + 1)
+            if j == -1:
+                j = n
+            buf.append(command[i + 1:j])
+            has_any = True
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            out: List[str] = []
+            while j < n and command[j] != '"':
+                if command[j] == "\\" and j + 1 < n and command[j + 1] in '"\\$`':
+                    out.append(command[j + 1])
+                    j += 2
+                else:
+                    out.append(command[j])
+                    j += 1
+            buf.append("".join(out))
+            has_any = True
+            i = j + 1
+        elif c == "\\" and i + 1 < n:
+            buf.append(command[i + 1])
+            has_unquoted = True
+            has_any = True
+            i += 2
+        elif c in " \t":
+            end_token()
+            i += 1
+        elif c in ";\n":
+            end_sub()
+            i += 1
+        elif c in "&|":
+            end_sub()
+            while i < n and command[i] in "&|":
+                i += 1
+        else:
+            buf.append(c)
+            has_unquoted = True
+            has_any = True
+            i += 1
+    end_sub()
+    return subs
+
+
+def masked_subcommands(command: str) -> List[str]:
+    """Return per-subcommand strings with content-only quoted spans masked.
+
+    Used for command-prefix (``anchored``) rules so quoted argument text —
+    commit messages, echo strings, heredoc bodies — cannot false-match a
+    command rule, while quoting obfuscation of the command itself still
+    normalizes to the literal form.
+    """
+    command = _strip_heredoc_bodies(command)
+
+    assigns: Dict[str, str] = {}
+    for m in _ASSIGN_RE.finditer(command):
+        assigns[m.group(1)] = m.group(2).strip("'\"")
+
+    def _resolve(tok: str) -> str:
+        for name, val in assigns.items():
+            tok = tok.replace("${%s}" % name, val).replace("$" + name, val)
+        return tok
+
+    results: List[str] = []
+    for toks in _scan_masked_tokens(command):
+        words: List[str] = []
+        prev = ""
+        for text, fully_quoted in toks:
+            resolved = _resolve(text)
+            is_content = fully_quoted and (not resolved or any(ch in " \t\n" for ch in resolved))
+            if not words and _ASSIGN_TOKEN_RE.match(resolved):
+                # Leading VAR=value assignment — its value is data here (the
+                # assigns table already handles later ``$VAR`` expansion).
+                words.append(_MASK)
+                prev = _MASK
+                continue
+            if is_content:
+                # A ``sh -c "…"`` payload is a command, not content — rescan.
+                if (
+                    words
+                    and prev.startswith("-")
+                    and "c" in prev
+                    and words[0].rsplit("/", 1)[-1] in _SHELL_NAMES
+                ):
+                    results.extend(masked_subcommands(resolved))
+                words.append(_MASK)
+                prev = _MASK
+            else:
+                words.append(resolved)
+                prev = resolved
+        if words and any(w != _MASK for w in words):
+            results.append(" ".join(words))
+    return results
+
+
 # ============================================================================
 # DECISION LADDERS
 # ============================================================================
@@ -993,9 +1155,12 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     # ``ask`` at the end (the unattended resolver turns that into a block).
     subcommands, ambiguous = normalize_subcommands(command)
     haystacks = [command] + [s for s in subcommands if s and s != command]
+    # Anchored (command-prefix) rules match only masked subcommands, so quoted
+    # argument text — commit messages, echo strings — can't false-match (#675).
+    masked_haystacks = masked_subcommands(command)
 
-    def _search(pat: str) -> bool:
-        for hay in haystacks:
+    def _search(pat: str, hays: List[str]) -> bool:
+        for hay in hays:
             try:
                 if re.search(pat, hay, re.IGNORECASE):
                     return True
@@ -1015,8 +1180,9 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
         reason = pattern_obj.get("reason", "Matched pattern")
         should_ask = pattern_obj.get("ask", False)
         bypassable = pattern_obj.get("bypassable", False)
+        anchored = pattern_obj.get("anchored", False)
         try:
-            if _search(pattern):
+            if _search(pattern, masked_haystacks if anchored else haystacks):
                 if should_ask:
                     return {
                         "decision": "ask",
