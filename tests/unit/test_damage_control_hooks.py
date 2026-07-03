@@ -149,6 +149,97 @@ class TestBashHookCheckCommand:
 
 
 # ---------------------------------------------------------------------------
+# bash-tool-damage-control.py: anchored (command-prefix) rules — #675
+# ---------------------------------------------------------------------------
+
+
+class TestAnchoredRules:
+    """Anchored rules match command position only, never quoted content."""
+
+    GH_RULE = {
+        "pattern": r"\bgh\s+pr\s+comment\b",
+        "reason": "GitHub CLI: Add a comment to a PR",
+        "ask": True,
+        "anchored": True,
+    }
+
+    @staticmethod
+    def _config(patterns):
+        return {
+            "bashToolPatterns": patterns,
+            "zeroAccessPaths": [],
+            "readOnlyPaths": [],
+            "noDeletePaths": [],
+            "allowedPaths": [],
+        }
+
+    def _check(self, bash_hook, command):
+        return bash_hook.check_command(command, self._config([self.GH_RULE]))
+
+    def test_quoted_message_mention_not_matched(self, bash_hook):
+        r = self._check(
+            bash_hook,
+            'git commit -m "document that gh pr comment was blocked"',
+        )
+        assert r["decision"] == "allow"
+
+    def test_quoted_echo_mention_not_matched(self, bash_hook):
+        r = self._check(bash_hook, 'echo "gh pr comment was blocked" >> notes.md')
+        assert r["decision"] == "allow"
+
+    def test_heredoc_body_mention_not_matched(self, bash_hook):
+        r = self._check(
+            bash_hook, 'git commit -F - <<EOF\nnotes about gh pr comment\nEOF'
+        )
+        assert r["decision"] == "allow"
+
+    def test_real_command_still_matched(self, bash_hook):
+        r = self._check(bash_hook, "gh pr comment 5 --body hi")
+        assert r["decision"] == "ask"
+
+    def test_real_command_in_chain_still_matched(self, bash_hook):
+        r = self._check(bash_hook, "git status && gh pr comment 5 --body hi")
+        assert r["decision"] == "ask"
+
+    def test_quote_obfuscated_command_still_matched(self, bash_hook):
+        assert self._check(bash_hook, 'g"h" pr comment 5')["decision"] == "ask"
+        assert self._check(bash_hook, '"gh" pr comment 5')["decision"] == "ask"
+
+    def test_var_indirection_still_matched(self, bash_hook):
+        r = self._check(bash_hook, "G=gh; $G pr comment 5")
+        assert r["decision"] == "ask"
+
+    def test_shell_dash_c_payload_still_matched(self, bash_hook):
+        r = self._check(bash_hook, 'bash -c "gh pr comment 5 --body hi"')
+        assert r["decision"] == "ask"
+
+    def test_unanchored_rule_still_matches_content(self, bash_hook):
+        # Content-based rules keep whole-command semantics.
+        rule = dict(self.GH_RULE)
+        del rule["anchored"]
+        r = bash_hook.check_command(
+            'git commit -m "mentions gh pr comment"', self._config([rule])
+        )
+        assert r["decision"] == "ask"
+
+    def test_tooldef_rules_are_anchored(self, bash_hook, tmp_path):
+        (tmp_path / "gh.yaml").write_text(
+            "name: GitHub CLI\ncommands:\n"
+            "  - cmd: gh pr comment <pr>\n"
+            "    access: write\n"
+            "    description: Add a comment to a PR\n"
+        )
+        patterns = bash_hook.load_write_patterns_from_tooldefs(tmp_path)
+        assert patterns and all(p.get("anchored") for p in patterns)
+
+    def test_masked_subcommands_masks_quoted_content(self, bash_hook):
+        subs = bash_hook.masked_subcommands('git commit -m "a b c" && echo hi')
+        assert subs[0].startswith("git commit -m ")
+        assert "a b c" not in subs[0]
+        assert subs[1] == "echo hi"
+
+
+# ---------------------------------------------------------------------------
 # bash-tool-damage-control.py: helper functions
 # ---------------------------------------------------------------------------
 

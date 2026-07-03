@@ -7,28 +7,36 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\bgit\s+reset\s+--hard\b'
     reason: git reset --hard (use --soft or stash)
+    anchored: true
 
   - pattern: '\bgit\s+clean\s+(-[^\s]*)*-[fd]'
     reason: git clean with force/directory flags
+    anchored: true
 
   # Note: This blocks --force but NOT --force-with-lease
   - pattern: '\bgit\s+push\s+.*--force(?!-with-lease)'
     reason: git push --force (use --force-with-lease)
+    anchored: true
 
   - pattern: '\bgit\s+push\s+(-[^\s]*)*-f\b'
     reason: git push -f (use --force-with-lease)
+    anchored: true
 
   - pattern: '\bgit\s+stash\s+clear\b'
     reason: git stash clear (deletes ALL stashes)
+    anchored: true
 
   - pattern: '\bgit\s+reflog\s+expire\b'
     reason: git reflog expire (destroys recovery mechanism)
+    anchored: true
 
   - pattern: '\bgit\s+gc\s+.*--prune=now'
     reason: git gc --prune=now (can lose dangling commits)
+    anchored: true
 
   - pattern: '\bgit\s+filter-branch\b'
     reason: git filter-branch (rewrites entire history)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # GIT OPERATIONS REQUIRING CONFIRMATION (ask: true)
@@ -36,23 +44,29 @@ bashToolPatterns:
   - pattern: '\bgit\s+checkout\s+--\s*\.'
     reason: Discards all uncommitted changes
     ask: true
+    anchored: true
 
   - pattern: '\bgit\s+restore\s+\.'
     reason: Discards all uncommitted changes
     ask: true
+    anchored: true
 
   - pattern: '\bgit\s+stash\s+drop\b'
     reason: Permanently deletes a stash
     ask: true
+    anchored: true
 
   - pattern: '\bgit\s+branch\s+(-[^\s]*)*-D'
     reason: Force deletes branch (even if unmerged)
     ask: true
+    anchored: true
 
   - pattern: '\bgit\s+push\s+\S+\s+--delete\b'
     reason: Deletes remote branch
     ask: true
+    anchored: true
 
   - pattern: '\bgit\s+push\s+\S+\s+:\S+'
     reason: Deletes remote branch (old syntax)
     ask: true
+    anchored: true
