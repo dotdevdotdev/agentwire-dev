@@ -566,3 +566,113 @@ class TestPersistentSessionDispatch:
         self._dispatch(proj, type="claude-bypass")
         assert killed == ["persist-s"]
         assert precreated == ["persist-s"]
+
+
+class TestDispatchWatchdog:
+    """#677: a hung ensure must never starve the board. _run_ensure gets a
+    max-runtime ceiling, self-heals from a dead child whose pipes are held
+    open by grandchildren, and the timeout aftermath is loud (session kill +
+    owner notification)."""
+
+    def _fast_watchdog(self, monkeypatch, max_runtime):
+        from types import SimpleNamespace
+
+        from agentwire import scheduler
+        from agentwire.scheduler import dispatch
+        monkeypatch.setattr(dispatch, "_WATCHDOG_POLL", 0.1)
+        monkeypatch.setattr(
+            scheduler, "_sched_config",
+            lambda: SimpleNamespace(dispatch_max_runtime=max_runtime))
+
+    # --- _run_ensure ---
+
+    def test_hung_child_killed_at_ceiling(self, monkeypatch):
+        from agentwire import scheduler
+        from agentwire.scheduler import _EXIT_TIMEOUT
+        self._fast_watchdog(monkeypatch, 1)
+        start = time.time()
+        exit_code, result, duration = scheduler._run_ensure(["sleep", "60"])
+        assert exit_code == _EXIT_TIMEOUT
+        assert time.time() - start < 15  # nowhere near 60s
+        assert result is not None and result.returncode == _EXIT_TIMEOUT
+
+    def test_dead_child_with_held_pipes_reaped(self, monkeypatch):
+        # Child exits immediately but a background grandchild inherits the
+        # stdout pipe — bare communicate() would block on pipe EOF forever.
+        import subprocess as sp
+        self._fast_watchdog(monkeypatch, 3600)
+        from agentwire import scheduler
+        start = time.time()
+        exit_code, result, duration = scheduler._run_ensure(
+            ["sh", "-c", "echo hi; sleep 60 & exit 0"])
+        assert exit_code == 0
+        assert time.time() - start < 30  # reaped by the poll, not pipe EOF
+
+    def test_normal_completion_unaffected(self, monkeypatch):
+        from agentwire import scheduler
+        self._fast_watchdog(monkeypatch, 3600)
+        exit_code, result, duration = scheduler._run_ensure(
+            ["sh", "-c", "echo done"])
+        assert exit_code == 0
+        assert "done" in result.stdout
+
+    def test_zero_ceiling_disables_watchdog_kill(self, monkeypatch):
+        from agentwire import scheduler
+        self._fast_watchdog(monkeypatch, 0)
+        exit_code, result, duration = scheduler._run_ensure(
+            ["sh", "-c", "sleep 0.3; echo ok"])
+        assert exit_code == 0
+
+    # --- dispatch aftermath ---
+
+    def _patch_dispatch(self, monkeypatch, proj):
+        import agentwire.locking
+        from agentwire import scheduler
+        from agentwire.scheduler import _EXIT_TIMEOUT
+        killed, notified = [], []
+        monkeypatch.setattr(agentwire.locking, "remove_stale_lock", lambda s: None)
+        monkeypatch.setattr(scheduler, "_kill_session", lambda s: killed.append(s))
+        monkeypatch.setattr(scheduler, "_pre_create_session", lambda t: None)
+        monkeypatch.setattr(scheduler, "_run_ensure",
+                            lambda cmd, env=None: (_EXIT_TIMEOUT, None, 999))
+        monkeypatch.setattr(scheduler, "_parse_ensure_summary",
+                            lambda t, r, **kw: ("", [], []))
+        monkeypatch.setattr(scheduler, "_notify_dispatch_timeout",
+                            lambda t, s, d: notified.append((t.name, s, d)))
+        monkeypatch.setattr(scheduler, "_log_event", lambda *a, **k: None)
+        monkeypatch.setattr(scheduler, "_notify_portal", lambda *a, **k: None)
+        monkeypatch.setattr(scheduler, "_capture_head", lambda p: "")
+        monkeypatch.setattr(scheduler, "save_board", lambda b: None)
+        return killed, notified
+
+    def _project(self, tmp_path, task_yaml):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentwire.yml").write_text(task_yaml)
+        return proj
+
+    def _dispatch(self, proj, **task_kwargs):
+        from agentwire import scheduler
+        task = SchedulerTask(name="t", project=str(proj), session="wd-s",
+                             task="t", schedule=Schedule(every="1h"), **task_kwargs)
+        board = Board()
+        board.tasks["t"] = task
+        return scheduler._dispatch_inplace_task(board, task, TaskState())
+
+    def test_timeout_kills_session_and_notifies(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n")
+        killed, notified = self._patch_dispatch(monkeypatch, proj)
+        state = self._dispatch(proj)
+        assert state.last_status == "timeout"
+        # killed once pre-dispatch (fresh session) and once post-timeout
+        assert killed.count("wd-s") == 2
+        assert notified == [("t", "wd-s", 999)]
+
+    def test_timeout_spares_persistent_session_but_still_notifies(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path,
+                             "tasks:\n  t:\n    prompt: do\n    exit_on_complete: false\n")
+        killed, notified = self._patch_dispatch(monkeypatch, proj)
+        state = self._dispatch(proj)
+        assert state.last_status == "timeout"
+        assert killed == []
+        assert notified == [("t", "wd-s", 999)]

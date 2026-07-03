@@ -205,6 +205,7 @@ channels:  # Outbound-only notifications. Only email + quo ship.
 scheduler:
   autostart: true        # Start the scheduler daemon when the portal boots (default: true)
   dispatch_cooldown: 60  # Seconds between task dispatches (default: 60)
+  dispatch_max_runtime: 14400  # Watchdog ceiling per dispatch in seconds; a hung ensure is killed and the task marked timeout (default: 4h, 0 disables)
 
 usage_limit:             # Usage-limit recovery watchdog (docs/wiki/usage-limit-recovery.md)
   enabled: true          # Master switch for dialog detection/parking (default: true)

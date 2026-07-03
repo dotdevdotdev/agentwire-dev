@@ -431,6 +431,10 @@ class SchedulerConfig:
     session_create_timeout: int = 30
     max_loop_sleep: int = 60
     dispatch_cooldown: int = 60
+    # Watchdog ceiling for a single dispatch (seconds). A hung `ensure`
+    # (e.g. an unrecognized usage-limit dialog) otherwise holds the single
+    # dispatch slot forever and starves the whole board (#677). 0 disables.
+    dispatch_max_runtime: int = 14400
     # Crash-loop guard: a board that won't parse / has no tasks backs off
     # exponentially from `error_backoff_base` up to `error_backoff_max`
     # instead of tight-looping (#449).

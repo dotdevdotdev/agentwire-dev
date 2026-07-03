@@ -37,6 +37,7 @@ from .dispatch import (
     _is_worktree_task,
     _kill_process_tree,
     _kill_session,
+    _notify_dispatch_timeout,
     _parse_ensure_summary,
     _pr_number_from_url,
     _pr_state,
