@@ -78,12 +78,36 @@ class AgentCommand:
 _UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
 
 
+def _capture_unattended_env() -> dict[str, str]:
+    """Pop the unattended marker OUT of this process's environment.
+
+    The marker must reach new sessions only via the deliberate
+    ``tmux new-session -e K=V`` path (``_with_unattended_env`` below). If it
+    stays in ``os.environ``, a ``tmux`` client we spawn while no server is
+    running boots the shared tmux server WITH the marker in its process env,
+    and from then on every session that server creates — interactive human
+    sessions included — inherits it and gets falsely treated as unattended
+    (#674). Capturing at import time preserves intended propagation while
+    guaranteeing no child process of the CLI can inherit the raw var.
+    """
+    captured: dict[str, str] = {}
+    for key in _UNATTENDED_ENV_KEYS:
+        val = os.environ.pop(key, None)
+        if val:
+            captured[key] = val
+    return captured
+
+
+_UNATTENDED_ENV = _capture_unattended_env()
+
+
 def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
     """Propagate the unattended marker into a session being created.
 
     The scheduler is the single place that decides a dispatch is unattended —
     it seeds ``AGENTWIRE_UNATTENDED[=1]`` (and any per-task
-    ``AGENTWIRE_UNATTENDED_ALLOW``) into the dispatch subprocess environment.
+    ``AGENTWIRE_UNATTENDED_ALLOW``) into the dispatch subprocess environment,
+    captured here at import (see ``_capture_unattended_env``).
     Every session-creation path funnels its env through here on the way to
     ``tmux new-session -e K=V``, so the marker lands in the new session BEFORE
     the agent launches and the damage-control hook can read it. A child session
@@ -94,7 +118,7 @@ def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
     """
     merged = dict(env)
     for key in _UNATTENDED_ENV_KEYS:
-        val = os.environ.get(key)
+        val = _UNATTENDED_ENV.get(key)
         if val and key not in merged:
             merged[key] = val
     return merged
