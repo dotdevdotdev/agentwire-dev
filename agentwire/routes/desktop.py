@@ -6,7 +6,6 @@ They read/write ``self.active_notifications`` and call ``self.broadcast_dashboar
 through the composed server's MRO.
 """
 
-import time
 
 from aiohttp import web
 
@@ -167,33 +166,21 @@ class DesktopRoutesMixin:
         if not text:
             return web.json_response({"success": False, "error": "text required"}, status=400)
 
-        import uuid
-        notification_id = data.get("id") or str(uuid.uuid4())[:8]
-        session = data.get("session")
-        priority = data.get("priority", "normal")
-
-        if session:
-            stale_ids = [
-                nid for nid, n in self.active_notifications.items()
-                if n.get("session") == session
-            ]
-            for nid in stale_ids:
-                self.active_notifications.pop(nid, None)
-                await self.broadcast_dashboard("notification_dismiss", {"id": nid})
-
-        notification = {
-            "id": notification_id,
-            "text": text,
-            "session": session,
-            "priority": priority,
-            "timestamp": time.time(),
-        }
-
-        self.active_notifications[notification_id] = notification
+        timeout = data.get("timeout")
+        if timeout is not None:
+            try:
+                timeout = max(0.0, float(timeout))
+            except (TypeError, ValueError):
+                timeout = None
 
         clients = len(self.dashboard_clients)
-        await self.broadcast_dashboard("notification", notification)
-        await self._fanout_push(text, session=session, priority=priority)
+        notification_id = await self._post_toast(
+            text,
+            session=data.get("session"),
+            priority=data.get("priority", "normal"),
+            notification_id=data.get("id"),
+            timeout=timeout,
+        )
 
         # Report how many dashboards saw it live. 0 isn't a failure — the toast
         # is persisted in active_notifications and restored on the next page

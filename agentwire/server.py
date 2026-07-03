@@ -427,10 +427,14 @@ class AgentWireServer(
         try:
             success, result = await self.run_agentwire_cmd(["stt", "start"], json_output=False)
             if success:
-                await self._post_toast(
-                    "Starting host STT (Moonshine) — browser speech until ready",
-                    session="moonshine-stt", priority="normal", id_prefix="moonshine")
-                logger.info("[STT] Ensured managed Moonshine shim")
+                if "already running" in result.get("output", ""):
+                    # Reused an existing shim — nothing launched, stay quiet.
+                    logger.info("[STT] Managed Moonshine shim already running")
+                else:
+                    await self._post_toast(
+                        "Starting host STT (Moonshine) — browser speech until ready",
+                        session="moonshine-stt", priority="normal", id_prefix="moonshine")
+                    logger.info("[STT] Ensured managed Moonshine shim")
             else:
                 logger.warning("[STT] Managed shim start failed: %s", result.get("error"))
         except asyncio.CancelledError:
@@ -455,10 +459,14 @@ class AgentWireServer(
         try:
             success, result = await self.run_agentwire_cmd(["kokoro", "start"], json_output=False)
             if success:
-                await self._post_toast(
-                    "Starting host voice (Kokoro) — browser speech until ready",
-                    session="kokoro-voice", priority="normal", id_prefix="kokoro")
-                logger.info("[TTS] Ensured managed Kokoro shim")
+                if "already running" in result.get("output", ""):
+                    # Reused an existing shim — nothing launched, stay quiet.
+                    logger.info("[TTS] Managed Kokoro shim already running")
+                else:
+                    await self._post_toast(
+                        "Starting host voice (Kokoro) — browser speech until ready",
+                        session="kokoro-voice", priority="normal", id_prefix="kokoro")
+                    logger.info("[TTS] Ensured managed Kokoro shim")
             else:
                 logger.warning("[TTS] Managed shim start failed: %s", result.get("error"))
         except asyncio.CancelledError:
@@ -1783,16 +1791,26 @@ class AgentWireServer(
         except Exception as e:
             logger.warning("[Services] Autostart error: %s", e)
 
-    async def _post_toast(self, text: str, session: str, priority: str = "high",
-                          id_prefix: str = "toast") -> None:
+    async def _post_toast(self, text: str, session: str | None = None,
+                          priority: str = "normal", id_prefix: str = "toast",
+                          notification_id: str | None = None,
+                          timeout: float | None = None) -> str:
         """Post a dashboard toast notification, replacing any stale toast
-        for the same session key."""
-        notification_id = f"{id_prefix}-{str(uuid.uuid4())[:8]}"
-        stale = [nid for nid, n in self.active_notifications.items()
-                 if n.get("session") == session]
-        for nid in stale:
-            self.active_notifications.pop(nid, None)
-            await self.broadcast_dashboard("notification_dismiss", {"id": nid})
+        for the same session key. Single emit path — the HTTP endpoint
+        delegates here too.
+
+        Lifecycle contract (enforced frontend-side): ``normal`` toasts
+        auto-fade after a default timeout, ``high`` toasts stick until
+        dismissed. An explicit ``timeout`` (seconds) overrides the default;
+        0 means sticky. Returns the notification id.
+        """
+        notification_id = notification_id or f"{id_prefix}-{str(uuid.uuid4())[:8]}"
+        if session:
+            stale = [nid for nid, n in self.active_notifications.items()
+                     if n.get("session") == session]
+            for nid in stale:
+                self.active_notifications.pop(nid, None)
+                await self.broadcast_dashboard("notification_dismiss", {"id": nid})
         notification = {
             "id": notification_id,
             "text": text,
@@ -1800,9 +1818,12 @@ class AgentWireServer(
             "priority": priority,
             "timestamp": time.time(),
         }
+        if timeout is not None:
+            notification["timeout"] = timeout
         self.active_notifications[notification_id] = notification
         await self.broadcast_dashboard("notification", notification)
         await self._fanout_push(text, session=session, priority=priority)
+        return notification_id
 
     async def _notify_service_event(self, name: str, text: str, speak: bool):
         """Toast (+ optional TTS) for a service watchdog event."""

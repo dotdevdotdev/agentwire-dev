@@ -5568,6 +5568,37 @@ body.sidebar-pinned .sidebar-tab {
     border-color: var(--error);
 }
 
+/* Transient info toasts: a thin bar drains over the auto-fade countdown so
+   it's visually obvious the toast is ephemeral. Paused on hover / hidden tab
+   (the .fading class is toggled in sync with the JS timer). */
+.notification-toast.auto-fade {
+    position: relative;
+    overflow: hidden;
+}
+
+.notification-toast.auto-fade::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: 100%;
+    background: var(--text-muted);
+    opacity: 0.5;
+    transform-origin: left;
+    transform: scaleX(1);
+}
+
+.notification-toast.auto-fade.fading::after {
+    animation: toast-fade-progress var(--fade-duration, 8s) linear forwards;
+}
+
+@keyframes toast-fade-progress {
+    to {
+        transform: scaleX(0);
+    }
+}
+
 .notification-toast-header {
     display: flex;
     align-items: center;
