@@ -184,3 +184,34 @@ def test_quiet_submit_is_confirmed_not_false_negatived(emulator_session, monkeyp
     # No activity markers on screen — pure quiet confirm.
     assert not session_ready.pane_shows_activity(box)
     assert "quiet report no spinner here" not in box
+
+
+def test_stuck_paste_finished_enter_only_no_duplicate(emulator_session, monkeypatch):
+    # #689: a prior delivery pasted the message but its Enter was swallowed —
+    # the message sits rendered in the input box. finish_submit must heal it
+    # with Enter ONLY (no re-paste, so the #621 dedup holds: the emulator's
+    # buffer would show the text twice if a second paste happened).
+    session, socket, _ = emulator_session
+    _patch_pane_manager(monkeypatch, socket)
+
+    msg = "[MSG from worker - done] PR 42 drafted  (#deadbe)"
+    # Simulate the stuck state: paste lands, Enter never fires.
+    session_ready.paste_no_enter(session, msg)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+        if session_ready.text_landed(cap, msg):
+            break
+        time.sleep(0.1)
+    cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    assert session_ready.text_landed(cap, msg), "stuck-state setup failed"
+    # The stuck message must NOT read as delivered/on-scrollback (#689).
+    assert not session_ready.message_on_scrollback(cap, msg)
+
+    assert session_ready.finish_submit(session, msg)
+    cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    box = session_ready.input_box(cap)
+    assert box == "", f"box should be empty after finish_submit, got: {box!r}"
+    # No duplicate: the emulator clears on submit; a re-paste would have left a
+    # second copy sitting in the box.
+    assert msg not in (box or "")

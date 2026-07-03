@@ -705,6 +705,10 @@ class TestIdempotentDelivery:
 
     def _patch(self, monkeypatch, deliver, scrollback):
         from agentwire import session_ready, usage_limit
+        # #689: "on scrollback" now means outside a parseable input box — a bare
+        # rendered line with no box no longer counts (it could be sitting unsent
+        # in the box). Model a real delivered state: text above an EMPTY box.
+        scrollback = f"{scrollback}\n{RULE}\n❯\n{RULE}"
         monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
         monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "")
         monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
@@ -948,3 +952,68 @@ class TestSessionNameValidation:
         assert len(msgs) == 1
         assert msgs[0].path.is_relative_to(isolate / "proj" / "child")
         assert [m.text for m in inbox.list_messages("proj/child")] == ["hello"]
+
+
+class TestStuckInBox:
+    """#689 — our own message sitting in the recipient's input box is a
+    swallowed-Enter delivery, not a human draft: the drain must finish it with
+    an Enter-only retry (never a re-paste) and unlink only once submitted."""
+
+    def _patch(self, monkeypatch, box_content, finish_ok):
+        from agentwire import session_ready, usage_limit
+        monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
+        monkeypatch.setattr(
+            prompt_router, "input_box_content_sgr", lambda vis: box_content)
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        # No pre-dedup hits: nothing on scrollback outside the box.
+        monkeypatch.setattr(
+            session_ready, "scrollback", lambda s, p=0: f"{RULE}\n❯\n{RULE}")
+        finishes = []
+        monkeypatch.setattr(
+            session_ready, "finish_submit",
+            lambda s, m, marker=None, pane_index=0:
+                (finishes.append(m) or finish_ok))
+        pasted = []
+        monkeypatch.setattr(
+            prompt_router, "safe_deliver",
+            lambda s, p, text: (pasted.append(text) or (True, "delivered")))
+        return finishes, pasted
+
+    def test_stuck_message_finished_and_unlinked(self, isolate, monkeypatch):
+        m = inbox.enqueue("s", "PR drafted", kind="done", sender="w")[0]
+        finishes, pasted = self._patch(monkeypatch, m.render(), finish_ok=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1
+        assert finishes == [m.render()]
+        assert pasted == []  # NEVER re-pasted (#621)
+        assert inbox.list_messages("s") == []
+
+    def test_finish_failure_defers_without_penalty(self, isolate, monkeypatch):
+        m = inbox.enqueue("s", "PR drafted", kind="done", sender="w")[0]
+        finishes, pasted = self._patch(monkeypatch, m.render(), finish_ok=False)
+        res = inbox.flush_session("s")
+        assert res["deferred"] and res["reason"] == "stuck_in_box"
+        assert pasted == []
+        msgs = inbox.list_messages("s")
+        assert len(msgs) == 1
+        assert msgs[0].attempts == 0  # no dead-letter penalty — target isn't refusing
+
+    def test_foreign_draft_is_not_stuck(self, isolate, monkeypatch):
+        # Box holds a human draft, not our message: normal defer path, no Enter.
+        inbox.enqueue("s", "PR drafted", kind="done", sender="w")
+        finishes, pasted = self._patch(
+            monkeypatch, "half-typed human thought", finish_ok=True)
+        res = inbox.flush_session("s")
+        assert res["deferred"]
+        assert finishes == []  # never pressed Enter into a foreign draft
+        assert len(inbox.list_messages("s")) == 1
+
+    def test_partial_stuck_unlinks_only_stuck(self, isolate, monkeypatch):
+        a = inbox.enqueue("s", "alpha", kind="done", sender="w")[0]
+        inbox.enqueue("s", "beta", kind="done", sender="w")
+        finishes, pasted = self._patch(monkeypatch, a.render(), finish_ok=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and res["deferred"]
+        remaining = inbox.list_messages("s")
+        assert len(remaining) == 1 and "beta" in remaining[0].text
+        assert pasted == []
