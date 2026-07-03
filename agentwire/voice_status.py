@@ -201,18 +201,65 @@ def resolve_tts_status(config: Any | None = None, *, probe: bool = True) -> Voic
 # === STT ===================================================================
 
 
+def _portal_effective_stt_backend() -> str | None:
+    """The RUNNING portal's effective ``stt.backend``, or None if unreachable.
+
+    ``--no-stt`` is a runtime override — it flips the portal process's config
+    to ``backend: none`` without touching ``config.yaml``, so status surfaces
+    reading the file alone would still report "default" (#679). The portal's
+    ``/api/voice-status`` reports its post-override config; ask it and let the
+    live answer win. Fail-open (return None) when the portal isn't running.
+    """
+    try:
+        from .core import _get_portal_url, portal_request
+        resp = portal_request("GET", f"{_get_portal_url()}/api/voice-status", timeout=2)
+        if resp.ok:
+            return (resp.json().get("stt") or {}).get("backend")
+    except Exception:
+        pass
+    return None
+
+
 def resolve_stt_status(config: Any | None = None, *, probe: bool = True) -> VoiceStatus:
     """Resolve the active STT path.
 
-    ``cloud`` uploads audio to an OpenAI-compatible API server-side — no shim,
-    so readiness is "is the API key set". ``default`` transcribes via the
-    portal-managed Moonshine ``:8101`` shim when Moonshine is importable, else
-    falls back to in-browser SpeechRecognition (no host shim to probe).
-    ``custom`` uploads to the configured shim, which is probed.
+    ``none`` means server STT is disabled (``stt.backend: none`` or the portal
+    was started with ``--no-stt``) — browser SpeechRecognition still works
+    client-side. ``cloud`` uploads audio to an OpenAI-compatible API
+    server-side — no shim, so readiness is "is the API key set". ``default``
+    transcribes via the portal-managed Moonshine ``:8101`` shim when Moonshine
+    is importable, else falls back to in-browser SpeechRecognition (no host
+    shim to probe). ``custom`` uploads to the configured shim, which is probed.
     """
     cfg = _load_typed_config(config)
     stt = getattr(cfg, "stt", None)
     tier = getattr(stt, "backend", "default") if stt is not None else "default"
+
+    # A running portal's effective backend beats the file: --no-stt only
+    # exists inside the portal process (#679).
+    if probe and tier != "none":
+        live = _portal_effective_stt_backend()
+        if live == "none":
+            tier = "none"
+
+    if tier == "none":
+        from .stt import DEFAULT_STT_URL
+
+        warnings: list[str] = []
+        if probe:
+            url = getattr(stt, "url", None) or DEFAULT_STT_URL
+            up, _ = _probe(url)
+            if up:
+                warnings.append(
+                    f"an STT shim is up at {url} but server STT is disabled — "
+                    f"it is unused (stop it: agentwire stt stop)."
+                )
+        return VoiceStatus(
+            "stt", "none", "server STT disabled (browser SpeechRecognition only)",
+            True,
+            "STT disabled (stt.backend 'none' or portal --no-stt)",
+            warnings=warnings,
+        )
 
     if tier == "cloud":
         cloud = getattr(stt, "cloud", None) or {}
