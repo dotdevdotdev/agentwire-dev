@@ -85,6 +85,25 @@ READ_ONLY_BLOCKED = (
 
 NO_DELETE_BLOCKED = DELETE_PATTERNS
 
+# Interpreter programs can write a file without any shell-level write token:
+# ``python3 -c 'open(p, "w")...'``, a heredoc piped into ``python -``, or
+# ``echo 'open(p,"w")' | python3``. The program text is opaque to static
+# matching, so for PROTECTED control-plane paths we fail closed: an interpreter
+# invocation that takes inline code (-c/-e, combined forms like ``perl -pie``),
+# a heredoc/stdin program, or has data piped into it, AND mentions a protected
+# path anywhere in the command, is blocked (#678). Applied ONLY by
+# ``check_protected_command`` — never to user readOnlyPaths rules — so a
+# legitimate read via ``cat``/``grep`` stays allowed.
+_INTERPRETERS = r'(?:python[\d.]*|perl|ruby|node|deno|bun|php)'
+INTERPRETER_WRITE_PATTERNS = [
+    # interpreter ... -c/-e/... or stdin/heredoc marker, path anywhere after
+    (r'\b' + _INTERPRETERS +
+     r'\b[^\n|;&]*(?:\s-\S*[ceE]\b|\s+-\s|\s+-$|<<)(?s:.*){path}',
+     "interpreter program"),
+    # path anywhere before a pipe into an interpreter
+    (r'{path}(?s:.*)\|\s*' + _INTERPRETERS + r'\b', "pipe into interpreter"),
+]
+
 
 # ============================================================================
 # GLOB / PATH HELPERS
@@ -380,7 +399,11 @@ def check_path_patterns(
     Returns ``(matched, reason)`` where reason names the operation that triggered.
     """
     if is_glob_pattern(path):
-        path_regex = glob_to_regex(path)
+        # Allow an optional (possibly quoted) directory prefix: ``*`` in the
+        # glob can't span ``/``, so without this a basename glob like
+        # ``*.agentwire.yml`` never matched an absolute target
+        # (``> /repo/.agentwire.yml`` sailed past every write pattern) (#678).
+        path_regex = r'["\']?(?:[^\s"\';|&<>]*/)?' + glob_to_regex(path)
     else:
         expanded = os.path.expanduser(path)
         if expanded == path:
@@ -770,7 +793,10 @@ def check_protected_command(
     for path in _protected_path_patterns():
         for hay in haystacks:
             matched, reason = check_path_patterns(
-                hay, path, READ_ONLY_BLOCKED, "protected control-plane path"
+                hay,
+                path,
+                READ_ONLY_BLOCKED + INTERPRETER_WRITE_PATTERNS,
+                "protected control-plane path",
             )
             if matched:
                 op = _infer_operation_from_reason(reason)
