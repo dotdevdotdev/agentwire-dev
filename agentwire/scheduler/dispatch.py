@@ -13,6 +13,7 @@ from .gates import _gated_tasks
 from .models import (
     _EXIT_FAILED,
     _EXIT_LOCK_CONFLICT,
+    _EXIT_TIMEOUT,
     _EXIT_TO_STATUS,
     Board,
     SchedulerTask,
@@ -512,8 +513,46 @@ def _unattended_env(task: SchedulerTask) -> dict[str, str]:
     return env
 
 
+# How often the dispatch watchdog wakes to check on its child. Bounds how
+# long a dead-child-with-held-pipes wedge can last (see _run_ensure).
+_WATCHDOG_POLL = 30.0
+# How long to wait for pipe drain after the child is known dead/killed.
+_DRAIN_TIMEOUT = 10.0
+
+
+def _drain_pipes(proc: "subprocess.Popen") -> tuple[str, str]:
+    """Best-effort read of remaining stdout/stderr after the child is dead.
+
+    Grandchildren (tmux, agents) inherit the pipe fds and can hold them open
+    past the child's exit, so even this drain gets a bounded timeout; on
+    expiry the pipes are closed and output is abandoned.
+    """
+    try:
+        return proc.communicate(timeout=_DRAIN_TIMEOUT)
+    except Exception:
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except Exception:
+                pass
+        return "", ""
+
+
 def _run_ensure(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, "subprocess.CompletedProcess | None", int]:
-    """Run an `agentwire ensure` subprocess; return (exit_code, result, duration_s)."""
+    """Run an `agentwire ensure` subprocess; return (exit_code, result, duration_s).
+
+    Watchdogged (#677): a single dispatch may run at most
+    ``dispatch_max_runtime`` seconds (0 disables) — on expiry the whole
+    process group is SIGKILLed and the task reports ``timeout``, so one hung
+    ensure can never starve the board. The wait also polls the child's exit
+    directly: ``communicate()`` blocks on pipe EOF, not child exit, so a
+    child killed externally while grandchildren hold the pipes open would
+    otherwise wedge the daemon forever.
+    """
+    from agentwire import scheduler as _sched
+
+    max_runtime = getattr(_sched._sched_config(), "dispatch_max_runtime", 14400)
     start_time = time.time()
     result = None
     try:
@@ -521,12 +560,75 @@ def _run_ensure(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int,
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True, env=env,
         )
-        stdout, stderr = proc.communicate()
-        exit_code = proc.returncode
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=_WATCHDOG_POLL)
+                exit_code = proc.returncode
+                break
+            except subprocess.TimeoutExpired:
+                if proc.poll() is not None:
+                    # Child already exited but orphaned grandchildren hold the
+                    # pipes open — reap what's left and take the real exit code.
+                    # killpg still reaches group members reparented to init.
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    _kill_process_tree(proc.pid)
+                    stdout, stderr = _drain_pipes(proc)
+                    exit_code = proc.returncode
+                    break
+                if max_runtime and (time.time() - start_time) >= max_runtime:
+                    # Watchdog ceiling: kill the entire process group
+                    # (start_new_session=True makes pgid == pid), then any
+                    # stragglers that escaped it.
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    _kill_process_tree(proc.pid)
+                    stdout, stderr = _drain_pipes(proc)
+                    print(f"[{_ts()}] Dispatch watchdog: killed hung ensure "
+                          f"(pid {proc.pid}) after {int(time.time() - start_time)}s")
+                    exit_code = _EXIT_TIMEOUT
+                    break
         result = subprocess.CompletedProcess(cmd, exit_code, stdout, stderr)
     except Exception:
         exit_code = _EXIT_FAILED
     return exit_code, result, int(time.time() - start_time)
+
+
+def _notify_dispatch_timeout(task: SchedulerTask, session: str, duration: int) -> None:
+    """Surface a watchdog kill: distinct event + best-effort owner email.
+
+    Reuses the outbound email channel (same wiring as usage-limit parks and
+    unattended blocks) so a killed dispatch is never a silent failure.
+    """
+    from agentwire import scheduler as _sched
+
+    _sched._log_event("dispatch_timeout", task=task.name, session=session,
+                      duration=duration)
+    try:
+        import socket
+
+        from ..channels.email import send_email
+        hours = duration / 3600
+        send_email(
+            subject=f"[agentwire] scheduler watchdog killed hung task: {task.name}",
+            body=(
+                f"Dispatch of **{task.name}** (session `{session}`) on "
+                f"`{socket.gethostname()}` exceeded the dispatch_max_runtime "
+                f"ceiling and was killed after {hours:.1f}h.\n\n"
+                f"- **Project:** {task.project}\n"
+                f"- **Task:** {task.task}\n\n"
+                "The task was marked `timeout` and the scheduler moved on. "
+                "Common cause: the agent session wedged on an unrecognized "
+                "interactive dialog (e.g. a usage-limit variant) — check "
+                "`agentwire limits status` and the session scrollback."
+            ),
+        )
+    except Exception:
+        pass
 
 
 def _apply_max_runs(board: Board, task: SchedulerTask, new_state: TaskState,
@@ -603,6 +705,14 @@ def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: Ta
             last_duration=duration,
             run_count=existing_state.run_count,
         )
+
+    if exit_code == _EXIT_TIMEOUT:
+        # Watchdog kill — the agent session is wedged, not working. Tear it
+        # down (persistent sessions excepted — they double as interactive
+        # receivers) and make the failure loud.
+        if not persistent:
+            _sched._kill_session(task.session)
+        _sched._notify_dispatch_timeout(task, task.session, duration)
 
     summary, files_modified, blockers_list = _sched._parse_ensure_summary(task, result)
 
@@ -701,6 +811,13 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
             last_run=existing_state.last_run, last_status="lock_conflict",
             last_duration=duration, run_count=existing_state.run_count,
         )
+
+    if exit_code == _EXIT_TIMEOUT:
+        # Watchdog kill — tear down the wedged worktree session and make the
+        # failure loud. The worktree itself flows into _finalize_worktree_pr
+        # below, so any partial work is preserved as a draft PR.
+        _sched._kill_session(wt_session)
+        _sched._notify_dispatch_timeout(task, wt_session, duration)
 
     summary, files_modified, blockers_list = _sched._parse_ensure_summary(
         task, result, project=worktree_path, session=wt_session)
