@@ -288,7 +288,10 @@ def cmd_say(args) -> int:
     display = getattr(args, 'display', None)
     # Capture whether the toast actually reached the portal, so the caller can
     # report it honestly rather than claiming "shown" when the portal is down.
-    toast_ok = _post_desktop_notification(display, session=session, priority="high") if display else None
+    # Briefing cards are info, not action items: normal priority, but a longer
+    # fade than the 8s default since the card carries more than the spoken line.
+    toast_ok = _post_desktop_notification(display, session=session, priority="normal",
+                                          timeout=30) if display else None
 
     def _say_result(rc: int, sink: str, clients: int = 0) -> int:
         """Report which sink actually received the audio (#444): browser

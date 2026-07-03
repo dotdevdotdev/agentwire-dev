@@ -1081,17 +1081,21 @@ def _get_agentwire_path() -> str:
     return os.path.expanduser("~/.local/bin/agentwire")
 
 
-def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal") -> bool:
+def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal",
+                               timeout: float | None = None) -> bool:
     """POST a toast to the portal's desktop-notification endpoint. Best-effort.
 
     Shared by `agentwire notify-user` and the `say --display` path. Returns True
     on a 2xx, False on any failure (no portal, network error) — never raises.
+    `timeout` (seconds) overrides the frontend's auto-fade default; 0 = sticky.
     """
     import ssl
 
     body: dict = {"text": text, "priority": priority}
     if session:
         body["session"] = session
+    if timeout is not None:
+        body["timeout"] = timeout
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
