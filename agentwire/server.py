@@ -43,6 +43,7 @@ from .routes.desktop import DesktopRoutesMixin, register_desktop_routes
 from .routes.history import HistoryRoutesMixin, register_history_routes
 from .routes.machines import MachinesRoutesMixin, register_machines_routes
 from .routes.notify import NotifyRoutesMixin, register_notify_routes
+from .routes.palette import PaletteRoutesMixin, register_palette_routes
 from .routes.permission import PermissionRoutesMixin, register_permission_routes
 from .routes.projects import ProjectsRoutesMixin, register_projects_routes
 from .routes.push import PushRoutesMixin, register_push_routes
@@ -235,6 +236,7 @@ class AgentWireServer(
     HistoryRoutesMixin,
     MachinesRoutesMixin,
     NotifyRoutesMixin,
+    PaletteRoutesMixin,
     PermissionRoutesMixin,
     ProjectsRoutesMixin,
     PushRoutesMixin,
@@ -348,6 +350,8 @@ class AgentWireServer(
         register_history_routes(self, self.app)
         # Tmux hook notifications
         register_notify_routes(self, self.app)
+        # User-defined command-palette items (#676)
+        register_palette_routes(self, self.app)
         register_desktop_routes(self, self.app)
         # Services registry (custom service sessions from config)
         self.app.router.add_get("/api/services/custom", self.api_services_custom)

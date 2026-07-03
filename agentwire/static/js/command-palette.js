@@ -11,6 +11,10 @@
  *   - New worktree  → quicktask flow (project, base, branch, pull-first) → open
  *   - Open session  → pick a running tmux session → attach
  *
+ * User-defined items (config.yaml palette.items, #676) render alongside the
+ * built-ins: no fields → run immediately (toast reports the outcome); with
+ * fields → a mini-form, then POST /api/palette/run.
+ *
  * Keyboard: ↑/↓ navigate, Enter selects, Esc backs out of a drill-in (or closes
  * the palette from the root).
  */
@@ -28,10 +32,12 @@ let paletteEl = null;
 let lastFocus = null;
 let projectsCache = null;
 let sessionsCache = null;
+let customCommandsCache = null;  // user-defined items from ~/.agentwire/config.yaml (#676)
 let selectedIndex = 0;
 let currentItems = [];           // filtered, runnable items in the active list view
-let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'worktree' | 'open-session'
+let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'worktree' | 'open-session' | 'custom-item'
 let prefillProject = '';
+let currentCustomItem = null;    // the custom item whose field form is open
 
 const COMMANDS = [
     { id: 'ask-council', icon: '🏛', label: 'Ask council', keywords: 'council ask question deliberate lenses brainstorm advice decide soul', run: () => setView('ask-council') },
@@ -132,6 +138,42 @@ async function loadSessions() {
     } catch (e) { /* ignore */ }
     sessionsCache = out.filter((s) => !isService(s.name || '') && !isCouncil(s.name || ''));
     return sessionsCache;
+}
+
+/** User-defined palette items (config.yaml palette.items). Best-effort:
+ *  a portal without the endpoint or an empty config just yields []. */
+async function loadCustomCommands() {
+    if (customCommandsCache) return customCommandsCache;
+    try {
+        const res = await apiFetch('/api/palette');
+        const data = await res.json();
+        customCommandsCache = res.ok ? (data.items || []) : [];
+    } catch (e) {
+        customCommandsCache = [];
+    }
+    return customCommandsCache;
+}
+
+/** Execute a custom item server-side and report the outcome as a toast. */
+async function runCustomItem(item, fields) {
+    const { toastSuccess, toastError } = await import('./toast.js');
+    try {
+        const res = await apiFetch('/api/palette/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: item.id, fields }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+            throw new Error(data.error || (data.output || '').trim() || `Run failed (HTTP ${res.status})`);
+        }
+        const out = (data.output || '').trim();
+        toastSuccess(`${item.label} ✓${out ? `\n${out.slice(0, 400)}` : ''}`);
+        return true;
+    } catch (err) {
+        toastError(`${item.label}: ${err?.message || 'failed'}`);
+        return false;
+    }
 }
 
 async function openTerminal(name, mode, machine) {
@@ -664,9 +706,63 @@ async function submitAskCouncil(prompt) {
 // ---------------------------------------------------------------------------
 
 function rootItems(query) {
-    return COMMANDS
+    const builtins = COMMANDS
         .filter((c) => matches(query, `${c.label} ${c.keywords}`))
         .map((c) => ({ icon: c.icon, label: c.label, run: c.run }));
+    const customs = (customCommandsCache || [])
+        .filter((c) => matches(query, `${c.label} ${c.keywords || ''} ${c.id}`))
+        .map((c) => ({
+            icon: c.icon || '⚡',
+            label: c.label,
+            run: async () => {
+                if ((c.fields || []).length) {
+                    currentCustomItem = c;
+                    setView('custom-item');
+                } else {
+                    closeCommandPalette();
+                    runCustomItem(c, {});
+                }
+            },
+        }));
+    return [...builtins, ...customs];
+}
+
+function customItemFormHtml(item) {
+    const fieldsHtml = (item.fields || []).map((f) => `
+        <label class="quicktask-field">
+            <span class="quicktask-label">${escapeHtml(f.label || f.name)}</span>
+            <input type="text" name="${escapeHtml(f.name)}" value="${escapeHtml(f.default || '')}" autocomplete="off" />
+        </label>`).join('');
+    return `
+        <div class="quicktask-error" data-error hidden></div>
+        <div class="quicktask-progress" data-progress hidden></div>
+        <form class="quicktask-form" data-form="custom-item">
+            ${fieldsHtml}
+            <div class="quicktask-footer">
+                <button type="button" class="quicktask-btn-cancel" data-action="back">Back</button>
+                <button type="submit" class="quicktask-btn-submit">Run</button>
+            </div>
+        </form>`;
+}
+
+function bindCustomItemForm(form) {
+    const item = currentCustomItem;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fields = {};
+        for (const f of item.fields || []) {
+            fields[f.name] = form.querySelector(`input[name="${CSS.escape(f.name)}"]`)?.value.trim() || '';
+        }
+        const missing = (item.fields || []).filter((f) => !fields[f.name]);
+        if (missing.length) {
+            showError(`Missing: ${missing.map((f) => f.label || f.name).join(', ')}`);
+            return;
+        }
+        showProgress(`Running ${item.label}…`);
+        const ok = await runCustomItem(item, fields);
+        if (ok) closeCommandPalette();
+        else if (paletteEl) showError('Failed — see toast for details.');
+    });
 }
 
 function openSessionItems(query) {
@@ -743,11 +839,16 @@ function renderView() {
         body.innerHTML = askCouncilFormHtml();
     } else if (currentView === 'new-session') body.innerHTML = newSessionFormHtml();
     else if (currentView === 'worktree') body.innerHTML = worktreeFormHtml();
+    else if (currentView === 'custom-item') {
+        footer.textContent = '↵ run · esc back';
+        body.innerHTML = customItemFormHtml(currentCustomItem);
+    }
     const form = body.querySelector('.quicktask-form');
     if (currentView === 'new-idea') bindNewIdeaForm(form);
     else if (currentView === 'ask-council') bindAskCouncilForm(form);
     else if (currentView === 'new-session') bindNewSessionForm(form);
     else if (currentView === 'worktree') bindWorktreeForm(form);
+    else if (currentView === 'custom-item') bindCustomItemForm(form);
 }
 
 function focusActiveInput() {
@@ -765,6 +866,7 @@ async function setView(view) {
     input.value = '';
     if (view === 'open-session') await loadSessions();
     if (view === 'new-session' || view === 'worktree') await loadProjects();
+    if (view === 'root') await loadCustomCommands();
     renderView();
     focusActiveInput();
 }
@@ -775,6 +877,7 @@ function goBack() {
         return;
     }
     prefillProject = '';
+    currentCustomItem = null;
     setView('root');
 }
 
@@ -869,6 +972,7 @@ export function closeCommandPalette() {
     currentItems = [];
     selectedIndex = 0;
     prefillProject = '';
+    currentCustomItem = null;
     if (lastFocus && typeof lastFocus.focus === 'function') {
         try { lastFocus.focus(); } catch (e) { /* ignore */ }
     }

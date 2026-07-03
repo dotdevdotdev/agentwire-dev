@@ -238,3 +238,24 @@ session:
                              # (worker, task-runner, notifications) and soul/soul-* sessions
                              # are excluded automatically; per-session opt-out: --no-soul on new/dev
 ```
+
+## Custom Command-Palette Items (`palette:`) (#676)
+
+User-defined portal Cmd/Ctrl+K entries — personal CLI workflows reachable from the palette without editing source. Local-only host config (like `~/.agentwire/scripts/`), and execution-plane: `palette.` can never be added to the `agentwire config set` allowlist.
+
+```yaml
+palette:
+  items:
+    - id: quicktask                 # [A-Za-z0-9][A-Za-z0-9._-]* — unique
+      label: "Quick task"           # shown in the palette
+      icon: "⚡"                    # optional (default ⚡)
+      keywords: "quicktask worktree"  # optional extra search terms
+      run: "agentwire worktree {name} -p {project}"  # shell command template
+      fields:                       # optional — opens a mini-form before running
+        - { name: name,    label: "Branch/task name" }
+        - { name: project, label: "Project", default: "agentwire-dev" }
+```
+
+- Every `{placeholder}` in `run` must be a declared field; field *values* are shell-quoted at run time (no injection via the form), while the template itself is trusted owner config.
+- No `fields` → the item runs immediately on selection; output lands as a portal toast.
+- CLI: `agentwire palette list [--json]`, `agentwire palette run <id> --field k=v` (300s timeout). Portal wraps these via `GET /api/palette` + `POST /api/palette/run`.
