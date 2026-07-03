@@ -187,7 +187,7 @@ Command Categories:
     #   - msg:    polite agent-to-agent inbox (rides the watchdog)
     from . import diff_cli, limits_cli, msg_cli, pane_cli, prompts_cli, send_cli  # noqa: I001  # session_cli kept on its own line below to minimize Phase 1 #495 merge conflicts
     from . import session_cli
-    from . import channels_cli, portal_cli, tts_cli
+    from . import channels_cli, config_cli, portal_cli, tts_cli
     from . import scheduler_cli, ensure_cli
     from . import doctor_cli, history_cli, machine_cli, safety_cli
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
@@ -222,6 +222,7 @@ Command Categories:
         system_cli.register_system_parser,
         push_cli.register_push_parser,
         repo_cli.register_repo_parser,
+        config_cli.register_config_parser,
     ]
     for _reg in _REGISTRARS:
         _reg(subparsers)
@@ -353,6 +354,7 @@ _GROUP_COMMANDS = [
     "portal", "tts", "stt", "tunnels", "machine", "history", "handoff",
     "wiki", "hooks", "projects", "safety", "network", "listen",
     "voiceclone", "roles", "task", "lock", "scheduler", "council", "limits",
+    "config",
 ]
 
 

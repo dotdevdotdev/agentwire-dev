@@ -602,6 +602,18 @@ def cmd_doctor(args) -> int:
         for warn in warnings:
             print(f"  [..] {warn.message}")
 
+    # `agentwire config set` allowlist must never contain execution-plane
+    # keys — that would reopen the #466 confused-deputy hole (#670).
+    from .config_cli import execution_plane_violations
+    _cfg_violations = execution_plane_violations()
+    if not _cfg_violations:
+        print("  [ok] config-set allowlist contains no execution-plane keys")
+    else:
+        for _bad in _cfg_violations:
+            print(f"  [!!] config-set allowlist contains execution-plane key: {_bad}")
+        print("     Fix: remove the key from EDITABLE_KEYS in agentwire/config_cli.py")
+        issues_found += len(_cfg_violations)
+
     # 6. Check SSH connectivity
     print("\nChecking SSH connectivity...")
     ctx = NetworkContext.from_config()
