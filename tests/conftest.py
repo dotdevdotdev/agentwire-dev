@@ -9,6 +9,25 @@ import yaml
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _no_real_outbound_email(monkeypatch):
+    """No test may send real email — ever.
+
+    ``_escalate_dead_letter`` (and friends) call the live Resend wiring, so a
+    test that dead-letters a done/request/escalation message without mocking
+    ``send_email`` silently emails the owner on every suite run (found the hard
+    way: ``test_purge_leaves_ingest_and_dead`` flooded the inbox with
+    "undelivered done: x → s" from its fixture names). Tests that assert on
+    email re-patch the same target via ``monkeypatch``, which overrides this.
+    """
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "agentwire.channels.email.send_email",
+        lambda **kw: SimpleNamespace(success=True, id="test-stub"),
+    )
+
+
 @pytest.fixture
 def tmp_config_dir(tmp_path):
     """Temporary ~/.agentwire/ equivalent."""
