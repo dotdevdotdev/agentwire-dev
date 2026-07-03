@@ -69,7 +69,9 @@ MAX_ATTEMPTS = 40
 # consecutive sweeps ≈ an unknown placeholder, not an actively-typed draft).
 # Such messages stay pending forever instead of burning toward dead-letter;
 # doctor / worktree --watch surface them, and they deliver once the box frees up.
-_NO_PENALTY_REASONS = frozenset({"target_busy", "queued_placeholder", "box_static"})
+_NO_PENALTY_REASONS = frozenset(
+    {"target_busy", "queued_placeholder", "box_static", "stuck_in_box"}
+)
 
 # Consecutive sweeps the box must show byte-identical content before the defer
 # stops penalizing (see _box_static). Low enough that an unknown placeholder
@@ -766,6 +768,47 @@ def flush_session(session: str, force: bool = False) -> dict:
                 }
 
             if box_content != "":
+                # Our own message sitting in the box = a prior paste whose Enter
+                # was swallowed (#689). Heal it: Enter-only finish_submit — NEVER
+                # a re-paste, so the #621 idempotency dedup keeps holding. Unlink
+                # only once submission is confirmed; otherwise stay pending
+                # without penalty (the target isn't refusing, our own delivery
+                # is wedged).
+                stuck = [
+                    m for m in messages
+                    if "".join(m.render().split()) in "".join(box_content.split())
+                ]
+                if stuck:
+                    from .session_ready import finish_submit
+
+                    if finish_submit(session, stuck[0].render()):
+                        for m in stuck:
+                            if m.path is not None:
+                                m.path.unlink(missing_ok=True)
+                        _log_event(
+                            "stuck_submitted", to=session, count=len(stuck),
+                            kinds=[m.kind for m in stuck],
+                        )
+                        _clear_box_state(session)
+                        remaining = [m for m in messages if m not in stuck]
+                        if remaining:
+                            _bump_attempts(remaining, "target_busy")
+                        return {
+                            "session": session,
+                            "delivered": pre_consumed + len(stuck),
+                            "deferred": bool(remaining),
+                            "reason": "delivered" if not remaining else "target_busy",
+                        }
+                    dead = _bump_attempts(messages, "stuck_in_box")
+                    _log_event(
+                        "deferred", to=session, count=len(messages),
+                        reason="stuck_in_box",
+                    )
+                    return {
+                        "session": session, "delivered": pre_consumed,
+                        "deferred": True, "reason": "stuck_in_box", "dead": dead,
+                    }
+
                 # Box is not empty. We never bypass this to protect human drafts. But
                 # the "queued messages" placeholder is a BUSY signal, not a draft:
                 # defer WITHOUT penalty (like target_busy) so a generating-with-queued

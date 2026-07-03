@@ -5,6 +5,8 @@ from Claude Code 2.x panes (fixture-gen session) and from the stuck worker
 incident that motivated #276.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from agentwire import prompt_router
@@ -842,3 +844,108 @@ class TestNotifyPermissionRequest:
         assert info.kind == "question" and source == "hook"
         assert info.question == "Ship it?"
         assert [o["label"] for o in info.options] == ["Yes", "No"]
+
+
+# =============================================================================
+# #689 — stuck-box sweeper backstop
+# =============================================================================
+
+STUCK_RULE = "─" * 60
+
+
+def _stuck_screen(box_text, footer=""):
+    return f"output above\n{STUCK_RULE}\n❯ {box_text}\n{STUCK_RULE}\n{footer}"
+
+
+class TestFlushStuckBox:
+    """The last-resort healer: machine-injected text stuck in an idle pane's
+    input box across consecutive sweeps gets a bare Enter — never a paste."""
+
+    def _patch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path)
+        keys = []
+
+        def fake_tmux(args, timeout=5):
+            keys.append(args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(prompt_router, "_tmux", fake_tmux)
+        monkeypatch.setattr(
+            prompt_router, "EVENTS_FILE", tmp_path / "events.jsonl")
+        return keys
+
+    def test_machine_header_flushes_on_second_sweep(self, monkeypatch, tmp_path):
+        keys = self._patch(monkeypatch, tmp_path)
+        screen = _stuck_screen("[MSG from worker · done] finished  ⟨#abc123⟩")
+        assert not prompt_router._flush_stuck_box("s", 0, screen)  # sweep 1: arm
+        assert keys == []
+        assert prompt_router._flush_stuck_box("s", 0, screen)  # sweep 2: flush
+        assert keys == [["send-keys", "-t", "s.0", "Enter"]]
+
+    def test_pasted_text_placeholder_flushes(self, monkeypatch, tmp_path):
+        keys = self._patch(monkeypatch, tmp_path)
+        screen = _stuck_screen("[Pasted text #1 +12 lines]")
+        prompt_router._flush_stuck_box("s", 0, screen)
+        assert prompt_router._flush_stuck_box("s", 0, screen)
+        assert len(keys) == 1
+
+    def test_human_draft_never_flushed(self, monkeypatch, tmp_path):
+        keys = self._patch(monkeypatch, tmp_path)
+        screen = _stuck_screen("my half-typed human thought")
+        for _ in range(5):
+            assert not prompt_router._flush_stuck_box("s", 0, screen)
+        assert keys == []
+
+    def test_changed_content_resets_counter(self, monkeypatch, tmp_path):
+        keys = self._patch(monkeypatch, tmp_path)
+        a = _stuck_screen("[MSG from w · done] one  ⟨#aaa111⟩")
+        b = _stuck_screen("[MSG from w · done] two  ⟨#bbb222⟩")
+        assert not prompt_router._flush_stuck_box("s", 0, a)
+        assert not prompt_router._flush_stuck_box("s", 0, b)  # reset, re-armed
+        assert keys == []
+
+    def test_generating_pane_skipped(self, monkeypatch, tmp_path):
+        keys = self._patch(monkeypatch, tmp_path)
+        screen = _stuck_screen(
+            "[MSG from w · done] finished  ⟨#abc123⟩",
+            footer="✶ Working… (esc to interrupt)",
+        )
+        for _ in range(3):
+            assert not prompt_router._flush_stuck_box("s", 0, screen)
+        assert keys == []
+
+    def test_queued_placeholder_skipped(self, monkeypatch, tmp_path):
+        keys = self._patch(monkeypatch, tmp_path)
+        screen = _stuck_screen("[MSG queue] Press up to edit queued messages")
+        prompt_router._flush_stuck_box("s", 0, screen)
+        assert not prompt_router._flush_stuck_box("s", 0, screen)
+        assert keys == []
+
+    def test_empty_or_unparseable_clears_state(self, monkeypatch, tmp_path):
+        self._patch(monkeypatch, tmp_path)
+        stuck = _stuck_screen("[MSG from w · done] hi  ⟨#abc123⟩")
+        assert not prompt_router._flush_stuck_box("s", 0, stuck)  # armed
+        prompt_router._flush_stuck_box("s", 0, _stuck_screen(""))  # cleared
+        # Re-stuck: must take TWO sweeps again, not fire immediately.
+        assert not prompt_router._flush_stuck_box("s", 0, stuck)
+
+
+class TestSafeDeliverPane:
+    def test_pane_index_threads_to_send_verified(self, monkeypatch):
+        from agentwire import session_ready
+        monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
+        monkeypatch.setattr(prompt_router, "_is_parked", lambda s: False)
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p: True)
+        monkeypatch.setattr(
+            prompt_router, "screen_shows_live_menu", lambda v: False)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t: "")
+        seen = {}
+
+        def fake_send(session, text, marker=None, retries=1, settle=2.0,
+                      pane_index=0):
+            seen["pane"] = pane_index
+            return True
+
+        monkeypatch.setattr(session_ready, "send_verified", fake_send)
+        ok, reason = prompt_router.safe_deliver("s", 3, "hello")
+        assert ok and seen["pane"] == 3

@@ -447,7 +447,7 @@ def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[boo
 
     from .session_ready import send_verified
 
-    ok = send_verified(target_session, text)
+    ok = send_verified(target_session, text, pane_index=target_pane)
     return (ok, "delivered" if ok else "delivery_unverified")
 
 
@@ -749,6 +749,80 @@ def _router_config() -> "tuple[bool, set[str]]":
         return True, set()
 
 
+# Stuck-box sweeper backstop (#689). Machine-injected message headers whose
+# pasted-but-unsubmitted drafts the sweep may flush with a bare Enter. Human
+# drafts never start with these, so the backstop cannot submit a walked-away
+# human's half-typed message. ``[Pasted text`` is Claude Code's placeholder for
+# a large multi-line paste — the msg drain's coalesced blob renders exactly
+# that way when its Enter is swallowed.
+_MACHINE_HEADER_RE = re.compile(r"^\[(MSG from|NOTIFY from|PROMPT|IDLE|Pasted text)\b")
+# Consecutive sweeps (~60s apart) the identical content must sit in the box
+# before the flush fires — one sweep of settling covers a delivery in flight.
+STUCK_BOX_SWEEPS = 2
+
+
+def _stuck_box_path(session: str, pane_index: int) -> Path:
+    return STATE_DIR / f"{session}.{pane_index}.stuckbox.json"
+
+
+def _flush_stuck_box(session: str, pane_index: int, visible: str) -> bool:
+    """Press Enter on a box stuck holding machine-injected text (#689).
+
+    The last-resort healer behind the verified-submit and drain fixes: any
+    paste-then-submit path that died between paste and Enter (crash, kill,
+    swallowed keystroke that exhausted its budget) leaves a message rendered in
+    the recipient's input box forever. Fires only when ALL of:
+
+      - the box parses and holds non-empty, non-placeholder content,
+      - the content starts with a machine-injected header (never a human draft),
+      - the pane is not mid-generation (no ``esc to interrupt`` footer),
+      - the identical content has sat there for ``STUCK_BOX_SWEEPS``
+        consecutive sweeps (state persisted per-pane next to prompt markers).
+
+    Never pastes — Enter only, so the #621 idempotency dedup keeps holding.
+    """
+    path = _stuck_box_path(session, pane_index)
+    box = input_box_content(visible)
+    if (
+        not box
+        or not _MACHINE_HEADER_RE.match(box)
+        or is_queued_placeholder(box)
+        or "esc to interrupt" in visible.lower()
+    ):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        data = {}
+    count = int(data.get("count", 0)) + 1 if data.get("content") == box else 1
+    if count < STUCK_BOX_SWEEPS:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(path, {"content": box, "count": count})
+        except OSError:
+            pass
+        return False
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        _tmux(["send-keys", "-t", f"{session}.{pane_index}", "Enter"])
+        _log_event(
+            "stuck_box_flushed", session=session, pane=pane_index,
+            content=box[:120],
+        )
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def sweep() -> dict:
     """Scan all agent panes for live interactive prompts and route them.
 
@@ -794,12 +868,17 @@ def sweep() -> dict:
         if session in excluded or _is_parked(session):
             continue
 
-        info = detect_prompt(_capture(f"{session}.{pane_index}"))
+        visible = _capture(f"{session}.{pane_index}")
+        info = detect_prompt(visible)
         marker = read_marker(session, pane_index)
 
         if info is None:
             if marker:
                 clear_marker(session, pane_index)
+            if _flush_stuck_box(session, pane_index, visible):
+                routed.append(
+                    {"session": session, "pane": pane_index, "kind": "stuck_box"}
+                )
             continue
 
         # A fresh hook-routed marker keeps the sweep off this pane entirely.

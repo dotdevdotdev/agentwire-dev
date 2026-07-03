@@ -74,6 +74,23 @@ lands in a durable inbox and is injected only at a safe boundary.
    already sits landed-but-unsubmitted in the box, and if so retries only the
    *submit*, so a whole-send retry can never double the draft.
 
+   **Pasted ≠ submitted (#689).** Three closures for the paste-lands-but-Enter-
+   is-swallowed failure: **(a)** `message_on_scrollback` excludes the input-box
+   region — a message still sitting in the box no longer reads as "on
+   scrollback", so the drain can't unlink a pending file the recipient never
+   received (an unparseable box counts as *not* on scrollback: keep pending).
+   **(b)** `send_verified`'s Phase-2 confirm is strict before the first Enter —
+   an unparseable busy box plus activity glyphs can no longer declare a message
+   submitted with **zero** Enter keystrokes ever sent. **(c)** When the drain
+   finds one of its own pending messages rendered in the recipient's box, it
+   heals via `session_ready.finish_submit` — an **Enter-only** retry (never a
+   re-paste, so the #621 dedup holds), unlinking only once submission confirms
+   and otherwise deferring without penalty (`stuck_in_box`). As a last-resort
+   backstop, the watchdog pane-sweep flushes a bare Enter on any idle pane
+   whose box has held identical **machine-injected** text (`[MSG…`, `[NOTIFY…`,
+   `[Pasted text…`) for two consecutive sweeps — human-looking drafts are never
+   auto-submitted.
+
 4. **Defer or drop.** If either gate fails, the messages stay put, their
    `attempts` counter bumps, and the defer `reason` (`box_not_empty`,
    `target_parked`, …) is stamped on each message. After `MAX_ATTEMPTS`

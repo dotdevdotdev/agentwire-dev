@@ -474,3 +474,115 @@ class TestCouncilDelegation:
         monkeypatch.setattr(session_ready, "send_verified", fake)
         assert cli.send_verified("council-gut", "msg", "[COUNCIL PROMPT #1]")
         assert calls["args"] == ("council-gut", "msg", "[COUNCIL PROMPT #1]", 1)
+
+
+class TestStripInputBox:
+    """#689 — 'on scrollback' must mean OUTSIDE the input box."""
+
+    def test_removes_box_region(self):
+        cap = "history line\n" + render_box("draft text")
+        outside = session_ready.strip_input_box(cap)
+        assert "history line" in outside
+        assert "draft text" not in outside
+
+    def test_unparseable_returns_none(self):
+        assert session_ready.strip_input_box("no rules anywhere") is None
+
+    def test_empty_box(self):
+        outside = session_ready.strip_input_box("above\n" + render_box())
+        assert "above" in outside
+
+
+class TestMessageOnScrollbackBoxAware:
+    """#689 regression — a pasted-but-unsubmitted message sitting in the input
+    box must NOT read as 'on scrollback'. That false positive is exactly how
+    the drain unlinked pending files while the recipient never got the message
+    (2026-07-03 repro)."""
+
+    def test_message_in_box_is_not_on_scrollback(self):
+        msg = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+        cap = "some history\n" + render_box(msg)
+        assert not session_ready.message_on_scrollback(cap, msg)
+
+    def test_message_above_box_is_on_scrollback(self):
+        msg = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+        cap = f"{msg}\n" + render_box()
+        assert session_ready.message_on_scrollback(cap, msg)
+
+    def test_unparseable_box_stays_pending(self):
+        # Can't prove the text is outside the box → conservative False.
+        msg = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+        assert not session_ready.message_on_scrollback(f"junk\n{msg}\njunk", msg)
+
+
+class TestZeroEnterFalsePositive:
+    """#689 root cause 1 — a busy pane whose box is unparseable at phase-2
+    start must NOT be declared submitted before at least one Enter has actually
+    been pressed."""
+
+    def test_strict_confirm_rejects_unparseable_box(self):
+        busy = "⏺ Bash(ls)\n  ⎿ file.py\n✻ Thinking…\nsome text no box"
+        assert not session_ready.submit_confirmed(
+            busy, "our msg", allow_unparsed=False
+        )
+        # Permissive (post-Enter) still accepts activity evidence.
+        assert session_ready.submit_confirmed(busy, "our msg")
+
+    def test_enter_pressed_before_permissive_confirm(self, monkeypatch):
+        # Paste lands (parseable box), then the pane re-renders busily and the
+        # box becomes unparseable with activity glyphs. The old code confirmed
+        # on the FIRST phase-2 snapshot with zero Enters.
+        _fake_clock(monkeypatch)
+        busy = "⏺ Bash(build)\n✶ Working… (esc to interrupt)\nno box parses here"
+
+        def frame(a):
+            if a["enters"] == 0:
+                if a["caps"] <= 2:
+                    return render_box("stuck report")  # landed
+                return busy  # unparseable re-render — must NOT confirm yet
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "stuck report")
+        assert actions["enters"] >= 1, "confirmed with zero Enters pressed"
+
+
+class TestFinishSubmit:
+    """#689 healing primitive — Enter-only, never a paste."""
+
+    def test_submits_stuck_message(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        msg = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box(msg)  # stuck in the box
+            return render_box()  # Enter registered
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.finish_submit("s", msg)
+        assert actions["pastes"] == 0  # NEVER pastes (#621 dedup holds)
+        assert actions["enters"] >= 1
+
+    def test_already_clear_box_no_enter(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_box())
+        assert session_ready.finish_submit("s", "gone message")
+        assert actions["enters"] == 0
+        assert actions["pastes"] == 0
+
+    def test_wedged_box_returns_false(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        msg = "immovable text"
+        actions = _env(monkeypatch, lambda a: render_box(msg))
+        assert not session_ready.finish_submit("s", msg)
+        assert actions["pastes"] == 0
+
+    def test_never_raises(self, monkeypatch):
+        _fake_clock(monkeypatch)
+
+        def boom(a):
+            raise RuntimeError("gone")
+
+        _env(monkeypatch, boom)
+        assert session_ready.finish_submit("s", "msg") is False
