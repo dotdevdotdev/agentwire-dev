@@ -112,7 +112,42 @@ BASH_WRITES = [
     "rm ~/.agentwire/damage-control/core.yaml",
     "sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py",
     "echo 'enabled: false' > .damagecontrol.yml",
+    # #678 — absolute-path targets: basename globs (*.agentwire.yml) must
+    # match through a directory prefix, not just the bare relative form.
+    "echo x >> /some/repo/.agentwire.yml",
+    "echo x > /some/repo/.agentwire.yml",
+    'sed -i "s/a/b/" /some/repo/.agentwire.yml',
+    "cp /tmp/x /some/repo/.agentwire.yml",
+    "mv /tmp/x /some/repo/.agentwire.yml",
+    'tee "/some/repo/.agentwire.yml" < /tmp/x',
+    # #678 — interpreter programs are opaque; fail closed when an inline/
+    # stdin/piped interpreter invocation mentions a protected path.
+    "python3 -c 'open(\".agentwire.yml\", \"w\").write(\"x\")'",
+    "python3 -c 'open(\"/some/repo/.agentwire.yml\", \"a\").write(\"x\")'",
+    "perl -e 'open(F, \">\", \".agentwire.yml\")'",
+    "python3 - <<'EOF'\nopen('/some/repo/.agentwire.yml', 'w').write('x')\nEOF",
+    "echo 'open(\".agentwire.yml\",\"w\")' | python3",
 ]
+
+# Write-shaped-looking but innocent: mentioning the filename in quoted
+# CONTENT (an issue body, a commit message) must NOT block (#675 posture),
+# and plain reads stay allowed.
+BASH_INNOCENT = [
+    'gh issue create --title "bug" --body "edit your .agentwire.yml to fix"',
+    'git commit -m "docs: mention .agentwire.yml"',
+    "cat .agentwire.yml",
+    "grep roles /some/repo/.agentwire.yml",
+    "python3 -m pytest tests/unit",
+]
+
+
+@pytest.mark.parametrize("command", BASH_INNOCENT)
+def test_innocent_mention_or_read_not_blocked(cfg, command):
+    result = check_command(command, cfg)
+    # Some of these hit ordinary ask-tier rules (gh/git) — that's fine; the
+    # assertion is that the PROTECTED control-plane gate doesn't fire.
+    assert result["decision"] != "block", command
+    assert result.get("protected") is not True, command
 
 
 @pytest.mark.parametrize("command", BASH_WRITES)
