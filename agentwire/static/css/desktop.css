@@ -5514,6 +5514,29 @@ body.sidebar-pinned .sidebar-tab {
     color: #fff;
 }
 
+/* Artifact window titlebar download button (mirrors .wb-title-ptt sizing) */
+.wb-title-download {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin-right: 6px;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0;
+    vertical-align: middle;
+}
+
+.wb-title-download:hover {
+    background: var(--hover);
+}
+
 /* =========================================================================
    Toast Notification Panel
    ========================================================================= */
