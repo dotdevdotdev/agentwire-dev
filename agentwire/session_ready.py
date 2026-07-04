@@ -41,6 +41,27 @@ SUBMIT_BUDGET = 20.0
 # can eat the wall-clock before we've pressed Enter enough times).
 MIN_ENTER_ATTEMPTS = 4
 
+# Readiness hardening (#695). Two identical 500ms frames proved too weak a
+# stability signal: a render pause while a notice panel / effort banner loads
+# (or model-init on a high effort tier) yields an identical pair with the input
+# handler still unwired, and the premature paste fragments + its Enters are
+# swallowed. Require a longer identical run, then demand POSITIVE proof the
+# handler consumes keystrokes: type a probe char, watch it render in the input
+# box, erase it. Only then is the real paste allowed.
+READY_STABLE_SNAPSHOTS = 3  # consecutive identical frames (~1s of stability)
+PROBE_CHAR = "."
+# Per-probe wait for the typed char to render in the box. Short: an unwired
+# handler swallows (or buffers) the keystroke, and the outer loop re-sends.
+PROBE_APPEAR_TIMEOUT = 3.0
+# Wait for backspace(s) to clear the rendered probe(s) out of the box.
+PROBE_ERASE_TIMEOUT = 3.0
+
+# Seed-failure recovery (#695): bounded attempts at clearing a partial paste
+# out of the input box (Escape clears Claude Code's current input, including a
+# large paste's ``[Pasted text]`` chip), and the per-attempt confirm budget.
+CLEAR_BOX_ATTEMPTS = 3
+CLEAR_BOX_TIMEOUT = 3.0
+
 # Substrings that mean "Claude is actively working" — a spinner footer, the
 # token counter, the esc-to-interrupt hint, or tool-output glyphs. A
 # submitted-and-working agent is the success case the old check mistook for a
@@ -197,27 +218,86 @@ def _poll(predicate, timeout: float) -> bool:
         time.sleep(POLL_INTERVAL)
 
 
+def _box_is_probe(box: "str | None") -> bool:
+    """Is the input box showing nothing but our probe char(s)?
+
+    Swallowed-then-buffered keystrokes can pile up, so any run of probe chars
+    counts. Ghost/placeholder hint text (a sentence) never matches, and a
+    leftover draft never matches — both correctly read as "probe not proven".
+    """
+    if not box:
+        return False
+    s = "".join(box.split())
+    return bool(s) and set(s) == {PROBE_CHAR}
+
+
+def _probe_input_handler(session: str, pane_index: int, deadline: float) -> bool:
+    """Positive proof the input handler consumes keystrokes (#695).
+
+    Types PROBE_CHAR, polls the input box until the char actually renders,
+    then erases it and confirms the box moved on. A banner-up-but-unwired
+    session swallows (or buffers) the keystroke, so the probe never confirms
+    and we re-send until *deadline* — failing safe instead of pasting into a
+    session that would fragment the paste and swallow its Enters.
+    """
+    from agentwire import pane_manager
+
+    target = f"{session}.{pane_index}"
+
+    def box() -> "str | None":
+        return input_box(capture_session(session, pane_index=pane_index))
+
+    while time.time() < deadline:
+        pane_manager.run_command(
+            ["tmux", "send-keys", "-t", target, "-l", PROBE_CHAR], timeout=5
+        )
+        appear_budget = min(
+            PROBE_APPEAR_TIMEOUT, max(deadline - time.time(), POLL_INTERVAL)
+        )
+        if not _poll(lambda: _box_is_probe(box()), appear_budget):
+            continue  # swallowed — handler not wired yet; re-send and re-check
+        # Erase: buffered keystrokes may have piled up ("..."), so backspace
+        # what's visible and confirm the box no longer shows probe chars.
+        while time.time() < deadline:
+            try:
+                visible = box() or ""
+            except Exception:
+                visible = ""
+            for _ in range(len("".join(visible.split())) or 1):
+                pane_manager.run_command(
+                    ["tmux", "send-keys", "-t", target, "BSpace"], timeout=5
+                )
+            if _poll(lambda: not _box_is_probe(box()), PROBE_ERASE_TIMEOUT):
+                return True
+        return False
+    return False
+
+
 def wait_for_session_ready(
     session_full_name: str, timeout: float = 30.0, pane_index: int = 0
 ) -> bool:
     """Poll a session's pane until Claude is fully ready to accept input.
 
-    Two-phase wait:
+    Three-phase wait:
 
     1. Detect the Claude prompt banner (``❯`` or ``Bypassing Permissions``).
-    2. Wait until the screen is *stable* — two consecutive 500ms snapshots
-       are identical. This catches the case where Claude has rendered its
-       banner but is still wiring its input handler. A premature paste at
-       that point gets fragmented into multiple ``[Pasted text +N]`` chunks
-       and Enter keys land in a state where Claude can't process them —
-       the prompt sits in the input box, never submitted.
+    2. Wait until the screen is *stable* — READY_STABLE_SNAPSHOTS consecutive
+       500ms snapshots are identical. Two identical frames proved too weak
+       (#695): a render pause while a notice panel / effort banner loads
+       yields an identical pair with the input handler still unwired.
+    3. Probe the input handler (:func:`_probe_input_handler`): type a char,
+       confirm it renders in the input box, erase it. Without this positive
+       proof, a premature paste gets fragmented into multiple
+       ``[Pasted text +N]`` chunks and Enter keys land in a state where
+       Claude can't process them — the prompt sits in the input box, never
+       submitted.
 
     Also auto-accepts the first-time "trust this folder" prompt, which a
     fresh project directory always triggers (and which contains neither
     banner string, so it would otherwise stall the wait until timeout).
 
-    Returns True once the screen is stable after banner-detection. False on
-    timeout.
+    Returns True once the probe round-trips after banner + stability. False
+    on timeout.
     """
     from agentwire import pane_manager
 
@@ -225,6 +305,7 @@ def wait_for_session_ready(
     banner_seen = False
     trust_accepted = False
     last_snapshot: str | None = None
+    stable_count = 0
 
     while time.time() < deadline:
         try:
@@ -232,6 +313,7 @@ def wait_for_session_ready(
         except Exception:
             time.sleep(0.5)
             last_snapshot = None
+            stable_count = 0
             continue
 
         if not banner_seen:
@@ -253,10 +335,14 @@ def wait_for_session_ready(
             time.sleep(0.5)
             continue
 
-        # Banner is up; wait for two consecutive identical snapshots.
+        # Banner is up; require READY_STABLE_SNAPSHOTS identical snapshots.
         if last_snapshot is not None and out == last_snapshot:
-            return True
+            stable_count += 1
+        else:
+            stable_count = 0
         last_snapshot = out
+        if stable_count >= READY_STABLE_SNAPSHOTS - 1:
+            return _probe_input_handler(session_full_name, pane_index, deadline)
         time.sleep(0.5)
 
     return False
@@ -494,3 +580,64 @@ def send_verified(
         except Exception:
             pass
     return False
+
+
+def clear_input_box(session: str, pane_index: int = 0) -> bool:
+    """Best-effort: clear whatever sits unsubmitted in the input box (#695).
+
+    A failed seed can leave a partial paste in the box, which (a) confuses a
+    human attaching to the session and (b) blocks the msg-inbox fallback
+    forever — the drain only pastes into an EMPTY box. Sends Escape (Claude
+    Code: clears the current input, including a large paste's ``[Pasted
+    text]`` chip) and confirms emptiness with the drain's own SGR-aware gate
+    (``prompt_router.prompt_is_empty``), so "cleared" here means exactly
+    "the drain will deliver". Returns True iff the box ends up empty.
+    """
+    from agentwire import pane_manager, prompt_router
+
+    target = f"{session}.{pane_index}"
+
+    def empty() -> bool:
+        return prompt_router.prompt_is_empty(session, pane_index)
+
+    for _ in range(CLEAR_BOX_ATTEMPTS):
+        try:
+            if empty():
+                return True
+            pane_manager.run_command(
+                ["tmux", "send-keys", "-t", target, "Escape"], timeout=5
+            )
+            if _poll(empty, CLEAR_BOX_TIMEOUT):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def recover_failed_seed(
+    session: str, message: str, sender: "str | None" = None, pane_index: int = 0
+) -> "str | None":
+    """Recover a first-message seed that failed to deliver (#695).
+
+    1. Clear the partial paste out of the input box (it would block the
+       inbox drain's empty-box gate indefinitely).
+    2. Enqueue the prompt as a ``request`` into the session's msg inbox —
+       the watchdog delivers it once the box is truly ready, and a request
+       that can never deliver dead-letters LOUDLY (owner email) instead of
+       vanishing.
+
+    Returns ``"inbox"`` when the prompt was queued, None when even the
+    fallback failed (the caller must tell the user to deliver manually).
+    Never raises.
+    """
+    try:
+        clear_input_box(session, pane_index=pane_index)
+    except Exception:
+        pass
+    try:
+        from agentwire import inbox
+
+        inbox.enqueue(session, message, kind="request", sender=sender or "agentwire")
+        return "inbox"
+    except Exception:
+        return None

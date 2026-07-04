@@ -477,11 +477,25 @@ def cmd_new(args) -> int:
             )
         save_project_config(project_config, session_path)
 
+    # Record the creating session as parent for prompt routing. --created-by
+    # overrides; empty string opts out; default = the calling tmux session.
+    # Resolved before seeding so a failed seed can name its sender.
+    created_by = getattr(args, 'created_by', None)
+    if created_by is None:
+        created_by = pane_manager.get_current_session()
+
     # Deliver the first message once the agent is ready (verified paste).
-    # Delivery failure doesn't fail the command — the session exists.
+    # Delivery failure doesn't fail the command — the session exists — but it
+    # must be LOUD (#695): clear the partial paste out of the box and fall
+    # back to the msg inbox so the prompt still arrives once the box is ready.
     first_message_delivered = None
+    first_message_fallback = None
     if first_message and agent_cmd:
-        from agentwire.session_ready import send_verified, wait_for_session_ready
+        from agentwire.session_ready import (
+            recover_failed_seed,
+            send_verified,
+            wait_for_session_ready,
+        )
 
         if not json_mode:
             print("Waiting for agent to deliver first message...")
@@ -489,14 +503,24 @@ def cmd_new(args) -> int:
             wait_for_session_ready(session_name, timeout=60)
             and send_verified(session_name, first_message)
         )
-        if not first_message_delivered and not json_mode:
-            print(f"Warning: first message not delivered to '{session_name}' — paste it manually", file=sys.stderr)
+        if not first_message_delivered:
+            first_message_fallback = recover_failed_seed(
+                session_name, first_message, sender=created_by or "agentwire"
+            )
+            if not json_mode:
+                if first_message_fallback == "inbox":
+                    print(
+                        f"WARNING: first message NOT delivered to '{session_name}' — "
+                        "queued to its msg inbox for delivery once the input box is ready",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"WARNING: first message NOT delivered to '{session_name}' "
+                        "and could not be queued — paste it manually",
+                        file=sys.stderr,
+                    )
 
-    # Record the creating session as parent for prompt routing. --created-by
-    # overrides; empty string opts out; default = the calling tmux session.
-    created_by = getattr(args, 'created_by', None)
-    if created_by is None:
-        created_by = pane_manager.get_current_session()
     _record_session_creator(session_name, created_by, via="new")
 
     if json_mode:
@@ -509,6 +533,10 @@ def cmd_new(args) -> int:
         }
         if first_message:
             result["first_message_delivered"] = bool(first_message_delivered)
+            if not first_message_delivered:
+                # "inbox" (queued for watchdog delivery) or None (fallback
+                # failed too — the prompt is gone; caller must redeliver).
+                result["first_message_fallback"] = first_message_fallback
         _output_json(result)
     else:
         print(f"Created session '{session_name}' in {session_path}")

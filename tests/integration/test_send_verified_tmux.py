@@ -32,9 +32,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 # A self-contained emulator — written to a temp file and run as the pane's
-# command. Reads stdin byte-by-byte in raw mode; \r submits, \n is literal.
+# command. Reads stdin byte-by-byte in raw mode; \r submits, \n is literal,
+# \x7f (backspace) erases. An optional argv[1] delay renders the banner+box
+# immediately but leaves stdin unconsumed for that many seconds — the #695
+# "input handler not wired yet" window (keystrokes buffer in the PTY).
 EMULATOR = r'''
-import os, sys, tty
+import os, sys, time, tty
 RULE = "─" * 20
 buf = ""
 
@@ -55,6 +58,12 @@ sys.stdout.write("\x1b[?2004h")
 sys.stdout.flush()
 tty.setraw(sys.stdin.fileno())
 draw()
+
+# Simulated late input wiring (#695): the screen is up (banner + box) but
+# nothing consumes stdin yet — keystrokes sent now buffer in the PTY and are
+# dumped into the loop all at once when the "handler" finally wires.
+if len(sys.argv) > 1:
+    time.sleep(float(sys.argv[1]))
 
 data = b""
 in_paste = False
@@ -82,6 +91,8 @@ while True:
         elif ch == "\r":             # real Enter keystroke -> submit
             if buf:
                 buf = ""
+        elif ch == "\x7f":           # backspace keystroke -> erase one char
+            buf = buf[:-1]
         elif ch == "\x03":
             sys.exit(0)
         else:
@@ -99,34 +110,53 @@ def _capture(session):
 
 
 @pytest.fixture
-def emulator_session(tmp_path):
+def emulator_factory(tmp_path):
+    """Spawn emulator panes on a private tmux socket; kill them on teardown.
+
+    ``make(wire_delay=N)`` renders the banner+box immediately but leaves the
+    emulator's stdin unconsumed for N seconds — the #695 unwired window.
+    """
     script = tmp_path / "claude_box_emulator.py"
     script.write_text(EMULATOR)
-    session = f"awtest-{uuid.uuid4().hex[:8]}"
-    # Dedicated server socket so we never touch the user's live tmux. The socket
-    # path MUST be short — macOS caps Unix-domain socket paths at ~104 bytes, and
-    # pytest's tmp_path easily blows past that (silently failing new-session), so
-    # keep it in a short temp dir keyed by a tiny uuid.
-    sock_dir = Path(tempfile.mkdtemp(prefix="awt-"))
-    socket = str(sock_dir / "s")
+    created = []
 
-    def tmux_s(*args):
-        return subprocess.run(
-            ["tmux", "-S", socket, *args], capture_output=True, text=True
-        )
+    def make(wire_delay: float = 0.0):
+        session = f"awtest-{uuid.uuid4().hex[:8]}"
+        # Dedicated server socket so we never touch the user's live tmux. The
+        # socket path MUST be short — macOS caps Unix-domain socket paths at
+        # ~104 bytes, and pytest's tmp_path easily blows past that (silently
+        # failing new-session), so keep it in a short temp dir.
+        sock_dir = Path(tempfile.mkdtemp(prefix="awt-"))
+        socket = str(sock_dir / "s")
 
-    tmux_s("new-session", "-d", "-s", session, "-x", "120", "-y", "40",
-           f"{sys.executable} {script}")
-    # Wait for the box to render.
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if "❯" in subprocess.run(
-            ["tmux", "-S", socket, "capture-pane", "-t", f"{session}.0", "-p"],
-            capture_output=True, text=True).stdout:
-            break
-        time.sleep(0.1)
-    yield session, socket, tmux_s
-    tmux_s("kill-session", "-t", session)
+        def tmux_s(*args):
+            return subprocess.run(
+                ["tmux", "-S", socket, *args], capture_output=True, text=True
+            )
+
+        cmd = f"{sys.executable} {script}"
+        if wire_delay:
+            cmd += f" {wire_delay}"
+        tmux_s("new-session", "-d", "-s", session, "-x", "120", "-y", "40", cmd)
+        # Wait for the box to render.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if "❯" in subprocess.run(
+                ["tmux", "-S", socket, "capture-pane", "-t", f"{session}.0", "-p"],
+                capture_output=True, text=True).stdout:
+                break
+            time.sleep(0.1)
+        created.append((session, tmux_s))
+        return session, socket, tmux_s
+
+    yield make
+    for session, tmux_s in created:
+        tmux_s("kill-session", "-t", session)
+
+
+@pytest.fixture
+def emulator_session(emulator_factory):
+    return emulator_factory()
 
 
 def _patch_pane_manager(monkeypatch, socket):
@@ -215,3 +245,34 @@ def test_stuck_paste_finished_enter_only_no_duplicate(emulator_session, monkeypa
     # No duplicate: the emulator clears on submit; a re-paste would have left a
     # second copy sitting in the box.
     assert msg not in (box or "")
+
+
+def test_wait_ready_probe_roundtrip_real_tmux(emulator_factory, monkeypatch):
+    # #695: against a wired pane, readiness confirms via the probe round-trip
+    # (type a char, see it render, erase it) and leaves the box clean for the
+    # real paste — which then delivers end-to-end.
+    session, socket, _ = emulator_factory()
+    _patch_pane_manager(monkeypatch, socket)
+
+    assert session_ready.wait_for_session_ready(session, timeout=15)
+    cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    assert session_ready.input_box(cap) == "", "probe left residue in the box"
+    assert session_ready.send_verified(session, "the seed prompt")
+
+
+def test_wait_ready_holds_until_input_handler_wired(emulator_factory, monkeypatch):
+    # #695 live repro shape: banner + input box render immediately, but stdin
+    # is not consumed for 3s (keystrokes buffer in the PTY — the unwired
+    # window). The pre-#695 rule (two identical 500ms frames) declared ready
+    # ~1s in and pasted into the void; the probe must hold readiness until the
+    # handler actually consumes keystrokes, then clean up every buffered probe.
+    session, socket, _ = emulator_factory(wire_delay=3.0)
+    _patch_pane_manager(monkeypatch, socket)
+
+    t0 = time.time()
+    assert session_ready.wait_for_session_ready(session, timeout=30)
+    assert time.time() - t0 >= 2.5, "declared ready inside the unwired window"
+    cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    assert session_ready.input_box(cap) == "", "buffered probes not erased"
+    # The seed that used to fragment/sit unsubmitted now delivers.
+    assert session_ready.send_verified(session, "seed after late wiring")
