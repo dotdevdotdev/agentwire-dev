@@ -5,6 +5,7 @@ This file lives in project directories and is the source of truth for session co
 """
 
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -139,6 +140,47 @@ def compose_session_type(harness: str, posture: str) -> str:
 
 
 @dataclass
+class WorktreeOverrides:
+    """Per-project overrides for `agentwire worktree` (the `worktree:` block).
+
+    Sits between per-invocation flags and the global config in the
+    precedence chain (#705): CLI/MCP flag → this block → global `worktree:`
+    in config.yaml → built-ins. ``dir`` only moves the root — the nesting
+    shape is unchanged: ``<dir>/<project>/<name>/``.
+    """
+    dir: Optional[Path] = None   # overrides worktree.worktree_dir for this project
+    base: Optional[str] = None   # overrides worktree.default_base for this project
+
+
+_WORKTREE_OVERRIDE_KEYS = {"dir", "base"}
+
+
+def _parse_worktree_overrides(data: Any) -> WorktreeOverrides:
+    """Parse the optional ``worktree:`` block. Unknown keys warn, never fail."""
+    if not isinstance(data, dict):
+        if data is not None:
+            print(
+                f"Warning: .agentwire.yml `worktree:` should be a mapping "
+                f"with dir/base keys, got {type(data).__name__} — ignoring",
+                file=sys.stderr,
+            )
+        return WorktreeOverrides()
+    unknown = sorted(set(data) - _WORKTREE_OVERRIDE_KEYS)
+    if unknown:
+        print(
+            f"Warning: unknown key(s) in .agentwire.yml `worktree:` block: "
+            f"{', '.join(unknown)} (expected: dir, base)",
+            file=sys.stderr,
+        )
+    dir_val = data.get("dir")
+    base_val = data.get("base")
+    return WorktreeOverrides(
+        dir=Path(str(dir_val)).expanduser() if dir_val else None,
+        base=str(base_val) if base_val else None,
+    )
+
+
+@dataclass
 class ProjectConfig:
     """Project-level configuration for a project directory.
 
@@ -154,6 +196,7 @@ class ProjectConfig:
     parent: Optional[str] = None  # Parent session for hierarchical notifications
     shell: Optional[str] = None  # Default shell for task commands (default: /bin/sh)
     tasks: dict[str, Any] = field(default_factory=dict)  # Task definitions (raw dict, parsed by tasks.py)
+    worktree: WorktreeOverrides = field(default_factory=WorktreeOverrides)  # `agentwire worktree` overrides (#705)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for YAML serialization."""
@@ -170,6 +213,13 @@ class ProjectConfig:
             d["shell"] = self.shell
         if self.tasks:
             d["tasks"] = self.tasks
+        if self.worktree.dir or self.worktree.base:
+            wt: dict[str, Any] = {}
+            if self.worktree.dir:
+                wt["dir"] = str(self.worktree.dir)
+            if self.worktree.base:
+                wt["base"] = self.worktree.base
+            d["worktree"] = wt
         return d
 
     @classmethod
@@ -189,6 +239,7 @@ class ProjectConfig:
             parent=parent,
             shell=shell,
             tasks=tasks if isinstance(tasks, dict) else {},
+            worktree=_parse_worktree_overrides(data.get("worktree")),
         )
 
 
