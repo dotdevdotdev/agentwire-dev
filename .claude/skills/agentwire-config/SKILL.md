@@ -219,6 +219,10 @@ session_context:         # Context-bloat observability (Phase 0, observe-only �
 worktree:                         # `agentwire worktree <name>` orchestration (WorktreeConfig).
                                   # Distinct from projects.worktrees above (the legacy
                                   # project/branch layout).
+                                  # PRECEDENCE (#705): a project's .agentwire.yml `worktree:`
+                                  # block (dir/base) overrides these for that repo; a
+                                  # per-invocation --base flag beats both. Chain: flag →
+                                  # project .agentwire.yml → this global block → built-ins.
   worktree_dir: ~/worktrees       # Root for worktrees, nested per project:
                                   # <worktree_dir>/<project>/<name>/ (mirrors ~/projects/)
   default_base: develop           # Base branch new worktrees fork from. OMIT to derive from

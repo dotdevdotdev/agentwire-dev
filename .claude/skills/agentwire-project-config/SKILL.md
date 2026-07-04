@@ -45,8 +45,30 @@ session:
 | `parent` | Session name | Parent session for hierarchical notifications |
 | `shell` | `/bin/sh`, `/bin/bash`, etc. | Default shell for task commands |
 | `tasks` | Task definitions | Scheduled workload configurations |
+| `worktree` | `dir` / `base` mapping | Per-project overrides for `agentwire worktree` (see below) |
 
 For pi sessions (`pi-*`, e.g. `pi-zai`, `pi-deepseek`), see the `agentwire-pi` skill.
+
+## Worktree overrides (#705)
+
+A project can override where `agentwire worktree` puts its worktrees and which
+branch they fork from, without touching the global config — the
+monorepo/develop-base shop is the canonical case:
+
+```yaml
+worktree:
+  dir: ~/work-trees     # overrides global worktree.worktree_dir for THIS project
+  base: develop         # overrides global worktree.default_base for THIS project
+```
+
+Precedence (most specific wins): per-invocation CLI/MCP `--base` flag →
+project `.agentwire.yml` `worktree:` block → global `~/.agentwire/config.yaml`
+`worktree:` → built-ins (`~/worktrees`, repo origin/HEAD). The nesting shape is
+unchanged — `dir` only moves the root: `<dir>/<project>/<name>/`. ALL worktree
+subcommands (create/list/status/remove/prune) resolve through the same
+project-scoped dir, and registry entries record the resolved path, so existing
+worktrees survive an override change. Unknown keys in the block warn to stderr
+but don't fail.
 
 > **No safety config in `.agentwire.yml` (#466/#467).** `.agentwire.yml` is
 > agent-writable, so it carries **zero** damage-control policy. The kill switch,

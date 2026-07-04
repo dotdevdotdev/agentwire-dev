@@ -41,6 +41,7 @@ from .project_config import (
     POSTURES,
     ProjectConfig,
     SessionType,
+    WorktreeOverrides,
     compose_session_type,
     detect_default_agent_type,
     load_project_config,
@@ -801,7 +802,17 @@ def cmd_worktree(args) -> int:
         project_base = Path(os.getcwd())
     project_path = git_root(project_base) or project_base
 
-    worktree_dir = wt_config.worktree_dir
+    # Per-project overrides (#705): the repo's .agentwire.yml `worktree:` block
+    # (dir/base) beats the global config for THIS project. Precedence:
+    # per-invocation flag → project .agentwire.yml → global config.yaml →
+    # built-ins. Resolved BEFORE the subcommand dispatch so create / list /
+    # status / remove / prune all scope to the same dir — remove/prune must
+    # find what create made. (Registry entries record the resolved path, so
+    # already-created worktrees survive an override change regardless.)
+    project_config = load_project_config(project_path)
+    project_wt = project_config.worktree if project_config else WorktreeOverrides()
+
+    worktree_dir = project_wt.dir or wt_config.worktree_dir
 
     # Registry management flags (name is optional for these).
     if getattr(args, 'list', False):
@@ -833,9 +844,10 @@ def cmd_worktree(args) -> int:
     session_name = f"{project_name}-{safe_name}"
     worktree_path = worktree_dir / project_name / safe_name
 
-    # --base wins; else config default; else the repo's actual default branch
-    # (origin/HEAD, not a hardcoded 'main'). --current handled per-mode below.
-    default_base = getattr(args, 'base', None) or wt_config.default_base
+    # --base wins; else project override; else global config default; else the
+    # repo's actual default branch (origin/HEAD, not a hardcoded 'main').
+    # --current handled per-mode below.
+    default_base = getattr(args, 'base', None) or project_wt.base or wt_config.default_base
 
     # The branch created in default mode honors the naming template.
     templated_branch = apply_naming(wt_config.naming, name)
@@ -903,8 +915,8 @@ def cmd_worktree(args) -> int:
         new_branch = None
         mode_label = f"existing branch {name}"
     else:
-        # Default mode: new branch from base.
-        # Precedence: explicit --base > --current > config default > repo-derived.
+        # Default mode: new branch from base. Precedence: explicit --base >
+        # --current > project .agentwire.yml > global config > repo-derived.
         explicit_base = getattr(args, 'base', None)
         if explicit_base:
             base_branch = explicit_base
@@ -916,6 +928,8 @@ def cmd_worktree(args) -> int:
             if result.returncode != 0 or not result.stdout.strip():
                 return _output_result(False, json_mode, f"Failed to detect current branch in {project_path}")
             base_branch = result.stdout.strip()
+        elif project_wt.base:
+            base_branch = project_wt.base
         elif wt_config.default_base:
             base_branch = wt_config.default_base
         else:

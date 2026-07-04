@@ -1,12 +1,15 @@
 """Tests for agentwire/project_config.py — SessionType, ProjectConfig, normalize."""
 
 
+from pathlib import Path
+
 import pytest
 import yaml
 
 from agentwire.project_config import (
     ProjectConfig,
     SessionType,
+    WorktreeOverrides,
     compose_session_type,
     ensure_gitignored,
     find_project_config,
@@ -262,6 +265,62 @@ class TestProjectConfigIO:
         assert config is not None
         assert config.type == SessionType.CLAUDE_BYPASS
         assert config.roles == ["contributor"]
+
+
+# --- worktree: block — per-project overrides for `agentwire worktree` (#705) ---
+
+class TestWorktreeOverrides:
+    def test_full_block(self):
+        config = ProjectConfig.from_dict({
+            "worktree": {"dir": "/tmp/my-trees", "base": "develop"},
+        })
+        assert config.worktree.dir == Path("/tmp/my-trees")
+        assert config.worktree.base == "develop"
+
+    def test_dir_tilde_expanded(self):
+        config = ProjectConfig.from_dict({"worktree": {"dir": "~/work-trees"}})
+        assert config.worktree.dir == Path.home() / "work-trees"
+        assert config.worktree.base is None
+
+    def test_base_only(self):
+        config = ProjectConfig.from_dict({"worktree": {"base": "develop"}})
+        assert config.worktree.dir is None
+        assert config.worktree.base == "develop"
+
+    def test_absent_block_defaults_empty(self):
+        config = ProjectConfig.from_dict({})
+        assert config.worktree == WorktreeOverrides()
+        assert config.worktree.dir is None
+        assert config.worktree.base is None
+
+    def test_unknown_keys_warn_but_parse(self, capsys):
+        config = ProjectConfig.from_dict({
+            "worktree": {"dir": "/tmp/t", "bogus": 1, "naming": "x"},
+        })
+        assert config.worktree.dir == Path("/tmp/t")  # known keys still land
+        err = capsys.readouterr().err
+        assert "bogus" in err and "naming" in err
+
+    def test_non_mapping_block_ignored_with_warning(self, capsys):
+        config = ProjectConfig.from_dict({"worktree": "develop"})
+        assert config.worktree == WorktreeOverrides()
+        assert "worktree" in capsys.readouterr().err
+
+    def test_null_values_treated_as_unset(self):
+        config = ProjectConfig.from_dict({"worktree": {"dir": None, "base": None}})
+        assert config.worktree.dir is None
+        assert config.worktree.base is None
+
+    def test_to_dict_round_trip(self):
+        original = ProjectConfig.from_dict({
+            "type": "claude-bypass",
+            "worktree": {"dir": "/tmp/my-trees", "base": "develop"},
+        })
+        restored = ProjectConfig.from_dict(original.to_dict())
+        assert restored.worktree == original.worktree
+
+    def test_to_dict_omits_empty_block(self):
+        assert "worktree" not in ProjectConfig().to_dict()
 
 
 # --- ProjectConfig holds no safety config (#466/#467) ---

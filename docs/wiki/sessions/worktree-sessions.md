@@ -16,8 +16,9 @@ The branch a new worktree forks from is resolved in this order:
 
 1. `--base/-b <branch>` (explicit, always wins)
 2. `--current/-c` (the repo's currently checked-out branch)
-3. config `worktree.default_base`
-4. **the repo's actual default branch** — `git symbolic-ref refs/remotes/origin/HEAD` (e.g. a monorepo defaulting to `develop`), falling back to the current branch, finally `main`
+3. the project's `.agentwire.yml` `worktree.base` (per-project override, #705)
+4. global config `worktree.default_base`
+5. **the repo's actual default branch** — `git symbolic-ref refs/remotes/origin/HEAD` (e.g. a monorepo defaulting to `develop`), falling back to the current branch, finally `main`
 
 So `agentwire worktree foo` in a repo whose default is `develop` branches off `origin/develop` with no flags and no config. (If `origin/HEAD` isn't set locally, run `git remote set-head origin -a` once to populate it; until then the current-branch fallback applies.)
 
@@ -61,6 +62,21 @@ worktree:
 ```
 
 Distinct from `projects.worktrees` (the legacy `project/branch` session layout under `~/projects/<project>-worktrees/`). See the `agentwire-config` skill for the full field reference.
+
+### Per-project overrides (#705)
+
+A repo's `.agentwire.yml` can override the worktree root and base for **that project only**, so the global layout isn't a lock-in (the monorepo/develop-base shop is the canonical case):
+
+```yaml
+# .agentwire.yml at the repo root
+worktree:
+  dir: ~/work-trees     # overrides worktree.worktree_dir for this project
+  base: develop         # overrides worktree.default_base for this project
+```
+
+Precedence (most specific wins): per-invocation `--base` flag → project `.agentwire.yml` `worktree:` block → global `config.yaml` `worktree:` → built-ins (`~/worktrees`, repo origin/HEAD). The nesting shape is unchanged — `dir` only moves the root: `<dir>/<project>/<name>/`.
+
+All subcommands (create/list/status/remove/prune) resolve through the same project-scoped dir, so `--remove` always finds what create made. Registry entries record the **resolved** worktree path, so worktrees created before an override change remain listable and removable afterwards. Unknown keys in the block warn to stderr but never fail the config load.
 
 ## Other modes
 

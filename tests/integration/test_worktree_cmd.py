@@ -255,6 +255,130 @@ def test_remove_by_full_session_name(tmp_path, monkeypatch, wt_env):
     assert reg.entries(clone.resolve()) == []
 
 
+# --- Per-project overrides via .agentwire.yml `worktree:` block (#705) ---
+
+def _write_project_override(repo, **kv):
+    import yaml
+    (repo / ".agentwire.yml").write_text(yaml.safe_dump({"worktree": kv}))
+
+
+def test_project_dir_override_creates_under_project_dir(tmp_path, monkeypatch, wt_env):
+    """`worktree.dir` in .agentwire.yml moves the root for THIS repo only;
+    the nesting shape <dir>/<project>/<name>/ is unchanged."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    global_dir = tmp_path / "global-worktrees"
+    project_dir = tmp_path / "project-worktrees"
+    _write_project_override(clone, dir=str(project_dir))
+
+    rc = _run(monkeypatch, _config(global_dir), name="fix-bug", project=str(clone))
+    assert rc == 0
+    assert (project_dir / "clone-repo" / "fix-bug").exists()
+    assert not global_dir.exists()
+    # Registry records the RESOLVED path, so the entry survives override changes.
+    entries = reg.entries(clone.resolve())
+    assert entries[0]["worktree_path"] == str(project_dir / "clone-repo" / "fix-bug")
+
+
+def test_project_dir_override_remove_round_trip(tmp_path, monkeypatch, wt_env):
+    """--remove resolves through the same project-scoped dir as create."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    global_dir = tmp_path / "global-worktrees"
+    project_dir = tmp_path / "project-worktrees"
+    _write_project_override(clone, dir=str(project_dir))
+    cfg = _config(global_dir)
+
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone)) == 0
+    wt_path = project_dir / "clone-repo" / "fix-bug"
+    assert wt_path.exists()
+
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone), remove=True) == 0
+    assert not wt_path.exists()
+    assert reg.entries(clone.resolve()) == []
+    # Last worktree gone → empty per-project dir swept under the OVERRIDE root.
+    assert not (project_dir / "clone-repo").exists()
+
+
+def test_project_base_override_beats_global(tmp_path, monkeypatch, wt_env):
+    """`worktree.base` in .agentwire.yml wins over config default_base."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    origin = tmp_path / "origin"
+    _git(origin, "branch", "release")
+    _git(clone, "fetch", "-q", "origin")
+    _write_project_override(clone, base="release")
+
+    wt_dir = tmp_path / "worktrees"
+    rc = _run(monkeypatch, _config(wt_dir, default_base="develop"),
+              name="hot", project=str(clone))
+    assert rc == 0
+    assert reg.entries(clone.resolve())[0]["base"] == "release"
+    # The new branch actually forked from origin/release.
+    base_sha = _git(clone, "rev-parse", "origin/release").stdout.strip()
+    head = _git(wt_dir / "clone-repo" / "hot", "rev-parse", "HEAD").stdout.strip()
+    assert head == base_sha
+
+
+def test_invocation_base_beats_project_override(tmp_path, monkeypatch, wt_env):
+    """Per-invocation --base is the most specific — beats the project block."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    origin = tmp_path / "origin"
+    _git(origin, "branch", "release")
+    _git(clone, "fetch", "-q", "origin")
+    _write_project_override(clone, base="release")
+
+    rc = _run(monkeypatch, _config(tmp_path / "worktrees"),
+              name="hot", base="develop", project=str(clone))
+    assert rc == 0
+    assert reg.entries(clone.resolve())[0]["base"] == "develop"
+
+
+def test_current_flag_beats_project_base(tmp_path, monkeypatch, wt_env):
+    """--current is per-invocation too — beats the project block."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    origin = tmp_path / "origin"
+    _git(origin, "branch", "release")
+    _git(clone, "fetch", "-q", "origin")
+    _write_project_override(clone, base="release")
+    # Current branch differs from both develop and release... but must exist
+    # on origin for the fetch — keep it on develop and just assert the pick.
+    rc = _run(monkeypatch, _config(tmp_path / "worktrees"),
+              name="hot", current=True, project=str(clone))
+    assert rc == 0
+    assert reg.entries(clone.resolve())[0]["base"] == "develop"  # the checked-out branch
+
+
+def test_no_override_falls_through_to_global(tmp_path, monkeypatch, wt_env):
+    """An .agentwire.yml WITHOUT a worktree block changes nothing — global
+    dir/base apply as before."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    (clone / ".agentwire.yml").write_text("type: claude-bypass\n")
+
+    global_dir = tmp_path / "global-worktrees"
+    rc = _run(monkeypatch, _config(global_dir), name="fix-bug", project=str(clone))
+    assert rc == 0
+    assert (global_dir / "clone-repo" / "fix-bug").exists()
+    assert reg.entries(clone.resolve())[0]["base"] == "develop"  # repo-derived
+
+
+def test_entries_survive_override_change(tmp_path, monkeypatch, wt_env):
+    """A worktree created under the old dir stays removable after the
+    override changes: the registry stores the resolved path."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    old_dir = tmp_path / "old-trees"
+    new_dir = tmp_path / "new-trees"
+    _write_project_override(clone, dir=str(old_dir))
+    cfg = _config(tmp_path / "global-worktrees")
+
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone)) == 0
+    wt_path = old_dir / "clone-repo" / "fix-bug"
+    assert wt_path.exists()
+
+    # Override moves — the already-created worktree must still resolve.
+    _write_project_override(clone, dir=str(new_dir))
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone), remove=True) == 0
+    assert not wt_path.exists()
+    assert reg.entries(clone.resolve()) == []
+
+
 def test_prune_drops_stale_entries(tmp_path, monkeypatch, wt_env):
     _, clone = _origin_and_clone(tmp_path, default_branch="develop")
     wt_dir = tmp_path / "worktrees"
