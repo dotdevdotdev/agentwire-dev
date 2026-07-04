@@ -84,6 +84,47 @@ class ArtifactsRoutesMixin:
             logger.error(f"Artifacts list failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
+    async def api_artifacts_download(self, request):
+        """GET /api/artifacts/download/{path} — serve an artifact file as an attachment.
+
+        Same bearer-token auth as every other API route (the security middleware
+        covers it); the only difference from the ``/artifacts`` static mount is
+        ``Content-Disposition: attachment`` so the browser saves instead of
+        renders. Path-validated to the artifacts root: the resolved target
+        (symlinks followed) must land inside ``config.artifacts.dir`` or the
+        request is rejected 400.
+
+        Multi-file artifact dirs (e.g. handoff bundles): this downloads exactly
+        the requested entry HTML — no zipping or asset inlining. Artifacts are
+        rendered via iframe ``srcdoc`` where relative sub-resources don't
+        resolve either, so self-contained HTML is already the supported shape.
+        """
+        rel_path = request.match_info["path"]
+        artifacts_dir = self.config.artifacts.dir.resolve()
+        try:
+            filepath = (artifacts_dir / rel_path).resolve()
+            filepath.relative_to(artifacts_dir)
+        except (ValueError, OSError):
+            return web.json_response(
+                {"success": False, "error": "invalid path"}, status=400
+            )
+        if not filepath.is_file():
+            return web.json_response(
+                {"success": False, "error": "file not found"}, status=404
+            )
+
+        from urllib.parse import quote
+        ascii_name = filepath.name.replace('"', "").replace("\\", "")
+        return web.FileResponse(
+            filepath,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_name}"; '
+                    f"filename*=UTF-8''{quote(filepath.name)}"
+                )
+            },
+        )
+
     async def api_artifacts_delete(self, request):
         """DELETE /api/artifacts/{filename} — delete a file from the artifacts directory."""
         import re
@@ -114,6 +155,7 @@ def register_artifacts_routes(server, app):
     """Wire the artifacts domain's routes (and static mount) onto ``app``."""
     app.router.add_post("/api/artifacts/upload", server.api_artifacts_upload)
     app.router.add_get("/api/artifacts", server.api_artifacts_list)
+    app.router.add_get("/api/artifacts/download/{path:.+}", server.api_artifacts_download)
     app.router.add_delete("/api/artifacts/{filename:.+}", server.api_artifacts_delete)
     artifacts_dir = server.config.artifacts.dir
     artifacts_dir.mkdir(parents=True, exist_ok=True)

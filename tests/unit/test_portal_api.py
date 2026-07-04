@@ -427,6 +427,68 @@ class TestApiArtifacts:
         assert not (artifacts_dir / "deleteme.html").exists()
 
 
+class TestApiArtifactDownload:
+    """GET /api/artifacts/download/{path} — attachment download (#707)."""
+
+    async def test_download_artifact(self, portal_client):
+        client, server = portal_client
+        (server.config.artifacts.dir / "report.html").write_text("<h1>report</h1>")
+        resp = await client.get("/api/artifacts/download/report.html")
+        assert resp.status == 200
+        disposition = resp.headers["Content-Disposition"]
+        assert disposition.startswith("attachment")
+        assert 'filename="report.html"' in disposition
+        assert await resp.text() == "<h1>report</h1>"
+
+    async def test_download_nested_entry_html(self, portal_client):
+        """Multi-file artifact dirs: the entry HTML downloads by relative path."""
+        client, server = portal_client
+        bundle = server.config.artifacts.dir / "handoff-demo"
+        bundle.mkdir()
+        (bundle / "show-the-story.html").write_text("<p>story</p>")
+        resp = await client.get("/api/artifacts/download/handoff-demo/show-the-story.html")
+        assert resp.status == 200
+        assert 'filename="show-the-story.html"' in resp.headers["Content-Disposition"]
+        assert await resp.text() == "<p>story</p>"
+
+    async def test_download_traversal_rejected(self, portal_client, tmp_path):
+        client, server = portal_client
+        secret = tmp_path / "secret.txt"
+        secret.write_text("nope")
+        # Encoded-slash traversal survives client/proxy dot-segment
+        # normalization; aiohttp decodes match_info to "../secret.txt" — the
+        # resolve/relative_to guard must reject it.
+        resp = await client.get("/api/artifacts/download/..%2fsecret.txt")
+        assert resp.status == 400
+        body = await resp.json()
+        assert body == {"success": False, "error": "invalid path"}
+
+    async def test_download_symlink_escape_rejected(self, portal_client, tmp_path):
+        client, server = portal_client
+        secret = tmp_path / "secret.txt"
+        secret.write_text("nope")
+        (server.config.artifacts.dir / "link.html").symlink_to(secret)
+        resp = await client.get("/api/artifacts/download/link.html")
+        assert resp.status == 400
+
+    async def test_download_missing_file_404(self, portal_client):
+        client, _ = portal_client
+        resp = await client.get("/api/artifacts/download/nope.html")
+        assert resp.status == 404
+
+    async def test_download_requires_token(self, portal_client_with_token):
+        client, server = portal_client_with_token
+        (server.config.artifacts.dir / "auth.html").write_text("<p>x</p>")
+        resp = await client.get("/api/artifacts/download/auth.html")
+        assert resp.status == 401
+        resp = await client.get(
+            "/api/artifacts/download/auth.html",
+            headers={"Authorization": "Bearer testtoken123"},
+        )
+        assert resp.status == 200
+        assert resp.headers["Content-Disposition"].startswith("attachment")
+
+
 # ---------------------------------------------------------------------------
 # Desktop windows API
 # ---------------------------------------------------------------------------

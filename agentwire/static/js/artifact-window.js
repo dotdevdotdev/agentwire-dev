@@ -7,6 +7,7 @@
 
 import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
+import { toast } from './toast.js';
 
 // If the iframe's `load` event hasn't fired by now, treat it as stuck and flip
 // the spinner to the error state. The native `error` event doesn't fire for
@@ -199,6 +200,66 @@ export class ArtifactWindow {
         const reloadBtn = container.querySelector('.artifact-reload-btn');
         if (reloadBtn) {
             reloadBtn.addEventListener('click', () => this.reload());
+        }
+
+        this._setupDownloadButton();
+    }
+
+    /**
+     * Titlebar download button — local artifacts only (external URLs have
+     * nothing on our disk to serve). Fetches via apiFetch so the bearer token
+     * rides along (a plain <a href> navigation can't carry the Authorization
+     * header), then saves the blob. This is a separate top-level fetch — the
+     * iframe srcdoc/sandbox model (#645) is untouched.
+     */
+    _setupDownloadButton() {
+        if (this._isExternalUrl()) return;
+        const relPath = this._artifactRelPath();
+        if (!relPath) return;
+        const titleEl = this.winbox.window.querySelector('.wb-title');
+        if (!titleEl) return;
+
+        const btn = document.createElement('button');
+        btn.className = 'wb-title-download';
+        btn.title = 'Download HTML';
+        btn.innerHTML = '<span aria-hidden="true">&#x2B73;</span>';
+        titleEl.insertBefore(btn, titleEl.firstChild);
+
+        // WinBox attaches capture-phase mousedown on .wb-drag for window
+        // dragging — stop it at pointerdown so a click doesn't start a drag.
+        btn.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        }, true);
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._downloadArtifact(relPath);
+        });
+    }
+
+    /** Relative path under the artifacts root, or null if not an /artifacts/ URL. */
+    _artifactRelPath() {
+        const resolved = this._resolveUrl();
+        if (!resolved.startsWith('/artifacts/')) return null;
+        const rel = resolved.slice('/artifacts/'.length).split('?')[0].split('#')[0];
+        return rel || null;
+    }
+
+    async _downloadArtifact(relPath) {
+        const encoded = relPath.split('/').map(encodeURIComponent).join('/');
+        try {
+            const resp = await apiFetch(`/api/artifacts/download/${encoded}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = relPath.split('/').pop();
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(a.href);
+        } catch (e) {
+            toast(`Download failed: ${e.message}`, { type: 'error' });
         }
     }
 
