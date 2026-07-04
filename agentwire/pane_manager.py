@@ -280,7 +280,14 @@ def send_to_target(target: str, text: str, enter: bool = True) -> None:
             result = run_command(["tmux", "load-buffer", temp_path], timeout=5)
             if not result.success:
                 raise RuntimeError(f"Failed to load buffer: {result.stderr.strip()}")
-            result = run_command(["tmux", "paste-buffer", "-t", target], timeout=5)
+            # -p wraps the paste in bracketed-paste delimiters when the app has
+            # requested them (Claude Code always does; tmux falls back to a
+            # plain paste otherwise). Without the explicit end-of-paste marker,
+            # Claude Code detects the paste heuristically as an input burst,
+            # and an Enter arriving inside that window is coalesced INTO the
+            # paste as a newline instead of submitting — the swallowed-Enter
+            # root cause behind the #698 stress-test failures.
+            result = run_command(["tmux", "paste-buffer", "-p", "-t", target], timeout=5)
             if not result.success:
                 raise RuntimeError(f"Target '{target}' not found: {result.stderr.strip()}")
         finally:

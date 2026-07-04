@@ -323,12 +323,15 @@ class TestSendVerifiedAdaptive:
         assert session_ready.send_verified("s", "resilient prompt")
         assert actions["enters"] == 2
 
-    def test_fast_agent_already_submitted(self, monkeypatch):
-        # A fast bypass agent consumed+submitted before our first poll: empty
-        # box + visible activity → delivered, no Enter needed.
+    def test_already_submitted_needs_the_echo_not_ambient_activity(self, monkeypatch):
+        # "Already submitted" is only provable by the message echoed on
+        # scrollback OUTSIDE the box. An empty box + ambient activity glyphs is
+        # what every agent pane looks like in the instants BEFORE a paste
+        # renders (#698) — it must NOT read as delivered.
         _fake_clock(monkeypatch)
-        actions = _env(monkeypatch, lambda a: render_working())
-        assert session_ready.send_verified("s", "my unique multiline prompt")
+        msg = "my unique multiline prompt"
+        actions = _env(monkeypatch, lambda a: f"> {msg}\n" + render_working())
+        assert session_ready.send_verified("s", msg)
         assert actions["enters"] == 0
 
     def test_large_paste_placeholder_lands(self, monkeypatch):
@@ -486,26 +489,27 @@ class TestPrePasteGuardIdentity:
 
 class TestSubmitConfirmed:
     """#621 — Phase-2 confirm keys on 'the box no longer holds our text', since
-    Phase 1 already proved the paste landed. The old `submitted` additionally
-    demanded a spinner or the echoed turn, which false-negatived a landed-and-
-    submitted paste under a quiet/fast agent (→ inbox redelivery loop / notify
-    'sat there unsent')."""
+    Phase 1 already proved the paste landed. #698 — ONLY a parseable box may
+    decide: activity glyphs, markers, and raw-capture visibility are all
+    satisfied by a stuck paste sitting inside a box we failed to parse."""
 
     def test_quiet_cleared_box_is_confirmed(self):
         # Box cleared, NO activity marker, message already scrolled out of view.
         cap = render_box()  # empty box, nothing else
         assert session_ready.submit_confirmed(cap, "report text")
-        # The old, over-strict check would NOT confirm this — the regression.
-        assert not session_ready.submitted(cap, "report text")
 
     def test_text_still_in_box_is_not_confirmed(self):
         cap = render_box("report text")
         assert not session_ready.submit_confirmed(cap, "report text")
 
-    def test_unparseable_box_falls_back_to_marker(self):
-        cap = "tool output everywhere, no box at all\n[MARKER-LINE]"
-        assert session_ready.submit_confirmed(cap, "zzz", marker="[MARKER-LINE]")
-        assert not session_ready.submit_confirmed(cap, "zzz", marker="[ABSENT]")
+    def test_unparseable_box_is_never_confirmed(self):
+        # #698 — no box parse, no confirm. The old fallback trusted a marker
+        # or activity glyphs in the raw capture, but the capture INCLUDES the
+        # box region, so a stuck paste satisfied both and got its inbox file
+        # deleted while the recipient never received it.
+        cap = "⏺ tool output everywhere, no box at all\n[MARKER-LINE]"
+        assert not session_ready.submit_confirmed(cap, "zzz")
+        assert not session_ready.submit_confirmed(cap, "[MARKER-LINE]")
 
     def test_quiet_submit_no_activity_delivers(self, monkeypatch):
         # End-to-end: paste lands in the box, one Enter clears it, and the pane
@@ -554,6 +558,18 @@ class TestStripInputBox:
         outside = session_ready.strip_input_box("above\n" + render_box())
         assert "above" in outside
 
+    def test_below_last_rule_is_never_outside(self):
+        # #698 — a mid-redraw frame can drop the box's bottom border, so the
+        # "last two rules" bracket an echoed '> …' line while the REAL box
+        # (holding the stuck text) sits below the last rule. Nothing below the
+        # top border may ever count as scrollback.
+        msg = "[MSG from w · done] stuck  ⟨#abc123⟩"
+        garbled = f"history\n{RULE}\n> some old echoed turn\n{RULE}\n❯ {msg}"
+        outside = session_ready.strip_input_box(garbled)
+        assert outside is not None
+        assert msg not in outside
+        assert not session_ready.message_on_scrollback(garbled, msg)
+
 
 class TestMessageOnScrollbackBoxAware:
     """#689 regression — a pasted-but-unsubmitted message sitting in the input
@@ -578,22 +594,20 @@ class TestMessageOnScrollbackBoxAware:
 
 
 class TestZeroEnterFalsePositive:
-    """#689 root cause 1 — a busy pane whose box is unparseable at phase-2
-    start must NOT be declared submitted before at least one Enter has actually
-    been pressed."""
+    """#689/#698 — a pane whose box is unparseable must NEVER be declared
+    submitted, no matter how many Enters have been pressed: activity glyphs sit
+    in every agent pane's scrollback, and the raw capture includes the very box
+    that failed to parse."""
 
-    def test_strict_confirm_rejects_unparseable_box(self):
+    def test_confirm_rejects_unparseable_box(self):
         busy = "⏺ Bash(ls)\n  ⎿ file.py\n✻ Thinking…\nsome text no box"
-        assert not session_ready.submit_confirmed(
-            busy, "our msg", allow_unparsed=False
-        )
-        # Permissive (post-Enter) still accepts activity evidence.
-        assert session_ready.submit_confirmed(busy, "our msg")
+        assert not session_ready.submit_confirmed(busy, "our msg")
 
-    def test_enter_pressed_before_permissive_confirm(self, monkeypatch):
+    def test_enter_pressed_and_confirm_waits_for_parseable_frame(self, monkeypatch):
         # Paste lands (parseable box), then the pane re-renders busily and the
         # box becomes unparseable with activity glyphs. The old code confirmed
-        # on the FIRST phase-2 snapshot with zero Enters.
+        # on the FIRST phase-2 snapshot with zero Enters; post-#698 the confirm
+        # holds out for a parseable frame that no longer shows our text.
         _fake_clock(monkeypatch)
         busy = "⏺ Bash(build)\n✶ Working… (esc to interrupt)\nno box parses here"
 
@@ -607,6 +621,39 @@ class TestZeroEnterFalsePositive:
         actions = _env(monkeypatch, frame)
         assert session_ready.send_verified("s", "stuck report")
         assert actions["enters"] >= 1, "confirmed with zero Enters pressed"
+
+    def test_garbled_frames_after_enter_never_confirm(self, monkeypatch):
+        # #698 stress-test root cause: Enter pressed but swallowed, and every
+        # subsequent confirm snapshot is a garbled busy frame. The old
+        # permissive fallback confirmed on the first such frame (activity
+        # glyphs) → 'delivered' logged, message file unlinked, text stuck in
+        # the box until a human noticed. Must report failure instead.
+        _fake_clock(monkeypatch)
+        busy = "⏺ Bash(build)\n✶ Working… (esc to interrupt)\nno box parses here"
+
+        def frame(a):
+            if a["caps"] <= 2:
+                return render_box("stress report")  # landed
+            return busy  # garbled forever after — swallowed Enter never proven
+
+        actions = _env(monkeypatch, frame)
+        assert not session_ready.send_verified("s", "stress report")
+        assert actions["enters"] >= 1
+
+    def test_zero_press_race_paste_not_yet_rendered(self, monkeypatch):
+        # #698 12:40 incident: the tick pasted, and BEFORE the paste rendered
+        # the old Phase 1 read 'empty box + activity' as already-submitted and
+        # Phase 2 confirmed against the same still-empty box — 'delivered' in
+        # under a second with ZERO Enter presses, then the paste appeared and
+        # sat there forever. An empty box with no echo must keep polling and,
+        # if the paste never renders, fail the send — never report delivered.
+        _fake_clock(monkeypatch)
+        transcript = "⏺ Bash(ls)\n  ⎿ file.py\n✻ Thinking…\n· 1.2k tokens\n"
+        actions = _env(monkeypatch, lambda a: transcript + render_box())
+        assert not session_ready.send_verified(
+            "s", "[MSG from fix-696 · done] PR ready  ⟨#95556e⟩"
+        )
+        assert actions["enters"] == 0  # never pressed into a box with no paste
 
 
 class TestFinishSubmit:
@@ -752,3 +799,36 @@ class TestRecoverFailedSeed:
 
         monkeypatch.setattr(inbox, "enqueue", boom)
         assert session_ready.recover_failed_seed("sess", "x") is None
+
+
+class TestLiveMenuAbort:
+    """#698 hardening — a live select-menu appearing on the target mid-send
+    owns the pane's keystrokes: Enter would confirm the highlighted option and
+    pasted text could select one. Both the re-press loop and the retry paste
+    must refuse and defer to the next tick's safe_deliver gate."""
+
+    MENU = (
+        "Do you want to proceed?\n"
+        "❯ 1. Yes\n"
+        "  2. No\n"
+        "Esc to cancel"
+    )
+
+    def test_no_enter_pressed_into_live_menu(self, monkeypatch):
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["caps"] <= 2:
+                return render_box("report text")  # landed
+            return self.MENU  # dialog replaced the screen mid-submit
+
+        actions = _env(monkeypatch, frame)
+        assert not session_ready.send_verified("s", "report text")
+        assert actions["enters"] == 0
+
+    def test_retry_never_pastes_into_live_menu(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: self.MENU)
+        assert not session_ready.send_verified("s", "report text", retries=2)
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 0
