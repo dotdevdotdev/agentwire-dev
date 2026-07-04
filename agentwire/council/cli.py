@@ -16,12 +16,15 @@ recency) otherwise, and **every command echoes which sitting it acted on**.
 Subcommands:
 
 - ``start``   — spin up the orchestrator + lens soul sessions (a *sitting*)
-- ``stop``    — kill the sitting's sessions, clear state (history kept)
+- ``stop``    — kill the sitting's sessions, clear state (history kept);
+  renders the minutes artifact by default when any prompt exists (#708)
 - ``status``  — sitting + per-session liveness + open prompts
 - ``ask``     — fan a prompt out to every soul (creates the inbox first)
 - ``collect`` — block until every soul has filed take/ack/pass, or timeout
 - ``reply``   — file a soul's reply (souls run this via Bash)
 - ``list``    — every live/known sitting, oldest-first
+- ``minutes`` — render a sitting's persisted record to a standalone HTML
+  artifact (question + attributed verbatim takes + optional synthesis)
 """
 
 from __future__ import annotations
@@ -30,9 +33,10 @@ import json
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from agentwire.council import inbox, state
+from agentwire.council import inbox, state, view
 
 # --- output helpers -----------------------------------------------------------
 
@@ -158,6 +162,35 @@ def current_session() -> str | None:
     from agentwire import pane_manager
 
     return pane_manager.get_current_session()
+
+
+def open_artifact_window(url: str, title: str) -> bool:
+    """Best-effort: open a rendered artifact as a portal window.
+
+    Returns True only when the portal accepted the open; a down or erroring
+    portal returns False — the artifact file exists on disk either way.
+    """
+    import os
+
+    from agentwire import core
+
+    portal = os.environ.get("AGENTWIRE_PORTAL_URL")
+    if not portal:
+        try:
+            portal = (core.load_config().get("portal", {}) or {}).get("url")
+        except Exception:
+            portal = None
+    portal = portal or core._default_portal_url()
+    try:
+        resp = core.portal_request(
+            "POST",
+            f"{portal}/api/desktop/window/open",
+            json={"type": "artifact", "url": url, "title": title},
+            timeout=5,
+        )
+        return resp.status_code == 200 and bool(resp.json().get("success"))
+    except Exception:
+        return False
 
 
 # --- targeting / resolution -----------------------------------------------------
@@ -322,6 +355,39 @@ def cmd_council_start(args) -> int:
     return _emit(args, payload, human, exit_code=0 if payload["success"] else 1, council=name)
 
 
+def _synthesis_text(value: str | None) -> str:
+    """Resolve ``--synthesis <file-or-text>``: an existing file's content,
+    else the value verbatim."""
+    if not value:
+        return ""
+    try:
+        path = Path(value).expanduser()
+        if path.is_file():
+            return path.read_text()
+    except (OSError, ValueError):
+        pass  # not a readable path — the value is the synthesis itself
+    return value
+
+
+def _render_minutes(
+    name: str, prompt_ids: list[int] | None = None, synthesis: str = ""
+) -> tuple[str | None, bool | None]:
+    """Write the minutes artifact and best-effort open it in the portal.
+
+    Returns ``(path, opened)`` — both None when the sitting has no matching
+    prompt history (nothing rendered, nothing opened).
+    """
+    from agentwire.council import minutes
+
+    path = minutes.write_minutes(name, prompt_ids, synthesis=synthesis)
+    if path is None:
+        return None, None
+    opened = open_artifact_window(
+        minutes.artifact_url(name), f"Council minutes — {name}"
+    )
+    return str(path), opened
+
+
 def cmd_council_stop(args) -> int:
     name, err = resolve_name(args)
     if err:
@@ -329,6 +395,15 @@ def cmd_council_stop(args) -> int:
     sitting = state.read_sitting(name)
     if sitting is None:
         return _emit_error(args, f"no council sitting '{name}'")
+
+    # Minutes before teardown (#708): tri-state --minutes/--no-minutes,
+    # default (None) renders exactly when any prompt history exists.
+    minutes_path: str | None = None
+    minutes_opened: bool | None = None
+    if getattr(args, "minutes", None) is not False:
+        minutes_path, minutes_opened = _render_minutes(
+            name, synthesis=_synthesis_text(getattr(args, "synthesis", None))
+        )
 
     live = list_live_sessions()
     killed: list[str] = []
@@ -340,13 +415,56 @@ def cmd_council_stop(args) -> int:
             not_running.append(session)
     state.clear_sitting(name)
 
-    payload = {"success": True, "killed": killed, "not_running": not_running}
-    return _emit(
-        args,
-        payload,
-        f"Council '{name}' stopped ({len(killed)} sessions killed). Prompt history kept.",
-        council=name,
+    payload = {
+        "success": True,
+        "killed": killed,
+        "not_running": not_running,
+        "minutes": minutes_path,
+        "minutes_opened": minutes_opened,
+    }
+    human = (
+        f"Council '{name}' stopped ({len(killed)} sessions killed). "
+        "Prompt history kept."
     )
+    if minutes_path:
+        human += f"\nMinutes: {minutes_path}"
+    return _emit(args, payload, human, council=name)
+
+
+def cmd_council_minutes(args) -> int:
+    name, err = resolve_name(args)
+    if err:
+        return _emit_error(args, err)
+
+    available = view.available_prompt_ids(name)
+    if not available:
+        return _emit_error(args, f"council '{name}' has no prompt history to render")
+
+    prompt_arg = getattr(args, "prompt", None) or "all"
+    prompt_ids: list[int] | None = None
+    if str(prompt_arg) != "all":
+        try:
+            prompt_ids = [int(prompt_arg)]
+        except (TypeError, ValueError):
+            return _emit_error(
+                args, f"--prompt must be a prompt id or 'all', got {prompt_arg!r}"
+            )
+        if prompt_ids[0] not in available:
+            return _emit_error(
+                args,
+                f"no prompt #{prompt_ids[0]} in council '{name}' "
+                f"(available: {', '.join(map(str, available))})",
+            )
+
+    path, opened = _render_minutes(
+        name, prompt_ids, synthesis=_synthesis_text(getattr(args, "synthesis", None))
+    )
+
+    payload = {"success": True, "path": path, "opened": opened}
+    human = f"Minutes: {path}"
+    if opened:
+        human += "\nOpened as a portal artifact window."
+    return _emit(args, payload, human, council=name)
 
 
 def cmd_council_status(args) -> int:

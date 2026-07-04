@@ -85,13 +85,14 @@ the `prompts/` history.
 ```bash
 agentwire council start [--name N] [--roster brain,gut,...] [--type T] [--model M] [--force]
 agentwire council list                          # every sitting: name·cwd·age·live·prompts
-agentwire council stop    [--name N]
+agentwire council stop    [--name N] [--minutes|--no-minutes] [--synthesis S]
 agentwire council status  [--name N]
 agentwire council ask     [--name N] "Should we ship X?"   # or --file / stdin
 agentwire council collect [--name N] [--prompt P] [--timeout 120] [--no-wait]
 agentwire council reply   --name N --prompt P --take --text "..."   # souls run this
 agentwire council reply   --name N --prompt P --ack
 agentwire council reply   --name N --prompt P --pass
+agentwire council minutes [--name N] [--prompt P|all] [--synthesis S]  # render record → HTML
 ```
 
 `--name` is optional everywhere (resolved per the targeting rules above); the
@@ -106,15 +107,44 @@ comes from `--text`, `--file`, or stdin. All subcommands support `--json`.
 |------|-------|
 | `council_start(name, roster, model)` | `council start` |
 | `council_list()` | `council list` |
-| `council_stop(name)` | `council stop` |
+| `council_stop(name, minutes, synthesis)` | `council stop` — renders minutes on the way out by default |
 | `council_status(name)` | `council status` |
 | `council_ask(prompt, name)` | `council ask` — returns the prompt id |
 | `council_collect(prompt_id, timeout, name)` | `council collect` (subprocess timeout padded past the blocking window) |
+| `council_minutes(name, prompt, synthesis)` | `council minutes` — returns the artifact path |
 
 Every tool takes the optional `name` and echoes `[council: <name>]` so you can
 see which sitting it hit.
 
 `council reply` is deliberately CLI-only — souls invoke it via Bash.
+
+## Minutes (the sitting's record)
+
+`council minutes` renders a presentation-quality standalone HTML record of a
+sitting — the original question, the orchestrator's synthesis, and the
+verbatim per-soul replies (attributed, badged take/ack/pass/followup), one
+section per prompt — following the handoff pattern
+([#708](https://github.com/dotdevdotdev/agentwire-dev/issues/708)):
+
+- **Deterministic render of disk state.** Everything verbatim already
+  persists under `~/.agentwire/council/<name>/prompts/NNNN/`; the renderer is
+  a pure function of it. The synthesis exists only in the orchestrator's
+  context, so it's an *input*: `--synthesis <file-or-text>` (omitted →
+  minutes without a synthesis section).
+- **Output** is one fully self-contained file (inline CSS only — the portal's
+  artifact CSP blocks external fetches; verbatim text is HTML-escaped),
+  theme-aware light/dark, at
+  `~/.agentwire/artifacts/council-<name>-minutes/index.html`. The command
+  prints the path and best-effort opens it as a portal artifact window when
+  the portal is up (`opened` in the `--json` payload).
+- **`council stop` renders minutes automatically** when any prompt exists
+  (`--no-minutes` to skip, `--synthesis` to include your synthesis), so
+  closing a sitting leaves the record behind. Prompt history survives stop,
+  so minutes can also be rendered for dismissed sittings any time — pass
+  `--name` explicitly (a dismissed sitting is never auto-resolved).
+- `--prompt <id|all>` scopes the render (default: every prompt on disk).
+  Re-rendering overwrites the same `index.html` — one minutes artifact per
+  sitting name.
 
 ## Extending the roster
 

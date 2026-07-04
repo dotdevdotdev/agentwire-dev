@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+{#- Council minutes (#708). Fully self-contained: inline CSS only — the
+    portal's artifact CSP blocks external fetches. Theme-aware via
+    prefers-color-scheme; verbatim text renders in pre-wrap prose blocks. -#}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Council minutes — {{ record.name }}</title>
+<style>
+  :root {
+    --bg: #f6f6f3;
+    --surface: #ffffff;
+    --fg: #22262b;
+    --muted: #67707b;
+    --border: #dfe3e8;
+    --accent: #0e7490;
+    --take: #15803d;      --take-bg: #f0fdf4;
+    --ack: #b45309;       --ack-bg: #fffbeb;
+    --pass: #67707b;      --pass-bg: #f4f6f8;
+    --followup: #1d4ed8;  --followup-bg: #eff6ff;
+    --synthesis: #0e7490; --synthesis-bg: #ecfeff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --accent: #22d3ee;
+      --take: #4ade80;      --take-bg: #10251a;
+      --ack: #fbbf24;       --ack-bg: #2b2212;
+      --pass: #8b949e;      --pass-bg: #1a2028;
+      --followup: #93c5fd;  --followup-bg: #131f33;
+      --synthesis: #22d3ee; --synthesis-bg: #0f2229;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  .eyebrow {
+    margin: 0;
+    color: var(--accent);
+    font: 600 0.75rem/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+  h1 { margin: 0.25rem 0 0.5rem; font-size: 1.9rem; line-height: 1.2; }
+  h2 { margin: 0 0 0.25rem; font-size: 1.25rem; }
+  .meta { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.85rem; }
+  .meta span + span::before { content: " · "; }
+  .roster { margin: 0.75rem 0 0; }
+  .chip {
+    display: inline-block;
+    margin: 0 0.35rem 0.35rem 0;
+    padding: 0.1rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    font: 500 0.78rem/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  section { margin-top: 2.25rem; }
+  .question {
+    margin: 1rem 0 0;
+    padding: 1rem 1.25rem;
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    background: var(--surface);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .synthesis {
+    margin-top: 1.25rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--synthesis);
+    border-radius: 8px;
+    background: var(--synthesis-bg);
+  }
+  .synthesis h2, .synthesis h3 { margin: 0 0 0.5rem; color: var(--synthesis); }
+  .prose { white-space: pre-wrap; overflow-wrap: break-word; }
+  .reply {
+    margin-top: 1rem;
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .reply header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .soul { font: 600 0.95rem/1.4 ui-monospace, "SF Mono", Menlo, monospace; }
+  .badge {
+    padding: 0.05rem 0.55rem;
+    border-radius: 999px;
+    font: 600 0.72rem/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .kind-take .badge     { color: var(--take);     background: var(--take-bg); }
+  .kind-followup .badge { color: var(--followup); background: var(--followup-bg); }
+  .kind-ack .badge      { color: var(--ack);      background: var(--ack-bg); }
+  .kind-pass .badge     { color: var(--pass);     background: var(--pass-bg); }
+  .kind-pass, .kind-ack { border-style: dashed; }
+  .when { margin-left: auto; color: var(--muted); font-size: 0.78rem; }
+  .empty { margin: 0; color: var(--muted); font-style: italic; }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Council minutes</p>
+    <h1>{{ record.name }}</h1>
+    <p class="meta">
+      {%- if record.started_at %}<span>seated {{ record.started_at }}</span>{% endif %}
+      {%- if record.dismissed_at %}<span>dismissed {{ record.dismissed_at }}</span>{% endif %}
+      <span>{{ record.prompts | length }} prompt{{ 's' if record.prompts | length != 1 }}</span>
+    </p>
+    {%- if record.roster %}
+    <p class="roster">
+      {%- for soul in record.roster %}<span class="chip">{{ soul }}</span>{% endfor %}
+    </p>
+    {%- endif %}
+  </header>
+
+  {#- A sitting-wide synthesis leads when it spans multiple prompts;
+      for a single prompt it sits between the question and the takes. -#}
+  {%- if synthesis and record.prompts | length > 1 %}
+  <section class="synthesis">
+    <h2>Synthesis</h2>
+    <div class="prose">{{ synthesis }}</div>
+  </section>
+  {%- endif %}
+
+  {%- for prompt in record.prompts %}
+  <section>
+    <h2>Prompt #{{ prompt.id }}</h2>
+    {%- if prompt.created_at %}<p class="meta"><span>asked {{ prompt.created_at }}</span></p>{% endif %}
+    <blockquote class="question">{{ prompt.question }}</blockquote>
+
+    {%- if synthesis and record.prompts | length == 1 %}
+    <div class="synthesis">
+      <h3>Synthesis</h3>
+      <div class="prose">{{ synthesis }}</div>
+    </div>
+    {%- endif %}
+
+    {%- for reply in prompt.replies %}
+    <article class="reply kind-{{ reply.kind }}">
+      <header>
+        <span class="soul">{{ reply.soul }}</span>
+        <span class="badge">{{ reply.kind }}</span>
+        {%- if reply.written_at %}<span class="when">{{ reply.written_at }}</span>{% endif %}
+      </header>
+      {%- if reply.text %}
+      <div class="prose">{{ reply.text }}</div>
+      {%- elif reply.kind == 'pass' %}
+      <p class="empty">Nothing to add through this lens.</p>
+      {%- elif reply.kind == 'ack' %}
+      <p class="empty">Researching — follow-up coming.</p>
+      {%- endif %}
+    </article>
+    {%- else %}
+    <p class="empty">No replies filed.</p>
+    {%- endfor %}
+  </section>
+  {%- endfor %}
+
+  <footer>
+    <p>Sitting <strong>{{ record.name }}</strong>{% if record.archived %} (dismissed){% endif %}
+      · roster: {{ record.roster | join(', ') if record.roster else '—' }}
+      · rendered {{ generated_at }} by agentwire</p>
+  </footer>
+</main>
+</body>
+</html>

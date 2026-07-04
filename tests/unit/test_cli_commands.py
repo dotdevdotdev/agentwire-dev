@@ -266,6 +266,7 @@ class TestCmdNewSeedFallback:
 
     def _run_cmd_new(self, monkeypatch, tmp_path, *, ready, verified, fallback):
         from types import SimpleNamespace
+
         from agentwire import session_cli as m
         from agentwire import session_ready
 

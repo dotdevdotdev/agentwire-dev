@@ -268,6 +268,17 @@ Command Categories:
         "stop", help="Kill the sitting's sessions (prompt history kept)"
     )
     c_stop.add_argument("--name", help=_name_help)
+    c_stop.add_argument(
+        "--minutes", dest="minutes", action="store_true", default=None,
+        help="Render the minutes artifact (default: render when any prompt exists)",
+    )
+    c_stop.add_argument(
+        "--no-minutes", dest="minutes", action="store_false",
+        help="Skip the minutes artifact",
+    )
+    c_stop.add_argument(
+        "--synthesis", help="Synthesis for the minutes: text, or a path to a file"
+    )
     c_stop.add_argument("--json", action="store_true", help="Output JSON")
     c_stop.set_defaults(func=council_cli.cmd_council_stop)
 
@@ -331,6 +342,30 @@ Command Categories:
     c_reply.add_argument("--file", help="Read reply text from a file")
     c_reply.add_argument("--json", action="store_true", help="Output JSON")
     c_reply.set_defaults(func=council_cli.cmd_council_reply)
+
+    # council minutes
+    c_minutes = council_subparsers.add_parser(
+        "minutes",
+        help="Render a sitting's minutes artifact (question + takes + synthesis)",
+        description=(
+            "Deterministically renders the sitting's persisted prompt history "
+            "(question + attributed verbatim take/ack/pass replies) plus an "
+            "optional orchestrator-supplied synthesis into a self-contained "
+            "HTML artifact at ~/.agentwire/artifacts/council-<name>-minutes/, "
+            "and opens it as a portal artifact window when the portal is up. "
+            "Works for live and dismissed sittings (prompt history is kept "
+            "on stop)."
+        ),
+    )
+    c_minutes.add_argument("--name", help=_name_help)
+    c_minutes.add_argument(
+        "--prompt", help="Prompt id to render, or 'all' (default: all)"
+    )
+    c_minutes.add_argument(
+        "--synthesis", help="Synthesis: text, or a path to a file containing it"
+    )
+    c_minutes.add_argument("--json", action="store_true", help="Output JSON")
+    c_minutes.set_defaults(func=council_cli.cmd_council_minutes)
 
     return parser
 
