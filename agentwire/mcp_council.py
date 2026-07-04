@@ -52,25 +52,37 @@ def council_start(name: str = "", roster: str = "", model: str = "") -> str:
 
 
 @mcp.tool()
-def council_stop(name: str = "") -> str:
+def council_stop(name: str = "", minutes: bool = True, synthesis: str = "") -> str:
     """Stop a council sitting: kill all soul sessions + the orchestrator.
 
-    Prompt history under ``~/.agentwire/council/<name>/prompts/`` is kept.
+    Prompt history under ``~/.agentwire/council/<name>/prompts/`` is kept, and
+    by default the sitting's minutes artifact is rendered on the way out
+    (when any prompt exists) — pass your synthesis so the record includes it.
 
     Args:
         name: Sitting name (empty = cwd-repo-slug / sole live sitting)
+        minutes: Render the minutes artifact (default True; skipped anyway
+            when the sitting has no prompt history)
+        synthesis: Your synthesis for the minutes — text, or a path to a file
 
     Returns:
-        Which sessions were killed.
+        Which sessions were killed, plus the minutes path when rendered.
     """
     args = ["council", "stop"]
     if name:
         args += ["--name", name]
+    if not minutes:
+        args += ["--no-minutes"]
+    if synthesis:
+        args += ["--synthesis", synthesis]
     data = run_agentwire_cmd(args, timeout=60)
     if not data.get("success"):
         return f"Failed to stop council: {data.get('error', 'Unknown error')}"
     killed = data.get("killed") or []
-    return f"{_council_tag(data)}Council stopped. Killed: {', '.join(killed) or '(none)'}"
+    out = f"{_council_tag(data)}Council stopped. Killed: {', '.join(killed) or '(none)'}"
+    if data.get("minutes"):
+        out += f"\nMinutes: {data['minutes']}"
+    return out
 
 
 @mcp.tool()
@@ -191,3 +203,38 @@ def council_collect(prompt_id: int = 0, timeout: int = 120, name: str = "") -> s
     for r in data.get("replies") or []:
         lines.append(f"\n--- {r['soul']} ({r['kind']}) ---\n{r['text']}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def council_minutes(name: str = "", prompt: str = "", synthesis: str = "") -> str:
+    """Render a sitting's minutes: question, synthesis, verbatim takes → HTML.
+
+    Deterministically renders the sitting's persisted prompt history
+    (question + attributed take/ack/pass replies) plus your optional
+    synthesis into a self-contained HTML artifact at
+    ``~/.agentwire/artifacts/council-<name>-minutes/index.html``, and opens
+    it as a portal artifact window when the portal is up. Works for live and
+    dismissed sittings alike — prompt history survives ``council_stop``.
+
+    Args:
+        prompt: Prompt id to render, or 'all' (empty = all)
+        synthesis: Your synthesis of the takes — text, or a path to a file
+        name: Sitting name (empty = cwd-repo-slug / sole live sitting)
+
+    Returns:
+        The rendered artifact's path, and whether a portal window opened.
+    """
+    args = ["council", "minutes"]
+    if name:
+        args += ["--name", name]
+    if prompt:
+        args += ["--prompt", prompt]
+    if synthesis:
+        args += ["--synthesis", synthesis]
+    data = run_agentwire_cmd(args, timeout=60)
+    if not data.get("success"):
+        return f"Failed to render minutes: {data.get('error') or data}"
+    out = f"{_council_tag(data)}Minutes: {data.get('path')}"
+    if data.get("opened"):
+        out += "\nOpened as a portal artifact window."
+    return out

@@ -32,3 +32,11 @@ user's prompts out to them, collect their takes, and synthesize.
 - `council_status` shows roster health if something seems stuck.
 - Don't editorialize the lenses away. If Critic and Gut disagree, the
   disagreement *is* the product — surface it.
+
+## Closing the sitting
+
+When the user wraps up, stop with your synthesis so the minutes artifact
+carries it: `council_stop(synthesis="<your synthesis>")`. Stop renders the
+minutes (question + verbatim attributed takes + your synthesis) automatically
+whenever any prompt was asked. To (re)render the record at any other moment —
+including for a past sitting — use `council_minutes(synthesis=...)`.
