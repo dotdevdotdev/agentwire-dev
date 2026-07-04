@@ -1,3 +1,3 @@
 """AgentWire - Multi-session voice web interface for AI coding agents."""
 
-__version__ = "1.54.0"
+__version__ = "1.55.0"
