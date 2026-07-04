@@ -6,7 +6,7 @@
 agentwire worktree fix-bug          # new branch from the repo's default base + standalone session
 ```
 
-A worktree session is a **standalone tmux session** (`{project}-{name}`) running on its own git worktree under `worktree_dir` (default `~/worktrees/`). It survives independently of its creator and carries the intrinsic **worktree-session etiquette** (isolation, no live-tool rebuild/restart, in-worktree verification, draft PR + notify-back) — that role is injected by the spawn verb, so first prompts only need the task itself. `--roles` / `.agentwire.yml roles:` **add** to it; they never replace it.
+A worktree session is a **standalone tmux session** (`{project}-{name}`) running on its own git worktree at `<worktree_dir>/<project>/<name>/` (default `~/worktrees/<project>/<name>/` — nested per project, mirroring `~/projects/<project>/`; the tmux session name stays flat). It survives independently of its creator and carries the intrinsic **worktree-session etiquette** (isolation, no live-tool rebuild/restart, in-worktree verification, draft PR + notify-back) — that role is injected by the spawn verb, so first prompts only need the task itself. `--roles` / `.agentwire.yml roles:` **add** to it; they never replace it.
 
 > "Worktree session" **always** means this command — never `agentwire spawn --branch` (that makes a worker *pane* inside the current session). See the [glossary](../glossary.md).
 
@@ -48,13 +48,13 @@ agentwire worktree --remove name   # kill the session + remove the worktree + un
 agentwire worktree --prune         # drop entries whose worktree is gone + `git worktree prune`
 ```
 
-`--list` annotates each entry: **live** (tmux session running), **orphan** (worktree on disk, no session), **stale** (registry entry, worktree gone). `--remove` is the cleanup/recovery path; it still works on hand-created worktrees not in the registry by falling back to the conventional `{project}-{name}` layout.
+`--list` annotates each entry: **live** (tmux session running), **orphan** (worktree on disk, no session), **stale** (registry entry, worktree gone). `--remove` is the cleanup/recovery path; it still works on hand-created worktrees not in the registry by falling back to the conventional `<worktree_dir>/<project>/<name>/` layout. Removing (or pruning) a project's last worktree also removes the now-empty `<worktree_dir>/<project>/` dir.
 
 ## Config
 
 ```yaml
 worktree:
-  worktree_dir: ~/worktrees
+  worktree_dir: ~/worktrees       # worktrees nest per project: <worktree_dir>/<project>/<name>/
   default_base: develop           # omit → repo-derived (origin/HEAD)
   default_project: ~/projects/my-repo
   naming: "{user}/{slug}"

@@ -85,7 +85,7 @@ def test_default_base_is_repo_derived(tmp_path, monkeypatch, wt_env):
     rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone))
     assert rc == 0
 
-    wt_path = wt_dir / "clone-repo-fix-bug"
+    wt_path = wt_dir / "clone-repo" / "fix-bug"
     assert wt_path.exists()
     # New branch's parent is origin/develop's tip.
     base_sha = _git(clone, "rev-parse", "origin/develop").stdout.strip()
@@ -145,7 +145,7 @@ def test_invalid_branch_name_fails_clean_no_orphan(tmp_path, monkeypatch, wt_env
     rc = _run(monkeypatch, _config(wt_dir), name="Auth V2", project=str(clone))
     assert rc != 0
     # No orphaned worktree, nothing registered, nothing launched.
-    assert not (wt_dir / "clone-repo-Auth-V2").exists()
+    assert not (wt_dir / "clone-repo" / "Auth-V2").exists()
     assert reg.entries(clone.resolve()) == []
     # git agrees there's only the main worktree.
     wt_list = _git(clone, "worktree", "list").stdout
@@ -175,7 +175,7 @@ def test_naming_template_applied_to_branch(tmp_path, monkeypatch, wt_env):
     rc = _run(monkeypatch, cfg, name="Auth V2", project=str(clone))
     assert rc == 0
     # Branch is templated; session/worktree key stays the tmux-safe raw name.
-    wt_path = wt_dir / "clone-repo-Auth-V2"  # spaces → '-' for tmux safety
+    wt_path = wt_dir / "clone-repo" / "Auth-V2"  # spaces → '-' for tmux safety
     assert wt_path.exists()
     branch = _git(wt_path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     assert branch == "feature-auth-v2"
@@ -191,7 +191,7 @@ def test_project_inferred_from_cwd_git_root(tmp_path, monkeypatch, wt_env):
     wt_dir = tmp_path / "worktrees"
     rc = _run(monkeypatch, _config(wt_dir), name="thing")  # no --project
     assert rc == 0
-    assert (wt_dir / "clone-repo-thing").exists()
+    assert (wt_dir / "clone-repo" / "thing").exists()
     assert reg.entries(clone.resolve())[0]["session"] == "clone-repo-thing"
 
 
@@ -205,7 +205,7 @@ def test_monorepo_many_sessions_one_repo(tmp_path, monkeypatch, wt_env):
     sessions = {e["session"] for e in reg.entries(clone.resolve())}
     assert sessions == {"clone-repo-one", "clone-repo-two", "clone-repo-three"}
     for n in ("one", "two", "three"):
-        assert (wt_dir / f"clone-repo-{n}").exists()
+        assert (wt_dir / "clone-repo" / n).exists()
 
 
 def test_remove_cleans_worktree_and_registry(tmp_path, monkeypatch, wt_env):
@@ -213,12 +213,45 @@ def test_remove_cleans_worktree_and_registry(tmp_path, monkeypatch, wt_env):
     wt_dir = tmp_path / "worktrees"
     cfg = _config(wt_dir)
     assert _run(monkeypatch, cfg, name="kill-me", project=str(clone)) == 0
-    wt_path = wt_dir / "clone-repo-kill-me"
+    wt_path = wt_dir / "clone-repo" / "kill-me"
     assert wt_path.exists()
 
     rc = _run(monkeypatch, cfg, name="kill-me", project=str(clone), remove=True)
     assert rc == 0
     assert not wt_path.exists()
+    assert reg.entries(clone.resolve()) == []
+    # Last worktree gone → the empty per-project dir goes with it.
+    assert not (wt_dir / "clone-repo").exists()
+    assert wt_dir.exists()  # the root itself is never removed
+
+
+def test_remove_keeps_project_dir_while_siblings_remain(tmp_path, monkeypatch, wt_env):
+    """Removing one of two worktrees must NOT sweep the project dir."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="one", project=str(clone)) == 0
+    assert _run(monkeypatch, cfg, name="two", project=str(clone)) == 0
+
+    assert _run(monkeypatch, cfg, name="one", project=str(clone), remove=True) == 0
+    assert not (wt_dir / "clone-repo" / "one").exists()
+    assert (wt_dir / "clone-repo" / "two").exists()
+    assert (wt_dir / "clone-repo").exists()
+
+    assert _run(monkeypatch, cfg, name="two", project=str(clone), remove=True) == 0
+    assert not (wt_dir / "clone-repo").exists()
+
+
+def test_remove_by_full_session_name(tmp_path, monkeypatch, wt_env):
+    """--remove accepts the full {project}-{name} session name too."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone)) == 0
+
+    rc = _run(monkeypatch, cfg, name="clone-repo-fix-bug", project=str(clone), remove=True)
+    assert rc == 0
+    assert not (wt_dir / "clone-repo").exists()
     assert reg.entries(clone.resolve()) == []
 
 
@@ -229,7 +262,7 @@ def test_prune_drops_stale_entries(tmp_path, monkeypatch, wt_env):
     assert _run(monkeypatch, cfg, name="gone", project=str(clone)) == 0
 
     # Simulate an externally-removed worktree.
-    wt_path = wt_dir / "clone-repo-gone"
+    wt_path = wt_dir / "clone-repo" / "gone"
     subprocess.run(["git", "-C", str(clone), "worktree", "remove", str(wt_path), "--force"],
                    capture_output=True)
     assert not wt_path.exists()
@@ -238,3 +271,5 @@ def test_prune_drops_stale_entries(tmp_path, monkeypatch, wt_env):
     rc = _run(monkeypatch, cfg, prune=True, project=str(clone))
     assert rc == 0
     assert reg.entries(clone.resolve()) == []
+    # Pruning the project's last worktree sweeps the empty per-project dir.
+    assert not (wt_dir / "clone-repo").exists()

@@ -136,23 +136,6 @@ def is_git_repo(path: Path) -> bool:
     return (path / ".git").exists()
 
 
-def get_session_path(
-    name: str,
-    projects_dir: Path,
-    worktree_suffix: str = "-worktrees",
-) -> Path:
-    """Get filesystem path for a session.
-
-    For "project" -> projects_dir / project
-    For "project/branch" -> projects_dir / f"{project}{worktree_suffix}" / branch
-    """
-    project, branch, _ = parse_session_name(name)
-
-    if branch:
-        return projects_dir / f"{project}{worktree_suffix}" / branch
-    return projects_dir / project
-
-
 def ensure_worktree(
     project_path: Path,
     branch: str,

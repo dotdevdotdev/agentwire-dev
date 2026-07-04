@@ -1,7 +1,6 @@
 """Tests for agentwire/worktree.py — Session name parsing, paths."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -10,7 +9,6 @@ from agentwire.worktree import (
     default_base_branch,
     ensure_worktree,
     get_project_type,
-    get_session_path,
     git_root,
     is_git_repo,
     is_valid_branch_name,
@@ -58,30 +56,6 @@ class TestParseSessionName:
         assert project == "myapp"
         assert branch == "feat/sub"
         assert machine is None
-
-
-# --- get_session_path ---
-
-class TestGetSessionPath:
-    def test_simple_project(self):
-        projects = Path("/home/user/projects")
-        result = get_session_path("myapp", projects)
-        assert result == Path("/home/user/projects/myapp")
-
-    def test_worktree_with_suffix(self):
-        projects = Path("/home/user/projects")
-        result = get_session_path("myapp/feature", projects)
-        assert result == Path("/home/user/projects/myapp-worktrees/feature")
-
-    def test_custom_suffix(self):
-        projects = Path("/home/user/projects")
-        result = get_session_path("myapp/branch", projects, worktree_suffix="-wt")
-        assert result == Path("/home/user/projects/myapp-wt/branch")
-
-    def test_machine_ignored_in_path(self):
-        projects = Path("/home/user/projects")
-        result = get_session_path("myapp@server", projects)
-        assert result == Path("/home/user/projects/myapp")
 
 
 # --- is_git_repo ---
