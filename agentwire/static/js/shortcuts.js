@@ -52,7 +52,7 @@ export const SHORTCUT_GROUPS = [
     {
         title: 'Windows',
         items: [
-            { combo: ['Tab'], alt: ['Shift', 'Tab'], desc: 'Cycle to the next / previous window', where: 'desktop.js setupWindowCycling' },
+            { combo: ['Alt', ']'], alt: ['Alt', '['], desc: 'Cycle to the next / previous window (Tab always goes to the terminal)', where: 'desktop.js setupWindowCycling' },
             { combo: ['F3'], alt: ['Alt', '`'], desc: 'Window collage — Mission-Control grid of all windows', where: 'desktop.js setupCollage' },
         ],
     },

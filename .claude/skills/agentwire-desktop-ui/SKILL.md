@@ -22,7 +22,7 @@ The portal uses a left sidebar with a floating tab handle instead of hover hotzo
 
 Both share session data from `sessions-section.js` (single fetch, shared activity state, pub-sub via `onSessionsChanged`).
 
-**Keyboard:** Tab cycles forward through open windows, Shift+Tab cycles backward. Works inside terminals (captured on `window` in capture phase before xterm).
+**Keyboard:** Alt+] cycles forward through open windows, Alt+[ cycles backward — works everywhere including inside terminals (captured on `window` in capture phase before xterm, detected via `e.code` bracket keys). Tab and Shift+Tab are NEVER intercepted by the desktop; they always pass through to the focused terminal (Claude Code uses Tab for completion and Shift+Tab for permission modes — #659/#696).
 
 **Files:** `static/js/sidebar.js` (shell + click-toggle), `static/js/sidebar/<name>-section.js` (per-section modules), `static/css/desktop.css` (sidebar-* classes).
 
