@@ -775,20 +775,26 @@ def _flush_stuck_box(session: str, pane_index: int, visible: str) -> bool:
 
       - the box parses and holds non-empty, non-placeholder content,
       - the content starts with a machine-injected header (never a human draft),
-      - the pane is not mid-generation (no ``esc to interrupt`` footer),
+      - no live select-menu is on screen (Enter would answer the dialog),
       - the identical content has sat there for ``STUCK_BOX_SWEEPS``
         consecutive sweeps (state persisted per-pane next to prompt markers).
+
+    A mid-generation pane is deliberately NOT skipped (#698): Enter on a
+    generating Claude Code pane QUEUES the draft (Esc interrupts, Enter never
+    does), while the old ``esc to interrupt`` gate both refused the flush AND
+    reset the counter every sweep — so a stuck box on a busy orchestrator was
+    never rescued for as long as it kept working (the 2026-07-04 12:40
+    incident, where the owner watched the message sit and pressed Enter
+    manually). Frames we can't judge (unparseable box, live menu) HOLD the
+    counter instead of resetting it, for the same reason.
 
     Never pastes — Enter only, so the #621 idempotency dedup keeps holding.
     """
     path = _stuck_box_path(session, pane_index)
     box = input_box_content(visible)
-    if (
-        not box
-        or not _MACHINE_HEADER_RE.match(box)
-        or is_queued_placeholder(box)
-        or "esc to interrupt" in visible.lower()
-    ):
+    if box is None or screen_shows_live_menu(visible):
+        return False  # can't judge this frame / Enter unsafe — hold the counter
+    if not box or not _MACHINE_HEADER_RE.match(box) or is_queued_placeholder(box):
         try:
             path.unlink(missing_ok=True)
         except OSError:

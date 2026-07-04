@@ -904,15 +904,19 @@ class TestFlushStuckBox:
         assert not prompt_router._flush_stuck_box("s", 0, b)  # reset, re-armed
         assert keys == []
 
-    def test_generating_pane_skipped(self, monkeypatch, tmp_path):
+    def test_generating_pane_still_flushes(self, monkeypatch, tmp_path):
+        # #698 regression (the 12:40 incident): Enter on a generating pane
+        # QUEUES the draft — it never interrupts — so a stuck machine message
+        # on a busy orchestrator must be rescued on the normal two-sweep
+        # cadence, not starved (and counter-reset) until the turn ends.
         keys = self._patch(monkeypatch, tmp_path)
         screen = _stuck_screen(
             "[MSG from w · done] finished  ⟨#abc123⟩",
             footer="✶ Working… (esc to interrupt)",
         )
-        for _ in range(3):
-            assert not prompt_router._flush_stuck_box("s", 0, screen)
-        assert keys == []
+        assert not prompt_router._flush_stuck_box("s", 0, screen)  # arm
+        assert prompt_router._flush_stuck_box("s", 0, screen)  # rescue
+        assert keys == [["send-keys", "-t", "s.0", "Enter"]]
 
     def test_queued_placeholder_skipped(self, monkeypatch, tmp_path):
         keys = self._patch(monkeypatch, tmp_path)
@@ -921,13 +925,38 @@ class TestFlushStuckBox:
         assert not prompt_router._flush_stuck_box("s", 0, screen)
         assert keys == []
 
-    def test_empty_or_unparseable_clears_state(self, monkeypatch, tmp_path):
+    def test_empty_box_clears_state(self, monkeypatch, tmp_path):
         self._patch(monkeypatch, tmp_path)
         stuck = _stuck_screen("[MSG from w · done] hi  ⟨#abc123⟩")
         assert not prompt_router._flush_stuck_box("s", 0, stuck)  # armed
         prompt_router._flush_stuck_box("s", 0, _stuck_screen(""))  # cleared
         # Re-stuck: must take TWO sweeps again, not fire immediately.
         assert not prompt_router._flush_stuck_box("s", 0, stuck)
+
+    def test_unparseable_frame_holds_counter(self, monkeypatch, tmp_path):
+        # #698 — a transient mid-redraw frame (no box parses) must not reset
+        # the stuck counter; the next stuck sighting completes the pair and
+        # rescues within that one sweep.
+        keys = self._patch(monkeypatch, tmp_path)
+        stuck = _stuck_screen("[MSG from w · done] hi  ⟨#abc123⟩")
+        assert not prompt_router._flush_stuck_box("s", 0, stuck)  # armed
+        assert not prompt_router._flush_stuck_box("s", 0, "garbled, no rules")
+        assert prompt_router._flush_stuck_box("s", 0, stuck)  # rescued
+        assert len(keys) == 1
+
+    def test_live_menu_holds_and_never_enters(self, monkeypatch, tmp_path):
+        # A live dialog owns Enter — never flush into it, but keep the counter
+        # so the rescue fires once the dialog is gone.
+        keys = self._patch(monkeypatch, tmp_path)
+        stuck = _stuck_screen("[MSG from w · done] hi  ⟨#abc123⟩")
+        menu = _stuck_screen(
+            "[MSG from w · done] hi  ⟨#abc123⟩", footer="Esc to cancel"
+        )
+        assert not prompt_router._flush_stuck_box("s", 0, stuck)  # armed
+        assert not prompt_router._flush_stuck_box("s", 0, menu)  # held
+        assert keys == []
+        assert prompt_router._flush_stuck_box("s", 0, stuck)  # rescued
+        assert len(keys) == 1
 
 
 class TestSafeDeliverPane:

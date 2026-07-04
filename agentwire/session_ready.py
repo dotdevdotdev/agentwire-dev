@@ -138,70 +138,37 @@ def text_landed(capture: str, message: str) -> bool:
     return message_visible(box, message)
 
 
-def submitted(capture: str, message: str, marker: str | None = None) -> bool:
-    """Did the paste actually get *submitted* (Enter registered)?
-
-    The discriminating signal is the input box: if our text still sits in a
-    readable box, it is NOT submitted — this is the exact false-positive the old
-    check made (treating "text visible anywhere" as success while it sat unsent).
-
-    Once the box no longer holds our text, we confirm with positive evidence:
-      - *marker* given → the marker line is present in scrollback.
-      - empty box → the pane shows activity OR the message scrolled into history
-        (an empty box with neither is the idle/never-received vanish case).
-      - unparseable box (tool output / dialog covering it) → activity AND the
-        message visible in scrollback.
-    """
-    box = input_box(capture)
-    if box is not None and message_visible(box, message):
-        return False  # still sitting unsent in the box
-    if marker is not None:
-        return marker in capture
-    if box == "":
-        return pane_shows_activity(capture) or message_visible(capture, message)
-    return pane_shows_activity(capture) and message_visible(capture, message)
-
-
-def submit_confirmed(
-    capture: str,
-    message: str,
-    marker: str | None = None,
-    allow_unparsed: bool = True,
-) -> bool:
+def submit_confirmed(capture: str, message: str) -> bool:
     """Phase-2 confirm: did the (already-landed) paste actually *submit*? (#621)
 
-    Distinct from :func:`submitted`, which also has to defend Phase 1's "did the
-    paste even land?" question and so demands positive activity/scrollback
-    evidence before trusting an empty box. By Phase 2 we have ALREADY proven the
-    text landed in the input box, so the submission signal is simply: **the box
-    no longer holds our text.** Requiring a spinner or the echoed turn on top of
-    that is what false-negatived a landed-and-submitted paste under a quiet or
-    very fast agent — reporting ``delivery_unverified`` (→ inbox redelivery loop)
-    or an unconfirmed Enter (→ notify-parent "sat there unsent").
+    By Phase 2 the text has been proven to land in the input box, so the
+    submission signal is: **a parseable box no longer holds our text.** An
+    empty box, or a box now showing a different/next prompt, both count —
+    including the submitted-while-generating case, where the text queues
+    invisibly and never echoes until the turn ends. While a multi-line paste's
+    ``[Pasted text …]`` placeholder (or the expanded text) still occupies the
+    box, it reads as not-yet-submitted, so the caller keeps pressing Enter
+    (dismiss-then-submit).
 
-    - Box parseable → submitted iff our message is no longer visible in it. An
-      empty box, or a box now showing a different/next prompt, both count. While
-      a multi-line paste's ``[Pasted text …]`` placeholder (or the expanded text)
-      still occupies the box, it reads as not-yet-submitted, so the caller keeps
-      pressing Enter (dismiss-then-submit).
-    - Box unparseable (tool output / dialog covering it) → fall back to positive
-      evidence: the explicit marker line, the message echoed in scrollback, or
-      visible activity. This fallback is inherently permissive — activity glyphs
-      sit in almost every agent pane's scrollback, and the "visible" text may be
-      our paste still sitting in the very box we failed to parse — so it is only
-      trusted once at least one Enter has actually been pressed (#689): callers
-      pass ``allow_unparsed=False`` before the first press, forcing an Enter
-      instead of declaring a busy re-rendering pane submitted with zero
-      keystrokes ever sent.
+    An UNPARSEABLE box (mid-redraw frame, tool output / dialog covering it) is
+    never confirmed (#698). The old fallback accepted activity glyphs, a
+    caller marker, or the message visible in the raw capture — all of which a
+    stuck paste satisfies, because activity glyphs sit in every agent pane's
+    scrollback, the marker is part of the pasted text, and the raw capture
+    *includes* the very box we failed to parse. One garbled snapshot during
+    the confirm poll was enough to log ``delivered`` for a message still
+    sitting unsent (the 2026-07-04 12:40 loss, #698). Proving the text is
+    *outside* the box requires the same box parse that just failed, so nothing
+    can be proven: not confirmed. The caller keeps pressing Enter (a no-op on
+    an already-submitted box) until a parseable frame decides, and a genuinely
+    landed-but-scrolled message is consumed by the next drain tick's box-aware
+    dedup instead — a duplicate press is recoverable, a false ``delivered``
+    deletes the message.
     """
     box = input_box(capture)
-    if box is not None:
-        return not message_visible(box, message)
-    if not allow_unparsed:
+    if box is None:
         return False
-    if marker is not None and marker in capture:
-        return True
-    return pane_shows_activity(capture) or message_visible(capture, message)
+    return not message_visible(box, message)
 
 
 def _poll(predicate, timeout: float) -> bool:
@@ -379,6 +346,13 @@ def strip_input_box(capture: str) -> "str | None":
     parse (region between the last two horizontal rules, prompt glyph first);
     when the box can't be located we return None so callers stay conservative
     (can't prove the text is outside the box → treat as not on scrollback).
+
+    Only lines strictly ABOVE the box's top border count as outside (#698).
+    A mid-redraw frame can drop the box's bottom border, making the last two
+    rules bracket some other region — in which case the real box (and the
+    stuck text in it) sits BELOW the last rule, where the old version happily
+    matched it as "scrollback". Below the top border nothing but the box and
+    the footer hints ever renders, so excluding it all loses no real echo.
     """
     from agentwire import prompt_router
 
@@ -393,7 +367,7 @@ def strip_input_box(capture: str) -> "str | None":
     text = "\n".join(box).lstrip()
     if text[:1] not in prompt_router._PROMPT_GLYPHS:
         return None
-    return "\n".join(lines[:rules[-2] + 1] + lines[rules[-1]:])
+    return "\n".join(lines[:rules[-2] + 1])
 
 
 def message_on_scrollback(capture: str, rendered: str) -> bool:
@@ -471,28 +445,47 @@ def _deliver_once(
                 already_landed = True
             elif message_on_scrollback(cap, message):
                 return True
+        if not already_landed:
+            # A live select-menu owns the pane's keystrokes: pasted text (or
+            # the digits in it) could SELECT an option. safe_deliver gates the
+            # first attempt, but the whole-send retry re-enters here after the
+            # target's state may have changed (#698) — refuse, defer to the
+            # next tick.
+            from agentwire import prompt_router
+
+            if prompt_router.screen_shows_live_menu(cap):
+                return False
     except Exception:
         pass
 
     if not already_landed:
         paste_no_enter(session, message, pane_index=pane_index)
 
-    # Phase 1 — wait for the paste to actually land in the input box (or for a
-    # very fast bypass agent to have already consumed AND submitted it). If it
-    # never lands, the paste vanished — let the caller retry the whole send.
+    # Phase 1 — wait for the paste to actually land in the input box, or for
+    # positive proof it already submitted: the message (or the caller's
+    # marker) echoed on scrollback OUTSIDE the box. Ambient evidence must
+    # never end this wait (#698): the old check accepted "empty box +
+    # activity glyphs" as already-submitted, which is what every agent pane
+    # looks like in the instants BEFORE a paste renders — Phase 2 then
+    # confirmed against the same still-empty box and reported ``delivered``
+    # with zero Enter presses, seconds before the paste appeared and stuck
+    # (the 2026-07-04 12:40 loss). If the paste never renders, it vanished —
+    # let the caller retry the whole send.
     def landed_or_done() -> bool:
         cap = _snapshot(session, pane_index)
-        return submitted(cap, message, marker) or text_landed(cap, message)
+        if text_landed(cap, message):
+            return True
+        if message_on_scrollback(cap, message):
+            return True
+        return marker is not None and message_on_scrollback(cap, marker)
 
     if not _poll(landed_or_done, LAND_TIMEOUT):
         return False
 
-    return _submit_phase(session, message, marker, pane_index)
+    return _submit_phase(session, message, pane_index)
 
 
-def _submit_phase(
-    session: str, message: str, marker: str | None, pane_index: int
-) -> bool:
+def _submit_phase(session: str, message: str, pane_index: int) -> bool:
     """Phase 2 — press Enter and confirm the box cleared. Enter-only, no paste.
 
     Re-press is driven by a wall-clock budget, not a fixed count: a single Enter
@@ -503,33 +496,37 @@ def _submit_phase(
     no-op, so over-pressing is safe, while a tight count would give up before a
     laggy box ever caught up.
 
-    The pre-press confirm is STRICT (``allow_unparsed=False``): before any Enter
-    has been sent, an unparseable box must never read as submitted — that was
-    the #689 zero-keystroke false positive (busy pane + activity glyphs →
-    "delivered" with the Enter never fired). Once at least one Enter is pressed,
-    the permissive fallback is trusted again.
+    ``submit_confirmed`` only ever trusts a parseable box (#698), so every
+    exit path — including the pre-press short-circuit — has positively seen a
+    box that no longer holds our text. A live select-menu appearing on the
+    target (a permission dialog the recipient's own work raised) aborts the
+    loop instead of pressing Enter into it, which would CONFIRM the
+    highlighted option; the delivery reports unverified and the next tick's
+    ``safe_deliver`` dialog guard + box-aware dedup take it from there.
     """
-    if submit_confirmed(
-        _snapshot(session, pane_index), message, marker, allow_unparsed=False
-    ):
+    cap = _snapshot(session, pane_index)
+    if submit_confirmed(cap, message):
         return True
+    from agentwire import prompt_router
+
     deadline = time.time() + SUBMIT_BUDGET
     attempts = 0
     while True:
+        if prompt_router.screen_shows_live_menu(cap):
+            return False
         press_enter(session, pane_index=pane_index)
         attempts += 1
         if _poll(
-            lambda: submit_confirmed(_snapshot(session, pane_index), message, marker),
+            lambda: submit_confirmed(_snapshot(session, pane_index), message),
             SUBMIT_TIMEOUT,
         ):
             return True
         if attempts >= MIN_ENTER_ATTEMPTS and time.time() >= deadline:
             return False
+        cap = _snapshot(session, pane_index)
 
 
-def finish_submit(
-    session: str, message: str, marker: str | None = None, pane_index: int = 0
-) -> bool:
+def finish_submit(session: str, message: str, pane_index: int = 0) -> bool:
     """Enter-only submit retry for a message already sitting in the input box.
 
     The #689 healing primitive: when a prior delivery pasted the text but its
@@ -539,7 +536,7 @@ def finish_submit(
     Returns True only once submission is confirmed; never raises.
     """
     try:
-        return _submit_phase(session, message, marker, pane_index)
+        return _submit_phase(session, message, pane_index)
     except Exception:
         return False
 
@@ -560,8 +557,9 @@ def send_verified(
     1. Paste WITHOUT Enter, then poll the input box (bounded, ``LAND_TIMEOUT``)
        until the pasted text is actually visible there — never press Enter on a
        box that hasn't received the paste yet.
-    2. Press Enter and poll (bounded, ``SUBMIT_TIMEOUT``) until the box clears.
-       If a keystroke is swallowed, re-press up to ``MAX_ENTER_ATTEMPTS`` times.
+    2. Press Enter and poll (bounded, ``SUBMIT_TIMEOUT`` per press) until the
+       box clears. If a keystroke is swallowed, re-press until ``SUBMIT_BUDGET``
+       elapses (at least ``MIN_ENTER_ATTEMPTS`` presses).
 
     Returns True once submission is confirmed. Returns False — a hard, surfaced
     failure the caller must handle — only after exhausting *retries* whole-send
