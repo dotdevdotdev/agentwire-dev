@@ -5,6 +5,25 @@ from agentwire import session_ready
 BANNER = "❯ \nBypassing Permissions"
 TRUST = "Do you trust this folder?\nPress Enter to confirm"
 
+RULE = "─" * 20
+
+
+def render_box(content: str = "") -> str:
+    """A parseable Claude input box wrapped in horizontal rules."""
+    glyph = f"❯ {content}" if content else "❯"
+    return f"{RULE}\n{glyph}\n{RULE}"
+
+
+def render_working(content: str = "") -> str:
+    """An empty input box plus a visible activity marker (submitted+working)."""
+    return "✶ Working… (esc to interrupt)\n" + render_box(content)
+
+
+# Readiness frames (#695): banner up with a parseable input box, empty or
+# holding the rendered probe char.
+READY = "Bypassing Permissions\n" + render_box()
+READY_PROBE = "Bypassing Permissions\n" + render_box(session_ready.PROBE_CHAR)
+
 
 def _scripted_capture(monkeypatch, frames):
     """Make capture_pane return successive frames (last one repeats)."""
@@ -28,43 +47,100 @@ class TestWaitForSessionReady:
     def _no_sleep(self, monkeypatch):
         monkeypatch.setattr(session_ready.time, "sleep", lambda s: self._sleeps.append(s))
 
-    def test_banner_then_stable_returns_true(self, monkeypatch):
+    def _keys(self, monkeypatch):
+        """Stub tmux key sends (trust-Enter + readiness probe); returns the log."""
+        sent = []
+        from agentwire import pane_manager
+        monkeypatch.setattr(
+            pane_manager, "run_command",
+            lambda cmd, timeout=5: sent.append(cmd))
+        return sent
+
+    def _fake_time(self, monkeypatch, step=0.1):
+        clock = {"t": 0.0}
+
+        def fake_time():
+            clock["t"] += step
+            return clock["t"]
+
+        monkeypatch.setattr(session_ready.time, "time", fake_time)
+
+    # Happy-path frames: banner, READY_STABLE_SNAPSHOTS identical frames, the
+    # probe char rendering in the box (poll + erase-count captures), erased.
+    HAPPY = ["booting...", READY, READY, READY, READY_PROBE, READY_PROBE, READY]
+
+    def test_banner_stable_then_probe_roundtrip_returns_true(self, monkeypatch):
         self._no_sleep(monkeypatch)
-        _scripted_capture(monkeypatch, ["booting...", BANNER, BANNER])
+        sent = self._keys(monkeypatch)
+        _scripted_capture(monkeypatch, self.HAPPY)
         assert session_ready.wait_for_session_ready("s", timeout=10)
+        # The probe was typed and erased — never left in the box.
+        assert any(c[-2:] == ["-l", session_ready.PROBE_CHAR] for c in sent)
+        assert any(c[-1] == "BSpace" for c in sent)
 
     def test_churning_screen_times_out(self, monkeypatch):
         self._no_sleep(monkeypatch)
         # Banner up but screen never stabilizes: every frame differs
         frames = [BANNER + f"\nline{i}" for i in range(1000)]
         _scripted_capture(monkeypatch, frames)
-        # Fake clock: advance time per capture so the deadline passes
-        clock = {"t": 0.0}
-
-        def fake_time():
-            clock["t"] += 0.1
-            return clock["t"]
-
-        monkeypatch.setattr(session_ready.time, "time", fake_time)
+        self._fake_time(monkeypatch)
         assert not session_ready.wait_for_session_ready("s", timeout=5)
 
     def test_trust_prompt_accepted_then_ready(self, monkeypatch):
         self._no_sleep(monkeypatch)
-        pressed = []
-        from agentwire import pane_manager
-        monkeypatch.setattr(
-            pane_manager, "run_command",
-            lambda cmd, timeout=5: pressed.append(cmd))
-        _scripted_capture(monkeypatch, [TRUST, BANNER, BANNER])
+        sent = self._keys(monkeypatch)
+        _scripted_capture(monkeypatch, [TRUST] + self.HAPPY[1:])
         assert session_ready.wait_for_session_ready("s", timeout=10)
-        assert len(pressed) == 1
-        assert pressed[0][:2] == ["tmux", "send-keys"]
-        assert pressed[0][-1] == "Enter"
+        assert sent[0][:2] == ["tmux", "send-keys"]
+        assert sent[0][-1] == "Enter"
 
     def test_capture_exception_tolerated(self, monkeypatch):
         self._no_sleep(monkeypatch)
-        _scripted_capture(monkeypatch, [RuntimeError("no session"), BANNER, BANNER])
+        sent = self._keys(monkeypatch)
+        _scripted_capture(
+            monkeypatch, [RuntimeError("no session")] + self.HAPPY[1:])
         assert session_ready.wait_for_session_ready("s", timeout=10)
+        assert sent  # probe ran
+
+    def test_unwired_input_handler_never_ready(self, monkeypatch):
+        # #695 live repro: banner up, screen stable, input box parseable and
+        # empty — but the input handler is not wired yet, so the probe char
+        # never renders. The old two-identical-frames rule declared ready here
+        # and the seed paste fragmented/sat unsubmitted; now the wait must
+        # keep re-probing and ultimately fail instead of green-lighting.
+        self._no_sleep(monkeypatch)
+        sent = self._keys(monkeypatch)
+        _scripted_capture(monkeypatch, [READY])  # stable forever, box empty
+        self._fake_time(monkeypatch)
+        assert not session_ready.wait_for_session_ready("s", timeout=20)
+        probes = [c for c in sent if c[-2:] == ["-l", session_ready.PROBE_CHAR]]
+        assert len(probes) >= 2  # kept re-probing, never trusted the screen
+
+    def test_render_pause_two_identical_frames_not_ready(self, monkeypatch):
+        # #695: a render pause (notice panel / effort banner loading) yields
+        # exactly two identical frames before the screen changes again. The
+        # pre-#695 rule returned ready at frame two; now nothing may be typed
+        # or pasted at the pane at all.
+        self._no_sleep(monkeypatch)
+        sent = self._keys(monkeypatch)
+        frames = [READY, READY] + [READY + f"\nnotice {i}" for i in range(1000)]
+        _scripted_capture(monkeypatch, frames)
+        self._fake_time(monkeypatch)
+        assert not session_ready.wait_for_session_ready("s", timeout=5)
+        assert sent == []  # probe never reached — no keystrokes sent
+
+    def test_buffered_probes_all_erased(self, monkeypatch):
+        # Keystrokes swallowed during wiring can be buffered and dumped into
+        # the box all at once ("..."); every one must be backspaced away so
+        # the real paste lands in a clean box.
+        self._no_sleep(monkeypatch)
+        sent = self._keys(monkeypatch)
+        piled = "Bypassing Permissions\n" + render_box(session_ready.PROBE_CHAR * 3)
+        _scripted_capture(
+            monkeypatch, [READY, READY, READY, piled, piled, READY])
+        assert session_ready.wait_for_session_ready("s", timeout=10)
+        bspaces = [c for c in sent if c[-1] == "BSpace"]
+        assert len(bspaces) == 3
 
 
 class TestMessageVisible:
@@ -104,20 +180,6 @@ class TestMessageVisible:
         a = "[NOTIFY from agentwire-dev-issue-100] finished task alpha"
         b = "[NOTIFY from agentwire-dev-issue-100] finished task bravo"
         assert not session_ready.message_visible(f"❯ {a}", b)
-
-
-RULE = "─" * 20
-
-
-def render_box(content: str = "") -> str:
-    """A parseable Claude input box wrapped in horizontal rules."""
-    glyph = f"❯ {content}" if content else "❯"
-    return f"{RULE}\n{glyph}\n{RULE}"
-
-
-def render_working(content: str = "") -> str:
-    """An empty input box plus a visible activity marker (submitted+working)."""
-    return "✶ Working… (esc to interrupt)\n" + render_box(content)
 
 
 def _fake_clock(monkeypatch, step: float = 0.5):
@@ -586,3 +648,107 @@ class TestFinishSubmit:
 
         _env(monkeypatch, boom)
         assert session_ready.finish_submit("s", "msg") is False
+
+
+class TestClearInputBox:
+    """#695 — seed recovery clears the partial paste out of the box, keyed on
+    the drain's own SGR-aware emptiness gate (so 'cleared' means exactly 'the
+    inbox fallback can deliver')."""
+
+    def _wire(self, monkeypatch, empty_after: int):
+        """prompt_is_empty flips True after N Escapes; returns the key log."""
+        from agentwire import pane_manager, prompt_router
+        state = {"escapes": 0}
+        monkeypatch.setattr(
+            prompt_router, "prompt_is_empty",
+            lambda s, p=0: state["escapes"] >= empty_after)
+
+        def run(cmd, timeout=5):
+            if cmd[-1] == "Escape":
+                state["escapes"] += 1
+
+        monkeypatch.setattr(pane_manager, "run_command", run)
+        return state
+
+    def test_already_empty_sends_nothing(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=0)
+        assert session_ready.clear_input_box("s")
+        assert state["escapes"] == 0
+
+    def test_escape_clears_partial_paste(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=1)
+        assert session_ready.clear_input_box("s")
+        assert state["escapes"] == 1
+
+    def test_wedged_box_returns_false_bounded(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=10**9)
+        assert not session_ready.clear_input_box("s")
+        assert state["escapes"] == session_ready.CLEAR_BOX_ATTEMPTS
+
+    def test_capture_failure_returns_false(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        from agentwire import pane_manager, prompt_router
+
+        def boom(*a, **k):
+            raise RuntimeError("gone")
+
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", boom)
+        monkeypatch.setattr(pane_manager, "run_command", lambda *a, **k: None)
+        assert session_ready.clear_input_box("s") is False
+
+
+class TestRecoverFailedSeed:
+    """#695 — a failed seed must never be silent: the prompt falls back to the
+    msg inbox (watchdog delivery, dead-letter escalation) and the caller learns
+    which fallback fired."""
+
+    def test_clears_box_then_queues_request(self, monkeypatch):
+        from agentwire import inbox
+        calls = {}
+        monkeypatch.setattr(
+            session_ready, "clear_input_box",
+            lambda s, pane_index=0: calls.setdefault("cleared", (s, pane_index)) or True)
+
+        def fake_enqueue(to, text, kind="note", sender=None, ref=""):
+            calls["enqueue"] = (to, text, kind, sender)
+            return []
+
+        monkeypatch.setattr(inbox, "enqueue", fake_enqueue)
+        result = session_ready.recover_failed_seed("sess", "the seed prompt", sender="orch")
+        assert result == "inbox"
+        assert calls["cleared"] == ("sess", 0)
+        assert calls["enqueue"] == ("sess", "the seed prompt", "request", "orch")
+
+    def test_default_sender(self, monkeypatch):
+        from agentwire import inbox
+        seen = {}
+        monkeypatch.setattr(session_ready, "clear_input_box", lambda s, pane_index=0: True)
+        monkeypatch.setattr(
+            inbox, "enqueue",
+            lambda to, text, kind="note", sender=None, ref="": seen.update(sender=sender) or [])
+        assert session_ready.recover_failed_seed("sess", "x") == "inbox"
+        assert seen["sender"] == "agentwire"
+
+    def test_clear_failure_still_queues(self, monkeypatch):
+        from agentwire import inbox
+
+        def boom(*a, **k):
+            raise RuntimeError("no pane")
+
+        monkeypatch.setattr(session_ready, "clear_input_box", boom)
+        monkeypatch.setattr(
+            inbox, "enqueue", lambda to, text, kind="note", sender=None, ref="": [])
+        assert session_ready.recover_failed_seed("sess", "x") == "inbox"
+
+    def test_enqueue_failure_returns_none_never_raises(self, monkeypatch):
+        from agentwire import inbox
+        monkeypatch.setattr(session_ready, "clear_input_box", lambda s, pane_index=0: True)
+
+        def boom(*a, **k):
+            raise OSError("inbox unwritable")
+
+        monkeypatch.setattr(inbox, "enqueue", boom)
+        assert session_ready.recover_failed_seed("sess", "x") is None

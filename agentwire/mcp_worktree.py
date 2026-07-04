@@ -52,15 +52,41 @@ def worktree_create(
     caller = get_caller_session()
     if caller:
         args += ["--created-by", caller]
-    # Seeding waits for agent boot (~up to 60s); give the CLI room to finish.
-    data = run_agentwire_cmd(args, timeout=90)
+    # Seeding waits for agent boot (up to 60s) and, on a failed seed, runs the
+    # clear-box + inbox-fallback recovery (#695) — give the CLI room to finish
+    # the loud-failure path instead of masking it with a subprocess timeout.
+    data = run_agentwire_cmd(args, timeout=180)
     if not data.get("success"):
         return f"Failed to create worktree: {data.get('error', 'Unknown error')}"
     session = data.get("session", name)
     path = data.get("path", "")
-    seeded = " (seeded)" if prompt and data.get("first_message_delivered") else ""
     if data.get("reattached"):
-        return f"Reattached to existing worktree session '{session}' at {path}."
+        note = (
+            " NOTE: the session was already live, so the seed prompt was NOT "
+            "pasted — send it with msg_send if still needed."
+            if prompt
+            else ""
+        )
+        return f"Reattached to existing worktree session '{session}' at {path}.{note}"
+    # Seed failure must be LOUD (#695): a silently-missing "(seeded)" suffix is
+    # invisible to an orchestrator skimming results, and the session then sits
+    # idle with the task never delivered.
+    if prompt and not data.get("first_message_delivered"):
+        if data.get("first_message_fallback") == "inbox":
+            return (
+                f"Created worktree session '{session}' at {path}. "
+                "WARNING: seed prompt NOT delivered — the input box was not ready. "
+                "The prompt was queued to the session's msg inbox and the watchdog "
+                "will deliver it once the box is ready; verify with msg_inbox / "
+                "session_output before assuming the task started."
+            )
+        return (
+            f"Created worktree session '{session}' at {path}. "
+            "WARNING: seed prompt NOT delivered and could NOT be queued — the "
+            f"session is idle with no task. Deliver it manually (session_send to "
+            f"'{session}')."
+        )
+    seeded = " (seeded)" if prompt else ""
     return f"Created worktree session '{session}'{seeded} at {path}."
 
 

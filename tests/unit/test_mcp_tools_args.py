@@ -393,3 +393,66 @@ class TestSchedulerHistory:
         # Should only show 3 most recent
         lines = [line for line in result.split("\n") if line.startswith("  ")]
         assert len(lines) == 3
+
+
+# ---------------------------------------------------------------------------
+# Worktree tools
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeCreateSeedResult:
+    """#695 — a failed seed must be LOUD in the tool result. The old contract
+    (silently omitting ' (seeded)') left orchestrators believing the task was
+    delivered while the session sat idle."""
+
+    def _create(self, mock_cmd, data, prompt="do the task"):
+        from agentwire.mcp_worktree import worktree_create
+        mock_cmd.return_value = data
+        return worktree_create("x", prompt=prompt)
+
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    def test_seeded_success(self, mock_cmd, _caller):
+        result = self._create(mock_cmd, _success(
+            session="proj-x", path="/w/proj-x", first_message_delivered=True))
+        assert "(seeded)" in result
+        assert "WARNING" not in result
+        # The failure path (recovery) needs headroom past the 60s boot wait.
+        assert mock_cmd.call_args.kwargs["timeout"] >= 180
+
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    def test_seed_failure_with_inbox_fallback_is_loud(self, mock_cmd, _caller):
+        result = self._create(mock_cmd, _success(
+            session="proj-x", path="/w/proj-x",
+            first_message_delivered=False, first_message_fallback="inbox"))
+        assert "WARNING" in result
+        assert "NOT delivered" in result
+        assert "msg inbox" in result
+        assert "(seeded)" not in result
+
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    def test_seed_failure_without_fallback_is_loud(self, mock_cmd, _caller):
+        result = self._create(mock_cmd, _success(
+            session="proj-x", path="/w/proj-x",
+            first_message_delivered=False, first_message_fallback=None))
+        assert "WARNING" in result
+        assert "could NOT be queued" in result
+        assert "session_send" in result
+
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    def test_no_prompt_no_seed_talk(self, mock_cmd, _caller):
+        result = self._create(
+            mock_cmd, _success(session="proj-x", path="/w/proj-x"), prompt="")
+        assert "(seeded)" not in result
+        assert "WARNING" not in result
+
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    def test_reattach_with_prompt_notes_undelivered_seed(self, mock_cmd, _caller):
+        result = self._create(mock_cmd, _success(
+            session="proj-x", path="/w/proj-x", reattached=True))
+        assert "Reattached" in result
+        assert "NOT" in result  # the seed prompt was not pasted — say so

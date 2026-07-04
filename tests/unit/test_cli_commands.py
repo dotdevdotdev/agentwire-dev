@@ -259,6 +259,83 @@ class TestCmdNewFirstMessage:
         assert "local-only" in payload["error"]
 
 
+class TestCmdNewSeedFallback:
+    """#695 — cmd_new's JSON contract on a failed seed: recovery runs (clear
+    box + msg-inbox fallback) and `first_message_fallback` tells the caller
+    (mcp_worktree) which fallback fired, so the failure is never silent."""
+
+    def _run_cmd_new(self, monkeypatch, tmp_path, *, ready, verified, fallback):
+        from types import SimpleNamespace
+        from agentwire import session_cli as m
+        from agentwire import session_ready
+
+        # Hermetic stubs: no tmux, no roles from disk, no portal.
+        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
+        monkeypatch.setattr(
+            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
+        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
+        monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
+        monkeypatch.setattr(
+            m, "_resolve_session_type_from_args", lambda a, k: ("claude-bypass", None))
+        monkeypatch.setattr(
+            m, "build_agent_command",
+            lambda *a, **k: SimpleNamespace(command="claude", env={}))
+        monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
+        monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
+        monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
+
+        calls = {}
+        monkeypatch.setattr(
+            session_ready, "wait_for_session_ready",
+            lambda s, timeout=30.0, pane_index=0: ready)
+        monkeypatch.setattr(
+            session_ready, "send_verified",
+            lambda s, msg, **k: verified)
+
+        def fake_recover(session, message, sender=None, pane_index=0):
+            calls["recover"] = (session, message, sender)
+            return fallback
+
+        monkeypatch.setattr(session_ready, "recover_failed_seed", fake_recover)
+
+        args = argparse.Namespace(
+            session="proj", path=str(tmp_path), force=False, json=True,
+            first_message="do the thing", created_by="orch",
+        )
+        rc = m.cmd_new(args)
+        return rc, calls
+
+    def test_seed_failure_runs_recovery_and_reports_fallback(
+            self, capsys, monkeypatch, tmp_path):
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=False, verified=False, fallback="inbox")
+        assert rc == 0  # the session exists; seeding failure doesn't fail the cmd
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["success"] is True
+        assert payload["first_message_delivered"] is False
+        assert payload["first_message_fallback"] == "inbox"
+        # Recovery got the prompt and the creator as sender.
+        assert calls["recover"] == ("proj", "do the thing", "orch")
+
+    def test_seed_failure_fallback_also_failed(self, capsys, monkeypatch, tmp_path):
+        rc, _ = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=True, verified=False, fallback=None)
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["first_message_delivered"] is False
+        assert payload["first_message_fallback"] is None
+
+    def test_seed_success_no_fallback_key(self, capsys, monkeypatch, tmp_path):
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=True, verified=True, fallback="inbox")
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["first_message_delivered"] is True
+        assert "first_message_fallback" not in payload
+        assert "recover" not in calls  # recovery never runs on success
+
+
 # --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
 #
 # Both commands used to copy `project_config.roles` raw, bypassing
