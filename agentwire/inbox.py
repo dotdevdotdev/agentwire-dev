@@ -62,6 +62,13 @@ BROADCAST_TOKEN = "@all"
 # being permanently busy/typed-in).
 MAX_ATTEMPTS = 40
 
+# A recipient that positively does not exist gets a much shorter window (#694):
+# a gone session can't clear its box by itself — it only comes back if someone
+# recreates it — so the grace is ~5 watchdog ticks (≈5 min), enough for a
+# restart/recreate to land, not the 40-minute busy cap. Counted separately
+# (``Message.gone_attempts``) so prior busy penalties don't erode the grace.
+GONE_MAX_ATTEMPTS = 5
+
 # Defer reasons that DON'T penalize: the target is legitimately busy — running a
 # long command (unparseable box → "target_busy") or generating with human-queued
 # input (the "queued messages" placeholder → "queued_placeholder"), or the box
@@ -106,6 +113,7 @@ class Message:
     text: str
     ts: int  # epoch ms
     attempts: int = 0
+    gone_attempts: int = 0  # ticks the drain observed the target session gone
     reason: str = ""  # last defer reason (why delivery kept failing)
     dead_ts: int = 0  # epoch ms when dead-lettered (0 = still live)
     ref: str = ""  # optional machine-readable pointer (e.g. a report path) — for ingest
@@ -120,6 +128,7 @@ class Message:
             "text": self.text,
             "ts": self.ts,
             "attempts": self.attempts,
+            "gone_attempts": self.gone_attempts,
             "reason": self.reason,
             "dead_ts": self.dead_ts,
             "ref": self.ref,
@@ -251,6 +260,7 @@ def _read_message(path: Path) -> "Message | None":
             text=str(data.get("text", "")),
             ts=int(data.get("ts", 0)),
             attempts=int(data.get("attempts", 0)),
+            gone_attempts=int(data.get("gone_attempts", 0)),
             reason=str(data.get("reason", "")),
             dead_ts=int(data.get("dead_ts", 0)),
             ref=str(data.get("ref", "")),
@@ -484,19 +494,34 @@ def gc_sender(sender: str) -> dict:
 # =============================================================================
 
 
-def _live_agent_sessions() -> list[str]:
-    """Every tmux session whose pane 0 runs an agent (Claude/pi)."""
-    from . import prompt_router
+def live_sessions() -> "set[str] | None":
+    """Every live tmux session name, or None when tmux is unreachable.
+
+    ``None`` (no server / no tmux) is deliberately distinct from ``set()``:
+    the gone fast-path (#694) and the send-time warning only fire on POSITIVE
+    knowledge that tmux is reachable but the target isn't there. With the
+    server down everything is equally unreachable — that's an outage, not a
+    gone recipient, so callers fall back to the ordinary defer path.
+    """
     from .usage_limit import _tmux
 
     try:
         result = _tmux(["list-sessions", "-F", "#{session_name}"])
     except Exception:
-        return []
+        return None
     if result.returncode != 0:
+        return None
+    return {s for s in result.stdout.split("\n") if s.strip()}
+
+
+def _live_agent_sessions() -> list[str]:
+    """Every tmux session whose pane 0 runs an agent (Claude/pi)."""
+    from . import prompt_router
+
+    sessions = live_sessions()
+    if not sessions:
         return []
-    sessions = [s for s in result.stdout.split("\n") if s.strip()]
-    return [s for s in sessions if prompt_router.is_agent_pane(s, 0)]
+    return [s for s in sorted(sessions) if prompt_router.is_agent_pane(s, 0)]
 
 
 def resolve_targets(to: str, sender: "str | None") -> list[str]:
@@ -639,6 +664,15 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     ``reason`` is the defer reason that caused this pass; it's stamped onto the
     message so a dead-lettered one carries *why* it never got delivered.
     Returns the number dead-lettered this pass.
+
+    ``target_gone`` additionally bumps the per-message ``gone_attempts``
+    counter and dead-letters at the fast ``GONE_MAX_ATTEMPTS`` cap (#694) — a
+    gone session can't un-go by itself, so it gets minutes of grace (enough
+    for a recreate to land), not the 40-minute busy window. The counter is
+    separate from ``attempts`` so busy penalties accrued while the target
+    lived don't erode the grace, and cumulative across gone observations —
+    a target that flaps in and out without ever accepting delivery still
+    burns out on schedule.
     """
     dead = 0
     for msg in messages:
@@ -657,7 +691,9 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
 
         msg.attempts += 1
         msg.reason = reason
-        if msg.attempts >= MAX_ATTEMPTS:
+        if reason == "target_gone":
+            msg.gone_attempts += 1
+        if msg.attempts >= MAX_ATTEMPTS or msg.gone_attempts >= GONE_MAX_ATTEMPTS:
             msg.dead_ts = _now_ms()
             target = dead_dir(msg.to or "unknown") / msg.path.name
             try:
@@ -736,6 +772,22 @@ def flush_session(session: str, force: bool = False) -> dict:
         messages = list_messages(session)
         if not messages:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
+
+        # Gone gate FIRST (#694): a recipient that positively doesn't exist can
+        # never clear a box, and the ordinary gates misread it — capturing a
+        # gone session parses as "no box" → target_busy, a NO-penalty defer, so
+        # a done to a stale parent once sat queued ~24h instead of burning out.
+        # Gone is its own penalized reason with the fast GONE_MAX_ATTEMPTS cap.
+        # Only positive knowledge counts: with tmux unreachable live_sessions()
+        # is None and the ordinary defer path applies.
+        live = live_sessions()
+        if live is not None and session not in live:
+            dead = _bump_attempts(messages, "target_gone")
+            _log_event("deferred", to=session, count=len(messages), reason="target_gone")
+            return {
+                "session": session, "delivered": 0, "deferred": True,
+                "reason": "target_gone", "dead": dead,
+            }
 
         pre_consumed = 0
         if not force:

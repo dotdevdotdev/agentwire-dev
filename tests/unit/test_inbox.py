@@ -19,6 +19,11 @@ def isolate(tmp_path, monkeypatch):
     root = tmp_path / "inbox"
     monkeypatch.setattr(inbox, "INBOX_ROOT", root)
     monkeypatch.setattr(inbox, "EVENTS_FILE", tmp_path / "inbox-events.jsonl")
+    # Positive-existence gate (#694) defaults to "unknown" (tmux unreachable)
+    # so the busy/refusal scenarios below exercise the ordinary gates without
+    # the host's real session list interfering. Gone-target behavior is tested
+    # explicitly in TestTargetGone with a controlled live set.
+    monkeypatch.setattr(inbox, "live_sessions", lambda: None)
     return root
 
 
@@ -625,6 +630,97 @@ class TestBoxStatic:
         _patch_delivery(monkeypatch, empty=True)
         inbox.flush_session("s")
         assert not inbox._box_state_path("s").exists()
+
+
+class TestTargetGone:
+    """#694: a recipient that positively doesn't exist defers as `target_gone`
+    — a penalized reason with its own fast cap (GONE_MAX_ATTEMPTS ≈ minutes,
+    not the 40-minute busy window) — checked BEFORE the box gate. The original
+    hole: capturing a gone session parses as "no box" → `target_busy`, a
+    no-penalty defer, so a done to a stale parent sat queued ~24h instead of
+    burning out and escalating."""
+
+    def test_gone_target_penalizes_not_target_busy(self, isolate, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"someone-else"})
+        # Old-bug conditions: the gone session's capture yields no parseable box.
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "")
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "")
+        inbox.enqueue("ghost", "hi", sender="w")
+        res = inbox.flush_session("ghost")
+        assert res["deferred"] and res["reason"] == "target_gone"
+        msg = inbox.list_messages("ghost")[0]
+        assert msg.attempts == 1 and msg.gone_attempts == 1
+
+    def test_fast_dead_letter_window(self, isolate, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: set())
+        inbox.enqueue("ghost", "hi", sender="w")
+        for _ in range(inbox.GONE_MAX_ATTEMPTS - 1):
+            inbox.flush_session("ghost")
+            assert len(inbox.list_messages("ghost")) == 1  # grace not yet spent
+        inbox.flush_session("ghost")
+        assert inbox.list_messages("ghost") == []
+        dead = inbox.list_dead("ghost")
+        assert len(dead) == 1
+        assert dead[0].reason == "target_gone"
+        assert dead[0].gone_attempts == inbox.GONE_MAX_ATTEMPTS
+        # The whole point: minutes, not the 40-minute busy cap.
+        assert inbox.GONE_MAX_ATTEMPTS < inbox.MAX_ATTEMPTS
+
+    def test_prior_busy_penalties_do_not_erode_grace(self, isolate, monkeypatch):
+        # attempts accrued while the target lived must not insta-kill on gone:
+        # the gone window is its own counter.
+        m = inbox.enqueue("ghost", "hi", kind="done", sender="w")[0]
+        m.attempts = inbox.GONE_MAX_ATTEMPTS + 3  # over the gone cap, under MAX
+        inbox._write_message(m.path, m)
+        monkeypatch.setattr(inbox, "live_sessions", lambda: set())
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: SimpleNamespace(success=True),
+        )
+        for _ in range(inbox.GONE_MAX_ATTEMPTS - 1):
+            inbox.flush_session("ghost")
+            assert len(inbox.list_messages("ghost")) == 1  # full grace granted
+        inbox.flush_session("ghost")
+        assert len(inbox.list_dead("ghost")) == 1
+
+    def test_unknown_tmux_state_never_fast_kills(self, isolate, monkeypatch):
+        # live_sessions() None (server down / no tmux) is an outage, not a gone
+        # recipient: the ordinary defer path applies (here: unparseable box →
+        # target_busy, no penalty) so a reboot can't nuke queued report-backs.
+        monkeypatch.setattr(inbox, "live_sessions", lambda: None)
+        monkeypatch.setattr("agentwire.usage_limit._capture", lambda s, **kw: "")
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: None)
+        inbox.enqueue("ghost", "hi", sender="w")
+        res = inbox.flush_session("ghost")
+        assert res["reason"] == "target_busy"
+        msg = inbox.list_messages("ghost")[0]
+        assert msg.attempts == 0 and msg.gone_attempts == 0
+
+    def test_reappeared_target_delivers(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="w")
+        monkeypatch.setattr(inbox, "live_sessions", lambda: set())
+        inbox.flush_session("s")  # one gone tick
+        assert inbox.list_messages("s")[0].gone_attempts == 1
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"s"})
+        sent = _patch_delivery(monkeypatch, empty=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and len(sent) == 1
+        assert inbox.list_messages("s") == []
+
+    def test_gone_dead_letter_emails_owner_for_done(self, isolate, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: set())
+        emails = []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: emails.append(kw) or SimpleNamespace(success=True),
+        )
+        inbox.enqueue("ghost", "PR #1 drafted", kind="done", sender="w")
+        for _ in range(inbox.GONE_MAX_ATTEMPTS):
+            inbox.flush_session("ghost")
+        assert len(emails) == 1
+        assert "target_gone" in emails[0]["body"]
+        assert len(inbox.list_dead("ghost")) == 1
 
 
 class TestDeadLetterEscalation:
