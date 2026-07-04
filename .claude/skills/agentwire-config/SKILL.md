@@ -219,7 +219,8 @@ session_context:         # Context-bloat observability (Phase 0, observe-only â€
 worktree:                         # `agentwire worktree <name>` orchestration (WorktreeConfig).
                                   # Distinct from projects.worktrees above (the legacy
                                   # project/branch layout).
-  worktree_dir: ~/worktrees       # Where worktrees are created (one dir per session)
+  worktree_dir: ~/worktrees       # Root for worktrees, nested per project:
+                                  # <worktree_dir>/<project>/<name>/ (mirrors ~/projects/)
   default_base: develop           # Base branch new worktrees fork from. OMIT to derive from
                                   # the repo's actual default branch (origin/HEAD, fallback to
                                   # current branch) â€” no hardcoded 'main'. --base always wins.

@@ -13,7 +13,7 @@ the repo's absolute path. Each file holds a list of entries:
       "project": "/Users/me/projects/monorepo",
       "entries": [
         {"branch": "fix-bug", "session": "monorepo-fix-bug",
-         "base": "develop", "worktree_path": "/Users/me/worktrees/monorepo-fix-bug",
+         "base": "develop", "worktree_path": "/Users/me/worktrees/monorepo/fix-bug",
          "created_at": "2026-06-14T10:30:00-04:00"}
       ]
     }

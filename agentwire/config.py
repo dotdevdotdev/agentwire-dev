@@ -84,7 +84,16 @@ class ServerConfig:
 
 @dataclass
 class WorktreesConfig:
-    """Git worktrees configuration for parallel sessions."""
+    """Git worktrees configuration for `project/branch` sessions.
+
+    Governs the legacy ``project/branch`` session layout under
+    ``~/projects/<project>-worktrees/``. Still ALIVE (#703): the scheduler's
+    worktree+PR dispatch creates its sessions via
+    ``agentwire new -s <project>/<branch>``, and ``copy_files`` seeds every
+    fresh worktree (including scheduler dispatches). Standalone
+    ``agentwire worktree`` sessions use :class:`WorktreeConfig` instead
+    (``~/worktrees/<project>/<name>/``).
+    """
 
     enabled: bool = True
     suffix: str = "-worktrees"
@@ -128,7 +137,9 @@ class WorktreeConfig:
         default_project: Repo path used when ``--project`` is omitted and
             cwd is not inside a git repo. ``None`` → infer from cwd's git
             root, else cwd.
-        worktree_dir: Where worktrees live (one dir per session).
+        worktree_dir: Root under which worktrees are created, nested per
+            project — ``<worktree_dir>/<project>/<name>/`` — mirroring
+            ``~/projects/<project>/``.
         naming: Optional branch-name template applied in default (new-branch)
             mode, e.g. ``"{user}/{slug}"`` or ``"feature-{slug}"``.
             Placeholders: ``{name}`` (raw), ``{slug}`` (slugified),

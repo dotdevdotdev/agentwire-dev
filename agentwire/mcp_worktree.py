@@ -19,9 +19,9 @@ def worktree_create(
 
     The spawn half of the worktree lifecycle (paired with worktree_status /
     worktree_list / worktree_remove). Creates a branch off origin/<base>, a
-    worktree under ~/worktrees/, and a tmux session running an agent with the
-    worktree-session safety etiquette auto-injected. This is how a Briefing Mode
-    anchor fans out correspondents.
+    worktree at ~/worktrees/<project>/<name>/, and a tmux session running an
+    agent with the worktree-session safety etiquette auto-injected. This is how
+    a Briefing Mode anchor fans out correspondents.
 
     Args:
         name: Worktree/branch name (becomes the branch + session suffix).

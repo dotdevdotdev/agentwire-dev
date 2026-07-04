@@ -59,7 +59,7 @@ The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, 
 
 | Term | Command | What you get |
 |------|---------|--------------|
-| **Worktree session** | `agentwire worktree <name> -p <repo>` | **Standalone tmux session** named `{project}-<name>`, new branch `<name>` from origin/main, worktree under `~/worktrees/`. Survives independently; report-back via `agentwire notify-parent --to <orchestrator>`. Etiquette (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) is intrinsic — the `worktree-session` role is auto-injected by the verb, so first prompts only need the task. |
+| **Worktree session** | `agentwire worktree <name> -p <repo>` | **Standalone tmux session** named `{project}-<name>`, new branch `<name>` from origin/main, worktree at `~/worktrees/<project>/<name>/` (nested per project, mirroring `~/projects/`). Survives independently; report-back via `agentwire notify-parent --to <orchestrator>`. Etiquette (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) is intrinsic — the `worktree-session` role is auto-injected by the verb, so first prompts only need the task. |
 | **Worker pane** | `agentwire spawn --branch <name>` | A **pane inside the current session** (pane 1+), worktree on `<name>`. Inherits the session's dashboard; idle hook reaps it. |
 
 When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Worker panes are for small subtasks watched by the orchestrator; worktree sessions are for parallel autonomous work. The verb sets the posture: `worktree`/`new` default to the bypass posture (full access), `spawn` to restricted — no `--type` needed for the common case.

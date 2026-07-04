@@ -57,9 +57,11 @@ def _infer_session_from_path() -> str | None:
 
     ~/projects/myapp -> myapp
     ~/projects/myapp-worktrees/feature -> myapp/feature
+    ~/worktrees/myapp/fix-bug -> myapp-fix-bug (worktree session)
     """
     cwd = Path.cwd()
     projects_dir = Path.home() / "projects"
+    worktrees_dir = Path.home() / "worktrees"
 
     try:
         rel = cwd.relative_to(projects_dir)
@@ -73,6 +75,15 @@ def _infer_session_from_path() -> str | None:
             return f"{base}/{parts[1]}"
         elif len(parts) >= 2:
             return f"{parts[0]}/{parts[1]}"
+    except ValueError:
+        pass
+
+    try:
+        # Worktree sessions live at ~/worktrees/<project>/<name>/ with a flat
+        # tmux session name {project}-{name}.
+        parts = cwd.relative_to(worktrees_dir).parts
+        if len(parts) >= 2:
+            return f"{parts[0]}-{parts[1]}"
     except ValueError:
         pass
 

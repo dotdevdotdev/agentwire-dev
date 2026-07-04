@@ -809,7 +809,7 @@ def cmd_worktree(args) -> int:
     if getattr(args, 'watch', False):
         return _worktree_watch(args, project_path, json_mode)
     if getattr(args, 'prune', False):
-        return _worktree_prune(args, project_path, json_mode)
+        return _worktree_prune(args, project_path, worktree_dir, json_mode)
     if getattr(args, 'status', False):
         return _worktree_status(args, project_path, worktree_dir, json_mode)
     if getattr(args, 'remove', False):
@@ -826,10 +826,12 @@ def cmd_worktree(args) -> int:
 
     project_name = project_path.name
     # Session/worktree-dir key stays the raw CLI name made tmux-safe; the git
-    # branch may be templated separately via worktree.naming.
+    # branch may be templated separately via worktree.naming. The worktree
+    # nests per project — ~/worktrees/<project>/<name>/ — mirroring
+    # ~/projects/<project>/; the tmux session name stays flat {project}-{name}.
     safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
     session_name = f"{project_name}-{safe_name}"
-    worktree_path = worktree_dir / session_name
+    worktree_path = worktree_dir / project_name / safe_name
 
     # --base wins; else config default; else the repo's actual default branch
     # (origin/HEAD, not a hardcoded 'main'). --current handled per-mode below.
@@ -945,7 +947,7 @@ def cmd_worktree(args) -> int:
             return _output_result(False, json_mode, f"Failed to fetch origin/{base_branch}: {fetch_result.stderr.strip()}")
 
     # Create worktree
-    worktree_dir.mkdir(parents=True, exist_ok=True)
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
     wt_cmd = ["git", "-C", str(project_path), "worktree", "add"]
     if new_branch:
         wt_cmd += [str(worktree_path), git_ref, "--detach", "--quiet"]
@@ -973,6 +975,7 @@ def cmd_worktree(args) -> int:
                     ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
                     capture_output=True,
                 )
+            _cleanup_empty_project_dir(worktree_path, worktree_dir)
             return _output_result(False, json_mode, f"Failed to create branch '{new_branch}': {branch_result.stderr.strip()}")
 
     # Record the branch↔session association in the local registry.
@@ -1099,28 +1102,48 @@ def _git_badge(git: dict | None) -> str:
     return " ".join(parts)
 
 
+def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -> tuple[str, Path]:
+    """Resolve a name/session/branch to (session_name, worktree_path).
+
+    Registry first; falls back to the conventional layout — session
+    ``{project}-{name}``, worktree ``worktree_dir/<project>/<name>/`` — so
+    recovery still works on hand-created or pre-registry worktrees.
+    """
+    project_name = project_path.name
+    candidates = {name, f"{project_name}-{name}"}
+    for e in worktree_registry.entries(project_path):
+        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
+            return e.get("session"), Path(e.get("worktree_path"))
+
+    safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+    if safe_name.startswith(f"{project_name}-"):
+        safe_name = safe_name[len(project_name) + 1:]
+    return f"{project_name}-{safe_name}", worktree_dir / project_name / safe_name
+
+
+def _cleanup_empty_project_dir(worktree_path: Path, worktree_dir: Path) -> None:
+    """Remove now-empty per-project dirs under ``worktree_dir``.
+
+    Removing a project's last worktree should not leave an empty
+    ``~/worktrees/<project>/`` behind. Walks up from the worktree's parent,
+    rmdir'ing while empty, stopping at ``worktree_dir`` itself.
+    """
+    parent = worktree_path.parent
+    while parent != worktree_dir and parent.is_relative_to(worktree_dir):
+        try:
+            parent.rmdir()  # only succeeds when empty
+        except OSError:
+            break
+        parent = parent.parent
+
+
 def _worktree_status(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
     """Read-only git status for one worktree session (--status). Never mutates."""
     name = getattr(args, 'name', None)
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire worktree --status <name|session>")
 
-    project_name = project_path.name
-    candidates = {name, f"{project_name}-{name}"}
-    entry = None
-    for e in worktree_registry.entries(project_path):
-        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
-            entry = e
-            break
-
-    if entry:
-        session_name = entry.get("session")
-        worktree_path = Path(entry.get("worktree_path"))
-    else:
-        safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
-        session_name = name if name.startswith(f"{project_name}-") else f"{project_name}-{safe_name}"
-        worktree_path = worktree_dir / session_name
-
+    session_name, worktree_path = _resolve_worktree_entry(name, project_path, worktree_dir)
     git = worktree_status(worktree_path)
 
     if json_mode:
@@ -1136,12 +1159,13 @@ def _worktree_status(args, project_path: Path, worktree_dir: Path, json_mode: bo
     return 0
 
 
-def _worktree_prune(args, project_path: Path, json_mode: bool) -> int:
+def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
     """Drop registry entries whose worktree path is gone; git worktree prune."""
     removed = []
     for e in worktree_registry.entries(project_path):
         if not Path(e.get("worktree_path", "")).exists():
             worktree_registry.unregister(project_path, session=e.get("session"))
+            _cleanup_empty_project_dir(Path(e.get("worktree_path", "")), worktree_dir)
             removed.append(e.get("session"))
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"],
                    capture_output=True)
@@ -1161,23 +1185,7 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire worktree --remove <name|session>")
 
-    project_name = project_path.name
-    candidates = {name, f"{project_name}-{name}"}
-    entry = None
-    for e in worktree_registry.entries(project_path):
-        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
-            entry = e
-            break
-
-    if entry:
-        session_name = entry.get("session")
-        worktree_path = Path(entry.get("worktree_path"))
-    else:
-        # Not in registry — fall back to the conventional layout so recovery
-        # still works on hand-created or pre-registry worktrees.
-        safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
-        session_name = name if name.startswith(f"{project_name}-") else f"{project_name}-{safe_name}"
-        worktree_path = worktree_dir / session_name
+    session_name, worktree_path = _resolve_worktree_entry(name, project_path, worktree_dir)
 
     # Kill the tmux session if it's alive.
     killed = False
@@ -1193,6 +1201,11 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
             capture_output=True,
         )
         removed = not worktree_path.exists()
+
+    # Removing a project's last worktree also removes the now-empty
+    # ~/worktrees/<project>/ dir.
+    if not worktree_path.exists():
+        _cleanup_empty_project_dir(worktree_path, worktree_dir)
 
     worktree_registry.unregister(project_path, session=session_name, worktree_path=worktree_path)
 
