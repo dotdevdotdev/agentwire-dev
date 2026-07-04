@@ -66,15 +66,36 @@ def cmd_msg_send(args) -> int:
             print(f"Nothing queued — {reason}.")
         return 0
 
+    # Send-time existence signal (#694): queueing to a named session that
+    # doesn't currently exist is legal (it may be created shortly), but the
+    # sender must learn the target is gone instead of reading a bare "Queued"
+    # as delivery-in-progress. @all targets are live by construction, and with
+    # tmux unreachable (live is None) we can't positively say gone — no warning.
+    live = inbox.live_sessions()
+    missing = (
+        []
+        if args.to == inbox.BROADCAST_TOKEN or live is None
+        else sorted({m.to for m in written} - live)
+    )
+    warnings = [
+        f"session '{t}' does not currently exist — message will dead-letter "
+        f"in ~{inbox.GONE_MAX_ATTEMPTS} min unless it appears"
+        for t in missing
+    ]
+
     if getattr(args, "json", False):
         print(json.dumps({
             "success": True,
             "queued": [m.to_dict() for m in written],
             "recipients": [m.to for m in written],
+            "missing": missing,
+            "warnings": warnings,
         }))
     else:
         recips = ", ".join(m.to for m in written)
         print(f"Queued {args.kind} from {sender} → {recips}")
+        for warning in warnings:
+            print(f"Warning: {warning}")
     return 0
 
 
@@ -171,8 +192,8 @@ def _parse_duration(text: str) -> "int | None":
 
 def _purge_dead(args) -> int:
     """Clear dead-lettered corpses. ``-s`` scopes to one session; without it the
-    whole graveyard is cleared (purge never falls back to the *current* session
-    — that's a listing convenience, too sharp an edge for a delete)."""
+    whole graveyard is cleared — same no-``-s``-means-global rule as the lister
+    (#693), and purge never guesses a session for a delete."""
     import sys
     import time
 
@@ -203,13 +224,19 @@ def cmd_msg_dead(args) -> int:
     """List (or, with ``--purge``, clear) dead-lettered messages.
 
     These are messages a recipient never accepted — its input box stayed busy,
-    or it was parked/non-agent the whole time. They are *not* retried; this is
-    where silent data loss became visible. ``--purge`` is the human/ops cleanup
-    for the graveyard `doctor` surfaces.
+    it was parked/non-agent the whole time, or it didn't exist. They are *not*
+    retried; this is where silent data loss became visible. ``--purge`` is the
+    human/ops cleanup for the graveyard `doctor` surfaces.
+
+    Omitted ``-s`` means GLOBAL — every session's graveyard (#693). It never
+    falls back to the caller's session: every agent runs inside tmux, so a
+    caller-scoped default made the global view unreachable exactly where
+    monitoring loops run, silently reporting "no dead letters" while other
+    sessions' graveyards grew.
     """
     if getattr(args, "purge", False):
         return _purge_dead(args)
-    session = getattr(args, "session", None) or _current_session()
+    session = getattr(args, "session", None)
     sessions = [session] if session else inbox.dead_sessions()
 
     grouped = [(s, inbox.list_dead(s)) for s in sessions]
@@ -350,8 +377,8 @@ def register_msg_parser(subparsers) -> None:
     )
     dead_parser.add_argument(
         "-s", "--session", default=None,
-        help="Session (list default: current, or all when outside one; "
-             "purge default: all — never the current session)",
+        help="Scope to one session (default: every session's graveyard, "
+             "for both list and --purge)",
     )
     dead_parser.add_argument(
         "--purge", action="store_true",

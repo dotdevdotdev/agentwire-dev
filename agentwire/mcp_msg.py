@@ -17,6 +17,12 @@ def msg_send(to: str, text: str, kind: str = "note", ref: str = "") -> str:
     is empty and the pane is safe, so it can never clobber a human who is
     mid-typing. Delivery is at the next safe boundary (≤60s), not instant.
 
+    Sending to a named session that doesn't currently exist still queues (the
+    session may be about to be created), but the confirmation carries a
+    warning: unless the session appears, the message dead-letters within a few
+    minutes (and load-bearing kinds email the owner). Heed the warning — a
+    gone recipient usually means a stale session name; check sessions_list.
+
     Prefer `session_send` ONLY when you must forcibly drive a session right
     now (it pastes + Enter immediately, overwriting any uncommitted draft).
 
@@ -34,7 +40,8 @@ def msg_send(to: str, text: str, kind: str = "note", ref: str = "") -> str:
             so the recipient can open the file without parsing free text.
 
     Returns:
-        Confirmation of which sessions were queued, or an error.
+        Confirmation of which sessions were queued — plus a warning when a
+        named recipient doesn't currently exist — or an error.
     """
     caller = get_caller_session()
     args = ["msg", "send", "--to", to, "--kind", kind]
@@ -48,7 +55,10 @@ def msg_send(to: str, text: str, kind: str = "note", ref: str = "") -> str:
         recipients = data.get("recipients") or []
         if not recipients:
             return f"No live recipients for '{to}'."
-        return f"Queued {kind} → {', '.join(recipients)} (delivers when their box is clear)."
+        out = f"Queued {kind} → {', '.join(recipients)} (delivers when their box is clear)."
+        for warning in data.get("warnings") or []:
+            out += f"\nWarning: {warning}"
+        return out
     return f"Failed to queue message: {data.get('error', 'Unknown error')}"
 
 
@@ -149,12 +159,16 @@ def msg_dead(session: str | None = None) -> str:
     """List dead-lettered polite messages — ones dropped after retrying out.
 
     A `msg` whose recipient never cleared its input box (or stayed parked /
-    non-agent) is retried for ~40 minutes, then dead-lettered rather than lost
-    silently. Use this to see what never reached someone, and why.
+    non-agent) is retried for ~40 minutes; one whose recipient doesn't exist
+    dead-letters after only a few minutes (`target_gone`). Either way the drop
+    is recorded here rather than lost silently. Use this to see what never
+    reached someone, and why.
 
     Args:
-        session: Session name (default: the calling session; omit to list
-            every session that has dead-lettered messages).
+        session: Scope to one session's graveyard. Omitted means GLOBAL —
+            every session that has dead-lettered messages (#693: it never
+            defaults to the calling session, so a monitoring loop inside a
+            session still sees the whole graveyard).
 
     Returns:
         The dead-lettered messages with their drop reason + timestamp, or a

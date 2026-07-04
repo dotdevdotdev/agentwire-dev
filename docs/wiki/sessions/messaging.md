@@ -99,7 +99,7 @@ lands in a durable inbox and is injected only at a safe boundary.
    `dead_letter` event is logged — no infinite retry. `msg dead` surfaces these
    so the drop is never silent.
 
-   Two refinements keep the penalty honest:
+   Three refinements keep the penalty honest:
 
    - **No-penalty busy reasons.** `target_busy` (the box can't be parsed — the
      agent is running a long command) and `queued_placeholder` (the box shows
@@ -109,6 +109,23 @@ lands in a durable inbox and is injected only at a safe boundary.
      toward dead-letter; the message waits and delivers once the box frees up.
      The placeholder is matched loosely, and only the *penalty* changes — a
      non-empty box is still never pasted into (see the collision detector below).
+   - **Gone recipients burn out fast (#694).** Before any box parsing, the
+     drain checks the target against the live tmux session list. A recipient
+     that *positively doesn't exist* defers as `target_gone` — a penalized
+     reason with its own short cap, `GONE_MAX_ATTEMPTS` (5 ticks ≈ **5
+     minutes**, counted in a separate per-message `gone_attempts` field so
+     busy penalties accrued while the target lived don't erode the grace). A
+     gone session can't un-go by itself — the grace only needs to cover a
+     recreate/restart landing — so it doesn't get the 40-minute busy window.
+     The up-front check also fixes the original hole: capturing a gone
+     session parses as "no box" → `target_busy`, a no-penalty defer, which is
+     how a `done` to a stale parent once sat queued for ~24 hours instead of
+     escalating. Only *positive* knowledge counts: if tmux itself is
+     unreachable (server down, e.g. mid-reboot), that's an outage rather than
+     a gone recipient, and the ordinary no-penalty defer path applies.
+     Messages to remote (`name@machine`) recipients — which the local drain
+     could never deliver anyway (see Scope) — now surface as `target_gone`
+     within minutes instead of pending silently forever.
    - **Out-of-band escalation.** When a **load-bearing** kind (`done` / `request`
      / `escalation`) does dead-letter, the owner is emailed via the shared Resend
      wiring (the same channel usage-limit parking uses) so the loss is surfaced
@@ -186,15 +203,25 @@ agentwire msg flush [-s <session>] [--force]  # attempt a drain now (gated unles
 agentwire msg purge [<session>]      # drop a session's PENDING queue (self-heal a wedged inbox)
 ```
 
-`msg dead` with `-s` scopes to one session; outside a session it lists every
-session that has dead letters. Each line shows the kind, sender, died-at time,
-attempt count, and the drop reason.
+`msg send` to a named session that doesn't currently exist still queues (the
+session may be about to be created) but **warns in the confirmation** — text
+output prints a `Warning:` line, JSON carries `missing` + `warnings` fields,
+and MCP `msg_send` relays it — so a sender never mistakes "Queued" for
+delivery-in-progress when the target is gone (#694). No warning fires for
+`@all` (targets are live by construction) or when tmux is unreachable (no
+positive knowledge).
+
+`msg dead` without `-s` is **global** — it lists every session that has dead
+letters, whether or not you run it from inside a session (#693: the old
+current-session fallback made the global view unreachable from inside tmux,
+which is exactly where every monitoring agent lives). `-s` scopes to one
+recipient. Each line shows the kind, sender, died-at time, attempt count, and
+the drop reason.
 
 `msg dead --purge` deletes corpses (`doctor` surfaces them but never grows a
 cleanup itself). `-s` scopes the purge to one session; **without `-s` it clears
-every session's graveyard** — purge deliberately does *not* fall back to the
-current session the way the lister does, since a silent self-scope on a delete
-is too sharp an edge. `--older-than <dur>` (`7d`/`12h`/`30m`/`2w`) clears only
+every session's graveyard** — the same no-`-s`-means-global rule as the lister.
+`--older-than <dur>` (`7d`/`12h`/`30m`/`2w`) clears only
 corpses that died before the cutoff, so you can drop stale ones and keep recent
 report-backs you haven't read. Pre-schema corpses (no `dead_ts`) count as
 infinitely old.
@@ -221,7 +248,8 @@ the single source of truth; the portal and MCP call it.
 
 - `msg_send(to, text, kind="note", ref="")` — polite peer update; delivers at the
   next safe boundary. `kind="ingest"` is passive (pull-only); `ref` is a typed
-  pointer.
+  pointer. Warns in the confirmation when the named recipient doesn't
+  currently exist (dead-letters in ~5 min unless it appears).
 - `msg_inbox(session=None)` — peek pending + passive messages (does not consume).
 - `msg_pull(session=None)` — read + remove passive (`ingest`) messages.
 - `msg_flush(session=None, force=False)` — force a drain of the driving queue
@@ -229,7 +257,8 @@ the single source of truth; the portal and MCP call it.
 - `msg_purge(session=None)` — drop a session's pending queue (self-heal a wedged
   inbox); never touches `dead/` or passive `ingest/`.
 - `msg_dead(session=None)` — list dead-lettered messages with their drop reason
-  + timestamp (omit `session` to list every session that has any).
+  + timestamp. Omitted `session` is GLOBAL (every session that has any) even
+  when called from inside a session; pass a name to scope.
 
 **Rule of thumb for agents:** use `msg_send` for routine peer updates that
 shouldn't interrupt; use `session_send` only when you need to forcibly drive a
