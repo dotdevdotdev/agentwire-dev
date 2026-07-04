@@ -324,6 +324,21 @@ class TestPickNextTask:
         assert name is None
         assert wait > 0
 
+    @patch("agentwire.scheduler._check_gate", return_value=False)
+    def test_due_but_gate_blocked_sleeps_not_spins(self, mock_gate):
+        """#691: a due task whose gate fails must NOT yield (None, 0.0) —
+        time.sleep(0) makes the daemon busy-loop (gate re-run + portal notify
+        ~12×/sec) until the gate ever passes."""
+        from agentwire.scheduler.schedule import GATE_RETRY_FLOOR
+
+        now = time.time()
+        board = self._make_board([
+            ("gated-task", "1h", True, False, now - 7200),  # overdue, gate fails
+        ])
+        name, wait = pick_next_task(board)
+        assert name is None
+        assert wait >= GATE_RETRY_FLOOR
+
     @patch("agentwire.scheduler._check_gate", return_value=True)
     def test_never_run_task_is_overdue(self, mock_gate):
         board = self._make_board([

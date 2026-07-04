@@ -14,6 +14,11 @@ from .models import (
     _parse_time,
 )
 
+# Minimum sleep when the board has a DUE task that isn't runnable (gate
+# failed). Without it, pick_next_task returns (None, 0.0) and the main loop
+# spins at time.sleep(0) — see #691.
+GATE_RETRY_FLOOR = 30.0
+
 
 def _dt_to_ts(dt: datetime | None) -> float:
     """Convert a datetime to a Unix timestamp (0 if None)."""
@@ -258,9 +263,14 @@ def pick_next_task(board: Board) -> tuple[str | None, float]:
         if _sched._check_gate(board, name):
             return name, 0.0
 
-    # Nothing to run now — calculate sleep until earliest task is due
+    # Nothing to run now — calculate sleep until earliest task is due. A task
+    # can be DUE yet not runnable (gate failed, above), which makes
+    # seconds_until_next_due return 0.0 — without a floor the main loop does
+    # time.sleep(0) and spins hard: gate command re-run + portal notify
+    # ~12×/sec until the gate ever passes (#691). Floor to GATE_RETRY_FLOOR so
+    # a due-but-gated board re-checks at loop cadence instead.
     wait = seconds_until_next_due(board)
-    return None, wait
+    return None, max(wait, GATE_RETRY_FLOOR)
 
 
 def seconds_until_next_due(board: Board) -> float:
