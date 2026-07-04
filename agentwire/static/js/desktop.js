@@ -347,7 +347,7 @@ function handleWindowActivity({ session }) {
 }
 
 // Move focus to the next (+1) / previous (-1) open window, wrapping around.
-// Shared by Tab/Shift+Tab and the two-finger swipe gesture.
+// Shared by Alt+]/Alt+[ and the two-finger swipe gesture.
 function cycleWindow(direction) {
     const items = Array.from(elements.taskbarWindows.querySelectorAll('.sidebar-open-item'));
     if (items.length === 0) return;
@@ -367,39 +367,32 @@ function cycleWindow(direction) {
     saveTaskbarState();
 }
 
-// Tab / Shift+Tab to cycle open windows.
-// Terminal input wins: when focus is inside an xterm (its hidden
-// .xterm-helper-textarea) or any other text-input context, both Tab and
-// Shift+Tab pass through untouched — Claude Code uses Shift+Tab to cycle
-// permission modes and Tab for completion cycling (#659).
+// Alt+] / Alt+[ to cycle open windows (#696).
 //
-// One wrinkle: cycling itself focuses the landed-on terminal (cycleWindow →
-// SessionWindow.focus() → terminal.focus()), so without a carve-out the guard
-// would end every cycle chain after one hop — and a second Shift+Tab would
-// silently flip that Claude session's permission mode. So cycling is "sticky":
-// for a short grace window after a keyboard cycle, further Tab/Shift+Tab keep
-// cycling even though a terminal holds focus. Pause longer than the grace
-// window and the keys belong to the terminal again.
-const CYCLE_GRACE_MS = 1500;
-let lastKeyboardCycleTs = -Infinity;
-
-function tabBelongsToFocusedInput() {
-    const el = document.activeElement;
-    if (!el) return false;
-    if (el.closest('.xterm')) return true;  // xterm-helper-textarea et al.
-    const tag = el.tagName;
-    return tag === 'TEXTAREA' || tag === 'INPUT' || el.isContentEditable;
-}
-
+// Tab and Shift+Tab are NEVER intercepted by the desktop — they always pass
+// through to the focused terminal or input. Claude Code needs Shift+Tab to
+// cycle permission modes and Tab for completion cycling (#659); the earlier
+// focus-gated Tab binding (#663) could sustain a cycle chain but never start
+// one, because every window-activation path auto-focuses the terminal (#696).
+// Cycling therefore lives on a dedicated chord that works unconditionally,
+// terminal focus or not.
+//
+// Why Alt+bracket: Cmd+Tab (macOS app switcher), Alt+Tab (Windows/Linux app
+// switcher) and Ctrl+Tab / Ctrl+Shift+Tab (browser tab switching) never
+// reliably reach the page; Ctrl+Alt+Left/Right is workspace switching on
+// common Linux desktops; Alt+` is already the collage toggle. Alt+] / Alt+[
+// is unclaimed by OS, browser, and Claude Code, encodes direction in the key,
+// and matches the Alt+` / Alt+N chord idiom used elsewhere in the portal.
+// Detected via e.code (physical key) because on macOS Option composes e.key
+// into “ / ‘ — same trick as setupCollage's Alt+`.
 function setupWindowCycling() {
     window.addEventListener('keydown', (e) => {
-        if (e.key !== 'Tab') return;
-        const inCycleChain = performance.now() - lastKeyboardCycleTs < CYCLE_GRACE_MS;
-        if (!inCycleChain && tabBelongsToFocusedInput()) return;
+        if (!e.altKey || e.metaKey || e.ctrlKey) return;
+        if (e.code !== 'BracketRight' && e.code !== 'BracketLeft') return;
+        if (isCommandPaletteOpen() || isHelpOpen()) return;
         e.preventDefault();
         e.stopPropagation();
-        lastKeyboardCycleTs = performance.now();
-        cycleWindow(e.shiftKey ? -1 : 1);
+        cycleWindow(e.code === 'BracketRight' ? 1 : -1);
     }, true);  // capture phase — runs before xterm's handlers
 }
 
