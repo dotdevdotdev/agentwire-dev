@@ -33,6 +33,22 @@ def _no_real_outbound_email(request, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_live_portal_stt_query(monkeypatch):
+    """Keep tests off the RUNNING portal's /api/voice-status.
+
+    #683 made ``resolve_stt_status`` prefer the live portal's effective STT
+    backend over the file config — correct in production, but it makes any
+    status test environment-dependent (a portal running ``--no-stt`` on the
+    dev box flips every configured-backend assertion to the ``none`` tier;
+    test_doctor_voice broke exactly this way). Tests that exercise the live
+    override re-patch this attribute themselves.
+    """
+    import agentwire.voice_status as vs
+
+    monkeypatch.setattr(vs, "_portal_effective_stt_backend", lambda: None)
+
+
 @pytest.fixture
 def tmp_config_dir(tmp_path):
     """Temporary ~/.agentwire/ equivalent."""
