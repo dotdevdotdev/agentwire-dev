@@ -191,36 +191,54 @@ def worktree_status(name: str, project_dir: str = "") -> str:
 
 
 @mcp.tool()
-def worktree_remove(name: str, project_dir: str = "") -> str:
+def worktree_remove(
+    name: str,
+    project_dir: str = "",
+    keep_branch: bool = False,
+    force_delete_branch: bool = False,
+) -> str:
     """Tear down a worktree session: kill the session, remove the worktree + branch, unregister.
 
     This is the teardown step. The agent should have already committed, pushed,
     and opened its PR (confirm with worktree_status first). This kills the tmux
-    session, force-removes the git worktree, and drops the registry entry — it
-    does NOT push or open a PR for you.
+    session, force-removes the git worktree (verifying the dir is actually gone —
+    never a silent partial teardown), drops the registry entry, and best-effort
+    deletes the branch (local ref + remote) once its PR is confirmed merged. It
+    never touches main and never requires switching the primary checkout —
+    branch deletion works entirely from the (now-vacated) branch name.
 
     Args:
         name: Worktree session name, branch, or short name.
         project_dir: Path to the git repo (default: server cwd).
+        keep_branch: Skip branch cleanup entirely (leave the branch as-is).
+        force_delete_branch: Delete the branch even if not confirmed merged —
+            use only when you're sure the work is safe to discard.
 
     Returns:
-        Success message describing what was removed, or an error description.
+        Success message describing what was removed, or a loud failure
+        description if the worktree directory could not actually be cleared.
     """
     args = ["worktree", "--remove", name]
     if project_dir:
         args += ["--project", project_dir]
+    if keep_branch:
+        args += ["--keep-branch"]
+    if force_delete_branch:
+        args += ["--force-delete-branch"]
     data = run_agentwire_cmd(args)
-    if not data.get("success"):
-        return f"Failed to remove worktree: {data.get('error', 'Unknown error')}"
     session = data.get("session", name)
     killed = " (killed live session)" if data.get("killed") else ""
-    if data.get("worktree_removed"):
-        return f"Removed worktree session '{session}'{killed}; worktree deleted."
-    return f"Unregistered '{session}'{killed}; worktree left at {data.get('path')} (not removed)."
+    if not data.get("success"):
+        return f"FAILED to remove worktree session '{session}'{killed}: {data.get('error', 'Unknown error')}"
+    branch_bit = ""
+    if data.get("branch"):
+        branch_bit = (f" Branch '{data['branch']}' deleted." if data.get("branch_deleted")
+                      else f" Branch '{data['branch']}' kept ({data.get('branch_note', 'not deleted')}).")
+    return f"Removed worktree session '{session}'{killed}; worktree deleted.{branch_bit}"
 
 
 @mcp.tool()
-def worktree_prune(project_dir: str = "") -> str:
+def worktree_prune(project_dir: str = "", gc_merged: bool = False) -> str:
     """Garbage-collect stale worktree registry entries (+ `git worktree prune`).
 
     Drops registry entries whose worktree dir is gone and runs git's own prune.
@@ -228,17 +246,31 @@ def worktree_prune(project_dir: str = "") -> str:
 
     Args:
         project_dir: Path to the git repo (default: server cwd).
+        gc_merged: Also fully tear down (session + worktree + branch, via the
+            same atomic path as worktree_remove) any STILL-PRESENT registered
+            worktree whose branch is confirmed merged. Off by default — this
+            is otherwise a safe, read-mostly cleanup and shouldn't kill a
+            live, in-flight session just because its branch looks merged.
 
     Returns:
-        Which stale entries were pruned, or that there was nothing to prune.
+        Which stale entries were pruned / merged worktrees GC'd, or that
+        there was nothing to prune.
     """
     args = ["worktree", "--prune"]
     if project_dir:
         args += ["--project", project_dir]
+    if gc_merged:
+        args += ["--gc-merged"]
     data = run_agentwire_cmd(args)
     if not data.get("success"):
         return f"Failed to prune worktrees: {data.get('error', 'Unknown error')}"
     pruned = data.get("pruned") or []
-    if not pruned:
+    gc_done = data.get("gc_merged") or []
+    if not pruned and not gc_done:
         return "Nothing to prune."
-    return f"Pruned {len(pruned)} stale entr{'y' if len(pruned) == 1 else 'ies'}: {', '.join(pruned)}"
+    bits = []
+    if pruned:
+        bits.append(f"Pruned {len(pruned)} stale entr{'y' if len(pruned) == 1 else 'ies'}: {', '.join(pruned)}")
+    if gc_done:
+        bits.append(f"GC'd {len(gc_done)} merged worktree{'s' if len(gc_done) != 1 else ''}: {', '.join(gc_done)}")
+    return "; ".join(bits) + "."

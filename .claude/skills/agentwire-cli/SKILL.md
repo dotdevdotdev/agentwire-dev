@@ -49,8 +49,14 @@ agentwire worktree name --ref v2.0  # detached at tag/commit
 agentwire worktree name --prompt "task"  # spawn AND seed the first message in one call (verified delivery)
 agentwire worktree --list       # list this repo's worktree sessions + read-only git status; --all = every repo
 agentwire worktree --status name  # read-only git status (dirty/ahead/behind/pushed) for one worktree
-agentwire worktree --remove name  # kill session + remove worktree + unregister (cleanup/recovery)
+agentwire worktree --remove name  # ATOMIC teardown: kill session + force-remove worktree + delete
+                                #   merged branch (local+remote) + unregister — fails loudly (non-zero,
+                                #   registry entry kept) if the dir can't actually be cleared (#717).
+                                #   --keep-branch skips branch cleanup; --force-delete-branch deletes
+                                #   even if not confirmed merged.
 agentwire worktree --prune      # drop registry entries whose worktree is gone + git worktree prune
+                                #   --gc-merged: also tear down (session+worktree+branch) any
+                                #   still-present entry whose branch is confirmed merged
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 

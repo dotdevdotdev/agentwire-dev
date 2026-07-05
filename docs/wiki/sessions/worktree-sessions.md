@@ -45,11 +45,24 @@ agentwire keeps a small **local, per-repo registry** (one JSON file per repo und
 ```bash
 agentwire worktree --list          # this repo's worktree sessions (live / orphan / stale)
 agentwire worktree --list --all    # across every repo
-agentwire worktree --remove name   # kill the session + remove the worktree + unregister
+agentwire worktree --remove name   # kill the session + remove the worktree + branch + unregister
 agentwire worktree --prune         # drop entries whose worktree is gone + `git worktree prune`
 ```
 
 `--list` annotates each entry: **live** (tmux session running), **orphan** (worktree on disk, no session), **stale** (registry entry, worktree gone). `--remove` is the cleanup/recovery path; it still works on hand-created worktrees not in the registry by falling back to the conventional `<worktree_dir>/<project>/<name>/` layout. Removing (or pruning) a project's last worktree also removes the now-empty `<worktree_dir>/<project>/` dir.
+
+### Teardown is atomic (#717)
+
+`--remove` kills the tmux session, force-removes the git worktree (`git worktree remove --force` + `git worktree prune`), and only THEN drops the registry entry — it never touches `main` or requires switching the primary checkout's branch, so it works even when `~/projects/<repo>` permanently holds `main`. If the directory somehow can't be cleared (e.g. its `.git` link is broken), the command fails LOUDLY — non-zero exit, `success: false`, the reason in `error` — and the registry entry is **kept** so `--list`/`--prune` still see it. It never silently "unregisters" an orphaned directory.
+
+`--remove` also best-effort deletes the branch — local ref (`git branch -D`) and, if it was pushed, the remote (`git push origin --delete`) — but **only once the branch is confirmed merged**, so a teardown can never silently drop unmerged work. "Merged" is checked via `gh pr view <branch> --json state` first (catches squash/rebase merges, whose commit hash differs from the branch tip so a plain git ancestor check would miss them), falling back to a `git merge-base --is-ancestor` check against `origin/<base>` when `gh` is unavailable/unauthenticated or no PR was ever opened. Flags:
+
+```bash
+agentwire worktree --remove name --keep-branch          # skip branch cleanup entirely
+agentwire worktree --remove name --force-delete-branch  # delete even if not confirmed merged
+```
+
+`--prune --gc-merged` extends the stale-entry sweep: for every **still-present** registered worktree whose branch is confirmed merged, it runs the same atomic teardown (session + worktree + branch). Plain `--prune` never does this on its own — it only drops entries whose directory is already gone — so a live, in-flight worktree is never touched just because its branch happens to look merged.
 
 ## Config
 

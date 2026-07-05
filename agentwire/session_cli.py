@@ -694,7 +694,7 @@ def cmd_recreate(args) -> int:
     # Step 2: Remove worktree (if branch session)
     if branch and worktree_path.exists():
         remove_worktree(project_path, worktree_path)
-        # Force remove if git worktree remove failed
+        # Force remove if git worktree remove still left it on disk
         if worktree_path.exists():
             shutil.rmtree(worktree_path, ignore_errors=True)
 
@@ -1187,63 +1187,186 @@ def _worktree_status(args, project_path: Path, worktree_dir: Path, json_mode: bo
 
 
 def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
-    """Drop registry entries whose worktree path is gone; git worktree prune."""
+    """Drop registry entries whose worktree path is gone; git worktree prune.
+
+    With --gc-merged, also tears down (session + worktree + branch, via the
+    same atomic path as --remove) any STILL-PRESENT registered entry whose
+    branch is confirmed merged — the "GC orphaned ~/worktrees/* dirs whose
+    branch is already merged" sweep from #717. Off by default: this command
+    is normally a safe, read-mostly cleanup and shouldn't kill a live,
+    in-flight session just because its branch happens to look merged.
+    """
     removed = []
-    for e in worktree_registry.entries(project_path):
-        if not Path(e.get("worktree_path", "")).exists():
+    gc_merged_out = []
+    gc_merged = getattr(args, 'gc_merged', False)
+    for e in list(worktree_registry.entries(project_path)):
+        wt_path = Path(e.get("worktree_path", ""))
+        if not wt_path.exists():
             worktree_registry.unregister(project_path, session=e.get("session"))
-            _cleanup_empty_project_dir(Path(e.get("worktree_path", "")), worktree_dir)
+            _cleanup_empty_project_dir(wt_path, worktree_dir)
             removed.append(e.get("session"))
+            continue
+        if gc_merged and e.get("branch"):
+            if _branch_merge_state(project_path, e["branch"], e.get("base")) == "merged":
+                result = _teardown_entry(
+                    project_path, worktree_dir, e["session"], wt_path,
+                    e["branch"], e.get("base"), force_branch=True,
+                )
+                if result["success"]:
+                    gc_merged_out.append(e["session"])
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"],
                    capture_output=True)
     if json_mode:
-        _output_json({"success": True, "pruned": removed})
+        _output_json({"success": True, "pruned": removed, "gc_merged": gc_merged_out})
     else:
         if removed:
             print(f"Pruned {len(removed)} stale registry entr{'y' if len(removed) == 1 else 'ies'}: {', '.join(removed)}")
-        else:
+        if gc_merged_out:
+            print(f"GC'd {len(gc_merged_out)} merged worktree{'s' if len(gc_merged_out) != 1 else ''}: {', '.join(gc_merged_out)}")
+        if not removed and not gc_merged_out:
             print("Nothing to prune.")
     return 0
 
 
-def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
-    """Cleanup/recovery: kill the session, remove the worktree, unregister."""
-    name = getattr(args, 'name', None)
-    if not name:
-        return _output_result(False, json_mode, "Usage: agentwire worktree --remove <name|session>")
+def _branch_merge_state(project_path: Path, branch: str, base: str | None) -> str:
+    """Best-effort "is `branch` safe to delete" check. Returns "merged" / "open" / "unknown".
 
-    session_name, worktree_path = _resolve_worktree_entry(name, project_path, worktree_dir)
+    Prefers `gh pr view` — a squash/rebase merge on GitHub creates a NEW commit
+    that a plain ancestor check won't recognize, so pure git can false-negative
+    on the single most common merge workflow. Falls back to a git merge-base
+    ancestor check against `origin/<base>` when gh is unavailable/unauthenticated
+    or no PR was ever opened for the branch (base is required for the fallback).
+    """
+    if shutil.which("gh"):
+        result = subprocess.run(
+            ["gh", "pr", "view", branch, "--json", "state", "-q", ".state"],
+            cwd=project_path, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            state = result.stdout.strip().upper()
+            if state == "MERGED":
+                return "merged"
+            if state in ("OPEN", "CLOSED"):
+                return "open"
+    if base:
+        result = subprocess.run(
+            ["git", "-C", str(project_path), "merge-base", "--is-ancestor", branch, f"origin/{base}"],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return "merged"
+    return "unknown"
 
-    # Kill the tmux session if it's alive.
+
+def _delete_branch_if_safe(project_path: Path, branch: str, base: str | None, force: bool = False) -> tuple[bool, str]:
+    """Best-effort local + remote branch cleanup. Never touches an unmerged branch
+    unless `force` — deleting an unmerged branch would silently drop real work.
+
+    Returns (deleted, note) — note explains a skip, or names the confirmed state
+    on delete.
+    """
+    if not force:
+        state = _branch_merge_state(project_path, branch, base)
+        if state != "merged":
+            return False, f"not confirmed merged (state={state}); kept — pass --force-delete-branch to override"
+
+    local = subprocess.run(
+        ["git", "-C", str(project_path), "branch", "-D", branch],
+        capture_output=True, text=True,
+    )
+    if local.returncode != 0 and "not found" not in local.stderr.lower():
+        return False, f"local branch delete failed: {local.stderr.strip()}"
+
+    # Best-effort — the remote ref may already be gone (e.g. GitHub's own
+    # "delete branch" button after merge); a failure here doesn't undo the
+    # local delete above.
+    subprocess.run(
+        ["git", "-C", str(project_path), "push", "origin", "--delete", branch],
+        capture_output=True, text=True,
+    )
+    return True, "merged" if not force else "forced"
+
+
+def _teardown_entry(
+    project_path: Path, worktree_dir: Path, session_name: str, worktree_path: Path,
+    branch: str | None, base: str | None, *, keep_branch: bool = False, force_branch: bool = False,
+) -> dict:
+    """Core atomic teardown: kill session, force-remove the worktree + prune,
+    unregister, best-effort branch cleanup. Shared by --remove and
+    --prune --gc-merged so both paths go through the exact same steps (#717).
+
+    Never reports worktree_removed=True while the dir is still on disk: if
+    `git worktree remove --force` can't clear it, this fails LOUDLY
+    (success: False) and leaves the registry entry in place, instead of
+    silently "unregistering" an orphan.
+    """
     killed = False
     if tmux_session_exists(session_name):
         subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
         killed = True
 
-    # Remove the git worktree (force), then sweep any leftover dir.
-    removed = remove_worktree(project_path, worktree_path)
-    if not removed and worktree_path.exists():
-        subprocess.run(
-            ["git", "-C", str(project_path), "worktree", "remove", str(worktree_path), "--force"],
-            capture_output=True,
-        )
-        removed = not worktree_path.exists()
+    # Force-remove the git worktree, then prune admin files either way.
+    _, remove_error = remove_worktree(project_path, worktree_path, force=True)
+    subprocess.run(["git", "-C", str(project_path), "worktree", "prune"], capture_output=True)
+
+    if worktree_path.exists():
+        reason = remove_error or "worktree directory still present after `git worktree remove --force`"
+        return {"success": False, "session": session_name, "path": str(worktree_path),
+                "killed": killed, "worktree_removed": False, "error": reason}
 
     # Removing a project's last worktree also removes the now-empty
     # ~/worktrees/<project>/ dir.
-    if not worktree_path.exists():
-        _cleanup_empty_project_dir(worktree_path, worktree_dir)
+    _cleanup_empty_project_dir(worktree_path, worktree_dir)
 
+    branch_deleted, branch_note = (False, "")
+    if branch and not keep_branch:
+        branch_deleted, branch_note = _delete_branch_if_safe(project_path, branch, base, force=force_branch)
+
+    # Only unregister once the dir is confirmed gone (see docstring).
     worktree_registry.unregister(project_path, session=session_name, worktree_path=worktree_path)
 
+    return {"success": True, "session": session_name, "path": str(worktree_path),
+            "killed": killed, "worktree_removed": True,
+            "branch": branch, "branch_deleted": branch_deleted, "branch_note": branch_note}
+
+
+def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
+    """Teardown: kill the session, force-remove the worktree + prune, unregister,
+    and (best-effort) delete the branch — one atomic call (#717)."""
+    name = getattr(args, 'name', None)
+    if not name:
+        return _output_result(False, json_mode, "Usage: agentwire worktree --remove <name|session>")
+
+    session_name, worktree_path = _resolve_worktree_entry(name, project_path, worktree_dir)
+    entry = next((e for e in worktree_registry.entries(project_path) if e.get("session") == session_name), None)
+
+    # Capture the branch before the worktree disappears. Registry first (set
+    # at creation time); fall back to the worktree's own HEAD for a
+    # hand-created/unregistered worktree so branch cleanup still works.
+    branch = entry.get("branch") if entry else None
+    base = entry.get("base") if entry else None
+    if branch is None and worktree_path.exists():
+        branch = worktree_status(worktree_path).get("branch")
+
+    result = _teardown_entry(
+        project_path, worktree_dir, session_name, worktree_path, branch, base,
+        keep_branch=getattr(args, 'keep_branch', False),
+        force_branch=getattr(args, 'force_delete_branch', False),
+    )
+
     if json_mode:
-        _output_json({"success": True, "session": session_name, "path": str(worktree_path),
-                      "killed": killed, "worktree_removed": removed})
+        _output_json(result)
+    elif not result["success"]:
+        print(f"FAILED to remove worktree at {result['path']}: {result['error']}"
+              + (" (session killed)" if result["killed"] else ""))
     else:
-        print(f"Removed worktree session '{session_name}'"
-              + (" (killed live session)" if killed else "")
-              + (f"; worktree {worktree_path} removed" if removed else f"; worktree {worktree_path} left in place"))
-    return 0
+        msg = (f"Removed worktree session '{result['session']}'"
+               + (" (killed live session)" if result["killed"] else "")
+               + f"; worktree {result['path']} removed")
+        if result["branch"]:
+            msg += f"; branch '{result['branch']}' " + ("deleted" if result["branch_deleted"] else f"kept ({result['branch_note']})")
+        print(msg)
+    return 0 if result["success"] else 1
 
 
 def cmd_fork(args) -> int:
@@ -1713,8 +1836,11 @@ def register_session_parser(subparsers) -> None:
     wt_parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
     wt_parser.add_argument("--watch", action="store_true", help="Watch registered worktree sessions in a loop and report status")
     wt_parser.add_argument("--status", action="store_true", help="Show read-only git status (dirty/ahead/behind/pushed) for a worktree session")
-    wt_parser.add_argument("--remove", action="store_true", help="Kill the session, remove the worktree, and unregister (cleanup/recovery)")
+    wt_parser.add_argument("--remove", action="store_true", help="Atomic teardown: kill the session, force-remove the worktree, delete the branch once merged, and unregister (cleanup/recovery)")
+    wt_parser.add_argument("--keep-branch", action="store_true", help="With --remove: skip branch cleanup entirely (default: best-effort delete once confirmed merged)")
+    wt_parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged")
     wt_parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
+    wt_parser.add_argument("--gc-merged", action="store_true", help="With --prune: also tear down (session/worktree/branch) any registered entry whose branch is confirmed merged")
     wt_parser.add_argument("--all", action="store_true", help="With --list: include worktree sessions across every repo")
     _add_posture_harness_flags(wt_parser)
     wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")

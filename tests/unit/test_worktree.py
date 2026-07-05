@@ -14,6 +14,7 @@ from agentwire.worktree import (
     is_git_repo,
     is_valid_branch_name,
     parse_session_name,
+    remove_worktree,
     slugify,
 )
 
@@ -243,3 +244,35 @@ class TestWorktreeSeeding:
         # Listed file doesn't exist — creation still succeeds.
         assert ensure_worktree(repo, "f3", wt, copy_files=["secret.env"])
         assert not (wt / "secret.env").exists()
+
+
+# --- remove_worktree (#717: force by default, reports (removed, error)) ---
+
+class TestRemoveWorktree:
+    def test_force_removes_dirty_worktree(self, tmp_path):
+        """Uncommitted changes in the worktree must not block teardown."""
+        repo, git = _make_repo(tmp_path)
+        wt = tmp_path / "repo-worktrees" / "dirty"
+        assert ensure_worktree(repo, "dirty", wt)
+        (wt / "scratch.txt").write_text("uncommitted\n")
+
+        removed, error = remove_worktree(repo, wt)
+        assert removed is True
+        assert error == ""
+        assert not wt.exists()
+
+    def test_reports_error_when_not_a_worktree(self, tmp_path):
+        repo, _ = _make_repo(tmp_path)
+        bogus = tmp_path / "never-a-worktree"
+        bogus.mkdir()
+
+        removed, error = remove_worktree(repo, bogus)
+        assert removed is False
+        assert error  # non-empty reason from git
+
+    def test_not_a_git_repo(self, tmp_path):
+        not_repo = tmp_path / "plain-dir"
+        not_repo.mkdir()
+        removed, error = remove_worktree(not_repo, tmp_path / "wherever")
+        assert removed is False
+        assert error
