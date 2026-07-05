@@ -492,6 +492,16 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                         self.roles = task_role if task_role else None
                         self.model = None
                         self.json = json_mode
+                        # Force the pre-#715 unconditional-inherit behavior:
+                        # ensure is the scheduler's dispatch primitive — the
+                        # scheduler daemon fans out across many projects from
+                        # one fixed tmux session by design, so #715's
+                        # same-project default (meant for an interactive
+                        # session's own cross-project spawns) would wrongly
+                        # drop the parent link for nearly every dispatched
+                        # task. Always parent to whichever session is
+                        # actually running this ensure call.
+                        self.created_by = pane_manager.get_current_session()
 
                 from . import session_cli
                 result = session_cli.cmd_new(NewArgs(task.role))

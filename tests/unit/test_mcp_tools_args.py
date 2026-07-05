@@ -35,7 +35,8 @@ class TestSessionTools:
         assert "Failed" in result
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
-    def test_session_create_minimal(self, mock_cmd):
+    @patch("agentwire.mcp_session.get_caller_session", return_value=None)
+    def test_session_create_minimal(self, _caller, mock_cmd):
         from agentwire.mcp_session import session_create
         mock_cmd.return_value = _success()
         result = session_create(name="test")
@@ -43,12 +44,51 @@ class TestSessionTools:
         assert "created" in result
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
-    def test_session_create_all_args(self, mock_cmd):
+    @patch("agentwire.mcp_session.get_caller_session", return_value=None)
+    def test_session_create_all_args(self, _caller, mock_cmd):
         from agentwire.mcp_session import session_create
         mock_cmd.return_value = _success()
         session_create(name="x", project_dir="/p", roles="voice,worker", session_type="bare")
         args = mock_cmd.call_args[0][0]
         assert args == ["new", "-s", "x", "-p", "/p", "--roles", "voice,worker", "--type", "bare"]
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
+    @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
+    def test_session_create_forwards_caller_as_candidate(self, _caller, mock_cmd):
+        # #715 — the caller is forwarded as a CANDIDATE (--caller-session), not
+        # a forced --created-by; cmd_new decides whether to inherit it based
+        # on whether project_dir is the caller's own project.
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="test", project_dir="/other/project")
+        args = mock_cmd.call_args[0][0]
+        assert args == ["new", "-s", "test", "-p", "/other/project",
+                         "--caller-session", "orchestrator"]
+        assert "--created-by" not in args
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
+    @patch("agentwire.mcp_session.get_caller_session", return_value=None)
+    def test_session_create_no_caller_forwards_nothing(self, _caller, mock_cmd):
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="test")
+        args = mock_cmd.call_args[0][0]
+        assert "--caller-session" not in args
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
+    @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
+    def test_session_create_explicit_created_by_overrides_and_skips_caller_session(
+            self, _caller, mock_cmd):
+        # Parity with worktree_create's created_by override (#715) — forces a
+        # specific parent for the related-project case instead of relying on
+        # the default same-project-conditional inheritance.
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="test", project_dir="/other/project", created_by="orchestrator")
+        args = mock_cmd.call_args[0][0]
+        assert args == ["new", "-s", "test", "-p", "/other/project",
+                         "--created-by", "orchestrator"]
+        assert "--caller-session" not in args
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
     @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
@@ -456,3 +496,62 @@ class TestWorktreeCreateSeedResult:
             session="proj-x", path="/w/proj-x", reattached=True))
         assert "Reattached" in result
         assert "NOT" in result  # the seed prompt was not pasted — say so
+
+
+class TestWorktreeCreateCallerForwarding:
+    """#715 — worktree_create must not unconditionally force --created-by to
+    the caller anymore (that flattened every cross-project spawn into the
+    caller's subtree). It forwards the caller as a --caller-session
+    CANDIDATE, letting cmd_new's same-project check decide inheritance,
+    unless an explicit `created_by` override is passed."""
+
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value="orchestrator")
+    def test_default_forwards_caller_session_not_created_by(self, _caller, mock_cmd):
+        from agentwire.mcp_worktree import worktree_create
+        mock_cmd.return_value = _success(session="proj-x", path="/w/proj-x")
+        worktree_create("x", project_dir="/other/project")
+        args = mock_cmd.call_args[0][0]
+        assert args == ["worktree", "x", "-p", "/other/project",
+                         "--caller-session", "orchestrator"]
+        assert "--created-by" not in args
+
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    def test_no_caller_forwards_nothing(self, _caller, mock_cmd):
+        from agentwire.mcp_worktree import worktree_create
+        mock_cmd.return_value = _success(session="proj-x", path="/w/proj-x")
+        worktree_create("x")
+        args = mock_cmd.call_args[0][0]
+        assert "--caller-session" not in args
+        assert "--created-by" not in args
+
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value="orchestrator")
+    def test_explicit_created_by_overrides_and_skips_caller_session(self, _caller, mock_cmd):
+        from agentwire.mcp_worktree import worktree_create
+        mock_cmd.return_value = _success(session="proj-x", path="/w/proj-x")
+        worktree_create("x", project_dir="/other/project", created_by="orchestrator")
+        args = mock_cmd.call_args[0][0]
+        assert args == ["worktree", "x", "-p", "/other/project",
+                         "--created-by", "orchestrator"]
+        assert "--caller-session" not in args
+
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value="orchestrator")
+    def test_explicit_empty_created_by_does_not_force_standalone(self, _caller, mock_cmd):
+        # KNOWN LIMITATION, not a feature: at the CLI, --created-by '' forces
+        # standalone. At the MCP layer, created_by="" is indistinguishable
+        # from "omitted" (both are the str="" default), so it falls through
+        # to the same default candidate-forwarding as not passing it at all —
+        # it does NOT force standalone. There is currently no way to force
+        # standalone through this MCP tool; only the raw CLI's
+        # `agentwire worktree --created-by ''` does. A dedicated boolean
+        # (mirroring #712/#713's `standalone` param on session_create) would
+        # be the correct fix, not overloading this string param further.
+        from agentwire.mcp_worktree import worktree_create
+        mock_cmd.return_value = _success(session="proj-x", path="/w/proj-x")
+        worktree_create("x", project_dir="/other/project", created_by="")
+        args = mock_cmd.call_args[0][0]
+        assert args == ["worktree", "x", "-p", "/other/project",
+                         "--caller-session", "orchestrator"]

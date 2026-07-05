@@ -52,6 +52,8 @@ Workers auto-exit when idle. They write summary files before exiting, and you re
 
 Sessions can have parent sessions. When you go idle, your parent is notified. Use `notify(text, to=session)` to send text notifications up the chain.
 
+`session_create` / `worktree_create` record you as the new session's parent **only when the target project is the one you're already running in** — spawning into a genuinely different project gets its own standalone root instead of nesting under you. Fanning out more work within your own project still parents as before.
+
 ## Wiki (Knowledge Base)
 
 When you discover something noteworthy during your work — a technology gotcha, a debugging solution, a useful pattern, an API quirk — write or update a wiki page at `~/.agentwire/wiki/wiki/`. This compounds knowledge across sessions so future agents don't re-research the same things.

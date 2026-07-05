@@ -9,6 +9,7 @@ from agentwire.worktree import (
     default_base_branch,
     ensure_worktree,
     get_project_type,
+    git_common_dir,
     git_root,
     is_git_repo,
     is_valid_branch_name,
@@ -143,6 +144,33 @@ class TestGitRoot:
 
     def test_none_outside_repo(self, tmp_path):
         assert git_root(tmp_path) is None
+
+
+# --- git_common_dir (the "same repo" signal that survives linked worktrees) ---
+
+class TestGitCommonDir:
+    def test_none_outside_repo(self, tmp_path):
+        assert git_common_dir(tmp_path) is None
+
+    def test_matches_main_repo_git_dir(self, tmp_path):
+        repo, _ = _make_repo(tmp_path)
+        assert git_common_dir(repo) == (repo / ".git").resolve()
+
+    def test_linked_worktree_shares_common_dir_with_main_repo(self, tmp_path):
+        # A worktree's own git_root differs from the main repo's, but
+        # git_common_dir must agree — that's the whole point of #715's
+        # same-project check (a caller running from a worktree of project X
+        # spawning into project X's main checkout is still "same project").
+        repo, git = _make_repo(tmp_path)
+        wt = tmp_path / "wt"
+        git("worktree", "add", "-q", "-b", "side", str(wt))
+        assert git_root(wt) != repo.resolve()
+        assert git_common_dir(wt) == git_common_dir(repo) == (repo / ".git").resolve()
+
+    def test_different_repos_have_different_common_dirs(self, tmp_path):
+        repo_a, _ = _make_repo(tmp_path, name="repo-a")
+        repo_b, _ = _make_repo(tmp_path, name="repo-b")
+        assert git_common_dir(repo_a) != git_common_dir(repo_b)
 
 
 # --- default_base_branch (repo-derived, no hardcoded main) ---

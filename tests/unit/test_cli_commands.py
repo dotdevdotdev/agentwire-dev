@@ -337,6 +337,74 @@ class TestCmdNewSeedFallback:
         assert "recover" not in calls  # recovery never runs on success
 
 
+class TestCmdNewDefaultCreatedByRooting:
+    """#715 — with --created-by unset, cmd_new should only default to the
+    caller when the new session is in the caller's own project; a genuinely
+    different project gets its own standalone root instead of being flattened
+    into the caller's subtree."""
+
+    def _run(self, monkeypatch, tmp_path, *, caller_session, caller_project_path):
+        from types import SimpleNamespace
+
+        from agentwire import core
+        from agentwire import session_cli as m
+
+        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
+        monkeypatch.setattr(
+            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
+        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
+        monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
+        monkeypatch.setattr(
+            m, "_resolve_session_type_from_args", lambda a, k: ("claude-bypass", None))
+        monkeypatch.setattr(
+            m, "build_agent_command",
+            lambda *a, **k: SimpleNamespace(command="claude", env={}))
+        monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
+        monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
+        monkeypatch.setattr(m.pane_manager, "get_current_session", lambda: None)
+        monkeypatch.setattr(core, "_live_session_cwd", lambda s: caller_project_path)
+
+        recorded = {}
+
+        def fake_record(session_name, created_by, via):
+            recorded["created_by"] = created_by
+
+        monkeypatch.setattr(m, "_record_session_creator", fake_record)
+
+        args = argparse.Namespace(
+            session="proj", path=str(tmp_path), force=False, json=True,
+            created_by=None, caller_session=caller_session,
+        )
+        rc = m.cmd_new(args)
+        assert rc == 0
+        return recorded
+
+    def test_same_project_inherits_caller(self, monkeypatch, tmp_path):
+        recorded = self._run(
+            monkeypatch, tmp_path,
+            caller_session="orchestrator", caller_project_path=Path(tmp_path),
+        )
+        assert recorded["created_by"] == "orchestrator"
+
+    def test_cross_project_gets_standalone_root(self, monkeypatch, tmp_path):
+        other_project = tmp_path.parent / "some-other-project"
+        recorded = self._run(
+            monkeypatch, tmp_path,
+            caller_session="orchestrator", caller_project_path=other_project,
+        )
+        assert recorded["created_by"] is None
+
+    def test_no_caller_session_falls_back_to_pane_manager(self, monkeypatch, tmp_path):
+        # Neither --caller-session (MCP) nor a live tmux pane (bare CLI outside
+        # tmux) is available — no candidate caller at all, so no inheritance.
+        recorded = self._run(
+            monkeypatch, tmp_path,
+            caller_session=None, caller_project_path=Path(tmp_path),
+        )
+        assert recorded["created_by"] is None
+
+
 # --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
 #
 # Both commands used to copy `project_config.roles` raw, bypassing

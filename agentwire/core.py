@@ -28,7 +28,7 @@ from .project_config import (
     normalize_session_type,
 )
 from .roles import RoleConfig, merge_roles
-from .worktree import parse_session_name
+from .worktree import git_common_dir, parse_session_name
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
@@ -489,22 +489,71 @@ def wait_for_shell_prompt(target: str, timeout: float = 2.0) -> None:
         time.sleep(0.05)
 
 
+def _live_session_cwd(session: str) -> Path | None:
+    """The session's current pane cwd, or None if it isn't a live tmux session.
+
+    Unlike ``_get_session_project_path``, this never falls back to guessing a
+    path from the session name — a guessed path is unsafe for an identity
+    comparison (#715's same-project check needs the real cwd or nothing).
+    """
+    if not tmux_session_exists(session):
+        return None
+    result = subprocess.run(
+        ["tmux", "display-message", "-t", session, "-p", "#{pane_current_path}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip())
+    return None
+
+
 def _get_session_project_path(session: str) -> Path | None:
     """Get a session's project path from tmux cwd, falling back to session name parsing."""
-    if tmux_session_exists(session):
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", session, "-p", "#{pane_current_path}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return Path(result.stdout.strip())
+    live = _live_session_cwd(session)
+    if live is not None:
+        return live
 
     # Fallback: derive from session name
     config = load_config()
     projects_dir = Path(config.get("projects", {}).get("dir", "~/projects")).expanduser()
     project, _, _ = parse_session_name(session)
     return projects_dir / project
+
+
+def _same_project(path_a: Path, path_b: Path) -> bool:
+    """True when two paths belong to the same git repo (shared .git dir
+    across linked worktrees) or, outside a repo, are the same resolved path."""
+    common_a = git_common_dir(path_a)
+    if common_a is None:
+        return path_a.resolve() == path_b.resolve()
+    common_b = git_common_dir(path_b)
+    if common_b is None:
+        return path_a.resolve() == path_b.resolve()
+    return common_a == common_b
+
+
+def resolve_default_created_by(caller: str | None, target_path: Path) -> str | None:
+    """The default ``created_by`` when none was explicitly given.
+
+    Inherit the caller only when the new session's project is the one the
+    caller is already running in — a cross-project spawn gets its own root
+    instead of flattening into the caller's subtree (#715). An explicit
+    --created-by always wins and never reaches this function.
+
+    Uses ``_live_session_cwd`` rather than ``_get_session_project_path`` —
+    the latter's session-name-guessing fallback isn't a safe basis for an
+    identity comparison (it doesn't understand the worktree-session naming
+    scheme, `{project}-{name}`, and would misjudge same/cross-project); if the
+    caller's real cwd can't be confirmed, treat it as unknown (no inheritance)
+    rather than risk a wrong guess.
+    """
+    if not caller:
+        return None
+    caller_path = _live_session_cwd(caller)
+    if caller_path is None:
+        return None
+    return caller if _same_project(caller_path, target_path) else None
 
 
 def tmux_session_has_agent(name: str) -> bool:

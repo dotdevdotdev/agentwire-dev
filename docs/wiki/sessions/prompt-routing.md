@@ -27,9 +27,16 @@ and never match — that's the loop guard.
 ## Parent resolution (precedence)
 
 1. **Worker pane** (index > 0) → pane 0 of the same session.
-2. **Creator**: `agentwire new` records the calling tmux session in
-   `~/.agentwire/sessions/{name}/metadata.json` (`--created-by` overrides,
-   `--created-by ''` opts out; `agentwire kill` removes it).
+2. **Creator**: `agentwire new` / `agentwire worktree` record the calling
+   tmux session in `~/.agentwire/sessions/{name}/metadata.json` — but only
+   by **default when the new session is in the caller's own project**
+   (same git repo, checked via `git rev-parse --git-common-dir` so it
+   survives linked worktrees); a worktree/session spawned into a genuinely
+   different project defaults to a standalone root instead of nesting under
+   the caller (#715). `--created-by <name>` forces a specific parent
+   regardless of project (e.g. for closely related projects); `--created-by
+   ''` forces standalone even within the same project. `agentwire kill`
+   removes a recorded creator.
 3. **`.agentwire.yml` `parent:`** field.
 4. None → human-only, unchanged.
 

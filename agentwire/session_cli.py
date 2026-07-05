@@ -34,6 +34,7 @@ from .core import (
     build_agent_command,
     load_config,
     parse_env_args,
+    resolve_default_created_by,
     tmux_session_exists,
 )
 from .project_config import (
@@ -479,11 +480,18 @@ def cmd_new(args) -> int:
         save_project_config(project_config, session_path)
 
     # Record the creating session as parent for prompt routing. --created-by
-    # overrides; empty string opts out; default = the calling tmux session.
-    # Resolved before seeding so a failed seed can name its sender.
+    # overrides (including '' to opt out); otherwise default to the caller
+    # ONLY when the new session is in the caller's own project — a
+    # cross-project spawn gets its own root instead of flattening into the
+    # caller's subtree (#715). --caller-session is the candidate caller for
+    # that check (MCP forwards it; direct CLI use falls back to the current
+    # tmux session). Resolved before seeding so a failed seed can name its
+    # sender.
     created_by = getattr(args, 'created_by', None)
+    caller = None
     if created_by is None:
-        created_by = pane_manager.get_current_session()
+        caller = getattr(args, 'caller_session', None) or pane_manager.get_current_session()
+        created_by = resolve_default_created_by(caller, session_path)
 
     # Deliver the first message once the agent is ready (verified paste).
     # Delivery failure doesn't fail the command — the session exists — but it
@@ -505,8 +513,12 @@ def cmd_new(args) -> int:
             and send_verified(session_name, first_message)
         )
         if not first_message_delivered:
+            # created_by can be None for a legitimate cross-project standalone
+            # spawn (#715) even though a real caller made the call — fall back
+            # to that caller for the recovery message's sender rather than the
+            # generic "agentwire" so the fallback attribution stays accurate.
             first_message_fallback = recover_failed_seed(
-                session_name, first_message, sender=created_by or "agentwire"
+                session_name, first_message, sender=created_by or caller or "agentwire"
             )
             if not json_mode:
                 if first_message_fallback == "inbox":
@@ -869,6 +881,7 @@ def cmd_worktree(args) -> int:
             'first_message': getattr(args, 'prompt', None),
             'env': getattr(args, 'env', None),
             'created_by': getattr(args, 'created_by', None),
+            'caller_session': getattr(args, 'caller_session', None),
         })())
 
     # If worktree already exists, reattach (and heal the registry entry).
@@ -1648,8 +1661,16 @@ def register_session_parser(subparsers) -> None:
     new_parser.add_argument("--first-message", dest="first_message",
                             help="After the agent boots, deliver this as its first message (verified; local sessions only)")
     new_parser.add_argument("--created-by", dest="created_by",
-                            help="Record this session as the creator/parent for prompt routing "
-                                 "(default: the calling tmux session; pass '' to opt out)")
+                            help="Force this session's recorded creator/parent for prompt routing, "
+                                 "overriding the default same-project-only inheritance below; pass "
+                                 "'' to force standalone (no parent) regardless of project")
+    new_parser.add_argument("--caller-session", dest="caller_session",
+                            help="Internal: candidate caller session for computing the default "
+                                 "--created-by — inherited only if this session's project matches "
+                                 "the caller's (#715); ignored when --created-by is given explicitly. "
+                                 "Default: the calling tmux session. MCP forwards this explicitly, "
+                                 "since the CLI subprocess can't reliably auto-detect the caller "
+                                 "across the MCP boundary.")
     new_parser.add_argument("--json", action="store_true", help="Output as JSON")
     new_parser.set_defaults(func=cmd_new)
 
@@ -1702,8 +1723,15 @@ def register_session_parser(subparsers) -> None:
     wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     wt_parser.add_argument("--created-by", dest="created_by",
-                           help="Record this session as the creator/parent for prompt routing "
-                                "(default: the calling tmux session; pass '' to opt out). "
-                                "MCP forwards the caller here so notify-parent resolves.")
+                           help="Force this session's recorded creator/parent for prompt routing, "
+                                "overriding the default same-project-only inheritance below; pass "
+                                "'' to force standalone (no parent) regardless of project")
+    wt_parser.add_argument("--caller-session", dest="caller_session",
+                           help="Internal: candidate caller session for computing the default "
+                                "--created-by — inherited only if this worktree's project matches "
+                                "the caller's (#715); ignored when --created-by is given explicitly. "
+                                "Default: the calling tmux session. MCP forwards this explicitly, "
+                                "since the CLI subprocess can't reliably auto-detect the caller "
+                                "across the MCP boundary.")
     wt_parser.add_argument("--json", action="store_true", help="Output as JSON")
     wt_parser.set_defaults(func=cmd_worktree)
