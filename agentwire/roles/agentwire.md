@@ -24,6 +24,8 @@ Sessions are tmux sessions running AI agents. You can create, message, and monit
 
 **Polite vs forceful.** Prefer `msg_send` for routine peer updates that must not interrupt — "PR drafted", "picking up the footer". It drops the message into a file inbox and the watchdog injects it only when the recipient's input box is empty (≤60s), so it **never clobbers a human's half-typed draft**. Reach for `session_send` **only** when you must drive a session right now — it pastes + Enter immediately, overwriting any uncommitted draft. `kind` ∈ note|done|request|escalation; `to="@all"` broadcasts to live agent sessions except you.
 
+**Parenting — subtask vs standalone project.** A session you create is recorded as your **child** by default: its permission/plan/AskUserQuestion prompts route back to you and it nests under you in the sidebar. That's correct when the new session is a **subtask of your own work**. If instead you're spawning a session for a **separate standalone project** you're only advising or delegating to, use `session_create(..., standalone=True)` (or CLI `agentwire new ... --created-by ''`) so its prompts route to the human instead of you. An already-spawned session can be detached after the fact by clearing `created_by` from `~/.agentwire/sessions/<name>/metadata.json`.
+
 ## Panes (Workers)
 
 Panes are sub-processes within your session. Pane 0 is you. Panes 1+ are workers.

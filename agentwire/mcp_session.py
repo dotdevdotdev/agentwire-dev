@@ -105,6 +105,7 @@ def session_create(
     session_type: str | None = None,
     base: str | None = None,
     pull_first: bool = True,
+    standalone: bool = False,
 ) -> str:
     """Create a new AgentWire session.
 
@@ -128,6 +129,13 @@ def session_create(
             default 'main'). Ignored for flat names.
         pull_first: Fetch origin/<base> before branching (worktree mode only,
             default True). Set False to branch off the local <base> as-is.
+        standalone: Set True when spawning a session in a SEPARATE standalone
+            project you're only advising or delegating to — not a subtask of
+            your own work. Skips recording you as its creator, so its prompts
+            (permission/plan/AskUserQuestion) route to the human instead of
+            back to you and it doesn't nest under you in the sidebar. Leave
+            False (default) for spawning your own subtasks — that's when
+            child parenting is correct.
 
     Returns:
         Success message or error description.
@@ -144,6 +152,8 @@ def session_create(
         args.extend(["--base", base])
     if not pull_first:
         args.append("--no-pull-first")
+    if standalone:
+        args.extend(["--created-by", ""])
 
     data = run_agentwire_cmd(args)
     if data.get("success"):

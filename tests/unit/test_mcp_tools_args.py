@@ -51,6 +51,22 @@ class TestSessionTools:
         assert args == ["new", "-s", "x", "-p", "/p", "--roles", "voice,worker", "--type", "bare"]
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
+    def test_session_create_standalone(self, mock_cmd):
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="x", standalone=True)
+        args = mock_cmd.call_args[0][0]
+        assert args == ["new", "-s", "x", "--created-by", ""]
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
+    def test_session_create_not_standalone_by_default(self, mock_cmd):
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="x")
+        args = mock_cmd.call_args[0][0]
+        assert "--created-by" not in args
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
     @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
     def test_session_send_cross_session(self, mock_caller, mock_cmd):
         from agentwire.mcp_session import session_send

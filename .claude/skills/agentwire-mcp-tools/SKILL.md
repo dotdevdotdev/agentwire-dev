@@ -32,7 +32,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 
 **Passive `ingest` messages (Briefing Mode):** `kind="ingest"` is **never auto-delivered** — it lands silently and waits until the recipient calls `msg_pull()`. Use it for "output ready" awareness signals that must NOT drive the recipient into a turn. Pair with `ref="<path>"` so the pointer is machine-readable. `msg_flush` forces a (still-gated) drain of the *driving* queue; it never touches passive messages.
 
-**Note:** `session_create` (via `agentwire new`) records the calling session as the new session's creator — interactive prompts (permission/plan/AskUserQuestion) in the child then route back to you as `[PROMPT from ...]` messages. Answer them with `agentwire prompts answer -s <session> --expect <hash> <key>` via Bash (guarded compare-and-send), NEVER with raw `session_send_keys` — a late keystroke races the portal and can type into the child's input or abort its turn.
+**Note:** `session_create` (via `agentwire new`) records the calling session as the new session's creator — interactive prompts (permission/plan/AskUserQuestion) in the child then route back to you as `[PROMPT from ...]` messages. Answer them with `agentwire prompts answer -s <session> --expect <hash> <key>` via Bash (guarded compare-and-send), NEVER with raw `session_send_keys` — a late keystroke races the portal and can type into the child's input or abort its turn. Spawning a session for a **separate standalone project** you're only advising, not your own subtask? Pass `session_create(..., standalone=True)` so its prompts route to the human instead of you.
 
 ## Pane Management (9 tools)
 
