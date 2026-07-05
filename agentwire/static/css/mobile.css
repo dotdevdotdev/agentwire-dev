@@ -7,19 +7,21 @@
     --spacing-base: 8px;
 
     --background: #000000;
-    --accent: #39ff14;
+    --accent: #00ff66;
     --text: #e2e8f0;
     --text-muted: #94a3b8;
     --chrome: #1a1a1a;
     --chrome-border: #2a2a2a;
-    --hover: rgba(57, 255, 20, 0.1);
-    --error: #f87171;
-    --primary-subtle: rgba(57, 255, 20, 0.3);
-    --primary-glow: rgba(57, 255, 20, 0.4);
+    --hover: rgba(0, 255, 102, 0.1);
+    --error: var(--neon-red);
+    --primary-subtle: rgba(0, 255, 102, 0.3);
+    --primary-glow: rgba(0, 255, 102, 0.4);
     --attention: #fbbf24;
     --attention-subtle: rgba(251, 191, 36, 0.12);
     --attention-glow: rgba(251, 191, 36, 0.25);
     --off: #4b5563;
+    --neon-red: #ff5449;
+    --neon-purple: #c06cf0;
 }
 
 * {
@@ -454,12 +456,12 @@ html, body {
 
 .mobile-ptt.recording {
     border-color: var(--error);
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(255, 84, 73, 0.12);
     animation: mobile-recording 1.2s ease-in-out infinite;
 }
 
 @keyframes mobile-recording {
-    50% { box-shadow: 0 0 0 8px rgba(248, 113, 113, 0.18); }
+    50% { box-shadow: 0 0 0 8px rgba(255, 84, 73, 0.18); }
 }
 
 .mobile-ptt.processing {
