@@ -762,12 +762,16 @@ PROTECTED_CONTROL_PLANE_PATHS = [
     # confused-deputy escape). Treat them as control plane (#466 lockdown).
     "~/.agentwire/scheduler.yaml",      # scheduler gate commands run via shell
     "~/.agentwire/config.yaml",         # service healthcheck commands run via shell
-    # Per-project task config: ``.agentwire.yml`` also defines task pre/post/gate
-    # commands. Protecting it closes the same escape, with an ergonomic tradeoff —
-    # under worktree dispatch the agent can no longer author its own task config,
-    # so task authoring becomes a host-side act (consistent with the control-plane
-    # guarantee: loosening is always host-side).
-    "*.agentwire.yml",                  # project session/task config (any dir)
+    # Per-project task-EXECUTION config (#720): split out of ``.agentwire.yml``,
+    # which is now purely declarative (type/roles/voice/parent/worktree) and
+    # agent-writable again — it carries no exec vector. ``.agentwire.tasks.yml``
+    # holds the ``tasks:`` block (pre/post/on_task_end/shell/unattended_allow),
+    # which agentwire runs the same way (confused-deputy risk above), so it
+    # stays protected. Authored via propose-and-promote: an agent drafts to the
+    # UNPROTECTED ``.agentwire.tasks.proposed.yml`` staging file; a human reviews
+    # (``agentwire tasks review``) and promotes (``agentwire tasks promote``) —
+    # the agent never writes the live file. See ``agentwire/tasks_cli.py``.
+    "*.agentwire.tasks.yml",            # project task-execution config (any dir)
 ]
 
 
@@ -787,12 +791,33 @@ def _protected_path_patterns() -> List[str]:
     return out
 
 
-def is_protected_control_plane(file_path: str) -> bool:
-    """True if ``file_path`` is part of the damage-control control plane."""
+def _matched_protected_pattern(file_path: str) -> Optional[str]:
+    """The protected-path pattern that matches ``file_path``, if any."""
     for pat in _protected_path_patterns():
         if match_path(file_path, pat):
-            return True
-    return False
+            return pat
+    return None
+
+
+def is_protected_control_plane(file_path: str) -> bool:
+    """True if ``file_path`` is part of the damage-control control plane."""
+    return _matched_protected_pattern(file_path) is not None
+
+
+def _protected_reason(matched_pattern: str) -> str:
+    """Block reason for a protected-control-plane hit, tailored to the path.
+
+    ``.agentwire.tasks.yml`` has a real, host-side remedy (propose-and-promote,
+    #720) — name it so the agent doesn't dead-end. Everything else keeps the
+    generic "edit on the host" message.
+    """
+    if matched_pattern.endswith(".agentwire.tasks.yml"):
+        return (
+            "protected task-execution control-plane file (host-owned) — draft "
+            "to .agentwire.tasks.proposed.yml instead, then ask the host to run "
+            "`agentwire tasks review` and `agentwire tasks promote`"
+        )
+    return "protected control-plane file (host-owned; edit on the host)"
 
 
 def check_protected_path(
@@ -804,10 +829,11 @@ def check_protected_path(
     Used by the edit/write hooks. The allowlist (a human opt-in) may override;
     nothing else does.
     """
-    if is_protected_control_plane(file_path):
+    matched = _matched_protected_pattern(file_path)
+    if matched:
         if is_path_allowed_for_op(file_path, allowed_paths, "edit"):
             return False, ""
-        return True, "protected control-plane file (host-owned; edit on the host)"
+        return True, _protected_reason(matched)
     return False, ""
 
 
@@ -837,7 +863,7 @@ def check_protected_command(
                 op = _infer_operation_from_reason(reason)
                 if is_command_path_allowed(command, allowed_paths, op):
                     break
-                return True, f"Protected control-plane path: {path}"
+                return True, _protected_reason(path)
     return False, ""
 
 

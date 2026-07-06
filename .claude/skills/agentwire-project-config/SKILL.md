@@ -1,11 +1,18 @@
 ---
 name: agentwire-project-config
-description: Reference for per-project `.agentwire.yml` — session type, roles, voice, parent, shell, safety allowlist; task schema with pre/prompt/post/output/branch-management fields and built-in variables; hierarchical idle notifications with worker summary files and queue processor; role system. Use when configuring a project for agentwire, wiring up scheduled tasks, defining worker/orchestrator relationships, or debugging task execution.
+description: Reference for per-project `.agentwire.yml` (declarative session type/roles/voice/parent/worktree, agent-writable) and the separate protected `.agentwire.tasks.yml` (pre/prompt/post/on_task_end/shell/branch-management task schema, authored via propose-and-promote); hierarchical idle notifications with worker summary files and queue processor; role system. Use when configuring a project for agentwire, wiring up scheduled tasks, defining worker/orchestrator relationships, or debugging task execution.
 ---
 
 # `.agentwire.yml` Project Config
 
 Each project can have a `.agentwire.yml` in its root directory. This configures session type, roles, voice, and parent for that project.
+
+**Split from task-execution config (#720).** `.agentwire.yml` is now PURELY
+declarative — `type`/`roles`/`voice`/`parent`/`worktree`, no execution vector —
+so it's agent-writable. Named `tasks:` (the code the scheduler actually runs
+via `shell=True`: `pre`/`post`/`on_task_end`/`shell`) live in a separate file,
+**`.agentwire.tasks.yml`**, which is protected control-plane. See
+[Task Schema](#task-schema-agentwiretasksyml) below for how to author it.
 
 ## Gitignore it (don't commit it)
 
@@ -14,9 +21,9 @@ Each project can have a `.agentwire.yml` in its root directory. This configures 
 1. **A tracked copy breaks worktree dispatch subtly.** Worktree-dispatched runs (scheduler tasks, worktree sessions) check out HEAD — if the file is tracked, uncommitted live edits are invisible to the run, which silently executes the stale committed version. The failure mode is confusing: the live file looks right, the run behaves wrong.
 2. **It's personal/live config, not project code.** Voice choices, email recipients, schedules, machine-specific roles — none of that belongs in a repo, especially a public one.
 
-Worktree runs still get the file: `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml"]`) copies gitignored configs from the main checkout into every new worktree as live files — the live file always wins, no drift.
+Worktree runs still get the file: `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml", ".agentwire.tasks.yml"]`) copies gitignored configs from the main checkout into every new worktree as live files — the live file always wins, no drift.
 
-AgentWire enforces this automatically: whenever it writes `.agentwire.yml` into a git repo (`agentwire projects create`, `agentwire new --persist`, portal project settings), it appends the file to the project's `.gitignore` unless it's already ignored — or already *tracked*. A tracked file is left alone: committing is a valid choice for teams that want shared, versioned task definitions, but they're opting into the HEAD-checkout behavior above — worktree runs use the committed version, never live edits. To switch an existing project to the recommended setup: `git rm --cached .agentwire.yml`, add it to `.gitignore`, commit.
+AgentWire enforces this automatically: whenever it writes `.agentwire.yml` into a git repo (`agentwire projects create`, `agentwire new --persist`, portal project settings), it appends the file to the project's `.gitignore` unless it's already ignored — or already *tracked*. A tracked file is left alone: committing is a valid choice for teams that want shared, versioned task definitions, but they're opting into the HEAD-checkout behavior above — worktree runs use the committed version, never live edits. To switch an existing project to the recommended setup: `git rm --cached .agentwire.yml`, add it to `.gitignore`, commit. `agentwire tasks promote` gitignores `.agentwire.tasks.yml` (via a `.agentwire.tasks*.yml` glob, covering the staging draft too) the same way, on first promote.
 
 **Format is FLAT (no nesting):**
 
@@ -43,9 +50,10 @@ session:
 | `roles` | List of role names | Roles to load (from bundled or `~/.agentwire/roles/`) |
 | `voice` | Voice name | TTS voice for this project |
 | `parent` | Session name | Parent session for hierarchical notifications |
-| `shell` | `/bin/sh`, `/bin/bash`, etc. | Default shell for task commands |
-| `tasks` | Task definitions | Scheduled workload configurations |
 | `worktree` | `dir` / `base` mapping | Per-project overrides for `agentwire worktree` (see below) |
+
+`shell`/`tasks` used to live here — they moved to the separate, protected
+`.agentwire.tasks.yml` (#720). See [Task Schema](#task-schema-agentwiretasksyml).
 
 For pi sessions (`pi-*`, e.g. `pi-zai`, `pi-deepseek`), see the `agentwire-pi` skill.
 
@@ -72,18 +80,43 @@ but don't fail.
 
 > **No safety config in `.agentwire.yml` (#466/#467).** `.agentwire.yml` is
 > agent-writable, so it carries **zero** damage-control policy. The kill switch,
-> `disabled_rules`, `unattended_allow`, **and the per-project `allowed_paths`
+> `disabled_rules`, `unattended_allow` defaults, **and the per-project `allowed_paths`
 > allowlist** all live in the protected, agent-unwritable `.damagecontrol.yml` at
 > the repo root (and global `~/.agentwire/damagecontrol.yml`) — edited host-side
 > only. The allowlist is the one knob that overrides the protected-control-plane
 > check, so it must itself sit behind that protection. See
 > [`docs/wiki/internals/damage-control.md`](../../docs/wiki/internals/damage-control.md).
 
-## Task Schema
+## Task Schema (`.agentwire.tasks.yml`)
 
-Tasks are defined in `.agentwire.yml` for use with `agentwire ensure`:
+Tasks are defined in the separate, **protected** `.agentwire.tasks.yml` for use
+with `agentwire ensure` (#720). It holds every field that's actually code the
+scheduler runs via `shell=True` — `shell`/`pre`/`post`/`on_task_end` —
+so it sits at the same damage-control tier as `.damagecontrol.yml`: a policed
+agent cannot write it directly with Edit/Write/Bash.
+
+**Authoring it — propose-and-promote** (mirrors the worktree → PR → review →
+merge model, because task defs ARE executable code):
+
+1. An agent drafts to the **unprotected** staging file
+   `.agentwire.tasks.proposed.yml` with its normal file tools.
+2. A human runs `agentwire tasks review [session]` — prints a diff against the
+   live file plus every shell-bearing field the draft would run, and any
+   validation issues.
+3. The human runs `agentwire tasks promote [session] [--yes]` — copies the
+   vetted draft into the live `.agentwire.tasks.yml` (agentwire itself,
+   host-trusted, does the write) and deletes the draft. Refuses without `--yes`
+   when there's no interactive terminal to confirm on.
+
+Both commands are **host-only by design**: they're not exposed as MCP tools
+(an MCP tool that shelled out to `promote` would bypass the Bash-tool
+protection entirely — see [Outbound MCP tool gating](../../docs/wiki/internals/damage-control.md#outbound-mcp-tool-gating-457)),
+and `agentwire tasks promote` is additionally hard-blocked as a Bash-tool
+pattern so an agent can't just run the CLI itself. Run `promote` from your own
+terminal, not by asking the agent to do it.
 
 ```yaml
+# .agentwire.tasks.yml
 shell: /bin/sh  # Project-level default shell
 
 tasks:

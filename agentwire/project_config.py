@@ -184,9 +184,14 @@ def _parse_worktree_overrides(data: Any) -> WorktreeOverrides:
 class ProjectConfig:
     """Project-level configuration for a project directory.
 
-    Lives in .agentwire.yml in the project root. Holds NO damage-control safety
-    config — the kill switch, rule knobs, AND the per-project allowlist all live
-    in the protected, agent-unwritable ``.damagecontrol.yml`` instead (#466/#467).
+    Lives in .agentwire.yml in the project root — PURELY declarative session
+    config (type/roles/voice/parent/worktree), no execution vector, agent-writable
+    (#720). Holds NO damage-control safety config — the kill switch, rule knobs,
+    AND the per-project allowlist all live in the protected, agent-unwritable
+    ``.damagecontrol.yml`` instead (#466/#467). Task definitions (pre/post/
+    on_task_end/shell — code the scheduler runs via shell=True) live in the
+    separate, protected ``.agentwire.tasks.yml`` instead (see ``tasks.py`` /
+    ``tasks_cli.py``) — never parsed here.
     Shared by all sessions running in this project folder.
     Session name is NOT stored here - it's runtime context from environment.
     """
@@ -194,8 +199,6 @@ class ProjectConfig:
     roles: list[str] = field(default_factory=list)  # Composable roles
     voice: Optional[str] = None  # TTS voice
     parent: Optional[str] = None  # Parent session for hierarchical notifications
-    shell: Optional[str] = None  # Default shell for task commands (default: /bin/sh)
-    tasks: dict[str, Any] = field(default_factory=dict)  # Task definitions (raw dict, parsed by tasks.py)
     worktree: WorktreeOverrides = field(default_factory=WorktreeOverrides)  # `agentwire worktree` overrides (#705)
 
     def to_dict(self) -> dict:
@@ -209,10 +212,6 @@ class ProjectConfig:
             d["voice"] = self.voice
         if self.parent:
             d["parent"] = self.parent
-        if self.shell:
-            d["shell"] = self.shell
-        if self.tasks:
-            d["tasks"] = self.tasks
         if self.worktree.dir or self.worktree.base:
             wt: dict[str, Any] = {}
             if self.worktree.dir:
@@ -229,16 +228,12 @@ class ProjectConfig:
         roles = data.get("roles", [])
         voice = data.get("voice")
         parent = data.get("parent")
-        shell = data.get("shell")
-        tasks = data.get("tasks", {})
 
         return cls(
             type=SessionType.from_str(type_value) if isinstance(type_value, str) else type_value,
             roles=roles if isinstance(roles, list) else [roles] if roles else [],
             voice=voice,
             parent=parent,
-            shell=shell,
-            tasks=tasks if isinstance(tasks, dict) else {},
             worktree=_parse_worktree_overrides(data.get("worktree")),
         )
 
@@ -331,22 +326,30 @@ def save_project_config(config: ProjectConfig, project_dir: Path) -> bool:
         return False
 
 
-def ensure_gitignored(project_dir: Path) -> bool:
-    """Ensure .agentwire.yml is gitignored in the project's repo.
+def ensure_gitignored(
+    project_dir: Path,
+    filename: str = ".agentwire.yml",
+    pattern: Optional[str] = None,
+) -> bool:
+    """Ensure ``filename`` is gitignored in the project's repo.
 
-    .agentwire.yml is personal/live config (voices, schedules, email
-    recipients), and a tracked copy breaks worktree dispatch: worktree runs
-    check out HEAD, so uncommitted live edits to a tracked file are silently
-    ignored. Worktree runs get the live file via projects.worktrees.copy_files
-    instead. A file that is already tracked is left alone — that's a
-    deliberate choice to share versioned config.
+    These files are personal/live config (voices, schedules, email recipients,
+    task shell commands), and a tracked copy breaks worktree dispatch: worktree
+    runs check out HEAD, so uncommitted live edits to a tracked file are
+    silently ignored. Worktree runs get the live file via
+    projects.worktrees.copy_files instead. A file that is already tracked is
+    left alone — that's a deliberate choice to share versioned config.
 
     Args:
-        project_dir: Project root (the directory containing .agentwire.yml)
+        project_dir: Project root (the directory containing ``filename``)
+        filename: The tracked/ignored status of THIS file gates the check.
+        pattern: The line appended to .gitignore (defaults to ``filename``;
+            pass a glob to also cover sibling files, e.g. a staging draft).
 
     Returns:
         True if .gitignore was modified, False otherwise.
     """
+    pattern = pattern or filename
     project_dir = Path(project_dir).resolve()
     try:
         in_repo = subprocess.run(
@@ -358,14 +361,14 @@ def ensure_gitignored(project_dir: Path) -> bool:
 
         # Already tracked = deliberate team choice; don't fight it
         tracked = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", ".agentwire.yml"],
+            ["git", "ls-files", "--error-unmatch", filename],
             cwd=project_dir, capture_output=True, timeout=10,
         )
         if tracked.returncode == 0:
             return False
 
         ignored = subprocess.run(
-            ["git", "check-ignore", "-q", ".agentwire.yml"],
+            ["git", "check-ignore", "-q", filename],
             cwd=project_dir, capture_output=True, timeout=10,
         )
         if ignored.returncode == 0:
@@ -375,7 +378,7 @@ def ensure_gitignored(project_dir: Path) -> bool:
         existing = gitignore.read_text() if gitignore.exists() else ""
         prefix = "" if not existing or existing.endswith("\n") else "\n"
         with open(gitignore, "a") as f:
-            f.write(f"{prefix}# AgentWire personal config — keep untracked (worktree dispatch + privacy)\n.agentwire.yml\n")
+            f.write(f"{prefix}# AgentWire personal config — keep untracked (worktree dispatch + privacy)\n{pattern}\n")
         return True
     except Exception:
         return False

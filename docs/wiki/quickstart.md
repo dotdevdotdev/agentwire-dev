@@ -146,12 +146,16 @@ needs `server.host: 0.0.0.0` + certs + the portal token (see SECURITY.md).
 
 ## 4. Your first scheduled task
 
-Define a task in `~/projects/hello/.agentwire.yml` (gitignored — see §2):
+Set the session config in `~/projects/hello/.agentwire.yml` (gitignored — see §2):
 
 ```yaml
 type: claude-auto      # safer than claude-bypass for unattended work
 roles: [task-runner]
+```
 
+Then define the task itself in the separate, protected `~/projects/hello/.agentwire.tasks.yml` — see the `agentwire-project-config` skill for the propose-and-promote authoring flow:
+
+```yaml
 tasks:
   hello-task:
     prompt: |

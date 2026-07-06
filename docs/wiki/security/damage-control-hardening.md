@@ -19,10 +19,18 @@ landed and are summarized here afterward. Credit: internal security review.
    configs whose strings agentwire runs through its **own**
    `subprocess.run(..., shell=True)` calls — `~/.agentwire/scheduler.yaml`
    (gate commands), `~/.agentwire/config.yaml` (service healthchecks), and
-   per-project `.agentwire.yml` (task commands). Those subprocesses never
-   traverse the Claude Code hook, so write-access to them was a confused-deputy
-   path to unguarded execution. Tradeoff: under worktree dispatch, task config
-   is now authored host-side.
+   per-project task commands. Those subprocesses never traverse the Claude
+   Code hook, so write-access to them was a confused-deputy path to unguarded
+   execution. Tradeoff: under worktree dispatch, task config is now authored
+   host-side.
+   > **Update (#720, 2026-07):** per-project task commands were split out of
+   > `.agentwire.yml` into a separate protected file, `.agentwire.tasks.yml` —
+   > `.agentwire.yml` itself is now purely declarative (type/roles/voice/
+   > parent/worktree) and agent-writable again. The "authored host-side"
+   > tradeoff above is softened by a propose-and-promote flow (`agentwire tasks
+   > review` / `agentwire tasks promote`): an agent still drafts the task
+   > definitions, a human just has to promote them. See
+   > [Damage control § Task-execution config split](../internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720).
 
 2. **Tilde / `$HOME` canonicalization.** Commands are canonicalized (`~`,
    `$HOME`, `${HOME}` expanded) before path matching, so a home-relative

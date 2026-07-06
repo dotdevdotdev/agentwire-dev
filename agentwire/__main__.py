@@ -187,7 +187,7 @@ Command Categories:
     from . import diff_cli, limits_cli, msg_cli, pane_cli, prompts_cli, send_cli  # noqa: I001  # session_cli kept on its own line below to minimize Phase 1 #495 merge conflicts
     from . import session_cli
     from . import channels_cli, config_cli, portal_cli, tts_cli
-    from . import scheduler_cli, ensure_cli
+    from . import scheduler_cli, ensure_cli, tasks_cli
     from . import doctor_cli, history_cli, machine_cli, safety_cli
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
     from . import notify_cli, palette_cli, push_cli, repo_cli, system_cli, wiki_cli
@@ -207,6 +207,7 @@ Command Categories:
         channels_cli.register_channels_parser,
         scheduler_cli.register_scheduler_parser,
         ensure_cli.register_ensure_parser,
+        tasks_cli.register_tasks_parser,
         doctor_cli.register_doctor_parser,
         safety_cli.register_safety_parser,
         machine_cli.register_machine_parser,

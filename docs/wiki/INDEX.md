@@ -42,7 +42,7 @@ How sessions talk to humans and external platforms.
 
 Headless and scheduled execution.
 
-- **[Scheduled workloads](scheduling/scheduled-workloads.md)** — `agentwire ensure`, `.agentwire.yml` task schema
+- **[Scheduled workloads](scheduling/scheduled-workloads.md)** — `agentwire ensure`, `.agentwire.tasks.yml` task schema
 - **[Usage-limit recovery](usage-limit-recovery.md)** — deterministic detect → park → email → auto-resume for the Claude Code usage-limit dialog; launchd watchdog, zero LLM involvement
 
 ## Security
@@ -105,7 +105,7 @@ Agent-facing reference lives in `.claude/skills/` and loads automatically inside
 | `agentwire-cli` | Composing `agentwire ...` shell commands |
 | `agentwire-mcp-tools` | Picking the right MCP tool inside a session |
 | `agentwire-config` | Editing `~/.agentwire/config.yaml` |
-| `agentwire-project-config` | Editing `.agentwire.yml`, defining tasks/roles |
+| `agentwire-project-config` | Editing `.agentwire.yml` (roles/session config) + `.agentwire.tasks.yml` (tasks) |
 | `agentwire-scheduler` | Scheduled tasks, gates |
 | `agentwire-desktop-ui` | Editing portal static files |
 | `agentwire-pi` | Pi sessions for any provider (zai, deepseek, openai, …) |

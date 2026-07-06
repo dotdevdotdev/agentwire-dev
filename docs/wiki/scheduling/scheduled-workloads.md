@@ -10,8 +10,8 @@ Reliable headless task execution for unattended and automated agent workflows.
 
 Two paths for running scheduled work, picked per task:
 
-1. **`agentwire ensure` tasks** — Reliable session management + task execution with lifecycle hooks. A full Claude Code session runs a single prompt from `.agentwire.yml`. Best for multi-step agent work that needs its own branch / PR / MCP tools.
-2. **Tasks in `.agentwire.yml`** — Named tasks with pre/prompt/post phases and branch management — the substrate for path #1.
+1. **`agentwire ensure` tasks** — Reliable session management + task execution with lifecycle hooks. A full Claude Code session runs a single prompt from `.agentwire.tasks.yml`. Best for multi-step agent work that needs its own branch / PR / MCP tools.
+2. **Tasks in `.agentwire.tasks.yml`** — Named tasks with pre/prompt/post phases and branch management — the substrate for path #1.
 
 Both are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire scheduler daemon.
 
@@ -19,12 +19,19 @@ Both are orchestrated by `~/.agentwire/scheduler.yaml` and the AgentWire schedul
 
 ## Task Definition Schema
 
-Define tasks in `.agentwire.yml` — **keep that file gitignored**. Worktree-dispatched runs check out HEAD, so if the file is tracked, uncommitted live edits to a task prompt are silently ignored and the run executes the stale committed version. Gitignored, the live file is seeded into every worktree via `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml"]`) and always wins. See the `agentwire-project-config` skill.
+Define tasks in `.agentwire.tasks.yml` (a sibling of `.agentwire.yml`, split out in #720) — **keep that file gitignored**. Worktree-dispatched runs check out HEAD, so if the file is tracked, uncommitted live edits to a task prompt are silently ignored and the run executes the stale committed version. Gitignored, the live file is seeded into every worktree via `projects.worktrees.copy_files` (default `[".env", ".agentwire.yml", ".agentwire.tasks.yml"]`) and always wins. See the `agentwire-project-config` skill.
+
+`.agentwire.tasks.yml` is **protected control-plane** — a policed agent can't write it directly. Authoring it is propose-and-promote: draft to `.agentwire.tasks.proposed.yml`, then a human runs `agentwire tasks review` and `agentwire tasks promote`. See [Damage control](../internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720).
 
 ```yaml
+# .agentwire.yml — declarative session config
 type: claude-auto    # Recommended for unattended work — see claude-auto below
 roles:
   - task-runner
+```
+
+```yaml
+# .agentwire.tasks.yml — task-execution config
 shell: /bin/sh       # Default shell for task commands
 
 tasks:
@@ -327,7 +334,10 @@ See `../sessions/claude-code-auto-mode.md` for full setup, allow rule configurat
 type: claude-auto
 roles:
   - task-runner
+```
 
+```yaml
+# ~/projects/piinpoint/.agentwire.tasks.yml
 tasks:
   write-tests:
     prompt: "Write missing unit tests for recent changes in the payments module. Focus on edge cases."

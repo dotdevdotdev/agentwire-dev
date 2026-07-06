@@ -8,6 +8,7 @@ path. Loosening is always a human, host-side act.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ from agentwire.safety._core import (
     check_path,
     is_protected_control_plane,
     load_allowed_paths,
+    load_config,
     load_safety_config,
 )
 from agentwire.safety_commands import load_patterns
@@ -32,13 +34,29 @@ CONTROL_PLANE_FILES = [
     # — these never traverse the Claude Code hook, so they are control plane too.
     os.path.expanduser("~/.agentwire/scheduler.yaml"),
     os.path.expanduser("~/.agentwire/config.yaml"),
-    "/some/repo/.agentwire.yml",
+    # Per-project task-execution config (#720) — NOT .agentwire.yml, which was
+    # split out and is agent-writable again (see test_agentwire_yml_is_no_longer_protected).
+    "/some/repo/.agentwire.tasks.yml",
 ]
 
 
 @pytest.fixture
 def cfg():
     c = load_patterns()
+    c["safety"] = {"enabled": True, "disabled_rules": []}
+    return c
+
+
+# Bundled rules loaded straight from the repo (not `safety_commands.load_patterns()`,
+# which prefers a live `~/.agentwire/damage-control/` override if the host happens
+# to have one installed) — so the `agentwire tasks promote` block below tests THIS
+# repo's rule, deterministically, regardless of the machine it runs on.
+_DC_RULES = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control" / "rules"
+
+
+@pytest.fixture
+def bundled_cfg():
+    c = load_config(_DC_RULES)
     c["safety"] = {"enabled": True, "disabled_rules": []}
     return c
 
@@ -60,12 +78,64 @@ def test_unrelated_file_is_not_protected():
     assert is_protected_control_plane(os.path.expanduser("~/projects/foo/app/config.yaml")) is False
 
 
+def test_agentwire_yml_is_no_longer_protected():
+    """#720: .agentwire.yml was split out — it's pure declarative session config
+    (type/roles/voice/parent/worktree) now, agent-writable again."""
+    assert is_protected_control_plane("/some/repo/.agentwire.yml") is False
+
+
+def test_agentwire_tasks_proposed_yml_is_not_protected():
+    """The unprotected staging file an agent drafts to (#720 propose-and-promote)."""
+    assert is_protected_control_plane("/some/repo/.agentwire.tasks.proposed.yml") is False
+
+
 BASH_EXECUTION_PLANE_WRITES = [
     "echo 'x' > ~/.agentwire/scheduler.yaml",
     "echo 'x' > ~/.agentwire/config.yaml",
-    "echo 'x' > .agentwire.yml",
+    "echo 'x' > .agentwire.tasks.yml",
     "sed -i 's/a/b/' ~/.agentwire/scheduler.yaml",
 ]
+
+# #720: .agentwire.yml carries no execution vector anymore — writes to it must
+# succeed (not be blocked as control plane), while the split-out task-exec
+# file and staging draft behave as expected.
+BASH_AGENTWIRE_YML_WRITES_ALLOWED = [
+    "echo 'roles: [agentwire]' > .agentwire.yml",
+    "echo 'roles: [agentwire]' >> /some/repo/.agentwire.yml",
+]
+
+BASH_PROPOSED_TASKS_WRITES_ALLOWED = [
+    "echo 'tasks: {}' > .agentwire.tasks.proposed.yml",
+]
+
+
+@pytest.mark.parametrize("command", BASH_AGENTWIRE_YML_WRITES_ALLOWED)
+def test_bash_write_to_agentwire_yml_not_blocked(cfg, command):
+    result = check_command(command, cfg)
+    assert result.get("protected") is not True
+    assert result["decision"] != "block"
+
+
+@pytest.mark.parametrize("command", BASH_PROPOSED_TASKS_WRITES_ALLOWED)
+def test_bash_write_to_proposed_tasks_not_blocked(cfg, command):
+    result = check_command(command, cfg)
+    assert result.get("protected") is not True
+    assert result["decision"] != "block"
+
+
+def test_agentwire_tasks_promote_is_hard_blocked_for_agent(bundled_cfg):
+    """The propose-and-promote CLI escape (#720): an agent must not be able to
+    just run `agentwire tasks promote` itself from its Bash tool — that would
+    write the protected file on the agent's behalf (confused-deputy)."""
+    result = check_command("agentwire tasks promote", bundled_cfg)
+    assert result["decision"] == "block"
+
+
+def test_agentwire_tasks_review_is_not_blocked(bundled_cfg):
+    """`review` is read-only — no reason to block the agent from checking its
+    own draft before asking a human to promote it."""
+    result = check_command("agentwire tasks review", bundled_cfg)
+    assert result["decision"] != "block"
 
 
 @pytest.mark.parametrize("command", BASH_EXECUTION_PLANE_WRITES)
@@ -112,31 +182,31 @@ BASH_WRITES = [
     "rm ~/.agentwire/damage-control/core.yaml",
     "sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py",
     "echo 'enabled: false' > .damagecontrol.yml",
-    # #678 — absolute-path targets: basename globs (*.agentwire.yml) must
+    # #678 — absolute-path targets: basename globs (*.agentwire.tasks.yml) must
     # match through a directory prefix, not just the bare relative form.
-    "echo x >> /some/repo/.agentwire.yml",
-    "echo x > /some/repo/.agentwire.yml",
-    'sed -i "s/a/b/" /some/repo/.agentwire.yml',
-    "cp /tmp/x /some/repo/.agentwire.yml",
-    "mv /tmp/x /some/repo/.agentwire.yml",
-    'tee "/some/repo/.agentwire.yml" < /tmp/x',
+    "echo x >> /some/repo/.agentwire.tasks.yml",
+    "echo x > /some/repo/.agentwire.tasks.yml",
+    'sed -i "s/a/b/" /some/repo/.agentwire.tasks.yml',
+    "cp /tmp/x /some/repo/.agentwire.tasks.yml",
+    "mv /tmp/x /some/repo/.agentwire.tasks.yml",
+    'tee "/some/repo/.agentwire.tasks.yml" < /tmp/x',
     # #678 — interpreter programs are opaque; fail closed when an inline/
     # stdin/piped interpreter invocation mentions a protected path.
-    "python3 -c 'open(\".agentwire.yml\", \"w\").write(\"x\")'",
-    "python3 -c 'open(\"/some/repo/.agentwire.yml\", \"a\").write(\"x\")'",
-    "perl -e 'open(F, \">\", \".agentwire.yml\")'",
-    "python3 - <<'EOF'\nopen('/some/repo/.agentwire.yml', 'w').write('x')\nEOF",
-    "echo 'open(\".agentwire.yml\",\"w\")' | python3",
+    "python3 -c 'open(\".agentwire.tasks.yml\", \"w\").write(\"x\")'",
+    "python3 -c 'open(\"/some/repo/.agentwire.tasks.yml\", \"a\").write(\"x\")'",
+    "perl -e 'open(F, \">\", \".agentwire.tasks.yml\")'",
+    "python3 - <<'EOF'\nopen('/some/repo/.agentwire.tasks.yml', 'w').write('x')\nEOF",
+    "echo 'open(\".agentwire.tasks.yml\",\"w\")' | python3",
 ]
 
 # Write-shaped-looking but innocent: mentioning the filename in quoted
 # CONTENT (an issue body, a commit message) must NOT block (#675 posture),
 # and plain reads stay allowed.
 BASH_INNOCENT = [
-    'gh issue create --title "bug" --body "edit your .agentwire.yml to fix"',
-    'git commit -m "docs: mention .agentwire.yml"',
-    "cat .agentwire.yml",
-    "grep roles /some/repo/.agentwire.yml",
+    'gh issue create --title "bug" --body "edit your .agentwire.tasks.yml to fix"',
+    'git commit -m "docs: mention .agentwire.tasks.yml"',
+    "cat .agentwire.tasks.yml",
+    "grep roles /some/repo/.agentwire.tasks.yml",
     "python3 -m pytest tests/unit",
 ]
 
