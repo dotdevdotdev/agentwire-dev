@@ -6,6 +6,7 @@
  */
 
 import { scratchpad } from './scratchpad.js';
+import { armDeadKeySuppressor } from './dead-key-suppressor.js';
 
 const PIN_KEY = 'sidebar-pinned';
 
@@ -35,17 +36,27 @@ export const sidebar = {
             this.close();
         });
 
-        // ESC closes (unless pinned). Cmd/Ctrl + ` toggles.
+        // ESC closes (unless pinned).
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && this.isOpen() && !this.isPinned()) {
                 this.close();
-                return;
-            }
-            if ((e.metaKey || e.ctrlKey) && (e.key === '`' || e.code === 'Backquote')) {
-                e.preventDefault();
-                this.toggle();
             }
         });
+
+        // Option/Alt + ` toggles. Capture phase on window + stopPropagation so
+        // xterm's <textarea> never sees the keystroke; arm the shared dead-key
+        // suppressor so the grave-accent composition (Option+` on macOS) never
+        // leaks into the focused terminal. Mirrors desktop.js setupCollage's
+        // alt-backquote idiom — e.code (not e.key) because the macOS dead key
+        // makes e.key 'Dead', never a backtick.
+        window.addEventListener('keydown', (e) => {
+            if (!(e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'Backquote')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.repeat) return;  // ignore auto-repeat while the key is held
+            armDeadKeySuppressor();
+            this.toggle();
+        }, true);
 
         // Pin toggle
         this.pinBtn?.addEventListener('click', (e) => {

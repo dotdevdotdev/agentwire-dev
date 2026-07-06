@@ -51,8 +51,3 @@ export function armDeadKeySuppressor(ms = 700) {
         requestAnimationFrame(() => ae.focus());
     }
 }
-
-/** Cancel an arm() — for hotkeys that turned out to be no-ops. */
-export function disarmDeadKeySuppressor() {
-    suppressUntil = 0;
-}

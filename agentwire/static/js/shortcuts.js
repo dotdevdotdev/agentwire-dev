@@ -39,7 +39,7 @@ export const SHORTCUT_GROUPS = [
         items: [
             { combo: ['Mod', 'K'], desc: 'Open the command palette', where: 'desktop.js setupCommandPalette' },
             { combo: ['F1'], alt: ['?'], desc: 'Show this help', where: 'help-modal.js setupHelp' },
-            { combo: ['Mod', '`'], desc: 'Toggle the sidebar', where: 'sidebar.js' },
+            { combo: ['Alt', '`'], desc: 'Toggle the sidebar', where: 'sidebar.js' },
             { combo: ['Esc'], desc: 'Close the open modal, palette, collage, or sidebar', where: 'various' },
         ],
     },
@@ -53,7 +53,7 @@ export const SHORTCUT_GROUPS = [
         title: 'Windows',
         items: [
             { combo: ['Alt', ']'], alt: ['Alt', '['], desc: 'Cycle to the next / previous window (Tab always goes to the terminal)', where: 'desktop.js setupWindowCycling' },
-            { combo: ['F3'], alt: ['Alt', '`'], desc: 'Window collage — Mission-Control grid of all windows', where: 'desktop.js setupCollage' },
+            { combo: ['F3'], desc: 'Window collage — Mission-Control grid of all windows', where: 'desktop.js setupCollage' },
         ],
     },
     {
