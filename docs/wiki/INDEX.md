@@ -20,7 +20,7 @@ New to AgentWire? Start here:
 
 How AgentWire runs AI agents — session types, REPLs, and permission models.
 
-- **[Worktree sessions](sessions/worktree-sessions.md)** — `agentwire worktree <name>`: isolated branch + worktree + standalone session for one unit of work; repo-derived base branch, naming templates, monorepo support, local branch↔session registry (`--list`/`--remove`/`--prune`)
+- **[Worktree sessions](sessions/worktree-sessions.md)** — `agentwire worktree <name>`: isolated branch + worktree + standalone session for one unit of work; repo-derived base branch, naming templates, monorepo support, local branch↔session registry (`--list`/`--remove`/`--prune`/`--dangling`); `--kind orchestrator` / `agentwire orchestrator` for a durable project window on the same topology (role⟂topology, #716)
 - **[claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — Auto mode session type with classifier safety net
 - **[pi](sessions/pi.md)** — Pi coding agent (multi-provider: zai, deepseek, openai, openrouter, …)
 - **[Window sizing](sessions/window-sizing.md)** — how tmux `window-size` policies interact with the portal (v1.33+ behavior change, healing stuck windows, policy picker)

@@ -2,8 +2,9 @@
 
 ``doctor`` walks the full install (Python/deps, hooks, skills, damage control,
 source-checkout drift, services, config, SSH/tunnels, voice loop, secrets,
-remote machines, dead-lettered messages) and optionally auto-fixes the local
-ones. ``network status`` is the read-only network-health glance.
+remote machines, dead-lettered messages, dangling worktree sessions) and
+optionally auto-fixes the local ones. ``network status`` is the read-only
+network-health glance.
 
 The hook/skill drift helpers (``get_hooks_source``, ``_managed_hook_files``,
 ``_managed_file_state``, ``skill_drift``, ``CLAUDE_SKILLS_DIR``) are owned by
@@ -868,6 +869,26 @@ def cmd_doctor(args) -> int:
                 print("  [ok] No dead-lettered done/escalation messages found (any dead-letters are informational)")
     except Exception as e:
         print(f"  [..] Could not check dead-lettered messages: {e}")
+
+    # 11. Check for dangling worktree sessions (live, open PR, no live parent
+    # to review/merge it — #716's concrete failure mode: a rootless-but-
+    # still-subordinate session that correctly refuses to self-merge).
+    print("\nChecking for dangling worktree sessions...")
+    try:
+        from . import worktree_registry
+        from .session_cli import scan_dangling_worktrees
+
+        dangling = scan_dangling_worktrees(worktree_registry.all_entries())
+        if not dangling:
+            print("  [ok] No dangling worktree sessions found")
+        else:
+            issues_found += 1
+            print(f"  [!!] {len(dangling)} live worktree session(s) with an open PR and no live parent:")
+            for d in dangling:
+                print(f"       - {d['session']} branch={d['branch']} {d.get('pr_url', '')} ({d['reason']})")
+            print("       Assign a parent (agentwire msg send / --created-by) or merge/close the PR yourself.")
+    except Exception as e:
+        print(f"  [..] Could not check for dangling worktree sessions: {e}")
 
     # Summary
     print()

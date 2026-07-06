@@ -236,9 +236,12 @@ worktree:                         # `agentwire worktree <name>` orchestration (W
                                   # templated; the tmux session name stays {project}-{name}.
 
 session:
-  # No global default-role: a session's etiquette is derived from its spawn
-  # verb (new → orchestrator, worktree → worktree-session, spawn → worker),
-  # then any --roles / .agentwire.yml roles: replace it. See resolve_roles.
+  # No global default-role: a session's ROLE is derived from its spawn verb
+  # (new → orchestrator or worker depending on branch, worktree → worker by
+  # default, spawn → worker), then any --roles / .agentwire.yml roles: stack
+  # on (worker) or replace (orchestrator) it. TOPOLOGY (worktree vs pane/main)
+  # separately picks WHICH worker etiquette file (worker-worktree vs worker).
+  # See resolve_roles.
   inject_soul: true          # Append the bundled 'soul' personality role to every human-facing
                              # session (appended last for recency weight). Headless roles
                              # (worker, task-runner, notifications) and soul/soul-* sessions

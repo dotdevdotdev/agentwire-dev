@@ -20,8 +20,9 @@ from pathlib import Path
 
 from . import chrome_tabs, pane_manager, services, worktree_registry
 from .core import (
-    KIND_DEFAULT_POSTURE,
     _check_tmux_installed,
+    _default_posture,
+    _display_parent,
     _get_machine_config,
     _graceful_kill,
     _launch_tmux_session,
@@ -80,7 +81,10 @@ def cmd_session_defaults(args) -> int:
     kind = getattr(args, 'kind', None) or 'orchestrator'
     posture = getattr(args, 'posture', None)
     harness = getattr(args, 'harness', None)
-    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
+    # No topology signal on this preview endpoint (only --kind); previews the
+    # pane/main-topology flavor for kind=worker. The frontend only ever asks
+    # for kind=orchestrator today, where topology doesn't affect the result.
+    default_posture = _default_posture(kind)
     try:
         session_type = compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture)
     except ValueError as e:
@@ -148,14 +152,23 @@ def cmd_new(args) -> int:
     project, branch, machine_id = parse_session_name(name)
 
     # --- Role resolution (two distinct phases) -----------------------------
-    # Phase 1 — resolve. The session KIND is derived from the spawn verb:
-    # cmd_worktree passes kind="worktree-session" explicitly; for `new` we
+    # Phase 1 — resolve. The session's ROLE is derived from the spawn verb:
+    # cmd_worktree passes an explicit kind (default "worker"); for `new` we
     # derive it — a project/branch name (or any worktree dispatch from the
-    # scheduler / portal) IS a worktree-session, a plain name is an
-    # orchestrator. Safety-rail kinds (worker, worktree-session) STACK their
-    # intrinsic etiquette under user roles; orchestrator is a replaceable
-    # persona. All precedence lives in resolve_roles — one greppable function.
+    # scheduler / portal) is a worker on worktree topology, a plain name is
+    # an orchestrator. The safety-rail kind (worker) STACKS its intrinsic
+    # etiquette under user roles — which etiquette file depends on topology
+    # (worktree_topology below); orchestrator is a replaceable persona. All
+    # precedence lives in resolve_roles — one greppable function.
     kind = derive_session_kind(bool(branch), getattr(args, 'kind', None))
+    # cmd_worktree/_launch_session passes an explicit worktree_topology=True —
+    # it MUST NOT be re-derived from bool(branch) here, since its session_name
+    # is a flat `{project}-{name}` (no slash), which parse_session_name would
+    # otherwise misread as branchless. A direct `agentwire new -s proj/branch`
+    # has no such override, so bool(branch) is the right signal for it.
+    worktree_topology = getattr(args, 'worktree_topology', None)
+    if worktree_topology is None:
+        worktree_topology = bool(branch)
     roles_arg = getattr(args, 'roles', None)
     cli_roles = [r.strip() for r in roles_arg.split(",") if r.strip()] if roles_arg else None
 
@@ -166,7 +179,7 @@ def cmd_new(args) -> int:
         if existing and existing.roles:
             project_roles = existing.roles
 
-    role_names = resolve_roles(kind, cli_roles=cli_roles, project_roles=project_roles)
+    role_names = resolve_roles(kind, worktree_topology=worktree_topology, cli_roles=cli_roles, project_roles=project_roles)
 
     # Phase 2 — auto-append: the soul personality role rides last (recency
     # weight). Kept visibly separate from resolution above.
@@ -263,7 +276,7 @@ def cmd_new(args) -> int:
                 return _output_result(False, json_mode, f"Session '{session_name}' already exists on {machine_id}. Use -f to replace.")
 
         # Create remote tmux session — resolve posture × harness (shared core)
-        session_type, st_err = _resolve_session_type_from_args(args, kind)
+        session_type, st_err = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
         if st_err:
             return _output_result(False, json_mode, st_err)
 
@@ -433,7 +446,7 @@ def cmd_new(args) -> int:
         or getattr(args, 'prompted', False)
     )
     if type_explicit:
-        session_type, st_err = _resolve_session_type_from_args(args, kind)
+        session_type, st_err = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
         if st_err:
             return _output_result(False, json_mode, st_err)
     else:
@@ -442,7 +455,7 @@ def cmd_new(args) -> int:
             session_type = normalize_session_type(existing_config.type.value, agent_type)
         else:
             # Kind default posture × claude (no global default-role lookup).
-            session_type, _ = _resolve_session_type_from_args(args, kind)
+            session_type, _ = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
 
     # Build agent command
     model_override = getattr(args, 'model', None)
@@ -488,9 +501,22 @@ def cmd_new(args) -> int:
     # that check (MCP forwards it; direct CLI use falls back to the current
     # tmux session). Resolved before seeding so a failed seed can name its
     # sender.
+    #
+    # Joint default with role (#716): an EXPLICITLY requested orchestrator
+    # roots by default instead — a durable orchestrator shouldn't answer to
+    # whoever happened to spawn it. Gated on the explicit --kind flag (not
+    # the resolved `kind`, which is "orchestrator" by default for any
+    # branchless name) so the ubiquitous plain `agentwire new` case keeps
+    # its existing same-project-inherit behavior untouched. This is the one
+    # place this default lives — cmd_worktree's `_launch_session` forwards
+    # its own `--kind` straight through as `kind` here, so `agentwire
+    # worktree --kind orchestrator` / `agentwire orchestrator` compose with
+    # it for free.
     created_by = getattr(args, 'created_by', None)
     caller = None
-    if created_by is None:
+    if created_by is None and getattr(args, 'kind', None) == 'orchestrator':
+        created_by = ''
+    elif created_by is None:
         caller = getattr(args, 'caller_session', None) or pane_manager.get_current_session()
         created_by = resolve_default_created_by(caller, session_path)
 
@@ -558,6 +584,17 @@ def cmd_new(args) -> int:
 
     _notify_portal_sessions_changed()
     return 0
+
+
+def _resolve_and_soul_worktree_roles(has_branch: bool, project_roles: list[str] | None = None) -> list[str]:
+    """Shared by cmd_recreate/cmd_fork (5 call sites): derive kind from
+    branch presence, resolve the topology-aware intrinsic etiquette, then
+    append soul — the same two-phase resolve/soul sequence cmd_new uses.
+    Neither command accepts --roles, so cli_roles is never a factor here.
+    """
+    kind = derive_session_kind(has_branch)
+    role_names = resolve_roles(kind, worktree_topology=has_branch, project_roles=project_roles)
+    return inject_soul(role_names, load_config())
 
 
 def cmd_recreate(args) -> int:
@@ -643,13 +680,11 @@ def cmd_recreate(args) -> int:
             session_type_str = f"{agent_type}-bypass"
 
         # Inject the kind's intrinsic etiquette — a remote project/branch
-        # recreate is still a worktree-session and must carry the safety
-        # contract. The remote project_config isn't readable here, so we
-        # resolve from the derived kind alone; the bundled etiquette roles
+        # recreate is still a worker on worktree topology and must carry the
+        # safety contract. The remote project_config isn't readable here, so
+        # we resolve from the derived kind alone; the bundled etiquette roles
         # resolve locally and are baked into the agent command.
-        kind = derive_session_kind(bool(branch))
-        role_names = resolve_roles(kind)
-        role_names = inject_soul(role_names, load_config())
+        role_names = _resolve_and_soul_worktree_roles(bool(branch))
         roles = None
         if role_names:
             roles, _ = load_roles(role_names)
@@ -743,13 +778,11 @@ def cmd_recreate(args) -> int:
 
     # Route through resolve_roles with a derived kind so the recreated session
     # carries its kind's intrinsic etiquette — recreating a project/branch
-    # (worktree) session re-injects the worktree-session safety contract
+    # (worktree) session re-injects the worker-worktree safety contract
     # (isolation / verify / draft-PR / notify), which a raw project_config.roles
     # copy would silently drop. Same contract as cmd_new/cmd_worktree.
-    kind = derive_session_kind(bool(branch))
     project_roles = list(project_config.roles) if project_config and project_config.roles else None
-    role_names = resolve_roles(kind, project_roles=project_roles)
-    role_names = inject_soul(role_names, load_config())
+    role_names = _resolve_and_soul_worktree_roles(bool(branch), project_roles=project_roles)
     roles = None
     if role_names:
         roles, _ = load_roles(role_names, session_path)
@@ -789,12 +822,18 @@ def cmd_worktree(args) -> int:
 
     If the worktree already exists, reattaches to the existing session.
 
-    The session's KIND is "worktree-session" — a safety-rail kind. Its
-    intrinsic etiquette (isolation, no live-tool mutation, in-worktree
-    verification, draft-PR + notify-back) is auto-injected by resolve_roles
-    for every dispatch and is non-overridable: it's always present, no
-    opt-out, no templating. `--roles` / `.agentwire.yml roles:` ADD to it,
-    they never replace it.
+    ROLE and TOPOLOGY are independent axes — this verb picks worktree
+    topology; role defaults to "worker" (--kind orchestrator overrides it,
+    for a durable branch-pinned project window — see the `orchestrator`
+    sugar verb). Kind "worker" is a safety-rail kind: its intrinsic
+    etiquette (isolation, no live-tool mutation, in-worktree verification,
+    draft-PR + notify-back) is auto-injected by resolve_roles for every
+    dispatch and is non-overridable: it's always present, no opt-out, no
+    templating. `--roles` / `.agentwire.yml roles:` ADD to it, they never
+    replace it. Kind "orchestrator" is a replaceable persona instead — and,
+    unless --created-by says otherwise, roots itself (no parent) rather than
+    inheriting the caller, since a durable orchestrator shouldn't be a
+    subordinate of whoever happened to spawn it.
     """
     json_mode = getattr(args, 'json', False)
     name = getattr(args, 'name', None)
@@ -834,6 +873,8 @@ def cmd_worktree(args) -> int:
         return _worktree_watch(args, project_path, json_mode)
     if getattr(args, 'prune', False):
         return _worktree_prune(args, project_path, worktree_dir, json_mode)
+    if getattr(args, 'dangling', False):
+        return _worktree_dangling(args, project_path, json_mode)
     if getattr(args, 'status', False):
         return _worktree_status(args, project_path, worktree_dir, json_mode)
     if getattr(args, 'remove', False):
@@ -865,14 +906,23 @@ def cmd_worktree(args) -> int:
     # The branch created in default mode honors the naming template.
     templated_branch = apply_naming(wt_config.naming, name)
 
+    # kind defaults to "worker" (zero behavior change for existing callers)
+    # — worker-worktree etiquette is injected intrinsically by cmd_new's
+    # resolver, since this session is on worktree topology. --kind
+    # orchestrator overrides for a durable branch-pinned window; cmd_new
+    # itself applies the joint rooting default for that case (SSOT — see
+    # its own created_by resolution), so this is just the plain kind pick.
+    effective_kind = getattr(args, 'kind', None) or 'worker'
+
     def _launch_session():
-        # kind="worktree-session" → worktree-session etiquette is injected
-        # intrinsically by cmd_new's resolver. Posture/harness/model/roles
-        # forward through the shared flag core.
         return cmd_new(type('Args', (), {
             'session': session_name, 'path': str(worktree_path), 'json': json_mode,
             'force': False, 'bare': False, 'restricted': False, 'prompted': False,
-            'kind': 'worktree-session',
+            'kind': effective_kind,
+            # session_name is a flat `{project}-{name}` (no slash) — cmd_new's
+            # own bool(branch) would misread it as branchless, so this is
+            # forced explicitly rather than left to be re-derived.
+            'worktree_topology': True,
             'type': getattr(args, 'type', None),
             'posture': getattr(args, 'posture', None),
             'harness': getattr(args, 'harness', None),
@@ -898,7 +948,7 @@ def cmd_worktree(args) -> int:
         worktree_registry.register(
             project_path, branch=reattach_branch,
             session=session_name, base=default_base,
-            worktree_path=worktree_path,
+            worktree_path=worktree_path, kind=effective_kind,
         )
         if tmux_session_exists(session_name):
             # Already live. For automation/json, report and return (never paste
@@ -1013,6 +1063,7 @@ def cmd_worktree(args) -> int:
         session=session_name,
         base=base_branch,
         worktree_path=worktree_path,
+        kind=effective_kind,
     )
 
     # cmd_new (via _launch_session) emits the single authoritative json
@@ -1025,8 +1076,21 @@ def cmd_worktree(args) -> int:
     return _launch_session()
 
 
+def cmd_orchestrator(args) -> int:
+    """Sugar for `agentwire worktree --kind orchestrator`.
+
+    Stands up a durable, root project window on its own worktree/branch: a
+    replaceable persona (not a safety-railed subordinate) that, unless
+    --created-by says otherwise, roots itself instead of inheriting whoever
+    ran the command. Everything else (base/existing/ref/roles/posture/
+    prompt/registry-management flags) is identical to `worktree`.
+    """
+    args.kind = 'orchestrator'
+    return cmd_worktree(args)
+
+
 def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
-    """List worktree-session registry entries (--list)."""
+    """List worktree registry entries (--list)."""
     show_all = getattr(args, 'all', False)
     from agentwire import inbox
     if show_all:
@@ -1238,6 +1302,90 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
             print(f"GC'd {len(gc_merged_out)} merged worktree{'s' if len(gc_merged_out) != 1 else ''}: {', '.join(gc_merged_out)}")
         if not removed and not gc_merged_out:
             print("Nothing to prune.")
+    return 0
+
+
+def scan_dangling_worktrees(rows: list[dict]) -> list[dict]:
+    """Flag LIVE worker-kind registry entries with an OPEN PR and no live
+    recorded parent — a PR nobody is positioned to review/merge (the
+    concrete failure mode from #716: a rootless-but-still-subordinate
+    session that correctly refuses to self-merge, so its green PR just
+    dangles).
+
+    ``rows`` are registry entries (as from ``worktree_registry.entries()`` /
+    ``all_entries()``), each carrying at least "session", "branch",
+    "project", "kind". Shared by ``agentwire worktree --dangling`` and
+    ``doctor``.
+
+    Orchestrator-kind entries are SKIPPED — a durable orchestrator roots by
+    design (#716's joint default) and is itself the reviewer/merger, so a
+    parentless orchestrator with an open PR is its normal, healthy
+    lifecycle, not a dangling failure. Entries registered before this field
+    existed carry ``kind=None`` and are treated as worker-like (the
+    pre-#716 default for a worktree), which only widens the scan, never
+    narrows it, for old entries.
+
+    This is NOT the same "orphan" as --list's state badge (a dead session
+    whose worktree dir is still on disk) — this flags a LIVE session with
+    nothing above it positioned to act on its work. Deliberately a shallow
+    "has any live recorded parent" check (recorded creator, or the
+    `.agentwire.yml parent:` fallback — the same precedence
+    `_display_parent`/prompt-routing already use), not a full
+    orchestrator-role verification of that parent (that's not durably
+    stored anywhere today and is out of scope — see #716's deferred
+    merge-authority-per-edge north star).
+    """
+    if not shutil.which("gh"):
+        return []
+    dangling = []
+    for r in rows:
+        if r.get("kind") == "orchestrator":
+            continue
+        session = r.get("session", "")
+        branch = r.get("branch")
+        if not branch or not tmux_session_exists(session):
+            continue
+        result = subprocess.run(
+            ["gh", "pr", "view", branch, "--json", "state,url"],
+            cwd=r.get("project"), capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            continue
+        try:
+            pr = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            continue
+        if str(pr.get("state", "")).upper() != "OPEN":
+            continue
+        parent = _display_parent(session, r.get("worktree_path", ""))
+        if parent and tmux_session_exists(parent):
+            continue
+        dangling.append({
+            "session": session, "branch": branch, "project": r.get("project"),
+            "pr_url": pr.get("url"), "created_by": parent or None,
+            "reason": "no recorded parent" if not parent else "parent not live",
+        })
+    return dangling
+
+
+def _worktree_dangling(args, project_path: Path, json_mode: bool) -> int:
+    """Scan for live worktree sessions with a dangling (open, unparented) PR (--dangling)."""
+    show_all = getattr(args, 'all', False)
+    if show_all:
+        rows = worktree_registry.all_entries()
+    else:
+        rows = [dict(e, project=str(project_path)) for e in worktree_registry.entries(project_path)]
+    dangling = scan_dangling_worktrees(rows)
+    if json_mode:
+        _output_json({"success": True, "dangling": dangling})
+        return 0
+    if not dangling:
+        scope = "any repo" if show_all else str(project_path)
+        print(f"No dangling worktree sessions for {scope}.")
+        return 0
+    print(f"{len(dangling)} dangling worktree session(s) — open PR, no live parent to act on it:")
+    for d in dangling:
+        print(f"  {d['session']:<32} branch={d['branch']}  {d.get('pr_url', '')}  ({d['reason']})")
     return 0
 
 
@@ -1508,14 +1656,13 @@ def cmd_fork(args) -> int:
             # Default to agent-bypass based on detected agent
             session_type_str = f"{agent_type}-bypass"
 
-        # The fork target is a worktree (project/branch) → worktree-session
-        # kind, so resolve_roles stacks the non-overridable safety etiquette
-        # under the source's roles instead of copying them raw (which dropped
-        # the kind's intrinsic contract). Kind derived from the target name.
-        kind = derive_session_kind(bool(target_branch))
+        # The fork target is a worktree (project/branch) → worker kind on
+        # worktree topology, so resolve_roles stacks the non-overridable
+        # safety etiquette under the source's roles instead of copying them
+        # raw (which dropped the kind's intrinsic contract). Kind derived
+        # from the target name.
         project_roles = list(source_config.roles) if source_config and source_config.roles else None
-        role_names = resolve_roles(kind, project_roles=project_roles)
-        role_names = inject_soul(role_names, load_config())
+        role_names = _resolve_and_soul_worktree_roles(bool(target_branch), project_roles=project_roles)
         roles = None
         if role_names:
             roles, _ = load_roles(role_names, Path(source_path))
@@ -1601,10 +1748,8 @@ def cmd_fork(args) -> int:
         # Non-worktree fork: target has no branch → orchestrator kind (a
         # replaceable persona), so source roles take precedence as usual.
         # Routed through resolve_roles for one consistent precedence path.
-        kind = derive_session_kind(bool(target_branch))
         project_roles = list(source_project_config.roles) if source_project_config and source_project_config.roles else None
-        role_names = resolve_roles(kind, project_roles=project_roles)
-        role_names = inject_soul(role_names, load_config())
+        role_names = _resolve_and_soul_worktree_roles(bool(target_branch), project_roles=project_roles)
         roles = None
         if role_names:
             roles, _ = load_roles(role_names, fork_path)
@@ -1753,13 +1898,12 @@ def cmd_fork(args) -> int:
         # Default to agent-bypass based on detected agent
         session_type_str = f"{agent_type}-bypass"
 
-    # Worktree fork: target is project/branch → worktree-session kind, so
-    # resolve_roles stacks the non-overridable isolation/verify/draft-PR/notify
-    # etiquette under the source's roles. Kind derived from the target name.
-    kind = derive_session_kind(bool(target_branch))
+    # Worktree fork: target is project/branch → worker kind on worktree
+    # topology, so resolve_roles stacks the non-overridable
+    # isolation/verify/draft-PR/notify etiquette under the source's roles.
+    # Kind derived from the target name.
     project_roles = list(source_config.roles) if source_config and source_config.roles else None
-    role_names = resolve_roles(kind, project_roles=project_roles)
-    role_names = inject_soul(role_names, load_config())
+    role_names = _resolve_and_soul_worktree_roles(bool(target_branch), project_roles=project_roles)
     roles = None
     if role_names:
         roles, _ = load_roles(role_names, config_path)
@@ -1808,12 +1952,12 @@ def register_session_parser(subparsers) -> None:
                                            "bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>[-restricted|-readonly], standard, worker, voice")
     # Roles
     new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
-    new_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"],
-                            help="Override the derived session kind (advanced). A project/branch name "
-                                 "normally derives 'worktree-session' (draft-PR + notify etiquette). Pass "
-                                 "'orchestrator' for a worktree that is finalized externally — e.g. the "
-                                 "scheduler, which opens/reaps the PR itself, so the task agent must NOT "
-                                 "open its own.")
+    new_parser.add_argument("--kind", choices=["orchestrator", "worker"],
+                            help="Override the derived session role (advanced). A project/branch name "
+                                 "normally derives 'worker' (draft-PR + notify etiquette on worktree "
+                                 "topology). Pass 'orchestrator' for a worktree that is finalized "
+                                 "externally — e.g. the scheduler, which opens/reaps the PR itself, so "
+                                 "the task agent must NOT open its own.")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     new_parser.add_argument("--persist", action="store_true", help="Write the resolved type/--roles to .agentwire.yml (default: session-level override only)")
@@ -1841,8 +1985,8 @@ def register_session_parser(subparsers) -> None:
 
     # === session-defaults command (resolver — backs the portal endpoint) ===
     sd_parser = subparsers.add_parser("session-defaults", help="Resolve a new session's composed type + intrinsic roles (JSON)")
-    sd_parser.add_argument("--kind", choices=["orchestrator", "worktree-session", "worker"], default="orchestrator",
-                           help="Spawn-verb kind (default: orchestrator = `agentwire new`)")
+    sd_parser.add_argument("--kind", choices=["orchestrator", "worker"], default="orchestrator",
+                           help="Spawn-verb role (default: orchestrator = `agentwire new`)")
     _add_posture_harness_flags(sd_parser)
     sd_parser.add_argument("--json", action="store_true", default=True, help="Output as JSON (default)")
     sd_parser.set_defaults(func=cmd_session_defaults)
@@ -1867,39 +2011,68 @@ def register_session_parser(subparsers) -> None:
     fork_parser.add_argument("--json", action="store_true", help="Output as JSON")
     fork_parser.set_defaults(func=cmd_fork)
 
-    # === worktree command ===
+    # === worktree command (+ the `orchestrator` sugar verb below) ===
+    def _add_worktree_flags(parser) -> None:
+        """Flags shared by `worktree` and its `orchestrator` sugar verb."""
+        parser.add_argument("--base", "-b", help="Base branch to fork from (default: config worktree.default_base, else the repo's origin/HEAD default branch)")
+        parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch (used when --base is not given)")
+        parser.add_argument("--existing", "-e", action="store_true", help="Checkout an existing branch (no new branch created)")
+        parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
+        parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")
+        parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
+        parser.add_argument("--watch", action="store_true", help="Watch registered worktree sessions in a loop and report status")
+        parser.add_argument("--status", action="store_true", help="Show read-only git status (dirty/ahead/behind/pushed) for a worktree session")
+        parser.add_argument("--dangling", action="store_true",
+                            help="Scan for LIVE worktree sessions with an OPEN PR and no live recorded "
+                                 "parent — a PR nobody is positioned to review/merge (--all for every "
+                                 "repo). Distinct from --list's 'orphan' state (dead session, disk "
+                                 "remnant) — this flags a LIVE session no one is watching.")
+        parser.add_argument("--remove", action="store_true", help="Atomic teardown: kill the session, force-remove the worktree, delete the branch once merged, and unregister (cleanup/recovery)")
+        parser.add_argument("--keep-branch", action="store_true", help="With --remove: skip branch cleanup entirely (default: best-effort delete once confirmed merged)")
+        parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged")
+        parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
+        parser.add_argument("--gc-merged", action="store_true", help="With --prune: also tear down (session/worktree/branch) any registered entry whose branch is confirmed merged")
+        parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")
+        _add_posture_harness_flags(parser)
+        parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
+        parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worker etiquette (kind=orchestrator: REPLACES the default persona instead)")
+        parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
+        parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
+        parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
+        parser.add_argument("--created-by", dest="created_by",
+                            help="Force this session's recorded creator/parent for prompt routing, "
+                                 "overriding the default below; pass '' to force standalone (no "
+                                 "parent) regardless of project")
+        parser.add_argument("--caller-session", dest="caller_session",
+                            help="Internal: candidate caller session for computing the default "
+                                 "--created-by — inherited only if this worktree's project matches "
+                                 "the caller's (#715); ignored when --created-by is given explicitly. "
+                                 "Default: the calling tmux session. MCP forwards this explicitly, "
+                                 "since the CLI subprocess can't reliably auto-detect the caller "
+                                 "across the MCP boundary.")
+        parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     wt_parser = subparsers.add_parser("worktree", help="Create a git worktree + session in one command")
     wt_parser.add_argument("name", nargs="?", help="Name (becomes branch name in default mode, session suffix always)")
-    wt_parser.add_argument("--base", "-b", help="Base branch to fork from (default: config worktree.default_base, else the repo's origin/HEAD default branch)")
-    wt_parser.add_argument("--current", "-c", action="store_true", help="Fork from the repo's current branch (used when --base is not given)")
-    wt_parser.add_argument("--existing", "-e", action="store_true", help="Checkout an existing branch (no new branch created)")
-    wt_parser.add_argument("--ref", help="Detach at a specific ref (tag, commit, branch)")
-    wt_parser.add_argument("--project", "-p", help="Path to git repo (default: config worktree.default_project, else the git root of cwd)")
-    wt_parser.add_argument("--list", action="store_true", help="List registered worktree sessions for this repo (--all for every repo)")
-    wt_parser.add_argument("--watch", action="store_true", help="Watch registered worktree sessions in a loop and report status")
-    wt_parser.add_argument("--status", action="store_true", help="Show read-only git status (dirty/ahead/behind/pushed) for a worktree session")
-    wt_parser.add_argument("--remove", action="store_true", help="Atomic teardown: kill the session, force-remove the worktree, delete the branch once merged, and unregister (cleanup/recovery)")
-    wt_parser.add_argument("--keep-branch", action="store_true", help="With --remove: skip branch cleanup entirely (default: best-effort delete once confirmed merged)")
-    wt_parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged")
-    wt_parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
-    wt_parser.add_argument("--gc-merged", action="store_true", help="With --prune: also tear down (session/worktree/branch) any registered entry whose branch is confirmed merged")
-    wt_parser.add_argument("--all", action="store_true", help="With --list: include worktree sessions across every repo")
-    _add_posture_harness_flags(wt_parser)
-    wt_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
-    wt_parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worktree-session etiquette")
-    wt_parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
-    wt_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
-    wt_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
-    wt_parser.add_argument("--created-by", dest="created_by",
-                           help="Force this session's recorded creator/parent for prompt routing, "
-                                "overriding the default same-project-only inheritance below; pass "
-                                "'' to force standalone (no parent) regardless of project")
-    wt_parser.add_argument("--caller-session", dest="caller_session",
-                           help="Internal: candidate caller session for computing the default "
-                                "--created-by — inherited only if this worktree's project matches "
-                                "the caller's (#715); ignored when --created-by is given explicitly. "
-                                "Default: the calling tmux session. MCP forwards this explicitly, "
-                                "since the CLI subprocess can't reliably auto-detect the caller "
-                                "across the MCP boundary.")
-    wt_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    wt_parser.add_argument("--kind", choices=["orchestrator", "worker"], default=None,
+                           help="Session role (default: worker — the common dispatched-task case, "
+                                "safety-railed: isolation/verify/draft-PR/notify, non-overridable). "
+                                "'orchestrator' makes this worktree a durable, replaceable-persona "
+                                "project window instead of a subordinate, and — unless --created-by "
+                                "says otherwise — roots it (no parent), since a durable orchestrator "
+                                "shouldn't answer to whoever happened to spawn it. See also the "
+                                "`orchestrator` sugar verb.")
+    _add_worktree_flags(wt_parser)
     wt_parser.set_defaults(func=cmd_worktree)
+
+    # === orchestrator command (sugar: `worktree --kind orchestrator`) ===
+    orch_parser = subparsers.add_parser(
+        "orchestrator",
+        help="Stand up a durable, root orchestrator session on its own worktree "
+             "(sugar for `worktree --kind orchestrator`)",
+    )
+    orch_parser.add_argument("name", nargs="?", default="orchestrator",
+                             help="Name (becomes branch name in default mode, session suffix always); "
+                                  "default: 'orchestrator'")
+    _add_worktree_flags(orch_parser)
+    orch_parser.set_defaults(func=cmd_orchestrator)

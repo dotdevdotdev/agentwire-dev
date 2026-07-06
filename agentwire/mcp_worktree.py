@@ -15,14 +15,15 @@ def worktree_create(
     base: str = "",
     prompt: str = "",
     created_by: str = "",
+    kind: str = "",
 ) -> str:
     """Create a worktree session (new branch + checkout + tmux session), optionally seeded.
 
     The spawn half of the worktree lifecycle (paired with worktree_status /
     worktree_list / worktree_remove). Creates a branch off origin/<base>, a
     worktree at ~/worktrees/<project>/<name>/, and a tmux session running an
-    agent with the worktree-session safety etiquette auto-injected. This is how
-    a Briefing Mode anchor fans out correspondents.
+    agent with the intrinsic safety etiquette for its role auto-injected.
+    This is how a Briefing Mode anchor fans out correspondents.
 
     By default, the new session is recorded as the caller's child (so
     notify-parent / prompt routing resolve back to you) ONLY when project_dir
@@ -32,8 +33,9 @@ def worktree_create(
     Args:
         name: Worktree/branch name (becomes the branch + session suffix).
         project_dir: Path to the git repo (default: server cwd).
-        roles: Comma-separated roles STACKED on the worktree-session etiquette
-            (e.g. "correspondent"). Never replaces the safety rail.
+        roles: Comma-separated roles STACKED on the intrinsic worker etiquette
+            (e.g. "correspondent"). Never replaces the safety rail (kind=worker;
+            for kind="orchestrator" these REPLACE the default persona instead).
         base: Base branch to fork from (default: the repo's origin/HEAD).
         prompt: Optional first message — delivered once the agent is booted and
             ready (verified paste). Lets you spawn AND seed the task in one call
@@ -43,7 +45,14 @@ def worktree_create(
             worktree in a closely related project. Leave empty for the
             default behavior; note that empty here is NOT the same as the
             CLI's `--created-by ''` (force standalone) — there is currently
-            no way to force standalone through this tool.
+            no way to force standalone through this tool. Ignored when
+            kind="orchestrator" and this is left empty — that combination
+            roots by default (a durable orchestrator shouldn't inherit
+            whoever spawned it).
+        kind: Session role — "worker" (default: safety-railed, isolation/
+            verify/draft-PR/notify, non-overridable) or "orchestrator" (a
+            durable, replaceable-persona project window instead of a
+            subordinate). Leave empty for the default.
 
     Returns:
         Success message with the session name + worktree path, or an error.
@@ -57,6 +66,8 @@ def worktree_create(
         args += ["--base", base]
     if prompt:
         args += ["--prompt", prompt]
+    if kind:
+        args += ["--kind", kind]
     if created_by:
         args += ["--created-by", created_by]
     else:
@@ -107,7 +118,7 @@ def worktree_create(
 
 
 @mcp.tool()
-def worktree_list(project_dir: str = "") -> str:
+def worktree_list(project_dir: str = "", check_dangling: bool = False) -> str:
     """List worktree sessions for a repo, each with read-only git status.
 
     Use this to see the state of in-flight worktree work before tearing it
@@ -117,6 +128,13 @@ def worktree_list(project_dir: str = "") -> str:
     Args:
         project_dir: Path to the git repo. Defaults to the server's cwd; pass a
             repo path to scope the list to that project.
+        check_dangling: Also flag LIVE worker-kind sessions with an OPEN PR
+            and no live parent — a PR nobody is positioned to review/merge
+            (uses `gh`, one network call per live session; off by default).
+            Orchestrator-kind sessions are excluded — a self-rooted
+            orchestrator with an open PR is its normal healthy lifecycle.
+            Distinct from the "orphan" state below (a dead session whose
+            worktree dir is left on disk).
 
     Returns:
         Formatted list of worktree sessions, or a message if none are registered.
@@ -148,6 +166,17 @@ def worktree_list(project_dir: str = "") -> str:
                     bits.append("pushed")
             badge = f" [{', '.join(bits)}]"
         lines.append(f"  {e.get('session')} ({state}) branch={e.get('branch')}{badge}")
+    if check_dangling:
+        dargs = ["worktree", "--dangling"]
+        if project_dir:
+            dargs += ["--project", project_dir]
+        ddata = run_agentwire_cmd(dargs)
+        dangling = ddata.get("dangling") or [] if ddata.get("success") else []
+        if dangling:
+            lines.append("")
+            lines.append(f"DANGLING ({len(dangling)}) — open PR, no live parent to review/merge:")
+            for d in dangling:
+                lines.append(f"  {d.get('session')} branch={d.get('branch')} {d.get('pr_url', '')} ({d.get('reason')})")
     return "\n".join(lines)
 
 

@@ -9,6 +9,8 @@ phase_3: shipped
 
 # Briefing Mode — asymmetric-verbosity orchestration
 
+> **Terminology note (#716, post-dates this doc):** the `worktree-session` kind referenced throughout below was renamed — it's now role `worker` on worktree topology, backed by the `worker-worktree` role file. The safety-rail/persona split and the underlying mechanics this doc describes are unchanged; only the kind's name and the fact that ROLE and TOPOLOGY are now independent axes are new. See `CLAUDE.md`'s "Three independent axes" section for the current model. `__main__.py` line-number citations below also predate the #495 CLI-layout split (the code now lives in `session_cli.py`/`roles/__init__.py`).
+>
 > **Status — Phases 1 & 2 shipped (2026-06-21):**
 > - **Phase 1:** the `anchor` and `correspondent` roles (`agentwire/roles/`). Spawn an anchor with `agentwire new -s <name> --roles anchor`; it fans out correspondents, which file deep reports to a dropbox (`~/.agentwire/research/<anchor-session>/`); the anchor briefs asymmetrically (`say` headline + `portal_notify` card) on the human's cue.
 > - **Phase 2:** the passive `ingest` message kind — never auto-delivered (routes to a reserved `ingest/` subdir the drain skips), pulled with `agentwire msg pull` / MCP `msg_pull`. Correspondents now drop a passive pointer; the anchor pulls on the human's cue (awareness without being driven). Plus MCP `worktree_create` and a `--prompt` seed flag on `agentwire worktree` (spawn + seed in one call, verified delivery), completing the worktree lifecycle quartet (create / status / list / remove).

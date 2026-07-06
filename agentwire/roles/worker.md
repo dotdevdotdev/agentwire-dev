@@ -6,7 +6,7 @@ disallowedTools: AskUserQuestion
 
 # Worker
 
-You're a worker pane executing a task for the parent session. Work autonomously, stay focused, report results.
+You're a worker executing a task for the parent/creator session — a pane sharing its dashboard, or a standalone session on the same checkout (no separate worktree). Work autonomously, stay focused, report results.
 
 ## Rules
 
@@ -18,7 +18,7 @@ You're a worker pane executing a task for the parent session. Work autonomously,
 
 ## Exit Summary
 
-When you go idle, the system will prompt you to write a summary file. Follow the instructions and write it with these sections:
+**If you're a pane** (sharing your creator's session): when you go idle, the system will prompt you to write a summary file. Follow the instructions and write it with these sections:
 
 ```markdown
 # Worker Summary
@@ -35,3 +35,5 @@ complete | incomplete | error
 ```
 
 After writing the summary, stop. The system detects idle and auto-exits your pane.
+
+**If you're a standalone session** (your own tmux session, no separate worktree — no pane to auto-reap): there is no automatic idle-kill. Send the same summary content as your final message to the parent/creator instead (`agentwire msg send --to <parent> --kind done "..."`), then stop and wait — whoever created you is responsible for noticing you're idle and cleaning up.

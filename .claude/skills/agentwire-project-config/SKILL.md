@@ -209,16 +209,18 @@ By default, `agentwire new` flags (`--type`, `--roles`) are session-level overri
 
 Roles define agent behavior and are composable. Mix and match roles in `.agentwire.yml` to configure orchestrators, workers, or specialized agents.
 
+**ROLE vs TOPOLOGY (#716):** the session `kind` (`orchestrator` | `worker`) is a pure authority/etiquette axis — it says nothing about WHERE the session runs. TOPOLOGY (main checkout / worktree branch / pane) is separate and independent. `worker`'s intrinsic etiquette FILE still varies by topology, though: a worktree-topology worker gets `worker-worktree` (isolation, draft-PR, notify, keeps voice); a pane/main-topology worker gets `worker` (headless, exit-summary, auto-kill). Neither is user-selectable directly — they're resolved from `kind` + topology by `resolve_roles`.
+
 **Available roles:**
 
 | Role | Purpose |
 |------|---------|
 | `agentwire` | Core session/pane/MCP tools awareness |
-| `orchestrator` | Long-lived project orchestrator — plans, delegates, reviews results |
+| `orchestrator` | Long-lived project orchestrator — plans, delegates, reviews results. Topology-invariant (same role file on main or a worktree). |
 | `voice` | Voice communication (speak/listen) |
-| `worker` | Receive tasks, execute autonomously, report back |
+| `worker` | Receive tasks, execute autonomously, report back. Intrinsic etiquette for a pane (`agentwire spawn`) or a main-topology session — headless, exit-summary, auto-kill. Not directly selectable via `--roles` as a *replacement* for the worktree flavor; it's resolved from kind + topology. |
+| `worker-worktree` | Intrinsic etiquette for `agentwire worktree` sessions (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back, keeps voice) — auto-injected when kind=worker on worktree topology, not configurable |
 | `task-runner` | Scheduled task execution |
-| `worktree-session` | Intrinsic etiquette for `agentwire worktree` sessions (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back) — auto-injected by the verb's kind, not configurable |
 | `chatbot` | Conversational personality |
 | `init` | Setup wizard behavior |
 

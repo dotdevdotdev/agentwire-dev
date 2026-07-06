@@ -199,49 +199,73 @@ def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool
     return [*role_names, "soul"]
 
 
-# The etiquette intrinsic to each session KIND. The kind is DERIVED from the
-# spawn verb — `agentwire new` → orchestrator, `agentwire worktree` →
-# worktree-session, `agentwire spawn` → worker — never user-configured. The
-# etiquette describes what the session structurally IS (an orchestrator
-# delegates; a worker focuses and reports; a worktree session isolates and
-# opens a draft PR), so it can't get lost: it's derived, not looked up in a
-# defaults table. These are the ONLY roles agentwire injects on its own behalf.
+# ROLE ∈ {orchestrator, worker} is authority + etiquette — what the session
+# IS and what it's allowed to do — and says nothing about WHERE it runs.
+# TOPOLOGY (main checkout / worktree branch / pane) is a separate axis. A
+# worker's concrete etiquette payload still differs by topology (a worktree
+# worker pushes a branch and opens a draft PR, keeps voice, and can ask via
+# prompt-routing; a pane/main-topology worker is headless, writes an
+# exit-summary, and gets auto-killed) — that composition lives in
+# WORKTREE_TOPOLOGY_ETIQUETTE + _intrinsic_role_name below, not in the kind
+# itself. Kind is derived from the spawn verb — `agentwire new`/`worktree` →
+# orchestrator or worker (never user-configured except via --kind); `spawn`
+# → worker, always pane topology. These are the ONLY roles agentwire injects
+# on its own behalf.
 INTRINSIC_ETIQUETTE: dict[str, str] = {
     "orchestrator": "orchestrator",
-    "worktree-session": "worktree-session",
     "worker": "worker",
 }
 
+# Override for role=worker on worktree topology (its own branch/worktree, not
+# a pane): isolation/verify/draft-PR/don't-merge/notify. Only "worker" has a
+# topology-specific variant — "orchestrator" is topology-invariant.
+WORKTREE_TOPOLOGY_ETIQUETTE: dict[str, str] = {
+    "worker": "worker-worktree",
+}
+
 # SAFETY-RAIL kinds carry a STRUCTURAL contract that must always be present —
-# it describes what the session *is*, and dropping it is a safety regression:
-#   - worker:           focus / report / auto-kill
-#   - worktree-session: isolation / verify / draft-PR / notify
+# it describes what the session *is*, and dropping it is a safety regression.
 # For these, the intrinsic etiquette is NON-OVERRIDABLE: user/project roles
 # STACK on top of it, never replace it.
 #
 # Every other kind (orchestrator) is a PERSONA: a sensible zero-config default
 # that explicit roles are free to REPLACE — that's what keeps council /
 # scheduler / task sessions clean when they pass their own roles.
-SAFETY_RAIL_KINDS: set[str] = {"worker", "worktree-session"}
+SAFETY_RAIL_KINDS: set[str] = {"worker"}
+
+
+def _intrinsic_role_name(kind: str | None, worktree_topology: bool) -> str | None:
+    """Which bundled role file backs a given (kind, topology) pair."""
+    if kind is None:
+        return None
+    if worktree_topology and kind in WORKTREE_TOPOLOGY_ETIQUETTE:
+        return WORKTREE_TOPOLOGY_ETIQUETTE[kind]
+    return INTRINSIC_ETIQUETTE.get(kind)
 
 
 def derive_session_kind(has_branch: bool, explicit_kind: str | None = None) -> str:
-    """The session KIND for an `agentwire new` (or worktree) dispatch.
+    """The session's ROLE for an `agentwire new` (or worktree) dispatch.
 
-    Kind is derived from what's being created, never user-configured:
-    - An explicit kind wins — ``cmd_worktree`` passes "worktree-session".
+    Role is derived from what's being created, never user-configured:
+    - An explicit kind wins.
     - Otherwise a worktree (a ``project/branch`` name, which is also how the
-      scheduler and portal dispatch worktrees) IS a worktree-session, so it
-      gets the isolation/verify/draft-PR/notify safety contract regardless of
-      entrypoint. A plain name is an orchestrator.
+      scheduler and portal dispatch worktrees) is a subordinate — "worker" —
+      regardless of entrypoint. A plain name is an orchestrator.
+
+    This is the ROLE axis only (authority: orchestrator vs worker) — it says
+    nothing about topology. The concrete etiquette payload for a worker still
+    varies by topology (worktree vs pane/main); that composition happens in
+    :func:`resolve_roles`, not here.
     """
     if explicit_kind:
         return explicit_kind
-    return "worktree-session" if has_branch else "orchestrator"
+    return "worker" if has_branch else "orchestrator"
 
 
 def resolve_roles(
     kind: str | None,
+    *,
+    worktree_topology: bool = False,
     cli_roles: list[str] | None = None,
     project_roles: list[str] | None = None,
 ) -> list[str]:
@@ -249,10 +273,13 @@ def resolve_roles(
 
     Two rules, by kind:
 
-    - **Safety-rail kinds** (``worker``, ``worktree-session``): the intrinsic
-      etiquette is structural and non-overridable. Result = intrinsic +
-      project roles + cli roles, stacked and de-duplicated (etiquette always
-      first/present). ``--roles`` ADDS to the contract, never removes it.
+    - **Safety-rail kinds** (``worker``): the intrinsic etiquette is
+      structural and non-overridable. Result = intrinsic + project roles +
+      cli roles, stacked and de-duplicated (etiquette always first/present).
+      ``--roles`` ADDS to the contract, never removes it. Which etiquette
+      file is intrinsic depends on ``worktree_topology`` — a worker on its
+      own worktree gets the isolation/draft-PR/notify contract; a pane (or
+      main-topology) worker gets the exit-summary/auto-kill contract.
     - **Persona kind** (``orchestrator``, and ``kind=None``): the intrinsic
       etiquette is just a zero-config default. Precedence ``--roles`` >
       ``.agentwire.yml roles:`` > intrinsic — user roles REPLACE it. So a
@@ -264,15 +291,18 @@ def resolve_roles(
     visibly distinct phases.
 
     Args:
-        kind: Session kind ("orchestrator" | "worktree-session" | "worker"),
-            or None (treated as a persona with no default).
+        kind: Session kind ("orchestrator" | "worker"), or None (treated as
+            a persona with no default).
+        worktree_topology: True when this is a standalone session on its own
+            git worktree/branch (vs a pane, or a plain main-topology
+            session) — selects which "worker" etiquette file applies.
         cli_roles: Roles from ``--roles`` (highest-precedence user source).
         project_roles: Roles from ``.agentwire.yml roles:``.
 
     Returns:
         The resolved role list (before the soul auto-append).
     """
-    intrinsic = INTRINSIC_ETIQUETTE.get(kind) if kind else None
+    intrinsic = _intrinsic_role_name(kind, worktree_topology)
 
     if kind in SAFETY_RAIL_KINDS:
         # Non-overridable contract: etiquette always present, user roles stack.

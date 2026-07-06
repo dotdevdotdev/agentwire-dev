@@ -31,9 +31,11 @@ agentwire recreate -s name      # destroy and recreate with fresh worktree
 agentwire worktree name         # new branch + worktree + STANDALONE session
                                 #   "worktree session" ALWAYS means this command — never
                                 #   `spawn --branch` (that makes a pane). Defaults to the
-                                #   bypass posture (autonomous); override with --posture.
-                                #   The worktree-session etiquette role is intrinsic to
-                                #   the verb (isolation, no rebuild/restart, verify
+                                #   bypass posture (autonomous, topology-driven — same for
+                                #   every role on this verb); override with --posture.
+                                #   ROLE defaults to "worker" (zero behavior change) — the
+                                #   worker-worktree etiquette role is intrinsic to that
+                                #   default (isolation, no rebuild/restart, verify
                                 #   in-worktree, draft PR + notify-back) — first prompts
                                 #   only need the task itself
                                 #   Base branch (default mode): --base wins, else config
@@ -47,8 +49,18 @@ agentwire worktree name -c      # from repo's current branch
 agentwire worktree name -e      # checkout existing branch (no new branch)
 agentwire worktree name --ref v2.0  # detached at tag/commit
 agentwire worktree name --prompt "task"  # spawn AND seed the first message in one call (verified delivery)
+agentwire worktree name --kind orchestrator  # ROLE override (#716): a durable, replaceable-
+                                #   persona project window instead of a safety-railed
+                                #   subordinate. Roots by default (created_by='') unless
+                                #   --created-by says otherwise.
+agentwire orchestrator [name] -p <project>  # sugar for `worktree --kind orchestrator`
+                                #   (name defaults to "orchestrator") — the durable-window
+                                #   one-liner for a monorepo/large-repo project.
 agentwire worktree --list       # list this repo's worktree sessions + read-only git status; --all = every repo
 agentwire worktree --status name  # read-only git status (dirty/ahead/behind/pushed) for one worktree
+agentwire worktree --dangling    # LIVE worker sessions with an OPEN PR and no live recorded
+                                #   parent (#716) — a PR nobody is positioned to review/merge.
+                                #   Distinct from --list's "orphan" (dead session, disk remnant).
 agentwire worktree --remove name  # ATOMIC teardown: kill session + force-remove worktree + delete
                                 #   merged branch (local+remote) + unregister — fails loudly (non-zero,
                                 #   registry entry kept) if the dir can't actually be cleared (#717).

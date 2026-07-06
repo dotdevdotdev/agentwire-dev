@@ -16,7 +16,6 @@ from . import (  # noqa: E402  # must follow load_dotenv() above
 from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401: re-exported moved helpers
     _UNATTENDED_ENV_KEYS,
     CONFIG_DIR,
-    KIND_DEFAULT_POSTURE,
     AgentCommand,
     _add_posture_harness_flags,
     _build_tmux_env_flags,

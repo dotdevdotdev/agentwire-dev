@@ -6,7 +6,7 @@
 agentwire worktree fix-bug          # new branch from the repo's default base + standalone session
 ```
 
-A worktree session is a **standalone tmux session** (`{project}-{name}`) running on its own git worktree at `<worktree_dir>/<project>/<name>/` (default `~/worktrees/<project>/<name>/` — nested per project, mirroring `~/projects/<project>/`; the tmux session name stays flat). It survives independently of its creator and carries the intrinsic **worktree-session etiquette** (isolation, no live-tool rebuild/restart, in-worktree verification, draft PR + notify-back) — that role is injected by the spawn verb, so first prompts only need the task itself. `--roles` / `.agentwire.yml roles:` **add** to it; they never replace it.
+A worktree session is a **standalone tmux session** (`{project}-{name}`) running on its own git worktree at `<worktree_dir>/<project>/<name>/` (default `~/worktrees/<project>/<name>/` — nested per project, mirroring `~/projects/<project>/`; the tmux session name stays flat). By default its ROLE is `worker` — a separate axis from topology (#716) — and it survives independently of its creator, carrying the intrinsic **worker-worktree etiquette** (isolation, no live-tool rebuild/restart, in-worktree verification, draft PR + notify-back) — that role is injected by the spawn verb's default, so first prompts only need the task itself. `--roles` / `.agentwire.yml roles:` **add** to it; they never replace it. Pass `--kind orchestrator` (or use the `agentwire orchestrator` sugar verb) instead, for a durable, replaceable-persona project window on this same worktree topology — see [role/topology axes](../../../CLAUDE.md#mcp-server-for-agents).
 
 > "Worktree session" **always** means this command — never `agentwire spawn --branch` (that makes a worker *pane* inside the current session). See the [glossary](../glossary.md).
 
@@ -51,6 +51,15 @@ agentwire worktree --prune         # drop entries whose worktree is gone + `git 
 
 `--list` annotates each entry: **live** (tmux session running), **orphan** (worktree on disk, no session), **stale** (registry entry, worktree gone). `--remove` is the cleanup/recovery path; it still works on hand-created worktrees not in the registry by falling back to the conventional `<worktree_dir>/<project>/<name>/` layout. Removing (or pruning) a project's last worktree also removes the now-empty `<worktree_dir>/<project>/` dir.
 
+### Dangling PRs — a different kind of orphan (#716)
+
+`--list`'s "orphan" above means a **dead** session with a worktree dir still on disk. `agentwire worktree --dangling` (and `agentwire doctor`) flag the opposite failure: a **LIVE worker session** with an OPEN PR and no live parent — the concrete shape from #716, where a rooted-but-still-subordinate session correctly refuses to self-merge its own green PR, so it just dangles with nothing positioned to review/merge it. Orchestrator-kind entries are excluded entirely — a durable orchestrator roots by design and is itself the reviewer/merger, so a parentless orchestrator with an open PR is healthy, not dangling. It's a shallow "has any live parent" check (recorded creator, or the `.agentwire.yml parent:` fallback — the same precedence prompt-routing already uses) via `gh pr view <branch>` per live entry, not a full orchestrator-role verification of that parent (that's not durably stored anywhere and is out of scope — the deferred merge-authority-per-edge model is the eventual fuller fix).
+
+```bash
+agentwire worktree --dangling        # this repo
+agentwire worktree --dangling --all  # every repo
+```
+
 ### Teardown is atomic (#717)
 
 `--remove` kills the tmux session, force-removes the git worktree (`git worktree remove --force` + `git worktree prune`), and only THEN drops the registry entry — it never touches `main` or requires switching the primary checkout's branch, so it works even when `~/projects/<repo>` permanently holds `main`. If the directory somehow can't be cleared (e.g. its `.git` link is broken), the command fails LOUDLY — non-zero exit, `success: false`, the reason in `error` — and the registry entry is **kept** so `--list`/`--prune` still see it. It never silently "unregisters" an orphaned directory.
@@ -66,7 +75,7 @@ agentwire worktree --remove name --force-delete-branch  # delete even if not con
 
 Worktree sessions often open a claude-in-chrome tab to verify their work (dev server, screenshots) before opening a PR. Two MCP tools track that so it doesn't leak: `chrome_tab_track(tab_id, url)` (call right after `tabs_create_mcp`) and `chrome_tab_untrack(tab_id)` (call after you close it yourself with `tabs_close_mcp`). agentwire has no way to call `tabs_close_mcp` itself — that MCP server runs inside the calling agent's own client, not agentwire's process — so this is pure bookkeeping, not automatic closing.
 
-The **normal path** is the session closing its own tabs (and untracking them) before finishing — see the `worktree-session` role's Finish etiquette. The **crash backstop**: `--remove` (and `--prune --gc-merged`) checks this registry during teardown and reports any tab a session never got around to closing, so the calling agent can close it via `tabs_close_mcp`. `chrome_tab_list` shows what's currently tracked, across sessions or for one.
+The **normal path** is the session closing its own tabs (and untracking them) before finishing — see the `worker-worktree` role's Finish etiquette. The **crash backstop**: `--remove` (and `--prune --gc-merged`) checks this registry during teardown and reports any tab a session never got around to closing, so the calling agent can close it via `tabs_close_mcp`. `chrome_tab_list` shows what's currently tracked, across sessions or for one.
 
 ```bash
 agentwire tabs track --session name --tab-id <id> --url <url>   # bookkeeping only — CLI backing for chrome_tab_track
