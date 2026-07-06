@@ -106,6 +106,7 @@ def session_create(
     base: str | None = None,
     pull_first: bool = True,
     created_by: str = "",
+    standalone: bool = False,
     kind: str = "",
 ) -> str:
     """Create a new AgentWire session.
@@ -138,13 +139,18 @@ def session_create(
         created_by: Force a specific recorded creator/parent, overriding the
             default same-project-only inheritance above — e.g. to parent a
             session in a closely related project. Leave empty for the
-            default behavior; note that empty here is NOT the same as the
-            CLI's `--created-by ''` (force standalone) — there is currently
-            no way to force standalone through this tool. Ignored when
-            kind="orchestrator" is passed explicitly and this is left empty
-            — that combination roots by default instead (a durable
-            orchestrator shouldn't inherit whoever spawned it), regardless
-            of whether name has a branch.
+            default behavior. Wins over `standalone` when both are given.
+            Ignored when kind="orchestrator" is passed explicitly and this
+            is left empty — that combination roots by default instead (a
+            durable orchestrator shouldn't inherit whoever spawned it),
+            regardless of whether name has a branch.
+        standalone: Force a standalone root (no parent) even in your OWN
+            project, passing the CLI's `--created-by ''`. Use this when you're
+            spawning a session in a separate project you're only advising —
+            so its prompts route to the human, not back to you. Cross-project
+            spawns already auto-root (#715), so this is mainly for a
+            same-project session you want detached, or to force standalone
+            explicitly. Ignored when `created_by` is set (that wins).
         kind: Session role — "worker" or "orchestrator". A flat name (no
             branch) already defaults to orchestrator; a project/branch name
             defaults to worker (safety-railed: isolation/verify/draft-PR/
@@ -171,6 +177,13 @@ def session_create(
         args.extend(["--kind", kind])
     if created_by:
         args.extend(["--created-by", created_by])
+    elif standalone:
+        # Force a standalone root even in the caller's own project (#712):
+        # the CLI reads `--created-by ''` (an explicit empty string, which
+        # argparse distinguishes from the flag being absent) as "opt out of
+        # inheritance". Wins over the default caller-forwarding below;
+        # `created_by` above wins over this.
+        args.extend(["--created-by", ""])
     else:
         # Forward the calling session as a CANDIDATE parent — the CLI only
         # inherits it when project_dir turns out to be the caller's own repo

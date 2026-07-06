@@ -92,6 +92,34 @@ class TestSessionTools:
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
     @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
+    def test_session_create_standalone_forces_empty_created_by(self, _caller, mock_cmd):
+        # #712 — standalone=True forces `--created-by ''` (an explicit empty
+        # string the CLI reads as "opt out of inheritance") even in the
+        # caller's own project, and skips the default --caller-session
+        # candidate-forwarding entirely.
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="test", project_dir="/p", standalone=True)
+        args = mock_cmd.call_args[0][0]
+        assert args == ["new", "-s", "test", "-p", "/p", "--created-by", ""]
+        assert "--caller-session" not in args
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
+    @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
+    def test_session_create_created_by_wins_over_standalone(self, _caller, mock_cmd):
+        # #712 — an explicit created_by beats standalone: the caller asked for
+        # a specific parent, so honor it rather than forcing a root.
+        from agentwire.mcp_session import session_create
+        mock_cmd.return_value = _success()
+        session_create(name="test", project_dir="/p", created_by="orchestrator",
+                       standalone=True)
+        args = mock_cmd.call_args[0][0]
+        assert args == ["new", "-s", "test", "-p", "/p",
+                         "--created-by", "orchestrator"]
+        assert "--caller-session" not in args
+
+    @patch("agentwire.mcp_session.run_agentwire_cmd")
+    @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")
     def test_session_send_cross_session(self, mock_caller, mock_cmd):
         from agentwire.mcp_session import session_send
         mock_cmd.return_value = _success(verified=True)
