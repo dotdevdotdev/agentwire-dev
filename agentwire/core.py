@@ -543,8 +543,8 @@ def resolve_default_created_by(caller: str | None, target_path: Path) -> str | N
 
     Uses ``_live_session_cwd`` rather than ``_get_session_project_path`` —
     the latter's session-name-guessing fallback isn't a safe basis for an
-    identity comparison (it doesn't understand the worktree-session naming
-    scheme, `{project}-{name}`, and would misjudge same/cross-project); if the
+    identity comparison (it doesn't understand the worktree naming scheme,
+    `{project}-{name}`, and would misjudge same/cross-project); if the
     caller's real cwd can't be confirmed, treat it as unknown (no inheritance)
     rather than risk a wrong guess.
     """
@@ -1184,14 +1184,20 @@ def _post_desktop_notification(text: str, session: str | None = None, priority: 
         return False
 
 
-KIND_DEFAULT_POSTURE = {
-    "orchestrator": "bypass",      # agentwire new — you drive it, full access
-    "worktree-session": "bypass",  # agentwire worktree — autonomous, full access
-    "worker": "restricted",        # agentwire spawn — locked-down executor
-}
+def _default_posture(kind: str | None, worktree_topology: bool = False) -> str:
+    """Default posture for a spawn: bypass, unless it's a worker that is NOT
+    isolated on its own worktree — a pane (agentwire spawn) or a worker on
+    plain main topology, both sharing a live checkout someone else may be
+    watching, stay restricted. Orchestrators (main or worktree topology) and
+    worktree-topology workers get full autonomous access — nothing to step
+    on but their own isolated branch.
+    """
+    if kind == "worker" and not worktree_topology:
+        return "restricted"
+    return "bypass"
 
 
-def _resolve_session_type_from_args(args, kind: str) -> tuple[str | None, str | None]:
+def _resolve_session_type_from_args(args, kind: str, worktree_topology: bool = False) -> tuple[str | None, str | None]:
     """Resolve the internal fused session type from the shared flag core.
 
     Posture × harness are the canonical axes; legacy --type (fused strings or
@@ -1207,7 +1213,7 @@ def _resolve_session_type_from_args(args, kind: str) -> tuple[str | None, str | 
     posture = getattr(args, 'posture', None)
     harness = getattr(args, 'harness', None)
     type_arg = getattr(args, 'type', None)
-    default_posture = KIND_DEFAULT_POSTURE.get(kind, "bypass")
+    default_posture = _default_posture(kind, worktree_topology)
 
     if posture or harness:
         try:

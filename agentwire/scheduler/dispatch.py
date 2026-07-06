@@ -754,12 +754,12 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
 
     # Create the worktree + session off the latest origin/<base>.
     # --kind orchestrator: a project/branch name would otherwise derive the
-    # 'worktree-session' kind, whose etiquette tells the agent to open its OWN
-    # draft PR + notify. But the scheduler is the deterministic finalizer
-    # (_finalize_worktree_pr opens + tracks the PR; reap_worktree_prs only
-    # reaps TRACKED PRs) — an agent-opened PR would escape the reaper and leak.
-    # The replaceable orchestrator kind lets the task's own roles win, so no
-    # worktree-session PR-opening contract is injected.
+    # 'worker' kind on worktree topology, whose etiquette tells the agent to
+    # open its OWN draft PR + notify. But the scheduler is the deterministic
+    # finalizer (_finalize_worktree_pr opens + tracks the PR; reap_worktree_prs
+    # only reaps TRACKED PRs) — an agent-opened PR would escape the reaper and
+    # leak. The replaceable orchestrator kind lets the task's own roles win,
+    # so no worker-worktree PR-opening contract is injected.
     new_cmd = [
         "agentwire", "new", "-s", wt_session, "-p", task.project,
         "--base", task.base, "--pull-first", "--kind", "orchestrator", "--json",

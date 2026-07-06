@@ -106,6 +106,7 @@ def session_create(
     base: str | None = None,
     pull_first: bool = True,
     created_by: str = "",
+    kind: str = "",
 ) -> str:
     """Create a new AgentWire session.
 
@@ -139,7 +140,17 @@ def session_create(
             session in a closely related project. Leave empty for the
             default behavior; note that empty here is NOT the same as the
             CLI's `--created-by ''` (force standalone) — there is currently
-            no way to force standalone through this tool.
+            no way to force standalone through this tool. Ignored when
+            kind="orchestrator" is passed explicitly and this is left empty
+            — that combination roots by default instead (a durable
+            orchestrator shouldn't inherit whoever spawned it), regardless
+            of whether name has a branch.
+        kind: Session role — "worker" or "orchestrator". A flat name (no
+            branch) already defaults to orchestrator; a project/branch name
+            defaults to worker (safety-railed: isolation/verify/draft-PR/
+            notify). Pass "orchestrator" to override that default for a
+            project/branch name — e.g. a durable branch-pinned project
+            window. Leave empty for the derived default.
 
     Returns:
         Success message or error description.
@@ -156,6 +167,8 @@ def session_create(
         args.extend(["--base", base])
     if not pull_first:
         args.append("--no-pull-first")
+    if kind:
+        args.extend(["--kind", kind])
     if created_by:
         args.extend(["--created-by", created_by])
     else:
@@ -232,7 +245,7 @@ def diff(session: str, base: str = "") -> str:
     Args:
         session: Session name to inspect.
         base: Diff base ref. Empty = HEAD if there are uncommitted changes,
-            else origin/main (a worktree-session's committed branch work).
+            else origin/main (a worktree session's committed branch work).
 
     Returns:
         A per-file summary of additions/deletions, or "No changes".

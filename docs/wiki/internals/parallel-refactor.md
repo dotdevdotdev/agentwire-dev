@@ -88,7 +88,7 @@ The partition rides on this graph; derive it mechanically, don't take a model's 
 
 What worked for driving the fleet:
 
-- **One worktree session per group**, each PR'ing into the shared **feature branch** (never `main`), so the orchestrator stays in control of integration. Dispatch: `agentwire worktree <group> --base <feature-branch> -p <repo> --prompt "…"`. The `worktree-session` role (auto-injected by the verb) already encodes isolation + draft-PR + notify-back, so prompts only carry the task.
+- **One worktree session per group**, each PR'ing into the shared **feature branch** (never `main`), so the orchestrator stays in control of integration. Dispatch: `agentwire worktree <group> --base <feature-branch> -p <repo> --prompt "…"`. The `worker-worktree` role (auto-injected by the verb's default role) already encodes isolation + draft-PR + notify-back, so prompts only carry the task.
 - **Independent review gate per PR**, all mechanical: ① diff scope is only the expected files; ② **dangling-ref grep** — every moved name is absent from the monolith except its import + registrar line; ③ **no-redefine grep** — `core` helpers are *imported*, not copied into the new module; ④ CI green.
 - **Backstop with polls, not notifications.** Worktree-completion notifications are unreliable (a polite report-back can dead-letter against a busy orchestrator — see [messaging](../sessions/messaging.md) and #523). Run a background `gh pr …` poll for each expected PR rather than waiting to be told.
 - **`send --wait-ready --verify` "could not be verified" is a false negative.** It frequently reports failure on a delivery that landed. Confirm via `agentwire output` before re-sending — a blind retry double-drives the session.

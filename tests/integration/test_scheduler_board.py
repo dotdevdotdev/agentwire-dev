@@ -371,10 +371,10 @@ class TestBoardDisplay:
 
 class TestSchedulerWorktreeDispatchOptsOutOfPR:
     """The scheduler is the deterministic PR finalizer, so its worktree task
-    agents must NOT open their own PRs. C3 derives 'worktree-session' from the
-    slash session name, so the dispatch must override with --kind orchestrator
-    (making the task's own roles win, dropping the draft-PR/notify etiquette).
-    Regression guard for the orphan-PR leak."""
+    agents must NOT open their own PRs. C3 derives 'worker' (on worktree
+    topology) from the slash session name, so the dispatch must override
+    with --kind orchestrator (making the task's own roles win, dropping the
+    draft-PR/notify etiquette). Regression guard for the orphan-PR leak."""
 
     def test_dispatch_passes_kind_orchestrator(self, board_env):
         calls = []

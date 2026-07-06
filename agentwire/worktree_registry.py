@@ -107,8 +107,16 @@ def register(
     base: str | None,
     worktree_path: Path,
     created_at: str | None = None,
+    kind: str | None = None,
 ) -> dict:
     """Record (or replace) a worktree session. Idempotent per session/path.
+
+    ``kind`` (#716) is the session's ROLE at registration time ("worker" or
+    "orchestrator") — recorded so the dangling-PR detector (see
+    ``session_cli.scan_dangling_worktrees``) can tell a safety-railed worker
+    (which structurally can't self-merge and needs a live reviewer) apart
+    from a self-rooted orchestrator (full authority, expected to be
+    parentless — flagging it as "dangling" would be a false positive).
 
     The full read-modify-write is held under an exclusive flock so
     concurrent registration processes serialize instead of clobbering.
@@ -122,6 +130,7 @@ def register(
         "base": base,
         "worktree_path": str(worktree_path),
         "created_at": created_at,
+        "kind": kind,
     }
     with _locked(path):
         data = _load(path)

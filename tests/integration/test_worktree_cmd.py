@@ -78,7 +78,7 @@ def _run(monkeypatch, cfg, **arg_overrides):
         name=None, base=None, current=False, existing=False, ref=None,
         project=None, list=False, remove=False, prune=False, all=False,
         json=True, type=None, posture=None, harness=None, model=None,
-        roles=None, env=None, created_by=None, caller_session=None,
+        roles=None, env=None, created_by=None, caller_session=None, kind=None,
     )
     base.update(arg_overrides)
     return m.cmd_worktree(Namespace(**base))
@@ -130,6 +130,100 @@ def test_caller_session_forwarded_to_cmd_new(tmp_path, monkeypatch, wt_env):
               caller_session="orchestrator")
     assert rc == 0
     assert wt_env["args"].caller_session == "orchestrator"
+    assert wt_env["args"].created_by is None
+
+
+def test_default_kind_is_worker_with_explicit_worktree_topology(tmp_path, monkeypatch, wt_env):
+    """#716: no --kind → cmd_new gets kind='worker' AND an explicit
+    worktree_topology=True override. The override is load-bearing: the
+    session_name _launch_session hands cmd_new is a flat `{project}-{name}`
+    (no slash), so cmd_new's own bool(branch) re-derivation would silently
+    read it as branchless and pick the WRONG (pane) etiquette + posture."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone))
+    assert rc == 0
+    assert wt_env["args"].kind == "worker"
+    assert wt_env["args"].worktree_topology is True
+    # And the session name really has no slash — this is what makes the
+    # override load-bearing rather than redundant.
+    assert "/" not in wt_env["args"].session
+
+
+def test_kind_orchestrator_overrides_default(tmp_path, monkeypatch, wt_env):
+    """--kind orchestrator flows through instead of the worker default."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone), kind="orchestrator")
+    assert rc == 0
+    assert wt_env["args"].kind == "orchestrator"
+
+
+def test_kind_orchestrator_passes_created_by_through_unresolved(tmp_path, monkeypatch, wt_env):
+    """cmd_worktree/_launch_session does NOT resolve the joint rooting
+    default itself — it just forwards kind + created_by=None through to
+    cmd_new, which is the ONE place that default lives (SSOT — see
+    TestCmdNewDefaultCreatedByRooting::test_explicit_kind_orchestrator_roots_even_same_project_caller
+    in test_cli_commands.py for the actual '' resolution, end-to-end).
+    cmd_new is mocked out in this fixture, so this only pins the pass-through
+    contract, not the resolution itself."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone), kind="orchestrator")
+    assert rc == 0
+    assert wt_env["args"].kind == "orchestrator"
+    assert wt_env["args"].created_by is None
+
+
+def test_kind_worker_default_created_by_still_none(tmp_path, monkeypatch, wt_env):
+    """The joint rooting default is specific to kind=orchestrator — the
+    common worker case keeps created_by=None so #715's same-project
+    inheritance logic still runs downstream in cmd_new."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone))
+    assert rc == 0
+    assert wt_env["args"].created_by is None
+
+
+def test_explicit_created_by_wins_over_orchestrator_joint_default(tmp_path, monkeypatch, wt_env):
+    """Explicit --created-by (including '') always wins over the joint
+    default, whichever value it is — even a real parent name for an
+    orchestrator that DOES want to inherit one."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone),
+              kind="orchestrator", created_by="some-parent")
+    assert rc == 0
+    assert wt_env["args"].created_by == "some-parent"
+
+
+def test_orchestrator_sugar_verb_forces_kind(tmp_path, monkeypatch, wt_env):
+    """`agentwire orchestrator` = `worktree --kind orchestrator` — cmd_orchestrator
+    is a thin wrapper that forces args.kind before delegating to cmd_worktree.
+    The joint rooting default itself resolves downstream in cmd_new (SSOT —
+    see test_cli_commands.py), so this only pins that the sugar verb forces
+    kind and forwards created_by unresolved, same as the plain verb above."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    base = dict(
+        name="proj-window", base=None, current=False, existing=False, ref=None,
+        project=str(clone), list=False, remove=False, prune=False, all=False,
+        json=True, type=None, posture=None, harness=None, model=None,
+        roles=None, env=None, created_by=None, caller_session=None, kind=None,
+    )
+    monkeypatch.setattr(m, "load_config", lambda *a, **k: cfg, raising=False)
+    import agentwire.config as config_mod
+    monkeypatch.setattr(config_mod, "load_config", lambda *a, **k: cfg)
+    rc = m.cmd_orchestrator(Namespace(**base))
+    assert rc == 0
+    assert wt_env["args"].kind == "orchestrator"
     assert wt_env["args"].created_by is None
 
 

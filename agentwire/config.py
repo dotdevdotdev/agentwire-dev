@@ -120,7 +120,7 @@ class ProjectsConfig:
 
 @dataclass
 class WorktreeConfig:
-    """Standalone worktree-session orchestration (`worktree:` config key).
+    """Standalone worktree session orchestration (`worktree:` config key).
 
     Governs `agentwire worktree <name>` — the first-class primitive for
     spawning an isolated branch+worktree+session for one unit of work.

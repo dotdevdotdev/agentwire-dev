@@ -102,9 +102,9 @@ class TestResolveDefaultCreatedBy:
         assert core.resolve_default_created_by("caller", repo_b) is None
 
     def test_dead_caller_session_does_not_fall_back_to_name_guessing(self, monkeypatch, tmp_path):
-        # Regression: a worktree-session caller ("myproject-fix-bug", the
-        # hyphenated flat naming `agentwire worktree` uses) that's no longer a
-        # live tmux session must NOT resolve via _get_session_project_path's
+        # Regression: a worktree caller ("myproject-fix-bug", the hyphenated
+        # flat naming `agentwire worktree` uses) that's no longer a live tmux
+        # session must NOT resolve via _get_session_project_path's
         # session-name-parsing fallback (which only understands "/"-separated
         # project/branch names and would derive the wrong, nonexistent
         # project "myproject-fix-bug" instead of "myproject"). Unknown must

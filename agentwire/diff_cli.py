@@ -29,7 +29,7 @@ Output shape (``--json``)::
 
 Base resolution (no ``--base``): if the worktree has uncommitted changes the
 diff is vs ``HEAD`` (what the agent just did, not yet committed); otherwise it
-is vs ``origin/main`` (a worktree-session's committed branch work). The portal
+is vs ``origin/main`` (a worktree session's committed branch work). The portal
 relies on this so a phone review needs zero flags.
 """
 

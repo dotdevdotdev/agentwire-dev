@@ -278,7 +278,7 @@ class TestCmdNewSeedFallback:
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
         monkeypatch.setattr(
-            m, "_resolve_session_type_from_args", lambda a, k: ("claude-bypass", None))
+            m, "_resolve_session_type_from_args", lambda a, k, **kw: ("claude-bypass", None))
         monkeypatch.setattr(
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
@@ -343,7 +343,8 @@ class TestCmdNewDefaultCreatedByRooting:
     different project gets its own standalone root instead of being flattened
     into the caller's subtree."""
 
-    def _run(self, monkeypatch, tmp_path, *, caller_session, caller_project_path):
+    def _run(self, monkeypatch, tmp_path, *, caller_session, caller_project_path,
+             kind=None, session="proj"):
         from types import SimpleNamespace
 
         from agentwire import core
@@ -356,7 +357,7 @@ class TestCmdNewDefaultCreatedByRooting:
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
         monkeypatch.setattr(
-            m, "_resolve_session_type_from_args", lambda a, k: ("claude-bypass", None))
+            m, "_resolve_session_type_from_args", lambda a, k, **kw: ("claude-bypass", None))
         monkeypatch.setattr(
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
@@ -373,8 +374,8 @@ class TestCmdNewDefaultCreatedByRooting:
         monkeypatch.setattr(m, "_record_session_creator", fake_record)
 
         args = argparse.Namespace(
-            session="proj", path=str(tmp_path), force=False, json=True,
-            created_by=None, caller_session=caller_session,
+            session=session, path=str(tmp_path), force=False, json=True,
+            created_by=None, caller_session=caller_session, kind=kind,
         )
         rc = m.cmd_new(args)
         assert rc == 0
@@ -404,12 +405,41 @@ class TestCmdNewDefaultCreatedByRooting:
         )
         assert recorded["created_by"] is None
 
+    def test_explicit_kind_orchestrator_roots_even_same_project_caller(self, monkeypatch, tmp_path):
+        # #716: cmd_new is the ONE place this joint default lives — it must
+        # fire whether cmd_new is reached directly (`agentwire new --kind
+        # orchestrator` / `session_create(kind="orchestrator")`) or via
+        # cmd_worktree's _launch_session, which just forwards --kind through.
+        # Without this, a durable orchestrator created via `agentwire new`
+        # directly (skipping cmd_worktree) would silently inherit the caller
+        # as parent whenever same-project — contradicting its own "roots by
+        # default" contract.
+        recorded = self._run(
+            monkeypatch, tmp_path,
+            caller_session="orchestrator", caller_project_path=Path(tmp_path),
+            kind="orchestrator",
+        )
+        assert recorded["created_by"] == ""
+
+    def test_plain_branchless_new_keeps_inherit_behavior_even_though_it_derives_orchestrator(self, monkeypatch, tmp_path):
+        # The joint default is gated on the EXPLICIT --kind flag, not the
+        # resolved kind (a plain branchless name always derives to
+        # "orchestrator" via derive_session_kind) — otherwise every ordinary
+        # `agentwire new -s name` call would stop inheriting same-project
+        # callers, a much bigger behavior change than #716 asked for.
+        recorded = self._run(
+            monkeypatch, tmp_path,
+            caller_session="orchestrator", caller_project_path=Path(tmp_path),
+            kind=None,
+        )
+        assert recorded["created_by"] == "orchestrator"
+
 
 # --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
 #
 # Both commands used to copy `project_config.roles` raw, bypassing
 # resolve_roles + the #309/#310 kind-derivation — so a recreated worktree
-# session silently lost its non-overridable worktree-session etiquette
+# session silently lost its non-overridable worker-worktree etiquette
 # (isolation / verify / draft-PR / notify). These capture the role list each
 # command hands to load_roles and assert the kind's intrinsic etiquette is
 # present (or, for the orchestrator persona, replaceable).
@@ -499,9 +529,10 @@ class TestRecreateRoutesThroughResolveRoles:
             session="proj/feature", json=True, type="claude-bypass", env=None,
         )
         assert mod.cmd_recreate(args) == 0
-        # The whole point: a project/branch recreate is a worktree-session, so
-        # the safety contract is present even though nothing was saved.
-        assert cap.role_names[0] == "worktree-session"
+        # The whole point: a project/branch recreate is a worker on worktree
+        # topology, so the safety contract is present even though nothing
+        # was saved.
+        assert cap.role_names[0] == "worker-worktree"
         assert "soul" in cap.role_names
 
     def test_worktree_recreate_stacks_saved_roles_under_etiquette(
@@ -519,7 +550,7 @@ class TestRecreateRoutesThroughResolveRoles:
         )
         assert mod.cmd_recreate(args) == 0
         # Non-overridable: etiquette first, saved role stacks, never replaces.
-        assert cap.role_names[0] == "worktree-session"
+        assert cap.role_names[0] == "worker-worktree"
         assert "domain" in cap.role_names
 
     def test_plain_recreate_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
@@ -550,7 +581,7 @@ class TestRecreateRoutesThroughResolveRoles:
 
 
 class TestForkRoutesThroughResolveRoles:
-    def test_worktree_fork_injects_worktree_session_etiquette(self, monkeypatch, tmp_path):
+    def test_worktree_fork_injects_worker_worktree_etiquette(self, monkeypatch, tmp_path):
         import agentwire.session_cli as mod
 
         projects = tmp_path / "projects"
@@ -563,8 +594,8 @@ class TestForkRoutesThroughResolveRoles:
             env=None, commit=None,
         )
         assert mod.cmd_fork(args) == 0
-        # Fork target is a worktree → worktree-session etiquette, intrinsic.
-        assert cap.role_names[0] == "worktree-session"
+        # Fork target is a worktree → worker etiquette on worktree topology, intrinsic.
+        assert cap.role_names[0] == "worker-worktree"
 
     def test_worktree_fork_stacks_source_roles_under_etiquette(self, monkeypatch, tmp_path):
         import agentwire.session_cli as mod
@@ -579,7 +610,7 @@ class TestForkRoutesThroughResolveRoles:
             env=None, commit=None,
         )
         assert mod.cmd_fork(args) == 0
-        assert cap.role_names[0] == "worktree-session"
+        assert cap.role_names[0] == "worker-worktree"
         assert "domain" in cap.role_names
 
     def test_non_worktree_fork_is_orchestrator_replaceable(self, monkeypatch, tmp_path):

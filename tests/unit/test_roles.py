@@ -6,6 +6,7 @@ import pytest
 from agentwire.roles import (
     INTRINSIC_ETIQUETTE,
     SAFETY_RAIL_KINDS,
+    WORKTREE_TOPOLOGY_ETIQUETTE,
     RoleConfig,
     derive_session_kind,
     discover_role,
@@ -213,8 +214,19 @@ class TestResolveRolesZeroConfig:
     def test_intrinsic_etiquette_is_the_zero_config_default(self):
         # Zero-config: each verb's kind yields exactly its intrinsic etiquette.
         assert resolve_roles("orchestrator") == ["orchestrator"]
-        assert resolve_roles("worktree-session") == ["worktree-session"]
         assert resolve_roles("worker") == ["worker"]
+
+    def test_worktree_topology_selects_the_worktree_flavored_worker_role(self):
+        # ROLE (worker) is topology-independent; the FILE it resolves to
+        # isn't — a worker on its own worktree gets a genuinely different
+        # etiquette (isolation/draft-PR/notify) than a pane/main worker
+        # (headless, exit-summary/auto-kill).
+        assert resolve_roles("worker", worktree_topology=True) == ["worker-worktree"]
+        assert resolve_roles("worker", worktree_topology=False) == ["worker"]
+
+    def test_worktree_topology_is_a_no_op_for_orchestrator(self):
+        # Orchestrator is topology-invariant — no worktree-specific variant.
+        assert resolve_roles("orchestrator", worktree_topology=True) == ["orchestrator"]
 
 
 class TestResolveRolesPersona:
@@ -248,7 +260,8 @@ class TestResolveRolesPersona:
 
 
 class TestResolveRolesSafetyRail:
-    """worker / worktree-session — non-overridable contract: etiquette always present, user roles STACK."""
+    """worker (pane/main topology or worktree topology) — non-overridable
+    contract: etiquette always present, user roles STACK."""
 
     def test_worker_etiquette_always_present_cli_stacks(self):
         # C1: a worker pane in a configured project keeps worker etiquette.
@@ -257,41 +270,49 @@ class TestResolveRolesSafetyRail:
     def test_worker_etiquette_always_present_project_stacks(self):
         assert resolve_roles("worker", project_roles=["domain"]) == ["worker", "domain"]
 
-    def test_worktree_session_etiquette_always_present_cli_stacks(self):
-        # C2: `worktree foo --roles domain` keeps the worktree-session contract.
-        assert resolve_roles("worktree-session", cli_roles=["domain"]) == ["worktree-session", "domain"]
+    def test_worker_worktree_etiquette_always_present_cli_stacks(self):
+        # C2: `worktree foo --roles domain` keeps the worker-worktree contract.
+        assert resolve_roles("worker", worktree_topology=True, cli_roles=["domain"]) == ["worker-worktree", "domain"]
 
-    def test_worktree_session_etiquette_always_present_project_stacks(self):
+    def test_worker_worktree_etiquette_always_present_project_stacks(self):
         # A repo with roles: in .agentwire.yml still gets the safety contract.
-        assert resolve_roles("worktree-session", project_roles=["domain"]) == ["worktree-session", "domain"]
+        assert resolve_roles("worker", worktree_topology=True, project_roles=["domain"]) == ["worker-worktree", "domain"]
 
     def test_project_and_cli_both_stack(self):
         assert resolve_roles("worker", cli_roles=["b"], project_roles=["a"]) == ["worker", "a", "b"]
 
     def test_intrinsic_not_duplicated(self):
         assert resolve_roles("worker", cli_roles=["worker", "extra"]) == ["worker", "extra"]
-        assert resolve_roles("worktree-session", project_roles=["worktree-session"]) == ["worktree-session"]
+        assert resolve_roles("worker", worktree_topology=True, project_roles=["worker-worktree"]) == ["worker-worktree"]
 
     def test_etiquette_survives_even_a_task_runner_role(self):
-        # Scheduler worktree dispatch: task-runner stacks ON worktree-session.
-        assert resolve_roles("worktree-session", cli_roles=["task-runner"]) == ["worktree-session", "task-runner"]
+        # Scheduler worktree dispatch: task-runner stacks ON worker-worktree.
+        assert resolve_roles("worker", worktree_topology=True, cli_roles=["task-runner"]) == ["worker-worktree", "task-runner"]
 
     def test_worker_etiquette_stays_voiceless(self):
-        # worker is headless → soul is NOT appended even after stacking.
+        # pane/main-topology worker is headless → soul is NOT appended even after stacking.
         assert inject_soul(resolve_roles("worker", cli_roles=["x"])) == ["worker", "x"]
+
+    def test_worker_worktree_etiquette_keeps_voice(self):
+        # Standalone worktree topology is NOT headless — it keeps soul/voice,
+        # unlike the pane/main-topology flavor. This is deliberate: the two
+        # role files exist precisely because this behavior genuinely differs
+        # by topology (see also AskUserQuestion, which worker.md disallows
+        # and worker-worktree.md does not — routed to the parent instead).
+        assert inject_soul(resolve_roles("worker", worktree_topology=True)) == ["worker-worktree", "soul"]
 
 
 class TestDeriveSessionKind:
     def test_explicit_kind_wins(self):
-        assert derive_session_kind(True, "worktree-session") == "worktree-session"
-        assert derive_session_kind(False, "worktree-session") == "worktree-session"
-        # The scheduler overrides the derived worktree-session with a
-        # replaceable orchestrator so its task-runner roles win (no agent PR).
+        assert derive_session_kind(True, "worker") == "worker"
+        assert derive_session_kind(False, "worker") == "worker"
+        # The scheduler overrides the derived worker with a replaceable
+        # orchestrator so its task-runner roles win (no agent PR).
         assert derive_session_kind(True, "orchestrator") == "orchestrator"
 
-    def test_branch_means_worktree_session(self):
+    def test_branch_means_worker(self):
         # `new project/branch`, portal worktree dispatch (C3) — no explicit kind.
-        assert derive_session_kind(True) == "worktree-session"
+        assert derive_session_kind(True) == "worker"
 
     def test_plain_name_means_orchestrator(self):
         assert derive_session_kind(False) == "orchestrator"
@@ -302,35 +323,39 @@ class TestSchedulerWorktreeOptsOutOfPrEtiquette:
     NOT open their own PRs (they'd escape reap_worktree_prs and leak). It
     dispatches `new -s proj/branch --kind orchestrator --roles task-runner`."""
 
-    def test_scheduler_task_has_no_worktree_session_role(self):
+    def test_scheduler_task_has_no_worker_worktree_role(self):
         kind = derive_session_kind(has_branch=True, explicit_kind="orchestrator")
-        roles = resolve_roles(kind, cli_roles=["task-runner"])
-        assert "worktree-session" not in roles  # the PR-opening contract
+        roles = resolve_roles(kind, worktree_topology=True, cli_roles=["task-runner"])
+        assert "worker-worktree" not in roles  # the PR-opening contract
         assert roles == ["task-runner"]
 
     def test_scheduler_task_without_roles_still_no_pr_etiquette(self):
         # Even a role-less scheduler task gets the orchestrator persona, which
         # carries no draft-PR instruction.
         kind = derive_session_kind(has_branch=True, explicit_kind="orchestrator")
-        assert "worktree-session" not in resolve_roles(kind)
+        assert "worker-worktree" not in resolve_roles(kind, worktree_topology=True)
 
     def test_human_worktree_keeps_full_pr_etiquette(self):
-        # `agentwire worktree foo` → cmd_worktree passes kind="worktree-session"
-        # (no slash name, explicit kind). The draft-PR/notify contract stays.
-        kind = derive_session_kind(has_branch=False, explicit_kind="worktree-session")
-        assert "worktree-session" in resolve_roles(kind, cli_roles=["domain"])
+        # `agentwire worktree foo` → cmd_worktree passes kind="worker" (default)
+        # and an explicit worktree_topology=True override. The draft-PR/notify
+        # contract stays.
+        kind = derive_session_kind(has_branch=False, explicit_kind="worker")
+        assert "worker-worktree" in resolve_roles(kind, worktree_topology=True, cli_roles=["domain"])
 
 
 class TestIntrinsicEtiquette:
-    def test_maps_three_kinds(self):
+    def test_maps_two_kinds(self):
         assert INTRINSIC_ETIQUETTE == {
             "orchestrator": "orchestrator",
-            "worktree-session": "worktree-session",
             "worker": "worker",
         }
 
+    def test_worktree_topology_etiquette_overrides_worker_only(self):
+        # Only "worker" has a topology-specific variant; orchestrator doesn't.
+        assert WORKTREE_TOPOLOGY_ETIQUETTE == {"worker": "worker-worktree"}
+
     def test_safety_rail_kinds(self):
-        assert SAFETY_RAIL_KINDS == {"worker", "worktree-session"}
+        assert SAFETY_RAIL_KINDS == {"worker"}
 
     def test_every_intrinsic_role_is_discoverable(self):
         for role_name in INTRINSIC_ETIQUETTE.values():
@@ -344,11 +369,21 @@ class TestIntrinsicEtiquette:
             assert role.tools == []
             assert role.instructions
 
+    def test_every_worktree_topology_role_is_discoverable(self):
+        for role_name in WORKTREE_TOPOLOGY_ETIQUETTE.values():
+            path = discover_role(role_name)
+            assert path is not None, f"worktree-topology role not found: {role_name}"
+            role = parse_role_file(path)
+            assert role is not None
+            assert role.name == role_name
+            assert role.tools == []
+            assert role.instructions
 
-class TestBundledWorktreeSessionRole:
+
+class TestBundledWorkerWorktreeRole:
     def test_thin_etiquette_no_pm_no_templating(self):
-        """worktree-session is pure orchestration etiquette: no PM, no {{templates}}."""
-        role = parse_role_file(discover_role("worktree-session"))
+        """worker-worktree is pure orchestration etiquette: no PM, no {{templates}}."""
+        role = parse_role_file(discover_role("worker-worktree"))
         assert role is not None
         # Etiquette present.
         for needle in ["agentwire rebuild", "portal restart", "DRAFT", "uv run pytest", "agentwire msg send"]:
@@ -357,6 +392,9 @@ class TestBundledWorktreeSessionRole:
         assert "{{" not in role.instructions
         assert "Closes #" not in role.instructions
         assert "single source of truth" not in role.instructions.lower()
+        # No AskUserQuestion lockout (unlike pane worker.md) — routed to the
+        # parent via prompt-routing instead, and no disallowedTools frontmatter.
+        assert "AskUserQuestion" not in (role.disallowed_tools or [])
         assert "breadcrumb" not in role.instructions.lower()
 
 

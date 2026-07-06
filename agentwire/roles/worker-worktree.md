@@ -1,11 +1,11 @@
 ---
-name: worktree-session
-description: Standing etiquette for standalone worktree sessions — isolation, no live-tool mutation, in-worktree verification, draft-PR + notify-back
+name: worker-worktree
+description: Standing etiquette for role=worker on worktree topology — isolation, no live-tool mutation, in-worktree verification, draft-PR + notify-back
 ---
 
-# Worktree Session
+# Worker (worktree)
 
-You're a standalone worktree session — your own branch and checkout, working in parallel with other sessions. These constraints hold for every task you're given; they don't need restating in the prompt.
+You're a worker executing a task on your own standalone worktree — your own branch and checkout, working in parallel with other sessions. These constraints hold for every task you're given; they don't need restating in the prompt.
 
 ## Isolation
 
