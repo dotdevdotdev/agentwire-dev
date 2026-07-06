@@ -5,6 +5,7 @@ inference, and the local branch↔session registry — with the tmux/session
 launch stubbed out so the tests stay hermetic.
 """
 
+import json
 import subprocess
 from argparse import Namespace
 
@@ -40,8 +41,14 @@ def _origin_and_clone(tmp_path, default_branch="develop"):
 
 @pytest.fixture
 def wt_env(tmp_path, monkeypatch):
-    """Isolate registry + stub session launch + capture the cmd_new call."""
+    """Isolate registry + stub session launch + capture the cmd_new call.
+
+    Also stubs `gh` away (shutil.which("gh") -> None) so branch-cleanup merge
+    checks deterministically take the git merge-base fallback path instead of
+    depending on whether the test host has `gh` installed/authenticated.
+    """
     monkeypatch.setattr(reg, "REGISTRY_DIR", tmp_path / "registry")
+    monkeypatch.setattr(m.chrome_tabs, "REGISTRY_FILE", tmp_path / "chrome-tabs.json")
 
     launched = {}
 
@@ -52,6 +59,7 @@ def wt_env(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "cmd_new", fake_cmd_new)
     monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
     monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+    monkeypatch.setattr(m.shutil, "which", lambda *_: None)
     return launched
 
 
@@ -411,3 +419,215 @@ def test_prune_drops_stale_entries(tmp_path, monkeypatch, wt_env):
     assert reg.entries(clone.resolve()) == []
     # Pruning the project's last worktree sweeps the empty per-project dir.
     assert not (wt_dir / "clone-repo").exists()
+
+
+# --- Atomic teardown + branch cleanup (#717) ---
+
+def _local_branch_exists(repo, branch):
+    return bool(_git(repo, "branch", "--list", branch).stdout.strip())
+
+
+def _remote_branch_exists(repo, branch):
+    return bool(_git(repo, "ls-remote", "--heads", "origin", branch).stdout.strip())
+
+
+def test_remove_fails_loudly_when_dir_survives(tmp_path, monkeypatch, wt_env, capsys):
+    """A worktree git can't actually clear must fail LOUDLY — never silently
+    'unregister' and leave the dir on disk (#717)."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="stuck", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "stuck"
+    assert wt_path.exists()
+
+    # Break the worktree's link back to its admin dir so `git worktree
+    # remove --force` fails, while its real content stays on disk.
+    (wt_path / ".git").unlink()
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="stuck", project=str(clone), remove=True)
+    assert rc == 1
+    assert wt_path.exists()  # never silently swept away
+    assert len(reg.entries(clone.resolve())) == 1  # entry kept, not dropped
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is False
+    assert payload["worktree_removed"] is False
+    assert payload["error"]
+
+
+def test_remove_kills_alive_session(tmp_path, monkeypatch, wt_env, capsys):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="alive", project=str(clone)) == 0
+
+    real_run = subprocess.run
+    killed = []
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["tmux", "kill-session"]:
+            killed.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(m, "tmux_session_exists", lambda name: name == "clone-repo-alive")
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="alive", project=str(clone), remove=True)
+    assert rc == 0
+    assert killed == [["tmux", "kill-session", "-t", "clone-repo-alive"]]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["killed"] is True
+
+
+def test_remove_deletes_trivially_merged_branch_local_and_remote(tmp_path, monkeypatch, wt_env):
+    """A branch identical to its base (no new commits) is trivially safe to
+    delete without gh or a real PR — exercises the git ancestor fallback."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="done", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "done"
+    _git(wt_path, "push", "-q", "-u", "origin", "done")
+    assert _remote_branch_exists(clone, "done")
+
+    rc = _run(monkeypatch, cfg, name="done", project=str(clone), remove=True)
+    assert rc == 0
+    assert not wt_path.exists()
+    assert not _local_branch_exists(clone, "done")
+    assert not _remote_branch_exists(clone, "done")
+
+
+def test_remove_keeps_unmerged_branch_by_default(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="wip", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "wip"
+    (wt_path / "new.txt").write_text("still working\n")
+    _git(wt_path, "add", "-A")
+    _git(wt_path, "commit", "-qm", "wip commit")
+
+    rc = _run(monkeypatch, cfg, name="wip", project=str(clone), remove=True)
+    assert rc == 0
+    assert not wt_path.exists()  # worktree still torn down
+    assert _local_branch_exists(clone, "wip")  # branch preserved — unmerged work
+
+
+def test_remove_force_delete_branch_removes_unmerged(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="wip2", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "wip2"
+    (wt_path / "new.txt").write_text("still working\n")
+    _git(wt_path, "add", "-A")
+    _git(wt_path, "commit", "-qm", "wip commit")
+
+    rc = _run(monkeypatch, cfg, name="wip2", project=str(clone), remove=True, force_delete_branch=True)
+    assert rc == 0
+    assert not _local_branch_exists(clone, "wip2")
+
+
+def test_remove_keep_branch_flag_preserves_merged_branch(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="keepme", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "keepme"
+
+    rc = _run(monkeypatch, cfg, name="keepme", project=str(clone), remove=True, keep_branch=True)
+    assert rc == 0
+    assert not wt_path.exists()
+    assert _local_branch_exists(clone, "keepme")
+
+
+def test_prune_gc_merged_tears_down_only_merged_worktrees(tmp_path, monkeypatch, wt_env):
+    """--prune --gc-merged sweeps registered-but-still-present worktrees whose
+    branch is confirmed merged; an in-flight (unmerged) worktree is untouched."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="finished", project=str(clone)) == 0
+    assert _run(monkeypatch, cfg, name="ongoing", project=str(clone)) == 0
+
+    ongoing_path = wt_dir / "clone-repo" / "ongoing"
+    (ongoing_path / "wip.txt").write_text("still going\n")
+    _git(ongoing_path, "add", "-A")
+    _git(ongoing_path, "commit", "-qm", "wip")
+
+    rc = _run(monkeypatch, cfg, prune=True, gc_merged=True, project=str(clone))
+    assert rc == 0
+
+    finished_path = wt_dir / "clone-repo" / "finished"
+    assert not finished_path.exists()
+    assert ongoing_path.exists()
+    sessions = {e["session"] for e in reg.entries(clone.resolve())}
+    assert sessions == {"clone-repo-ongoing"}
+
+
+# --- claude-in-chrome tab crash backstop (#717) ---
+
+def test_remove_reports_and_clears_orphaned_tabs(tmp_path, monkeypatch, wt_env):
+    """A tab the session tracked but never closed itself must be surfaced (not
+    silently dropped) by --remove, and cleared from the registry afterward."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="leaky", project=str(clone)) == 0
+    m.chrome_tabs.track("clone-repo-leaky", "tab-123", url="http://localhost:3000")
+
+    rc = _run(monkeypatch, cfg, name="leaky", project=str(clone), remove=True)
+    assert rc == 0
+    assert m.chrome_tabs.tabs_for("clone-repo-leaky") == []  # cleared, not left dangling
+
+
+def test_remove_with_no_tracked_tabs_reports_none(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="clean", project=str(clone)) == 0
+
+    rc = _run(monkeypatch, cfg, name="clean", project=str(clone), remove=True)
+    assert rc == 0
+    assert m.chrome_tabs.tabs_for("clone-repo-clean") == []
+
+
+def test_remove_failure_keeps_tracked_tabs_untouched(tmp_path, monkeypatch, wt_env):
+    """If teardown fails loudly (dir survives), tracked tabs stay tracked —
+    they're only cleared once the session is actually gone."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="stuck2", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "stuck2"
+    (wt_path / ".git").unlink()
+    m.chrome_tabs.track("clone-repo-stuck2", "tab-456")
+
+    rc = _run(monkeypatch, cfg, name="stuck2", project=str(clone), remove=True)
+    assert rc == 1
+    assert len(m.chrome_tabs.tabs_for("clone-repo-stuck2")) == 1
+
+
+def test_prune_gc_merged_clears_tabs_for_torn_down_sessions_only(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="finished2", project=str(clone)) == 0
+    assert _run(monkeypatch, cfg, name="ongoing2", project=str(clone)) == 0
+
+    ongoing_path = wt_dir / "clone-repo" / "ongoing2"
+    (ongoing_path / "wip.txt").write_text("still going\n")
+    _git(ongoing_path, "add", "-A")
+    _git(ongoing_path, "commit", "-qm", "wip")
+
+    m.chrome_tabs.track("clone-repo-finished2", "tab-a")
+    m.chrome_tabs.track("clone-repo-ongoing2", "tab-b")
+
+    rc = _run(monkeypatch, cfg, prune=True, gc_merged=True, project=str(clone))
+    assert rc == 0
+    assert m.chrome_tabs.tabs_for("clone-repo-finished2") == []  # GC'd session's tab cleared
+    assert len(m.chrome_tabs.tabs_for("clone-repo-ongoing2")) == 1  # untouched session's tab kept

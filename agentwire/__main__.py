@@ -192,6 +192,7 @@ Command Categories:
     from . import doctor_cli, history_cli, machine_cli, safety_cli
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
     from . import notify_cli, palette_cli, push_cli, repo_cli, system_cli, wiki_cli
+    from . import tabs_cli
     from .council import cli as council_cli
 
     _REGISTRARS = [  # noqa: N806  # registry constant; Phase 1 of #495 appends here
@@ -224,6 +225,7 @@ Command Categories:
         repo_cli.register_repo_parser,
         config_cli.register_config_parser,
         palette_cli.register_palette_parser,
+        tabs_cli.register_tabs_parser,
     ]
     for _reg in _REGISTRARS:
         _reg(subparsers)

@@ -269,26 +269,33 @@ def _seed_worktree_files(
             pass  # best-effort — a missing seed file shouldn't fail dispatch
 
 
-def remove_worktree(project_path: Path, worktree_path: Path) -> bool:
+def remove_worktree(project_path: Path, worktree_path: Path, *, force: bool = True) -> tuple[bool, str]:
     """Remove a git worktree.
+
+    Defaults to ``--force`` — teardown callers want this to succeed even with
+    uncommitted changes (the session is being torn down, not preserved), and
+    a non-force attempt just adds a doomed round-trip before the inevitable
+    force retry (#717).
 
     Args:
         project_path: Path to the main git repository
         worktree_path: Path to the worktree to remove
+        force: Pass ``--force`` to ``git worktree remove`` (default True)
 
     Returns:
-        True if removed successfully, False otherwise
+        (removed, error) — error is "" on success, else git's stderr/reason.
     """
     if not is_git_repo(project_path):
-        return False
+        return False, f"{project_path} is not a git repository"
 
-    result = subprocess.run(
-        ["git", "worktree", "remove", str(worktree_path)],
-        cwd=project_path,
-        capture_output=True,
-    )
+    cmd = ["git", "worktree", "remove", str(worktree_path)]
+    if force:
+        cmd.append("--force")
+    result = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True)
 
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr or result.stdout).strip()
 
 
 def worktree_status(worktree_path: Path) -> dict:
