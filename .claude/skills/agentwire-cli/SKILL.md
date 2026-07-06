@@ -169,11 +169,8 @@ agentwire listen stop --type    # transcribe + type at cursor (Hammerspoon paste
 agentwire listen stop --stdout  # transcribe + print raw transcript to stdout, no paste/send
                                 #   (scripting hook — Hammerspoon etc. capture $())
 
-# Voice cloning
-agentwire voiceclone start      # start recording voice sample
-agentwire voiceclone stop name  # stop and save as voice clone
-agentwire voiceclone list       # list available voices
-agentwire voiceclone delete name # delete a voice clone
+# Voices (custom/cloned voices come from a TTS shim — see docs/wiki/voice/shim-contract.md)
+agentwire tts voices            # list available voices (custom-shim voices or Kokoro presets)
 
 # Artifact windows (agent visual canvas)
 agentwire open <url> --title "T"  # open URL or local file as artifact window

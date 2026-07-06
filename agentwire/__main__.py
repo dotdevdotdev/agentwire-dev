@@ -118,7 +118,6 @@ Command Categories:
 
   Voice:
     listen           Voice input recording
-    voiceclone       Record and upload voice clones
     tts              Manage TTS server
     stt              Manage STT server
 
@@ -391,7 +390,7 @@ def _find_subparser(parser: argparse.ArgumentParser, *names: str):
 _GROUP_COMMANDS = [
     "portal", "tts", "stt", "tunnels", "machine", "history", "handoff",
     "wiki", "hooks", "projects", "safety", "network", "listen",
-    "voiceclone", "roles", "task", "lock", "scheduler", "council", "limits",
+    "roles", "task", "lock", "scheduler", "council", "limits",
     "config",
 ]
 

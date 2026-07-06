@@ -89,7 +89,7 @@ agentwire new -s hello -p ~/projects/hello
 
 > **Optional:** clone this repo (`git clone https://github.com/dotdevdotdev/agentwire-dev ~/projects/agentwire-dev`) and `agentwire dev` opens a guided helper session inside it — setup walkthrough, project wiring, issue filing, forking. It requires the source checkout; everything above works without one.
 
-**Requirements:** Python 3.10+, tmux, Claude Code. Optional: ffmpeg (only for host-mic push-to-talk capture and voice cloning — browser voice input works without it).
+**Requirements:** Python 3.10+, tmux, Claude Code. Optional: ffmpeg (only for host-mic push-to-talk capture — browser voice input works without it).
 
 **Honest setup time:** under a minute to a working voice portal with a genuinely good voice — Kokoro-82M runs on CPU out of the box (one-time ~200 MB model download in the background; the browser voice covers the wait). ~15 minutes for the full experience: cloned voices via a self-hosted TTS shim, Whisper-grade transcription, phone-from-anywhere (certs + token).
 
@@ -115,7 +115,7 @@ Origin checks reject cross-site browser requests on every bind. Keep the portal 
 
 **macOS:**
 ```bash
-brew install tmux uv        # ffmpeg optional: only for host-mic PTT + voice cloning
+brew install tmux uv        # ffmpeg optional: only for host-mic PTT
 uv tool install agentwire-dev
 ```
 
@@ -123,7 +123,7 @@ uv tool install agentwire-dev
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install tmux       # ffmpeg optional: only for host-mic PTT + voice cloning
+sudo apt install tmux       # ffmpeg optional: only for host-mic PTT
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install agentwire-dev
 ```
@@ -289,7 +289,7 @@ agentwire kill --pane 1           # Kill worker
 agentwire say "Hello"             # TTS (auto-routes to browser)
 agentwire send -s NAME "Done"     # Inject text into a session
 agentwire listen start/stop       # Voice recording
-agentwire voiceclone list         # Custom voices
+agentwire tts voices              # List available voices
 ```
 
 </details>

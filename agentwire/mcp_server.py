@@ -34,7 +34,6 @@ from . import (
     mcp_task,  # noqa: F401
     mcp_tunnels,  # noqa: F401
     mcp_voice,  # noqa: F401
-    mcp_voiceclone,  # noqa: F401
     mcp_wiki,  # noqa: F401
     mcp_worktree,  # noqa: F401
 )

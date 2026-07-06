@@ -23,7 +23,7 @@ uv tool install agentwire-dev
 
 `uv tool install` (or `pipx install agentwire-dev`) puts agentwire in its own isolated environment, so it works on PEP 668 "externally-managed" Pythons — bare `pip install agentwire-dev` fails there (Homebrew Python 3.12+, Debian/Ubuntu system Python). If you'd rather use pip, do it inside a venv.
 
-ffmpeg is **optional**: browser voice input works without it (WebM/Opus uploads are decoded in-process via PyAV). Install it only if you want host-mic push-to-talk capture (`agentwire listen`) or voice cloning — `brew install ffmpeg` / `sudo apt install ffmpeg`.
+ffmpeg is **optional**: browser voice input works without it (WebM/Opus uploads are decoded in-process via PyAV). Install it only if you want host-mic push-to-talk capture (`agentwire listen`) — `brew install ffmpeg` / `sudo apt install ffmpeg`.
 
 You'll also want **Claude Code** installed (`claude --version`) since the default session type runs through it.
 

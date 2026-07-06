@@ -487,7 +487,6 @@ be un-done) warrant gating, matching the `outbound.*` scope. The rest of the
 | `machine_add`/`machine_remove` | Open | Local registry edit; reversible. |
 | `scheduler_run`, `scheduler_enable`/`disable` | Open | Triggers local task runs (themselves gated by this hook + the Bash hook). |
 | `council_start`/`stop` | Open | Local orchestration sessions. |
-| `voiceclone_*` | Open | Local TTS asset management. |
 | `desktop_*`, `worktree_*`, `handoff_*`, `history_*` | Open | Local UI / git-backed / filesystem; reversible. |
 
 If a new outward-irreversible MCP verb is added, extend

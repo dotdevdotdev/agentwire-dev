@@ -122,7 +122,7 @@ def voices_list() -> str:
     Returns:
         List of voice names that can be used with the say() tool.
     """
-    data = run_agentwire_cmd(["voiceclone", "list"])
+    data = run_agentwire_cmd(["tts", "voices"])
     if not data.get("success"):
         return f"Failed to list voices: {data.get('error', 'Unknown error')}"
     return format_voices(data)
