@@ -57,6 +57,11 @@ agentwire worktree --remove name  # ATOMIC teardown: kill session + force-remove
 agentwire worktree --prune      # drop registry entries whose worktree is gone + git worktree prune
                                 #   --gc-merged: also tear down (session+worktree+branch) any
                                 #   still-present entry whose branch is confirmed merged
+agentwire tabs track --session name --tab-id <id> [--url <url>]  # bookkeeping for a
+                                #   claude-in-chrome tab the session opened, so worktree
+                                #   teardown can report it if the session never closes it
+agentwire tabs untrack --session name --tab-id <id>  # drop tracking after closing it yourself
+agentwire tabs list [--session name]  # list tracked tabs (debug leaked verification tabs)
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 

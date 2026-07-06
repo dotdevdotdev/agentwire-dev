@@ -14,6 +14,7 @@ Usage:
 
 from . import (
     mcp_channels,  # noqa: F401
+    mcp_chrome,  # noqa: F401
     mcp_council,  # noqa: F401
     mcp_desktop,  # noqa: F401
     mcp_handoff,  # noqa: F401

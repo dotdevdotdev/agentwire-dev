@@ -207,6 +207,10 @@ def worktree_remove(
     never touches main and never requires switching the primary checkout —
     branch deletion works entirely from the (now-vacated) branch name.
 
+    If the torn-down session tracked any claude-in-chrome verification tabs
+    (`chrome_tab_track`) it never closed itself, they're reported here — YOU
+    must close them with `tabs_close_mcp`; agentwire has no way to do it for you.
+
     Args:
         name: Worktree session name, branch, or short name.
         project_dir: Path to the git repo (default: server cwd).
@@ -234,7 +238,25 @@ def worktree_remove(
     if data.get("branch"):
         branch_bit = (f" Branch '{data['branch']}' deleted." if data.get("branch_deleted")
                       else f" Branch '{data['branch']}' kept ({data.get('branch_note', 'not deleted')}).")
-    return f"Removed worktree session '{session}'{killed}; worktree deleted.{branch_bit}"
+    tabs_bit = _orphaned_tabs_warning(data.get("orphaned_tabs"))
+    return f"Removed worktree session '{session}'{killed}; worktree deleted.{branch_bit}{tabs_bit}"
+
+
+def _orphaned_tabs_warning(orphaned: list | None) -> str:
+    """Format a WARNING suffix for claude-in-chrome tabs a torn-down session
+    never closed itself — agentwire can't close them (that MCP tool only runs
+    inside the calling agent's own client), so the calling agent must (#717).
+    Entries carrying a "session" key (the --gc-merged multi-session sweep) are
+    attributed per-tab; single-session worktree_remove entries just list ids.
+    """
+    if not orphaned:
+        return ""
+    ids = ", ".join(
+        f"{t['session']}:{t.get('tab_id', '?')}" if t.get("session") else t.get("tab_id", "?")
+        for t in orphaned
+    )
+    return (f" WARNING: {len(orphaned)} claude-in-chrome tab(s) opened by torn-down session(s) were "
+            f"never closed — call tabs_close_mcp for: {ids}.")
 
 
 @mcp.tool()
@@ -273,4 +295,6 @@ def worktree_prune(project_dir: str = "", gc_merged: bool = False) -> str:
         bits.append(f"Pruned {len(pruned)} stale entr{'y' if len(pruned) == 1 else 'ies'}: {', '.join(pruned)}")
     if gc_done:
         bits.append(f"GC'd {len(gc_done)} merged worktree{'s' if len(gc_done) != 1 else ''}: {', '.join(gc_done)}")
-    return "; ".join(bits) + "."
+    orphaned = data.get("orphaned_tabs") or []
+    tabs_bit = _orphaned_tabs_warning(orphaned).strip()
+    return "; ".join(bits) + "." + ((" " + tabs_bit) if tabs_bit else "")

@@ -9,6 +9,7 @@ the commands. Pure relocation — the CLI surface is unchanged.
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import re
 import shlex
@@ -17,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import pane_manager, services, worktree_registry
+from . import chrome_tabs, pane_manager, services, worktree_registry
 from .core import (
     KIND_DEFAULT_POSTURE,
     _check_tmux_installed,
@@ -1198,6 +1199,7 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
     """
     removed = []
     gc_merged_out = []
+    gc_orphaned_tabs = []
     gc_merged = getattr(args, 'gc_merged', False)
     for e in list(worktree_registry.entries(project_path)):
         wt_path = Path(e.get("worktree_path", ""))
@@ -1208,19 +1210,30 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
             continue
         if gc_merged and e.get("branch"):
             if _branch_merge_state(project_path, e["branch"], e.get("base")) == "merged":
+                # force_branch=True here does NOT mean "delete even if unmerged" —
+                # merge state was JUST confirmed above by this same sweep, so it
+                # just tells _teardown_entry to skip re-running the (redundant)
+                # merge check itself.
                 result = _teardown_entry(
                     project_path, worktree_dir, e["session"], wt_path,
                     e["branch"], e.get("base"), force_branch=True,
                 )
                 if result["success"]:
                     gc_merged_out.append(e["session"])
+                    for t in result.get("orphaned_tabs") or []:
+                        gc_orphaned_tabs.append({**t, "session": e["session"]})
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"],
                    capture_output=True)
     if json_mode:
-        _output_json({"success": True, "pruned": removed, "gc_merged": gc_merged_out})
+        _output_json({"success": True, "pruned": removed, "gc_merged": gc_merged_out,
+                      "orphaned_tabs": gc_orphaned_tabs})
     else:
         if removed:
             print(f"Pruned {len(removed)} stale registry entr{'y' if len(removed) == 1 else 'ies'}: {', '.join(removed)}")
+        if gc_orphaned_tabs:
+            ids = ", ".join(f"{t['session']}:{t.get('tab_id', '?')}" for t in gc_orphaned_tabs)
+            print(f"WARNING: {len(gc_orphaned_tabs)} claude-in-chrome tab(s) never closed by GC'd sessions: "
+                  f"{ids} — close via tabs_close_mcp")
         if gc_merged_out:
             print(f"GC'd {len(gc_merged_out)} merged worktree{'s' if len(gc_merged_out) != 1 else ''}: {', '.join(gc_merged_out)}")
         if not removed and not gc_merged_out:
@@ -1239,14 +1252,32 @@ def _branch_merge_state(project_path: Path, branch: str, base: str | None) -> st
     """
     if shutil.which("gh"):
         result = subprocess.run(
-            ["gh", "pr", "view", branch, "--json", "state", "-q", ".state"],
+            ["gh", "pr", "view", branch, "--json", "state,headRefOid"],
             cwd=project_path, capture_output=True, text=True,
         )
         if result.returncode == 0:
-            state = result.stdout.strip().upper()
+            try:
+                pr = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                pr = {}
+            state = str(pr.get("state", "")).upper()
             if state == "MERGED":
-                return "merged"
-            if state in ("OPEN", "CLOSED"):
+                # `gh pr view <branch>` resolves by head-branch NAME, not by
+                # ref identity — a long-merged PR whose remote branch was
+                # since deleted can still be the match if a LATER branch
+                # reuses the same name (common here: generic worktree names
+                # like "fix-bug" recur). Only trust MERGED when the PR's
+                # headRefOid still matches this branch's current tip; a
+                # mismatch means it's a stale namesake PR, not this branch —
+                # fall through to the git-ancestor check instead of deleting
+                # real unmerged work.
+                tip = subprocess.run(
+                    ["git", "-C", str(project_path), "rev-parse", branch],
+                    capture_output=True, text=True,
+                )
+                if tip.returncode == 0 and tip.stdout.strip() and tip.stdout.strip() == pr.get("headRefOid"):
+                    return "merged"
+            elif state in ("OPEN", "CLOSED"):
                 return "open"
     if base:
         result = subprocess.run(
@@ -1325,9 +1356,16 @@ def _teardown_entry(
     # Only unregister once the dir is confirmed gone (see docstring).
     worktree_registry.unregister(project_path, session=session_name, worktree_path=worktree_path)
 
+    # Crash backstop (#717): agentwire can't call `tabs_close_mcp` itself (that
+    # MCP server runs inside the calling agent's client, not this process), so
+    # we can't close these — just report them so the caller can. A session
+    # that closed its own tabs and untracked them normally leaves nothing here.
+    orphaned_tabs = chrome_tabs.clear(session_name)
+
     return {"success": True, "session": session_name, "path": str(worktree_path),
             "killed": killed, "worktree_removed": True,
-            "branch": branch, "branch_deleted": branch_deleted, "branch_note": branch_note}
+            "branch": branch, "branch_deleted": branch_deleted, "branch_note": branch_note,
+            "orphaned_tabs": orphaned_tabs}
 
 
 def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
@@ -1365,6 +1403,10 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
                + f"; worktree {result['path']} removed")
         if result["branch"]:
             msg += f"; branch '{result['branch']}' " + ("deleted" if result["branch_deleted"] else f"kept ({result['branch_note']})")
+        if result["orphaned_tabs"]:
+            ids = ", ".join(t.get("tab_id", "?") for t in result["orphaned_tabs"])
+            msg += (f"; WARNING: {len(result['orphaned_tabs'])} claude-in-chrome tab(s) never closed "
+                    f"by this session: {ids} — close via tabs_close_mcp")
         print(msg)
     return 0 if result["success"] else 1
 

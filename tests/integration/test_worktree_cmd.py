@@ -48,6 +48,7 @@ def wt_env(tmp_path, monkeypatch):
     depending on whether the test host has `gh` installed/authenticated.
     """
     monkeypatch.setattr(reg, "REGISTRY_DIR", tmp_path / "registry")
+    monkeypatch.setattr(m.chrome_tabs, "REGISTRY_FILE", tmp_path / "chrome-tabs.json")
 
     launched = {}
 
@@ -566,3 +567,67 @@ def test_prune_gc_merged_tears_down_only_merged_worktrees(tmp_path, monkeypatch,
     assert ongoing_path.exists()
     sessions = {e["session"] for e in reg.entries(clone.resolve())}
     assert sessions == {"clone-repo-ongoing"}
+
+
+# --- claude-in-chrome tab crash backstop (#717) ---
+
+def test_remove_reports_and_clears_orphaned_tabs(tmp_path, monkeypatch, wt_env):
+    """A tab the session tracked but never closed itself must be surfaced (not
+    silently dropped) by --remove, and cleared from the registry afterward."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="leaky", project=str(clone)) == 0
+    m.chrome_tabs.track("clone-repo-leaky", "tab-123", url="http://localhost:3000")
+
+    rc = _run(monkeypatch, cfg, name="leaky", project=str(clone), remove=True)
+    assert rc == 0
+    assert m.chrome_tabs.tabs_for("clone-repo-leaky") == []  # cleared, not left dangling
+
+
+def test_remove_with_no_tracked_tabs_reports_none(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="clean", project=str(clone)) == 0
+
+    rc = _run(monkeypatch, cfg, name="clean", project=str(clone), remove=True)
+    assert rc == 0
+    assert m.chrome_tabs.tabs_for("clone-repo-clean") == []
+
+
+def test_remove_failure_keeps_tracked_tabs_untouched(tmp_path, monkeypatch, wt_env):
+    """If teardown fails loudly (dir survives), tracked tabs stay tracked —
+    they're only cleared once the session is actually gone."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="stuck2", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "stuck2"
+    (wt_path / ".git").unlink()
+    m.chrome_tabs.track("clone-repo-stuck2", "tab-456")
+
+    rc = _run(monkeypatch, cfg, name="stuck2", project=str(clone), remove=True)
+    assert rc == 1
+    assert len(m.chrome_tabs.tabs_for("clone-repo-stuck2")) == 1
+
+
+def test_prune_gc_merged_clears_tabs_for_torn_down_sessions_only(tmp_path, monkeypatch, wt_env):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="finished2", project=str(clone)) == 0
+    assert _run(monkeypatch, cfg, name="ongoing2", project=str(clone)) == 0
+
+    ongoing_path = wt_dir / "clone-repo" / "ongoing2"
+    (ongoing_path / "wip.txt").write_text("still going\n")
+    _git(ongoing_path, "add", "-A")
+    _git(ongoing_path, "commit", "-qm", "wip")
+
+    m.chrome_tabs.track("clone-repo-finished2", "tab-a")
+    m.chrome_tabs.track("clone-repo-ongoing2", "tab-b")
+
+    rc = _run(monkeypatch, cfg, prune=True, gc_merged=True, project=str(clone))
+    assert rc == 0
+    assert m.chrome_tabs.tabs_for("clone-repo-finished2") == []  # GC'd session's tab cleared
+    assert len(m.chrome_tabs.tabs_for("clone-repo-ongoing2")) == 1  # untouched session's tab kept
