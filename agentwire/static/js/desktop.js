@@ -30,7 +30,6 @@ import { councilSection } from './sidebar/council-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
-import { armDeadKeySuppressor, disarmDeadKeySuppressor } from './dead-key-suppressor.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { PttController } from './ptt.js';
@@ -458,33 +457,22 @@ function isWithinHorizontalScroller(target) {
     return false;
 }
 
-// Collage — tap F3 (like macOS Mission Control) or Alt/Option+` to grid all
-// open windows; tap again, press Esc, or click a window to restore.
-// Dead-key handling (Option+` composes a grave accent) lives in the shared
-// suppressor — see dead-key-suppressor.js.
+// Collage — tap F3 (like macOS Mission Control) to grid all open windows; tap
+// again, press Esc, or click a window to restore. (Option/Alt+` is the sidebar
+// toggle — see sidebar.js.)
 function setupCollage() {
     collage.init(_lookupWindowInstance);
 
     // Capture phase on window + stopPropagation so xterm's <textarea> never
     // sees the keystroke (and the browser default — F3 find-next — is
-    // suppressed). Alt+` is detected via e.code: on macOS the dead key makes
-    // e.key 'Dead', never a backtick. Cmd/Ctrl+` stays the sidebar toggle.
+    // suppressed).
     window.addEventListener('keydown', (e) => {
-        const isF3 = e.code === 'F3';
-        const isAltBacktick = e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'Backquote';
-        if (!isF3 && !isAltBacktick) return;
+        if (e.code !== 'F3') return;
         if (isCommandPaletteOpen() || isHelpOpen()) return;
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;  // ignore auto-repeat while the key is held
-        // Arm BEFORE toggling — the suppressor must be active when the
-        // pending composition finalizes (blur of the focused terminal).
-        if (isAltBacktick) armDeadKeySuppressor();
-        const wasActive = collage.active;
         collage.toggle();
-        // No-op toggle (under 2 windows): disarm so the dead key composes
-        // normally — with no collage there's nothing to protect.
-        if (isAltBacktick && collage.active === wasActive) disarmDeadKeySuppressor();
     }, true);
 }
 

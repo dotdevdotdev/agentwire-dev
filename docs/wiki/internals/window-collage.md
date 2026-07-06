@@ -2,7 +2,7 @@
 
 > Living wiki. Update this page, don't create new versions.
 
-F3 or Alt/Option+` (or the `desktop_collage` MCP tool, or the command palette → "Window collage") lays a live preview of every open window into a grid so the whole desktop can be scanned at once. Click a tile to focus that window; Esc, the hotkey again, or clicking the backdrop exits.
+F3 (or the `desktop_collage` MCP tool, or the command palette → "Window collage") lays a live preview of every open window into a grid so the whole desktop can be scanned at once. Click a tile to focus that window; Esc, the hotkey again, or clicking the backdrop exits.
 
 Module: `agentwire/static/js/collage.js`. Styles: the `.collage-*` block in `agentwire/static/css/desktop.css`. Hotkey wiring: `setupCollage()` in `agentwire/static/js/desktop.js`.
 
