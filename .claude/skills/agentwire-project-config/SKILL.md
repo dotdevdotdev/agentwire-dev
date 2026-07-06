@@ -105,15 +105,19 @@ merge model, because task defs ARE executable code):
    validation issues.
 3. The human runs `agentwire tasks promote [session] [--yes]` — copies the
    vetted draft into the live `.agentwire.tasks.yml` (agentwire itself,
-   host-trusted, does the write) and deletes the draft. Refuses without `--yes`
-   when there's no interactive terminal to confirm on.
+   host-trusted, does the write) and deletes the draft.
 
-Both commands are **host-only by design**: they're not exposed as MCP tools
-(an MCP tool that shelled out to `promote` would bypass the Bash-tool
-protection entirely — see [Outbound MCP tool gating](../../docs/wiki/internals/damage-control.md#outbound-mcp-tool-gating-457)),
-and `agentwire tasks promote` is additionally hard-blocked as a Bash-tool
-pattern so an agent can't just run the CLI itself. Run `promote` from your own
-terminal, not by asking the agent to do it.
+Both commands are **host-only by design** — and `promote` is **hard-gated**,
+not just discouraged: it's not exposed as an MCP tool (an MCP tool that
+shelled out to it would bypass the Bash-tool protection entirely — see
+[Outbound MCP tool gating](../../docs/wiki/internals/damage-control.md#outbound-mcp-tool-gating-457)),
+it's blocked as a Bash command even with `# allow:` or the kill switch off
+(`PROTECTED_COMMAND_PATTERNS` in `safety/_core.py`), and the function itself
+refuses to run under `AGENTWIRE_UNATTENDED=1` or without a genuine host signal
+(a real interactive terminal, or the explicit `AGENTWIRE_ALLOW_TASKS_PROMOTE=1`
+opt-in for your own non-interactive script) — `--yes` only skips the
+confirmation prompt, it never substitutes for that. Run `promote` from your
+own terminal; it cannot be made to run through the agent.
 
 ```yaml
 # .agentwire.tasks.yml

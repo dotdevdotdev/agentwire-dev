@@ -867,6 +867,57 @@ def check_protected_command(
     return False, ""
 
 
+# ============================================================================
+# PROTECTED COMMANDS (escape-hatch- AND kill-switch-EXEMPT, like the protected
+# control plane above, but keyed on COMMAND SHAPE rather than a file path)
+# ============================================================================
+#
+# Some operations are dangerous no matter which file they touch — running
+# them at all IS the confused-deputy escape, not merely writing a particular
+# path. ``agentwire tasks promote`` is the first case (#720/#721 review):
+# it's the host-trusted program that copies a vetted draft into the protected
+# ``.agentwire.tasks.yml``. If a policed/unattended agent could just invoke
+# the CLI itself, the file protection above is moot — so this, like the
+# protected-path check, is evaluated before ``detect_escape_hatch`` and the
+# kill switch, and has NO allowlist override (there's no legitimate reason
+# for an agent to ever run this; unlike a path, there's nothing to allowlist
+# it TO). This is defense in depth on TOP OF ``cmd_tasks_promote``'s own
+# runtime refusal (unattended check + host-context gate in ``tasks_cli.py``)
+# — that second gate is what actually closes the ``python3 -c
+# "from agentwire.tasks_cli import cmd_tasks_promote; ..."`` bypass, since a
+# raw interpreter call never matches a bash command pattern at all.
+
+PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
+    (
+        r'\bagentwire\s+tasks\s+promote\b',
+        "agentwire tasks promote writes the protected .agentwire.tasks.yml — "
+        "host-only, run it from your own terminal (not through an agent).",
+    ),
+]
+
+
+def check_protected_bash_command(command: str) -> Tuple[bool, str]:
+    """Block a command matching a ``PROTECTED_COMMAND_PATTERNS`` entry.
+
+    Unconditional — no allowlist override, no escape hatch, no kill switch
+    (see module note above). These are COMMAND-PREFIX patterns, so — like the
+    ``anchored`` tooldef bashToolPatterns (#675) — matched only against
+    ``masked_subcommands``: quoting/escaping of the command itself still
+    normalizes to the literal form (``agentwire tasks prom''ote`` can't sneak
+    past), but quoted CONTENT (a commit message, an echo string) that merely
+    *mentions* the phrase is masked out first, so it can't false-match.
+    """
+    haystacks = masked_subcommands(command)
+    for pattern, reason in PROTECTED_COMMAND_PATTERNS:
+        for hay in haystacks:
+            try:
+                if re.search(pattern, hay, re.IGNORECASE):
+                    return True, reason
+            except re.error:
+                continue
+    return False, ""
+
+
 _ESCAPE_HATCH_RE = re.compile(r"#\s*allow:[ \t]*([^\n]+)", re.IGNORECASE)
 
 
@@ -1143,6 +1194,8 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
       0. Protected control plane → BLOCK (escape-hatch- AND kill-switch-exempt;
          only the user's allowlist re-permits) — runs FIRST so an agent can't
          self-authorize a write to the files that gate everything else.
+      0.5. Protected commands → BLOCK (same exemption, no allowlist override —
+         a command whose mere invocation is the escape, not a path it touches).
       1. Escape hatch (``# allow: <reason>``) → ALLOW (escape=True)
       2. Kill switch (``config["safety"]["enabled"] is False``) → ALLOW (disabled=True)
       3. Hard-blocked bash patterns (skip if ``id`` in ``disabled_rules``)
@@ -1167,6 +1220,19 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             "decision": "block",
             "reason": prot_reason,
             "pattern": "protectedControlPlane",
+            "command": command,
+            "protected": True,
+        }
+
+    # Protected COMMANDS — same tier, same reason (an agent-invoked
+    # `agentwire tasks promote` is the confused-deputy escape itself, not a
+    # path it happens to touch).
+    cmd_blocked, cmd_reason = check_protected_bash_command(command)
+    if cmd_blocked:
+        return {
+            "decision": "block",
+            "reason": cmd_reason,
+            "pattern": "protectedCommand",
             "command": command,
             "protected": True,
         }

@@ -14,24 +14,33 @@ because task definitions ARE executable code:
    live `.agentwire.tasks.yml`. agentwire itself (host-trusted) does the write;
    the agent never does.
 
-Both commands are HOST-ONLY by design:
+Both commands are HOST-ONLY by design — and `promote` HARD-GATES it, not just
+defense-in-depth (#721 review — three self-promotion bypasses were found and
+closed):
 
 - They are deliberately NOT exposed as MCP tools. The `mcp-tool-damage-control`
   hook only gates the specific outbound-comms matchers (email_send/quo_send) —
   every other `mcp__agentwire__*` tool is open by default, so an MCP tool that
   shelled out to `tasks promote` would hand the agent an instant, unguarded
   bypass of the whole scheme. CLI-only keeps this on the human's own terminal.
-- `agentwire tasks promote` is additionally hard-blocked as a Bash-tool pattern
-  (`rules/agentwire.yaml`) so an agent can't just run the CLI itself from its
-  Bash tool either. That block is defense-in-depth on top of the file
-  protection above, not a replacement for it (kill-switch-off / an escape
-  hatch could still open it — the deeper "police-at-execution" fix is a
-  tracked follow-up, not implemented here).
+- `agentwire tasks promote` is ALSO hard-blocked as a `PROTECTED_COMMAND_PATTERNS`
+  entry in `safety/_core.py` — escape-hatch- and kill-switch-EXEMPT (same tier
+  as the protected-control-plane file check), so `# allow:` and
+  `enabled: false` can't open it either.
+- `cmd_tasks_promote` ITSELF refuses to run outside a genuine host context
+  (see `_host_context_ok` below), regardless of how it's reached. This is the
+  layer that actually matters: a raw `python3 -c "from agentwire.tasks_cli
+  import cmd_tasks_promote; ..."` never matches any bash pattern (no
+  protected-path string, no "agentwire tasks promote" text) and so reaches
+  this function directly — the two Bash-hook layers above are necessary but
+  NOT sufficient. The function-level gate is invocation-path-agnostic: CLI,
+  `python -m agentwire`, or a raw import all hit the same check.
 """
 
 from __future__ import annotations
 
 import difflib
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -40,7 +49,33 @@ import yaml
 
 from .core import _get_session_project_path, _output_json, _output_result
 from .project_config import ensure_gitignored
+from .safety._core import is_unattended
 from .tasks import PROPOSED_TASKS_FILENAME, TASKS_FILENAME, parse_task_config, validate_task
+
+# Explicit host-side opt-in for a non-interactive `promote` (e.g. the owner's
+# own cron/CI script). Agent and scheduler sessions never have this set —
+# agentwire's session environment doesn't inject it anywhere — so its mere
+# presence is itself a (weak but real) signal of deliberate host action.
+ALLOW_PROMOTE_ENV = "AGENTWIRE_ALLOW_TASKS_PROMOTE"
+
+
+def _host_context_ok() -> bool:
+    """True only when this looks like a human acting at their own host.
+
+    `agentwire tasks promote` must be unreachable from an unattended or
+    policed-agent context by ANY invocation path — not just the literal CLI
+    command text, which a bash-pattern block can catch, but also a direct
+    Python call that never goes through a shell at all. A real interactive
+    tty is the strongest such signal: Claude Code's Bash tool runs commands
+    as a subprocess with no pty attached, whether the session is attended or
+    an unattended scheduler dispatch, so `sys.stdin.isatty()` is reliably
+    False there. ``ALLOW_PROMOTE_ENV`` is the deliberate escape valve for a
+    human's own non-interactive script (cron, CI) that legitimately isn't a
+    tty either.
+    """
+    if os.environ.get(ALLOW_PROMOTE_ENV) == "1":
+        return True
+    return sys.stdin.isatty()
 
 
 def _resolve_project_path(session: Optional[str]) -> Path:
@@ -166,9 +201,31 @@ def cmd_tasks_review(args) -> int:
 
 
 def cmd_tasks_promote(args) -> int:
-    """CLI command: agentwire tasks promote [session] [--yes]"""
+    """CLI command: agentwire tasks promote [session] [--yes]
+
+    Host-only, hard-gated (#721): refuses outright under an unattended
+    dispatch, and refuses everywhere else unless a genuine host signal is
+    present (a real tty, or the explicit ``AGENTWIRE_ALLOW_TASKS_PROMOTE``
+    opt-in) — regardless of ``--yes``, which only skips the interactive
+    confirmation PROMPT, never this gate.
+    """
     json_mode = getattr(args, "json", False)
     assume_yes = getattr(args, "yes", False)
+
+    if is_unattended():
+        return _output_result(
+            False, json_mode,
+            "Refusing: agentwire tasks promote cannot run in an unattended/scheduled "
+            "context — promote from your own terminal.",
+        )
+    if not _host_context_ok():
+        return _output_result(
+            False, json_mode,
+            "Refusing to promote: no interactive terminal detected and "
+            f"{ALLOW_PROMOTE_ENV} is not set — this looks like an automated or "
+            "agent context, not a human at the host. Run this from your own terminal.",
+        )
+
     project_path = _resolve_project_path(getattr(args, "session", None))
     proposed_path = project_path / PROPOSED_TASKS_FILENAME
     active_path = project_path / TASKS_FILENAME

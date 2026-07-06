@@ -32,20 +32,8 @@ bashToolPatterns:
   - pattern: '\brm\s+.*~/.agentwire'
     reason: Removing ~/.agentwire directory (destroys all AgentWire state)
 
-  # ---------------------------------------------------------------------------
-  # TASK-EXECUTION FILE PROMOTION (#720)
-  # ---------------------------------------------------------------------------
-  # `.agentwire.tasks.yml` is protected control-plane (safety/_core.py
-  # PROTECTED_CONTROL_PLANE_PATHS) — the agent can't write it directly. But
-  # `agentwire tasks promote` is a HOST-TRUSTED program that writes it FOR the
-  # caller, so an agent that could just run the CLI would get the same
-  # confused-deputy escape the file protection exists to close. Block the
-  # agent from invoking it; the host runs `promote` from their own terminal,
-  # never through the agent's Bash tool. (Defense-in-depth on top of the file
-  # protection above, not a replacement for it — see the "police-at-execution"
-  # follow-up noted in #720.)
-  - pattern: '\bagentwire\s+tasks\s+promote\b'
-    reason: >-
-      agentwire tasks promote writes the protected .agentwire.tasks.yml —
-      host-only. Draft to .agentwire.tasks.proposed.yml and ask the host to
-      review + promote from their own terminal.
+  # Note: `agentwire tasks promote` (#720/#721) is blocked via
+  # safety/_core.py's PROTECTED_COMMAND_PATTERNS instead of an ordinary
+  # bashToolPatterns entry here — it needs escape-hatch/kill-switch immunity,
+  # which only the code-level protected-command check provides (a rule in
+  # this file would still be overridable by `# allow:`).

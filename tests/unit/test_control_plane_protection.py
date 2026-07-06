@@ -8,7 +8,6 @@ path. Loosening is always a human, host-side act.
 """
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -17,7 +16,6 @@ from agentwire.safety._core import (
     check_path,
     is_protected_control_plane,
     load_allowed_paths,
-    load_config,
     load_safety_config,
 )
 from agentwire.safety_commands import load_patterns
@@ -43,20 +41,6 @@ CONTROL_PLANE_FILES = [
 @pytest.fixture
 def cfg():
     c = load_patterns()
-    c["safety"] = {"enabled": True, "disabled_rules": []}
-    return c
-
-
-# Bundled rules loaded straight from the repo (not `safety_commands.load_patterns()`,
-# which prefers a live `~/.agentwire/damage-control/` override if the host happens
-# to have one installed) — so the `agentwire tasks promote` block below tests THIS
-# repo's rule, deterministically, regardless of the machine it runs on.
-_DC_RULES = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control" / "rules"
-
-
-@pytest.fixture
-def bundled_cfg():
-    c = load_config(_DC_RULES)
     c["safety"] = {"enabled": True, "disabled_rules": []}
     return c
 
@@ -123,19 +107,93 @@ def test_bash_write_to_proposed_tasks_not_blocked(cfg, command):
     assert result["decision"] != "block"
 
 
-def test_agentwire_tasks_promote_is_hard_blocked_for_agent(bundled_cfg):
+def test_agentwire_tasks_promote_is_hard_blocked_for_agent(cfg):
     """The propose-and-promote CLI escape (#720): an agent must not be able to
     just run `agentwire tasks promote` itself from its Bash tool — that would
     write the protected file on the agent's behalf (confused-deputy)."""
-    result = check_command("agentwire tasks promote", bundled_cfg)
+    result = check_command("agentwire tasks promote", cfg)
     assert result["decision"] == "block"
+    assert result.get("protected") is True
 
 
-def test_agentwire_tasks_review_is_not_blocked(bundled_cfg):
+def test_agentwire_tasks_review_is_not_blocked(cfg):
     """`review` is read-only — no reason to block the agent from checking its
     own draft before asking a human to promote it."""
-    result = check_command("agentwire tasks review", bundled_cfg)
+    result = check_command("agentwire tasks review", cfg)
     assert result["decision"] != "block"
+
+
+# --------------------------------------------------------------------------
+# #721 review: `agentwire tasks promote` gets the SAME escape-hatch- and
+# kill-switch-EXEMPT tier as the protected-control-plane path check — it's a
+# PROTECTED_COMMAND_PATTERNS entry (safety/_core.py), not an ordinary
+# bashToolPatterns rule, specifically so `# allow:` and `enabled: false`
+# can't reopen the confused-deputy escape the file protection exists to
+# close. This is the "step 3 alone isn't enough" gap the review found: an
+# ordinary bashToolPatterns block IS overridable by the escape hatch, which
+# would have let `agentwire tasks promote --yes  # allow: x` straight through.
+# --------------------------------------------------------------------------
+
+PROMOTE_COMMANDS = [
+    "agentwire tasks promote",
+    "agentwire tasks promote --yes",
+    "uv run agentwire tasks promote --yes",
+    "python3 -m agentwire tasks promote --yes",
+]
+
+
+@pytest.mark.parametrize("command", PROMOTE_COMMANDS)
+def test_promote_blocked_regardless_of_invocation_wrapper(cfg, command):
+    result = check_command(command, cfg)
+    assert result["decision"] == "block"
+    assert result.get("protected") is True
+
+
+@pytest.mark.parametrize("command", PROMOTE_COMMANDS)
+def test_escape_hatch_cannot_override_promote_block(cfg, command):
+    result = check_command(command + "  # allow: I really want to", cfg)
+    assert result["decision"] == "block"
+    assert result.get("protected") is True
+    assert result.get("escape") is not True
+
+
+@pytest.mark.parametrize("command", PROMOTE_COMMANDS)
+def test_kill_switch_cannot_reopen_promote_block(command):
+    cfg = load_patterns()
+    cfg["safety"] = {"enabled": False, "disabled_rules": []}
+    result = check_command(command, cfg)
+    assert result["decision"] == "block"
+    assert result.get("protected") is True
+
+
+def test_promote_block_has_no_allowlist_override():
+    """Unlike protected PATHS, a protected COMMAND has no allowlist escape
+    valve at all — there's no legitimate reason for an agent to ever run
+    `agentwire tasks promote`, so nothing should be able to re-permit it."""
+    cfg = load_patterns()
+    cfg["safety"] = {"enabled": True}
+    cfg["allowedPaths"] = [{"path": "*", "allow": "all"}]
+    result = check_command("agentwire tasks promote", cfg)
+    assert result["decision"] == "block"
+    assert result.get("protected") is True
+
+
+PROMOTE_MENTIONS_IN_CONTENT = [
+    'git commit -m "docs: mention agentwire tasks promote in the README"',
+    'echo "run agentwire tasks promote when ready"',
+    'gh issue comment 1 --body "see agentwire tasks promote for details"',
+]
+
+
+@pytest.mark.parametrize("command", PROMOTE_MENTIONS_IN_CONTENT)
+def test_promote_block_does_not_false_match_quoted_content(cfg, command):
+    """The command-prefix pattern must only match the command ITSELF, not a
+    mere textual mention inside a commit message / echo string / PR comment
+    (mirrors the #675 anchored-rule masking — this check uses
+    masked_subcommands for exactly this reason)."""
+    result = check_command(command, cfg)
+    assert result["decision"] != "block"
+    assert result.get("protected") is not True
 
 
 @pytest.mark.parametrize("command", BASH_EXECUTION_PLANE_WRITES)

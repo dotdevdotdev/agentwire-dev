@@ -127,6 +127,13 @@ agent can't add to it without editing a protected file, which is itself blocked)
 The mechanism is `check_protected_command` / `check_protected_path` in
 `safety/_core.py`, which run **before** `detect_escape_hatch` and the kill switch.
 
+The same escape-hatch-/kill-switch-exempt tier also covers specific COMMANDS,
+not just paths — `PROTECTED_COMMAND_PATTERNS` (`check_protected_bash_command`,
+also checked before `detect_escape_hatch`) for operations that are dangerous
+regardless of which file they touch. See [Task-execution config
+split](#task-execution-config-split-agentwiretasksyml-720) below for the first
+entry (`agentwire tasks promote`).
+
 ### Task-execution config split (`.agentwire.tasks.yml`, #720)
 
 `.agentwire.yml` used to carry BOTH declarative session config (`type`/`roles`/
@@ -154,16 +161,38 @@ because task defs ARE executable code):
 Both commands are deliberately **CLI-only, never MCP**: an MCP tool that
 shelled out to `promote` would bypass the Bash-tool hook entirely (see
 [Outbound MCP tool gating](#outbound-mcp-tool-gating-457) — everything not on
-that explicit gated list is open by default). `agentwire tasks promote` is
-additionally hard-blocked as a `bashToolPatterns` rule
-(`rules/agentwire.yaml`) so an agent can't just run the CLI itself from its Bash
-tool — defense-in-depth on top of the file protection, not a replacement for
-it (an escape hatch or kill-switch-off could still open that specific rule;
-closing that gap needs the "police-at-execution" fix below).
+that explicit gated list is open by default).
 
-`rules/control-plane.yaml` lists the same paths as `readOnlyPaths` for
-defense-in-depth + visibility, but the code-level check is what makes the
-protection absolute.
+`agentwire tasks promote` self-invocation is **hard-gated**, not just
+defense-in-depth (#721 review found three bypasses of the original
+Bash-pattern-only block; all three are closed):
+
+1. **`PROTECTED_COMMAND_PATTERNS`** (`safety/_core.py`) blocks the command
+   text at the SAME tier as the protected-control-plane path check —
+   escape-hatch- and kill-switch-EXEMPT, evaluated before
+   `detect_escape_hatch`. Unlike an ordinary `bashToolPatterns` rule, `# allow:`
+   and `enabled: false` cannot reopen it, and there's no allowlist override at
+   all (there's no legitimate reason for an agent to ever run this command).
+2. **`cmd_tasks_promote` itself refuses to run** outside a genuine host
+   context, regardless of how it's reached — this is the layer that actually
+   matters, since a raw `python3 -c "from agentwire.tasks_cli import
+   cmd_tasks_promote; ..."` never matches any bash pattern at all (no
+   protected-path string, no command text), so it reaches the function
+   directly. It:
+   - Refuses unconditionally when `AGENTWIRE_UNATTENDED=1` (the marker the
+     scheduler stamps on every headless dispatch) — closing the concrete
+     exploit: an unattended task writes malicious `shell:` strings to the
+     proposed file, then self-promotes so the scheduler executes them
+     unguarded on the next tick.
+   - Otherwise requires a genuine host signal: a real interactive tty (Claude
+     Code's Bash tool never attaches one, attended or not), or the explicit
+     `AGENTWIRE_ALLOW_TASKS_PROMOTE=1` opt-in for a human's own
+     non-interactive script. **`--yes` only skips the confirmation prompt —
+     it never substitutes for this gate.**
+
+`rules/control-plane.yaml` lists the protected PATHS as `readOnlyPaths` for
+defense-in-depth + visibility, but the code-level checks above are what make
+the protection absolute.
 
 **Deferred / follow-up — police-at-execution.** The deeper root fix is routing
 agentwire's own task/gate/healthcheck `subprocess.run(shell=True)` calls
