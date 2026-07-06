@@ -70,7 +70,7 @@ def _run(monkeypatch, cfg, **arg_overrides):
         name=None, base=None, current=False, existing=False, ref=None,
         project=None, list=False, remove=False, prune=False, all=False,
         json=True, type=None, posture=None, harness=None, model=None,
-        roles=None, env=None, created_by=None,
+        roles=None, env=None, created_by=None, caller_session=None,
     )
     base.update(arg_overrides)
     return m.cmd_worktree(Namespace(**base))
@@ -109,6 +109,20 @@ def test_created_by_forwarded_to_cmd_new(tmp_path, monkeypatch, wt_env):
     assert rc == 0
     # The captured cmd_new Args carries the creator through unchanged.
     assert wt_env["args"].created_by == "orchestrator"
+
+
+def test_caller_session_forwarded_to_cmd_new(tmp_path, monkeypatch, wt_env):
+    """--caller-session (the MCP-forwarded candidate parent) flows through to
+    cmd_new distinctly from --created-by, so cmd_new's own same-project check
+    decides inheritance (#715) rather than cmd_worktree forcing it."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone),
+              caller_session="orchestrator")
+    assert rc == 0
+    assert wt_env["args"].caller_session == "orchestrator"
+    assert wt_env["args"].created_by is None
 
 
 def test_record_session_creator_persists_creator(tmp_path, monkeypatch):

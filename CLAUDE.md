@@ -64,6 +64,8 @@ The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, 
 
 When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Worker panes are for small subtasks watched by the orchestrator; worktree sessions are for parallel autonomous work. The verb sets the posture: `worktree`/`new` default to the bypass posture (full access), `spawn` to restricted — no `--type` needed for the common case.
 
+**Rooting (#715):** `agentwire worktree`/`new` record the calling session as the new session's parent (`created_by`, drives prompt routing + notify-parent) **only when the target repo is the caller's own project** — spawning into a genuinely different project defaults to a standalone root instead of nesting under the caller. Same-project fan-out (a worktree session spawning another worktree of its own project) still parents as before. `--created-by <name>` forces a specific parent regardless of project; `--created-by ''` forces standalone even within the same project. Detail: [`docs/wiki/sessions/prompt-routing.md`](docs/wiki/sessions/prompt-routing.md).
+
 ## Config Layout (`~/.agentwire/`)
 
 | File | Purpose |

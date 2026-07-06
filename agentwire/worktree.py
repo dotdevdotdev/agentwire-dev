@@ -18,7 +18,10 @@ def git_root(path: Path) -> Path | None:
 
     Walks up via ``git rev-parse --show-toplevel`` so a worktree session can
     be spawned from any subdirectory of a (mono)repo and still target the
-    repo root. Returns the main repo root, not a linked-worktree root.
+    repo root. Note: run from inside a linked worktree, this returns that
+    worktree's own top-level path, not the main checkout's — use
+    ``git_common_dir`` when you need an identity that's shared across all of
+    a repo's worktrees.
     """
     result = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
@@ -28,6 +31,27 @@ def git_root(path: Path) -> Path | None:
     if result.returncode == 0 and out:
         return Path(out)
     return None
+
+
+def git_common_dir(path: Path) -> Path | None:
+    """Return the shared ``.git`` dir for ``path``'s repo, or None outside a repo.
+
+    Identical across all of a repo's linked worktrees (unlike ``git_root``,
+    which returns each worktree's own top-level path) — the robust "same
+    repo" signal for comparing two paths that may each be a different linked
+    worktree of one logical project (#715).
+    """
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
+        capture_output=True, text=True,
+    )
+    out = result.stdout.strip()
+    if result.returncode != 0 or not out:
+        return None
+    common_dir = Path(out)
+    if not common_dir.is_absolute():
+        common_dir = path / common_dir
+    return common_dir.resolve()
 
 
 def default_base_branch(project_path: Path) -> str:

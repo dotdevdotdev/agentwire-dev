@@ -18,8 +18,11 @@ agentwire send -s name --wait-ready --timeout 60 -- "prompt"
                                 #   exit 1 if unverified; local only
 agentwire send-keys -s name key1 key2  # raw keys with pauses
 agentwire send-keys -s name --pane 2 key  # target a specific pane
-agentwire new -s name --created-by orch  # record creator (prompt-routing parent);
-                                #   default: calling tmux session; '' opts out
+agentwire new -s name --created-by orch  # FORCE this creator (prompt-routing parent)
+                                #   regardless of project; '' forces standalone.
+                                #   Default (no flag): inherit the calling tmux session
+                                #   ONLY if -p/-s targets the caller's own project — a
+                                #   different project defaults to a standalone root (#715)
 agentwire output -s name        # not: tmux capture-pane
 agentwire info -s name          # session metadata (cwd, panes) as JSON
 agentwire kill -s name          # not: tmux kill-session

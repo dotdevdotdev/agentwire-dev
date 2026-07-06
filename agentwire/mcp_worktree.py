@@ -14,6 +14,7 @@ def worktree_create(
     roles: str = "",
     base: str = "",
     prompt: str = "",
+    created_by: str = "",
 ) -> str:
     """Create a worktree session (new branch + checkout + tmux session), optionally seeded.
 
@@ -22,6 +23,11 @@ def worktree_create(
     worktree at ~/worktrees/<project>/<name>/, and a tmux session running an
     agent with the worktree-session safety etiquette auto-injected. This is how
     a Briefing Mode anchor fans out correspondents.
+
+    By default, the new session is recorded as the caller's child (so
+    notify-parent / prompt routing resolve back to you) ONLY when project_dir
+    is the same repo you're running in — a worktree spawned into a genuinely
+    separate project becomes its own standalone root instead (#715).
 
     Args:
         name: Worktree/branch name (becomes the branch + session suffix).
@@ -32,6 +38,12 @@ def worktree_create(
         prompt: Optional first message — delivered once the agent is booted and
             ready (verified paste). Lets you spawn AND seed the task in one call
             instead of a separate session_send.
+        created_by: Force a specific recorded creator/parent, overriding the
+            default same-project-only inheritance above — e.g. to parent a
+            worktree in a closely related project. Leave empty for the
+            default behavior; note that empty here is NOT the same as the
+            CLI's `--created-by ''` (force standalone) — there is currently
+            no way to force standalone through this tool.
 
     Returns:
         Success message with the session name + worktree path, or an error.
@@ -45,13 +57,17 @@ def worktree_create(
         args += ["--base", base]
     if prompt:
         args += ["--prompt", prompt]
-    # Forward the calling session as the new worktree's creator so prompt
-    # routing (resolve_parent) and notify-parent resolve back to the spawner.
-    # The CLI's own get_current_session() can't see the caller through the MCP
-    # subprocess boundary, so we pass it explicitly (issue #578).
-    caller = get_caller_session()
-    if caller:
-        args += ["--created-by", caller]
+    if created_by:
+        args += ["--created-by", created_by]
+    else:
+        # Forward the calling session as a CANDIDATE parent — the CLI only
+        # inherits it when project_dir turns out to be the caller's own repo
+        # (#715); a genuinely separate project becomes its own root. The CLI
+        # subprocess can't reliably auto-detect the caller across the MCP
+        # boundary, so we resolve and pass it explicitly (issue #578).
+        caller = get_caller_session()
+        if caller:
+            args += ["--caller-session", caller]
     # Seeding waits for agent boot (up to 60s) and, on a failed seed, runs the
     # clear-box + inbox-fallback recovery (#695) — give the CLI room to finish
     # the loud-failure path instead of masking it with a subprocess timeout.

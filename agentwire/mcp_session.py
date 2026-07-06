@@ -105,6 +105,7 @@ def session_create(
     session_type: str | None = None,
     base: str | None = None,
     pull_first: bool = True,
+    created_by: str = "",
 ) -> str:
     """Create a new AgentWire session.
 
@@ -117,6 +118,11 @@ def session_create(
     that path is already the working directory of another active session, the
     call is refused — two agents on the same dirty tree is unsafe.
 
+    The new session is recorded as your child (so notify-parent / prompt
+    routing resolve back to you) ONLY when project_dir is the same repo
+    you're running in — a session spawned in a genuinely separate project
+    becomes its own standalone root instead (#715).
+
     Args:
         name: Session name. Use 'project/branch' for an isolated worktree;
             a flat name attaches to project_dir directly.
@@ -128,6 +134,12 @@ def session_create(
             default 'main'). Ignored for flat names.
         pull_first: Fetch origin/<base> before branching (worktree mode only,
             default True). Set False to branch off the local <base> as-is.
+        created_by: Force a specific recorded creator/parent, overriding the
+            default same-project-only inheritance above — e.g. to parent a
+            session in a closely related project. Leave empty for the
+            default behavior; note that empty here is NOT the same as the
+            CLI's `--created-by ''` (force standalone) — there is currently
+            no way to force standalone through this tool.
 
     Returns:
         Success message or error description.
@@ -144,6 +156,18 @@ def session_create(
         args.extend(["--base", base])
     if not pull_first:
         args.append("--no-pull-first")
+    if created_by:
+        args.extend(["--created-by", created_by])
+    else:
+        # Forward the calling session as a CANDIDATE parent — the CLI only
+        # inherits it when project_dir turns out to be the caller's own repo
+        # (#715); a genuinely separate project becomes its own standalone
+        # root. The CLI subprocess can't reliably auto-detect the caller
+        # across the MCP boundary, so we resolve and pass it explicitly
+        # (issue #578).
+        caller = get_caller_session()
+        if caller:
+            args.extend(["--caller-session", caller])
 
     data = run_agentwire_cmd(args)
     if data.get("success"):
