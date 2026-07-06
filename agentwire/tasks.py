@@ -1,6 +1,13 @@
 """Task configuration and execution for scheduled workloads.
 
-Tasks are defined in .agentwire.yml and executed via `agentwire ensure`.
+Tasks are defined in .agentwire.tasks.yml and executed via `agentwire ensure`.
+
+`.agentwire.tasks.yml` is protected control-plane (#720 — split out of
+`.agentwire.yml`, which is now purely declarative and agent-writable again).
+It's authored via propose-and-promote: an agent drafts to the unprotected
+`.agentwire.tasks.proposed.yml`, and a human runs `agentwire tasks review` /
+`agentwire tasks promote` (see `tasks_cli.py`) to vet and land it. This module
+only ever READS the active file — writing it is a host-side act.
 """
 
 import subprocess
@@ -9,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+TASKS_FILENAME = ".agentwire.tasks.yml"
+PROPOSED_TASKS_FILENAME = ".agentwire.tasks.proposed.yml"
 
 
 class TaskError(Exception):
@@ -217,7 +227,7 @@ def parse_task_config(name: str, config: dict, default_shell: str | None = None)
 
 
 def load_task(project_path: Path, task_name: str) -> TaskConfig:
-    """Load a task configuration from project's .agentwire.yml.
+    """Load a task configuration from project's .agentwire.tasks.yml.
 
     Args:
         project_path: Path to project directory
@@ -230,10 +240,10 @@ def load_task(project_path: Path, task_name: str) -> TaskConfig:
         TaskNotFound: If task doesn't exist
         TaskValidationError: If task configuration is invalid
     """
-    config_file = project_path / ".agentwire.yml"
+    config_file = project_path / TASKS_FILENAME
 
     if not config_file.exists():
-        raise TaskNotFound(f"No .agentwire.yml found in {project_path}")
+        raise TaskNotFound(f"No {TASKS_FILENAME} found in {project_path}")
 
     try:
         with open(config_file) as f:
@@ -256,7 +266,7 @@ def load_task(project_path: Path, task_name: str) -> TaskConfig:
 
 
 def list_tasks(project_path: Path) -> list[dict[str, Any]]:
-    """List all tasks in a project's .agentwire.yml.
+    """List all tasks in a project's .agentwire.tasks.yml.
 
     Args:
         project_path: Path to project directory
@@ -264,7 +274,7 @@ def list_tasks(project_path: Path) -> list[dict[str, Any]]:
     Returns:
         List of dicts with task info (name, has_pre, has_post, etc.)
     """
-    config_file = project_path / ".agentwire.yml"
+    config_file = project_path / TASKS_FILENAME
 
     if not config_file.exists():
         return []

@@ -749,7 +749,7 @@ def cmd_task_list(args) -> int:
         return 0
 
     if not tasks:
-        print(f"No tasks defined in {project_path / '.agentwire.yml'}")
+        print(f"No tasks defined in {project_path / '.agentwire.tasks.yml'}")
         return 0
 
     print(f"Tasks in {project_path.name}:\n")

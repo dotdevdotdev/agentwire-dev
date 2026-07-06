@@ -18,7 +18,7 @@ Security firewall: PreToolUse hooks block dangerous bash/edit/write operations u
 
 ## E — Ensure Task
 
-A headless agent task defined under `tasks:` in a project's `.agentwire.yml` and executed by `agentwire ensure`. Runs a full Claude Code session through `pre` → `prompt` → `on_task_end` → `post` phases with optional branch management. → [Scheduled workloads](scheduling/scheduled-workloads.md).
+A headless agent task defined under `tasks:` in a project's protected `.agentwire.tasks.yml` and executed by `agentwire ensure`. Runs a full Claude Code session through `pre` → `prompt` → `on_task_end` → `post` phases with optional branch management. → [Scheduled workloads](scheduling/scheduled-workloads.md).
 
 ## F — Fork (Session Fork)
 
@@ -58,7 +58,7 @@ The agentwire web UI + REST/WebSocket API at `https://localhost:8765`. Wraps CLI
 
 ## P — Project Config
 
-`.agentwire.yml` at a project root. Defines `type:` (session type), `roles:`, `voice:`, `parent:`, and named `tasks:`. Picked up automatically when `agentwire new` targets a path that contains it. **Keep it gitignored** — it's personal config, and a tracked copy makes worktree-dispatched runs use the stale committed version instead of live edits (`projects.worktrees.copy_files` seeds the live file into worktrees). → `agentwire-project-config` skill in `.claude/skills/`.
+`.agentwire.yml` at a project root. Purely declarative — `type:` (session type), `roles:`, `voice:`, `parent:`, `worktree:` — with zero execution vector, so it's agent-writable (#720). Picked up automatically when `agentwire new` targets a path that contains it. **Keep it gitignored** — it's personal config, and a tracked copy makes worktree-dispatched runs use the stale committed version instead of live edits (`projects.worktrees.copy_files` seeds the live file into worktrees). Named `tasks:` live in the separate, protected `.agentwire.tasks.yml` instead — see [Ensure Task](#e--ensure-task) and [Damage control](internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720). → `agentwire-project-config` skill in `.claude/skills/`.
 
 ## R — Role
 

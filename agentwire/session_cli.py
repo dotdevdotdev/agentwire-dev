@@ -481,8 +481,6 @@ def cmd_new(args) -> int:
                 roles=cli_roles if cli_roles else existing_config.roles,
                 voice=existing_config.voice,
                 parent=existing_config.parent,
-                shell=existing_config.shell,
-                tasks=existing_config.tasks,
             )
         else:
             # Create new config

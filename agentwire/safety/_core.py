@@ -730,12 +730,16 @@ PROTECTED_CONTROL_PLANE_PATHS = [
     # confused-deputy escape). Treat them as control plane (#466 lockdown).
     "~/.agentwire/scheduler.yaml",      # scheduler gate commands run via shell
     "~/.agentwire/config.yaml",         # service healthcheck commands run via shell
-    # Per-project task config: ``.agentwire.yml`` also defines task pre/post/gate
-    # commands. Protecting it closes the same escape, with an ergonomic tradeoff —
-    # under worktree dispatch the agent can no longer author its own task config,
-    # so task authoring becomes a host-side act (consistent with the control-plane
-    # guarantee: loosening is always host-side).
-    "*.agentwire.yml",                  # project session/task config (any dir)
+    # Per-project task-EXECUTION config (#720): split out of ``.agentwire.yml``,
+    # which is now purely declarative (type/roles/voice/parent/worktree) and
+    # agent-writable again — it carries no exec vector. ``.agentwire.tasks.yml``
+    # holds the ``tasks:`` block (pre/post/on_task_end/shell/unattended_allow),
+    # which agentwire runs the same way (confused-deputy risk above), so it
+    # stays protected. Authored via propose-and-promote: an agent drafts to the
+    # UNPROTECTED ``.agentwire.tasks.proposed.yml`` staging file; a human reviews
+    # (``agentwire tasks review``) and promotes (``agentwire tasks promote``) —
+    # the agent never writes the live file. See ``agentwire/tasks_cli.py``.
+    "*.agentwire.tasks.yml",            # project task-execution config (any dir)
 ]
 
 
@@ -755,12 +759,33 @@ def _protected_path_patterns() -> List[str]:
     return out
 
 
-def is_protected_control_plane(file_path: str) -> bool:
-    """True if ``file_path`` is part of the damage-control control plane."""
+def _matched_protected_pattern(file_path: str) -> Optional[str]:
+    """The protected-path pattern that matches ``file_path``, if any."""
     for pat in _protected_path_patterns():
         if match_path(file_path, pat):
-            return True
-    return False
+            return pat
+    return None
+
+
+def is_protected_control_plane(file_path: str) -> bool:
+    """True if ``file_path`` is part of the damage-control control plane."""
+    return _matched_protected_pattern(file_path) is not None
+
+
+def _protected_reason(matched_pattern: str) -> str:
+    """Block reason for a protected-control-plane hit, tailored to the path.
+
+    ``.agentwire.tasks.yml`` has a real, host-side remedy (propose-and-promote,
+    #720) — name it so the agent doesn't dead-end. Everything else keeps the
+    generic "edit on the host" message.
+    """
+    if matched_pattern.endswith(".agentwire.tasks.yml"):
+        return (
+            "protected task-execution control-plane file (host-owned) — draft "
+            "to .agentwire.tasks.proposed.yml instead, then ask the host to run "
+            "`agentwire tasks review` and `agentwire tasks promote`"
+        )
+    return "protected control-plane file (host-owned; edit on the host)"
 
 
 def check_protected_path(
@@ -772,10 +797,11 @@ def check_protected_path(
     Used by the edit/write hooks. The allowlist (a human opt-in) may override;
     nothing else does.
     """
-    if is_protected_control_plane(file_path):
+    matched = _matched_protected_pattern(file_path)
+    if matched:
         if is_path_allowed_for_op(file_path, allowed_paths, "edit"):
             return False, ""
-        return True, "protected control-plane file (host-owned; edit on the host)"
+        return True, _protected_reason(matched)
     return False, ""
 
 
@@ -805,7 +831,58 @@ def check_protected_command(
                 op = _infer_operation_from_reason(reason)
                 if is_command_path_allowed(command, allowed_paths, op):
                     break
-                return True, f"Protected control-plane path: {path}"
+                return True, _protected_reason(path)
+    return False, ""
+
+
+# ============================================================================
+# PROTECTED COMMANDS (escape-hatch- AND kill-switch-EXEMPT, like the protected
+# control plane above, but keyed on COMMAND SHAPE rather than a file path)
+# ============================================================================
+#
+# Some operations are dangerous no matter which file they touch — running
+# them at all IS the confused-deputy escape, not merely writing a particular
+# path. ``agentwire tasks promote`` is the first case (#720/#721 review):
+# it's the host-trusted program that copies a vetted draft into the protected
+# ``.agentwire.tasks.yml``. If a policed/unattended agent could just invoke
+# the CLI itself, the file protection above is moot — so this, like the
+# protected-path check, is evaluated before ``detect_escape_hatch`` and the
+# kill switch, and has NO allowlist override (there's no legitimate reason
+# for an agent to ever run this; unlike a path, there's nothing to allowlist
+# it TO). This is defense in depth on TOP OF ``cmd_tasks_promote``'s own
+# runtime refusal (unattended check + host-context gate in ``tasks_cli.py``)
+# — that second gate is what actually closes the ``python3 -c
+# "from agentwire.tasks_cli import cmd_tasks_promote; ..."`` bypass, since a
+# raw interpreter call never matches a bash command pattern at all.
+
+PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
+    (
+        r'\bagentwire\s+tasks\s+promote\b',
+        "agentwire tasks promote writes the protected .agentwire.tasks.yml — "
+        "host-only, run it from your own terminal (not through an agent).",
+    ),
+]
+
+
+def check_protected_bash_command(command: str) -> Tuple[bool, str]:
+    """Block a command matching a ``PROTECTED_COMMAND_PATTERNS`` entry.
+
+    Unconditional — no allowlist override, no escape hatch, no kill switch
+    (see module note above). These are COMMAND-PREFIX patterns, so — like the
+    ``anchored`` tooldef bashToolPatterns (#675) — matched only against
+    ``masked_subcommands``: quoting/escaping of the command itself still
+    normalizes to the literal form (``agentwire tasks prom''ote`` can't sneak
+    past), but quoted CONTENT (a commit message, an echo string) that merely
+    *mentions* the phrase is masked out first, so it can't false-match.
+    """
+    haystacks = masked_subcommands(command)
+    for pattern, reason in PROTECTED_COMMAND_PATTERNS:
+        for hay in haystacks:
+            try:
+                if re.search(pattern, hay, re.IGNORECASE):
+                    return True, reason
+            except re.error:
+                continue
     return False, ""
 
 
@@ -1085,6 +1162,8 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
       0. Protected control plane → BLOCK (escape-hatch- AND kill-switch-exempt;
          only the user's allowlist re-permits) — runs FIRST so an agent can't
          self-authorize a write to the files that gate everything else.
+      0.5. Protected commands → BLOCK (same exemption, no allowlist override —
+         a command whose mere invocation is the escape, not a path it touches).
       1. Escape hatch (``# allow: <reason>``) → ALLOW (escape=True)
       2. Kill switch (``config["safety"]["enabled"] is False``) → ALLOW (disabled=True)
       3. Hard-blocked bash patterns (skip if ``id`` in ``disabled_rules``)
@@ -1109,6 +1188,19 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             "decision": "block",
             "reason": prot_reason,
             "pattern": "protectedControlPlane",
+            "command": command,
+            "protected": True,
+        }
+
+    # Protected COMMANDS — same tier, same reason (an agent-invoked
+    # `agentwire tasks promote` is the confused-deputy escape itself, not a
+    # path it happens to touch).
+    cmd_blocked, cmd_reason = check_protected_bash_command(command)
+    if cmd_blocked:
+        return {
+            "decision": "block",
+            "reason": cmd_reason,
+            "pattern": "protectedCommand",
             "command": command,
             "protected": True,
         }

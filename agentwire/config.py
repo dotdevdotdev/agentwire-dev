@@ -101,9 +101,11 @@ class WorktreesConfig:
     # Gitignored files that `git worktree add` won't carry over (it only
     # checks out tracked files). These are copied from the main repo into
     # each fresh worktree so agents have the secrets/config they need.
-    # .agentwire.yml is included because worktree-dispatched tasks can't
-    # load their task definition without it when the project gitignores it.
-    copy_files: list = field(default_factory=lambda: [".env", ".agentwire.yml"])
+    # .agentwire.yml/.agentwire.tasks.yml are included because worktree-dispatched
+    # tasks can't load their session/task config without them when the project
+    # gitignores them (the latter is the protected, host-authored task-exec file —
+    # #720).
+    copy_files: list = field(default_factory=lambda: [".env", ".agentwire.yml", ".agentwire.tasks.yml"])
 
 
 @dataclass
@@ -621,7 +623,7 @@ def _dict_to_config(data: dict) -> Config:
         enabled=worktrees_data.get("enabled", True),
         suffix=worktrees_data.get("suffix", "-worktrees"),
         auto_create_branch=worktrees_data.get("auto_create_branch", True),
-        copy_files=worktrees_data.get("copy_files", [".env", ".agentwire.yml"]),
+        copy_files=worktrees_data.get("copy_files", [".env", ".agentwire.yml", ".agentwire.tasks.yml"]),
     )
     projects = ProjectsConfig(
         dir=projects_data.get("dir", "~/projects"),

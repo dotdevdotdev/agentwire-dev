@@ -507,7 +507,7 @@ class TestPersistentSessionDispatch:
     def _project(self, tmp_path, task_yaml: str):
         proj = tmp_path / "proj"
         proj.mkdir()
-        (proj / ".agentwire.yml").write_text(task_yaml)
+        (proj / ".agentwire.tasks.yml").write_text(task_yaml)
         return proj
 
     def _sched_task(self, proj, **kwargs):
@@ -662,7 +662,7 @@ class TestDispatchWatchdog:
     def _project(self, tmp_path, task_yaml):
         proj = tmp_path / "proj"
         proj.mkdir()
-        (proj / ".agentwire.yml").write_text(task_yaml)
+        (proj / ".agentwire.tasks.yml").write_text(task_yaml)
         return proj
 
     def _dispatch(self, proj, **task_kwargs):

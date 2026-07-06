@@ -84,18 +84,22 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 └── cert.pem, key.pem        # self-signed TLS for the portal
 ```
 
-### Per-project — `.agentwire.yml`
+### Per-project — `.agentwire.yml` + `.agentwire.tasks.yml`
 
-Lives at the project root. Defines the session type, roles, voice, parent (for cross-session notifications), and named tasks. See `agentwire-project-config` skill for the full schema.
+`.agentwire.yml` lives at the project root and is purely declarative: session type, roles, voice, parent (for cross-session notifications), worktree overrides — no execution vector, so it's agent-writable. Named tasks (`pre`/`post`/`on_task_end`/`shell` — code the scheduler runs via `shell=True`) live in a separate, protected sibling file, `.agentwire.tasks.yml` (#720), authored via propose-and-promote (`agentwire tasks review` / `agentwire tasks promote`) since a policed agent can't write it directly. See `agentwire-project-config` skill for the full schema and [Damage control](internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720) for the protection model.
 
-**Gitignore it.** It's personal/live config (voices, schedules, notification addresses) — not project code. Tracking it also breaks worktree dispatch subtly: worktree runs check out HEAD, so uncommitted live edits to a tracked file are silently ignored. Gitignored, it's seeded into worktrees via `projects.worktrees.copy_files` (default includes it), so the live file always wins. AgentWire adds it to `.gitignore` automatically whenever it writes the file into a git repo.
+**Gitignore both.** They're personal/live config (voices, schedules, notification addresses, task shell commands) — not project code. Tracking either also breaks worktree dispatch subtly: worktree runs check out HEAD, so uncommitted live edits to a tracked file are silently ignored. Gitignored, they're seeded into worktrees via `projects.worktrees.copy_files` (default includes both), so the live file always wins. AgentWire adds `.agentwire.yml` to `.gitignore` automatically whenever it writes the file into a git repo; `agentwire tasks promote` does the same for `.agentwire.tasks.yml` on first promote.
 
 ```yaml
+# .agentwire.yml
 type: claude-auto
 roles: [task-runner]
 voice: may
 parent: main
+```
 
+```yaml
+# .agentwire.tasks.yml
 tasks:
   nightly-tests:
     starting_ref: main
@@ -137,7 +141,7 @@ Non-interactive work runs through the scheduler:
 
 | Path | Field | Dispatch | Best for |
 |---|---|---|---|
-| **Ensure task** | `task: <name>` in scheduler.yaml + `tasks: <name>:` in .agentwire.yml | `agentwire ensure` → tmux session → Claude Code | Recurring agent work |
+| **Ensure task** | `task: <name>` in scheduler.yaml + `tasks: <name>:` in .agentwire.tasks.yml | `agentwire ensure` → tmux session → Claude Code | Recurring agent work |
 
 ```
                 ┌──────── ~/.agentwire/scheduler.yaml ─────────┐

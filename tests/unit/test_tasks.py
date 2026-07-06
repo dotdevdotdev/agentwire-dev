@@ -165,7 +165,7 @@ class TestValidateTask:
 
 class TestLoadTask:
     def test_load_from_yml(self, project_dir):
-        config_path = project_dir / ".agentwire.yml"
+        config_path = project_dir / ".agentwire.tasks.yml"
         data = {
             "tasks": {
                 "lint": {"prompt": "Run lint."},
@@ -180,7 +180,7 @@ class TestLoadTask:
         assert task.prompt == "Run lint."
 
     def test_task_not_found(self, project_dir):
-        config_path = project_dir / ".agentwire.yml"
+        config_path = project_dir / ".agentwire.tasks.yml"
         data = {"tasks": {"lint": {"prompt": "Run lint."}}}
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f)
@@ -189,15 +189,23 @@ class TestLoadTask:
             load_task(project_dir, "nonexistent")
 
     def test_no_config_file(self, tmp_path):
-        with pytest.raises(TaskNotFound, match="No .agentwire.yml"):
+        with pytest.raises(TaskNotFound, match="No .agentwire.tasks.yml"):
             load_task(tmp_path, "anything")
+
+    def test_does_not_read_agentwire_yml(self, project_dir):
+        """Tasks live in .agentwire.tasks.yml only — .agentwire.yml is ignored (#720)."""
+        (project_dir / ".agentwire.yml").write_text(
+            "type: claude-bypass\ntasks:\n  lint:\n    prompt: Run lint.\n"
+        )
+        with pytest.raises(TaskNotFound, match="No .agentwire.tasks.yml"):
+            load_task(project_dir, "lint")
 
 
 # --- list_tasks ---
 
 class TestListTasks:
     def test_lists_all(self, project_dir):
-        config_path = project_dir / ".agentwire.yml"
+        config_path = project_dir / ".agentwire.tasks.yml"
         data = {
             "tasks": {
                 "a": {"prompt": "p", "pre": {"x": "echo"}, "mode": "loop"},
@@ -213,9 +221,9 @@ class TestListTasks:
         assert names == {"a", "b"}
 
     def test_empty_when_no_tasks(self, project_dir):
-        config_path = project_dir / ".agentwire.yml"
+        config_path = project_dir / ".agentwire.tasks.yml"
         with open(config_path, "w") as f:
-            yaml.safe_dump({"type": "bare"}, f)
+            yaml.safe_dump({"shell": "/bin/sh"}, f)
 
         assert list_tasks(project_dir) == []
 

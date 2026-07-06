@@ -125,16 +125,12 @@ class TestProjectConfig:
             "roles": ["agentwire", "voice"],
             "voice": "default",
             "parent": "main",
-            "shell": "/bin/bash",
-            "tasks": {"t1": {"prompt": "hello"}},
         }
         config = ProjectConfig.from_dict(data)
         assert config.type == SessionType.CLAUDE_BYPASS
         assert config.roles == ["agentwire", "voice"]
         assert config.voice == "default"
         assert config.parent == "main"
-        assert config.shell == "/bin/bash"
-        assert "t1" in config.tasks
 
     def test_from_dict_defaults(self):
         config = ProjectConfig.from_dict({})
@@ -142,8 +138,6 @@ class TestProjectConfig:
         assert config.roles == []
         assert config.voice is None
         assert config.parent is None
-        assert config.shell is None
-        assert config.tasks == {}
 
     def test_roles_string_to_list_coercion(self):
         config = ProjectConfig.from_dict({"roles": "agentwire"})
@@ -174,7 +168,6 @@ class TestProjectConfig:
             roles=["voice", "worker"],
             voice="may",
             parent="main",
-            shell="/bin/zsh",
         )
         d = original.to_dict()
         restored = ProjectConfig.from_dict(d)
@@ -182,7 +175,6 @@ class TestProjectConfig:
         assert restored.roles == original.roles
         assert restored.voice == original.voice
         assert restored.parent == original.parent
-        assert restored.shell == original.shell
 
 
 # --- load/save/find_project_config ---
@@ -343,6 +335,30 @@ class TestProjectConfigNoSafety:
         assert "safety" not in config.to_dict()
 
 
+# --- ProjectConfig holds no task-execution config either (#720) ---
+
+class TestProjectConfigNoTasks:
+    def test_shell_and_tasks_are_ignored(self):
+        """`shell:`/`tasks:` in .agentwire.yml are no longer parsed into the config.
+
+        Task-execution config (pre/post/on_task_end/shell) lives in the
+        protected .agentwire.tasks.yml — .agentwire.yml carries none of it.
+        """
+        config = ProjectConfig.from_dict({
+            "type": "claude-bypass",
+            "shell": "/bin/bash",
+            "tasks": {"t1": {"prompt": "hello"}},
+        })
+        assert not hasattr(config, "shell")
+        assert not hasattr(config, "tasks")
+
+    def test_to_dict_never_emits_shell_or_tasks(self):
+        config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
+        d = config.to_dict()
+        assert "shell" not in d
+        assert "tasks" not in d
+
+
 # --- ensure_gitignored ---
 
 def _git(repo, *args):
@@ -391,3 +407,19 @@ class TestEnsureGitignored:
         config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
         assert save_project_config(config, tmp_path) is True
         assert ".agentwire.yml" in (tmp_path / ".gitignore").read_text()
+
+    def test_custom_filename_and_pattern(self, tmp_path):
+        """`tasks_cli.py` reuses this for `.agentwire.tasks.yml` w/ a glob pattern."""
+        _git(tmp_path, "init")
+        assert ensure_gitignored(tmp_path, ".agentwire.tasks.yml", ".agentwire.tasks*.yml") is True
+        gitignore = (tmp_path / ".gitignore").read_text()
+        assert ".agentwire.tasks*.yml" in gitignore
+        assert ".agentwire.yml" not in gitignore
+
+    def test_custom_filename_idempotent_via_glob(self, tmp_path):
+        _git(tmp_path, "init")
+        ensure_gitignored(tmp_path, ".agentwire.tasks.yml", ".agentwire.tasks*.yml")
+        before = (tmp_path / ".gitignore").read_text()
+        # The proposed staging file is already covered by the glob line above.
+        assert ensure_gitignored(tmp_path, ".agentwire.tasks.proposed.yml", ".agentwire.tasks*.yml") is False
+        assert (tmp_path / ".gitignore").read_text() == before

@@ -31,3 +31,9 @@ bashToolPatterns:
 
   - pattern: '\brm\s+.*~/.agentwire'
     reason: Removing ~/.agentwire directory (destroys all AgentWire state)
+
+  # Note: `agentwire tasks promote` (#720/#721) is blocked via
+  # safety/_core.py's PROTECTED_COMMAND_PATTERNS instead of an ordinary
+  # bashToolPatterns entry here — it needs escape-hatch/kill-switch immunity,
+  # which only the code-level protected-command check provides (a rule in
+  # this file would still be overridable by `# allow:`).

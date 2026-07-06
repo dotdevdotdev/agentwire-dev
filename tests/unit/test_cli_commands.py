@@ -106,7 +106,7 @@ class TestCmdSafetyCheck:
 
 class TestTaskCommands:
     def test_list_tasks(self, project_dir):
-        config_path = project_dir / ".agentwire.yml"
+        config_path = project_dir / ".agentwire.tasks.yml"
         data = {
             "tasks": {
                 "lint": {"prompt": "Run linting."},
@@ -124,7 +124,7 @@ class TestTaskCommands:
         assert "test" in names
 
     def test_validate_good_task(self, project_dir):
-        config_path = project_dir / ".agentwire.yml"
+        config_path = project_dir / ".agentwire.tasks.yml"
         data = {"tasks": {"good": {"prompt": "Do things.", "retries": 1}}}
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f)

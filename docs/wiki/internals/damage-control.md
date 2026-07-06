@@ -117,6 +117,8 @@ Any write / edit / delete / move / chmod targeting one of these paths is
 - `~/.claude/settings.json` (the PreToolUse hook registration)
 - `~/.agentwire/hooks/damage-control/*.py` (the hook scripts), `~/.claude/hooks/*`
 - `~/.agentwire/damage-control/*.yaml` (the rule files)
+- `~/.agentwire/scheduler.yaml`, `~/.agentwire/config.yaml` (gate/healthcheck commands run via the same `shell=True` confused-deputy path)
+- any `.agentwire.tasks.yml` (per-project task-execution config — see [Task-execution config split](#task-execution-config-split-agentwiretasksyml-720) below; **not** `.agentwire.yml`, which is pure declarative session config and is agent-writable)
 
 The guarantee: **the agent only ever operates within the freedom the human
 preset; it can never expand its own freedom by editing a file.** The one
@@ -124,9 +126,82 @@ override is the user's `allowedPaths` allowlist — a human, host-side opt-in (t
 agent can't add to it without editing a protected file, which is itself blocked).
 The mechanism is `check_protected_command` / `check_protected_path` in
 `safety/_core.py`, which run **before** `detect_escape_hatch` and the kill switch.
-`rules/control-plane.yaml` lists the same paths as `readOnlyPaths` for
-defense-in-depth + visibility, but the code-level check is what makes the
-protection absolute.
+
+The same escape-hatch-/kill-switch-exempt tier also covers specific COMMANDS,
+not just paths — `PROTECTED_COMMAND_PATTERNS` (`check_protected_bash_command`,
+also checked before `detect_escape_hatch`) for operations that are dangerous
+regardless of which file they touch. See [Task-execution config
+split](#task-execution-config-split-agentwiretasksyml-720) below for the first
+entry (`agentwire tasks promote`).
+
+### Task-execution config split (`.agentwire.tasks.yml`, #720)
+
+`.agentwire.yml` used to carry BOTH declarative session config (`type`/`roles`/
+`voice`/`parent`/`worktree`) AND the `tasks:` block (`pre`/`post`/`on_task_end`/
+`shell` — code the scheduler runs via `shell=True`). Protecting the whole file
+to guard the second category also blocked agents from authoring the first, the
+common/safe case. The fix: split them.
+
+- **`.agentwire.yml`** — purely declarative, zero execution vector, agent-writable again.
+- **`.agentwire.tasks.yml`** — the `tasks:` block, protected control-plane (same tier as `.damagecontrol.yml`).
+
+Since a policed agent can't write the protected file directly, authoring it is
+**propose-and-promote** (mirrors the worktree → PR → review → merge model,
+because task defs ARE executable code):
+
+1. The agent drafts to the **unprotected** staging file `.agentwire.tasks.proposed.yml`.
+2. A human runs `agentwire tasks review [session]` — a diff against the live
+   file plus every shell-bearing field the draft would run (that's the
+   review's whole purpose), and any validation issues.
+3. The human runs `agentwire tasks promote [session] [--yes]` — agentwire
+   itself (host-trusted) copies the vetted draft into the live
+   `.agentwire.tasks.yml` and deletes the draft. The agent never writes the
+   live file.
+
+Both commands are deliberately **CLI-only, never MCP**: an MCP tool that
+shelled out to `promote` would bypass the Bash-tool hook entirely (see
+[Outbound MCP tool gating](#outbound-mcp-tool-gating-457) — everything not on
+that explicit gated list is open by default).
+
+`agentwire tasks promote` self-invocation is **hard-gated**, not just
+defense-in-depth (#721 review found three bypasses of the original
+Bash-pattern-only block; all three are closed):
+
+1. **`PROTECTED_COMMAND_PATTERNS`** (`safety/_core.py`) blocks the command
+   text at the SAME tier as the protected-control-plane path check —
+   escape-hatch- and kill-switch-EXEMPT, evaluated before
+   `detect_escape_hatch`. Unlike an ordinary `bashToolPatterns` rule, `# allow:`
+   and `enabled: false` cannot reopen it, and there's no allowlist override at
+   all (there's no legitimate reason for an agent to ever run this command).
+2. **`cmd_tasks_promote` itself refuses to run** outside a genuine host
+   context, regardless of how it's reached — this is the layer that actually
+   matters, since a raw `python3 -c "from agentwire.tasks_cli import
+   cmd_tasks_promote; ..."` never matches any bash pattern at all (no
+   protected-path string, no command text), so it reaches the function
+   directly. It:
+   - Refuses unconditionally when `AGENTWIRE_UNATTENDED=1` (the marker the
+     scheduler stamps on every headless dispatch) — closing the concrete
+     exploit: an unattended task writes malicious `shell:` strings to the
+     proposed file, then self-promotes so the scheduler executes them
+     unguarded on the next tick.
+   - Otherwise requires a genuine host signal: a real interactive tty (Claude
+     Code's Bash tool never attaches one, attended or not), or the explicit
+     `AGENTWIRE_ALLOW_TASKS_PROMOTE=1` opt-in for a human's own
+     non-interactive script. **`--yes` only skips the confirmation prompt —
+     it never substitutes for this gate.**
+
+`rules/control-plane.yaml` lists the protected PATHS as `readOnlyPaths` for
+defense-in-depth + visibility, but the code-level checks above are what make
+the protection absolute.
+
+**Deferred / follow-up — police-at-execution.** The deeper root fix is routing
+agentwire's own task/gate/healthcheck `subprocess.run(shell=True)` calls
+through the damage-control policy engine in-process (with the existing
+unattended fail-closed guardrail). That would mean an agent-authored command
+gains no unguarded exec even if it somehow lands in the file, and the file
+wouldn't strictly need protecting at all. Split-the-file (above) guards
+*authorship*; police-at-execution guards *the real risk*. Recommended as
+defense-in-depth on top of the split, not implemented here.
 
 ---
 
@@ -286,7 +361,7 @@ unattended gate is inert too (enable safety for scheduled projects to engage it)
 |--------|-------|-------|
 | `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create` — work + open a PR, nothing irreversible or outward-facing |
 | `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project extension (list of rule ids) |
-| `unattended_allow` | per-task in `.agentwire.yml` | Per-task extension — the pressure-relief valve: widen for one task instead of loosening the global default |
+| `unattended_allow` | per-task in `.agentwire.tasks.yml` | Per-task extension — the pressure-relief valve: widen for one task instead of loosening the global default |
 
 Allowlisting is **by rule ID**, not command text — so `git.push` (plain push)
 is allowed while `git push --force` (hard block) and `git push --delete`
@@ -299,7 +374,7 @@ exact rule id, so widening is copy-paste: add that id to the task's
 `unattended_allow`.
 
 ```yaml
-# project .agentwire.yml — let ONE scheduled task run terraform apply unattended
+# project .agentwire.tasks.yml — let ONE scheduled task run terraform apply unattended
 tasks:
   infra-drift:
     prompt: reconcile infra drift and apply
