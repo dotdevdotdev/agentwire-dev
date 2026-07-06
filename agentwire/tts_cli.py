@@ -1,6 +1,6 @@
-"""CLI for the audio service processes — ``agentwire tts|stt|kokoro|voiceclone``.
+"""CLI for the audio service processes — ``agentwire tts|stt|kokoro``.
 
-These four command groups share the same local/remote service-spawn shape
+These command groups share the same local/remote service-spawn shape
 (start a uvicorn server in a tmux session, or over SSH on a remote machine),
 so they live in one module along with their venv-selection and restart
 helpers. Shared, stateless helpers live in ``core``.
@@ -843,36 +843,19 @@ def _restart_tts_for_venv(venv: str, backend: str) -> bool:
     return _restart_tts_remote_for_venv(ssh_target, machine_id, venv, backend)
 
 
-# === Voice cloning Commands ===
+# === Voice listing ===
 
 
-def cmd_voiceclone_start(args) -> int:
-    """Start voice recording for cloning."""
-    from .voiceclone import start_recording
-    return start_recording()
-
-
-def cmd_voiceclone_stop(args) -> int:
-    """Stop recording and upload voice clone."""
-    from .voiceclone import stop_recording
-    return stop_recording(args.name)
-
-
-def cmd_voiceclone_cancel(args) -> int:
-    """Cancel current recording."""
-    from .voiceclone import cancel_recording
-    return cancel_recording()
-
-
-def cmd_voiceclone_list(args) -> int:
-    """List available voices (custom TTS shim only)."""
+def cmd_tts_voices(args) -> int:
+    """List available TTS voices (custom-shim voices, or Kokoro presets)."""
     json_mode = getattr(args, 'json', False)
 
     import requests
 
-    from .voiceclone import get_tts_url, is_custom_backend
+    tts_config = load_config().get("tts", {})
+    is_custom = tts_config.get("backend") == "custom"
 
-    if not is_custom_backend():
+    if not is_custom:
         # Default tier speaks via Kokoro presets — no cloning, but surface
         # the preset list so agents/users know what voices exist.
         try:
@@ -883,12 +866,12 @@ def cmd_voiceclone_list(args) -> int:
         if json_mode:
             _output_json({"success": True, "voices": [], "preset_voices": presets})
         else:
-            print("No cloned voices — voice cloning requires tts.backend: custom.")
+            print("No custom voices — cloned voices require tts.backend: custom.")
             if presets:
                 print(f"Default tier speaks via Kokoro. Preset voices: {', '.join(presets)}")
         return 0
 
-    tts_url = get_tts_url()
+    tts_url = tts_config.get("url")
     try:
         response = requests.get(f"{tts_url}/voices", timeout=10)
         if response.status_code == 200:
@@ -918,12 +901,6 @@ def cmd_voiceclone_list(args) -> int:
         else:
             print(f"Connection failed: {e}")
         return 1
-
-
-def cmd_voiceclone_delete(args) -> int:
-    """Delete a voice."""
-    from .voiceclone import delete_voice
-    return delete_voice(args.name)
 
 
 # === Parser registration ===
@@ -988,6 +965,13 @@ def register_tts_parser(subparsers) -> None:
     )
     tts_warm.set_defaults(func=cmd_tts_warm)
 
+    # tts voices
+    tts_voices = tts_subparsers.add_parser(
+        "voices", help="List available TTS voices (custom-shim voices or Kokoro presets)"
+    )
+    tts_voices.add_argument("--json", action="store_true", help="Output JSON")
+    tts_voices.set_defaults(func=cmd_tts_voices)
+
     # === stt command group ===
     stt_parser = subparsers.add_parser("stt", help="Manage STT server (native Whisper)")
     stt_subparsers = stt_parser.add_subparsers(dest="stt_command")
@@ -1043,42 +1027,3 @@ def register_tts_parser(subparsers) -> None:
     kokoro_status = kokoro_subparsers.add_parser("status", help="Check Kokoro shim status")
     kokoro_status.add_argument("--json", action="store_true", help="Output JSON")
     kokoro_status.set_defaults(func=cmd_kokoro_status)
-
-    # === voiceclone command group ===
-    voiceclone_parser = subparsers.add_parser(
-        "voiceclone", help="Record and upload voice clones"
-    )
-    voiceclone_subparsers = voiceclone_parser.add_subparsers(dest="voiceclone_command")
-
-    # voiceclone start
-    voiceclone_start = voiceclone_subparsers.add_parser(
-        "start", help="Start recording for voice clone"
-    )
-    voiceclone_start.set_defaults(func=cmd_voiceclone_start)
-
-    # voiceclone stop <name>
-    voiceclone_stop = voiceclone_subparsers.add_parser(
-        "stop", help="Stop recording and upload as voice clone"
-    )
-    voiceclone_stop.add_argument("name", help="Name for the voice clone")
-    voiceclone_stop.set_defaults(func=cmd_voiceclone_stop)
-
-    # voiceclone cancel
-    voiceclone_cancel = voiceclone_subparsers.add_parser(
-        "cancel", help="Cancel current recording"
-    )
-    voiceclone_cancel.set_defaults(func=cmd_voiceclone_cancel)
-
-    # voiceclone list
-    voiceclone_list = voiceclone_subparsers.add_parser(
-        "list", help="List available voices"
-    )
-    voiceclone_list.add_argument("--json", action="store_true", help="Output JSON")
-    voiceclone_list.set_defaults(func=cmd_voiceclone_list)
-
-    # voiceclone delete <name>
-    voiceclone_delete = voiceclone_subparsers.add_parser(
-        "delete", help="Delete a voice clone"
-    )
-    voiceclone_delete.add_argument("name", help="Name of voice to delete")
-    voiceclone_delete.set_defaults(func=cmd_voiceclone_delete)

@@ -84,7 +84,7 @@ timeout) for availability reporting and fail-fast in the `say` tool.
 {"voices": [{"name": "amy", "duration": 10.2}]}
 ```
 
-Powers `agentwire voiceclone list` and voice pickers. Omit if your model has
+Powers `agentwire tts voices` and voice pickers. Omit if your model has
 no selectable voices.
 
 ### `GET /capabilities` (optional, recommended)

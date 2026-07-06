@@ -252,7 +252,7 @@ def run_onboarding(skip_session: bool = True, force: bool = False) -> int:
     # Check ffmpeg (optional)
     ffmpeg_ok, ffmpeg_path = check_ffmpeg()
     if not ffmpeg_ok:
-        print_warning("ffmpeg not found (optional — needed for host-mic push-to-talk and voice cloning; browser voice input works without it)")
+        print_warning("ffmpeg not found (optional — needed for host-mic push-to-talk; browser voice input works without it)")
         print_info(f"Install with: {instructions['ffmpeg']}")
     else:
         print_success(f"ffmpeg: {ffmpeg_path}")
@@ -361,7 +361,7 @@ agent:
 # Voice — instant mode out of the box: Chrome speech in, Kokoro-82M out
 # (CPU neural voice, ~200MB model auto-downloads on first portal start;
 # browser speechSynthesis covers the wait). default_voice picks the Kokoro
-# preset (af_heart, af_bella, am_adam, ... — `agentwire voiceclone list`).
+# preset (af_heart, af_bella, am_adam, ... — `agentwire tts voices`).
 # Upgrade either side to a custom shim: docs/wiki/voice/shim-contract.md
 tts:
   backend: "default"

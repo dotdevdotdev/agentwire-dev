@@ -48,7 +48,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire jump --pane 1` | `pane_jump(pane=1)` |
 | `agentwire resize` | `pane_resize()` |
 
-## Voice & TTS (11 tools)
+## Voice & TTS (6 tools)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
@@ -59,13 +59,8 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire listen start` | `listen_start()` |
 | `agentwire listen stop` | `listen_stop()` |
 | `agentwire listen cancel` | `listen_cancel()` |
-| `agentwire voiceclone start` | `voiceclone_start()` |
-| `agentwire voiceclone stop name` | `voiceclone_stop(name="...")` |
-| `agentwire voiceclone cancel` | `voiceclone_cancel()` |
-| `agentwire voiceclone list` | `voiceclone_list()` |
-| `agentwire voiceclone delete name` | `voiceclone_delete(name="...")` |
 | (portal API) | `transcribe(audio_base64="...", format="webm")` |
-| `agentwire voiceclone list` | `voices_list()` |
+| `agentwire tts voices` | `voices_list()` |
 
 ## Tasks & Locks (7 tools)
 
