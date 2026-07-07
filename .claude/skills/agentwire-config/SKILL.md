@@ -18,7 +18,7 @@ description: Reference for `~/.agentwire/config.yaml` — main config structure 
 | `wiki/` | LLM-maintained knowledge base (Karpathy LLM Wiki pattern) |
 | `logs/` | Audit logs for damage-control |
 
-Per-session config (type, roles, voice) lives in `.agentwire.yml` in each project directory (see `agentwire-project-config` skill).
+Per-session config (posture, roles, voice) lives in `.agentwire.yml` in each project directory (see `agentwire-project-config` skill).
 
 ## Machine Scripts (`~/.agentwire/scripts/`)
 
@@ -128,7 +128,7 @@ services:  # Where services run (for multi-machine setups)
       project: "~/projects/brain"  # project dir; defaults to dev source dir
       autostart: true              # boot on portal launch / `agentwire up` (default true)
       roles: "brain"               # optional; overrides project .agentwire.yml
-      type: "claude-bypass"        # optional; session type override
+      posture: "bypass"            # optional; posture override
       restart: on-failure          # never | on-failure | always (watchdog respawn
                                    #   with 30s..10m exponential backoff; default on-failure;
                                    #   `agentwire services down` always sticks)

@@ -207,7 +207,7 @@ agentwire lock remove <session> # force-remove a specific lock
 # Project discovery
 agentwire projects list         # discover projects from projects_dir
 agentwire projects list --json  # JSON output for scripting
-agentwire projects create name              # mkdir + minimal .agentwire.yml (claude-bypass)
+agentwire projects create name              # mkdir + minimal .agentwire.yml (bypass)
                                             # (in git repos, .agentwire.yml is auto-added to
                                             #  .gitignore — personal config, keep it untracked)
 agentwire projects create name --git-init   # also run `git init`

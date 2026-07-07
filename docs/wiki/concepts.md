@@ -38,7 +38,7 @@ When you ask "should this be one session or two?" the answer is almost always in
 
 Inside a session, **pane 0 is the orchestrator** — the agent the user (or another session) talks to. Workers live in panes 1+ and are spawned by the orchestrator (typically via the MCP `pane_spawn` tool) for bounded subtasks. When a worker goes idle, an idle-handler hook captures the worker's output, sends a summary alert to pane 0, and kills the worker. Pane 0 is then free to dispatch the next worker, talk to the user, or start another agent.
 
-This pattern is load-bearing in three ways. **First**, it bounds risk: a worker can be `claude-restricted` (say-only — no edit, no write) while the orchestrator is `claude-bypass` (full access). The orchestrator delegates dangerous reads to a sandboxed worker without inheriting that worker's privileges. **Second**, it bounds context: workers run with a fresh prompt and a tiny system message, so they don't drag in the orchestrator's 200K-token conversation. **Third**, it bounds attention: pane 0 is where you look. Workers are noise that scrolls by; their summaries are the signal that surfaces.
+This pattern is load-bearing in three ways. **First**, it bounds risk: a worker can be `restricted` (say-only — no edit, no write) while the orchestrator is `bypass` (full access). The orchestrator delegates dangerous reads to a sandboxed worker without inheriting that worker's privileges. **Second**, it bounds context: workers run with a fresh prompt and a tiny system message, so they don't drag in the orchestrator's 200K-token conversation. **Third**, it bounds attention: pane 0 is where you look. Workers are noise that scrolls by; their summaries are the signal that surfaces.
 
 The pattern composes. An orchestrator in a "main" session can spawn workers AND send messages to other sessions. Those other sessions are also orchestrators with their own workers. The whole graph forms naturally: idle notifications flow upward (worker → orchestrator → `parent:` session → human), commands flow downward (human → main session → child sessions → workers).
 
@@ -77,7 +77,7 @@ A practical decision shortcut:
 
 You now have the mental model. Pick a path:
 
-- **Run something today**: `agentwire new -s test` and pick a session type from the [sessions index](INDEX.md#sessions).
+- **Run something today**: `agentwire new -s test` and pick a posture from the [sessions index](INDEX.md#sessions).
 - **Define a recurring task**: [Scheduled workloads](scheduling/scheduled-workloads.md).
 - **Wire a channel**: [Channels](communication/channels.md).
 - **Need a term defined**: [Glossary](glossary.md).

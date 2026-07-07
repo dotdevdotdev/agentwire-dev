@@ -83,7 +83,7 @@ the `prompts/` history.
 ## CLI
 
 ```bash
-agentwire council start [--name N] [--roster brain,gut,...] [--type T] [--model M] [--force]
+agentwire council start [--name N] [--roster brain,gut,...] [--posture P] [--model M] [--force]
 agentwire council list                          # every sitting: name·cwd·age·live·prompts
 agentwire council stop    [--name N] [--minutes|--no-minutes] [--synthesis S]
 agentwire council status  [--name N]

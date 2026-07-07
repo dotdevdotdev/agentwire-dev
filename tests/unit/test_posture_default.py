@@ -12,7 +12,7 @@ its own worktree.
 
 from argparse import Namespace
 
-from agentwire.core import _default_posture, _resolve_session_type_from_args
+from agentwire.core import _default_posture, _resolve_posture_from_args
 
 
 class TestDefaultPosture:
@@ -36,36 +36,42 @@ class TestDefaultPosture:
         assert _default_posture("nope") == "bypass"
 
 
-class TestResolveSessionTypeFromArgs:
+class TestResolvePostureFromArgs:
     def test_pane_worker_default_matches_status_quo(self):
-        # cmd_spawn's call site: _resolve_session_type_from_args(args, "worker")
+        # cmd_spawn's call site: _resolve_posture_from_args(args, "worker")
         # with no worktree_topology kwarg — must still resolve restricted.
-        args = Namespace(posture=None, type=None, bare=False,
+        args = Namespace(posture=None, bare=False,
                           restricted=False, prompted=False)
-        session_type, err = _resolve_session_type_from_args(args, "worker")
+        posture, err = _resolve_posture_from_args(args, "worker")
         assert err is None
-        assert "restricted" in session_type
+        assert posture == "restricted"
 
     def test_worktree_worker_resolves_bypass(self):
-        args = Namespace(posture=None, type=None, bare=False,
+        args = Namespace(posture=None, bare=False,
                           restricted=False, prompted=False)
-        session_type, err = _resolve_session_type_from_args(args, "worker", worktree_topology=True)
+        posture, err = _resolve_posture_from_args(args, "worker", worktree_topology=True)
         assert err is None
-        assert "bypass" in session_type
+        assert posture == "bypass"
 
     def test_orchestrator_resolves_bypass_regardless_of_topology(self):
-        args = Namespace(posture=None, type=None, bare=False,
+        args = Namespace(posture=None, bare=False,
                           restricted=False, prompted=False)
         for topology in (True, False):
-            session_type, err = _resolve_session_type_from_args(args, "orchestrator", worktree_topology=topology)
+            posture, err = _resolve_posture_from_args(args, "orchestrator", worktree_topology=topology)
             assert err is None
-            assert "bypass" in session_type
+            assert posture == "bypass"
 
     def test_explicit_posture_overrides_the_default(self):
         # worktree_topology=True would otherwise default to bypass — an
         # explicit --posture prompted must win regardless.
-        args = Namespace(posture="prompted", type=None, bare=False,
+        args = Namespace(posture="prompted", bare=False,
                           restricted=False, prompted=False)
-        session_type, err = _resolve_session_type_from_args(args, "worker", worktree_topology=True)
+        posture, err = _resolve_posture_from_args(args, "worker", worktree_topology=True)
         assert err is None
-        assert "prompted" in session_type
+        assert posture == "prompted"
+
+    def test_explicit_bare_boolean(self):
+        args = Namespace(posture=None, bare=True, restricted=False, prompted=False)
+        posture, err = _resolve_posture_from_args(args, "orchestrator")
+        assert err is None
+        assert posture == "bare"

@@ -75,7 +75,7 @@ def load_board() -> Board:
             enabled=bool(t.get("enabled", True)),
             filler=bool(t.get("filler", False)),
             priority=int(t.get("priority", 99)),
-            type=t.get("type"),
+            posture=t.get("posture"),
             roles=roles,
             model=t.get("model"),
             gate=t.get("gate"),

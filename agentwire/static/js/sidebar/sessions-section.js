@@ -71,8 +71,8 @@ export function renderCard(s, opts = {}) {
     const activity = activityStates.get(name) || s.activity || 'idle';
     const dotClass = activity === 'idle' ? 'dot-idle' : activity === 'processing' ? 'dot-processing' : activity === 'generating' ? 'dot-generating' : 'dot-playing';
     const tags = [];
-    if (s.type) {
-        tags.push(`<span class="sidebar-tag">${s.type}</span>`);
+    if (s.posture) {
+        tags.push(`<span class="sidebar-tag">${s.posture}</span>`);
     }
     if (machine) tags.push(`<span class="sidebar-tag">@${machine}</span>`);
     const roles = (s.roles || []).map(r => `<span class="sidebar-tag sidebar-tag-role">${r}</span>`).join('');

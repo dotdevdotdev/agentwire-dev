@@ -64,7 +64,7 @@ def test_unrelated_file_is_not_protected():
 
 def test_agentwire_yml_is_no_longer_protected():
     """#720: .agentwire.yml was split out — it's pure declarative session config
-    (type/roles/voice/parent/worktree) now, agent-writable again."""
+    (posture/roles/voice/parent/worktree) now, agent-writable again."""
     assert is_protected_control_plane("/some/repo/.agentwire.yml") is False
 
 
@@ -409,7 +409,7 @@ def test_agentwire_yml_allowlist_does_NOT_repermit_protected(tmp_path, monkeypat
     """BUG REPRODUCER: .agentwire.yml safety.allowed_paths must NOT re-permit a
     protected path — otherwise an agent edits .agentwire.yml to free itself."""
     (tmp_path / ".agentwire.yml").write_text(
-        "type: claude-bypass\n"
+        "posture: bypass\n"
         "safety:\n"
         "  allowed_paths:\n"
         f"    - path: {PROTECTED_TARGET}\n"
@@ -457,7 +457,7 @@ def test_load_allowed_paths_sources_from_damagecontrol_not_agentwire(tmp_path, m
     """The per-project allowlist comes from .damagecontrol.yml; an .agentwire.yml
     safety block contributes nothing."""
     (tmp_path / ".agentwire.yml").write_text(
-        "type: claude-bypass\n"
+        "posture: bypass\n"
         "safety:\n"
         "  allowed_paths:\n"
         "    - path: /from/agentwire\n"
@@ -476,7 +476,7 @@ def test_load_allowed_paths_sources_from_damagecontrol_not_agentwire(tmp_path, m
 
 def test_agentwire_yml_alone_contributes_no_allowlist(tmp_path, monkeypatch):
     (tmp_path / ".agentwire.yml").write_text(
-        "type: claude-bypass\n"
+        "posture: bypass\n"
         "safety:\n"
         "  allowed_paths:\n"
         "    - path: /from/agentwire\n"

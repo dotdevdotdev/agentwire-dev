@@ -25,7 +25,7 @@ Define tasks in `.agentwire.tasks.yml` (a sibling of `.agentwire.yml`, split out
 
 ```yaml
 # .agentwire.yml — declarative session config
-type: claude-auto    # Recommended for unattended work — see claude-auto below
+posture: auto    # Recommended for unattended work — see auto below
 roles:
   - task-runner
 ```
@@ -241,7 +241,7 @@ tasks:
     project: ~/projects/piinpoint
     session: piinpoint-tests
     task: write-tests
-    type: claude-auto          # Session type override
+    posture: auto              # Posture override
     roles: [task-runner]
     once: true                 # Auto-disable after first run
     schedule:
@@ -253,7 +253,7 @@ tasks:
     project: ~/projects/piinpoint
     session: piinpoint-lint
     task: lint-cleanup
-    type: claude-auto
+    posture: auto
     schedule:
       after: nightly-tests
       delay: 2m
@@ -308,18 +308,18 @@ The HTML report includes: task name, status badge, branch, PR link, duration, an
 
 ---
 
-## `claude-auto` — Recommended Session Type
+## `auto` — Recommended Posture
 
-For unattended work, use `claude-auto` instead of `claude-bypass`:
+For unattended work, use `auto` instead of `bypass`:
 
 ```yaml
 # .agentwire.yml
-type: claude-auto
+posture: auto
 ```
 
-`claude-auto` uses Claude Code's auto mode: a background Sonnet 4.6 classifier reviews each tool call before execution. Safe actions (file reads, edits, git ops) run immediately with no overhead. Dangerous actions (force push to main, mass deletion, credential exfiltration) are blocked.
+`auto` uses Claude Code's auto mode: a background Sonnet 4.6 classifier reviews each tool call before execution. Safe actions (file reads, edits, git ops) run immediately with no overhead. Dangerous actions (force push to main, mass deletion, credential exfiltration) are blocked.
 
-`claude-bypass` has no safety checks. `claude-auto` does everything `claude-bypass` does for normal unattended work but prevents catastrophic failures at 3am when nobody's watching.
+`bypass` has no safety checks. `auto` does everything `bypass` does for normal unattended work but prevents catastrophic failures at 3am when nobody's watching.
 
 **Requires:** Team or Enterprise Claude plan. Pro/Max individual plans not supported.
 
@@ -331,7 +331,7 @@ See `../sessions/claude-code-auto-mode.md` for full setup, allow rule configurat
 
 ```yaml
 # ~/projects/piinpoint/.agentwire.yml
-type: claude-auto
+posture: auto
 roles:
   - task-runner
 ```
@@ -380,7 +380,7 @@ tasks:
     project: ~/projects/piinpoint
     session: piinpoint-tests
     task: write-tests
-    type: claude-auto
+    posture: auto
     once: true
     schedule:
       every: 1m
@@ -391,7 +391,7 @@ tasks:
     project: ~/projects/piinpoint
     session: piinpoint-lint
     task: lint-cleanup
-    type: claude-auto
+    posture: auto
     once: true
     schedule:
       after: nightly-tests

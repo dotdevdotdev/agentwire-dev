@@ -102,7 +102,7 @@ def session_create(
     name: str,
     project_dir: str | None = None,
     roles: str | None = None,
-    session_type: str | None = None,
+    posture: str | None = None,
     base: str | None = None,
     pull_first: bool = True,
     created_by: str = "",
@@ -131,7 +131,7 @@ def session_create(
         project_dir: Project directory path. For worktree mode, this is the main
             repo (the worktree is created alongside it). Optional.
         roles: Comma-separated list of roles to apply. Optional.
-        session_type: Session type like 'claude-bypass'. Optional.
+        posture: Permission mode: bypass | prompted | restricted | readonly | auto (or bare). Optional.
         base: Base branch to fork the worktree from (worktree mode only,
             default 'main'). Ignored for flat names.
         pull_first: Fetch origin/<base> before branching (worktree mode only,
@@ -167,8 +167,8 @@ def session_create(
         args.extend(["-p", project_dir])
     if roles:
         args.extend(["--roles", roles])
-    if session_type:
-        args.extend(["--type", session_type])
+    if posture:
+        args.extend(["--posture", posture])
     if base:
         args.extend(["--base", base])
     if not pull_first:
@@ -306,8 +306,8 @@ def session_info(session: str) -> str:
         lines.append(f"  Working directory: {cwd}")
     if panes := data.get("panes"):
         lines.append(f"  Panes: {len(panes)}")
-    if session_type := data.get("type"):
-        lines.append(f"  Type: {session_type}")
+    if posture := data.get("posture"):
+        lines.append(f"  Posture: {posture}")
     if roles := data.get("roles"):
         lines.append(f"  Roles: {', '.join(roles)}")
 

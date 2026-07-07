@@ -96,7 +96,7 @@ def _parse_metadata(section: _Section) -> Metadata:
         repo_url=fields.get("repo_url") or fields.get("repo") or None,
         branch=fields.get("branch") or None,
         commit=fields.get("commit") or None,
-        session_type=fields.get("session_type") or None,
+        posture=fields.get("posture") or None,
         model=fields.get("model") or None,
         started_at=fields.get("started_at") or None,
         ended_at=fields.get("ended_at") or None,

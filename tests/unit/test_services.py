@@ -78,7 +78,7 @@ class TestRegistry:
         reg = services.registry(self._cfg([]))
         assert reg[0].name == "agentwire-notifications"
         assert reg[0].roles == "notifications"
-        assert reg[0].type == "claude-bypass"
+        assert reg[0].posture == "bypass"
         assert reg[0].restart == "on-failure"
 
     def test_user_services_appended(self, monkeypatch):

@@ -357,7 +357,7 @@ class CustomServiceConfig:
     Custom services show up in the portal's Services column, are booted by
     `agentwire up` AND on portal launch, and are watched by the portal's
     service watchdog. A service is just an agentwire session created in a
-    project directory; `roles`/`type` override the project's .agentwire.yml
+    project directory; `roles`/`posture` override the project's .agentwire.yml
     when set.
 
     restart: never | on-failure | always — what the watchdog does when the
@@ -369,7 +369,7 @@ class CustomServiceConfig:
     project: Optional[str] = None
     autostart: bool = True
     roles: Optional[str] = None  # comma-separated; overrides project .agentwire.yml
-    type: Optional[str] = None   # session type override (e.g. claude-bypass)
+    posture: Optional[str] = None   # posture override (e.g. bypass, restricted)
     restart: str = "on-failure"  # never | on-failure | always
     healthcheck: HealthcheckConfig = field(default_factory=HealthcheckConfig)
     # Context auto-management policy (issue #442): clear | compact | none.
@@ -739,7 +739,7 @@ def _dict_to_config(data: dict) -> Config:
                 project=entry.get("project"),
                 autostart=entry.get("autostart", True),
                 roles=entry.get("roles"),
-                type=entry.get("type"),
+                posture=entry.get("posture"),
                 restart=entry.get("restart", "on-failure"),
                 healthcheck=healthcheck,
                 context_policy=context_policy,

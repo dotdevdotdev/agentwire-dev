@@ -1,14 +1,14 @@
 ---
 name: agentwire-project-config
-description: Reference for per-project `.agentwire.yml` (declarative session type/roles/voice/parent/worktree, agent-writable) and the separate protected `.agentwire.tasks.yml` (pre/prompt/post/on_task_end/shell/branch-management task schema, authored via propose-and-promote); hierarchical idle notifications with worker summary files and queue processor; role system. Use when configuring a project for agentwire, wiring up scheduled tasks, defining worker/orchestrator relationships, or debugging task execution.
+description: Reference for per-project `.agentwire.yml` (declarative posture/roles/voice/parent/worktree, agent-writable) and the separate protected `.agentwire.tasks.yml` (pre/prompt/post/on_task_end/shell/branch-management task schema, authored via propose-and-promote); hierarchical idle notifications with worker summary files and queue processor; role system. Use when configuring a project for agentwire, wiring up scheduled tasks, defining worker/orchestrator relationships, or debugging task execution.
 ---
 
 # `.agentwire.yml` Project Config
 
-Each project can have a `.agentwire.yml` in its root directory. This configures session type, roles, voice, and parent for that project.
+Each project can have a `.agentwire.yml` in its root directory. This configures posture, roles, voice, and parent for that project.
 
 **Split from task-execution config (#720).** `.agentwire.yml` is now PURELY
-declarative — `type`/`roles`/`voice`/`parent`/`worktree`, no execution vector —
+declarative — `posture`/`roles`/`voice`/`parent`/`worktree`, no execution vector —
 so it's agent-writable. Named `tasks:` (the code the scheduler actually runs
 via `shell=True`: `pre`/`post`/`on_task_end`/`shell`) live in a separate file,
 **`.agentwire.tasks.yml`**, which is protected control-plane. See
@@ -29,7 +29,7 @@ AgentWire enforces this automatically: whenever it writes `.agentwire.yml` into 
 
 ```yaml
 # Session with voice and agentwire awareness
-type: claude-bypass
+posture: bypass
 roles:
   - agentwire
   - voice
@@ -40,13 +40,13 @@ parent: main  # Notify parent session when idle (optional)
 ```yaml
 # WRONG - don't nest under "session:"
 session:
-  type: claude
+  posture: bypass
   roles: [...]  # This won't be loaded!
 ```
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `bare` | Session permission level. **Use `claude-auto` for unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. |
+| `posture` | `bypass`, `prompted`, `restricted`, `readonly`, `auto` (or `bare`) | Permission mode the agent runs under. Use `auto` for unattended work — classifier blocks dangerous actions. |
 | `roles` | List of role names | Roles to load (from bundled or `~/.agentwire/roles/`) |
 | `voice` | Voice name | TTS voice for this project |
 | `parent` | Session name | Parent session for hierarchical notifications |
@@ -227,7 +227,7 @@ worker panes
 
 ```bash
 # Option 1: Create .agentwire.yml first, then create session
-echo "type: claude-bypass
+echo "posture: bypass
 roles:
   - agentwire
   - voice" > ~/projects/myproject/.agentwire.yml
@@ -238,7 +238,7 @@ agentwire new -s myproject -p ~/projects/myproject
 agentwire new -s myproject -p ~/projects/myproject --roles agentwire,voice --persist
 ```
 
-By default, `agentwire new` flags (`--type`, `--roles`) are session-level overrides only and never save to `.agentwire.yml`. Use `--persist` to opt in to saving.
+By default, `agentwire new` flags (`--posture`, `--roles`) are session-level overrides only and never save to `.agentwire.yml`. Use `--persist` to opt in to saving.
 
 ## Role System
 

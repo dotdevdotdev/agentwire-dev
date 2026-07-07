@@ -32,7 +32,7 @@ from .core import (
     _output_json,
     _output_result,
     _parse_session_target,
-    _resolve_session_type_from_args,
+    _resolve_posture_from_args,
     _run_remote,
     build_agent_command,
     inject_session_env,
@@ -89,12 +89,12 @@ def _get_session_config_from_path(path: str) -> dict:
     """Read session config from .agentwire.yml in the given path.
 
     Returns:
-        Dict with 'type' and 'roles' keys (values may be None/empty).
+        Dict with 'posture' and 'roles' keys (values may be None/empty).
     """
     import yaml
 
     if not path:
-        return {"type": None, "roles": []}
+        return {"posture": None, "roles": []}
 
     yml_path = Path(path) / ".agentwire.yml"
     if yml_path.exists():
@@ -102,24 +102,24 @@ def _get_session_config_from_path(path: str) -> dict:
             with open(yml_path) as f:
                 config = yaml.safe_load(f) or {}
                 return {
-                    "type": config.get("type"),
+                    "posture": config.get("posture"),
                     "roles": config.get("roles", []) or [],
                 }
         except Exception:
             pass
-    return {"type": None, "roles": []}
+    return {"posture": None, "roles": []}
 
 
-def _get_session_type_from_path(path: str) -> str | None:
-    """Read session type from .agentwire.yml in the given path."""
-    return _get_session_config_from_path(path).get("type")
+def _get_session_posture_from_path(path: str) -> str | None:
+    """Read session posture from .agentwire.yml in the given path."""
+    return _get_session_config_from_path(path).get("posture")
 
 
-def _get_remote_session_type(machine_id: str, path: str) -> str | None:
-    """Read session type from .agentwire.yml on a remote machine.
+def _get_remote_session_posture(machine_id: str, path: str) -> str | None:
+    """Read session posture from .agentwire.yml on a remote machine.
 
     Returns:
-        Session type (e.g., 'bare', 'claude-bypass') or None
+        Posture (e.g., 'bypass', 'restricted', 'bare') or None
     """
     import yaml
 
@@ -132,7 +132,7 @@ def _get_remote_session_type(machine_id: str, path: str) -> str | None:
     if result.returncode == 0 and result.stdout.strip():
         try:
             config = yaml.safe_load(result.stdout) or {}
-            return config.get("type")
+            return config.get("posture")
         except Exception:
             pass
     return None
@@ -169,7 +169,7 @@ def list_local_sessions(show_context: bool = False) -> list[dict]:
             "windows": int(parts[1]) if parts[1].isdigit() else 1,
             "path": path,
             "machine": None,
-            "type": cfg.get("type"),
+            "posture": cfg.get("posture"),
             "roles": cfg.get("roles", []),
             "parent": _display_parent(parts[0], path),
         }
@@ -224,7 +224,7 @@ def list_remote_sessions(machine_filter: str | None = None) -> dict[str, list[di
                 "windows": int(parts[1]) if parts[1].isdigit() else 1,
                 "path": remote_path,
                 "machine": machine_id,
-                "type": _get_remote_session_type(machine_id, remote_path),
+                "posture": _get_remote_session_posture(machine_id, remote_path),
             })
         remote_by_machine[machine_id] = machine_sessions
     return remote_by_machine
@@ -563,16 +563,16 @@ def _pane0_state(session: str) -> tuple[str | None, str | None]:
     return command, path
 
 
-def _wants_graceful_exit(session_type: str | None, pane_command: str | None) -> bool:
+def _wants_graceful_exit(posture: str | None, pane_command: str | None) -> bool:
     """Whether a session should get /exit before kill.
 
-    Claude-type sessions (claude-* or no declared type) get a graceful
+    Agent sessions (any posture, or no declared posture) get a graceful
     /exit. Bare shells don't speak /exit — plain tmux kill. If pane 0 is
     just sitting at a shell, there's no agent to exit.
     """
     if pane_command is None or pane_command in _SHELL_COMMANDS:
         return False
-    if session_type == "bare":
+    if posture == "bare":
         return False
     return True
 
@@ -650,9 +650,9 @@ def cmd_kill(args) -> int:
         parts = result.stdout.strip().split("\t", 1)
         pane_command = parts[0] if parts and parts[0] else None
         pane_path = parts[1] if len(parts) > 1 and parts[1] else None
-        session_type = _get_remote_session_type(machine_id, pane_path) if pane_path else None
+        posture = _get_remote_session_posture(machine_id, pane_path) if pane_path else None
 
-        graceful = not force and _wants_graceful_exit(session_type, pane_command)
+        graceful = not force and _wants_graceful_exit(posture, pane_command)
         agent_exited = False
         if graceful:
             # Send /exit to Claude first for clean shutdown (target pane 0 specifically)
@@ -698,9 +698,9 @@ def cmd_kill(args) -> int:
         return _output_result(False, json_mode, f"Session '{session}' not found")
 
     pane_command, pane_path = _pane0_state(session)
-    session_type = _get_session_type_from_path(pane_path) if pane_path else None
+    posture = _get_session_posture_from_path(pane_path) if pane_path else None
 
-    graceful = not force and _wants_graceful_exit(session_type, pane_command)
+    graceful = not force and _wants_graceful_exit(posture, pane_command)
     agent_exited = False
     if graceful:
         # Send /exit to Claude first for clean shutdown
@@ -859,14 +859,14 @@ def cmd_spawn(args) -> int:
     if missing:
         return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
 
-    # Resolve session type via the shared posture core (kind=worker
+    # Resolve posture via the shared spawn core (kind=worker
     # defaults to the restricted posture).
-    session_type_str, st_err = _resolve_session_type_from_args(args, "worker")
+    posture, st_err = _resolve_posture_from_args(args, "worker")
     if st_err:
         return _output_result(False, json_mode, st_err)
 
     # Build agent command
-    agent = build_agent_command(session_type_str, roles if roles else None, model=getattr(args, 'model', None))
+    agent = build_agent_command(posture, roles if roles else None, model=getattr(args, 'model', None))
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
     agent_cmd = agent.command
@@ -1136,7 +1136,6 @@ def register_pane_parser(subparsers) -> None:
     spawn_parser.add_argument("--cwd", help="Working directory (default: current)")
     spawn_parser.add_argument("--branch", "-b", help="Create worktree on this branch for isolated commits")
     _add_posture_flag(spawn_parser)
-    spawn_parser.add_argument("--type", help="Legacy fused session type (accepted, not primary): claude-bypass, claude-restricted")
     spawn_parser.add_argument("--roles", default=None, help="Comma-separated roles, STACKED on top of the always-present worker etiquette")
     spawn_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     spawn_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection (no-op for the headless worker role)")

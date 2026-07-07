@@ -96,7 +96,7 @@ def list_live_sessions() -> set[str]:
 
 
 def create_session(
-    name: str, roles: list[str], session_type: str, model: str | None, cwd: str
+    name: str, roles: list[str], posture: str, model: str | None, cwd: str
 ) -> None:
     """Create one council session via ``agentwire new`` in the sitting's
     workspace. Raises ``RuntimeError`` on failure.
@@ -106,7 +106,7 @@ def create_session(
         "-s", name,
         "-p", cwd,
         "--roles", ",".join(roles),
-        "--type", session_type,
+        "--posture", posture,
         "--allow-shared-dir",
         "--json",
     ]
@@ -237,7 +237,7 @@ def resolve_name(args) -> tuple[str | None, str | None]:
 # --- workspace ------------------------------------------------------------------
 
 
-def _write_workspace(name: str, session_type: str) -> None:
+def _write_workspace(name: str, posture: str) -> None:
     """Workspace dir the sitting's sessions run in.
 
     ``parent: agentwire-council-<name>`` routes any ``agentwire notify-parent`` from a
@@ -246,7 +246,7 @@ def _write_workspace(name: str, session_type: str) -> None:
     ws = state.workspace_dir(name)
     ws.mkdir(parents=True, exist_ok=True)
     (ws / ".agentwire.yml").write_text(
-        f"type: {session_type}\nparent: {state.orchestrator_for(name)}\n"
+        f"posture: {posture}\nparent: {state.orchestrator_for(name)}\n"
     )
 
 
@@ -288,9 +288,9 @@ def cmd_council_start(args) -> int:
             kill_session(s)
         state.clear_sitting(name)
 
-    session_type = getattr(args, "type", None) or "claude-bypass"
+    posture = getattr(args, "posture", None) or "bypass"
     model = getattr(args, "model", None)
-    _write_workspace(name, session_type)
+    _write_workspace(name, posture)
     workspace = str(state.workspace_dir(name))
 
     # Advisory: name the live sittings when seating beyond the first.
@@ -304,7 +304,7 @@ def cmd_council_start(args) -> int:
     failed: list[dict] = []
 
     try:
-        create_session(orchestrator, ["council-orchestrator"], session_type, model, workspace)
+        create_session(orchestrator, ["council-orchestrator"], posture, model, workspace)
     except RuntimeError as e:
         return _emit_error(args, f"failed to start orchestrator: {e}")
 
@@ -312,7 +312,7 @@ def cmd_council_start(args) -> int:
         session = state.session_for(name, lens)
         try:
             create_session(
-                session, ["council-member", f"council-{lens}"], session_type, model, workspace
+                session, ["council-member", f"council-{lens}"], posture, model, workspace
             )
             sessions[lens] = session
         except RuntimeError as e:
@@ -330,7 +330,7 @@ def cmd_council_start(args) -> int:
             sessions=sessions,
             started_at=state.now_iso(),
             cwd=workspace,
-            session_type=session_type,
+            posture=posture,
         ),
     )
 

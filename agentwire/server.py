@@ -190,7 +190,7 @@ class SessionConfig:
     machine: str | None = None
     path: str | None = None
     claude_session_id: str | None = None  # Claude Code session UUID for forking
-    type: str = "claude-bypass"  # Session type: bare | claude-bypass | claude-prompted | claude-restricted
+    posture: str = "bypass"  # Permission mode: bypass | prompted | restricted | readonly | auto, or bare
     roles: list = None  # Composable roles array
     spawned_by: str | None = None  # Parent session (for worker sessions)
 
@@ -775,7 +775,7 @@ class AgentWireServer(
             return SessionConfig(voice=self.config.tts.default_voice)
 
         return SessionConfig(
-            type=yaml_config.get("type", "claude-bypass"),
+            posture=yaml_config.get("posture", "bypass"),
             roles=yaml_config.get("roles", []),
             voice=yaml_config.get("voice", self.config.tts.default_voice),
         )
@@ -1749,7 +1749,7 @@ class AgentWireServer(
                         "session": name,
                         "idle_minutes": idle_min,
                         "nag_count": nag_counts[name],
-                        "type": meta.get("type", "unknown"),
+                        "posture": meta.get("posture", "unknown"),
                         "roles": meta.get("roles", []),
                         "project_path": meta.get("path", ""),
                         "machine": meta.get("machine") or "local",
@@ -1768,7 +1768,7 @@ class AgentWireServer(
                     prompt += (
                         f"### {sd['session']}\n"
                         f"- Idle: {sd['idle_minutes']}min | Nagged: {sd['nag_count']}x\n"
-                        f"- Type: {sd['type']} | Roles: {roles_str}\n"
+                        f"- Posture: {sd['posture']} | Roles: {roles_str}\n"
                         f"- Project: {sd['project_path']} | Machine: {sd['machine']}\n"
                     )
                     if sd['last_output_snippet']:

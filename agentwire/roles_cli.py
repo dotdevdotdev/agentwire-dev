@@ -101,7 +101,7 @@ def cmd_projects_list(args) -> int:
 
     # Print table
     print(f"Discovered Projects ({len(projects)}):\n")
-    print(f"{'Name':<25} {'Type':<15} {'Path':<40}")
+    print(f"{'Name':<25} {'Posture':<15} {'Path':<40}")
     print("-" * 80)
     for p in projects:
         # Truncate long paths
@@ -109,7 +109,7 @@ def cmd_projects_list(args) -> int:
         if len(path) > 40:
             path = "..." + path[-37:]
         machine_suffix = f" @{p['machine']}" if p['machine'] != 'local' else ""
-        print(f"{p['name']:<25} {p['type']:<15} {path:<40}{machine_suffix}")
+        print(f"{p['name']:<25} {p['posture']:<15} {path:<40}{machine_suffix}")
 
     print()
     return 0
@@ -121,7 +121,7 @@ _VALID_PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 def cmd_projects_create(args) -> int:
     """Create a new local project: make the directory, optionally git-init or clone, and write .agentwire.yml."""
     from .config import get_config
-    from .project_config import ProjectConfig, SessionType, ensure_gitignored, save_project_config
+    from .project_config import ProjectConfig, ensure_gitignored, save_project_config
 
     name = (args.name or "").strip()
     clone_url = (getattr(args, "from_url", None) or "").strip() or None
@@ -175,7 +175,7 @@ def cmd_projects_create(args) -> int:
         return _fail(f"Failed to create directory: {e}")
 
     gitignore_updated = ensure_gitignored(project_path)
-    config = ProjectConfig(type=SessionType.from_str("claude-bypass"), roles=[], voice=None)
+    config = ProjectConfig(posture="bypass", roles=[], voice=None)
     if not save_project_config(config, project_path):
         return _fail("Created project directory but failed to write .agentwire.yml")
 

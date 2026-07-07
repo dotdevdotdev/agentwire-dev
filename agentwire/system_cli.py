@@ -31,7 +31,7 @@ from .core import (
     tmux_session_exists,
     wait_for_shell_prompt,
 )
-from .project_config import detect_default_agent_type, load_project_config
+from .project_config import load_project_config
 from .roles import inject_soul, load_roles, resolve_roles
 
 
@@ -100,12 +100,9 @@ def cmd_dev(args) -> int:
         print(f"Warning: Roles not found: {', '.join(missing)}", file=sys.stderr)
         roles = None
 
-    # Use bypass session type for dev session (full permissions)
-    agent_type = detect_default_agent_type()
-    session_type_str = f"{agent_type}-bypass"
-
+    # Use the bypass posture for the dev session (full permissions)
     # Build agent command
-    agent = build_agent_command(session_type_str, roles)
+    agent = build_agent_command("bypass", roles)
 
     agent_cmd = agent.command
 
@@ -231,7 +228,7 @@ def cmd_services_list(args) -> int:
         "restart": svc.restart,
         "healthcheck": {"kind": svc.healthcheck.kind, "interval": svc.healthcheck.interval},
         "roles": svc.roles,
-        "type": svc.type,
+        "posture": svc.posture,
         "disabled": svc.name in disabled,
     } for svc in reg]
 

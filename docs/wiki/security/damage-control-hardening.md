@@ -25,7 +25,7 @@ landed and are summarized here afterward. Credit: internal security review.
    host-side.
    > **Update (#720, 2026-07):** per-project task commands were split out of
    > `.agentwire.yml` into a separate protected file, `.agentwire.tasks.yml` —
-   > `.agentwire.yml` itself is now purely declarative (type/roles/voice/
+   > `.agentwire.yml` itself is now purely declarative (posture/roles/voice/
    > parent/worktree) and agent-writable again. The "authored host-side"
    > tradeoff above is softened by a propose-and-promote flow (`agentwire tasks
    > review` / `agentwire tasks promote`): an agent still drafts the task

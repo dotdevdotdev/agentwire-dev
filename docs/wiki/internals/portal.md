@@ -55,7 +55,7 @@ The portal provides an OS-like desktop interface using WinBox.js for window mana
 | **Sessions** | Window listing all sessions with Monitor/Connect/Chat buttons |
 | **⚙ (Cog)** | Dropdown with Machines and Config options |
 
-**Chat button** appears in the Sessions window for voice-enabled sessions (`claude-*` types). Opens a voice chat window with orb visualization.
+**Chat button** appears in the Sessions window for voice-enabled agent sessions (any posture, not `bare`). Opens a voice chat window with orb visualization.
 
 ### Taskbar
 
@@ -89,7 +89,7 @@ Projects are folders with `.agentwire.yml` files, discovered from `projects.dir`
 | Field | Description |
 |-------|-------------|
 | Name | Folder name |
-| Type | Session type (`claude-bypass`, `claude-prompted`, `claude-auto`, etc.) |
+| Posture | Permission mode (`bypass`, `prompted`, `restricted`, `readonly`, `auto`) |
 | Path | Full path to project folder |
 | Roles | Configured roles from `.agentwire.yml` |
 

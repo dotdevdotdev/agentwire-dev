@@ -23,7 +23,7 @@ _HANDOFF_TEMPLATE = """\
 - repo_url: __REPO_URL__
 - branch: __BRANCH__
 - commit: __COMMIT__
-- session_type: claude-bypass
+- posture: bypass
 - model: __MODEL__
 - started_at: {{ ISO timestamp }}
 - ended_at: {{ ISO timestamp }}

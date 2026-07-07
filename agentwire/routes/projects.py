@@ -29,7 +29,7 @@ class ProjectsRoutesMixin:
             machine: Optional machine ID to filter by (e.g., 'local', 'mac-studio')
 
         Response:
-            {"projects": [{name, path, type, roles, machine, status}, ...]}
+            {"projects": [{name, path, posture, roles, machine, status}, ...]}
         """
         try:
             # Get list of machines to scan
@@ -284,7 +284,7 @@ class ProjectsRoutesMixin:
         """Resolve a new session's defaults via the CLI (the single resolver).
 
         Query params: kind (default orchestrator), posture.
-        Response: {kind, posture, session_type, roles, postures}.
+        Response: {kind, posture, resolved_posture, roles, postures}.
         The new-session UI reads this instead of hardcoding posture or the
         intrinsic role chips.
         """

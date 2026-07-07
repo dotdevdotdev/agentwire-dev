@@ -78,7 +78,7 @@ class TestSessionConfig:
     def test_defaults(self):
         cfg = SessionConfig()
         assert cfg.voice == "default"
-        assert cfg.type == "claude-bypass"
+        assert cfg.posture == "bypass"
         assert cfg.roles == []
 
     def test_roles_none_to_empty_list(self):
@@ -88,12 +88,12 @@ class TestSessionConfig:
     def test_custom_values(self):
         cfg = SessionConfig(
             voice="alice",
-            type="bare",
+            posture="bare",
             roles=["voice", "worker"],
             machine="gpu-box",
         )
         assert cfg.voice == "alice"
-        assert cfg.type == "bare"
+        assert cfg.posture == "bare"
         assert cfg.roles == ["voice", "worker"]
         assert cfg.machine == "gpu-box"
 

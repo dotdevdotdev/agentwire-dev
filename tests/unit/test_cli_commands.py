@@ -155,7 +155,7 @@ class TestProjectsDiscovery:
         p2 = tmp_path / "project-b"
         p2.mkdir()
         with open(p2 / ".agentwire.yml", "w") as f:
-            yaml.safe_dump({"type": "bare"}, f)
+            yaml.safe_dump({"posture": "bare"}, f)
 
         p3 = tmp_path / "not-a-project"
         p3.mkdir()
@@ -278,7 +278,7 @@ class TestCmdNewSeedFallback:
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
         monkeypatch.setattr(
-            m, "_resolve_session_type_from_args", lambda a, k, **kw: ("claude-bypass", None))
+            m, "_resolve_posture_from_args", lambda a, k, **kw: ("bypass", None))
         monkeypatch.setattr(
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
@@ -357,7 +357,7 @@ class TestCmdNewDefaultCreatedByRooting:
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
         monkeypatch.setattr(
-            m, "_resolve_session_type_from_args", lambda a, k, **kw: ("claude-bypass", None))
+            m, "_resolve_posture_from_args", lambda a, k, **kw: ("bypass", None))
         monkeypatch.setattr(
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
@@ -467,7 +467,7 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
     cfg = None
     if project_config_roles is not None:
         cfg = SimpleNamespace(
-            type=SimpleNamespace(value="claude-bypass"),
+            posture="bypass",
             roles=project_config_roles,
         )
 
@@ -475,7 +475,6 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
         "projects": {"dir": str(projects_dir), "worktrees": {"suffix": "-worktrees"}},
     })
     monkeypatch.setattr(mod, "load_project_config", lambda p: cfg)
-    monkeypatch.setattr(mod, "detect_default_agent_type", lambda: "claude")
     monkeypatch.setattr(mod, "build_agent_command", lambda *a, **k: AgentCommand(command=""))
 
     def fake_ensure_worktree(base, branch, wt, **kw):
@@ -526,7 +525,7 @@ class TestRecreateRoutesThroughResolveRoles:
         monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
         args = argparse.Namespace(
-            session="proj/feature", json=True, type="claude-bypass", env=None,
+            session="proj/feature", json=True, posture=None, env=None,
         )
         assert mod.cmd_recreate(args) == 0
         # The whole point: a project/branch recreate is a worker on worktree
@@ -546,7 +545,7 @@ class TestRecreateRoutesThroughResolveRoles:
         monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
         args = argparse.Namespace(
-            session="proj/feature", json=True, type="claude-bypass", env=None,
+            session="proj/feature", json=True, posture=None, env=None,
         )
         assert mod.cmd_recreate(args) == 0
         # Non-overridable: etiquette first, saved role stacks, never replaces.
@@ -561,7 +560,7 @@ class TestRecreateRoutesThroughResolveRoles:
         cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["custom"])
         monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
-        args = argparse.Namespace(session="proj", json=True, type="claude-bypass", env=None)
+        args = argparse.Namespace(session="proj", json=True, posture=None, env=None)
         assert mod.cmd_recreate(args) == 0
         # Persona kind: saved roles REPLACE the orchestrator default.
         assert "orchestrator" not in cap.role_names
@@ -575,7 +574,7 @@ class TestRecreateRoutesThroughResolveRoles:
         cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=None)
         monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
-        args = argparse.Namespace(session="proj", json=True, type="claude-bypass", env=None)
+        args = argparse.Namespace(session="proj", json=True, posture=None, env=None)
         assert mod.cmd_recreate(args) == 0
         assert cap.role_names[0] == "orchestrator"
 
@@ -590,7 +589,7 @@ class TestForkRoutesThroughResolveRoles:
         monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
         args = argparse.Namespace(
-            source="proj", target="proj/feat", json=True, type="claude-bypass",
+            source="proj", target="proj/feat", json=True, posture=None,
             env=None, commit=None,
         )
         assert mod.cmd_fork(args) == 0
@@ -606,7 +605,7 @@ class TestForkRoutesThroughResolveRoles:
         monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
         args = argparse.Namespace(
-            source="proj", target="proj/feat", json=True, type="claude-bypass",
+            source="proj", target="proj/feat", json=True, posture=None,
             env=None, commit=None,
         )
         assert mod.cmd_fork(args) == 0
@@ -626,7 +625,7 @@ class TestForkRoutesThroughResolveRoles:
         )
 
         args = argparse.Namespace(
-            source="ctxa", target="ctxb", json=True, type="claude-bypass",
+            source="ctxa", target="ctxb", json=True, posture=None,
             env=None, commit=None,
         )
         assert mod.cmd_fork(args) == 0
@@ -661,7 +660,7 @@ def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
     cfg = None
     if project_config_roles is not None:
         cfg = SimpleNamespace(
-            type=SimpleNamespace(value="claude-bypass", to_cli_flags=lambda: []),
+            posture="bypass",
             roles=project_config_roles,
         )
 

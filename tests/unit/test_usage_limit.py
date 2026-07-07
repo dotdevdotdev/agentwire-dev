@@ -42,7 +42,7 @@ DISPLAYED_DIALOG = REAL_DIALOG + """\
 
 ### jordan
 - Idle: 100min | Nagged: 49x
-- Type: claude-bypass
+- Posture: bypass
 
 ❯ ready for your next instruction
 """

@@ -482,7 +482,7 @@ agentwire kill -s unused-session
 
 ### Agent Command Not Starting (Just Shows Bash Prompt)
 
-**Symptom:** `agentwire new -s name --type claude-bypass` creates a tmux session but Claude never starts - you just see a bash prompt.
+**Symptom:** `agentwire new -s name --posture bypass` creates a tmux session but Claude never starts - you just see a bash prompt.
 
 **Cause:** System prompt (from roles) contains characters that break shell escaping when sent via `tmux send-keys`.
 

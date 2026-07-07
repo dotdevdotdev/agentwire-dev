@@ -1,4 +1,4 @@
-"""Tests for __main__.py — build_agent_command for each session type."""
+"""Tests for build_agent_command — the ONE flag-builder, keyed on posture (#729)."""
 
 import os
 
@@ -8,58 +8,80 @@ from agentwire.roles import RoleConfig
 
 
 class TestBuildAgentCommand:
-    def _build(self, session_type, roles=None, model=None):
+    def _build(self, posture, roles=None, model=None, resume_session_id=None):
         from agentwire.__main__ import build_agent_command
-        return build_agent_command(session_type, roles=roles, model=model)
+        return build_agent_command(posture, roles=roles, model=model,
+                                   resume_session_id=resume_session_id)
 
     def test_bare_empty_command(self):
         cmd = self._build("bare")
         assert cmd.command == ""
         assert cmd.temp_file is None
 
-    def test_claude_bypass(self):
-        cmd = self._build("claude-bypass")
+    def test_bypass(self):
+        cmd = self._build("bypass")
         assert "claude" in cmd.command
         assert "--dangerously-skip-permissions" in cmd.command
 
-    def test_claude_prompted(self):
-        cmd = self._build("claude-prompted")
+    def test_prompted(self):
+        cmd = self._build("prompted")
         assert "claude" in cmd.command
         assert "--dangerously-skip-permissions" not in cmd.command
         assert "--tools" not in cmd.command
 
-    def test_claude_restricted(self):
-        cmd = self._build("claude-restricted")
+    def test_restricted(self):
+        cmd = self._build("restricted")
         assert "claude" in cmd.command
         assert "--tools Bash" in cmd.command
 
+    def test_readonly_is_restricted(self):
+        # readonly collapses to the restricted say-only tier
+        assert self._build("readonly").command == self._build("restricted").command
+
+    def test_auto(self):
+        cmd = self._build("auto")
+        assert "--enable-auto-mode" in cmd.command
+        assert "--permission-mode" in cmd.command and "auto" in cmd.command
+        # auto injects the core tool-allows so the classifier is bypassed for the safe set
+        assert "--allowedTools" in cmd.command
+
+    def test_resume_inserts_flags_after_claude(self):
+        cmd = self._build("bypass", resume_session_id="abc-123")
+        assert cmd.command.startswith("claude --resume abc-123 --fork-session")
+        # posture flags still present alongside resume
+        assert "--dangerously-skip-permissions" in cmd.command
+
+    def test_resume_carries_auto_tool_allows(self):
+        # The old resume path dropped auto's tool-allows; the unified builder keeps them.
+        fresh = self._build("auto")
+        resumed = self._build("auto", resume_session_id="xyz")
+        assert "--allowedTools" in resumed.command
+        assert "--enable-auto-mode" in resumed.command
+        assert "--enable-auto-mode" in fresh.command
+
     def test_with_model_override(self):
-        cmd = self._build("claude-bypass", model="haiku")
+        cmd = self._build("bypass", model="haiku")
         assert "--model haiku" in cmd.command
 
     def test_with_roles_tools(self):
         roles = [RoleConfig(name="test", tools=["Bash", "Read"])]
-        cmd = self._build("claude-bypass", roles=roles)
+        cmd = self._build("bypass", roles=roles)
         assert "--tools" in cmd.command
         assert "Bash" in cmd.command
 
     def test_with_roles_instructions(self):
         roles = [RoleConfig(name="test", instructions="Be helpful")]
-        cmd = self._build("claude-bypass", roles=roles)
+        cmd = self._build("bypass", roles=roles)
         assert "--append-system-prompt" in cmd.command
         assert cmd.temp_file is not None
         if cmd.temp_file:
             os.unlink(cmd.temp_file)
 
     def test_restricted_ignores_role_flags(self):
-        """claude-restricted should not get role tools/instructions."""
+        """restricted should not get role tools/instructions."""
         roles = [RoleConfig(name="test", tools=["Read"], instructions="Hello")]
-        cmd = self._build("claude-restricted", roles=roles)
+        cmd = self._build("restricted", roles=roles)
         assert "--append-system-prompt" not in cmd.command
-
-    def test_unknown_type_empty(self):
-        cmd = self._build("nonexistent-type")
-        assert cmd.command == ""
 
 
 class TestSessionEnvInjection:

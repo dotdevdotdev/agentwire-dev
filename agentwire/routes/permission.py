@@ -128,7 +128,7 @@ class PermissionRoutesMixin:
             session = await self._get_or_create_session(name)
 
             # Check restricted mode - auto-handle without user interaction
-            if session.config.type == "claude-restricted":
+            if session.config.posture == "restricted":
                 # Parse session name to handle local vs remote
                 project, branch, machine = parse_session_name(name)
                 if branch:

@@ -44,7 +44,7 @@ class TestFormatEmpty:
     [
         ("format_sessions", "sessions", {}, [
             {"name": "a", "machine": None, "windows": 1, "path": "/a", "type": "bare"},
-            {"name": "b", "machine": "m1", "windows": 2, "path": "/b", "type": "claude-bypass"},
+            {"name": "b", "machine": "m1", "windows": 2, "path": "/b", "posture": "bypass"},
         ]),
         ("format_panes", "panes", {"session": "s"}, [
             {"index": 0, "command": "claude", "active": False},
@@ -96,12 +96,12 @@ class TestFormatSessionsBehavior:
     def test_all_fields_render(self):
         from agentwire.mcp_core import format_sessions
         result = format_sessions({"sessions": [
-            {"name": "my-app", "machine": "gpu-box", "windows": 3, "path": "/p", "type": "claude-bypass"},
+            {"name": "my-app", "machine": "gpu-box", "windows": 3, "path": "/p", "posture": "bypass"},
         ]})
         assert "my-app" in result
         assert "gpu-box" in result
         assert "3 window(s)" in result
-        assert "type=claude-bypass" in result
+        assert "posture=bypass" in result
 
     def test_null_machine_shows_local(self):
         from agentwire.mcp_core import format_sessions

@@ -44,11 +44,14 @@ Workers are for: large refactors touching many files, parallel independent subta
 
 Workers auto-exit when idle. They write summary files before exiting, and you receive the summary via an alert notification.
 
-### Spawn types
+### Spawn postures
 
-| `pane_type` | Agent |
+| `posture` | Meaning |
 |-------------|-------|
-| `claude-bypass` | Claude Code with full permissions (default) |
+| `bypass` | Full permissions |
+| `restricted` | Say-only (default for a worker pane) |
+| `prompted` | Interactive approval (hooks gate) |
+| `auto` | Classifier permission mode |
 
 ## Hierarchy
 

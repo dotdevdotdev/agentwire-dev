@@ -7,95 +7,37 @@ This file lives in project directories and is the source of truth for session co
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
 
-class SessionType(str, Enum):
-    """Session type determines agent execution mode."""
-    BARE = "bare"                    # No agent, just tmux session
-    CLAUDE_BYPASS = "claude-bypass"  # Claude with --dangerously-skip-permissions
-    CLAUDE_AUTO = "claude-auto"      # Claude with auto mode (classifier safety net)
-    CLAUDE_PROMPTED = "claude-prompted"  # Claude with permission hooks
-    CLAUDE_RESTRICTED = "claude-restricted"  # Claude with only say allowed
-    # Universal types (agent-agnostic, map to agent-specific types)
-    STANDARD = "standard"  # Full automation -> claude-bypass
-    WORKER = "worker"      # Worker pane -> claude-restricted
-    VOICE = "voice"        # Voice with prompts -> claude-prompted
-
-    @classmethod
-    def from_str(cls, value: str) -> "SessionType":
-        """Parse session type from string."""
-        value = value.lower().replace("_", "-")
-        try:
-            return cls(value)
-        except ValueError:
-            return cls.STANDARD  # Default for unknown types
-
-    def to_cli_flags(self) -> list[str]:
-        """Convert to CLI flags for Claude."""
-        if self == SessionType.BARE:
-            return []  # No Claude
-        elif self == SessionType.CLAUDE_BYPASS:
-            return ["--dangerously-skip-permissions"]
-        elif self == SessionType.CLAUDE_PROMPTED:
-            return []  # Uses permission hooks, no bypass
-        elif self == SessionType.CLAUDE_AUTO:
-            return ["--enable-auto-mode", "--permission-mode", "auto"]
-        elif self == SessionType.CLAUDE_RESTRICTED:
-            return ["--tools", "Bash"]  # ONLY bash tool (for say command)
-        return []
-
-
-def detect_default_agent_type() -> str:
-    """The only supported agent backend today is Claude Code."""
-    return "claude"
-
-
-def normalize_session_type(session_type: str, agent_type: str) -> str:
-    """Map universal types (standard/worker/voice) to agent-specific types."""
-    if session_type.startswith("claude-") or session_type == "bare":
-        return session_type
-
-    if session_type == "standard":
-        return f"{agent_type}-bypass"
-    elif session_type == "worker":
-        return f"{agent_type}-restricted"
-    elif session_type == "voice":
-        return f"{agent_type}-prompted"
-
-    return f"{agent_type}-bypass"
-
-
-# The POSTURE axis a fused session type ("claude-bypass") encodes: how much
-# the agent may do unprompted. Claude Code is the only agent backend, so a
-# posture composes directly into the internal fused string. Fused strings
-# still work on input (legacy aliases), but posture is the canonical surface.
-POSTURES = ("bypass", "prompted", "restricted", "readonly")
+# POSTURE is the single session axis: the Claude Code permission mode the agent
+# runs under (#729). Claude Code is the only agent backend (#730), so there is
+# nothing left to fuse a permission mode WITH — posture is all there is. The
+# `bare` sentinel is orthogonal: no agent, so no permission mode at all.
+POSTURES = ("bypass", "prompted", "restricted", "readonly", "auto")
 DEFAULT_POSTURE = "bypass"
+BARE = "bare"
 
 
-def compose_session_type(posture: str) -> str:
-    """Compose the internal fused session type from the posture axis.
+def resolve_posture(value: str) -> str:
+    """Validate + canonicalize an axis value into a posture (or the ``bare`` sentinel).
 
-    Claude Code is the only agent backend, so a posture maps directly:
-    bypass/prompted/restricted → ``claude-<posture>``; ``readonly`` collapses
-    to ``claude-restricted`` (Claude's most-locked tier — say-only).
-
-    Raises ValueError on an unknown posture so a typo fails loudly instead of
-    silently picking a wrong tier.
+    Accepts the five postures (bypass/prompted/restricted/readonly/auto) and the
+    ``bare`` no-agent sentinel. ``readonly`` collapses to ``restricted`` — they're
+    the same say-only tier, just two names for it. Raises ``ValueError`` on an
+    unknown value so a typo fails loudly instead of silently picking a tier.
     """
-    posture = (posture or DEFAULT_POSTURE).strip().lower()
-    if posture not in POSTURES:
+    v = (value or DEFAULT_POSTURE).strip().lower().replace("_", "-")
+    if v == BARE:
+        return BARE
+    if v not in POSTURES:
         raise ValueError(
-            f"Unknown posture '{posture}' (expected one of: {', '.join(POSTURES)})"
+            f"Unknown posture '{v}' (expected one of: {', '.join(POSTURES)}, or bare)"
         )
-    if posture == "readonly":
-        return "claude-restricted"
-    return f"claude-{posture}"
+    return "restricted" if v == "readonly" else v
 
 
 @dataclass
@@ -154,7 +96,7 @@ class ProjectConfig:
     Shared by all sessions running in this project folder.
     Session name is NOT stored here - it's runtime context from environment.
     """
-    type: SessionType = SessionType.STANDARD
+    posture: str = DEFAULT_POSTURE  # Permission mode: bypass|prompted|restricted|readonly|auto, or bare
     roles: list[str] = field(default_factory=list)  # Composable roles
     voice: Optional[str] = None  # TTS voice
     parent: Optional[str] = None  # Parent session for hierarchical notifications
@@ -163,7 +105,7 @@ class ProjectConfig:
     def to_dict(self) -> dict:
         """Convert to dictionary for YAML serialization."""
         d = {
-            "type": self.type.value,
+            "posture": self.posture,
         }
         if self.roles:
             d["roles"] = self.roles
@@ -183,13 +125,17 @@ class ProjectConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectConfig":
         """Create ProjectConfig from dictionary."""
-        type_value = data.get("type", "standard")
         roles = data.get("roles", [])
         voice = data.get("voice")
         parent = data.get("parent")
 
+        try:
+            posture = resolve_posture(str(data.get("posture", DEFAULT_POSTURE)))
+        except ValueError:
+            posture = DEFAULT_POSTURE  # Unknown value → fall back, don't crash config load
+
         return cls(
-            type=SessionType.from_str(type_value) if isinstance(type_value, str) else type_value,
+            posture=posture,
             roles=roles if isinstance(roles, list) else [roles] if roles else [],
             voice=voice,
             parent=parent,

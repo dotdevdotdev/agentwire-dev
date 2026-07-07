@@ -1,4 +1,4 @@
-"""Tests for agentwire/project_config.py — SessionType, ProjectConfig, normalize."""
+"""Tests for agentwire/project_config.py — resolve_posture, ProjectConfig."""
 
 
 from pathlib import Path
@@ -7,115 +7,50 @@ import pytest
 import yaml
 
 from agentwire.project_config import (
+    BARE,
+    DEFAULT_POSTURE,
+    POSTURES,
     ProjectConfig,
-    SessionType,
     WorktreeOverrides,
-    compose_session_type,
     ensure_gitignored,
     find_project_config,
     load_project_config,
-    normalize_session_type,
+    resolve_posture,
     save_project_config,
 )
 
-# --- SessionType.from_str ---
+# --- resolve_posture: the single session axis (#729) ---
 
-class TestSessionTypeFromStr:
-    @pytest.mark.parametrize("input_val,expected", [
-        ("bare", SessionType.BARE),
-        ("claude-bypass", SessionType.CLAUDE_BYPASS),
-        ("claude-prompted", SessionType.CLAUDE_PROMPTED),
-        ("claude-restricted", SessionType.CLAUDE_RESTRICTED),
-        ("standard", SessionType.STANDARD),
-        ("worker", SessionType.WORKER),
-        ("voice", SessionType.VOICE),
+class TestResolvePosture:
+    @pytest.mark.parametrize("value,expected", [
+        ("bypass", "bypass"),
+        ("prompted", "prompted"),
+        ("restricted", "restricted"),
+        ("auto", "auto"),
+        ("readonly", "restricted"),   # readonly collapses to restricted (say-only)
+        ("bare", "bare"),             # the no-agent sentinel
     ])
-    def test_valid_types(self, input_val, expected):
-        assert SessionType.from_str(input_val) == expected
+    def test_valid(self, value, expected):
+        assert resolve_posture(value) == expected
 
-    def test_case_insensitive(self):
-        assert SessionType.from_str("CLAUDE-BYPASS") == SessionType.CLAUDE_BYPASS
-        assert SessionType.from_str("Bare") == SessionType.BARE
+    def test_case_normalized(self):
+        assert resolve_posture("BYPASS") == "bypass"
+        assert resolve_posture("ReadOnly") == "restricted"
 
-    def test_underscore_to_hyphen(self):
-        assert SessionType.from_str("claude_bypass") == SessionType.CLAUDE_BYPASS
-        assert SessionType.from_str("CLAUDE_RESTRICTED") == SessionType.CLAUDE_RESTRICTED
+    def test_defaults_to_bypass(self):
+        assert resolve_posture("") == DEFAULT_POSTURE == "bypass"
+        assert resolve_posture(None) == "bypass"
 
-    def test_unknown_defaults_to_standard(self):
-        assert SessionType.from_str("nonexistent") == SessionType.STANDARD
-        assert SessionType.from_str("") == SessionType.STANDARD
-
-    def test_session_type_is_a_closed_claude_set(self):
-        """SessionType is a CLOSED claude-* set — an unknown non-claude type
-        (e.g. any former external-harness type) must NOT round-trip; it
-        defaults to STANDARD rather than becoming a live type of its own."""
-        assert SessionType.from_str("someagent-x") == SessionType.STANDARD
-        assert SessionType.from_str("someagent-x-restricted") == SessionType.STANDARD
-        assert SessionType.from_str("other-backend") == SessionType.STANDARD
-
-
-# --- SessionType.to_cli_flags ---
-
-class TestSessionTypeToCliFlags:
-    def test_bare_empty(self):
-        assert SessionType.BARE.to_cli_flags() == []
-
-    def test_bypass_has_skip_permissions(self):
-        flags = SessionType.CLAUDE_BYPASS.to_cli_flags()
-        assert "--dangerously-skip-permissions" in flags
-
-    def test_prompted_no_flags(self):
-        assert SessionType.CLAUDE_PROMPTED.to_cli_flags() == []
-
-    def test_restricted_has_tools_bash(self):
-        flags = SessionType.CLAUDE_RESTRICTED.to_cli_flags()
-        assert flags == ["--tools", "Bash"]
-
-    def test_standard_empty(self):
-        # Universal types return empty (they need normalizing first)
-        assert SessionType.STANDARD.to_cli_flags() == []
-
-
-# --- normalize_session_type ---
-
-class TestNormalizeSessionType:
-    @pytest.mark.parametrize("universal,agent,expected", [
-        ("standard", "claude", "claude-bypass"),
-        ("worker", "claude", "claude-restricted"),
-        ("voice", "claude", "claude-prompted"),
-    ])
-    def test_universal_mappings(self, universal, agent, expected):
-        assert normalize_session_type(universal, agent) == expected
-
-    @pytest.mark.parametrize("agent_specific", [
-        "claude-bypass", "claude-prompted", "claude-restricted",
-        "bare",
-    ])
-    def test_agent_specific_passthrough(self, agent_specific):
-        assert normalize_session_type(agent_specific, "claude") == agent_specific
-
-    def test_unknown_defaults_to_bypass(self):
-        assert normalize_session_type("foobar", "claude") == "claude-bypass"
-
-
-# --- compose_session_type: the posture axis (#309, collapsed to claude-only #730) ---
-
-class TestComposeSessionType:
-    @pytest.mark.parametrize("posture,expected", [
-        ("bypass", "claude-bypass"),
-        ("prompted", "claude-prompted"),
-        ("restricted", "claude-restricted"),
-        ("readonly", "claude-restricted"),   # claude's most-locked tier
-    ])
-    def test_compositions(self, posture, expected):
-        assert compose_session_type(posture) == expected
-
-    def test_defaults(self):
-        assert compose_session_type("") == "claude-bypass"
-
-    def test_unknown_posture_raises(self):
+    def test_unknown_raises(self):
         with pytest.raises(ValueError):
-            compose_session_type("nonsense")
+            resolve_posture("nonsense")
+
+    def test_auto_is_a_posture(self):
+        assert "auto" in POSTURES
+
+    def test_bare_is_not_a_posture(self):
+        # bare is orthogonal — a sentinel, not one of the permission modes
+        assert BARE not in POSTURES
 
 
 # --- ProjectConfig ---
@@ -123,23 +58,30 @@ class TestComposeSessionType:
 class TestProjectConfig:
     def test_from_dict_full(self):
         data = {
-            "type": "claude-bypass",
+            "posture": "bypass",
             "roles": ["agentwire", "voice"],
             "voice": "default",
             "parent": "main",
         }
         config = ProjectConfig.from_dict(data)
-        assert config.type == SessionType.CLAUDE_BYPASS
+        assert config.posture == "bypass"
         assert config.roles == ["agentwire", "voice"]
         assert config.voice == "default"
         assert config.parent == "main"
 
     def test_from_dict_defaults(self):
         config = ProjectConfig.from_dict({})
-        assert config.type == SessionType.STANDARD
+        assert config.posture == "bypass"
         assert config.roles == []
         assert config.voice is None
         assert config.parent is None
+
+    def test_from_dict_readonly_collapses(self):
+        assert ProjectConfig.from_dict({"posture": "readonly"}).posture == "restricted"
+
+    def test_from_dict_bad_posture_falls_back(self):
+        # Unknown value → default, never a crash on config load
+        assert ProjectConfig.from_dict({"posture": "nonsense"}).posture == "bypass"
 
     def test_roles_string_to_list_coercion(self):
         config = ProjectConfig.from_dict({"roles": "agentwire"})
@@ -151,29 +93,29 @@ class TestProjectConfig:
 
     def test_to_dict_omits_unset_includes_set(self):
         # Unset optional fields stay out of the dict
-        bare = ProjectConfig(type=SessionType.CLAUDE_BYPASS).to_dict()
-        assert bare == {"type": "claude-bypass"}
+        bare = ProjectConfig(posture="bypass").to_dict()
+        assert bare == {"posture": "bypass"}
         assert {"voice", "parent", "roles"}.isdisjoint(bare.keys())
         # Populated fields appear with their value
         full = ProjectConfig(
-            type=SessionType.WORKER,
+            posture="restricted",
             roles=["agentwire"],
             voice="default",
         ).to_dict()
-        assert full["type"] == "worker"
+        assert full["posture"] == "restricted"
         assert full["roles"] == ["agentwire"]
         assert full["voice"] == "default"
 
     def test_round_trip(self):
         original = ProjectConfig(
-            type=SessionType.CLAUDE_PROMPTED,
+            posture="prompted",
             roles=["voice", "worker"],
             voice="may",
             parent="main",
         )
         d = original.to_dict()
         restored = ProjectConfig.from_dict(d)
-        assert restored.type == original.type
+        assert restored.posture == original.posture
         assert restored.roles == original.roles
         assert restored.voice == original.voice
         assert restored.parent == original.parent
@@ -185,13 +127,13 @@ class TestProjectConfigIO:
     def test_load_from_directory(self, project_dir, project_config_file):
         config = load_project_config(project_dir)
         assert config is not None
-        assert config.type == SessionType.CLAUDE_BYPASS
+        assert config.posture == "bypass"
         assert "agentwire" in config.roles
 
     def test_load_from_file_path(self, project_config_file):
         config = load_project_config(project_config_file)
         assert config is not None
-        assert config.type == SessionType.CLAUDE_BYPASS
+        assert config.posture == "bypass"
 
     def test_load_missing_returns_none(self, tmp_path):
         config = load_project_config(tmp_path / "nonexistent")
@@ -199,7 +141,7 @@ class TestProjectConfigIO:
 
     def test_save_and_reload(self, project_dir):
         config = ProjectConfig(
-            type=SessionType.VOICE,
+            posture="prompted",
             roles=["voice"],
             voice="echo",
         )
@@ -207,7 +149,7 @@ class TestProjectConfigIO:
 
         loaded = load_project_config(project_dir)
         assert loaded is not None
-        assert loaded.type == SessionType.VOICE
+        assert loaded.posture == "prompted"
         assert loaded.roles == ["voice"]
         assert loaded.voice == "echo"
 
@@ -220,7 +162,7 @@ class TestProjectConfigIO:
 
         config_path = parent / ".agentwire.yml"
         with open(config_path, "w") as f:
-            yaml.safe_dump({"type": "bare"}, f)
+            yaml.safe_dump({"posture": "bare"}, f)
 
         found = find_project_config(child)
         assert found is not None
@@ -234,7 +176,7 @@ class TestProjectConfigIO:
         # Only the committed template exists → use it (#620).
         example = tmp_path / ".agentwire.yml.example"
         with open(example, "w") as f:
-            yaml.safe_dump({"type": "claude-bypass", "roles": ["contributor"]}, f)
+            yaml.safe_dump({"posture": "bypass", "roles": ["contributor"]}, f)
 
         found = find_project_config(tmp_path)
         assert found == example
@@ -244,20 +186,20 @@ class TestProjectConfigIO:
         live = tmp_path / ".agentwire.yml"
         example = tmp_path / ".agentwire.yml.example"
         with open(live, "w") as f:
-            yaml.safe_dump({"type": "bare"}, f)
+            yaml.safe_dump({"posture": "bare"}, f)
         with open(example, "w") as f:
-            yaml.safe_dump({"type": "claude-bypass", "roles": ["contributor"]}, f)
+            yaml.safe_dump({"posture": "bypass", "roles": ["contributor"]}, f)
 
         found = find_project_config(tmp_path)
         assert found == live
 
     def test_load_from_directory_uses_example(self, tmp_path):
         with open(tmp_path / ".agentwire.yml.example", "w") as f:
-            yaml.safe_dump({"type": "claude-bypass", "roles": ["contributor"]}, f)
+            yaml.safe_dump({"posture": "bypass", "roles": ["contributor"]}, f)
 
         config = load_project_config(tmp_path)
         assert config is not None
-        assert config.type == SessionType.CLAUDE_BYPASS
+        assert config.posture == "bypass"
         assert config.roles == ["contributor"]
 
 
@@ -307,7 +249,7 @@ class TestWorktreeOverrides:
 
     def test_to_dict_round_trip(self):
         original = ProjectConfig.from_dict({
-            "type": "claude-bypass",
+            "posture": "bypass",
             "worktree": {"dir": "/tmp/my-trees", "base": "develop"},
         })
         restored = ProjectConfig.from_dict(original.to_dict())
@@ -327,13 +269,13 @@ class TestProjectConfigNoSafety:
         .damagecontrol.yml — .agentwire.yml carries none.
         """
         config = ProjectConfig.from_dict({
-            "type": "claude-bypass",
+            "posture": "bypass",
             "safety": {"allowed_paths": [{"path": "dist/*", "allow": "all"}]},
         })
         assert not hasattr(config, "safety")
 
     def test_to_dict_never_emits_safety(self):
-        config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
+        config = ProjectConfig(posture="bypass")
         assert "safety" not in config.to_dict()
 
 
@@ -347,7 +289,7 @@ class TestProjectConfigNoTasks:
         protected .agentwire.tasks.yml — .agentwire.yml carries none of it.
         """
         config = ProjectConfig.from_dict({
-            "type": "claude-bypass",
+            "posture": "bypass",
             "shell": "/bin/bash",
             "tasks": {"t1": {"prompt": "hello"}},
         })
@@ -355,7 +297,7 @@ class TestProjectConfigNoTasks:
         assert not hasattr(config, "tasks")
 
     def test_to_dict_never_emits_shell_or_tasks(self):
-        config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
+        config = ProjectConfig(posture="bypass")
         d = config.to_dict()
         assert "shell" not in d
         assert "tasks" not in d
@@ -390,7 +332,7 @@ class TestEnsureGitignored:
 
     def test_respects_tracked_file(self, tmp_path):
         _git(tmp_path, "init")
-        (tmp_path / ".agentwire.yml").write_text("type: claude-bypass\n")
+        (tmp_path / ".agentwire.yml").write_text("posture: bypass\n")
         _git(tmp_path, "add", ".agentwire.yml")
         _git(tmp_path, "commit", "-m", "track config")
         assert ensure_gitignored(tmp_path) is False
@@ -406,7 +348,7 @@ class TestEnsureGitignored:
 
     def test_save_project_config_gitignores(self, tmp_path):
         _git(tmp_path, "init")
-        config = ProjectConfig(type=SessionType.CLAUDE_BYPASS)
+        config = ProjectConfig(posture="bypass")
         assert save_project_config(config, tmp_path) is True
         assert ".agentwire.yml" in (tmp_path / ".gitignore").read_text()
 

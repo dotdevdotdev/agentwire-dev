@@ -20,7 +20,7 @@ tmux session "myproject"
 
 The orchestrator coordinates work and dispatches workers via the MCP `pane_spawn` tool. Workers fire an *idle notification* on completion (via `~/.claude/hooks/idle-handler.sh`); the hook routes the alert to pane 0 and kills the worker. Pane 0's own idle notifications route to whatever session is named in `parent:` (typically the human-facing session).
 
-For session types — claude-bypass, claude-auto, pi-*, bare — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
+For postures — bypass, prompted, restricted, readonly, auto (or bare) — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
 
 ---
 
@@ -86,13 +86,13 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 
 ### Per-project — `.agentwire.yml` + `.agentwire.tasks.yml`
 
-`.agentwire.yml` lives at the project root and is purely declarative: session type, roles, voice, parent (for cross-session notifications), worktree overrides — no execution vector, so it's agent-writable. Named tasks (`pre`/`post`/`on_task_end`/`shell` — code the scheduler runs via `shell=True`) live in a separate, protected sibling file, `.agentwire.tasks.yml` (#720), authored via propose-and-promote (`agentwire tasks review` / `agentwire tasks promote`) since a policed agent can't write it directly. See `agentwire-project-config` skill for the full schema and [Damage control](internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720) for the protection model.
+`.agentwire.yml` lives at the project root and is purely declarative: posture, roles, voice, parent (for cross-session notifications), worktree overrides — no execution vector, so it's agent-writable. Named tasks (`pre`/`post`/`on_task_end`/`shell` — code the scheduler runs via `shell=True`) live in a separate, protected sibling file, `.agentwire.tasks.yml` (#720), authored via propose-and-promote (`agentwire tasks review` / `agentwire tasks promote`) since a policed agent can't write it directly. See `agentwire-project-config` skill for the full schema and [Damage control](internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720) for the protection model.
 
 **Gitignore both.** They're personal/live config (voices, schedules, notification addresses, task shell commands) — not project code. Tracking either also breaks worktree dispatch subtly: worktree runs check out HEAD, so uncommitted live edits to a tracked file are silently ignored. Gitignored, they're seeded into worktrees via `projects.worktrees.copy_files` (default includes both), so the live file always wins. AgentWire adds `.agentwire.yml` to `.gitignore` automatically whenever it writes the file into a git repo; `agentwire tasks promote` does the same for `.agentwire.tasks.yml` on first promote.
 
 ```yaml
 # .agentwire.yml
-type: claude-auto
+posture: auto
 roles: [task-runner]
 voice: may
 parent: main
@@ -167,9 +167,9 @@ Defense in depth, three layers:
 
 1. **Damage control hooks** (always on if `agentwire hooks install` was run): PreToolUse hooks on Bash/Edit/Write match commands and paths against `agentwire/hooks/damage-control/rules/*.yaml`. Block hard-blocked patterns, prompt for ask-patterns, run bypassable patterns through allowlist checks.
 2. **Per-project allowlists** (`allowed_paths` in the protected `.damagecontrol.yml` at the repo root): override the global rules for paths inside this project (e.g., `dist/*` allow-all, `.env.development` allow read/write/edit). The allowlist is host-owned — an agent can't edit `.damagecontrol.yml` to widen its own freedom (#466/#467).
-3. **Classifier-mode auto sessions** (`type: claude-auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Safe ops auto-approve at zero cost; dangerous ops are blocked. Layered on top of the hook-level checks.
+3. **Classifier-mode auto sessions** (`posture: auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Safe ops auto-approve at zero cost; dangerous ops are blocked. Layered on top of the hook-level checks.
 
-→ [Damage control](internals/damage-control.md), [claude-auto](sessions/claude-code-auto-mode.md).
+→ [Damage control](internals/damage-control.md), [auto](sessions/claude-code-auto-mode.md).
 
 ---
 
