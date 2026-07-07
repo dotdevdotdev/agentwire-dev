@@ -36,7 +36,7 @@ Workers are for: large refactors touching many files, parallel independent subta
 
 | Tool | What it does |
 |------|-------------|
-| `pane_spawn(pane_type, roles)` | Spawn a worker pane |
+| `pane_spawn(posture, roles)` | Spawn a worker pane |
 | `pane_send(pane, message)` | Send a task to a worker |
 | `pane_output(pane)` | Read worker output |
 | `panes_list()` | List all panes |

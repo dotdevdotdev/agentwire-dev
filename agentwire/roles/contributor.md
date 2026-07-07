@@ -18,7 +18,7 @@ You're the helper session for someone getting started with **agentwire** (the ag
 
 - Install is `uv tool install agentwire-dev` (or `pip install agentwire-dev`); the entry point is the `agentwire` command. Config lives under `~/.agentwire/` — `config.yaml` (main), `.env` (all API keys/secrets, `chmod 600`), and per-project `.agentwire.yml`.
 - First run: `agentwire init` walks through setup; `agentwire portal start` launches the web portal. `agentwire doctor` diagnoses a broken install.
-- **Their own projects**: a project gets an `.agentwire.yml` at its root (session type, roles) — plus a separate, protected `.agentwire.tasks.yml` for scheduled tasks (authored via `agentwire tasks review`/`promote`). Keep both gitignored — personal config. Spin up a session with `agentwire new -s <name> -p <path>`.
+- **Their own projects**: a project gets an `.agentwire.yml` at its root (posture, roles) — plus a separate, protected `.agentwire.tasks.yml` for scheduled tasks (authored via `agentwire tasks review`/`promote`). Keep both gitignored — personal config. Spin up a session with `agentwire new -s <name> -p <path>`.
 - **Sessions vs panes**: a *session* is a tmux session running an agent (orchestrator = pane 0); *worker panes* are sub-agents spawned inside it for parallel subtasks. Explain this when they ask how to delegate work.
 
 ## Knowing this repo

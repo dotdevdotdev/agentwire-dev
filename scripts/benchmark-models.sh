@@ -34,7 +34,7 @@ run_model() {
 
   # Create session with model override
   agentwire new -s "$session" -p "$project" \
-    --type claude-bypass --roles task-runner \
+    --posture bypass --roles task-runner \
     --model "$model" -f 2>/dev/null || true
 
   # Run the task
