@@ -90,11 +90,10 @@ class SessionsAdminRoutesMixin:
             name = data.get("name", "").strip()
             custom_path = data.get("path")
             voice = data.get("voice", self.config.tts.default_voice)
-            # Posture × harness are the canonical axes; a legacy fused `type`
-            # is still accepted. When posture/harness are present they win.
+            # Posture is the canonical axis; a legacy fused `type` is still
+            # accepted. When posture is present it wins.
             posture = (data.get("posture") or "").strip()
-            harness = (data.get("harness") or "").strip()
-            session_type = data.get("type") if not (posture or harness) else None
+            session_type = data.get("type") if not posture else None
             roles = data.get("roles")
             machine = data.get("machine", "local")
             worktree = data.get("worktree", False)
@@ -129,11 +128,9 @@ class SessionsAdminRoutesMixin:
             # Pass -p when provided (CLI uses it to locate repo for worktree creation)
             if custom_path:
                 args.extend(["-p", custom_path])
-            # Session type: posture × harness when given, else legacy --type.
+            # Session type: posture when given, else legacy --type.
             if posture:
                 args.extend(["--posture", posture])
-            if harness:
-                args.extend(["--harness", harness])
             if session_type:
                 args.extend(["--type", session_type])
             # Worktree-only flags: base branch + pull-first behaviour

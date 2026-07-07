@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .project_config import (
-    DEFAULT_HARNESS,
     POSTURES,
     compose_session_type,
     detect_default_agent_type,
@@ -210,90 +209,6 @@ def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None
         return AgentCommand(command="")
 
     merged = merge_roles(roles) if roles else None
-
-    # === Pi coding agent (any provider) ===
-    # Session type: pi-<provider>[-restricted|-readonly], e.g. pi-zai, pi-deepseek
-    if session_type.startswith("pi-"):
-        remainder = session_type[3:]
-        if remainder.endswith("-restricted"):
-            provider = remainder[:-11]
-            variant = "restricted"
-        elif remainder.endswith("-readonly"):
-            provider = remainder[:-9]
-            variant = "readonly"
-        else:
-            provider = remainder
-            variant = None
-
-        config = load_config()
-        pi_config = config.get("pi", {})
-        pi_binary = pi_config.get("binary", "pi")
-
-        provider_cfg = pi_config.get("providers", {}).get(provider)
-        if not provider_cfg:
-            raise ValueError(
-                f"No config for pi provider '{provider}'. "
-                f"Add pi.providers.{provider} to ~/.agentwire/config.yaml "
-                f"with at least env_var and default_model, and put the key "
-                f"itself in ~/.agentwire/.env (docs/wiki/security/secrets.md)."
-            )
-        env_var = provider_cfg.get("env_var", f"{provider.upper().replace('-', '_')}_API_KEY")
-        if provider_cfg.get("api_key"):
-            print(
-                f"Warning: pi.providers.{provider}.api_key in config.yaml is "
-                f"ignored — put {env_var}=... in ~/.agentwire/.env instead "
-                f"(docs/wiki/security/secrets.md)",
-                file=sys.stderr,
-            )
-        # The key comes from the process environment — ~/.agentwire/.env is
-        # loaded on every entry point, so one line there is all it takes.
-        api_key = os.environ.get(env_var, "")
-        default_model = provider_cfg.get("default_model", "")
-
-        # Merge provider key + any global pi extra_env
-        env: dict[str, str] = {}
-        if api_key:
-            env[env_var] = api_key
-        env.update(pi_config.get("extra_env", {}))
-
-        parts = [pi_binary, "--provider", provider]
-        resolved_model = model or default_model
-        if resolved_model:
-            parts.extend(["--model", resolved_model])
-
-        # Permission variants (pi has no permission system to bypass; variants
-        # translate to pi's --tools whitelist instead)
-        temp_file = None
-        if variant == "restricted":
-            parts.extend(["--tools", "read,grep,find,bash"])
-        elif variant == "readonly":
-            parts.extend(["--tools", "read,grep,find"])
-        elif merged and merged.tools:
-            # Translate Claude tool names to pi's lowercase tool names.
-            # Pi only supports: read, bash, edit, write, grep, find, ls
-            pi_valid = {"read", "bash", "edit", "write", "grep", "find", "ls"}
-            pi_tools = [t.lower() for t in merged.tools if t.lower() in pi_valid]
-            if pi_tools:
-                parts.extend(["--tools", ",".join(pi_tools)])
-
-        # System prompt: combine global pi.system_prompt + role instructions.
-        # Skipped for restricted/readonly — those are curated contexts.
-        if variant not in ("restricted", "readonly"):
-            global_prompt = pi_config.get("system_prompt", "")
-            role_prompt = merged.instructions if merged and merged.instructions else ""
-            combined = "\n\n".join(filter(None, [global_prompt, role_prompt]))
-            if combined:
-                f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-                f.write(combined)
-                f.close()
-                temp_file = f.name
-                parts.append(f'--append-system-prompt "$(<{temp_file})"')
-
-        return AgentCommand(
-            command=" ".join(parts),
-            temp_file=temp_file,
-            env=env,
-        )
 
     # === Claude Code ===
     if session_type.startswith("claude"):
@@ -1200,24 +1115,23 @@ def _default_posture(kind: str | None, worktree_topology: bool = False) -> str:
 def _resolve_session_type_from_args(args, kind: str, worktree_topology: bool = False) -> tuple[str | None, str | None]:
     """Resolve the internal fused session type from the shared flag core.
 
-    Posture × harness are the canonical axes; legacy --type (fused strings or
-    intent presets) and the internal --bare/--restricted/--prompted booleans
-    are accepted on input but never the primary surface.
+    Posture is the canonical axis; legacy --type (fused strings or intent
+    presets) and the internal --bare/--restricted/--prompted booleans are
+    accepted on input but never the primary surface.
 
-    Precedence: explicit --posture/--harness compose first; else legacy
-    --type; else legacy booleans; else the kind's default posture × claude.
+    Precedence: explicit --posture composes first; else legacy --type; else
+    legacy booleans; else the kind's default posture.
 
     Returns ``(session_type, error)`` — error is a message string when an
     invalid posture was given, session_type is None in that case.
     """
     posture = getattr(args, 'posture', None)
-    harness = getattr(args, 'harness', None)
     type_arg = getattr(args, 'type', None)
     default_posture = _default_posture(kind, worktree_topology)
 
-    if posture or harness:
+    if posture:
         try:
-            return compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture), None
+            return compose_session_type(posture), None
         except ValueError as e:
             return None, str(e)
     if type_arg:
@@ -1229,20 +1143,18 @@ def _resolve_session_type_from_args(args, kind: str, worktree_topology: bool = F
         return f"{detect_default_agent_type()}-restricted", None
     if getattr(args, 'prompted', False):
         return f"{detect_default_agent_type()}-prompted", None
-    return compose_session_type(DEFAULT_HARNESS, default_posture), None
+    return compose_session_type(default_posture), None
 
 
-def _add_posture_harness_flags(parser) -> None:
-    """Register the shared posture × harness axes on a spawn-verb parser.
+def _add_posture_flag(parser) -> None:
+    """Register the shared posture axis on a spawn-verb parser.
 
-    These are the canonical session-type surface across new/worktree/spawn;
+    This is the canonical session-type surface across new/worktree/spawn;
     legacy --type (fused strings, intent presets) stays accepted but secondary.
     """
     parser.add_argument("--posture", choices=list(POSTURES),
                         help="How much the agent may do unprompted: bypass/prompted/restricted/readonly "
                              "(default depends on the verb: new/worktree → bypass, spawn → restricted)")
-    parser.add_argument("--harness",
-                        help="Agent backend: claude (default), pi-<provider> (e.g. pi-zai, pi-deepseek), or bare")
 
 
 def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):

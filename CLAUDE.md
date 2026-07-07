@@ -90,7 +90,7 @@ When the owner says "worktree session", they mean the standalone session (`agent
 | `wiki/` | LLM-maintained knowledge base (Karpathy LLM Wiki pattern) |
 | `logs/` | Audit logs for damage-control |
 
-Per-project config lives in `.agentwire.yml` at the project root — **keep it gitignored** (personal config; a tracked copy makes worktree-dispatched runs silently use the stale committed version). `.agentwire.yml` is purely declarative (type/roles/voice/parent/worktree) and agent-writable; named tasks (pre/post/on_task_end/shell) live in the separate, protected sibling `.agentwire.tasks.yml`, authored via `agentwire tasks review`/`promote` (#720). See `agentwire-project-config` skill for fields and task schema. For pi sessions (zai, deepseek, openai, etc.), see the `agentwire-pi` skill.
+Per-project config lives in `.agentwire.yml` at the project root — **keep it gitignored** (personal config; a tracked copy makes worktree-dispatched runs silently use the stale committed version). `.agentwire.yml` is purely declarative (type/roles/voice/parent/worktree) and agent-writable; named tasks (pre/post/on_task_end/shell) live in the separate, protected sibling `.agentwire.tasks.yml`, authored via `agentwire tasks review`/`promote` (#720). See `agentwire-project-config` skill for fields and task schema.
 
 ## Key Patterns
 
@@ -176,7 +176,6 @@ Reference detail lives in skills under `.claude/skills/` — invoke as needed:
 | `agentwire-project-config` | Editing `.agentwire.yml` (session config) / `.agentwire.tasks.yml` (tasks), roles, idle notifications |
 | `agentwire-scheduler` | Scheduled task gates/schedule/priority |
 | `agentwire-desktop-ui` | Editing portal static files (sidebar, windows, artifacts) |
-| `agentwire-pi` | Setting up pi sessions (zai, deepseek, openai, etc.) via pi coding agent |
 
 ## Docs
 

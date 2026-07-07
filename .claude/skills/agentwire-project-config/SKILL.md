@@ -46,7 +46,7 @@ session:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `pi-<provider>` (e.g. `pi-zai`, `pi-deepseek`), `pi-<provider>-restricted`, `pi-<provider>-readonly` | Session permission level. **Use `claude-auto` for unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. **`pi-*` types** resolve `<provider>` against `pi.providers.<name>` in `~/.agentwire/config.yaml` — see the `agentwire-pi` skill. |
+| `type` | `claude-bypass`, `claude-auto`, `claude-prompted`, `claude-restricted`, `bare` | Session permission level. **Use `claude-auto` for unattended work** — same capability as `claude-bypass` but with AI classifier blocking dangerous actions. Requires Team/Enterprise plan. |
 | `roles` | List of role names | Roles to load (from bundled or `~/.agentwire/roles/`) |
 | `voice` | Voice name | TTS voice for this project |
 | `parent` | Session name | Parent session for hierarchical notifications |
@@ -54,8 +54,6 @@ session:
 
 `shell`/`tasks` used to live here — they moved to the separate, protected
 `.agentwire.tasks.yml` (#720). See [Task Schema](#task-schema-agentwiretasksyml).
-
-For pi sessions (`pi-*`, e.g. `pi-zai`, `pi-deepseek`), see the `agentwire-pi` skill.
 
 ## Worktree overrides (#705)
 

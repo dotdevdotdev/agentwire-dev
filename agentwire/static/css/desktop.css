@@ -1558,7 +1558,7 @@ body {
     border-color: var(--accent);
 }
 
-/* New-session: resolved role chips (removable) + advanced posture/harness fold */
+/* New-session: resolved role chips (removable) + advanced posture fold */
 .cmdk-chip {
     color: var(--text);
     border-color: var(--accent);

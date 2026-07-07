@@ -48,10 +48,6 @@ The agent in pane 0 of a session. Coordinates work, spawns workers in panes 1+ (
 
 A tmux pane within a session. Convention: pane 0 is the *orchestrator*, panes 1+ are *workers*. Workers auto-kill after sending their final idle notification.
 
-## P — Pi
-
-The third-party `@mariozechner/pi-coding-agent` CLI. Powers `pi-<provider>` session types. Faster and cheaper than Claude Code for non-Anthropic models, but no MCP and no hook integration. → [Pi sessions](sessions/pi.md).
-
 ## P — Portal
 
 The agentwire web UI + REST/WebSocket API at `https://localhost:8765`. Wraps CLI commands rather than reimplementing them — every endpoint shells out to `agentwire <cmd> --json`. → [Portal](internals/portal.md).
@@ -70,7 +66,7 @@ An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `a
 
 ## S — Session
 
-A tmux session running an AI agent (claude-*, pi-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
+A tmux session running an AI agent (claude-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
 
 ## S — Soul
 

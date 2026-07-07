@@ -21,26 +21,10 @@ class SessionType(str, Enum):
     CLAUDE_AUTO = "claude-auto"      # Claude with auto mode (classifier safety net)
     CLAUDE_PROMPTED = "claude-prompted"  # Claude with permission hooks
     CLAUDE_RESTRICTED = "claude-restricted"  # Claude with only say allowed
-    # Pi coding agent session types (`pi-zai`, `pi-deepseek`, `pi-<provider>[-restricted|-readonly]`)
-    # are handled dynamically by `_missing_` below — no explicit members needed.
     # Universal types (agent-agnostic, map to agent-specific types)
     STANDARD = "standard"  # Full automation -> claude-bypass
     WORKER = "worker"      # Worker pane -> claude-restricted
     VOICE = "voice"        # Voice with prompts -> claude-prompted
-
-    @classmethod
-    def _missing_(cls, value: object) -> "SessionType | None":
-        """Handle dynamic pi-<provider> types not enumerated at definition time.
-
-        Only `pi-*` is dynamic — the claude-* family is a closed set,
-        so unknown variants there should fail loudly rather than silently round-trip.
-        """
-        if isinstance(value, str) and value.startswith("pi-"):
-            obj = str.__new__(cls, value)
-            obj._name_ = value.upper().replace("-", "_")
-            obj._value_ = value
-            return obj
-        return None
 
     @classmethod
     def from_str(cls, value: str) -> "SessionType":
@@ -73,11 +57,7 @@ def detect_default_agent_type() -> str:
 
 def normalize_session_type(session_type: str, agent_type: str) -> str:
     """Map universal types (standard/worker/voice) to agent-specific types."""
-    if (
-        session_type.startswith("claude-")
-        or session_type.startswith("pi-")
-        or session_type == "bare"
-    ):
+    if session_type.startswith("claude-") or session_type == "bare":
         return session_type
 
     if session_type == "standard":
@@ -90,53 +70,32 @@ def normalize_session_type(session_type: str, agent_type: str) -> str:
     return f"{agent_type}-bypass"
 
 
-# The two orthogonal axes a fused session type ("claude-bypass") actually
-# encodes. Untangling them is the point: the user picks a POSTURE (how much
-# the agent can do unprompted) and a HARNESS (which agent backend), and we
-# compose the internal fused string from them. Fused strings still work on
-# input (legacy aliases), but posture×harness is the canonical surface.
+# The POSTURE axis a fused session type ("claude-bypass") encodes: how much
+# the agent may do unprompted. Claude Code is the only agent backend, so a
+# posture composes directly into the internal fused string. Fused strings
+# still work on input (legacy aliases), but posture is the canonical surface.
 POSTURES = ("bypass", "prompted", "restricted", "readonly")
 DEFAULT_POSTURE = "bypass"
-DEFAULT_HARNESS = "claude"
 
 
-def compose_session_type(harness: str, posture: str) -> str:
-    """Compose an internal fused session type from the posture × harness axes.
+def compose_session_type(posture: str) -> str:
+    """Compose the internal fused session type from the posture axis.
 
-    - ``bare`` harness ignores posture (there is no agent to gate).
-    - ``claude`` maps bypass/prompted/restricted to ``claude-<posture>``;
-      ``readonly`` collapses to ``claude-restricted`` (Claude's most-locked
-      tier — say-only).
-    - ``pi-<provider>`` maps bypass→``pi-<provider>`` (its default tier),
-      restricted→``pi-<provider>-restricted``, readonly→``pi-<provider>-readonly``;
-      ``prompted`` collapses to the default tier (pi has no hook-prompt mode).
+    Claude Code is the only agent backend, so a posture maps directly:
+    bypass/prompted/restricted → ``claude-<posture>``; ``readonly`` collapses
+    to ``claude-restricted`` (Claude's most-locked tier — say-only).
 
     Raises ValueError on an unknown posture so a typo fails loudly instead of
     silently picking a wrong tier.
     """
-    harness = (harness or DEFAULT_HARNESS).strip().lower()
     posture = (posture or DEFAULT_POSTURE).strip().lower()
     if posture not in POSTURES:
         raise ValueError(
             f"Unknown posture '{posture}' (expected one of: {', '.join(POSTURES)})"
         )
-
-    if harness == "bare":
-        return "bare"
-
-    if harness == "claude":
-        if posture == "readonly":
-            return "claude-restricted"
-        return f"claude-{posture}"
-
-    # pi-<provider> family
-    if harness.startswith("pi-"):
-        if posture in ("restricted", "readonly"):
-            return f"{harness}-{posture}"
-        return harness  # bypass / prompted → provider default tier
-
-    # Unknown harness: treat it as an already-fused/explicit type.
-    return harness
+    if posture == "readonly":
+        return "claude-restricted"
+    return f"claude-{posture}"
 
 
 @dataclass

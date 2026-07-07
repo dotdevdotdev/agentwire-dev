@@ -22,7 +22,7 @@ from pathlib import Path
 from . import pane_manager
 from .core import (
     CONFIG_DIR,
-    _add_posture_harness_flags,
+    _add_posture_flag,
     _check_tmux_installed,
     _display_parent,
     _get_agentwire_path,
@@ -567,12 +567,12 @@ def _wants_graceful_exit(session_type: str | None, pane_command: str | None) -> 
     """Whether a session should get /exit before kill.
 
     Claude-type sessions (claude-* or no declared type) get a graceful
-    /exit. Bare shells and pi-* sessions don't speak /exit — plain
-    tmux kill. If pane 0 is just sitting at a shell, there's no agent to exit.
+    /exit. Bare shells don't speak /exit — plain tmux kill. If pane 0 is
+    just sitting at a shell, there's no agent to exit.
     """
     if pane_command is None or pane_command in _SHELL_COMMANDS:
         return False
-    if session_type == "bare" or (session_type or "").startswith("pi-"):
+    if session_type == "bare":
         return False
     return True
 
@@ -581,9 +581,8 @@ def cmd_kill(args) -> int:
     """Kill a tmux session or pane (graceful /exit first, then kill).
 
     Claude sessions get /exit and we wait for the agent to actually
-    terminate (up to --timeout) before killing tmux. Non-Claude types
-    (bare, pi-*) fall through to a plain tmux kill. --force skips the
-    graceful step entirely.
+    terminate (up to --timeout) before killing tmux. Bare sessions fall
+    through to a plain tmux kill. --force skips the graceful step entirely.
 
     Supports remote sessions with session@machine format.
     Use --pane N to kill a specific pane in the current session.
@@ -860,7 +859,7 @@ def cmd_spawn(args) -> int:
     if missing:
         return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
 
-    # Resolve session type via the shared posture × harness core (kind=worker
+    # Resolve session type via the shared posture core (kind=worker
     # defaults to the restricted posture).
     session_type_str, st_err = _resolve_session_type_from_args(args, "worker")
     if st_err:
@@ -1136,8 +1135,8 @@ def register_pane_parser(subparsers) -> None:
     spawn_parser.add_argument("-s", "--session", help="Target session (default: auto-detect)")
     spawn_parser.add_argument("--cwd", help="Working directory (default: current)")
     spawn_parser.add_argument("--branch", "-b", help="Create worktree on this branch for isolated commits")
-    _add_posture_harness_flags(spawn_parser)
-    spawn_parser.add_argument("--type", help="Legacy fused session type (accepted, not primary): claude-bypass, claude-restricted, pi-<provider>[-restricted|-readonly]")
+    _add_posture_flag(spawn_parser)
+    spawn_parser.add_argument("--type", help="Legacy fused session type (accepted, not primary): claude-bypass, claude-restricted")
     spawn_parser.add_argument("--roles", default=None, help="Comma-separated roles, STACKED on top of the always-present worker etiquette")
     spawn_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     spawn_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection (no-op for the headless worker role)")

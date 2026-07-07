@@ -46,7 +46,6 @@ Two consequences:
 | Email channel (Resend) | `RESEND_API_KEY` | [Channels](../communication/channels.md) |
 | Quo / OpenPhone SMS channel | `QUO_API_KEY` (or legacy `OPENPHONE_API_KEY`) | [Channels](../communication/channels.md) |
 | Cloud STT | var **named by** `stt.cloud.api_key_env` — `OPENAI_API_KEY` by default; `GROQ_API_KEY`, `MISTRAL_API_KEY`, … per provider | [Cloud STT](../voice/stt-cloud.md) |
-| pi providers | var **named by** `pi.providers.<name>.env_var` — `ZAI_API_KEY`, `DEEPSEEK_API_KEY`, … | [Pi sessions](../sessions/pi.md) |
 | PyPI publish (maintainers) | `PYPI_TOKEN` | release workflow only |
 
 `agentwire doctor` reports, for each configured feature, whether its

@@ -1,42 +1,10 @@
 """Tests for __main__.py — build_agent_command for each session type."""
 
 import os
-from unittest.mock import patch
 
 import pytest
 
 from agentwire.roles import RoleConfig
-
-# Mock for load_config() in core used by build_agent_command's pi-* branch.
-# Keys are env-only (~/.agentwire/.env) — config holds the env var NAME.
-FAKE_CONFIG = {
-    "pi": {
-        "binary": "pi",
-        "providers": {
-            "zai": {
-                "env_var": "ZAI_API_KEY",
-                "default_model": "glm-5.1",
-            },
-            "deepseek": {
-                "env_var": "DEEPSEEK_API_KEY",
-                "default_model": "deepseek-chat",
-            },
-        },
-    },
-}
-
-
-@pytest.fixture(autouse=True)
-def mock_main_load_config():
-    with patch("agentwire.core.load_config", return_value=FAKE_CONFIG):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def provider_keys_in_env(monkeypatch):
-    """Provider keys come from the process env (loaded from ~/.agentwire/.env)."""
-    monkeypatch.setenv("ZAI_API_KEY", "test-key-123")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
 
 
 class TestBuildAgentCommand:
@@ -93,230 +61,6 @@ class TestBuildAgentCommand:
         cmd = self._build("nonexistent-type")
         assert cmd.command == ""
 
-    # === pi-zai session types ===
-
-    def test_pi_zai_basic(self):
-        """pi-zai launches pi binary with Z.AI provider and default model.
-
-        Security regression: key var name AND value must both stay out of
-        cmd.command (visible in ps auxwww) — they're injected via tmux env.
-        """
-        cmd = self._build("pi-zai")
-        assert cmd.command.startswith("pi --provider zai")
-        assert "ZAI_API_KEY" not in cmd.command
-        assert "test-key-123" not in cmd.command  # actual key value too
-        assert cmd.env == {"ZAI_API_KEY": "test-key-123"}
-        assert "--model glm-5.1" in cmd.command
-        # Pi has no --dangerously-skip-permissions (no permission system)
-        assert "--dangerously-skip-permissions" not in cmd.command
-        assert cmd.temp_file is None
-
-    def test_pi_zai_restricted(self):
-        """pi-zai-restricted whitelists read-only tools + bash."""
-        cmd = self._build("pi-zai-restricted")
-        assert "pi --provider zai" in cmd.command
-        assert "--tools read,grep,find,bash" in cmd.command
-
-    def test_pi_zai_readonly(self):
-        """pi-zai-readonly has no bash, no edits — pure inspection."""
-        cmd = self._build("pi-zai-readonly")
-        assert "pi --provider zai" in cmd.command
-        assert "--tools read,grep,find" in cmd.command
-        # No bash, no edit, no write
-        assert "bash" not in cmd.command.split("--tools")[1]
-        assert "edit" not in cmd.command.split("--tools")[1]
-        assert "write" not in cmd.command.split("--tools")[1]
-
-    def test_pi_zai_model_override(self):
-        cmd = self._build("pi-zai", model="glm-4.7-flash")
-        assert "--model glm-4.7-flash" in cmd.command
-        # Default should not also appear
-        assert "--model glm-5.1 " not in cmd.command
-
-    def test_pi_zai_with_role_instructions(self):
-        """pi-zai with role.instructions uses --append-system-prompt."""
-        roles = [RoleConfig(name="worker", instructions="You are a worker agent.")]
-        cmd = self._build("pi-zai", roles=roles)
-        assert "--append-system-prompt" in cmd.command
-        assert cmd.temp_file is not None
-        with open(cmd.temp_file) as f:
-            content = f.read()
-        assert "You are a worker agent." in content
-        os.unlink(cmd.temp_file)
-
-    def test_pi_zai_with_role_tools(self):
-        """pi-zai translates Claude tool names (CamelCase) to pi's lowercase."""
-        roles = [RoleConfig(name="test", tools=["Read", "Bash", "Edit"])]
-        cmd = self._build("pi-zai", roles=roles)
-        assert "--tools" in cmd.command
-        # Extracted tool list section
-        tools_section = cmd.command.split("--tools")[1].split()[0]
-        assert "read" in tools_section
-        assert "bash" in tools_section
-        assert "edit" in tools_section
-
-    def test_pi_zai_filters_unknown_tools(self):
-        """pi-zai drops tool names pi doesn't support (e.g., Glob, WebFetch)."""
-        roles = [RoleConfig(name="test", tools=["Read", "Glob", "WebFetch", "Bash"])]
-        cmd = self._build("pi-zai", roles=roles)
-        tools_section = cmd.command.split("--tools")[1].split()[0]
-        # Glob → find (but only if we translated; current impl filters out unknowns)
-        # WebFetch → not supported by pi
-        assert "webfetch" not in tools_section.lower()
-        # Read and Bash are valid
-        assert "read" in tools_section
-        assert "bash" in tools_section
-
-    def test_pi_zai_restricted_ignores_role_tools(self):
-        """pi-zai-restricted keeps its curated tool list regardless of roles."""
-        roles = [RoleConfig(name="test", tools=["Edit", "Write"])]
-        cmd = self._build("pi-zai-restricted", roles=roles)
-        # Should have restricted's tool list, not role's
-        assert "--tools read,grep,find,bash" in cmd.command
-
-
-    def test_pi_zai_readonly_ignores_role_instructions(self):
-        """pi-zai-readonly is a curated context, skips role instructions."""
-        roles = [RoleConfig(name="test", instructions="Be creative")]
-        cmd = self._build("pi-zai-readonly", roles=roles)
-        assert "--append-system-prompt" not in cmd.command
-        assert cmd.temp_file is None
-
-    # === pi-<provider> generalization (multi-provider) ===
-
-    def test_pi_deepseek_basic(self):
-        """pi-deepseek launches pi binary with deepseek provider + key."""
-        cmd = self._build("pi-deepseek")
-        assert cmd.command.startswith("pi --provider deepseek")
-        assert "--model deepseek-chat" in cmd.command
-        # Deepseek key under DEEPSEEK_API_KEY, never on the command line
-        assert "test-deepseek-key" not in cmd.command
-        assert cmd.env == {"DEEPSEEK_API_KEY": "test-deepseek-key"}
-
-    def test_pi_deepseek_restricted(self):
-        """pi-<provider>-restricted parses correctly for any provider."""
-        cmd = self._build("pi-deepseek-restricted")
-        assert "pi --provider deepseek" in cmd.command
-        assert "--tools read,grep,find,bash" in cmd.command
-
-    def test_pi_unknown_provider_raises(self):
-        """Provider not in pi.providers raises a clear error at build time."""
-        with pytest.raises(ValueError, match="pi provider 'bogus'"):
-            self._build("pi-bogus")
-
-    def test_pi_yaml_api_key_ignored(self, monkeypatch, capsys):
-        """api_key in config.yaml is ignored with a warning — env is the source."""
-        config = {
-            "pi": {
-                "binary": "pi",
-                "providers": {
-                    "zai": {
-                        "env_var": "ZAI_API_KEY",
-                        "api_key": "stale-yaml-key",
-                        "default_model": "glm-5.1",
-                    },
-                },
-            },
-        }
-        monkeypatch.setenv("ZAI_API_KEY", "env-key")
-        with patch("agentwire.core.load_config", return_value=config):
-            cmd = self._build("pi-zai")
-        assert cmd.env == {"ZAI_API_KEY": "env-key"}
-        assert "stale-yaml-key" not in str(cmd.env)
-        assert "ignored" in capsys.readouterr().err
-
-    def test_pi_missing_env_key_skips_injection(self, monkeypatch):
-        """No key in the environment → nothing injected (pi may have its own
-        key in ~/.pi/agent/models.json)."""
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        cmd = self._build("pi-zai")
-        assert cmd.env == {}
-
-    def test_pi_extra_env_merged_with_provider_key(self):
-        """pi.extra_env merges with the provider key."""
-        config = {
-            "pi": {
-                "binary": "pi",
-                "extra_env": {"MY_EXTRA_VAR": "test-extra"},
-                "providers": {
-                    "zai": {
-                        "env_var": "ZAI_API_KEY",
-                        "default_model": "glm-5.1",
-                    },
-                },
-            },
-        }
-        with patch("agentwire.core.load_config", return_value=config):
-            cmd = self._build("pi-zai")
-        assert cmd.env["ZAI_API_KEY"] == "test-key-123"
-        assert cmd.env["MY_EXTRA_VAR"] == "test-extra"
-
-    def test_pi_system_prompt_combined_with_role(self):
-        """pi.system_prompt is prepended to role instructions in the temp file."""
-        config = {
-            "pi": {
-                "binary": "pi",
-                "system_prompt": "GLOBAL_INSTRUCTIONS",
-                "providers": {
-                    "zai": {
-                        "env_var": "ZAI_API_KEY",
-                        "default_model": "glm-5.1",
-                    },
-                },
-            },
-        }
-        roles = [RoleConfig(name="worker", instructions="ROLE_INSTRUCTIONS")]
-        with patch("agentwire.core.load_config", return_value=config):
-            cmd = self._build("pi-zai", roles=roles)
-        assert cmd.temp_file is not None
-        with open(cmd.temp_file) as f:
-            content = f.read()
-        assert "GLOBAL_INSTRUCTIONS" in content
-        assert "ROLE_INSTRUCTIONS" in content
-        # Global must come first so role can override / extend it
-        assert content.index("GLOBAL_INSTRUCTIONS") < content.index("ROLE_INSTRUCTIONS")
-        os.unlink(cmd.temp_file)
-
-    def test_pi_system_prompt_alone_writes_temp_file(self):
-        """Even with no role, pi.system_prompt alone triggers --append-system-prompt."""
-        config = {
-            "pi": {
-                "binary": "pi",
-                "system_prompt": "ONLY_GLOBAL",
-                "providers": {
-                    "zai": {
-                        "env_var": "ZAI_API_KEY",
-                        "default_model": "glm-5.1",
-                    },
-                },
-            },
-        }
-        with patch("agentwire.core.load_config", return_value=config):
-            cmd = self._build("pi-zai")
-        assert cmd.temp_file is not None
-        with open(cmd.temp_file) as f:
-            assert f.read() == "ONLY_GLOBAL"
-        os.unlink(cmd.temp_file)
-
-    def test_pi_restricted_skips_system_prompt(self):
-        """Restricted variants are curated — pi.system_prompt is skipped."""
-        config = {
-            "pi": {
-                "binary": "pi",
-                "system_prompt": "GLOBAL_INSTRUCTIONS",
-                "providers": {
-                    "zai": {
-                        "env_var": "ZAI_API_KEY",
-                        "default_model": "glm-5.1",
-                    },
-                },
-            },
-        }
-        with patch("agentwire.core.load_config", return_value=config):
-            cmd = self._build("pi-zai-restricted")
-        assert "--append-system-prompt" not in cmd.command
-        assert cmd.temp_file is None
-
 
 class TestSessionEnvInjection:
     def test_build_tmux_env_flags_empty(self):
@@ -325,10 +69,10 @@ class TestSessionEnvInjection:
 
     def test_build_tmux_env_flags_pairs(self):
         from agentwire.__main__ import _build_tmux_env_flags
-        flags = _build_tmux_env_flags({"ZAI_API_KEY": "abc", "FOO": "bar"})
+        flags = _build_tmux_env_flags({"SVC_API_KEY": "abc", "FOO": "bar"})
         # Each var becomes two list entries: "-e" and "K=V"
         assert flags.count("-e") == 2
-        assert "ZAI_API_KEY=abc" in flags
+        assert "SVC_API_KEY=abc" in flags
         assert "FOO=bar" in flags
 
     def test_build_tmux_env_flags_shell_empty(self):
@@ -337,12 +81,12 @@ class TestSessionEnvInjection:
 
     def test_build_tmux_env_flags_shell_quoted(self):
         from agentwire.__main__ import _build_tmux_env_flags_shell
-        frag = _build_tmux_env_flags_shell({"ZAI_API_KEY": "abc 123"})
+        frag = _build_tmux_env_flags_shell({"SVC_API_KEY": "abc 123"})
         # Trailing space so it splices into the middle of a command string
         assert frag.endswith(" ")
         assert "-e" in frag
         # Value with spaces must be shell-quoted as a single -e argument
-        assert "'ZAI_API_KEY=abc 123'" in frag
+        assert "'SVC_API_KEY=abc 123'" in frag
 
     def test_build_tmux_env_flags_shell_multiple(self):
         from agentwire.__main__ import _build_tmux_env_flags_shell

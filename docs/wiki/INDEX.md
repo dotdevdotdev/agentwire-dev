@@ -22,7 +22,6 @@ How AgentWire runs AI agents — session types, REPLs, and permission models.
 
 - **[Worktree sessions](sessions/worktree-sessions.md)** — `agentwire worktree <name>`: isolated branch + worktree + standalone session for one unit of work; repo-derived base branch, naming templates, monorepo support, local branch↔session registry (`--list`/`--remove`/`--prune`/`--dangling`); `--kind orchestrator` / `agentwire orchestrator` for a durable project window on the same topology (role⟂topology, #716)
 - **[claude-code-auto-mode](sessions/claude-code-auto-mode.md)** — Auto mode session type with classifier safety net
-- **[pi](sessions/pi.md)** — Pi coding agent (multi-provider: zai, deepseek, openai, openrouter, …)
 - **[Window sizing](sessions/window-sizing.md)** — how tmux `window-size` policies interact with the portal (v1.33+ behavior change, healing stuck windows, policy picker)
 - **[Custom services](services.md)** — registered long-running sessions: autostart on portal launch, watchdog health checks + restart with backoff, `agentwire services` CLI
 - **[Council](council.md)** — multi-soul orchestrator sitting: fan a prompt out to lens sessions (brain, conscience, gut, critic, …), collect via file inbox, synthesize with attribution
@@ -108,7 +107,6 @@ Agent-facing reference lives in `.claude/skills/` and loads automatically inside
 | `agentwire-project-config` | Editing `.agentwire.yml` (roles/session config) + `.agentwire.tasks.yml` (tasks) |
 | `agentwire-scheduler` | Scheduled tasks, gates |
 | `agentwire-desktop-ui` | Editing portal static files |
-| `agentwire-pi` | Pi sessions for any provider (zai, deepseek, openai, …) |
 
 ## Issue tracking
 

@@ -450,25 +450,8 @@ def cmd_doctor(args) -> int:
     if claude_path:
         print(f"  [ok] claude: {claude_path}")
     else:
-        print("  [..] claude: not found (optional, use --bare sessions or other agents)")
+        print("  [..] claude: not found (optional, use --bare sessions)")
         print("     Install: https://github.com/anthropics/claude-code")
-
-    # Check Pi coding agent (optional, for pi-* session types)
-    pi_path = shutil.which("pi")
-    if pi_path:
-        try:
-            # Pi prints --version to stderr, so merge with stdout
-            result = subprocess.run(
-                [pi_path, "--version"],
-                capture_output=True, text=True, timeout=5,
-            )
-            pi_version = (result.stdout + result.stderr).strip()
-            print(f"  [ok] pi: {pi_path} (v{pi_version})")
-        except Exception:
-            print(f"  [ok] pi: {pi_path}")
-    else:
-        print("  [..] pi: not found (optional, required for pi-* session types)")
-        print("     Install: npm install -g @mariozechner/pi-coding-agent")
 
     # 3. Check AgentWire scripts
     print("\nChecking AgentWire scripts...")
@@ -750,11 +733,6 @@ def cmd_doctor(args) -> int:
         expected_keys.append(("channels.email (Resend)", ["RESEND_API_KEY"]))
     if channels_cfg.get("quo"):
         expected_keys.append(("channels.quo (OpenPhone)", ["QUO_API_KEY"]))
-    for pname, pcfg in (raw_cfg.get("pi", {}).get("providers", {}) or {}).items():
-        p_env_var = (pcfg or {}).get(
-            "env_var", f"{pname.upper().replace('-', '_')}_API_KEY"
-        )
-        expected_keys.append((f"pi.providers.{pname}", [p_env_var]))
     if expected_keys:
         print("\nChecking secrets (~/.agentwire/.env)...")
         for feature, candidates in expected_keys:

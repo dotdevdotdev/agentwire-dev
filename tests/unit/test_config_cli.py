@@ -84,7 +84,7 @@ def test_set_atomic_no_tmp_left_behind(config_dir):
         "services.tts.healthcheck",
         "executables.claude",
         "agent.command",
-        "pi.binary",
+        "hooks.on_start",
         "dev.source_dir",
     ],
 )
