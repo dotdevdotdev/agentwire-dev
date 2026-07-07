@@ -29,14 +29,15 @@ class TestBuildAgentCommand:
         assert "--dangerously-skip-permissions" not in cmd.command
         assert "--tools" not in cmd.command
 
-    def test_restricted(self):
-        cmd = self._build("restricted")
-        assert "claude" in cmd.command
-        assert "--tools Bash" in cmd.command
+    def test_restricted_rejected(self):
+        # restricted/readonly were dropped (#729) — no longer valid postures
+        import pytest
 
-    def test_readonly_is_restricted(self):
-        # readonly collapses to the restricted say-only tier
-        assert self._build("readonly").command == self._build("restricted").command
+        from agentwire.project_config import resolve_posture
+        with pytest.raises(ValueError):
+            resolve_posture("restricted")
+        with pytest.raises(ValueError):
+            resolve_posture("readonly")
 
     def test_auto(self):
         cmd = self._build("auto")
@@ -77,11 +78,15 @@ class TestBuildAgentCommand:
         if cmd.temp_file:
             os.unlink(cmd.temp_file)
 
-    def test_restricted_ignores_role_flags(self):
-        """restricted should not get role tools/instructions."""
+    def test_roles_apply_on_every_posture(self):
+        """Role tools/instructions apply unconditionally now — no tool-locking posture."""
         roles = [RoleConfig(name="test", tools=["Read"], instructions="Hello")]
-        cmd = self._build("restricted", roles=roles)
-        assert "--append-system-prompt" not in cmd.command
+        for posture in ("bypass", "prompted", "auto"):
+            cmd = self._build(posture, roles=roles)
+            assert "--append-system-prompt" in cmd.command
+            assert "--tools" in cmd.command
+            if cmd.temp_file:
+                os.unlink(cmd.temp_file)
 
 
 class TestSessionEnvInjection:

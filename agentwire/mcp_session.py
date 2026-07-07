@@ -131,7 +131,7 @@ def session_create(
         project_dir: Project directory path. For worktree mode, this is the main
             repo (the worktree is created alongside it). Optional.
         roles: Comma-separated list of roles to apply. Optional.
-        posture: Permission mode: bypass | prompted | restricted | readonly | auto (or bare). Optional.
+        posture: Permission mode: bypass | prompted | auto (or bare). Optional.
         base: Base branch to fork the worktree from (worktree mode only,
             default 'main'). Ignored for flat names.
         pull_first: Fetch origin/<base> before branching (worktree mode only,

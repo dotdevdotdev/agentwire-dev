@@ -89,7 +89,7 @@ Projects are folders with `.agentwire.yml` files, discovered from `projects.dir`
 | Field | Description |
 |-------|-------------|
 | Name | Folder name |
-| Posture | Permission mode (`bypass`, `prompted`, `restricted`, `readonly`, `auto`) |
+| Posture | Permission mode (`bypass`, `prompted`, `auto`) |
 | Path | Full path to project folder |
 | Roles | Configured roles from `.agentwire.yml` |
 

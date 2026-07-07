@@ -21,7 +21,7 @@ def pane_spawn(
     Args:
         session: Session name (defaults to current session if in tmux)
         roles: Comma-separated list of roles for the worker
-        posture: Permission mode: bypass | prompted | restricted | readonly | auto (optional; default restricted for a pane)
+        posture: Permission mode: bypass | prompted | auto (optional; default bypass)
 
     Returns:
         Pane index of the spawned worker or error description.

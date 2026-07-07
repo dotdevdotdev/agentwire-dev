@@ -819,12 +819,12 @@ class TestSessionStateComputation:
 
 
 # ---------------------------------------------------------------------------
-# Restricted mode (permission API)
+# Artifact upload/delete path safety
 # ---------------------------------------------------------------------------
 
 
-class TestApiRestrictedMode:
-    """Test the restricted mode command filtering through the permission endpoint."""
+class TestApiArtifactPathSafety:
+    """Artifact upload/delete reject path-traversal + hidden-file names."""
 
     async def test_artifact_upload_bad_filename(self, portal_client):
         client, server = portal_client

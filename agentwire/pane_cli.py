@@ -119,7 +119,7 @@ def _get_remote_session_posture(machine_id: str, path: str) -> str | None:
     """Read session posture from .agentwire.yml on a remote machine.
 
     Returns:
-        Posture (e.g., 'bypass', 'restricted', 'bare') or None
+        Posture (e.g., 'bypass', 'auto', 'bare') or None
     """
     import yaml
 
@@ -859,9 +859,9 @@ def cmd_spawn(args) -> int:
     if missing:
         return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
 
-    # Resolve posture via the shared spawn core (kind=worker
-    # defaults to the restricted posture).
-    posture, st_err = _resolve_posture_from_args(args, "worker")
+    # Resolve posture via the shared spawn core (defaults to bypass —
+    # a worker pane runs bypass + damage-control, no tool-locking).
+    posture, st_err = _resolve_posture_from_args(args)
     if st_err:
         return _output_result(False, json_mode, st_err)
 

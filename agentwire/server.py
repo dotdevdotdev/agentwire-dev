@@ -120,42 +120,6 @@ async def unpin_tmux_window(session_name: str, ssh_target: str | None = None) ->
     await proc.wait()
 
 
-def _is_allowed_in_restricted_mode(tool_name: str, tool_input: dict) -> bool:
-    """Check if command is allowed in restricted mode.
-
-    Allows:
-    - AskUserQuestion tool (for interactive prompts)
-    - Bash: say "message"
-
-    Rejects any shell operators, redirects, or multi-line commands.
-    """
-    # Allow AskUserQuestion tool
-    if tool_name == "AskUserQuestion":
-        return True
-
-    if tool_name != "Bash":
-        return False
-
-    command = tool_input.get("command", "").strip()
-
-    # Reject multi-line commands immediately
-    if '\n' in command:
-        return False
-
-    # Match: say or agentwire say followed by quoted string (optional & for background)
-    # Allows: say "hello world"
-    #         say 'hello world'
-    #         agentwire say "hello world"
-    #         agentwire say "hello world" &
-    #         agentwire say -s session "hello world"
-    # Rejects: say "hi" && rm -rf /
-    #          say "hi" > /tmp/log
-    #          say $(cat /etc/passwd)
-    pattern = r'^(?:agentwire\s+)?say\s+(?:-[sv]\s+\S+\s+)*(["\']).*\1\s*&?\s*$'
-
-    return bool(re.match(pattern, command))
-
-
 def should_nag_idle_session(
     name: str,
     last_output_timestamp: float,
@@ -190,7 +154,7 @@ class SessionConfig:
     machine: str | None = None
     path: str | None = None
     claude_session_id: str | None = None  # Claude Code session UUID for forking
-    posture: str = "bypass"  # Permission mode: bypass | prompted | restricted | readonly | auto, or bare
+    posture: str = "bypass"  # Permission mode: bypass | prompted | auto, or bare
     roles: list = None  # Composable roles array
     spawned_by: str | None = None  # Parent session (for worker sessions)
 

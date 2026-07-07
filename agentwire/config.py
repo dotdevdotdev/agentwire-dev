@@ -369,7 +369,7 @@ class CustomServiceConfig:
     project: Optional[str] = None
     autostart: bool = True
     roles: Optional[str] = None  # comma-separated; overrides project .agentwire.yml
-    posture: Optional[str] = None   # posture override (e.g. bypass, restricted)
+    posture: Optional[str] = None   # posture override (e.g. bypass, auto)
     restart: str = "on-failure"  # never | on-failure | always
     healthcheck: HealthcheckConfig = field(default_factory=HealthcheckConfig)
     # Context auto-management policy (issue #442): clear | compact | none.

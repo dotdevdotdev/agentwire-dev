@@ -21,7 +21,6 @@ from pathlib import Path
 from . import chrome_tabs, pane_manager, services, worktree_registry
 from .core import (
     _check_tmux_installed,
-    _default_posture,
     _display_parent,
     _get_machine_config,
     _graceful_kill,
@@ -41,6 +40,7 @@ from .core import (
     tmux_session_exists,
 )
 from .project_config import (
+    DEFAULT_POSTURE,
     POSTURES,
     ProjectConfig,
     WorktreeOverrides,
@@ -77,19 +77,17 @@ def cmd_session_defaults(args) -> int:
     """
     kind = getattr(args, 'kind', None) or 'orchestrator'
     posture = getattr(args, 'posture', None)
-    # No topology signal on this preview endpoint (only --kind); previews the
-    # pane/main-topology flavor for kind=worker. The frontend only ever asks
-    # for kind=orchestrator today, where topology doesn't affect the result.
-    default_posture = _default_posture(kind)
+    # Every spawn defaults to bypass now (workers included) — kind no longer
+    # affects the posture, only the intrinsic role etiquette below.
     try:
-        resolved = resolve_posture(posture or default_posture)
+        resolved = resolve_posture(posture or DEFAULT_POSTURE)
     except ValueError as e:
         return _output_result(False, True, str(e))
     _output_json({
         "success": True,
         "kind": kind,
-        "posture": posture or default_posture,
-        "resolved_posture": resolved,  # readonly→restricted, for the resolver display
+        "posture": posture or DEFAULT_POSTURE,
+        "resolved_posture": resolved,  # validated posture, for the resolver display
         "roles": resolve_roles(kind),  # intrinsic etiquette (chips); user roles layer on top
         "postures": list(POSTURES),
     })
@@ -271,7 +269,7 @@ def cmd_new(args) -> int:
                 return _output_result(False, json_mode, f"Session '{session_name}' already exists on {machine_id}. Use -f to replace.")
 
         # Create remote tmux session — resolve posture (shared core)
-        posture, st_err = _resolve_posture_from_args(args, kind, worktree_topology=worktree_topology)
+        posture, st_err = _resolve_posture_from_args(args)
         if st_err:
             return _output_result(False, json_mode, st_err)
 
@@ -427,17 +425,16 @@ def cmd_new(args) -> int:
     # initial pane's shell see them — post-hoc `tmux set-environment` only
     # affects shells spawned AFTER the call).
 
-    # Determine posture. Precedence: explicit --posture / legacy booleans
-    # (shared core) → existing .agentwire.yml posture → kind default.
+    # Determine posture. Precedence: explicit --posture / internal booleans
+    # (shared core) → existing .agentwire.yml posture → default (bypass).
     persist = getattr(args, 'persist', False)
     posture_explicit = bool(
         getattr(args, 'posture', None)
         or getattr(args, 'bare', False)
-        or getattr(args, 'restricted', False)
         or getattr(args, 'prompted', False)
     )
     if posture_explicit:
-        posture, st_err = _resolve_posture_from_args(args, kind, worktree_topology=worktree_topology)
+        posture, st_err = _resolve_posture_from_args(args)
         if st_err:
             return _output_result(False, json_mode, st_err)
     else:
@@ -446,7 +443,7 @@ def cmd_new(args) -> int:
             posture = resolve_posture(existing_config.posture)
         else:
             # Kind default posture (no global default-role lookup).
-            posture, _ = _resolve_posture_from_args(args, kind, worktree_topology=worktree_topology)
+            posture, _ = _resolve_posture_from_args(args)
 
     # Build agent command
     model_override = getattr(args, 'model', None)
@@ -895,7 +892,7 @@ def cmd_worktree(args) -> int:
     def _launch_session():
         return cmd_new(type('Args', (), {
             'session': session_name, 'path': str(worktree_path), 'json': json_mode,
-            'force': False, 'bare': False, 'restricted': False, 'prompted': False,
+            'force': False, 'bare': False, 'prompted': False,
             'kind': effective_kind,
             # session_name is a flat `{project}-{name}` (no slash) — cmd_new's
             # own bool(branch) would misread it as branchless, so this is

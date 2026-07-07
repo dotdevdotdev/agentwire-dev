@@ -46,7 +46,7 @@ session:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `posture` | `bypass`, `prompted`, `restricted`, `readonly`, `auto` (or `bare`) | Permission mode the agent runs under. Use `auto` for unattended work — classifier blocks dangerous actions. |
+| `posture` | `bypass`, `prompted`, `auto` (or `bare`) | Permission mode the agent runs under. Use `auto` for unattended work — classifier blocks dangerous actions. |
 | `roles` | List of role names | Roles to load (from bundled or `~/.agentwire/roles/`) |
 | `voice` | Voice name | TTS voice for this project |
 | `parent` | Session name | Parent session for hierarchical notifications |

@@ -25,9 +25,7 @@ class TestResolvePosture:
     @pytest.mark.parametrize("value,expected", [
         ("bypass", "bypass"),
         ("prompted", "prompted"),
-        ("restricted", "restricted"),
         ("auto", "auto"),
-        ("readonly", "restricted"),   # readonly collapses to restricted (say-only)
         ("bare", "bare"),             # the no-agent sentinel
     ])
     def test_valid(self, value, expected):
@@ -35,7 +33,7 @@ class TestResolvePosture:
 
     def test_case_normalized(self):
         assert resolve_posture("BYPASS") == "bypass"
-        assert resolve_posture("ReadOnly") == "restricted"
+        assert resolve_posture("Auto") == "auto"
 
     def test_defaults_to_bypass(self):
         assert resolve_posture("") == DEFAULT_POSTURE == "bypass"
@@ -45,8 +43,15 @@ class TestResolvePosture:
         with pytest.raises(ValueError):
             resolve_posture("nonsense")
 
-    def test_auto_is_a_posture(self):
-        assert "auto" in POSTURES
+    def test_dropped_postures_raise(self):
+        # restricted/readonly were removed (#729) — no longer valid
+        with pytest.raises(ValueError):
+            resolve_posture("restricted")
+        with pytest.raises(ValueError):
+            resolve_posture("readonly")
+
+    def test_posture_set(self):
+        assert POSTURES == ("bypass", "prompted", "auto")
 
     def test_bare_is_not_a_posture(self):
         # bare is orthogonal — a sentinel, not one of the permission modes
@@ -76,8 +81,10 @@ class TestProjectConfig:
         assert config.voice is None
         assert config.parent is None
 
-    def test_from_dict_readonly_collapses(self):
-        assert ProjectConfig.from_dict({"posture": "readonly"}).posture == "restricted"
+    def test_from_dict_dropped_posture_falls_back(self):
+        # restricted/readonly are gone → fall back to default, never crash
+        assert ProjectConfig.from_dict({"posture": "restricted"}).posture == "bypass"
+        assert ProjectConfig.from_dict({"posture": "readonly"}).posture == "bypass"
 
     def test_from_dict_bad_posture_falls_back(self):
         # Unknown value → default, never a crash on config load
@@ -98,11 +105,11 @@ class TestProjectConfig:
         assert {"voice", "parent", "roles"}.isdisjoint(bare.keys())
         # Populated fields appear with their value
         full = ProjectConfig(
-            posture="restricted",
+            posture="auto",
             roles=["agentwire"],
             voice="default",
         ).to_dict()
-        assert full["posture"] == "restricted"
+        assert full["posture"] == "auto"
         assert full["roles"] == ["agentwire"]
         assert full["voice"] == "default"
 

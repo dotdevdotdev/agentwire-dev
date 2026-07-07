@@ -398,7 +398,7 @@ function bindNewIdeaForm(form) {
 }
 
 // Posture options for the advanced fold (the resolver hands us the default).
-const POSTURE_OPTIONS = ['bypass', 'prompted', 'restricted', 'readonly', 'auto'];
+const POSTURE_OPTIONS = ['bypass', 'prompted', 'auto'];
 
 function newSessionFormHtml() {
     // One-click default: just a project. Roles (resolved chips) and the

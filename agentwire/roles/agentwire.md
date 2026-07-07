@@ -48,8 +48,7 @@ Workers auto-exit when idle. They write summary files before exiting, and you re
 
 | `posture` | Meaning |
 |-------------|-------|
-| `bypass` | Full permissions |
-| `restricted` | Say-only (default for a worker pane) |
+| `bypass` | Full permissions (default) |
 | `prompted` | Interactive approval (hooks gate) |
 | `auto` | Classifier permission mode |
 

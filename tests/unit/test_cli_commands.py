@@ -278,7 +278,7 @@ class TestCmdNewSeedFallback:
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
         monkeypatch.setattr(
-            m, "_resolve_posture_from_args", lambda a, k, **kw: ("bypass", None))
+            m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
         monkeypatch.setattr(
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
@@ -357,7 +357,7 @@ class TestCmdNewDefaultCreatedByRooting:
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
         monkeypatch.setattr(
-            m, "_resolve_posture_from_args", lambda a, k, **kw: ("bypass", None))
+            m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
         monkeypatch.setattr(
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))

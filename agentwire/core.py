@@ -222,7 +222,6 @@ def build_agent_command(
         return AgentCommand(command="")
 
     merged = merge_roles(roles) if roles else None
-    restricted = posture in ("restricted", "readonly")
 
     parts = ["claude"]
     if resume_session_id:
@@ -240,16 +239,14 @@ def build_agent_command(
             "Read(*)", "Edit(*)", "Write(*)", "Glob(*)", "Grep(*)",
         ]
         parts.extend(["--allowedTools", shlex.quote(",".join(core_allows))])
-    elif restricted:
-        parts.append("--tools Bash")  # ONLY bash tool (for say command)
 
     # Model override
     if model:
         parts.append(f"--model {model}")
 
-    # Role-based flags (not for restricted mode)
+    # Role-based flags (merged roles always apply — no tool-locking posture left)
     temp_file = None
-    if merged and not restricted:
+    if merged:
         if merged.tools:
             parts.append(f"--tools {','.join(merged.tools)}")
 
@@ -1109,32 +1106,19 @@ def _post_desktop_notification(text: str, session: str | None = None, priority: 
         return False
 
 
-def _default_posture(kind: str | None, worktree_topology: bool = False) -> str:
-    """Default posture for a spawn: bypass, unless it's a worker that is NOT
-    isolated on its own worktree — a pane (agentwire spawn) or a worker on
-    plain main topology, both sharing a live checkout someone else may be
-    watching, stay restricted. Orchestrators (main or worktree topology) and
-    worktree-topology workers get full autonomous access — nothing to step
-    on but their own isolated branch.
-    """
-    if kind == "worker" and not worktree_topology:
-        return "restricted"
-    return "bypass"
-
-
-def _resolve_posture_from_args(args, kind: str, worktree_topology: bool = False) -> tuple[str | None, str | None]:
+def _resolve_posture_from_args(args) -> tuple[str | None, str | None]:
     """Resolve the session's posture from the shared spawn-flag core.
 
-    Posture is the ONLY session axis (#729). Precedence: explicit --posture
-    first; else the internal --bare/--restricted/--prompted booleans (set by
-    cmd_worktree / cmd_recreate callers); else the kind's default posture.
+    Posture is the ONLY session axis (#729), and every spawn defaults to the
+    same one — bypass — regardless of kind/topology: workers run bypass +
+    damage-control just like orchestrators, no tool-locking. Precedence:
+    explicit --posture first; else the internal --bare/--prompted booleans
+    (set by cmd_worktree / cmd_recreate callers); else the default posture.
 
     Returns ``(posture, error)`` — error is a message string when an invalid
     posture was given, posture is None in that case.
     """
     posture = getattr(args, 'posture', None)
-    default_posture = _default_posture(kind, worktree_topology)
-
     if posture:
         try:
             return resolve_posture(posture), None
@@ -1142,11 +1126,9 @@ def _resolve_posture_from_args(args, kind: str, worktree_topology: bool = False)
             return None, str(e)
     if getattr(args, 'bare', False):
         return BARE, None
-    if getattr(args, 'restricted', False):
-        return "restricted", None
     if getattr(args, 'prompted', False):
         return "prompted", None
-    return default_posture, None
+    return DEFAULT_POSTURE, None
 
 
 def _resolve_posture_or_config(args, project_config, default: str = DEFAULT_POSTURE) -> tuple[str | None, str | None]:
@@ -1174,8 +1156,8 @@ def _add_posture_flag(parser) -> None:
     re-specified on recreate/fork through the one axis flag.
     """
     parser.add_argument("--posture", choices=[*POSTURES, BARE],
-                        help="Permission mode the agent runs under: bypass/prompted/restricted/readonly/auto "
-                             "(or bare for no agent). Default depends on the verb: new/worktree → bypass, spawn → restricted.")
+                        help="Permission mode the agent runs under: bypass/prompted/auto "
+                             "(or bare for no agent). Default: bypass.")
 
 
 def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):

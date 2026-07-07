@@ -17,27 +17,28 @@ import yaml
 # runs under (#729). Claude Code is the only agent backend (#730), so there is
 # nothing left to fuse a permission mode WITH — posture is all there is. The
 # `bare` sentinel is orthogonal: no agent, so no permission mode at all.
-POSTURES = ("bypass", "prompted", "restricted", "readonly", "auto")
+# Tool-locking postures (restricted/readonly) were dropped — every agent runs
+# with damage-control hooks as the guard, not tool allowlists.
+POSTURES = ("bypass", "prompted", "auto")
 DEFAULT_POSTURE = "bypass"
 BARE = "bare"
 
 
 def resolve_posture(value: str) -> str:
-    """Validate + canonicalize an axis value into a posture (or the ``bare`` sentinel).
+    """Validate an axis value as a posture (or the ``bare`` sentinel).
 
-    Accepts the five postures (bypass/prompted/restricted/readonly/auto) and the
-    ``bare`` no-agent sentinel. ``readonly`` collapses to ``restricted`` — they're
-    the same say-only tier, just two names for it. Raises ``ValueError`` on an
-    unknown value so a typo fails loudly instead of silently picking a tier.
+    Accepts the three postures (bypass/prompted/auto) and the ``bare`` no-agent
+    sentinel. Raises ``ValueError`` on an unknown value so a typo fails loudly
+    instead of silently picking a tier.
     """
-    v = (value or DEFAULT_POSTURE).strip().lower().replace("_", "-")
+    v = (value or DEFAULT_POSTURE).strip().lower()
     if v == BARE:
         return BARE
     if v not in POSTURES:
         raise ValueError(
             f"Unknown posture '{v}' (expected one of: {', '.join(POSTURES)}, or bare)"
         )
-    return "restricted" if v == "readonly" else v
+    return v
 
 
 @dataclass
@@ -96,7 +97,7 @@ class ProjectConfig:
     Shared by all sessions running in this project folder.
     Session name is NOT stored here - it's runtime context from environment.
     """
-    posture: str = DEFAULT_POSTURE  # Permission mode: bypass|prompted|restricted|readonly|auto, or bare
+    posture: str = DEFAULT_POSTURE  # Permission mode: bypass|prompted|auto, or bare
     roles: list[str] = field(default_factory=list)  # Composable roles
     voice: Optional[str] = None  # TTS voice
     parent: Optional[str] = None  # Parent session for hierarchical notifications

@@ -72,7 +72,7 @@ class SessionsAdminRoutesMixin:
             name: Base session/project name (required)
             path: Custom project path (optional, ignored if worktree=true)
             voice: TTS voice for this session
-            posture: Permission mode (bypass | prompted | restricted | readonly | auto | bare)
+            posture: Permission mode (bypass | prompted | auto | bare)
             roles: Comma-separated list of roles (e.g., "agentwire,worker")
             machine: Machine ID ('local' or remote machine ID)
             worktree: Whether to create a worktree session
@@ -308,7 +308,7 @@ class SessionsAdminRoutesMixin:
         """POST /api/session/{name}/recreate - Destroy session/worktree and create fresh one via CLI.
 
         Inherits session type from existing session config.
-        Supported postures: bypass | prompted | restricted | readonly | auto | bare
+        Supported postures: bypass | prompted | auto | bare
         """
         name = request.match_info["name"]
         try:
@@ -362,7 +362,7 @@ class SessionsAdminRoutesMixin:
         Useful for working on multiple features in the same project simultaneously.
 
         Inherits session type from existing session config.
-        Supported postures: bypass | prompted | restricted | readonly | auto | bare
+        Supported postures: bypass | prompted | auto | bare
         """
         name = request.match_info["name"]
         try:
@@ -415,7 +415,7 @@ class SessionsAdminRoutesMixin:
         Creates a new session that continues from the current conversation context.
 
         Inherits session type from existing session config.
-        Supported postures: bypass | prompted | restricted | readonly | auto | bare
+        Supported postures: bypass | prompted | auto | bare
         """
         name = request.match_info["name"]
         try:
