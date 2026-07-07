@@ -25,7 +25,6 @@ EXECUTION_PLANE_PREFIXES = (
     "services.",
     "executables.",
     "agent.",
-    "pi.",
     "hooks.",
     "dev.",
     "palette.",  # user palette `run` templates feed the shell (#676)

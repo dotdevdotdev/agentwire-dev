@@ -40,7 +40,6 @@ from .core import (
     tmux_session_exists,
 )
 from .project_config import (
-    DEFAULT_HARNESS,
     POSTURES,
     ProjectConfig,
     SessionType,
@@ -74,26 +73,24 @@ def cmd_session_defaults(args) -> int:
     """Resolve what a new session would get — backs the portal resolver endpoint.
 
     Given a spawn verb's KIND (default: orchestrator, i.e. `agentwire new`)
-    and optional posture/harness, returns the composed session type and the
-    intrinsic etiquette roles. The portal reads this instead of hardcoding —
-    one resolver, one source of truth.
+    and optional posture, returns the composed session type and the intrinsic
+    etiquette roles. The portal reads this instead of hardcoding — one
+    resolver, one source of truth.
     """
     kind = getattr(args, 'kind', None) or 'orchestrator'
     posture = getattr(args, 'posture', None)
-    harness = getattr(args, 'harness', None)
     # No topology signal on this preview endpoint (only --kind); previews the
     # pane/main-topology flavor for kind=worker. The frontend only ever asks
     # for kind=orchestrator today, where topology doesn't affect the result.
     default_posture = _default_posture(kind)
     try:
-        session_type = compose_session_type(harness or DEFAULT_HARNESS, posture or default_posture)
+        session_type = compose_session_type(posture or default_posture)
     except ValueError as e:
         return _output_result(False, True, str(e))
     _output_json({
         "success": True,
         "kind": kind,
         "posture": posture or default_posture,
-        "harness": harness or DEFAULT_HARNESS,
         "session_type": session_type,
         "roles": resolve_roles(kind),  # intrinsic etiquette (chips); user roles layer on top
         "postures": list(POSTURES),
@@ -275,7 +272,7 @@ def cmd_new(args) -> int:
             else:
                 return _output_result(False, json_mode, f"Session '{session_name}' already exists on {machine_id}. Use -f to replace.")
 
-        # Create remote tmux session — resolve posture × harness (shared core)
+        # Create remote tmux session — resolve posture (shared core)
         session_type, st_err = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
         if st_err:
             return _output_result(False, json_mode, st_err)
@@ -433,14 +430,13 @@ def cmd_new(args) -> int:
     # `tmux set-environment` only affects shells spawned AFTER the call).
     agent_type = detect_default_agent_type()
 
-    # Determine session type. Precedence: explicit posture/harness/type/legacy
+    # Determine session type. Precedence: explicit posture/type/legacy
     # booleans (shared core) → existing .agentwire.yml type → kind default.
     persist = getattr(args, 'persist', False)
     type_arg = getattr(args, 'type', None)
     type_explicit = bool(
         type_arg
         or getattr(args, 'posture', None)
-        or getattr(args, 'harness', None)
         or getattr(args, 'bare', False)
         or getattr(args, 'restricted', False)
         or getattr(args, 'prompted', False)
@@ -923,7 +919,6 @@ def cmd_worktree(args) -> int:
             'worktree_topology': True,
             'type': getattr(args, 'type', None),
             'posture': getattr(args, 'posture', None),
-            'harness': getattr(args, 'harness', None),
             'model': getattr(args, 'model', None),
             'roles': getattr(args, 'roles', None),
             'instructions': None, 'persist': False,
@@ -1934,7 +1929,7 @@ def cmd_fork(args) -> int:
 
 def register_session_parser(subparsers) -> None:
     """Register the session-lifecycle commands (new/fork/worktree/recreate/session-defaults)."""
-    from .core import _add_posture_harness_flags
+    from .core import _add_posture_flag
 
     # === new command (top-level) ===
     new_parser = subparsers.add_parser("new", help="Create new Claude Code session")
@@ -1944,10 +1939,10 @@ def register_session_parser(subparsers) -> None:
     new_parser.add_argument("--allow-shared-dir", action="store_true",
                             help="Allow attaching to a directory that already has active sessions "
                                  "(unlike --force, never replaces an existing same-name session)")
-    # Session type — posture × harness are canonical; --type is a legacy alias.
-    _add_posture_harness_flags(new_parser)
+    # Session type — posture is canonical; --type is a legacy alias.
+    _add_posture_flag(new_parser)
     new_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not the primary surface): "
-                                           "bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>[-restricted|-readonly], standard, worker, voice")
+                                           "bare, claude-bypass, claude-prompted, claude-restricted, standard, worker, voice")
     # Roles
     new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
     new_parser.add_argument("--kind", choices=["orchestrator", "worker"],
@@ -1985,7 +1980,7 @@ def register_session_parser(subparsers) -> None:
     sd_parser = subparsers.add_parser("session-defaults", help="Resolve a new session's composed type + intrinsic roles (JSON)")
     sd_parser.add_argument("--kind", choices=["orchestrator", "worker"], default="orchestrator",
                            help="Spawn-verb role (default: orchestrator = `agentwire new`)")
-    _add_posture_harness_flags(sd_parser)
+    _add_posture_flag(sd_parser)
     sd_parser.add_argument("--json", action="store_true", default=True, help="Output as JSON (default)")
     sd_parser.set_defaults(func=cmd_session_defaults)
 
@@ -1993,7 +1988,7 @@ def register_session_parser(subparsers) -> None:
     recreate_parser = subparsers.add_parser("recreate", help="Destroy and recreate session with fresh worktree")
     recreate_parser.add_argument("-s", "--session", required=True, help="Session name (project/branch or project/branch@machine)")
     # Session type
-    recreate_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
+    recreate_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, standard, worker, voice)")
     recreate_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     recreate_parser.add_argument("--json", action="store_true", help="Output as JSON")
     recreate_parser.set_defaults(func=cmd_recreate)
@@ -2003,7 +1998,7 @@ def register_session_parser(subparsers) -> None:
     fork_parser.add_argument("-s", "--source", required=True, help="Source session (project or project/branch)")
     fork_parser.add_argument("-t", "--target", required=True, help="Target session (must include branch: project/new-branch)")
     # Session type
-    fork_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, pi-<provider>, pi-<provider>-restricted, pi-<provider>-readonly, standard, worker, voice) — e.g. pi-zai, pi-deepseek")
+    fork_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, standard, worker, voice)")
     fork_parser.add_argument("--commit", metavar="REF", help="Fork from this commit/ref instead of HEAD (e.g. abc123, main~5)")
     fork_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     fork_parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -2031,7 +2026,7 @@ def register_session_parser(subparsers) -> None:
         parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
         parser.add_argument("--gc-merged", action="store_true", help="With --prune: also tear down (session/worktree/branch) any registered entry whose branch is confirmed merged")
         parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")
-        _add_posture_harness_flags(parser)
+        _add_posture_flag(parser)
         parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
         parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worker etiquette (kind=orchestrator: REPLACES the default persona instead)")
         parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")

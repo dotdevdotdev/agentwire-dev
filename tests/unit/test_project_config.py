@@ -45,6 +45,14 @@ class TestSessionTypeFromStr:
         assert SessionType.from_str("nonexistent") == SessionType.STANDARD
         assert SessionType.from_str("") == SessionType.STANDARD
 
+    def test_session_type_is_a_closed_claude_set(self):
+        """SessionType is a CLOSED claude-* set — an unknown non-claude type
+        (e.g. any former external-harness type) must NOT round-trip; it
+        defaults to STANDARD rather than becoming a live type of its own."""
+        assert SessionType.from_str("someagent-x") == SessionType.STANDARD
+        assert SessionType.from_str("someagent-x-restricted") == SessionType.STANDARD
+        assert SessionType.from_str("other-backend") == SessionType.STANDARD
+
 
 # --- SessionType.to_cli_flags ---
 
@@ -90,30 +98,24 @@ class TestNormalizeSessionType:
         assert normalize_session_type("foobar", "claude") == "claude-bypass"
 
 
-# --- compose_session_type: the posture × harness axes (#309) ---
+# --- compose_session_type: the posture axis (#309, collapsed to claude-only #730) ---
 
 class TestComposeSessionType:
-    @pytest.mark.parametrize("harness,posture,expected", [
-        ("claude", "bypass", "claude-bypass"),
-        ("claude", "prompted", "claude-prompted"),
-        ("claude", "restricted", "claude-restricted"),
-        ("claude", "readonly", "claude-restricted"),   # claude's most-locked tier
-        ("pi-zai", "bypass", "pi-zai"),
-        ("pi-zai", "restricted", "pi-zai-restricted"),
-        ("pi-zai", "readonly", "pi-zai-readonly"),
-        ("pi-zai", "prompted", "pi-zai"),              # pi has no prompt mode
-        ("bare", "bypass", "bare"),
-        ("bare", "restricted", "bare"),                # posture ignored, no agent
+    @pytest.mark.parametrize("posture,expected", [
+        ("bypass", "claude-bypass"),
+        ("prompted", "claude-prompted"),
+        ("restricted", "claude-restricted"),
+        ("readonly", "claude-restricted"),   # claude's most-locked tier
     ])
-    def test_compositions(self, harness, posture, expected):
-        assert compose_session_type(harness, posture) == expected
+    def test_compositions(self, posture, expected):
+        assert compose_session_type(posture) == expected
 
     def test_defaults(self):
-        assert compose_session_type("", "") == "claude-bypass"
+        assert compose_session_type("") == "claude-bypass"
 
     def test_unknown_posture_raises(self):
         with pytest.raises(ValueError):
-            compose_session_type("claude", "nonsense")
+            compose_session_type("nonsense")
 
 
 # --- ProjectConfig ---

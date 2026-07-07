@@ -292,8 +292,8 @@ def restore_redactions(new_content: str, old_content: str) -> str:
     ``server.auth_token``).
 
     Restores each redacted field to the on-disk value **at its own YAML path** —
-    so multiple ``api_key`` entries (e.g. several pi providers) each get their
-    own secret back, not a single global first-match. Operates on the raw text so
+    so multiple ``api_key`` entries (e.g. several service credentials) each get
+    their own secret back, not a single global first-match. Operates on the raw text so
     comments and formatting survive the round-trip; only redacted scalar lines
     change.
     """

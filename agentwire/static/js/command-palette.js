@@ -184,7 +184,7 @@ async function openTerminal(name, mode, machine) {
 /** Resume the project's session if one already exists, otherwise create it; then open + focus.
  * `firstMessage` is delivered to the agent in the background once it boots
  * (fresh sessions only — a resumed session ignores it). */
-async function spawnAndOpen({ name, path, machine, firstMessage, roles, posture, harness }) {
+async function spawnAndOpen({ name, path, machine, firstMessage, roles, posture }) {
     if (!name) throw new Error('Missing session name');
     machine = normalizeMachine(machine);
 
@@ -211,7 +211,6 @@ async function spawnAndOpen({ name, path, machine, firstMessage, roles, posture,
             first_message: firstMessage || undefined,
             roles: (roles && roles.length) ? roles : undefined,
             posture: posture || undefined,
-            harness: harness || undefined,
         }),
     });
     const data = await res.json().catch(() => ({}));
@@ -403,8 +402,8 @@ const POSTURE_OPTIONS = ['bypass', 'prompted', 'restricted', 'readonly'];
 
 function newSessionFormHtml() {
     // One-click default: just a project. Roles (resolved chips) and the
-    // posture/harness fold are populated/wired in bindNewSessionForm — the
-    // form reads /api/session/defaults, never hardcoding the resolver.
+    // posture fold are populated/wired in bindNewSessionForm — the form
+    // reads /api/session/defaults, never hardcoding the resolver.
     return `
         <div class="quicktask-error" data-error hidden></div>
         <div class="quicktask-progress" data-progress hidden></div>
@@ -425,10 +424,6 @@ function newSessionFormHtml() {
                     <span class="quicktask-label">Posture</span>
                     <select name="posture" data-posture></select>
                 </label>
-                <label class="quicktask-field">
-                    <span class="quicktask-label">Harness</span>
-                    <input type="text" name="harness" data-harness placeholder="claude" autocomplete="off" />
-                </label>
                 <div class="cmdk-resolved" data-resolved></div>
             </details>
             <div class="quicktask-footer">
@@ -442,7 +437,6 @@ function bindNewSessionForm(form) {
     const chipsEl = form.querySelector('[data-roles-chips]');
     const addInput = form.querySelector('[data-role-add]');
     const postureSel = form.querySelector('[data-posture]');
-    const harnessInput = form.querySelector('[data-harness]');
     const resolvedEl = form.querySelector('[data-resolved]');
 
     // Roles split into intrinsic (from the resolver, shown but the user can
@@ -463,10 +457,8 @@ function bindNewSessionForm(form) {
 
     async function refreshDefaults() {
         const posture = postureSel.value || '';
-        const harness = (harnessInput.value || '').trim();
         const qs = new URLSearchParams({ kind: 'orchestrator' });
         if (posture) qs.set('posture', posture);
-        if (harness) qs.set('harness', harness);
         try {
             const res = await apiFetch(`/api/session/defaults?${qs}`);
             const d = await res.json().catch(() => ({}));
@@ -477,7 +469,6 @@ function bindNewSessionForm(form) {
                 postureSel.innerHTML = opts.map((p) =>
                     `<option value="${p}"${p === d.posture ? ' selected' : ''}>${p}</option>`).join('');
             }
-            if (!harnessInput.value) harnessInput.placeholder = d.harness || 'claude';
             // Seed intrinsic role chips on first load only (don't stomp edits).
             if (roles.length === 0) { roles = [...(d.roles || [])]; renderChips(); }
             resolvedEl.textContent = `→ ${d.session_type}`;
@@ -492,7 +483,6 @@ function bindNewSessionForm(form) {
         addInput.value = '';
     });
     postureSel?.addEventListener('change', refreshDefaults);
-    harnessInput?.addEventListener('change', refreshDefaults);
 
     refreshDefaults();
 
@@ -506,7 +496,6 @@ function bindNewSessionForm(form) {
             await spawnAndOpen({
                 name, path: proj?.path, machine: proj?.machine,
                 roles, posture: postureSel.value || undefined,
-                harness: (harnessInput.value || '').trim() || undefined,
             });
         } catch (err) {
             showError(err?.message || 'Network error');

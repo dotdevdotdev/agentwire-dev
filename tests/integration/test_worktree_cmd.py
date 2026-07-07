@@ -77,7 +77,7 @@ def _run(monkeypatch, cfg, **arg_overrides):
     base = dict(
         name=None, base=None, current=False, existing=False, ref=None,
         project=None, list=False, remove=False, prune=False, all=False,
-        json=True, type=None, posture=None, harness=None, model=None,
+        json=True, type=None, posture=None, model=None,
         roles=None, env=None, created_by=None, caller_session=None, kind=None,
     )
     base.update(arg_overrides)
@@ -215,7 +215,7 @@ def test_orchestrator_sugar_verb_forces_kind(tmp_path, monkeypatch, wt_env):
     base = dict(
         name="proj-window", base=None, current=False, existing=False, ref=None,
         project=str(clone), list=False, remove=False, prune=False, all=False,
-        json=True, type=None, posture=None, harness=None, model=None,
+        json=True, type=None, posture=None, model=None,
         roles=None, env=None, created_by=None, caller_session=None, kind=None,
     )
     monkeypatch.setattr(m, "load_config", lambda *a, **k: cfg, raising=False)

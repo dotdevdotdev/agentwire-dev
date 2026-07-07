@@ -17,7 +17,7 @@ from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401:
     _UNATTENDED_ENV_KEYS,
     CONFIG_DIR,
     AgentCommand,
-    _add_posture_harness_flags,
+    _add_posture_flag,
     _build_tmux_env_flags,
     _build_tmux_env_flags_shell,
     _check_portal_health,

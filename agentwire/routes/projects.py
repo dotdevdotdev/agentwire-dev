@@ -283,19 +283,16 @@ class ProjectsRoutesMixin:
     async def api_session_defaults(self, request: web.Request) -> web.Response:
         """Resolve a new session's defaults via the CLI (the single resolver).
 
-        Query params: kind (default orchestrator), posture, harness.
-        Response: {kind, posture, harness, session_type, roles, postures}.
-        The new-session UI reads this instead of hardcoding posture/harness or
-        the intrinsic role chips.
+        Query params: kind (default orchestrator), posture.
+        Response: {kind, posture, session_type, roles, postures}.
+        The new-session UI reads this instead of hardcoding posture or the
+        intrinsic role chips.
         """
         kind = request.query.get("kind", "orchestrator")
         posture = request.query.get("posture")
-        harness = request.query.get("harness")
         args = ["session-defaults", "--kind", kind]
         if posture:
             args += ["--posture", posture]
-        if harness:
-            args += ["--harness", harness]
         success, result = await self.run_agentwire_cmd(args)
         if not success:
             return web.json_response({"error": result.get("error", "Failed to resolve defaults")}, status=400)
