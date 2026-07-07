@@ -224,9 +224,11 @@ def cmd_history_resume(args) -> int:
     # session gets EXACTLY the posture flags a fresh one would — including auto's
     # tool-allows injection, which the old to_cli_flags() path silently dropped.
     # resume_session_id inserts --resume/--fork-session right after `claude`.
+    # The role temp-file path (if any) is already inlined in agent.command via
+    # --append-system-prompt "$(<...)"; it persists (delete=False) for claude to
+    # read at launch, so there's nothing to hold onto here.
     agent = build_agent_command(project_config.posture, roles, resume_session_id=session_id)
     agent_cmd = agent.command
-    temp_file = agent.temp_file
 
     if machine_id and machine_id != "local":
         # Remote machine

@@ -12,7 +12,6 @@ from typing import Any, Optional
 
 import yaml
 
-
 # POSTURE is the single session axis: the Claude Code permission mode the agent
 # runs under (#729). Claude Code is the only agent backend (#730), so there is
 # nothing left to fuse a permission mode WITH — posture is all there is. The
@@ -87,7 +86,7 @@ class ProjectConfig:
     """Project-level configuration for a project directory.
 
     Lives in .agentwire.yml in the project root — PURELY declarative session
-    config (type/roles/voice/parent/worktree), no execution vector, agent-writable
+    config (posture/roles/voice/parent/worktree), no execution vector, agent-writable
     (#720). Holds NO damage-control safety config — the kill switch, rule knobs,
     AND the per-project allowlist all live in the protected, agent-unwritable
     ``.damagecontrol.yml`` instead (#466/#467). Task definitions (pre/post/
