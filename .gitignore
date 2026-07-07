@@ -45,6 +45,8 @@ Thumbs.db
 /voices/
 
 .agentwire.yml
+.agentwire.tasks.yml
+.agentwire.tasks.proposed.yml
 
 
 # Test outputs
