@@ -1,4 +1,4 @@
-type: claude-bypass
+posture: bypass
 roles:
   - agentwire
   - voice

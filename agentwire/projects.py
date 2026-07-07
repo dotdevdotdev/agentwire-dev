@@ -128,7 +128,7 @@ def _discover_local_projects(projects_dir: Path) -> list[dict]:
         projects.append({
             "name": folder.name,
             "path": str(folder),
-            "type": cfg.get("type", "claude-bypass"),
+            "posture": cfg.get("posture", "bypass"),
             "roles": cfg.get("roles", []),
             "machine": "local",
         })
@@ -190,7 +190,7 @@ done
         projects.append({
             "name": folder_name,
             "path": f"{projects_dir}/{folder_name}",
-            "type": cfg.get("type", "claude-bypass"),
+            "posture": cfg.get("posture", "bypass"),
             "roles": cfg.get("roles", []),
             "machine": machine_id,
         })
@@ -238,7 +238,7 @@ def _resolve_extra_projects(extra: list[dict], machine_filter: str | None = None
             projects.append({
                 "name": entry.get("name", p.name),
                 "path": str(p),
-                "type": cfg.get("type", "claude-bypass"),
+                "posture": cfg.get("posture", "bypass"),
                 "roles": cfg.get("roles", []),
                 "machine": "local",
             })
@@ -269,7 +269,7 @@ fi
             projects.append({
                 "name": name,
                 "path": path,
-                "type": cfg.get("type", "claude-bypass"),
+                "posture": cfg.get("posture", "bypass"),
                 "roles": cfg.get("roles", []),
                 "machine": entry_machine,
             })

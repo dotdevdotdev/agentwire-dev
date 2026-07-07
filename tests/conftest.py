@@ -91,7 +91,7 @@ def project_config_file(project_dir):
     """Write a .agentwire.yml and return its path."""
     config_path = project_dir / ".agentwire.yml"
     data = {
-        "type": "claude-bypass",
+        "posture": "bypass",
         "roles": ["agentwire", "voice"],
         "voice": "default",
         "parent": "main",

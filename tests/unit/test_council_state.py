@@ -57,7 +57,7 @@ class TestSitting:
         assert loaded.sessions["gut"] == "council-proj-gut"
         assert loaded.cwd == "/tmp/proj"
         assert loaded.next_prompt_id == 1
-        assert loaded.session_type == "claude-bypass"
+        assert loaded.posture == "bypass"
 
     def test_read_missing(self):
         assert state.read_sitting(NAME) is None

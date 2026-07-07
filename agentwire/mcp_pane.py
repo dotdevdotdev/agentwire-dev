@@ -11,7 +11,7 @@ from .mcp_core import (
 def pane_spawn(
     session: str | None = None,
     roles: str | None = None,
-    pane_type: str | None = None,
+    posture: str | None = None,
 ) -> str:
     """Spawn a worker pane in a session.
 
@@ -21,7 +21,7 @@ def pane_spawn(
     Args:
         session: Session name (defaults to current session if in tmux)
         roles: Comma-separated list of roles for the worker
-        pane_type: Session type like 'claude-bypass' (optional)
+        posture: Permission mode: bypass | prompted | auto (optional; default bypass)
 
     Returns:
         Pane index of the spawned worker or error description.
@@ -32,8 +32,8 @@ def pane_spawn(
         args.extend(["-s", session])
     if roles:
         args.extend(["--roles", roles])
-    if pane_type:
-        args.extend(["--type", pane_type])
+    if posture:
+        args.extend(["--posture", posture])
 
     # Spawn can take a while to initialize the agent, use longer timeout
     data = run_agentwire_cmd(args, timeout=120)

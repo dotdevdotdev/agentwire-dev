@@ -3,7 +3,7 @@
 # Claude Code Auto Mode
 
 Released March 24, 2026. Auto mode is a permission level between
-`claude-prompted` (manual approval) and `claude-bypass` (no checks).
+`prompted` (manual approval) and `bypass` (no checks).
 Before each tool call, a separate Claude Sonnet 4.6 classifier reviews the transcript
 and decides whether to approve or block the action automatically.
 
@@ -72,7 +72,7 @@ Auto mode **removes** any broad allow rules from the effective permissions:
 
 **Specific allow rules survive:** `Bash(git *)`, `Bash(npm test)`, `Bash(make build)`, etc.
 
-This means `claude-auto` sessions that relied on `Bash(*)` (as bypass sessions effectively
+This means `auto` sessions that relied on `Bash(*)` (as bypass sessions effectively
 do) need explicit specific allow rules instead. AgentWire must inject core allows at
 launch time.
 
@@ -84,7 +84,7 @@ Auto mode requires a deliberate three-layer allow strategy:
 
 ### Layer 1: AgentWire Core Allows (injected via `--allowedTools` at launch)
 
-AgentWire should inject these whenever it creates a `claude-auto` session.
+AgentWire should inject these whenever it creates an `auto` session.
 These are commands any agentwire-managed agent might need:
 
 ```
@@ -158,7 +158,7 @@ Allowed actions execute immediately, zero classifier cost. Everything else: clas
 
 ## Comparison to Existing Modes
 
-| | `claude-bypass` (current) | `claude-auto` (proposed) |
+| | `bypass` (current) | `auto` (proposed) |
 |-|--------------------------|--------------------------|
 | Permission prompts | None | None (classifier decides) |
 | Safety checks | **None** | AI classifier blocks dangerous actions |
@@ -171,7 +171,7 @@ Allowed actions execute immediately, zero classifier cost. Everything else: clas
 | Token overhead | None | ~20% for command-heavy tasks |
 | Headless stall on block | N/A | idle_timeout catches it |
 
-**Bottom line:** `claude-auto` does everything `claude-bypass` does for normal unattended
+**Bottom line:** `auto` does everything `bypass` does for normal unattended
 work, but prevents catastrophic failures at 3am when nobody's watching.
 
 ---
@@ -187,25 +187,25 @@ work, but prevents catastrophic failures at 3am when nobody's watching.
 
 ---
 
-## Using `claude-auto` in AgentWire
+## Using `auto` in AgentWire
 
-The session type is wired through every entry point — `.agentwire.yml`, the CLI, and MCP — and `agentwire/__main__.py` injects a core allowlist at launch so the classifier doesn't review routine git/agentwire/tmux ops.
+The posture is wired through every entry point — `.agentwire.yml`, the CLI, and MCP — and `agentwire/__main__.py` injects a core allowlist at launch so the classifier doesn't review routine git/agentwire/tmux ops.
 
 **`.agentwire.yml`:**
 ```yaml
-type: claude-auto
+posture: auto
 roles:
   - task-runner
 ```
 
 **CLI:**
 ```bash
-agentwire new myproject --type claude-auto
+agentwire new myproject --posture auto
 ```
 
 **MCP:**
 ```python
-session_create(name="myproject", session_type="claude-auto")
+session_create(name="myproject", posture="auto")
 ```
 
 The injected core allows cover `agentwire *`, `tmux *`, common `git *` / `gh pr *` operations, and the read/edit/write/glob/grep tools. Anything outside that list flows through the classifier (or, if it matches your user/project allowlists from Layer 2/3 above, runs without classifier cost).
@@ -219,9 +219,9 @@ Agent stalls waiting for a prompt that won't come. AgentWire's `idle_timeout` ca
 naturally. Task reports as `timeout` in scheduler history. Morning dashboard surfaces
 which tasks blocked and what action triggered it.
 
-**Mixed session types:**
-Some tasks use `claude-auto` (production repos), others `claude-bypass` (sandboxed
-experiments). Session type is per-session — both run simultaneously without conflict.
+**Mixed postures:**
+Some tasks use `auto` (production repos), others `bypass` (sandboxed
+experiments). Posture is per-session — both run simultaneously without conflict.
 
 **Haiku incompatibility:**
 Auto mode requires Sonnet 4.6 or Opus 4.6 and Anthropic auth. Tasks using Haiku

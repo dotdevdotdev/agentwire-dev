@@ -77,7 +77,7 @@ def _run(monkeypatch, cfg, **arg_overrides):
     base = dict(
         name=None, base=None, current=False, existing=False, ref=None,
         project=None, list=False, remove=False, prune=False, all=False,
-        json=True, type=None, posture=None, model=None,
+        json=True, posture=None, model=None,
         roles=None, env=None, created_by=None, caller_session=None, kind=None,
     )
     base.update(arg_overrides)
@@ -215,7 +215,7 @@ def test_orchestrator_sugar_verb_forces_kind(tmp_path, monkeypatch, wt_env):
     base = dict(
         name="proj-window", base=None, current=False, existing=False, ref=None,
         project=str(clone), list=False, remove=False, prune=False, all=False,
-        json=True, type=None, posture=None, model=None,
+        json=True, posture=None, model=None,
         roles=None, env=None, created_by=None, caller_session=None, kind=None,
     )
     monkeypatch.setattr(m, "load_config", lambda *a, **k: cfg, raising=False)
@@ -466,7 +466,7 @@ def test_no_override_falls_through_to_global(tmp_path, monkeypatch, wt_env):
     """An .agentwire.yml WITHOUT a worktree block changes nothing — global
     dir/base apply as before."""
     _, clone = _origin_and_clone(tmp_path, default_branch="develop")
-    (clone / ".agentwire.yml").write_text("type: claude-bypass\n")
+    (clone / ".agentwire.yml").write_text("posture: bypass\n")
 
     global_dir = tmp_path / "global-worktrees"
     rc = _run(monkeypatch, _config(global_dir), name="fix-bug", project=str(clone))

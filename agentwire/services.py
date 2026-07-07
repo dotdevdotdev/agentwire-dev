@@ -142,7 +142,7 @@ def registry(cfg: Config) -> list[CustomServiceConfig]:
         project=_source_dir(),
         autostart=True,
         roles="notifications",
-        type="claude-bypass",
+        posture="bypass",
         restart="on-failure",
         healthcheck=HealthcheckConfig(),  # tmux_session, 60s
         # Default-on context auto-management (issue #442): the idle-nag bridge
@@ -233,8 +233,8 @@ def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
            "--allow-shared-dir", "--json"]
     if svc.roles:
         cmd.extend(["--roles", svc.roles])
-    if svc.type:
-        cmd.extend(["--type", svc.type])
+    if svc.posture:
+        cmd.extend(["--posture", svc.posture])
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=60)
         return True, "started"

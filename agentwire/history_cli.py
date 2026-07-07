@@ -12,7 +12,6 @@ import json
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -22,15 +21,15 @@ from .core import (
     _output_json,
     _output_result,
     _run_remote,
+    build_agent_command,
     format_relative_time,
     load_config,
 )
-from .project_config import ProjectConfig, SessionType, load_project_config
+from .project_config import ProjectConfig, load_project_config
 from .roles import (
     derive_session_kind,
     inject_soul,
     load_roles,
-    merge_roles,
     resolve_roles,
 )
 
@@ -187,7 +186,7 @@ def cmd_history_resume(args) -> int:
     # Load project config for type and roles
     project_config = load_project_config(project_path)
     if project_config is None:
-        project_config = ProjectConfig(type=SessionType.CLAUDE_BYPASS, roles=[])
+        project_config = ProjectConfig(posture="bypass", roles=[])
 
     # Generate session name if not provided
     if not name:
@@ -206,11 +205,6 @@ def cmd_history_resume(args) -> int:
             counter += 1
             name = f"{base_name}-fork-{counter}"
 
-    # Build resume command
-    temp_file = None
-    cmd_parts = ["claude", "--resume", session_id, "--fork-session"]
-    cmd_parts.extend(project_config.type.to_cli_flags())
-
     # Route through resolve_roles with the derived kind so a resumed session
     # carries its kind's intrinsic etiquette. A history-resume has no branch, so
     # it's always an orchestrator — a zero-config resume now gets the same
@@ -220,25 +214,21 @@ def cmd_history_resume(args) -> int:
     project_roles = list(project_config.roles) if project_config.roles else None
     role_names = resolve_roles(kind, project_roles=project_roles)
     role_names = inject_soul(role_names, load_config())
+    roles = None
     if role_names:
-        roles, missing = load_roles(role_names, project_path)
-        if not missing and roles:
-            merged = merge_roles(roles)
-            if merged.tools:
-                cmd_parts.append("--tools")
-                cmd_parts.extend(sorted(merged.tools))
-            if merged.disallowed_tools:
-                cmd_parts.append("--disallowedTools")
-                cmd_parts.extend(sorted(merged.disallowed_tools))
-            if merged.instructions:
-                # Write to temp file to avoid shell escaping issues
-                f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-                f.write(merged.instructions)
-                f.close()
-                temp_file = f.name
-                cmd_parts.append(f'--append-system-prompt "$(<{temp_file})"')
+        loaded, missing = load_roles(role_names, project_path)
+        if not missing and loaded:
+            roles = loaded
 
-    agent_cmd = " ".join(cmd_parts)
+    # Build the resume command through the ONE flag-builder (#729) so a resumed
+    # session gets EXACTLY the posture flags a fresh one would — including auto's
+    # tool-allows injection, which the old to_cli_flags() path silently dropped.
+    # resume_session_id inserts --resume/--fork-session right after `claude`.
+    # The role temp-file path (if any) is already inlined in agent.command via
+    # --append-system-prompt "$(<...)"; it persists (delete=False) for claude to
+    # read at launch, so there's nothing to hold onto here.
+    agent = build_agent_command(project_config.posture, roles, resume_session_id=session_id)
+    agent_cmd = agent.command
 
     if machine_id and machine_id != "local":
         # Remote machine
@@ -273,7 +263,7 @@ def cmd_history_resume(args) -> int:
                 "resumed_from": session_id,
                 "path": remote_path,
                 "machine": machine_id,
-                "type": project_config.type.value,
+                "posture": project_config.posture,
             })
         else:
             host = machine.get('host', machine_id)
@@ -321,7 +311,7 @@ def cmd_history_resume(args) -> int:
             "resumed_from": session_id,
             "path": str(project_path),
             "machine": None,
-            "type": project_config.type.value,
+            "posture": project_config.posture,
         })
     else:
         print(f"Resumed session '{name}' (forked from {session_id})")

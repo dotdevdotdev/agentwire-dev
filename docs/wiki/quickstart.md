@@ -25,7 +25,7 @@ uv tool install agentwire-dev
 
 ffmpeg is **optional**: browser voice input works without it (WebM/Opus uploads are decoded in-process via PyAV). Install it only if you want host-mic push-to-talk capture (`agentwire listen`) — `brew install ffmpeg` / `sudo apt install ffmpeg`.
 
-You'll also want **Claude Code** installed (`claude --version`) since the default session type runs through it.
+You'll also want **Claude Code** installed (`claude --version`) since the default posture runs through it.
 
 Then install the agentwire hooks Claude Code needs to talk back to AgentWire:
 
@@ -95,7 +95,7 @@ That creates:
 - a tmux session named `hello`
 - a Claude Code agent in pane 0 (the *orchestrator*)
 
-If `~/projects/hello/.agentwire.yml` exists, its session type / roles / voice are picked up automatically. Want one written for you? Add `--persist` (e.g. `--roles agentwire,voice --persist` or `--type claude-bypass --persist`) and AgentWire saves the config — and, in a git repo, adds `.agentwire.yml` to `.gitignore`. Without `--persist`, flags are session-level overrides only. **Keep it gitignored**: it's personal config (voices, schedules, notification addresses), and a tracked copy makes worktree-dispatched runs silently use the stale committed version instead of your live edits.
+If `~/projects/hello/.agentwire.yml` exists, its posture / roles / voice are picked up automatically. Want one written for you? Add `--persist` (e.g. `--roles agentwire,voice --persist` or `--posture bypass --persist`) and AgentWire saves the config — and, in a git repo, adds `.agentwire.yml` to `.gitignore`. Without `--persist`, flags are session-level overrides only. **Keep it gitignored**: it's personal config (voices, schedules, notification addresses), and a tracked copy makes worktree-dispatched runs silently use the stale committed version instead of your live edits.
 
 Talk to it from another terminal:
 
@@ -149,7 +149,7 @@ needs `server.host: 0.0.0.0` + certs + the portal token (see SECURITY.md).
 Set the session config in `~/projects/hello/.agentwire.yml` (gitignored — see §2):
 
 ```yaml
-type: claude-auto      # safer than claude-bypass for unattended work
+posture: auto      # safer than bypass for unattended work
 roles: [task-runner]
 ```
 
@@ -224,6 +224,6 @@ Pick the next thing based on what you want to do:
 
 - **Multi-agent work** — orchestrator/worker pattern, `pane_spawn`, role files. → [Concepts — orchestrator/worker](concepts.md#the-orchestratorworker-pattern), [CLAUDE.md](../../CLAUDE.md).
 - **Run agents on a remote box** — register a machine, address sessions as `name@machine`. → [Remote machines](deployment/remote-machines.md).
-- **Lock down dangerous ops** — damage-control rules, per-project allowlists, classifier-mode auto sessions. → [Damage control](internals/damage-control.md), [claude-auto](sessions/claude-code-auto-mode.md).
+- **Lock down dangerous ops** — damage-control rules, per-project allowlists, classifier-mode auto sessions. → [Damage control](internals/damage-control.md), [auto](sessions/claude-code-auto-mode.md).
 - **Expose the portal to the public internet** — Cloudflare Tunnel + Zero Trust auth. → [Remote access](deployment/remote-access.md).
 - **Just look up a term** — [Glossary](glossary.md).

@@ -1,16 +1,15 @@
 """Portal routes — permission + review domain.
 
 Part of the #560 server.py split. Handlers moved verbatim from
-``AgentWireServer``; they depend on stdlib helpers plus ``prompt_router`` /
-``parse_session_name`` and on core attributes (``self.active_sessions``,
-``self._get_session_config``, ``self._broadcast``, ``self._say_to_room``,
-``self.run_agentwire_cmd``), which resolve through the MRO of the composed
-server class.
+``AgentWireServer``; they depend on stdlib helpers plus ``prompt_router`` and
+on core attributes (``self.active_sessions``, ``self._get_session_config``,
+``self._broadcast``, ``self._say_to_room``, ``self.run_agentwire_cmd``), which
+resolve through the MRO of the composed server class.
 
 Review and permission are grouped because the Review window's ``_live_prompt``
-helper is unique to ``api_review``. ``PendingPermission`` /
-``_is_allowed_in_restricted_mode`` live on the base server module and are
-imported lazily inside the handlers to avoid a circular import.
+helper is unique to ``api_review``. ``PendingPermission`` lives on the base
+server module and is imported lazily inside the handlers to avoid a circular
+import.
 """
 
 import asyncio
@@ -20,7 +19,6 @@ from pathlib import Path
 from aiohttp import web
 
 from .. import prompt_router
-from ..worktree import parse_session_name
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +107,8 @@ class PermissionRoutesMixin:
         This endpoint is called by the permission hook script when Claude Code
         needs permission for an action. It broadcasts the request to connected
         clients and waits for a response.
-
-        In restricted mode, only say commands are auto-allowed,
-        everything else is auto-denied silently.
         """
-        from ..server import PendingPermission, _is_allowed_in_restricted_mode
+        from ..server import PendingPermission
 
         name = request.match_info["name"]
         try:
@@ -127,46 +122,7 @@ class PermissionRoutesMixin:
             # Ensure session exists
             session = await self._get_or_create_session(name)
 
-            # Check restricted mode - auto-handle without user interaction
-            if session.config.type == "claude-restricted":
-                # Parse session name to handle local vs remote
-                project, branch, machine = parse_session_name(name)
-                if branch:
-                    tmux_session = f"{project}/{branch}".replace(".", "_")
-                else:
-                    tmux_session = project.replace(".", "_")
-
-                if _is_allowed_in_restricted_mode(tool_name, tool_input):
-                    # Auto-allow
-                    logger.info(f"[{name}] Restricted mode: auto-allowing {tool_name}")
-                    # Only send keystroke for Bash commands (say)
-                    # AskUserQuestion doesn't need permission keystroke
-                    if tool_name == "Bash":
-                        # Use CLI for consistent behavior (handles local and remote)
-                        # Send "1" to select "Yes" option in permission prompt
-                        session_target = f"{tmux_session}@{machine}" if machine else tmux_session
-                        result = await self._run_subprocess(
-                            ["agentwire", "send-keys", "-s", session_target, "1"]
-                        )
-                        if result is None or result[0] != 0:
-                            logger.error(f"[{name}] Failed to send allow keystroke")
-                    return web.json_response({"decision": "allow_always"})
-                else:
-                    # Auto-deny: send "Escape" keystroke (deny silently)
-                    logger.info(f"[{name}] Restricted mode: auto-denying {tool_name}")
-                    # Use CLI for consistent behavior (handles local and remote)
-                    session_target = f"{tmux_session}@{machine}" if machine else tmux_session
-                    result = await self._run_subprocess(
-                        ["agentwire", "send-keys", "-s", session_target, "Escape"]
-                    )
-                    if result is None or result[0] != 0:
-                        logger.error(f"[{name}] Failed to send deny keystroke")
-                    return web.json_response({
-                        "decision": "deny",
-                        "message": "Restricted mode: only say commands are allowed"
-                    })
-
-            # Create pending permission request (normal/prompted mode)
+            # Create pending permission request (prompted mode)
             try:
                 pane_index = int(data.get("pane_index") or 0)
             except (TypeError, ValueError):
@@ -174,10 +130,9 @@ class PermissionRoutesMixin:
             session.pending_permission = PendingPermission(request=data, pane_index=pane_index)
 
             # Route to the parent/orchestrator session, if one resolves
-            # (#276). Best-effort and non-blocking for the dialog itself;
-            # placed AFTER the restricted-mode branch so auto-denied tools
-            # never spam a parent. The hook payload's tmux_session (the real
-            # tmux name) beats the URL name, which may be a project alias.
+            # (#276). Best-effort and non-blocking for the dialog itself.
+            # The hook payload's tmux_session (the real tmux name) beats the
+            # URL name, which may be a project alias.
             tmux_name = str(data.get("tmux_session") or "") or name
             parent_notified = await asyncio.get_event_loop().run_in_executor(
                 None,

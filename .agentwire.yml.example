@@ -9,6 +9,6 @@
 # template (a live `.agentwire.yml` is resolved before the `.example` fallback).
 # The repo owner uses this to layer an untracked owner-override role:
 #   roles: [contributor, owner-override]
-type: claude-bypass
+posture: bypass
 roles:
   - contributor

@@ -398,7 +398,7 @@ function bindNewIdeaForm(form) {
 }
 
 // Posture options for the advanced fold (the resolver hands us the default).
-const POSTURE_OPTIONS = ['bypass', 'prompted', 'restricted', 'readonly'];
+const POSTURE_OPTIONS = ['bypass', 'prompted', 'auto'];
 
 function newSessionFormHtml() {
     // One-click default: just a project. Roles (resolved chips) and the
@@ -471,7 +471,7 @@ function bindNewSessionForm(form) {
             }
             // Seed intrinsic role chips on first load only (don't stomp edits).
             if (roles.length === 0) { roles = [...(d.roles || [])]; renderChips(); }
-            resolvedEl.textContent = `→ ${d.session_type}`;
+            resolvedEl.textContent = `→ ${d.resolved_posture}`;
         } catch (e) { /* leave defaults as-is */ }
     }
 

@@ -1,71 +1,57 @@
-"""Tests for agentwire/core.py's posture defaulting (#716).
+"""Tests for agentwire/core.py's posture resolution (#729).
 
-Posture used to be keyed by the old 3-way kind (orchestrator/worktree-session
--> bypass, worker -> restricted). Collapsing the kind enum to {orchestrator,
-worker} made that table ambiguous: "worker" now covers BOTH a pane (agentwire
-spawn, restricted) and a standalone worktree session (agentwire worktree,
-bypass) — a flat lookup on kind alone would silently flip every worktree
-session from bypass to permission-prompting restricted. These tests pin the
-corrected 2-input rule: restricted only for a worker that is NOT isolated on
-its own worktree.
+Posture is the ONLY session axis, and every spawn defaults to the same one —
+bypass — regardless of kind/topology: workers run bypass + damage-control just
+like orchestrators (no tool-locking posture exists anymore). These tests pin
+that flat rule plus the explicit-override precedence.
 """
 
 from argparse import Namespace
 
-from agentwire.core import _default_posture, _resolve_session_type_from_args
+from agentwire.core import _resolve_posture_from_args
 
 
-class TestDefaultPosture:
-    def test_orchestrator_is_always_bypass(self):
-        assert _default_posture("orchestrator") == "bypass"
-        assert _default_posture("orchestrator", worktree_topology=True) == "bypass"
-        assert _default_posture("orchestrator", worktree_topology=False) == "bypass"
-
-    def test_worker_on_worktree_topology_is_bypass(self):
-        # agentwire worktree's common case — isolated, no live-watcher, full autonomy.
-        assert _default_posture("worker", worktree_topology=True) == "bypass"
-
-    def test_worker_off_worktree_topology_is_restricted(self):
-        # agentwire spawn (a pane) and a main-topology `new --kind worker` —
-        # sharing a live checkout someone else may be watching.
-        assert _default_posture("worker", worktree_topology=False) == "restricted"
-        assert _default_posture("worker") == "restricted"
-
-    def test_unknown_kind_defaults_bypass(self):
-        assert _default_posture(None) == "bypass"
-        assert _default_posture("nope") == "bypass"
-
-
-class TestResolveSessionTypeFromArgs:
-    def test_pane_worker_default_matches_status_quo(self):
-        # cmd_spawn's call site: _resolve_session_type_from_args(args, "worker")
-        # with no worktree_topology kwarg — must still resolve restricted.
-        args = Namespace(posture=None, type=None, bare=False,
-                          restricted=False, prompted=False)
-        session_type, err = _resolve_session_type_from_args(args, "worker")
+class TestResolvePostureFromArgs:
+    def test_default_is_bypass(self):
+        args = Namespace(posture=None, bare=False, prompted=False)
+        posture, err = _resolve_posture_from_args(args)
         assert err is None
-        assert "restricted" in session_type
+        assert posture == "bypass"
 
-    def test_worktree_worker_resolves_bypass(self):
-        args = Namespace(posture=None, type=None, bare=False,
-                          restricted=False, prompted=False)
-        session_type, err = _resolve_session_type_from_args(args, "worker", worktree_topology=True)
+    def test_worker_also_defaults_bypass(self):
+        # A worker pane no longer gets a restricted posture — same default as any
+        # other spawn; damage-control is its guard.
+        args = Namespace(posture=None, bare=False, prompted=False)
+        posture, err = _resolve_posture_from_args(args)
         assert err is None
-        assert "bypass" in session_type
+        assert posture == "bypass"
 
-    def test_orchestrator_resolves_bypass_regardless_of_topology(self):
-        args = Namespace(posture=None, type=None, bare=False,
-                          restricted=False, prompted=False)
-        for topology in (True, False):
-            session_type, err = _resolve_session_type_from_args(args, "orchestrator", worktree_topology=topology)
-            assert err is None
-            assert "bypass" in session_type
-
-    def test_explicit_posture_overrides_the_default(self):
-        # worktree_topology=True would otherwise default to bypass — an
-        # explicit --posture prompted must win regardless.
-        args = Namespace(posture="prompted", type=None, bare=False,
-                          restricted=False, prompted=False)
-        session_type, err = _resolve_session_type_from_args(args, "worker", worktree_topology=True)
+    def test_explicit_posture_wins(self):
+        args = Namespace(posture="prompted", bare=False, prompted=False)
+        posture, err = _resolve_posture_from_args(args)
         assert err is None
-        assert "prompted" in session_type
+        assert posture == "prompted"
+
+    def test_explicit_auto(self):
+        args = Namespace(posture="auto", bare=False, prompted=False)
+        posture, err = _resolve_posture_from_args(args)
+        assert err is None
+        assert posture == "auto"
+
+    def test_invalid_posture_errors(self):
+        args = Namespace(posture="restricted", bare=False, prompted=False)
+        posture, err = _resolve_posture_from_args(args)
+        assert posture is None
+        assert err is not None
+
+    def test_bare_boolean(self):
+        args = Namespace(posture=None, bare=True, prompted=False)
+        posture, err = _resolve_posture_from_args(args)
+        assert err is None
+        assert posture == "bare"
+
+    def test_prompted_boolean(self):
+        args = Namespace(posture=None, bare=False, prompted=True)
+        posture, err = _resolve_posture_from_args(args)
+        assert err is None
+        assert posture == "prompted"

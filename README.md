@@ -184,7 +184,7 @@ AgentWire supports orchestrator/worker patterns for complex tasks:
 ```yaml
 # .agentwire.yml in your project (keep it gitignored — it's personal config,
 # and tracked copies break worktree dispatch; agentwire adds it to .gitignore for you)
-type: claude-bypass
+posture: bypass
 roles:
   - agentwire
   - voice

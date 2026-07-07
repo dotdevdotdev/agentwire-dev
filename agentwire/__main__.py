@@ -38,7 +38,7 @@ from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401:
     _portal_auth_headers,
     _post_desktop_notification,
     _record_session_creator,
-    _resolve_session_type_from_args,
+    _resolve_posture_from_args,
     _run_remote,
     _set_session_name_env,
     _start_portal_local,
@@ -256,7 +256,7 @@ Command Categories:
     c_start.add_argument(
         "--roster", help="Comma-separated lens names (default: full bundled roster)"
     )
-    c_start.add_argument("--type", help="Session type (default: claude-bypass)")
+    c_start.add_argument("--posture", help="Permission mode for council sessions (default: bypass)")
     c_start.add_argument("--model", help="Model override for all council sessions")
     c_start.add_argument(
         "--force", action="store_true", help="Tear down a live sitting first"

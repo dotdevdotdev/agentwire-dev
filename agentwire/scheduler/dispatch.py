@@ -212,10 +212,10 @@ def _kill_session(session: str) -> None:
 
 
 def _pre_create_session(task: SchedulerTask) -> None:
-    """Pre-create session with scheduler type/role overrides if needed.
+    """Pre-create session with scheduler posture/role overrides if needed.
 
-    The scheduler may specify a different session type than the project's
-    .agentwire.yml (e.g., claude-auto for scheduled tasks). If overrides
+    The scheduler may specify a different posture than the project's
+    .agentwire.yml (e.g., auto for scheduled tasks). If overrides
     are set, we need to create the session before ensure runs, because
     ensure uses project defaults.
 
@@ -223,7 +223,7 @@ def _pre_create_session(task: SchedulerTask) -> None:
     """
     from agentwire import scheduler as _sched
 
-    if not task.type and task.roles is None and not task.model:
+    if not task.posture and task.roles is None and not task.model:
         return  # No overrides, let ensure handle it
 
     # Only pre-create if session doesn't exist (ensure --fresh will have killed it)
@@ -235,8 +235,8 @@ def _pre_create_session(task: SchedulerTask) -> None:
         return  # Already exists
 
     cmd = ["agentwire", "new", "-s", task.session, "-p", task.project]
-    if task.type:
-        cmd.extend(["--type", task.type])
+    if task.posture:
+        cmd.extend(["--posture", task.posture])
     if task.roles is not None:
         cmd.extend(["--roles", ",".join(task.roles)])
     if task.model:
@@ -246,7 +246,7 @@ def _pre_create_session(task: SchedulerTask) -> None:
                             timeout=_sched._sched_config().session_create_timeout,
                             env=_unattended_env(task))
     if result.returncode == 0:
-        print(f"[{_ts()}] Pre-created session: {task.session} (type={task.type or 'default'}, model={task.model or 'default'})")
+        print(f"[{_ts()}] Pre-created session: {task.session} (posture={task.posture or 'default'}, model={task.model or 'default'})")
     else:
         print(f"[{_ts()}] Warning: Failed to pre-create session {task.session}: {result.stderr.strip()}")
 
@@ -673,9 +673,9 @@ def _dispatch_inplace_task(board: Board, task: SchedulerTask, existing_state: Ta
     # in interactive use — never kill it at dispatch; ensure reuses it as-is.
     persistent = _task_is_persistent(task)
 
-    has_overrides = bool(task.type or task.roles is not None or task.model)
+    has_overrides = bool(task.posture or task.roles is not None or task.model)
     if has_overrides:
-        # Scheduler has type/role overrides — kill + pre-create ourselves,
+        # Scheduler has posture/role overrides — kill + pre-create ourselves,
         # then let ensure reuse the session (no --fresh)
         if not persistent:
             _sched._kill_session(task.session)
@@ -764,8 +764,8 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
         "agentwire", "new", "-s", wt_session, "-p", task.project,
         "--base", task.base, "--pull-first", "--kind", "orchestrator", "--json",
     ]
-    if task.type:
-        new_cmd += ["--type", task.type]
+    if task.posture:
+        new_cmd += ["--posture", task.posture]
     if task.roles is not None:
         new_cmd += ["--roles", ",".join(task.roles)]
     if task.model:

@@ -15,7 +15,7 @@ services:
   custom:
     - name: work-tracker             # tmux session name (required)
       project: ~/projects/tracker    # project dir (default: dev source dir)
-      type: claude-bypass            # optional session-type override
+      posture: bypass                # optional posture override
       roles: tracker                 # optional roles override (comma-separated)
       autostart: true                # boot on portal launch / `agentwire up` (default)
       restart: on-failure            # never | on-failure | always (default on-failure)

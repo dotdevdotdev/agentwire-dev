@@ -24,8 +24,8 @@ def mocks(monkeypatch):
     calls = {"created": [], "killed": [], "sent": [], "live": set()}
     monkeypatch.setattr(cli, "list_live_sessions", lambda: set(calls["live"]))
 
-    def create(name, roles, session_type, model, cwd):
-        calls["created"].append((name, roles, session_type, model))
+    def create(name, roles, posture, model, cwd):
+        calls["created"].append((name, roles, posture, model))
         calls["live"].add(name)
 
     monkeypatch.setattr(cli, "create_session", create)

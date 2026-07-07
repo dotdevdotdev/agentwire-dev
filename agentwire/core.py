@@ -20,11 +20,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .project_config import (
+    BARE,
+    DEFAULT_POSTURE,
     POSTURES,
-    compose_session_type,
-    detect_default_agent_type,
     get_parent_from_config,
-    normalize_session_type,
+    resolve_posture,
 )
 from .roles import RoleConfig, merge_roles
 from .worktree import git_common_dir, parse_session_name
@@ -203,63 +203,70 @@ def parse_env_args(env_args: list[str] | None) -> dict[str, str]:
     return result
 
 
-def build_agent_command(session_type: str, roles: list[RoleConfig] | None = None, model: str | None = None) -> AgentCommand:
-    """Build the shell command + injected env for the given session type."""
-    if session_type == "bare":
+def build_agent_command(
+    posture: str,
+    roles: list[RoleConfig] | None = None,
+    model: str | None = None,
+    resume_session_id: str | None = None,
+) -> AgentCommand:
+    """Build the shell command + injected env for the given posture.
+
+    The ONE flag-builder (#729): fresh sessions AND history resume both route
+    through here, so a posture always launches with the same flags — no
+    create-vs-resume drift. Posture switches the permission-mode flags; ``bare``
+    is the no-agent sentinel (empty command); ``resume_session_id`` prepends the
+    ``--resume/--fork-session`` pair right after ``claude`` so the resumed
+    process still gets its posture's grants (incl. auto's tool-allows).
+    """
+    if posture == BARE:
         return AgentCommand(command="")
 
     merged = merge_roles(roles) if roles else None
 
-    # === Claude Code ===
-    if session_type.startswith("claude"):
-        parts = ["claude"]
+    parts = ["claude"]
+    if resume_session_id:
+        parts.extend(["--resume", resume_session_id, "--fork-session"])
 
-        # Permission flags
-        if session_type == "claude-bypass":
-            parts.append("--dangerously-skip-permissions")
-        elif session_type == "claude-auto":
-            parts.extend(["--enable-auto-mode", "--permission-mode", "auto"])
-            # Inject core allows that bypass the classifier entirely (zero token cost)
-            core_allows = [
-                "Bash(agentwire *)", "Bash(tmux *)", "Bash(git *)",
-                "Bash(gh pr create*)", "Bash(gh pr view*)",
-                "Read(*)", "Edit(*)", "Write(*)", "Glob(*)", "Grep(*)",
-            ]
-            parts.extend(["--allowedTools", shlex.quote(",".join(core_allows))])
-        elif session_type == "claude-restricted":
-            parts.append("--tools Bash")
-        # claude-prompted has no special flags
+    # Permission-mode flags (one per posture; prompted adds none — hooks gate it)
+    if posture == "bypass":
+        parts.append("--dangerously-skip-permissions")
+    elif posture == "auto":
+        parts.extend(["--enable-auto-mode", "--permission-mode", "auto"])
+        # Inject core allows that bypass the classifier entirely (zero token cost)
+        core_allows = [
+            "Bash(agentwire *)", "Bash(tmux *)", "Bash(git *)",
+            "Bash(gh pr create*)", "Bash(gh pr view*)",
+            "Read(*)", "Edit(*)", "Write(*)", "Glob(*)", "Grep(*)",
+        ]
+        parts.extend(["--allowedTools", shlex.quote(",".join(core_allows))])
 
-        # Model override
-        if model:
-            parts.append(f"--model {model}")
+    # Model override
+    if model:
+        parts.append(f"--model {model}")
 
-        # Role-based flags (not for restricted mode)
-        temp_file = None
-        if merged and session_type != "claude-restricted":
-            if merged.tools:
-                parts.append(f"--tools {','.join(merged.tools)}")
+    # Role-based flags (merged roles always apply — no tool-locking posture left)
+    temp_file = None
+    if merged:
+        if merged.tools:
+            parts.append(f"--tools {','.join(merged.tools)}")
 
-            if merged.disallowed_tools:
-                parts.append(f"--disallowedTools {','.join(merged.disallowed_tools)}")
+        if merged.disallowed_tools:
+            parts.append(f"--disallowedTools {','.join(merged.disallowed_tools)}")
 
-            if merged.instructions:
-                # Write to temp file to avoid shell escaping issues
-                # See docs/wiki/internals/shell-escaping.md for details
-                # MUST be last flag — multiline content can break subsequent args
-                f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-                f.write(merged.instructions)
-                f.close()
-                temp_file = f.name
-                parts.append(f'--append-system-prompt "$(<{temp_file})"')
+        if merged.instructions:
+            # Write to temp file to avoid shell escaping issues
+            # See docs/wiki/internals/shell-escaping.md for details
+            # MUST be last flag — multiline content can break subsequent args
+            f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+            f.write(merged.instructions)
+            f.close()
+            temp_file = f.name
+            parts.append(f'--append-system-prompt "$(<{temp_file})"')
 
-        return AgentCommand(
-            command=" ".join(parts),
-            temp_file=temp_file,
-        )
-
-    # Unknown session type - return empty
-    return AgentCommand(command="")
+    return AgentCommand(
+        command=" ".join(parts),
+        temp_file=temp_file,
+    )
 
 
 def check_python_version() -> bool:
@@ -1099,62 +1106,58 @@ def _post_desktop_notification(text: str, session: str | None = None, priority: 
         return False
 
 
-def _default_posture(kind: str | None, worktree_topology: bool = False) -> str:
-    """Default posture for a spawn: bypass, unless it's a worker that is NOT
-    isolated on its own worktree — a pane (agentwire spawn) or a worker on
-    plain main topology, both sharing a live checkout someone else may be
-    watching, stay restricted. Orchestrators (main or worktree topology) and
-    worktree-topology workers get full autonomous access — nothing to step
-    on but their own isolated branch.
-    """
-    if kind == "worker" and not worktree_topology:
-        return "restricted"
-    return "bypass"
+def _resolve_posture_from_args(args) -> tuple[str | None, str | None]:
+    """Resolve the session's posture from the shared spawn-flag core.
 
+    Posture is the ONLY session axis (#729), and every spawn defaults to the
+    same one — bypass — regardless of kind/topology: workers run bypass +
+    damage-control just like orchestrators, no tool-locking. Precedence:
+    explicit --posture first; else the internal --bare/--prompted booleans
+    (set by cmd_worktree / cmd_recreate callers); else the default posture.
 
-def _resolve_session_type_from_args(args, kind: str, worktree_topology: bool = False) -> tuple[str | None, str | None]:
-    """Resolve the internal fused session type from the shared flag core.
-
-    Posture is the canonical axis; legacy --type (fused strings or intent
-    presets) and the internal --bare/--restricted/--prompted booleans are
-    accepted on input but never the primary surface.
-
-    Precedence: explicit --posture composes first; else legacy --type; else
-    legacy booleans; else the kind's default posture.
-
-    Returns ``(session_type, error)`` — error is a message string when an
-    invalid posture was given, session_type is None in that case.
+    Returns ``(posture, error)`` — error is a message string when an invalid
+    posture was given, posture is None in that case.
     """
     posture = getattr(args, 'posture', None)
-    type_arg = getattr(args, 'type', None)
-    default_posture = _default_posture(kind, worktree_topology)
-
     if posture:
         try:
-            return compose_session_type(posture), None
+            return resolve_posture(posture), None
         except ValueError as e:
             return None, str(e)
-    if type_arg:
-        return normalize_session_type(type_arg, detect_default_agent_type()), None
-    # Internal legacy booleans (set by cmd_worktree / cmd_recreate callers).
     if getattr(args, 'bare', False):
-        return "bare", None
-    if getattr(args, 'restricted', False):
-        return f"{detect_default_agent_type()}-restricted", None
+        return BARE, None
     if getattr(args, 'prompted', False):
-        return f"{detect_default_agent_type()}-prompted", None
-    return compose_session_type(default_posture), None
+        return "prompted", None
+    return DEFAULT_POSTURE, None
+
+
+def _resolve_posture_or_config(args, project_config, default: str = DEFAULT_POSTURE) -> tuple[str | None, str | None]:
+    """Posture for recreate/fork: explicit --posture wins, else the source
+    config's posture, else *default*. Returns ``(posture, error)``."""
+    posture = getattr(args, 'posture', None)
+    if posture:
+        try:
+            return resolve_posture(posture), None
+        except ValueError as e:
+            return None, str(e)
+    cfg_posture = getattr(project_config, 'posture', None) if project_config else None
+    if cfg_posture:
+        try:
+            return resolve_posture(cfg_posture), None
+        except ValueError:
+            return default, None
+    return default, None
 
 
 def _add_posture_flag(parser) -> None:
-    """Register the shared posture axis on a spawn-verb parser.
+    """Register the canonical posture axis on a spawn-verb parser (#729).
 
-    This is the canonical session-type surface across new/worktree/spawn;
-    legacy --type (fused strings, intent presets) stays accepted but secondary.
+    Accepts ``bare`` too (the no-agent sentinel) so a bare session can be
+    re-specified on recreate/fork through the one axis flag.
     """
-    parser.add_argument("--posture", choices=list(POSTURES),
-                        help="How much the agent may do unprompted: bypass/prompted/restricted/readonly "
-                             "(default depends on the verb: new/worktree → bypass, spawn → restricted)")
+    parser.add_argument("--posture", choices=[*POSTURES, BARE],
+                        help="Permission mode the agent runs under: bypass/prompted/auto "
+                             "(or bare for no agent). Default: bypass.")
 
 
 def _git_behind_origin(repo: Path, base: str = "main", do_fetch: bool = True):

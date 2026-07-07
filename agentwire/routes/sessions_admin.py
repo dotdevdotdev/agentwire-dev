@@ -72,7 +72,7 @@ class SessionsAdminRoutesMixin:
             name: Base session/project name (required)
             path: Custom project path (optional, ignored if worktree=true)
             voice: TTS voice for this session
-            type: Session type (claude-bypass | claude-bypass | ...)
+            posture: Permission mode (bypass | prompted | auto | bare)
             roles: Comma-separated list of roles (e.g., "agentwire,worker")
             machine: Machine ID ('local' or remote machine ID)
             worktree: Whether to create a worktree session
@@ -90,10 +90,8 @@ class SessionsAdminRoutesMixin:
             name = data.get("name", "").strip()
             custom_path = data.get("path")
             voice = data.get("voice", self.config.tts.default_voice)
-            # Posture is the canonical axis; a legacy fused `type` is still
-            # accepted. When posture is present it wins.
+            # Posture is the single session axis (#729).
             posture = (data.get("posture") or "").strip()
-            session_type = data.get("type") if not posture else None
             roles = data.get("roles")
             machine = data.get("machine", "local")
             worktree = data.get("worktree", False)
@@ -128,11 +126,9 @@ class SessionsAdminRoutesMixin:
             # Pass -p when provided (CLI uses it to locate repo for worktree creation)
             if custom_path:
                 args.extend(["-p", custom_path])
-            # Session type: posture when given, else legacy --type.
+            # Session posture (the single axis).
             if posture:
                 args.extend(["--posture", posture])
-            if session_type:
-                args.extend(["--type", session_type])
             # Worktree-only flags: base branch + pull-first behaviour
             if worktree and branch:
                 args.extend(["--base", base])
@@ -312,7 +308,7 @@ class SessionsAdminRoutesMixin:
         """POST /api/session/{name}/recreate - Destroy session/worktree and create fresh one via CLI.
 
         Inherits session type from existing session config.
-        Supported types: claude-bypass | claude-prompted | claude-restricted | claude-auto | bare
+        Supported postures: bypass | prompted | auto | bare
         """
         name = request.match_info["name"]
         try:
@@ -323,8 +319,8 @@ class SessionsAdminRoutesMixin:
 
             # Build CLI args
             args = ["recreate", "-s", name]
-            # Set session type via --type flag
-            args.extend(["--type", old_config.type])
+            # Preserve the session's posture (the single axis)
+            args.extend(["--posture", old_config.posture])
 
             # Call CLI - handles kill, worktree removal, git pull, new worktree, new session
             success, result = await self.run_agentwire_cmd(args)
@@ -366,7 +362,7 @@ class SessionsAdminRoutesMixin:
         Useful for working on multiple features in the same project simultaneously.
 
         Inherits session type from existing session config.
-        Supported types: claude-bypass | claude-prompted | claude-restricted | claude-auto | bare
+        Supported postures: bypass | prompted | auto | bare
         """
         name = request.match_info["name"]
         try:
@@ -386,8 +382,8 @@ class SessionsAdminRoutesMixin:
 
             # Build CLI args - use `agentwire new` with the sibling session name
             args = ["new", "-s", new_session_name]
-            # Set session type via --type flag
-            args.extend(["--type", old_config.type])
+            # Preserve the session's posture (the single axis)
+            args.extend(["--posture", old_config.posture])
 
             # Call CLI - handles worktree creation and session setup
             success, result = await self.run_agentwire_cmd(args)
@@ -419,7 +415,7 @@ class SessionsAdminRoutesMixin:
         Creates a new session that continues from the current conversation context.
 
         Inherits session type from existing session config.
-        Supported types: claude-bypass | claude-prompted | claude-restricted | claude-auto | bare
+        Supported postures: bypass | prompted | auto | bare
         """
         name = request.match_info["name"]
         try:
@@ -450,8 +446,8 @@ class SessionsAdminRoutesMixin:
 
             # Build CLI args
             args = ["fork", "-s", name, "-t", target_session]
-            # Set session type via --type flag
-            args.extend(["--type", session_config.type])
+            # Preserve the session's posture (the single axis)
+            args.extend(["--posture", session_config.posture])
 
             # Call CLI - handles worktree creation and session setup
             success, result = await self.run_agentwire_cmd(args)

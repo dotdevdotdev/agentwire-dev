@@ -63,7 +63,7 @@ class Metadata:
     repo_url: str | None
     branch: str | None
     commit: str | None
-    session_type: str | None
+    posture: str | None
     model: str | None
     started_at: str | None
     ended_at: str | None

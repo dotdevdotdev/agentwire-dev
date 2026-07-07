@@ -21,7 +21,6 @@ from pathlib import Path
 from . import chrome_tabs, pane_manager, services, worktree_registry
 from .core import (
     _check_tmux_installed,
-    _default_posture,
     _display_parent,
     _get_machine_config,
     _graceful_kill,
@@ -30,7 +29,8 @@ from .core import (
     _output_json,
     _output_result,
     _record_session_creator,
-    _resolve_session_type_from_args,
+    _resolve_posture_from_args,
+    _resolve_posture_or_config,
     _run_remote,
     _set_session_name_env,
     build_agent_command,
@@ -40,14 +40,12 @@ from .core import (
     tmux_session_exists,
 )
 from .project_config import (
+    DEFAULT_POSTURE,
     POSTURES,
     ProjectConfig,
-    SessionType,
     WorktreeOverrides,
-    compose_session_type,
-    detect_default_agent_type,
     load_project_config,
-    normalize_session_type,
+    resolve_posture,
     save_project_config,
 )
 from .roles import (
@@ -79,19 +77,17 @@ def cmd_session_defaults(args) -> int:
     """
     kind = getattr(args, 'kind', None) or 'orchestrator'
     posture = getattr(args, 'posture', None)
-    # No topology signal on this preview endpoint (only --kind); previews the
-    # pane/main-topology flavor for kind=worker. The frontend only ever asks
-    # for kind=orchestrator today, where topology doesn't affect the result.
-    default_posture = _default_posture(kind)
+    # Every spawn defaults to bypass now (workers included) — kind no longer
+    # affects the posture, only the intrinsic role etiquette below.
     try:
-        session_type = compose_session_type(posture or default_posture)
+        resolved = resolve_posture(posture or DEFAULT_POSTURE)
     except ValueError as e:
         return _output_result(False, True, str(e))
     _output_json({
         "success": True,
         "kind": kind,
-        "posture": posture or default_posture,
-        "session_type": session_type,
+        "posture": posture or DEFAULT_POSTURE,
+        "resolved_posture": resolved,  # validated posture, for the resolver display
         "roles": resolve_roles(kind),  # intrinsic etiquette (chips); user roles layer on top
         "postures": list(POSTURES),
     })
@@ -273,12 +269,12 @@ def cmd_new(args) -> int:
                 return _output_result(False, json_mode, f"Session '{session_name}' already exists on {machine_id}. Use -f to replace.")
 
         # Create remote tmux session — resolve posture (shared core)
-        session_type, st_err = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
+        posture, st_err = _resolve_posture_from_args(args)
         if st_err:
             return _output_result(False, json_mode, st_err)
 
         # Build agent command
-        agent = build_agent_command(session_type, roles if roles else None, model=getattr(args, 'model', None))
+        agent = build_agent_command(posture, roles if roles else None, model=getattr(args, 'model', None))
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
         agent_cmd = agent.command
@@ -424,38 +420,34 @@ def cmd_new(args) -> int:
         else:
             return _output_result(False, json_mode, f"Session '{session_name}' already exists. Use -f to replace.")
 
-    # Determine agent type and normalize session type BEFORE creating the
-    # tmux session, so we can inject secrets via `tmux new-session -e K=V`
-    # (the only way to make the initial pane's shell see them — post-hoc
-    # `tmux set-environment` only affects shells spawned AFTER the call).
-    agent_type = detect_default_agent_type()
+    # Resolve the session's posture BEFORE creating the tmux session, so we can
+    # inject secrets via `tmux new-session -e K=V` (the only way to make the
+    # initial pane's shell see them — post-hoc `tmux set-environment` only
+    # affects shells spawned AFTER the call).
 
-    # Determine session type. Precedence: explicit posture/type/legacy
-    # booleans (shared core) → existing .agentwire.yml type → kind default.
+    # Determine posture. Precedence: explicit --posture / internal booleans
+    # (shared core) → existing .agentwire.yml posture → default (bypass).
     persist = getattr(args, 'persist', False)
-    type_arg = getattr(args, 'type', None)
-    type_explicit = bool(
-        type_arg
-        or getattr(args, 'posture', None)
+    posture_explicit = bool(
+        getattr(args, 'posture', None)
         or getattr(args, 'bare', False)
-        or getattr(args, 'restricted', False)
         or getattr(args, 'prompted', False)
     )
-    if type_explicit:
-        session_type, st_err = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
+    if posture_explicit:
+        posture, st_err = _resolve_posture_from_args(args)
         if st_err:
             return _output_result(False, json_mode, st_err)
     else:
         existing_config = load_project_config(session_path)
-        if existing_config and existing_config.type:
-            session_type = normalize_session_type(existing_config.type.value, agent_type)
+        if existing_config and existing_config.posture:
+            posture = resolve_posture(existing_config.posture)
         else:
-            # Kind default posture × claude (no global default-role lookup).
-            session_type, _ = _resolve_session_type_from_args(args, kind, worktree_topology=worktree_topology)
+            # Kind default posture (no global default-role lookup).
+            posture, _ = _resolve_posture_from_args(args)
 
     # Build agent command
     model_override = getattr(args, 'model', None)
-    agent = build_agent_command(session_type, roles if roles else None, model=model_override)
+    agent = build_agent_command(posture, roles if roles else None, model=model_override)
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
     _set_session_name_env(agent, session_name)
 
@@ -473,7 +465,7 @@ def cmd_new(args) -> int:
         if existing_config:
             # Preserve existing settings if not overridden by CLI
             project_config = ProjectConfig(
-                type=SessionType.from_str(session_type),
+                posture=posture,
                 roles=cli_roles if cli_roles else existing_config.roles,
                 voice=existing_config.voice,
                 parent=existing_config.parent,
@@ -481,7 +473,7 @@ def cmd_new(args) -> int:
         else:
             # Create new config
             project_config = ProjectConfig(
-                type=SessionType.from_str(session_type),
+                posture=posture,
                 roles=cli_roles if cli_roles else [],
                 voice=None,
             )
@@ -664,14 +656,11 @@ def cmd_recreate(args) -> int:
         # Step 5: Create new session
         session_path = worktree_path if branch else project_path
 
-        # Determine session type from --type flag or detect default
-        agent_type = detect_default_agent_type()
-        type_arg = getattr(args, 'type', None)
-        if type_arg:
-            session_type_str = normalize_session_type(type_arg, agent_type)
-        else:
-            # Fall back to agent-bypass
-            session_type_str = f"{agent_type}-bypass"
+        # Determine posture from --posture flag, else default bypass (the
+        # remote project_config isn't readable here).
+        posture, st_err = _resolve_posture_or_config(args, None)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
 
         # Inject the kind's intrinsic etiquette — a remote project/branch
         # recreate is still a worker on worktree topology and must carry the
@@ -684,7 +673,7 @@ def cmd_recreate(args) -> int:
             roles, _ = load_roles(role_names)
 
         # Build agent command using the standard function
-        agent = build_agent_command(session_type_str, roles)
+        agent = build_agent_command(posture, roles)
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
         agent_cmd = agent.command
 
@@ -755,20 +744,12 @@ def cmd_recreate(args) -> int:
     if not session_path.exists():
         return _output_result(False, json_mode, f"Path does not exist: {session_path}")
 
-    # Determine session type from CLI --type flag or existing config
-    agent_type = detect_default_agent_type()
-    type_arg = getattr(args, 'type', None)
+    # Determine posture from --posture flag or existing config (session-level
+    # only, not saved).
     project_config = load_project_config(session_path)
-
-    if type_arg:
-        # CLI flag specified - use it directly and normalize (session-level only, not saved)
-        session_type_str = normalize_session_type(type_arg, agent_type)
-    elif project_config:
-        # Use existing config
-        session_type_str = normalize_session_type(project_config.type.value, agent_type)
-    else:
-        # Default to agent-bypass based on detected agent
-        session_type_str = f"{agent_type}-bypass"
+    posture, st_err = _resolve_posture_or_config(args, project_config)
+    if st_err:
+        return _output_result(False, json_mode, st_err)
 
     # Route through resolve_roles with a derived kind so the recreated session
     # carries its kind's intrinsic etiquette — recreating a project/branch
@@ -782,7 +763,7 @@ def cmd_recreate(args) -> int:
         roles, _ = load_roles(role_names, session_path)
 
     # Build agent command
-    agent = build_agent_command(session_type_str, roles)
+    agent = build_agent_command(posture, roles)
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
     agent_cmd = agent.command
@@ -911,13 +892,12 @@ def cmd_worktree(args) -> int:
     def _launch_session():
         return cmd_new(type('Args', (), {
             'session': session_name, 'path': str(worktree_path), 'json': json_mode,
-            'force': False, 'bare': False, 'restricted': False, 'prompted': False,
+            'force': False, 'bare': False, 'prompted': False,
             'kind': effective_kind,
             # session_name is a flat `{project}-{name}` (no slash) — cmd_new's
             # own bool(branch) would misread it as branchless, so this is
             # forced explicitly rather than left to be re-derived.
             'worktree_topology': True,
-            'type': getattr(args, 'type', None),
             'posture': getattr(args, 'posture', None),
             'model': getattr(args, 'model', None),
             'roles': getattr(args, 'roles', None),
@@ -1634,20 +1614,11 @@ def cmd_fork(args) -> int:
         if result.returncode != 0:
             return _output_result(False, json_mode, f"Failed to create worktree: {result.stderr}")
 
-        # Determine session type from --type flag or source config
-        agent_type = detect_default_agent_type()
-        type_arg = getattr(args, 'type', None)
+        # Determine posture from --posture flag or source config
         source_config = load_project_config(Path(source_path))
-
-        if type_arg:
-            # CLI flag specified - use it directly
-            session_type_str = normalize_session_type(type_arg, agent_type)
-        elif source_config:
-            # Use source config
-            session_type_str = normalize_session_type(source_config.type.value, agent_type)
-        else:
-            # Default to agent-bypass based on detected agent
-            session_type_str = f"{agent_type}-bypass"
+        posture, st_err = _resolve_posture_or_config(args, source_config)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
 
         # The fork target is a worktree (project/branch) → worker kind on
         # worktree topology, so resolve_roles stacks the non-overridable
@@ -1661,7 +1632,7 @@ def cmd_fork(args) -> int:
             roles, _ = load_roles(role_names, Path(source_path))
 
         # Build agent command
-        agent = build_agent_command(session_type_str, roles)
+        agent = build_agent_command(posture, roles)
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
         agent_cmd = agent.command
@@ -1722,21 +1693,12 @@ def cmd_fork(args) -> int:
         if check_target.returncode == 0:
             return _output_result(False, json_mode, f"Target session '{target_session}' already exists")
 
-        # Determine session type from --type flag or source config (before
+        # Determine posture from --posture flag or source config (before
         # session creation, so we can inject env via `tmux new-session -e K=V`).
-        agent_type = detect_default_agent_type()
-        type_arg = getattr(args, 'type', None)
         source_project_config = load_project_config(fork_path)
-
-        if type_arg:
-            # CLI flag specified - use it directly
-            session_type_str = normalize_session_type(type_arg, agent_type)
-        elif source_project_config:
-            # Use source config
-            session_type_str = normalize_session_type(source_project_config.type.value, agent_type)
-        else:
-            # Default to agent-bypass based on detected agent
-            session_type_str = f"{agent_type}-bypass"
+        posture, st_err = _resolve_posture_or_config(args, source_project_config)
+        if st_err:
+            return _output_result(False, json_mode, st_err)
 
         # Non-worktree fork: target has no branch → orchestrator kind (a
         # replaceable persona), so source roles take precedence as usual.
@@ -1797,22 +1759,13 @@ def cmd_fork(args) -> int:
                 if jsonl_files:
                     resume_session_id = jsonl_files[0].stem
 
-        # Build agent command
-        agent = build_agent_command(session_type_str, roles)
+        # Build agent command — resume_session_id (if any) inserts
+        # --resume/--fork-session right after `claude` so the forked session
+        # starts with the source conversation in context.
+        agent = build_agent_command(posture, roles, resume_session_id=resume_session_id)
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
         agent_cmd = agent.command
-        # Inject --resume <id> --fork-session right after the 'claude' binary
-        # so the forked session starts with the source conversation in context
-        if agent_cmd and resume_session_id:
-            claude_pos = agent_cmd.rfind("claude")
-            if claude_pos >= 0:
-                insert_pos = claude_pos + len("claude")
-                agent_cmd = (
-                    agent_cmd[:insert_pos]
-                    + f" --resume {resume_session_id} --fork-session"
-                    + agent_cmd[insert_pos:]
-                )
 
         # Create new tmux session (env injected at creation time, cd, agent
         # start — see _launch_tmux_session).
@@ -1874,22 +1827,13 @@ def cmd_fork(args) -> int:
     if not success:
         return _output_result(False, json_mode, f"Failed to create worktree for branch '{target_branch}'")
 
-    # Determine session type from --type flag or source config (before
-    # session creation, so we can inject env via `tmux new-session -e K=V`).
-    agent_type = detect_default_agent_type()
-    type_arg = getattr(args, 'type', None)
+    # Determine posture from --posture flag or source config (before session
+    # creation, so we can inject env via `tmux new-session -e K=V`).
     config_path = source_path if source_path != project_path else project_path
     source_config = load_project_config(config_path)
-
-    if type_arg:
-        # CLI flag specified - use it directly
-        session_type_str = normalize_session_type(type_arg, agent_type)
-    elif source_config:
-        # Use source config
-        session_type_str = normalize_session_type(source_config.type.value, agent_type)
-    else:
-        # Default to agent-bypass based on detected agent
-        session_type_str = f"{agent_type}-bypass"
+    posture, st_err = _resolve_posture_or_config(args, source_config)
+    if st_err:
+        return _output_result(False, json_mode, st_err)
 
     # Worktree fork: target is project/branch → worker kind on worktree
     # topology, so resolve_roles stacks the non-overridable
@@ -1902,7 +1846,7 @@ def cmd_fork(args) -> int:
         roles, _ = load_roles(role_names, config_path)
 
     # Build agent command
-    agent = build_agent_command(session_type_str, roles)
+    agent = build_agent_command(posture, roles)
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
     agent_cmd = agent.command
 
@@ -1939,10 +1883,8 @@ def register_session_parser(subparsers) -> None:
     new_parser.add_argument("--allow-shared-dir", action="store_true",
                             help="Allow attaching to a directory that already has active sessions "
                                  "(unlike --force, never replaces an existing same-name session)")
-    # Session type — posture is canonical; --type is a legacy alias.
+    # Posture is the single session axis (#729).
     _add_posture_flag(new_parser)
-    new_parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not the primary surface): "
-                                           "bare, claude-bypass, claude-prompted, claude-restricted, standard, worker, voice")
     # Roles
     new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
     new_parser.add_argument("--kind", choices=["orchestrator", "worker"],
@@ -1953,7 +1895,7 @@ def register_session_parser(subparsers) -> None:
                                  "the task agent must NOT open its own.")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
-    new_parser.add_argument("--persist", action="store_true", help="Write the resolved type/--roles to .agentwire.yml (default: session-level override only)")
+    new_parser.add_argument("--persist", action="store_true", help="Write the resolved posture/--roles to .agentwire.yml (default: session-level override only)")
     new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
     # Worktree-only flags (default None so they can be rejected unless the
     # session name is a project/branch worktree).
@@ -1987,8 +1929,7 @@ def register_session_parser(subparsers) -> None:
     # === recreate command (top-level) ===
     recreate_parser = subparsers.add_parser("recreate", help="Destroy and recreate session with fresh worktree")
     recreate_parser.add_argument("-s", "--session", required=True, help="Session name (project/branch or project/branch@machine)")
-    # Session type
-    recreate_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, standard, worker, voice)")
+    _add_posture_flag(recreate_parser)  # default: inherit the source config's posture
     recreate_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     recreate_parser.add_argument("--json", action="store_true", help="Output as JSON")
     recreate_parser.set_defaults(func=cmd_recreate)
@@ -1997,8 +1938,7 @@ def register_session_parser(subparsers) -> None:
     fork_parser = subparsers.add_parser("fork", help="Fork a session into a new worktree")
     fork_parser.add_argument("-s", "--source", required=True, help="Source session (project or project/branch)")
     fork_parser.add_argument("-t", "--target", required=True, help="Target session (must include branch: project/new-branch)")
-    # Session type
-    fork_parser.add_argument("--type", help="Session type (bare, claude-bypass, claude-prompted, claude-restricted, standard, worker, voice)")
+    _add_posture_flag(fork_parser)  # default: inherit the source config's posture
     fork_parser.add_argument("--commit", metavar="REF", help="Fork from this commit/ref instead of HEAD (e.g. abc123, main~5)")
     fork_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
     fork_parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -2027,7 +1967,6 @@ def register_session_parser(subparsers) -> None:
         parser.add_argument("--gc-merged", action="store_true", help="With --prune: also tear down (session/worktree/branch) any registered entry whose branch is confirmed merged")
         parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")
         _add_posture_flag(parser)
-        parser.add_argument("--type", help="Legacy fused session type / intent preset (accepted, not primary)")
         parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worker etiquette (kind=orchestrator: REPLACES the default persona instead)")
         parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
         parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")

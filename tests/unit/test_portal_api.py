@@ -125,7 +125,7 @@ class TestApiSessions:
         with patch.object(server, "_list_local_sessions", new_callable=AsyncMock) as mock_local, \
              patch.object(server, "_list_remote_sessions", new_callable=AsyncMock) as mock_remote:
             mock_local.return_value = [
-                {"name": "app", "machine": None, "windows": 1, "path": "/app", "type": "claude-bypass"},
+                {"name": "app", "machine": None, "windows": 1, "path": "/app", "posture": "bypass"},
             ]
             mock_remote.return_value = {}
             resp = await client.get("/api/sessions")
@@ -184,19 +184,19 @@ class TestApiCreateSession:
         data = await resp.json()
         assert "error" in data
 
-    async def test_create_with_type(self, portal_client):
+    async def test_create_with_posture(self, portal_client):
         client, server = portal_client
         with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:
             mock_cmd.return_value = (True, {"session": "test"})
             server.broadcast_dashboard = AsyncMock()
             await client.post("/api/create", json={
-                "name": "test", "type": "bare",
+                "name": "test", "posture": "bare",
             })
         # Find the "new" call (not the "list" calls for sessions refresh)
         new_calls = [c for c in mock_cmd.call_args_list if c[0][0][0] == "new"]
         assert len(new_calls) >= 1
         args = new_calls[0][0][0]
-        assert "--type" in args
+        assert "--posture" in args
         assert "bare" in args
 
     async def test_create_remote_session(self, portal_client):
@@ -819,12 +819,12 @@ class TestSessionStateComputation:
 
 
 # ---------------------------------------------------------------------------
-# Restricted mode (permission API)
+# Artifact upload/delete path safety
 # ---------------------------------------------------------------------------
 
 
-class TestApiRestrictedMode:
-    """Test the restricted mode command filtering through the permission endpoint."""
+class TestApiArtifactPathSafety:
+    """Artifact upload/delete reject path-traversal + hidden-file names."""
 
     async def test_artifact_upload_bad_filename(self, portal_client):
         client, server = portal_client

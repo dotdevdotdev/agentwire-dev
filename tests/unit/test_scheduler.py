@@ -571,14 +571,14 @@ class TestPersistentSessionDispatch:
     def test_persistent_with_overrides_not_killed_but_precreated(self, tmp_path, monkeypatch):
         proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n    exit_on_complete: false\n")
         killed, precreated = self._patch_dispatch(monkeypatch)
-        self._dispatch(proj, type="claude-bypass")
+        self._dispatch(proj, posture="bypass")
         assert killed == []
         assert precreated == ["persist-s"]  # no-op when session exists
 
     def test_overrides_without_persistence_killed_and_precreated(self, tmp_path, monkeypatch):
         proj = self._project(tmp_path, "tasks:\n  t:\n    prompt: do\n")
         killed, precreated = self._patch_dispatch(monkeypatch)
-        self._dispatch(proj, type="claude-bypass")
+        self._dispatch(proj, posture="bypass")
         assert killed == ["persist-s"]
         assert precreated == ["persist-s"]
 

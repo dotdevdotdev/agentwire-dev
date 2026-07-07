@@ -67,7 +67,7 @@ class SchedulerTask:
     enabled: bool = True
     filler: bool = False  # only runs in spare cycles
     priority: int = 99    # task ordering (lower = higher priority)
-    type: str | None = None  # session type override (e.g., claude-bypass)
+    posture: str | None = None  # posture override (e.g., bypass, auto)
     roles: list[str] | None = None  # role override
     model: str | None = None  # model override
     gate: dict | None = None  # precondition gate (git_commit, git_diff, command)

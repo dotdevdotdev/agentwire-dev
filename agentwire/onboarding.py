@@ -556,7 +556,7 @@ services:
             "agentwire", "new",
             "-s", session_name,
             "--roles", "init",
-            "--type", "claude-bypass",
+            "--posture", "bypass",
         ]
 
         # Run and attach

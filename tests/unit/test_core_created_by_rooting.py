@@ -13,7 +13,10 @@ from agentwire import core
 def _make_repo(tmp_path, name="repo"):
     repo = tmp_path / name
     repo.mkdir()
-    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+
+    def run(*a):
+        return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], capture_output=True, text=True)
     run("config", "user.email", "t@t")
     run("config", "user.name", "t")

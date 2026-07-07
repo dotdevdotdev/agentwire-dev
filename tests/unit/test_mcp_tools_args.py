@@ -21,7 +21,7 @@ class TestSessionTools:
     def test_sessions_list_success(self, mock_cmd):
         from agentwire.mcp_session import sessions_list
         mock_cmd.return_value = _success(sessions=[
-            {"name": "app", "machine": "local", "windows": 1, "path": "/p", "type": "claude-bypass"},
+            {"name": "app", "machine": "local", "windows": 1, "path": "/p", "posture": "bypass"},
         ])
         result = sessions_list()
         mock_cmd.assert_called_once_with(["list", "--sessions"])
@@ -48,9 +48,9 @@ class TestSessionTools:
     def test_session_create_all_args(self, _caller, mock_cmd):
         from agentwire.mcp_session import session_create
         mock_cmd.return_value = _success()
-        session_create(name="x", project_dir="/p", roles="voice,worker", session_type="bare")
+        session_create(name="x", project_dir="/p", roles="voice,worker", posture="bare")
         args = mock_cmd.call_args[0][0]
-        assert args == ["new", "-s", "x", "-p", "/p", "--roles", "voice,worker", "--type", "bare"]
+        assert args == ["new", "-s", "x", "-p", "/p", "--roles", "voice,worker", "--posture", "bare"]
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
     @patch("agentwire.mcp_session.get_caller_session", return_value="orchestrator")

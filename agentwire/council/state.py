@@ -135,7 +135,7 @@ class Sitting:
     started_at: str
     cwd: str = ""  # dir the sitting was started from (for `council list`)
     next_prompt_id: int = 1
-    session_type: str = "claude-bypass"
+    posture: str = "bypass"
 
     def to_dict(self) -> dict:
         return {
@@ -145,7 +145,7 @@ class Sitting:
             "started_at": self.started_at,
             "cwd": self.cwd,
             "next_prompt_id": self.next_prompt_id,
-            "session_type": self.session_type,
+            "posture": self.posture,
         }
 
     @classmethod
@@ -157,7 +157,7 @@ class Sitting:
             started_at=d.get("started_at", ""),
             cwd=d.get("cwd", ""),
             next_prompt_id=int(d.get("next_prompt_id", 1)),
-            session_type=d.get("session_type", "claude-bypass"),
+            posture=d.get("posture", "bypass"),
         )
 
 

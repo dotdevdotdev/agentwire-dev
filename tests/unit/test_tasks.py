@@ -195,7 +195,7 @@ class TestLoadTask:
     def test_does_not_read_agentwire_yml(self, project_dir):
         """Tasks live in .agentwire.tasks.yml only — .agentwire.yml is ignored (#720)."""
         (project_dir / ".agentwire.yml").write_text(
-            "type: claude-bypass\ntasks:\n  lint:\n    prompt: Run lint.\n"
+            "posture: bypass\ntasks:\n  lint:\n    prompt: Run lint.\n"
         )
         with pytest.raises(TaskNotFound, match="No .agentwire.tasks.yml"):
             load_task(project_dir, "lint")
