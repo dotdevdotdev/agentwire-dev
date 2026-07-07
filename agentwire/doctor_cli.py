@@ -357,6 +357,53 @@ def _render_voice_loop_section(config, ctx) -> int:
     return failures
 
 
+def _find_unmigrated_task_projects() -> list[str]:
+    """Local projects with an inline ``.agentwire.yml`` ``tasks:`` block but no
+    promoted ``.agentwire.tasks.yml`` (#736).
+
+    This is the concrete #720/#721 regression: the task-split relocated where
+    tasks are READ from (``.agentwire.tasks.yml``) without migrating existing
+    task DATA, so these projects' scheduled/ensure tasks silently fail (exit 6)
+    while their config still *looks* task-bearing. Returns the affected project
+    names.
+    """
+    import yaml
+
+    from . import projects as projects_mod
+    from .tasks import TASKS_FILENAME
+
+    unmigrated: list[str] = []
+    for proj in projects_mod.get_projects("local"):
+        proj_dir = Path(proj["path"])
+        cfg_file = proj_dir / ".agentwire.yml"
+        try:
+            cfg = yaml.safe_load(cfg_file.read_text()) or {}
+        except Exception:
+            continue
+        if cfg.get("tasks") and not (proj_dir / TASKS_FILENAME).exists():
+            unmigrated.append(proj["name"])
+    return unmigrated
+
+
+def _render_task_migration_section() -> int:
+    """Doctor section: flag projects whose inline tasks never migrated (#736)."""
+    unmigrated = _find_unmigrated_task_projects()
+    if not unmigrated:
+        print("  [ok] No projects with un-migrated inline tasks")
+        return 0
+    for name in unmigrated:
+        print(
+            f"  [!!] Project {name}: tasks defined in .agentwire.yml but never "
+            "migrated to .agentwire.tasks.yml — they will NOT run under "
+            "ensure/scheduler."
+        )
+    print(
+        "     Run `agentwire tasks migrate` then `agentwire tasks promote` "
+        "in each affected project."
+    )
+    return len(unmigrated)
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -867,6 +914,17 @@ def cmd_doctor(args) -> int:
             print("       Assign a parent (agentwire msg send / --created-by) or merge/close the PR yourself.")
     except Exception as e:
         print(f"  [..] Could not check for dangling worktree sessions: {e}")
+
+    # 12. Projects whose inline .agentwire.yml tasks were never migrated to the
+    # promoted .agentwire.tasks.yml (#736). The #720/#721 task-split moved where
+    # tasks are read from without migrating the data, so these tasks silently
+    # fail (exit 6) under ensure/scheduler — the exact regression that went
+    # undetected because nothing surfaced it. Loud here so it can't hide again.
+    print("\nChecking project task migration (#736)...")
+    try:
+        issues_found += _render_task_migration_section()
+    except Exception as e:
+        print(f"  [..] Could not check project task migration: {e}")
 
     # Summary
     print()

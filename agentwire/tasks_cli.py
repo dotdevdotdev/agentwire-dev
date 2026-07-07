@@ -200,6 +200,80 @@ def cmd_tasks_review(args) -> int:
     return 0
 
 
+def cmd_tasks_migrate(args) -> int:
+    """CLI command: agentwire tasks migrate [session]
+
+    One-shot data migration for the #720/#721 task-split (#736): reads the
+    inline ``tasks:`` block still living in a project's declarative
+    ``.agentwire.yml`` — now dead weight, since the executor only reads
+    ``.agentwire.tasks.yml`` — and STAGES it to the unprotected
+    ``.agentwire.tasks.proposed.yml``. It deliberately never writes the
+    protected live ``.agentwire.tasks.yml``; that is ``promote``'s host-only
+    job. The human then runs ``agentwire tasks review`` and
+    ``agentwire tasks promote``.
+    """
+    json_mode = getattr(args, "json", False)
+    project_path = _resolve_project_path(getattr(args, "session", None))
+
+    config_path = project_path / ".agentwire.yml"
+    proposed_path = project_path / PROPOSED_TASKS_FILENAME
+    active_path = project_path / TASKS_FILENAME
+
+    if not config_path.exists():
+        return _output_result(
+            False, json_mode, f"No .agentwire.yml found in {project_path}"
+        )
+
+    data, err = _load_yaml(config_path)
+    if err:
+        return _output_result(False, json_mode, err)
+
+    tasks = data.get("tasks")
+    if not tasks:
+        return _output_result(
+            False, json_mode,
+            f"No inline 'tasks:' block in {config_path.name} — nothing to migrate.",
+        )
+
+    if active_path.exists():
+        return _output_result(
+            False, json_mode,
+            f"{active_path.name} already exists — tasks look already migrated. "
+            "Refusing to clobber the live task file; reconcile it by hand if you "
+            "really mean to re-migrate.",
+        )
+
+    overwrote = proposed_path.exists()
+    proposed_path.write_text(
+        yaml.safe_dump(
+            {"tasks": tasks}, sort_keys=False, allow_unicode=True, width=100
+        )
+    )
+    ensure_gitignored(project_path, TASKS_FILENAME, ".agentwire.tasks*.yml")
+
+    lines = [
+        f"Staged {len(tasks)} task(s) from {config_path.name} -> {proposed_path.name}"
+    ]
+    if overwrote:
+        lines.append(f"(overwrote an existing {proposed_path.name})")
+    lines += [
+        "",
+        "Next:",
+        "  1. Review:  agentwire tasks review",
+        "  2. Promote: agentwire tasks promote   (host-only)",
+        "",
+        f"After promoting, delete the dead 'tasks:' block from {config_path.name} "
+        "— the executor ignores it.",
+    ]
+    return _output_result(
+        True, json_mode, "\n".join(lines),
+        project=str(project_path),
+        proposed=str(proposed_path),
+        tasks=list(tasks),
+        overwrote=overwrote,
+    )
+
+
 def cmd_tasks_promote(args) -> int:
     """CLI command: agentwire tasks promote [session] [--yes]
 
@@ -282,6 +356,20 @@ def register_tasks_parser(subparsers) -> None:
         ),
     )
     tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_command")
+
+    migrate = tasks_subparsers.add_parser(
+        "migrate",
+        help="Stage a project's inline .agentwire.yml tasks: block as a draft (#736)",
+        description=(
+            "Read the inline 'tasks:' block from the project's .agentwire.yml "
+            "(dead weight since #720/#721 — the executor only reads "
+            ".agentwire.tasks.yml) and stage it to .agentwire.tasks.proposed.yml. "
+            "Then run `agentwire tasks review` and `agentwire tasks promote`."
+        ),
+    )
+    migrate.add_argument("session", nargs="?", help="Session name (default: current directory)")
+    migrate.add_argument("--json", action="store_true", help="Output JSON")
+    migrate.set_defaults(func=cmd_tasks_migrate)
 
     review = tasks_subparsers.add_parser(
         "review", help="Show the diff + every shell command in the staged draft"

@@ -23,6 +23,8 @@ Define tasks in `.agentwire.tasks.yml` (a sibling of `.agentwire.yml`, split out
 
 `.agentwire.tasks.yml` is **protected control-plane** — a policed agent can't write it directly. Authoring it is propose-and-promote: draft to `.agentwire.tasks.proposed.yml`, then a human runs `agentwire tasks review` and `agentwire tasks promote`. See [Damage control](../internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720).
 
+**Legacy inline tasks are dead weight (#736).** Tasks that predate the #720/#721 split still living under a `tasks:` key in `.agentwire.yml` do **not** run — the executor reads only `.agentwire.tasks.yml`, with no runtime fallback. Migrate once: `agentwire tasks migrate` stages the inline block to `.agentwire.tasks.proposed.yml`, then `agentwire tasks review` + `agentwire tasks promote` lands it; finally delete the dead `tasks:` block from `.agentwire.yml`. `agentwire doctor` flags any project still in the un-migrated state.
+
 ```yaml
 # .agentwire.yml — declarative session config
 posture: auto    # Recommended for unattended work — see auto below

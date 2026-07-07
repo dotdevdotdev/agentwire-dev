@@ -4,8 +4,9 @@ import argparse
 import json
 
 import pytest
+import yaml
 
-from agentwire.tasks_cli import cmd_tasks_promote, cmd_tasks_review
+from agentwire.tasks_cli import cmd_tasks_migrate, cmd_tasks_promote, cmd_tasks_review
 
 
 def _ns(**kwargs):
@@ -169,3 +170,82 @@ class TestTasksPromoteHardGating:
         rc = cmd_tasks_promote(_ns(yes=True))
         assert rc == 1
         assert not (proj / ".agentwire.tasks.yml").exists()
+
+
+def _write_config(proj, text):
+    (proj / ".agentwire.yml").write_text(text)
+
+
+INLINE = (
+    "posture: bypass\n"
+    "tasks:\n"
+    "  daily:\n"
+    "    prompt: write the report\n"
+    "    post:\n"
+    "      - echo done\n"
+)
+
+
+class TestTasksMigrate:
+    def test_stages_inline_tasks_as_proposed(self, proj):
+        _write_config(proj, INLINE)
+        rc = cmd_tasks_migrate(_ns())
+        assert rc == 0
+        proposed = proj / ".agentwire.tasks.proposed.yml"
+        assert proposed.exists()
+        # Live protected file is NEVER written by migrate.
+        assert not (proj / ".agentwire.tasks.yml").exists()
+        staged = yaml.safe_load(proposed.read_text())
+        assert set(staged.keys()) == {"tasks"}
+        assert staged["tasks"]["daily"]["prompt"] == "write the report"
+        assert staged["tasks"]["daily"]["post"] == ["echo done"]
+
+    def test_migrated_draft_promotes_cleanly(self, proj, capsys):
+        # End-to-end: what migrate stages must survive review with no issues.
+        _write_config(proj, INLINE)
+        assert cmd_tasks_migrate(_ns()) == 0
+        assert cmd_tasks_review(_ns()) == 0
+        assert "No validation issues" in capsys.readouterr().out
+
+    def test_no_inline_tasks_clear_message(self, proj, capsys):
+        _write_config(proj, "posture: bypass\n")
+        rc = cmd_tasks_migrate(_ns())
+        assert rc == 1
+        assert "nothing to migrate" in capsys.readouterr().err
+        assert not (proj / ".agentwire.tasks.proposed.yml").exists()
+
+    def test_no_config_file_fails(self, proj, capsys):
+        rc = cmd_tasks_migrate(_ns())
+        assert rc == 1
+        assert "No .agentwire.yml found" in capsys.readouterr().err
+
+    def test_does_not_clobber_existing_live_tasks_file(self, proj, capsys):
+        _write_config(proj, INLINE)
+        live = proj / ".agentwire.tasks.yml"
+        live.write_text("tasks:\n  existing:\n    prompt: keep me\n")
+        rc = cmd_tasks_migrate(_ns())
+        assert rc == 1
+        assert "already exists" in capsys.readouterr().err
+        # Live file untouched; no proposed draft written.
+        assert "keep me" in live.read_text()
+        assert not (proj / ".agentwire.tasks.proposed.yml").exists()
+
+    def test_overwrites_existing_proposed_with_note(self, proj, capsys):
+        _write_config(proj, INLINE)
+        proposed = proj / ".agentwire.tasks.proposed.yml"
+        proposed.write_text("tasks:\n  stale:\n    prompt: old\n")
+        rc = cmd_tasks_migrate(_ns())
+        assert rc == 0
+        assert "overwrote" in capsys.readouterr().out
+        staged = yaml.safe_load(proposed.read_text())
+        assert "daily" in staged["tasks"]
+        assert "stale" not in staged["tasks"]
+
+    def test_json_mode(self, proj, capsys):
+        _write_config(proj, INLINE)
+        rc = cmd_tasks_migrate(_ns(json=True))
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["success"] is True
+        assert data["tasks"] == ["daily"]
+        assert data["overwrote"] is False

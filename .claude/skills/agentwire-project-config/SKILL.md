@@ -117,6 +117,24 @@ opt-in for your own non-interactive script) — `--yes` only skips the
 confirmation prompt, it never substitutes for that. Run `promote` from your
 own terminal; it cannot be made to run through the agent.
 
+**Migrating legacy inline tasks (#736).** Before #720/#721, tasks lived inline
+in `.agentwire.yml` under a `tasks:` key. That block is now **dead weight** —
+the executor (`agentwire ensure` + the scheduler) reads **only**
+`.agentwire.tasks.yml`, so a project whose tasks never moved fails silently
+(`ensure` exits 6, scheduled runs error). There is no runtime fallback by
+design. Migrate each affected project once:
+
+1. `agentwire tasks migrate` — reads the inline `.agentwire.yml` `tasks:` block
+   and stages it to `.agentwire.tasks.proposed.yml` (never writes the protected
+   live file). Refuses to clobber an existing `.agentwire.tasks.yml`; overwrites
+   an existing proposed draft (and says so).
+2. `agentwire tasks review` then `agentwire tasks promote` — vet and land it.
+3. Delete the now-dead `tasks:` block from `.agentwire.yml`.
+
+`agentwire doctor` flags any project stuck in this state ("tasks defined in
+.agentwire.yml but never migrated to .agentwire.tasks.yml — they will NOT run
+under ensure/scheduler").
+
 ```yaml
 # .agentwire.tasks.yml
 shell: /bin/sh  # Project-level default shell
