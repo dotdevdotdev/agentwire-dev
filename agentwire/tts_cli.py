@@ -459,19 +459,102 @@ def _resolve_shim_python() -> tuple[str | None, str | None, str | None]:
     return sys.executable, None, None
 
 
+# === Managed shim liveness (health-aware idempotency, #734) ===
+#
+# A managed voice shim (Kokoro TTS :8102, Moonshine STT :8101) runs uvicorn in
+# a tmux session and warms its model in the background. The old start path was
+# idempotent on *session existence* alone, so a dead/wedged process inside a
+# live session was treated as healthy forever — say/transcribe then silently
+# fell back to browser voice. These helpers make start/ensure health-aware:
+# reuse a session only when it is actually serving (or too young to have bound
+# its port yet); otherwise reap it and relaunch.
+
+
+def _probe_shim_health(port: int, timeout: float = 2.0) -> tuple[bool, str | None]:
+    """Probe a managed shim's ``/health`` on localhost.
+
+    Returns ``(responded, status)``: ``responded`` is True when the HTTP server
+    answered at all (even mid-warmup); ``status`` is the reported state string
+    (``ok``/``loading``/``downloading``/``absent``/``failed``/…) or None when
+    nothing answered (process dead, wedged, or the port not yet bound)."""
+    try:
+        req = urllib.request.Request(f"http://localhost:{port}/health")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return True, data.get("status")
+    except Exception:
+        return False, None
+
+
+def _tmux_session_age(session_name: str) -> float | None:
+    """Seconds since the tmux session was created, or None if unknowable."""
+    import time
+
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", session_name, "#{session_created}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return time.time() - int(result.stdout.strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _shim_session_state(
+    session_name: str, port: int, *, warmup_grace: float = 25.0
+) -> tuple[bool, str | None]:
+    """``(live, status)`` for an EXISTING managed-shim tmux session.
+
+    The single liveness predicate shared by ``start`` (reuse-vs-reap) and
+    ``doctor`` (flag-a-dead-shim). A session is *live* when its ``/health``
+    answers a non-``failed`` status, OR it is younger than ``warmup_grace`` (the
+    port may not be bound yet). A process that never answers past the grace, or
+    reports a terminal ``failed``, is NOT live. ``status`` is the ``/health``
+    state, ``"starting"`` for a still-booting young session, or None for a dead
+    one — carried through for human-readable diagnostics."""
+    responded, status = _probe_shim_health(port)
+    if responded:
+        return (status != "failed", status)
+    age = _tmux_session_age(session_name)
+    if age is not None and age < warmup_grace:
+        return (True, "starting")
+    return (False, status)
+
+
+def _reap_shim_session(session_name: str) -> None:
+    """Kill a dead shim tmux session so a fresh one can bind the port."""
+    import time
+
+    subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+    time.sleep(0.5)
+
+
 # === STT Commands ===
 
 def cmd_stt_start(args) -> int:
     """Start the STT server in tmux."""
     session_name = get_stt_session_name()
-
-    if tmux_session_exists(session_name):
-        print(f"STT server already running in tmux session '{session_name}'")
-        print(f"  Attach: tmux attach -t {session_name}")
-        return 0
-
     port = args.port or 8101
     host = args.host or "0.0.0.0"
+
+    if tmux_session_exists(session_name):
+        live, status = _shim_session_state(session_name, port)
+        if live:
+            print(f"STT server already running in tmux session '{session_name}'")
+            print(f"  Attach: tmux attach -t {session_name}")
+            return 0
+        # Session exists but :{port}/health isn't serving (dead/wedged) —
+        # self-heal by reaping and relaunching instead of masking a dead
+        # engine behind mere session existence (#734).
+        print(
+            f"STT server session '{session_name}' is present but not serving "
+            f"(state: {status or 'no response'}) — relaunching."
+        )
+        _reap_shim_session(session_name)
+
     config = load_config()
     stt_config = config.get("stt", {})
     model = args.model or stt_config.get("model", "base")
@@ -576,20 +659,30 @@ def cmd_stt_status(args) -> int:
 # === Kokoro (default-tier TTS shim) Commands ===
 
 def cmd_kokoro_start(args) -> int:
-    """Start the default-tier Kokoro TTS shim in tmux (idempotent).
+    """Start the default-tier Kokoro TTS shim in tmux (idempotent, health-aware).
 
     Mirrors ``agentwire stt start``: the portal's ``ensure_managed_tts`` calls
-    this on startup, and the early-return on an existing session means a
-    user-started shim is reused with no port clash."""
+    this on startup. An existing session is reused only when it is actually
+    serving (``/health`` ok/warming); a dead-but-present session is reaped and
+    relaunched so a wedged shim self-heals instead of masking forever (#734)."""
     session_name = get_kokoro_session_name()
-
-    if tmux_session_exists(session_name):
-        print(f"Kokoro TTS shim already running in tmux session '{session_name}'")
-        print(f"  Attach: tmux attach -t {session_name}")
-        return 0
-
     port = args.port or 8102
     host = args.host or "0.0.0.0"
+
+    if tmux_session_exists(session_name):
+        live, status = _shim_session_state(session_name, port)
+        if live:
+            print(f"Kokoro TTS shim already running in tmux session '{session_name}'")
+            print(f"  Attach: tmux attach -t {session_name}")
+            return 0
+        # Session exists but :{port}/health isn't serving (dead/wedged) —
+        # self-heal by reaping and relaunching instead of masking a dead
+        # engine behind mere session existence (#734).
+        print(
+            f"Kokoro TTS shim session '{session_name}' is present but not serving "
+            f"(state: {status or 'no response'}) — relaunching."
+        )
+        _reap_shim_session(session_name)
 
     # Resolve an interpreter that can run the shim: dev-checkout venv when one
     # exists, otherwise the installed package's interpreter.

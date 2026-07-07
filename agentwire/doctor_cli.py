@@ -404,6 +404,77 @@ def _render_task_migration_section() -> int:
     return len(unmigrated)
 
 
+def _find_dead_managed_shims() -> list[dict]:
+    """Managed voice shims whose tmux session is alive but ``/health`` is dead.
+
+    The #734 failure mode: a wedged Kokoro (:8102) or Moonshine STT (:8101) shim
+    inside a live ``agentwire-kokoro``/``agentwire-stt`` session — say/transcribe
+    then silently fall back to browser voice/recognition with no error, and the
+    old session-existence-only ``ensure`` never relaunches it. Only the default
+    tier runs a managed shim, so we check that tier only, and reuse the same
+    ``_shim_session_state`` liveness predicate as ``start`` (SSOT).
+    """
+    from .config import load_config as load_config_typed
+    from .core import (
+        get_kokoro_session_name,
+        get_stt_session_name,
+        tmux_session_exists,
+    )
+    from .tts_cli import _shim_session_state
+
+    cfg = load_config_typed()
+    checks: list[tuple[str, str, int, str, str]] = []
+
+    if getattr(getattr(cfg, "tts", None), "backend", "default") == "default":
+        checks.append((
+            "Kokoro TTS", get_kokoro_session_name(), 8102,
+            "agentwire kokoro start", "say falls back to browser voice",
+        ))
+
+    if getattr(getattr(cfg, "stt", None), "backend", "default") == "default":
+        # Only the Moonshine path runs a shim; without it the default tier
+        # transcribes in the browser and there is nothing to probe.
+        from .stt import moonshine_importable
+
+        if moonshine_importable():
+            checks.append((
+                "Moonshine STT", get_stt_session_name(), 8101,
+                "agentwire stt start",
+                "transcription falls back to browser recognition",
+            ))
+
+    dead: list[dict] = []
+    for label, session, port, fix, impact in checks:
+        if not tmux_session_exists(session):
+            continue
+        live, status = _shim_session_state(session, port)
+        if not live:
+            dead.append({
+                "label": label, "session": session, "port": port,
+                "status": status, "fix": fix, "impact": impact,
+            })
+    return dead
+
+
+def _render_shim_liveness_section() -> int:
+    """Doctor section: managed shim session alive but ``/health`` dead (#734)."""
+    dead = _find_dead_managed_shims()
+    if not dead:
+        print("  [ok] No dead-but-present voice shims")
+        return 0
+    for d in dead:
+        print(
+            f"  [!!] {d['label']} shim session '{d['session']}' is alive but "
+            f":{d['port']}/health is not serving (state: "
+            f"{d['status'] or 'no response'}) — {d['impact']}."
+        )
+    print(
+        f"     Self-heal: re-run `{dead[0]['fix']}` — it is now health-aware and "
+        "reaps a dead session before relaunching."
+    )
+    return len(dead)
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -925,6 +996,17 @@ def cmd_doctor(args) -> int:
         issues_found += _render_task_migration_section()
     except Exception as e:
         print(f"  [..] Could not check project task migration: {e}")
+
+    # 13. Managed voice shims (Kokoro :8102, Moonshine STT :8101) whose tmux
+    # session is alive but whose /health is dead (#734). The old
+    # session-existence-only idempotency masked a wedged engine forever, so
+    # say/transcribe silently fell back to browser voice. Surfaced distinctly
+    # here with the now-health-aware self-heal command.
+    print("\nChecking managed voice shim liveness (#734)...")
+    try:
+        issues_found += _render_shim_liveness_section()
+    except Exception as e:
+        print(f"  [..] Could not check managed voice shim liveness: {e}")
 
     # Summary
     print()

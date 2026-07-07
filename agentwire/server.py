@@ -387,10 +387,11 @@ class AgentWireServer(
         """Ensure the default-tier Moonshine shim subprocess is running.
 
         Delegates to the CLI (single source of truth): ``agentwire stt start``
-        is idempotent — ``cmd_stt_start`` early-returns if the ``agentwire-stt``
-        tmux session already exists, so a user-started shim is reused with no
-        port clash. The ~19s ONNX warm-up happens in that child process, never
-        on the portal's event loop. Mirrors ``autostart_custom_services``."""
+        is idempotent and health-aware — ``cmd_stt_start`` reuses the
+        ``agentwire-stt`` session only when it is actually serving, and reaps +
+        relaunches a dead-but-present one (#734), so a wedged shim self-heals on
+        the next ensure. The ~19s ONNX warm-up happens in that child process,
+        never on the portal's event loop. Mirrors ``autostart_custom_services``."""
         await asyncio.sleep(5)  # let the portal finish binding first
         try:
             success, result = await self.run_agentwire_cmd(["stt", "start"], json_output=False)
@@ -438,10 +439,11 @@ class AgentWireServer(
         """Ensure the default-tier Kokoro TTS shim subprocess is running.
 
         Delegates to the CLI (single source of truth): ``agentwire kokoro start``
-        is idempotent — ``cmd_kokoro_start`` early-returns if the
-        ``agentwire-kokoro`` tmux session already exists, so a user-started shim
-        is reused with no port clash. The ~200 MB download + ONNX warm-up
-        happens in that child process, never on the portal's event loop. Mirrors
+        is idempotent and health-aware — ``cmd_kokoro_start`` reuses the
+        ``agentwire-kokoro`` session only when it is actually serving, and reaps
+        + relaunches a dead-but-present one (#734), so a wedged shim self-heals
+        on the next ensure. The ~200 MB download + ONNX warm-up happens in that
+        child process, never on the portal's event loop. Mirrors
         ``ensure_managed_stt``."""
         await asyncio.sleep(5)  # let the portal finish binding first
         try:
