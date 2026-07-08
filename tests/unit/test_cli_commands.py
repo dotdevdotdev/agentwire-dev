@@ -337,6 +337,83 @@ class TestCmdNewSeedFallback:
         assert "recover" not in calls  # recovery never runs on success
 
 
+class TestCmdNewWorktreeMissingDirFailsLoud:
+    """#739 — `agentwire new --json` must never report success with a `path`
+    that doesn't back a real worktree on disk. Two guards, two failure
+    windows: (1) worktree creation reports ok but the dir never landed, (2)
+    the dir existed right after creation but vanished before the pane
+    actually launches."""
+
+    def _base_args(self, project_path):
+        return argparse.Namespace(
+            session="proj/mybranch", path=str(project_path), force=False,
+            json=True, base=None, pull_first=False, roles=None, no_soul=True,
+        )
+
+    def test_ensure_worktree_lies_about_success(self, capsys, monkeypatch, tmp_path):
+        """`ensure_worktree` returns True without the dir existing (the #739
+        symptom: `agentwire new` proceeded past worktree creation with a path
+        whose directory was never actually created)."""
+        from agentwire import session_cli as m
+
+        project_path = tmp_path / "proj"
+        project_path.mkdir()
+
+        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
+        monkeypatch.setattr(
+            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
+        monkeypatch.setattr(m, "ensure_worktree", lambda *a, **k: True)
+        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
+
+        rc = m.cmd_new(self._base_args(project_path))
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["success"] is False
+        assert "does not exist" in payload["error"]
+
+    def test_dir_vanishes_between_creation_and_launch(self, capsys, monkeypatch, tmp_path):
+        """The dir is real right after `ensure_worktree`, but something
+        removes it before `_launch_tmux_session` runs — the pre-launch guard
+        must catch this instead of launching the agent into an ENOENT."""
+        import shutil
+        from types import SimpleNamespace
+
+        from agentwire import session_cli as m
+
+        project_path = tmp_path / "proj"
+        project_path.mkdir()
+        session_path = tmp_path / "proj-worktrees" / "mybranch"
+
+        def fake_ensure_worktree(proj, branch, wt_path, **kw):
+            wt_path.mkdir(parents=True)
+            return True
+
+        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
+        monkeypatch.setattr(
+            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
+        monkeypatch.setattr(m, "ensure_worktree", fake_ensure_worktree)
+        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
+        monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
+        monkeypatch.setattr(
+            m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
+
+        def vanish_then_build(*a, **k):
+            shutil.rmtree(str(session_path))
+            return SimpleNamespace(command="claude", env={})
+
+        monkeypatch.setattr(m, "build_agent_command", vanish_then_build)
+        launched = []
+        monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: launched.append(True))
+
+        rc = m.cmd_new(self._base_args(project_path))
+        assert rc == 1
+        assert not launched
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["success"] is False
+        assert "vanished before launch" in payload["error"]
+
+
 class TestCmdNewDefaultCreatedByRooting:
     """#715 — with --created-by unset, cmd_new should only default to the
     caller when the new session is in the caller's own project; a genuinely

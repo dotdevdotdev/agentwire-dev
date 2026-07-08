@@ -1,6 +1,6 @@
 """Watchdog stage isolation (agentwire/limits_cli.py, #490).
 
-The 60s watchdog runs four ``*.tick()`` stages sequentially. A raise in one
+The 60s watchdog runs five ``*.tick()`` stages sequentially. A raise in one
 must be logged and skipped, not propagate out and starve the rest of the cycle.
 """
 
@@ -24,7 +24,8 @@ def stub_stages(monkeypatch):
     when that stage actually runs, so the test can assert which stages ran.
     """
     ran: dict[str, list] = {k: [] for k in
-                            ("usage_limit", "prompt_router", "inbox", "session_context")}
+                            ("usage_limit", "prompt_router", "inbox", "session_context",
+                             "scheduler_zombie")}
 
     def make(name, result):
         def _tick():
@@ -35,6 +36,7 @@ def stub_stages(monkeypatch):
     import agentwire.inbox as inbox_mod
     import agentwire.prompt_router as pr_mod
     import agentwire.session_context as sc_mod
+    from agentwire.scheduler import zombie as zombie_mod
 
     monkeypatch.setattr(limits_cli.usage_limit, "tick",
                         make("usage_limit",
@@ -42,6 +44,7 @@ def stub_stages(monkeypatch):
     monkeypatch.setattr(pr_mod, "tick", make("prompt_router", {"routed": [], "deferred": []}))
     monkeypatch.setattr(inbox_mod, "tick", make("inbox", {"flushed": [], "deferred": []}))
     monkeypatch.setattr(sc_mod, "tick", make("session_context", {"acted": [], "deferred": []}))
+    monkeypatch.setattr(zombie_mod, "tick", make("scheduler_zombie", {"killed": []}))
     return ran
 
 

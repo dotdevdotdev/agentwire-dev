@@ -177,16 +177,20 @@ def cmd_limits_tick(args) -> int:
     """One watchdog pass (called by launchd every minute).
 
     Runs the usage-limit sweep FIRST, then prompt routing (#276), then the
-    polite-message inbox drain (#296), then context auto-management (#442) —
-    the ordering guarantees a usage-limit dialog is parked before any sweep
-    looks at the pane, that the inbox only ever delivers to panes the prompt
-    sweep already cleared, and that auto-``/clear`` runs LAST so it never fights
-    a pending paste/prompt for the same idle, empty box.
+    polite-message inbox drain (#296), then context auto-management (#442),
+    then the zombie-scheduler-session reap (#739) — the ordering guarantees a
+    usage-limit dialog is parked before any sweep looks at the pane, that the
+    inbox only ever delivers to panes the prompt sweep already cleared, that
+    auto-``/clear`` runs before the reap so it never fights a pending
+    paste/prompt for the same idle, empty box, and that the reap runs LAST
+    since it kills sessions outright (nothing later should still be acting on
+    one).
 
     Each stage runs inside :func:`_run_stage` so an exception in one subsystem
     is logged and skipped rather than aborting the whole cycle (#490).
     """
     from agentwire import inbox, prompt_router, session_context
+    from agentwire.scheduler import zombie as scheduler_zombie
 
     result = _run_stage(
         "usage_limit", usage_limit.tick,
@@ -197,9 +201,12 @@ def cmd_limits_tick(args) -> int:
         "inbox", inbox.tick, {"flushed": [], "deferred": []})
     context = _run_stage(
         "session_context", session_context.tick, {"acted": [], "deferred": []})
+    zombies = _run_stage(
+        "scheduler_zombie", scheduler_zombie.tick, {"killed": []})
     if getattr(args, "json", False):
         print(json.dumps({
-            **result, "prompts": prompts, "messages": messages, "context": context,
+            **result, "prompts": prompts, "messages": messages,
+            "context": context, "zombies": zombies,
         }))
         return 0
     if result.get("skipped"):
@@ -237,6 +244,9 @@ def cmd_limits_tick(args) -> int:
     if ctx_deferred:
         print("context deferred: " + ", ".join(
             f"{e['session']}({e['deferred']})" for e in ctx_deferred))
+    killed = zombies.get("killed") or []
+    if killed:
+        print("zombie scheduler sessions reaped: " + ", ".join(killed))
     return 0
 
 

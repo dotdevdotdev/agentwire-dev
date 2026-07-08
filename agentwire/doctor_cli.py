@@ -1008,6 +1008,30 @@ def cmd_doctor(args) -> int:
     except Exception as e:
         print(f"  [..] Could not check managed voice shim liveness: {e}")
 
+    # 14. Zombie scheduler sessions (#739): a worktree dispatch whose launch
+    # crashed before the agent started (e.g. the worktree dir went missing
+    # between `agentwire new` reporting success and the pane's `cd`) drops to
+    # a bare shell the idle-reaper never touches. `agentwire limits tick`
+    # self-heals these every minute, so a live one here means the watchdog
+    # isn't installed/running, not that reaping is broken.
+    print("\nChecking for zombie scheduler sessions (#739)...")
+    try:
+        from .scheduler import scan_zombie_sessions
+
+        zombie_sessions = scan_zombie_sessions()
+        if not zombie_sessions:
+            print("  [ok] No zombie scheduler sessions found")
+        else:
+            issues_found += 1
+            print(f"  [!!] {len(zombie_sessions)} scheduler session(s) stuck at a bare shell:")
+            for z in zombie_sessions:
+                print(f"       - {z['session']} ({z['command']}, {z['age_seconds']}s old)")
+            print("       `agentwire limits tick` reaps these automatically — "
+                  "run it now, or check the usage-limit watchdog is installed "
+                  "(`agentwire limits install`).")
+    except Exception as e:
+        print(f"  [..] Could not check for zombie scheduler sessions: {e}")
+
     # Summary
     print()
     print("-" * 60)
