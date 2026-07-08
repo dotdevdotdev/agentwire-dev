@@ -402,7 +402,17 @@ def cmd_new(args) -> int:
                 return _output_result(False, json_mode, hint)
 
     if not session_path.exists():
-        if args.force or path:
+        if branch:
+            # #739: a worktree session's path is only ever meant to come from
+            # `_spawn_worktree`/`ensure_worktree` above. Reaching here with it
+            # still missing means that creation silently didn't happen (or
+            # the dir vanished right after) — mkdir-ing an empty placeholder
+            # would launch the agent into a directory with no git checkout at
+            # all. Fail loud instead of returning a `path` that doesn't back
+            # a real worktree.
+            return _output_result(False, json_mode,
+                                   f"Worktree path does not exist after creation: {session_path}")
+        elif args.force or path:
             # Auto-create directory with -f flag or when custom path explicitly provided
             session_path.mkdir(parents=True, exist_ok=True)
         else:
@@ -452,6 +462,15 @@ def cmd_new(args) -> int:
     _set_session_name_env(agent, session_name)
 
     agent_cmd = agent.command
+
+    # #739: re-verify right before launch — closes the window between the
+    # earlier worktree-creation check and this point (shared-dir probe,
+    # posture/agent-command resolution) during which an external actor could
+    # still remove the directory. `agentwire new --json` must never report
+    # success with a `path` that doesn't exist on disk.
+    if not session_path.exists():
+        return _output_result(False, json_mode,
+                               f"Session path vanished before launch: {session_path}")
 
     # Create new tmux session with env vars injected at creation time, cd
     # into place, and start the agent (skipped when bare).

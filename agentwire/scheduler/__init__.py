@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 import yaml
 
 from ..core import _atomic_write
+from . import zombie
 from .dispatch import (
     _WORKFLOW_STATUS_TO_SCHED,
     _apply_max_runs,
@@ -110,3 +111,6 @@ from .state import (
     load_board,
     save_board,
 )
+from .zombie import reap as reap_zombie_sessions
+from .zombie import scan as scan_zombie_sessions
+from .zombie import tick as zombie_tick

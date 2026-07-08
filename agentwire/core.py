@@ -847,6 +847,34 @@ def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:
         )
 
 
+def _guarded_launch_command(path_str: str, agent_cmd: str | None) -> str:
+    """Build the pane's ``cd <path> && <agent_cmd>`` line with a missing-dir guard (#739).
+
+    A crashed worktree create can leave ``path_str`` absent by the time the
+    pane actually runs its ``cd`` (race between ``agentwire new`` reporting
+    success and the async pane launch, or an external actor removing the
+    dir). Without a guard, ``cd`` fails, the shell prints an error and
+    carries on, and ``agent_cmd`` (e.g. ``claude``) then launches from the
+    WRONG cwd and crashes — dropping the pane to a bare shell that the
+    idle-reaper never touches (it only reaps a *running* agent going idle),
+    so it lingers forever.
+
+    On a missing dir this instead alerts (emails the owner when
+    ``$AGENTWIRE_UNATTENDED=1`` — set for scheduler dispatches, see
+    ``_with_unattended_env``) and exits the shell, which tears the tmux
+    session down instead of leaving a zombie. ``agent_cmd`` never runs.
+    """
+    quoted_path = shlex.quote(path_str)
+    alert = (
+        f"echo \"agentwire: worktree missing at launch, aborting: {path_str}\" >&2; "
+        '[ "$AGENTWIRE_UNATTENDED" = "1" ] && agentwire email '
+        f'--subject "agentwire: worktree missing — ${{AGENTWIRE_SESSION_NAME:-unknown session}}" '
+        f'--body "cd failed at launch: {path_str}" >/dev/null 2>&1'
+    )
+    guard = f"cd {quoted_path} || {{ {alert}; exit 1; }}"
+    return f"{guard} && {agent_cmd}" if agent_cmd else guard
+
+
 def _launch_tmux_session(
     session_name: str,
     session_path,
@@ -859,8 +887,9 @@ def _launch_tmux_session(
     The one launch sequence shared by ``new`` / ``recreate`` / ``fork`` (#630):
     `tmux new-session -e K=V` injects *env* into the session environment
     BEFORE the initial shell starts (post-hoc `set-environment` never reaches
-    it), then `send-keys` cd's into place and, if *agent_cmd* is non-empty,
-    starts the agent after a short settle.
+    it), then `send-keys` cd's into place (guarded — see
+    ``_guarded_launch_command``) and, if *agent_cmd* is non-empty, starts the
+    agent after a short settle.
 
     Local (machine_id None): runs subprocess calls with check=True (raises on
     tmux failure) and returns None. Remote: runs one composite shell command
@@ -869,17 +898,14 @@ def _launch_tmux_session(
     import time
 
     path_str = str(session_path)
+    launch_cmd = _guarded_launch_command(path_str, agent_cmd)
     if machine_id:
         env_flags = _build_tmux_env_flags_shell(env)
         create_cmd = (
             f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(path_str)} {env_flags}&& "
-            f"tmux send-keys -t {shlex.quote(session_name)} 'cd {shlex.quote(path_str)}' Enter"
+            f"sleep 0.1 && "
+            f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(launch_cmd)} Enter"
         )
-        if agent_cmd:
-            create_cmd += (
-                f" && sleep 0.1 && "
-                f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(agent_cmd)} Enter"
-            )
         return _run_remote(machine_id, create_cmd)
 
     subprocess.run(
@@ -887,16 +913,11 @@ def _launch_tmux_session(
          *_build_tmux_env_flags(env)],
         check=True,
     )
+    time.sleep(0.1)
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, f"cd {shlex.quote(path_str)}", "Enter"],
+        ["tmux", "send-keys", "-t", session_name, launch_cmd, "Enter"],
         check=True,
     )
-    time.sleep(0.1)
-    if agent_cmd:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", session_name, agent_cmd, "Enter"],
-            check=True,
-        )
     return None
 
 
