@@ -78,8 +78,47 @@ def scan() -> list[dict]:
 
 
 def _notify(session: str, branch: str, command: str) -> None:
-    """Best-effort owner email — reused Resend wiring, mirrors
-    ``dispatch._notify_dispatch_timeout`` (never raises into the caller)."""
+    """Alert on a reaped zombie session (#739 + #743).
+
+    Always posts a portal toast, so the reap is visible in-band rather than
+    only in an email the human has to notice and forward. When the session
+    has a recorded parent (``created_by`` in its metadata — set at
+    ``agentwire new`` time, see ``_record_session_creator``), the crash is
+    ALSO escalated there via the msg inbox (drained by the same watchdog that
+    runs this reap) — a worktree worker's crash reaches its orchestrator, not
+    just the owner's inbox. Owner email — the reused Resend wiring, mirrors
+    ``dispatch._notify_dispatch_timeout`` — is strictly the fallback for a
+    session with no recorded parent (the genuine root/scheduler-dispatch
+    case #739 originally covered). Each channel is independently
+    best-effort; this must never raise into the caller.
+    """
+    text = (
+        f"agentwire: reaped zombie scheduler session `{session}` (branch "
+        f"`{branch}`) — launch crashed at a bare shell (`{command}`) before "
+        "the agent started."
+    )
+
+    try:
+        from ..core import _post_desktop_notification
+        _post_desktop_notification(text, session=session, priority="high")
+    except Exception:
+        pass
+
+    parent = None
+    try:
+        from ..core import load_session_metadata
+        parent = load_session_metadata(session).get("created_by") or None
+    except Exception:
+        parent = None
+
+    if parent:
+        try:
+            from ..inbox import enqueue
+            enqueue(parent, text, kind="escalation", sender="agentwire")
+        except Exception:
+            pass
+        return
+
     try:
         import socket
 

@@ -148,15 +148,25 @@ def _build_tmux_env_flags_shell(env: dict[str, str]) -> str:
     return " ".join(parts) + " "
 
 
-def _set_session_name_env(agent: "AgentCommand", session_name: str) -> None:
-    """Stamp ``AGENTWIRE_SESSION_NAME`` onto an ``AgentCommand.env``.
+def _set_session_name_env(agent: "AgentCommand", session_name: str, created_by: str | None = None) -> None:
+    """Stamp ``AGENTWIRE_SESSION_NAME`` (and, when there's a real parent,
+    ``AGENTWIRE_CREATED_BY``) onto an ``AgentCommand.env``.
 
     Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
-    / ``cmd_fork`` / scheduler-spawn paths gets this so downstream tooling
-    (notably the worker damage-control rules in ``safety/_core.py``)
-    can identify which agentwire session the running tool is part of.
+    / ``cmd_fork`` / scheduler-spawn paths gets ``AGENTWIRE_SESSION_NAME`` so
+    downstream tooling (notably the worker damage-control rules in
+    ``safety/_core.py``) can identify which agentwire session the running
+    tool is part of.
+
+    ``created_by`` of ``''`` (root/orchestrator) or ``None`` means no
+    parent — ``AGENTWIRE_CREATED_BY`` is deliberately left UNSET rather than
+    set to an empty string, so the bare pre-agent shell's launch-crash guard
+    (``_guarded_launch_command``) can tell "has a parent to escalate to"
+    apart from "root session, email the owner" with a plain ``-n`` test (#743).
     """
     agent.env["AGENTWIRE_SESSION_NAME"] = session_name
+    if created_by:
+        agent.env["AGENTWIRE_CREATED_BY"] = created_by
 
 
 def inject_session_env(session: str, env: dict[str, str], remote_host: str | None = None) -> None:
@@ -859,17 +869,35 @@ def _guarded_launch_command(path_str: str, agent_cmd: str | None) -> str:
     idle-reaper never touches (it only reaps a *running* agent going idle),
     so it lingers forever.
 
-    On a missing dir this instead alerts (emails the owner when
-    ``$AGENTWIRE_UNATTENDED=1`` — set for scheduler dispatches, see
-    ``_with_unattended_env``) and exits the shell, which tears the tmux
-    session down instead of leaving a zombie. ``agent_cmd`` never runs.
+    On a missing dir this instead alerts and exits the shell, which tears the
+    tmux session down instead of leaving a zombie. ``agent_cmd`` never runs.
+
+    Two alert routes, both shell-runtime-gated on env vars stamped at launch
+    (``_set_session_name_env``), so this function stays a pure string builder
+    with no Python-level knowledge of the session's parent (#743):
+    - A real recorded parent (``$AGENTWIRE_CREATED_BY`` set) gets the crash
+      escalated to its msg inbox — in-band, not just an email the human has
+      to forward.
+    - No parent (root/orchestrator sessions, the genuine scheduler-dispatch
+      case) falls back to the original owner email, still gated on
+      ``$AGENTWIRE_UNATTENDED=1`` (see ``_with_unattended_env``).
     """
     quoted_path = shlex.quote(path_str)
+    session_ref = "${AGENTWIRE_SESSION_NAME:-unknown session}"
+    missing_body = f"cd failed at launch: {path_str}"
+    notify_parent = (
+        '[ -n "$AGENTWIRE_CREATED_BY" ] && agentwire msg send --to "$AGENTWIRE_CREATED_BY" '
+        f'--kind escalation --subject "agentwire: worktree missing at launch — {session_ref}" '
+        f'--body "{missing_body}" >/dev/null 2>&1'
+    )
+    notify_owner = (
+        '[ -z "$AGENTWIRE_CREATED_BY" ] && [ "$AGENTWIRE_UNATTENDED" = "1" ] && agentwire email '
+        f'--subject "agentwire: worktree missing — {session_ref}" '
+        f'--body "{missing_body}" >/dev/null 2>&1'
+    )
     alert = (
         f"echo \"agentwire: worktree missing at launch, aborting: {path_str}\" >&2; "
-        '[ "$AGENTWIRE_UNATTENDED" = "1" ] && agentwire email '
-        f'--subject "agentwire: worktree missing — ${{AGENTWIRE_SESSION_NAME:-unknown session}}" '
-        f'--body "cd failed at launch: {path_str}" >/dev/null 2>&1'
+        f"{notify_parent}; {notify_owner}"
     )
     guard = f"cd {quoted_path} || {{ {alert}; exit 1; }}"
     return f"{guard} && {agent_cmd}" if agent_cmd else guard

@@ -455,11 +455,39 @@ def cmd_new(args) -> int:
             # Kind default posture (no global default-role lookup).
             posture, _ = _resolve_posture_from_args(args)
 
+    # Record the creating session as parent for prompt routing. --created-by
+    # overrides (including '' to opt out); otherwise default to the caller
+    # ONLY when the new session is in the caller's own project — a
+    # cross-project spawn gets its own root instead of flattening into the
+    # caller's subtree (#715). --caller-session is the candidate caller for
+    # that check (MCP forwards it; direct CLI use falls back to the current
+    # tmux session). Resolved before building the agent env (#743 needs the
+    # real parent, if any, in AGENTWIRE_CREATED_BY BEFORE `tmux new-session
+    # -e` fires) and before seeding so a failed seed can name its sender.
+    #
+    # Joint default with role (#716): an EXPLICITLY requested orchestrator
+    # roots by default instead — a durable orchestrator shouldn't answer to
+    # whoever happened to spawn it. Gated on the explicit --kind flag (not
+    # the resolved `kind`, which is "orchestrator" by default for any
+    # branchless name) so the ubiquitous plain `agentwire new` case keeps
+    # its existing same-project-inherit behavior untouched. This is the one
+    # place this default lives — cmd_worktree's `_launch_session` forwards
+    # its own `--kind` straight through as `kind` here, so `agentwire
+    # worktree --kind orchestrator` / `agentwire orchestrator` compose with
+    # it for free.
+    created_by = getattr(args, 'created_by', None)
+    caller = None
+    if created_by is None and getattr(args, 'kind', None) == 'orchestrator':
+        created_by = ''
+    elif created_by is None:
+        caller = getattr(args, 'caller_session', None) or pane_manager.get_current_session()
+        created_by = resolve_default_created_by(caller, session_path)
+
     # Build agent command
     model_override = getattr(args, 'model', None)
     agent = build_agent_command(posture, roles if roles else None, model=model_override)
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
-    _set_session_name_env(agent, session_name)
+    _set_session_name_env(agent, session_name, created_by=created_by)
 
     agent_cmd = agent.command
 
@@ -497,33 +525,6 @@ def cmd_new(args) -> int:
                 voice=None,
             )
         save_project_config(project_config, session_path)
-
-    # Record the creating session as parent for prompt routing. --created-by
-    # overrides (including '' to opt out); otherwise default to the caller
-    # ONLY when the new session is in the caller's own project — a
-    # cross-project spawn gets its own root instead of flattening into the
-    # caller's subtree (#715). --caller-session is the candidate caller for
-    # that check (MCP forwards it; direct CLI use falls back to the current
-    # tmux session). Resolved before seeding so a failed seed can name its
-    # sender.
-    #
-    # Joint default with role (#716): an EXPLICITLY requested orchestrator
-    # roots by default instead — a durable orchestrator shouldn't answer to
-    # whoever happened to spawn it. Gated on the explicit --kind flag (not
-    # the resolved `kind`, which is "orchestrator" by default for any
-    # branchless name) so the ubiquitous plain `agentwire new` case keeps
-    # its existing same-project-inherit behavior untouched. This is the one
-    # place this default lives — cmd_worktree's `_launch_session` forwards
-    # its own `--kind` straight through as `kind` here, so `agentwire
-    # worktree --kind orchestrator` / `agentwire orchestrator` compose with
-    # it for free.
-    created_by = getattr(args, 'created_by', None)
-    caller = None
-    if created_by is None and getattr(args, 'kind', None) == 'orchestrator':
-        created_by = ''
-    elif created_by is None:
-        caller = getattr(args, 'caller_session', None) or pane_manager.get_current_session()
-        created_by = resolve_default_created_by(caller, session_path)
 
     # Deliver the first message once the agent is ready (verified paste).
     # Delivery failure doesn't fail the command — the session exists — but it
