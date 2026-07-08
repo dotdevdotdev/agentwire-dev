@@ -160,9 +160,110 @@ class TestReap:
         assert zombie.tick() == {"killed": []}
 
     def test_notify_never_raises_on_email_failure(self, monkeypatch):
+        import agentwire.core as core_mod
+
         def boom(**kwargs):
             raise RuntimeError("resend down")
 
         import agentwire.channels.email as email_mod
         monkeypatch.setattr(email_mod, "send_email", boom)
+        monkeypatch.setattr(core_mod, "_post_desktop_notification", lambda *a, **k: False)
+        monkeypatch.setattr(core_mod, "load_session_metadata", lambda s: {})
+        zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")  # must not raise
+
+
+class TestNotifyRouting:
+    """#743: reap alerts must reach the portal + parent, not just email."""
+
+    def _no_op_toast(self, monkeypatch):
+        import agentwire.core as core_mod
+        posted = []
+        monkeypatch.setattr(
+            core_mod, "_post_desktop_notification",
+            lambda text, **kw: posted.append((text, kw)) or True,
+        )
+        return posted
+
+    def test_always_posts_a_portal_toast(self, monkeypatch):
+        import agentwire.core as core_mod
+        posted = self._no_op_toast(monkeypatch)
+        monkeypatch.setattr(core_mod, "load_session_metadata", lambda s: {})
+        monkeypatch.setattr("agentwire.channels.email.send_email", lambda **k: None)
+
+        zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")
+
+        assert len(posted) == 1
+        assert "proj/scheduler-a-1" in posted[0][0]
+        assert posted[0][1].get("session") == "proj/scheduler-a-1"
+
+    def test_routes_to_parent_via_msg_when_created_by_recorded(self, monkeypatch):
+        import agentwire.core as core_mod
+        import agentwire.inbox as inbox_mod
+        self._no_op_toast(monkeypatch)
+        monkeypatch.setattr(
+            core_mod, "load_session_metadata",
+            lambda s: {"created_by": "orchestrator"},
+        )
+        emailed = []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **k: emailed.append(k),
+        )
+        sent = []
+        monkeypatch.setattr(
+            inbox_mod, "enqueue",
+            lambda to, text, **kw: sent.append((to, text, kw)),
+        )
+
+        zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")
+
+        assert len(sent) == 1
+        to, text, kw = sent[0]
+        assert to == "orchestrator"
+        assert kw.get("kind") == "escalation"
+        assert not emailed  # email is the no-parent fallback only
+
+    def test_falls_back_to_email_when_no_parent_recorded(self, monkeypatch):
+        import agentwire.core as core_mod
+        import agentwire.inbox as inbox_mod
+        self._no_op_toast(monkeypatch)
+        monkeypatch.setattr(core_mod, "load_session_metadata", lambda s: {})
+        sent = []
+        monkeypatch.setattr(inbox_mod, "enqueue", lambda *a, **k: sent.append((a, k)))
+        emailed = []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **k: emailed.append(k),
+        )
+
+        zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")
+
+        assert not sent
+        assert len(emailed) == 1
+        assert "proj/scheduler-a-1" in emailed[0]["subject"]
+
+    def test_never_raises_when_msg_send_fails(self, monkeypatch):
+        import agentwire.core as core_mod
+        import agentwire.inbox as inbox_mod
+        self._no_op_toast(monkeypatch)
+        monkeypatch.setattr(
+            core_mod, "load_session_metadata",
+            lambda s: {"created_by": "orchestrator"},
+        )
+
+        def boom(*a, **k):
+            raise RuntimeError("inbox write failed")
+
+        monkeypatch.setattr(inbox_mod, "enqueue", boom)
+        zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")  # must not raise
+
+    def test_never_raises_when_toast_fails(self, monkeypatch):
+        import agentwire.core as core_mod
+
+        def boom(*a, **k):
+            raise RuntimeError("portal unreachable")
+
+        monkeypatch.setattr(core_mod, "_post_desktop_notification", boom)
+        monkeypatch.setattr(core_mod, "load_session_metadata", lambda s: {})
+        monkeypatch.setattr("agentwire.channels.email.send_email", lambda **k: None)
         zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")  # must not raise
