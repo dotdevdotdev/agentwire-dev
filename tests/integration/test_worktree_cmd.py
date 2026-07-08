@@ -725,3 +725,75 @@ def test_prune_gc_merged_clears_tabs_for_torn_down_sessions_only(tmp_path, monke
     assert rc == 0
     assert m.chrome_tabs.tabs_for("clone-repo-finished2") == []  # GC'd session's tab cleared
     assert len(m.chrome_tabs.tabs_for("clone-repo-ongoing2")) == 1  # untouched session's tab kept
+
+
+# --- Regressions for #740 ---
+
+def test_remove_resolves_project_name_from_cwd_inside_repo(tmp_path, monkeypatch, wt_env):
+    """--project <name> (a bare name, not a path) must resolve via the
+    configured projects dir, not by naively joining onto cwd. Before #740's
+    fix, running from inside the repo turned `--project <name>` into
+    `<cwd>/<name>` — a nonexistent doubled path — so removal failed after
+    already having killed the session."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    cfg.projects.dir = tmp_path  # so bare name "clone-repo" resolves to `clone`
+
+    assert _run(monkeypatch, cfg, name="kill-me", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "kill-me"
+    assert wt_path.exists()
+
+    monkeypatch.chdir(clone)  # cwd IS the project root — the reported scenario
+    rc = _run(monkeypatch, cfg, name="kill-me", project=clone.name, remove=True)
+    assert rc == 0
+    assert not wt_path.exists()
+    assert reg.entries(clone.resolve()) == []
+
+
+def test_remove_does_not_kill_session_when_worktree_removal_fails(tmp_path, monkeypatch, wt_env, capsys):
+    """Teardown must not kill a live session if the worktree removal fails —
+    doing so half-succeeds and leaves an orphaned worktree+branch with no
+    session left to notice (#740)."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="stuck3", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "stuck3"
+    # Break the worktree's link back to its admin dir so `git worktree
+    # remove --force` fails, while its real content stays on disk.
+    (wt_path / ".git").unlink()
+
+    killed = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["tmux", "kill-session"]:
+            killed.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(m, "tmux_session_exists", lambda name: name == "clone-repo-stuck3")
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="stuck3", project=str(clone), remove=True)
+    assert rc == 1
+    assert killed == []  # session must survive a failed removal
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is False
+    assert payload["killed"] is False
+
+
+def test_gc_merged_alone_runs_as_standalone_action(tmp_path, monkeypatch, wt_env):
+    """--gc-merged without --prune must actually run the GC sweep instead of
+    falling through to the 'Usage: agentwire worktree <name>...' error —
+    --help advertises it, so invoking it standalone must behave, not error (#740)."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="finished3", project=str(clone)) == 0
+
+    rc = _run(monkeypatch, cfg, gc_merged=True, project=str(clone))
+    assert rc == 0
+    assert reg.entries(clone.resolve()) == []

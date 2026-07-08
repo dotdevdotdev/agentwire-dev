@@ -787,6 +787,24 @@ def cmd_recreate(args) -> int:
     return 0
 
 
+def _resolve_project_arg(project_arg: str, projects_dir: Path) -> Path:
+    """Resolve ``--project`` to an absolute repo path, independent of cwd.
+
+    An explicit path (absolute, or one that actually exists relative to cwd —
+    ``.``, ``../sibling``) is honored as given. Otherwise ``project_arg`` is
+    treated as a bare project NAME and resolved against the configured
+    projects dir, the same way ``cmd_new`` resolves a bare project name from
+    ``project/branch`` session syntax — never by blindly joining it onto
+    whatever directory the command happens to run from. That naive join is
+    what path-doubled ``<cwd>/<project>`` into a nonexistent dir when cwd was
+    already the project's own directory (#740).
+    """
+    expanded = Path(project_arg).expanduser()
+    if expanded.is_absolute() or expanded.exists():
+        return expanded.resolve()
+    return (projects_dir / project_arg).resolve()
+
+
 def cmd_worktree(args) -> int:
     """Create a git worktree + agentwire session in one command.
 
@@ -816,13 +834,14 @@ def cmd_worktree(args) -> int:
     ref = getattr(args, 'ref', None)
 
     from .config import load_config as load_config_typed
-    wt_config = load_config_typed().worktree
+    full_config = load_config_typed()
+    wt_config = full_config.worktree
 
     # Resolve the repo: explicit --project → config default → git root of cwd
     # (so a worktree session can be spawned from any subdir of a monorepo).
     project_arg = getattr(args, 'project', None)
     if project_arg:
-        project_base = Path(project_arg).expanduser().resolve()
+        project_base = _resolve_project_arg(project_arg, full_config.projects.dir)
     elif wt_config.default_project:
         project_base = Path(wt_config.default_project).expanduser().resolve()
     else:
@@ -846,7 +865,7 @@ def cmd_worktree(args) -> int:
         return _worktree_list(args, project_path, json_mode)
     if getattr(args, 'watch', False):
         return _worktree_watch(args, project_path, json_mode)
-    if getattr(args, 'prune', False):
+    if getattr(args, 'prune', False) or getattr(args, 'gc_merged', False):
         return _worktree_prune(args, project_path, worktree_dir, json_mode)
     if getattr(args, 'dangling', False):
         return _worktree_dangling(args, project_path, json_mode)
@@ -1233,6 +1252,11 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
     branch is already merged" sweep from #717. Off by default: this command
     is normally a safe, read-mostly cleanup and shouldn't kill a live,
     in-flight session just because its branch happens to look merged.
+
+    ``--gc-merged`` alone (no ``--prune``) also dispatches here and runs the
+    same sweep — cmd_worktree treats it as implying --prune (#740), so
+    ``--help`` and behavior agree instead of --gc-merged falling through to
+    the usage error.
     """
     removed = []
     gc_merged_out = []
@@ -1443,7 +1467,7 @@ def _teardown_entry(
     project_path: Path, worktree_dir: Path, session_name: str, worktree_path: Path,
     branch: str | None, base: str | None, *, keep_branch: bool = False, force_branch: bool = False,
 ) -> dict:
-    """Core atomic teardown: kill session, force-remove the worktree + prune,
+    """Core atomic teardown: force-remove the worktree + prune, kill session,
     unregister, best-effort branch cleanup. Shared by --remove and
     --prune --gc-merged so both paths go through the exact same steps (#717).
 
@@ -1451,12 +1475,13 @@ def _teardown_entry(
     `git worktree remove --force` can't clear it, this fails LOUDLY
     (success: False) and leaves the registry entry in place, instead of
     silently "unregistering" an orphan.
-    """
-    killed = False
-    if tmux_session_exists(session_name):
-        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
-        killed = True
 
+    The worktree removal is attempted BEFORE the session is killed, and the
+    session is only killed once removal is confirmed — never the reverse.
+    Killing first would leave a live session's worktree+branch orphaned on
+    disk with no session left to notice, on any removal failure (bad
+    project_path, a stuck worktree, ...) (#740).
+    """
     # Force-remove the git worktree, then prune admin files either way.
     _, remove_error = remove_worktree(project_path, worktree_path, force=True)
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"], capture_output=True)
@@ -1464,7 +1489,12 @@ def _teardown_entry(
     if worktree_path.exists():
         reason = remove_error or "worktree directory still present after `git worktree remove --force`"
         return {"success": False, "session": session_name, "path": str(worktree_path),
-                "killed": killed, "worktree_removed": False, "error": reason}
+                "killed": False, "worktree_removed": False, "error": reason}
+
+    killed = False
+    if tmux_session_exists(session_name):
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+        killed = True
 
     # Removing a project's last worktree also removes the now-empty
     # ~/worktrees/<project>/ dir.
@@ -1490,7 +1520,7 @@ def _teardown_entry(
 
 
 def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
-    """Teardown: kill the session, force-remove the worktree + prune, unregister,
+    """Teardown: force-remove the worktree + prune, kill the session, unregister,
     and (best-effort) delete the branch — one atomic call (#717)."""
     name = getattr(args, 'name', None)
     if not name:
@@ -1960,11 +1990,11 @@ def register_session_parser(subparsers) -> None:
                                  "parent — a PR nobody is positioned to review/merge (--all for every "
                                  "repo). Distinct from --list's 'orphan' state (dead session, disk "
                                  "remnant) — this flags a LIVE session no one is watching.")
-        parser.add_argument("--remove", action="store_true", help="Atomic teardown: kill the session, force-remove the worktree, delete the branch once merged, and unregister (cleanup/recovery)")
+        parser.add_argument("--remove", action="store_true", help="Atomic teardown: force-remove the worktree, kill the session, delete the branch once merged, and unregister (cleanup/recovery)")
         parser.add_argument("--keep-branch", action="store_true", help="With --remove: skip branch cleanup entirely (default: best-effort delete once confirmed merged)")
         parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged")
         parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
-        parser.add_argument("--gc-merged", action="store_true", help="With --prune: also tear down (session/worktree/branch) any registered entry whose branch is confirmed merged")
+        parser.add_argument("--gc-merged", action="store_true", help="Tear down (session/worktree/branch) any registered entry whose branch is confirmed merged; implies --prune (runs standalone too)")
         parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")
         _add_posture_flag(parser)
         parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worker etiquette (kind=orchestrator: REPLACES the default persona instead)")
