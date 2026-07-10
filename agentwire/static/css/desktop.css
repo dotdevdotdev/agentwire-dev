@@ -6374,3 +6374,66 @@ body.sidebar-pinned .sidebar-tab {
 .collage-family .collage-card.is-active {
     border-color: var(--accent);
 }
+
+/* --- connector overlay (#746) — topology-wires.js ---
+   SVG layer of thin wires from each parent session's title bar to each live
+   child's, appended into the same #desktopArea collage.js targets. Read-only:
+   the module only measures window rects, never moves/resizes a real WinBox. */
+.topology-wires-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+}
+.topology-wires-overlay.hidden { display: none; }
+
+.topology-wire {
+    fill: none;
+    stroke: var(--wire-tint, var(--lineage-tint-1));
+    stroke-width: 2px;
+    stroke-linecap: round;
+    opacity: 0.4;
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--wire-tint, var(--lineage-tint-1)) 45%, transparent));
+}
+
+/* processing / generating / playing — a flowing dash reads as "working" */
+.topology-wire--flow {
+    opacity: 0.9;
+    stroke-dasharray: 7 7;
+    animation: topology-wire-flow 0.7s linear infinite;
+}
+
+/* Failure-state parity (#749): awaiting/stuck override the lineage tint
+   outright — amber/red must win over the family hue so a blocked child
+   never reads as "fine". Declared after .topology-wire so equal-specificity
+   cascade order (not !important) decides it. */
+.topology-wire--awaiting {
+    stroke: var(--topology-awaiting);
+    opacity: 0.95;
+    filter: drop-shadow(0 0 5px var(--topology-awaiting-glow));
+    animation: topology-wire-pulse 1.3s ease-in-out infinite;
+}
+.topology-wire--stuck {
+    stroke: var(--topology-stuck);
+    opacity: 1;
+    filter: drop-shadow(0 0 6px var(--topology-stuck-glow));
+    animation: topology-wire-pulse 0.7s ease-in-out infinite;
+}
+
+@keyframes topology-wire-flow {
+    to { stroke-dashoffset: -28; }
+}
+@keyframes topology-wire-pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .topology-wire--flow,
+    .topology-wire--awaiting,
+    .topology-wire--stuck {
+        animation: none;
+    }
+}

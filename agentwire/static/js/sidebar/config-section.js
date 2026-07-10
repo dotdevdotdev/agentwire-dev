@@ -8,6 +8,7 @@ import {
     getPermission, isMuted, setMuted, enableNotifications,
 } from '../notification-prefs.js';
 import { isAutoSend, setAutoSend, AUTOSEND_EVENT } from '../voice/autosend-prefs.js';
+import { topologyWires, TOPOLOGY_WIRES_EVENT } from '../topology-wires.js';
 
 function renderDisplayPrefs() {
     const current = getTerminalFontSize();
@@ -105,6 +106,38 @@ function bindAutoSendPref(body) {
     body._autoSendRepaint = repaint;
 }
 
+function renderTopologyWiresPref() {
+    const on = topologyWires.visible;
+    return `<div class="sidebar-display-prefs" data-topology-wires-block>
+        <div class="sidebar-display-row">
+            <label class="sidebar-config-key">Topology wires</label>
+            <label class="sidebar-notif-mute"><input type="checkbox" data-action="topology-wires"${on ? ' checked' : ''}/> ${on ? 'on' : 'off'}</label>
+        </div>
+        <div class="sidebar-display-row">
+            <span class="sidebar-display-hint">Parent↔child connector lines (Alt+L)</span>
+        </div>
+    </div>`;
+}
+
+function bindTopologyWiresPref(body) {
+    const repaint = () => {
+        const block = body.querySelector('[data-topology-wires-block]');
+        if (!block) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = renderTopologyWiresPref();
+        block.replaceWith(tmp.firstElementChild);
+        wire();
+    };
+    function wire() {
+        body.querySelector('[data-action="topology-wires"]')?.addEventListener('change', (e) => {
+            topologyWires.setVisible(e.target.checked);
+        });
+    }
+    wire();
+    window.addEventListener(TOPOLOGY_WIRES_EVENT, repaint);
+    body._topologyWiresRepaint = repaint;
+}
+
 function bindDisplayPrefs(body) {
     const slider = body.querySelector('#termFontSize');
     const valueEl = body.querySelector('[data-display="size"]');
@@ -139,15 +172,17 @@ export const configSection = {
                 else if (typeof value === 'object') display = `<code>${JSON.stringify(value)}</code>`;
                 return `<div class="sidebar-config-item"><span class="sidebar-config-key">${key}</span><span class="sidebar-config-val">${display}</span></div>`;
             }).join('');
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + itemHtml;
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyWiresPref() + itemHtml;
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
             bindAutoSendPref(body);
+            bindTopologyWiresPref(body);
         } catch (e) {
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + '<div class="sidebar-empty">Failed to load config</div>';
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyWiresPref() + '<div class="sidebar-empty">Failed to load config</div>';
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
             bindAutoSendPref(body);
+            bindTopologyWiresPref(body);
         }
     },
 };

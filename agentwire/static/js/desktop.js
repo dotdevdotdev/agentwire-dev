@@ -11,6 +11,7 @@ import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
+import { topologyWires } from './topology-wires.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { ReviewWindow } from './review-window.js';
@@ -101,6 +102,7 @@ async function init() {
     setupWindowCycling();
     setupWindowSwipeCycling();
     setupCollage();
+    setupTopologyWires();
     setupHelp();
 
     // Set up event listeners BEFORE fetching data
@@ -501,6 +503,23 @@ function setupCollage() {
         e.stopPropagation();
         if (e.repeat) return;  // ignore auto-repeat while the key is held
         collage.toggle();
+    }, true);
+}
+
+// Topology wires (#746) — Alt+L toggles the parent↔child connector overlay.
+// Detected via e.code, same capture-phase idiom as F3/Alt+`/Alt+bracket above,
+// so xterm's focused textarea never swallows it.
+function setupTopologyWires() {
+    topologyWires.init();
+
+    window.addEventListener('keydown', (e) => {
+        if (!e.altKey || e.metaKey || e.ctrlKey) return;
+        if (e.code !== 'KeyL') return;
+        if (isCommandPaletteOpen() || isHelpOpen()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        topologyWires.toggle();
     }, true);
 }
 
