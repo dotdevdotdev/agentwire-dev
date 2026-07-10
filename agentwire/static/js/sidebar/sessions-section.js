@@ -231,10 +231,13 @@ async function handleCloseClick(session) {
     }
 }
 
-// Data fetching + WebSocket events (registered once by sessionsSection)
+// Data fetching + WebSocket events (registered once by sessionsSection, but
+// exported so other consumers of getAllSessions()/activityStates — e.g.
+// topology-wires.js — can guarantee the pipeline is live without depending on
+// the Sessions sidebar accordion ever being expanded).
 let dataInitialized = false;
 
-function initData() {
+export function initData() {
     if (dataInitialized) return;
     dataInitialized = true;
 
