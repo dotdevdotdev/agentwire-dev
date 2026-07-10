@@ -550,6 +550,57 @@ class TestApiNotify:
         resp = await client.post("/api/notify", json={"session": "test"})
         assert resp.status == 400
 
+    async def test_session_created_broadcasts_explicit_parent_and_role(self, portal_client):
+        """#747 — when the creating process (cmd_new) posts parent/role
+        explicitly, those values are authoritative and travel straight
+        through to the broadcast, no lookup needed."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        server._get_sessions_data = AsyncMock(return_value=[])
+        resp = await client.post("/api/notify", json={
+            "event": "session_created", "session": "fix-auth-812",
+            "parent": "orchestrator", "role": "worker",
+        })
+        assert resp.status == 200
+        server.broadcast_dashboard.assert_any_call("session_created", {
+            "session": "fix-auth-812", "name": "fix-auth-812",
+            "parent": "orchestrator", "role": "worker",
+        })
+
+    async def test_session_created_falls_back_to_sessions_data_lookup(self, portal_client):
+        """A bare tmux-hook-triggered session_created (no parent/role in the
+        payload) falls back to looking the session up in the fresh sessions
+        list — the same data the immediately-following sessions_update
+        carries, so both events describe the session identically."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        server._get_sessions_data = AsyncMock(return_value=[
+            {"name": "fix-auth-812", "parent": "orchestrator", "role": "worker"},
+        ])
+        resp = await client.post("/api/notify", json={
+            "event": "session_created", "session": "fix-auth-812",
+        })
+        assert resp.status == 200
+        server.broadcast_dashboard.assert_any_call("session_created", {
+            "session": "fix-auth-812", "name": "fix-auth-812",
+            "parent": "orchestrator", "role": "worker",
+        })
+
+    async def test_session_created_unknown_session_has_null_parent_and_role(self, portal_client):
+        """A manually-created (non-agentwire) tmux session degrades to
+        null/null rather than erroring — it genuinely has no topology."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        server._get_sessions_data = AsyncMock(return_value=[])
+        resp = await client.post("/api/notify", json={
+            "event": "session_created", "session": "some-manual-tmux-session",
+        })
+        assert resp.status == 200
+        server.broadcast_dashboard.assert_any_call("session_created", {
+            "session": "some-manual-tmux-session", "name": "some-manual-tmux-session",
+            "parent": None, "role": None,
+        })
+
     async def test_generic_event_reports_client_count(self, portal_client):
         """#444: a broadcast reports how many dashboards received it, so the
         caller knows whether anything actually saw the ephemeral event."""

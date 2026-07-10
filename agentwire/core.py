@@ -740,6 +740,54 @@ def _record_session_creator(session_name: str, created_by: str | None, via: str)
     store_session_metadata(session_name, metadata)
 
 
+def _record_session_role(session_name: str, role: str | None) -> None:
+    """Record the session's ROLE axis (orchestrator/worker) to disk (merge-preserving).
+
+    Distinct from the etiquette/persona ``roles:`` list in ``.agentwire.yml`` —
+    this is the fundamental authority axis derived at creation time (``kind``
+    in cmd_new, ``effective_kind`` in cmd_worktree, "worker" for cmd_spawn).
+    Read back by list_local_sessions() and the session_created notify lookup.
+    """
+    if not role:
+        return
+    metadata = load_session_metadata(session_name)
+    metadata["role"] = role
+    store_session_metadata(session_name, metadata)
+
+
+def notify_portal_session_created(session_name: str, parent: str | None, role: str | None) -> None:
+    """Tell the portal a session was just created, with topology context (#747).
+
+    Fires immediately from the creating process instead of relying solely on
+    the global tmux ``session-created`` hook, which only knows the bare
+    session name (no parent/role) and can race a slow first-message delivery
+    before metadata is written. Fire-and-forget — failures are silently
+    ignored since the portal may not be running.
+    """
+    import ssl
+
+    payload: dict = {"event": "session_created", "session": session_name}
+    if parent:
+        payload["parent"] = parent
+    if role:
+        payload["role"] = role
+
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        req = urllib.request.Request(
+            f"{_default_portal_url()}/api/notify",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", **_portal_auth_headers()},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=3, context=ctx)
+    except Exception:
+        pass
+
+
 def _display_parent(session_name: str, path: str = "") -> "str | None":
     """The session that should visually own this one in the sidebar.
 

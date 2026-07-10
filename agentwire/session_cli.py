@@ -29,12 +29,14 @@ from .core import (
     _output_json,
     _output_result,
     _record_session_creator,
+    _record_session_role,
     _resolve_posture_from_args,
     _resolve_posture_or_config,
     _run_remote,
     _set_session_name_env,
     build_agent_command,
     load_config,
+    notify_portal_session_created,
     parse_env_args,
     resolve_default_created_by,
     tmux_session_exists,
@@ -504,6 +506,14 @@ def cmd_new(args) -> int:
     # into place, and start the agent (skipped when bare).
     _launch_tmux_session(session_name, session_path, agent.env, agent_cmd)
 
+    # Record creator/role and push the enriched session_created event (#747)
+    # as early as possible — before the potentially slow first-message wait
+    # below — so the portal broadcast carries real parent/role instead of
+    # racing the metadata write against the async global tmux hook.
+    _record_session_creator(session_name, created_by, via="new")
+    _record_session_role(session_name, kind)
+    notify_portal_session_created(session_name, created_by, kind)
+
     # Update project config (.agentwire.yml) - only if --persist is given.
     # Persist USER roles (--roles) only — the intrinsic etiquette and soul are
     # derived/auto-appended each run, never written into project config.
@@ -566,8 +576,6 @@ def cmd_new(args) -> int:
                         "and could not be queued — paste it manually",
                         file=sys.stderr,
                     )
-
-    _record_session_creator(session_name, created_by, via="new")
 
     if json_mode:
         result = {

@@ -240,6 +240,74 @@ def test_record_session_creator_persists_creator(tmp_path, monkeypatch):
     assert core._display_parent("clone-repo-fix-bug") == "orchestrator"
 
 
+def test_record_session_role_persists_and_merges_with_creator(tmp_path, monkeypatch):
+    """#747 — role (orchestrator/worker) is a separate merge-preserving field
+    alongside created_by, so the session_created broadcast can carry both."""
+    from agentwire import core
+
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
+
+    core._record_session_creator("clone-repo-fix-bug", "orchestrator", via="worktree")
+    core._record_session_role("clone-repo-fix-bug", "worker")
+
+    metadata = core.load_session_metadata("clone-repo-fix-bug")
+    assert metadata["created_by"] == "orchestrator"
+    assert metadata["role"] == "worker"
+
+    # A falsy role is a no-op — never clobbers an already-recorded role.
+    core._record_session_role("clone-repo-fix-bug", None)
+    assert core.load_session_metadata("clone-repo-fix-bug")["role"] == "worker"
+
+
+def test_notify_portal_session_created_posts_enriched_payload(monkeypatch):
+    """#747 — the creating process posts name/parent/role to /api/notify
+    directly, rather than relying solely on the racy global tmux hook."""
+    import json as _json
+    import urllib.request
+
+    from agentwire import core
+
+    seen = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None, context=None):
+        seen["url"] = req.full_url
+        seen["payload"] = _json.loads(req.data.decode())
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    core.notify_portal_session_created("clone-repo-fix-bug", "orchestrator", "worker")
+
+    assert seen["url"].endswith("/api/notify")
+    assert seen["payload"] == {
+        "event": "session_created",
+        "session": "clone-repo-fix-bug",
+        "parent": "orchestrator",
+        "role": "worker",
+    }
+
+
+def test_notify_portal_session_created_swallows_failures(monkeypatch):
+    """Fire-and-forget: the portal may not be running — never raise."""
+    import urllib.request
+
+    from agentwire import core
+
+    def fail(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+
+    core.notify_portal_session_created("proj", None, None)  # must not raise
+
+
 def test_base_flag_overrides(tmp_path, monkeypatch, wt_env):
     _, clone = _origin_and_clone(tmp_path, default_branch="develop")
     # Add a second branch on origin to base off of.

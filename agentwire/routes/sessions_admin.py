@@ -183,10 +183,10 @@ class SessionsAdminRoutesMixin:
                 yaml_config["voice"] = voice
                 await self._write_agentwire_yaml(session_path, yaml_config, machine_id)
 
-            # Broadcast session created to dashboard clients
-            await self.broadcast_dashboard("session_created", {"session": session_name})
-            sessions_data = await self._get_sessions_data()
-            await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
+            # No manual broadcast here (#747): the `agentwire new` subprocess
+            # just awaited above already posted the enriched session_created
+            # (name/parent/role) + sessions_update to this same portal from
+            # inside cmd_new, before returning.
 
             # Wait until the tmux pane has actually rendered something. The CLI
             # returns the moment `tmux send-keys` *queues* the agent command, so
