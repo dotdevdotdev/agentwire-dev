@@ -44,6 +44,35 @@
        neon purple (#c06cf0). */
     --neon-red: #ff5449;
     --neon-purple: #c06cf0;
+
+    /* Lineage-tint family palette (#749) — SSOT for the topology slices
+       (born-from-parent placement, connector overlay, hierarchy-grouped
+       collage). A session family (a parent + all its descendants) is
+       assigned ONE hue by family index (index % 6) so lineage reads at a
+       glance without labels. Every surface derives fills/borders/glows
+       from these base vars via color-mix() rather than re-deriving its
+       own palette — do not hardcode a family hex anywhere else.
+       Red and amber are reserved for failure/awaiting state (below) and
+       must never be assigned as a lineage tint. */
+    --lineage-tint-1: #00ff66; /* green  */
+    --lineage-tint-2: #00bfff; /* blue   */
+    --lineage-tint-3: #c06cf0; /* purple */
+    --lineage-tint-4: #f472b6; /* pink   */
+    --lineage-tint-5: #fb923c; /* orange */
+    --lineage-tint-6: #22d3ee; /* cyan   */
+    --lineage-tint-count: 6;   /* keep in sync with the numbered set above */
+
+    /* Failure-state parity (#749) — every "alive" treatment (glow, pulse,
+       flowing wire) a topology surface ships MUST have an equally salient
+       counterpart here. These alias the existing orb vocabulary so wires,
+       placement badges, and collage borders never invent a second color
+       language for state: amber = awaiting-input, red = stuck (blocked or
+       crashed alike). A green pulse must never be the only signal — a
+       stuck/awaiting child needs to read as loud as an active one. */
+    --topology-awaiting: var(--orb-awaiting);
+    --topology-awaiting-glow: color-mix(in srgb, var(--orb-awaiting) 50%, transparent);
+    --topology-stuck: var(--neon-red);
+    --topology-stuck-glow: color-mix(in srgb, var(--neon-red) 50%, transparent);
 }
 
 * {
@@ -6249,3 +6278,18 @@ body.sidebar-pinned .sidebar-tab {
     font-size: 9px; font-weight: 700; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 4px;
     background: rgba(255,255,255,0.06); color: var(--text-muted); border: 1px solid var(--chrome-border);
 }
+
+/* === topology ===
+   Session-family visualization (#749 slate: placement, connector overlay,
+   hierarchy-grouped collage). Every rule appended here must:
+   1. Pull its family color from --lineage-tint-1..6 (never a hardcoded hex)
+      so a parent and its descendants read as one hue family everywhere.
+   2. Pair any "alive" treatment (glow/pulse/flowing wire) with an equally
+      salient counterpart using --topology-awaiting / --topology-stuck —
+      a stuck or awaiting-input child must never look "fine".
+   3. Default any live-pane content peek OFF or blurred — surfacing a
+      child's live terminal by default is a screen-share / credential
+      exposure risk (council flag, issue #749). Peeks are opt-in reveals,
+      never the resting state.
+   Slices append their own subsections below as they ship; this anchor
+   intentionally has no rules yet. */

@@ -1,6 +1,6 @@
 ---
 name: agentwire-desktop-ui
-description: Portal desktop UI patterns — left sidebar (click-toggle tab handle, accordion sections, session grouping into Sessions/Services via explicit allowlist, keyboard nav), session window modes (Monitor `<pre>` vs Terminal xterm.js — Monitor MUST NOT use xterm), artifact windows (sandboxed iframes from `~/.agentwire/artifacts/`), window collage (preview overlay — NEVER mutate real WinBox windows). Use when editing portal static files (`static/js/sidebar/*`, `desktop.js`, `desktop.css`), changing window behavior, or adding sidebar sections.
+description: Portal desktop UI patterns — left sidebar (click-toggle tab handle, accordion sections, session grouping into Sessions/Services via explicit allowlist, keyboard nav), session window modes (Monitor `<pre>` vs Terminal xterm.js — Monitor MUST NOT use xterm), artifact windows (sandboxed iframes from `~/.agentwire/artifacts/`), window collage (preview overlay — NEVER mutate real WinBox windows), topology design tokens (lineage-tint hue families + failure-state parity for placement/connector/collage). Use when editing portal static files (`static/js/sidebar/*`, `desktop.js`, `desktop.css`), changing window behavior, adding sidebar sections, or building session-topology UI (parent/child visualization).
 ---
 
 # Portal Desktop UI Patterns
@@ -56,6 +56,15 @@ Why this is load-bearing (each broke a previous implementation — full autopsy 
 - `registerWindow`/`setActiveWindow` auto-minimize all others (single-window mode) → any window event mid-overlay fights manual layouts.
 
 **Z-index landscape:** WinBox windows (inline, grows from 10) < collage overlay (1400) < toasts (1500) < modals (2000) < command palette (3000) < sidebar (9001) < tile drag overlay (99999).
+
+## Topology Design Tokens (#749)
+
+Session-family visualization (born-from-parent placement, connector overlay, hierarchy-grouped collage) is a design gate on top of two rules, enforced via shared CSS tokens in `desktop.css` `:root` — the `/* === topology === */` anchor near the end of the file is where those three slices append their rules.
+
+1. **Lineage tint** — a family (a parent + all its descendants) shares one hue, never re-derived per surface. `--lineage-tint-1` through `--lineage-tint-6` are the SSOT palette (assign by `family-index % 6`); derive fills/borders/glows from the base var via `color-mix()` rather than hardcoding a family hex anywhere else. Red and amber are reserved for state (below) — never assign them as a lineage tint.
+2. **Failure-state parity** — every "alive" treatment (glow, pulse, flowing wire) ships an equally salient blocked/crashed/awaiting-input counterpart. `--topology-awaiting` (amber, aliases `--orb-awaiting`) and `--topology-stuck` (red, aliases `--neon-red`, covers blocked + crashed alike) are the shared vocabulary — a green pulse must never be the only signal while a child is stuck on a permission prompt.
+
+**Also:** any live-pane content peek (e.g. a collage tile showing a child's actual terminal output) must default off/blurred — surfacing it by default is a screen-share / credential-exposure risk the moment topology becomes something people demo. Peeks are opt-in reveals, never the resting state.
 
 ## Artifact Windows
 
