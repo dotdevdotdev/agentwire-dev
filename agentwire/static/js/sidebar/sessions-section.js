@@ -30,6 +30,21 @@ const collapsedParents = new Set();
 export function getAllSessions() { return allSessions; }
 export function onSessionsChanged(fn) { listeners.add(fn); }
 
+// getAllSessions() is only backed by a live fetch once something has called
+// initData()+fetchSessions() — normally sessionsSection.mount(), which only
+// runs once the sidebar's Sessions accordion is expanded. A consumer that
+// needs session data (parent linkage, etc.) without depending on that UI
+// state — e.g. the collage's family grouping, #748 — calls this instead.
+// Memoized: the first call fetches once and wires the live 'sessions' event
+// subscription (via initData); later calls reuse the same promise, so this
+// never becomes a second parallel poller.
+let sessionsLoadPromise = null;
+export function ensureSessionsLoaded() {
+    initData();
+    if (!sessionsLoadPromise) sessionsLoadPromise = fetchSessions();
+    return sessionsLoadPromise;
+}
+
 function notifyListeners() { for (const fn of listeners) fn(); }
 
 function renderCloseButton(name) {
