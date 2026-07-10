@@ -6437,3 +6437,42 @@ body.sidebar-pinned .sidebar-tab {
         animation: none;
     }
 }
+
+/* --- born-from-parent placement (#745) ---
+   Overlay ghost that flies from a parent window's title-bar edge to the
+   landing spot; the real WinBox window is only created once the ghost is
+   at rest (see spawn-ghost.js). --ghost-tint is set inline per-spawn to a
+   --lineage-tint-N value (lineage.js) — never a hardcoded hex. */
+.spawn-ghost-root {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+}
+
+.spawn-ghost {
+    position: fixed;
+    border-radius: var(--r, 9px);
+    background: color-mix(in srgb, var(--ghost-tint) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ghost-tint) 65%, transparent);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--ghost-tint) 55%, transparent);
+    opacity: 0;
+    filter: brightness(2.2);
+    transition:
+        left 0.48s cubic-bezier(0.2, 0.9, 0.25, 1),
+        top 0.48s cubic-bezier(0.2, 0.9, 0.25, 1),
+        width 0.48s cubic-bezier(0.2, 0.9, 0.25, 1),
+        height 0.48s cubic-bezier(0.2, 0.9, 0.25, 1),
+        opacity 0.3s ease-out,
+        filter 0.42s ease-out;
+}
+
+.spawn-ghost--fly {
+    opacity: 1;
+    filter: brightness(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .spawn-ghost {
+        transition: none !important;
+    }
+}

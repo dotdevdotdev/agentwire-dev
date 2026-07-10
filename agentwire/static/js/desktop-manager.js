@@ -220,11 +220,16 @@ class DesktopManager {
                 break;
 
             case 'session_created':
+                // machine is undefined on today's payload (server only ever
+                // creates local sessions this way) — forwarded ahead of time
+                // so the born-from-parent placement (#745) is ready the
+                // moment a remote-creation path starts sending it too.
                 this.emit('session_created', {
                     session: msg.session,
                     name: msg.name,
                     parent: msg.parent,
                     role: msg.role,
+                    machine: msg.machine,
                 });
                 break;
 

@@ -12,6 +12,8 @@ import { desktop } from './desktop-manager.js';
 import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
 import { topologyWires } from './topology-wires.js';
+import { flyGhost } from './spawn-ghost.js';
+import { lineageTintVar } from './lineage.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { ReviewWindow } from './review-window.js';
@@ -43,6 +45,21 @@ const sessionWindows = new Map();  // sessionId -> SessionWindow instance
 const artifactWindows = new Map();  // artifactId -> ArtifactWindow instance
 const reviewWindows = new Map();  // windowId -> ReviewWindow instance
 let councilWindow = null;  // single CouncilWindow instance (one board at a time)
+
+// Born-from-parent placement (#745): sessions we've noticed appear (via the
+// poll-driven `sessions` event, or the optional live `session_created` event
+// upgrade from #747) that haven't been placed yet. One-shot AND time-boxed —
+// consumed (or expired) by the next openSessionTerminal() call for that id,
+// so a session only ever gets one chance at the birth ghost, and only while
+// it's genuinely fresh. Without the TTL, a child created hours ago while its
+// parent was closed would still "materialize" the first time someone happens
+// to click it later — that's just a normal reopen, not a birth.
+const recentBirths = new Map();  // childId -> { parentName, tintVar, ts }
+const BIRTH_TTL_MS = 15000;
+// Baseline session-name snapshot for diffing new arrivals. Null until the
+// first `sessions` event, so page load never treats the existing world as
+// "newly born".
+let knownSessionNames = null;
 
 // Global PTT state
 let globalPttState = 'idle';  // idle | recording | processing (mirrors globalPttCtl)
@@ -115,6 +132,10 @@ async function init() {
     desktop.on('pane_died', handlePaneDied);
     desktop.on('session_renamed', handleSessionRenamed);
     desktop.on('window_activity', handleWindowActivity);
+    // Born-from-parent placement (#745) — poll-driven detection of newly
+    // arrived child sessions. Primary path; session_created above is an
+    // optional accelerant on top of it, never a hard dependency.
+    desktop.on('sessions', handleSessionsListUpdate);
 
     // Handle TTS/audio events for voice indicator
     desktop.on('tts_start', ({ session }) => {
@@ -296,11 +317,20 @@ function handleSessionClosed({ session }) {
 }
 
 /**
- * Handle session_created event (#747) — pushed the instant a session is
- * created (agentwire new / worktree / portal), instead of waiting for the
- * sessions_update broadcast that follows moments later.
+ * Handle session_created event — pushed the instant a session is created
+ * (agentwire new / worktree / portal, #747) instead of waiting for the
+ * sessions_update broadcast that follows moments later. Two independent
+ * jobs share this one event:
+ *  - #747: merge the new session into the live list immediately (dedup by
+ *    name) so the sidebar shows the birth without poll lag.
+ *  - #745: register the birth (registerBirth() below) so a currently-open,
+ *    non-minimized parent gets the ghost-fly placement — the exact function
+ *    the poll-driven handleSessionsListUpdate() also calls, so either
+ *    source lands in the same place; this is a pure accelerant, never a
+ *    hard dependency (today's payload always carries parent/role, but the
+ *    fields are read defensively in case a future creation path omits them).
  */
-function handleSessionCreated({ session, name, parent, role }) {
+function handleSessionCreated({ session, name, parent, role, machine }) {
     const sessionName = name || session;
     if (!sessionName) return;
 
@@ -309,26 +339,105 @@ function handleSessionCreated({ session, name, parent, role }) {
     // that follows always wins with the authoritative record (full-array
     // replace), so this placeholder just needs to not double up before then.
     const sessions = desktop.sessions || [];
-    if (!sessions.some((s) => s.name === sessionName)) {
-        desktop.sessions = [...sessions, {
+    const alreadyKnown = sessions.some((s) => s.name === sessionName);
+    let sessionsWithChild = sessions;
+    if (!alreadyKnown) {
+        sessionsWithChild = [...sessions, {
             name: sessionName,
             parent: parent || null,
             roles: role ? [role] : [],
             windows: 1,
             path: '',
-            machine: null,
+            machine: machine || null,
         }];
-        desktop.emit('sessions', desktop.sessions);
+        desktop.sessions = sessionsWithChild;
+        // This synchronously re-enters handleSessionsListUpdate() (below),
+        // which is what actually calls registerBirth() for a session it's
+        // never seen before — the whole point of the emit is to let that
+        // one diff-driven path pick it up, not to trigger it twice. Do NOT
+        // also call registerBirth() directly here: openSessionTerminal()
+        // consumes (deletes) the recentBirths ticket the instant it's
+        // *called*, well before the ghost settles and the real window
+        // mounts, so a second call this tick would sail past every guard
+        // and fly a second ghost onto a second real window.
+        desktop.emit('sessions', sessionsWithChild);
+        return;
     }
 
-    // If the parent's window is already open, reveal the child beside it
-    // immediately — openSessionTerminal dedupes by session id internally
-    // (sessionWindows.has(id)), so this is a no-op if a window for this
-    // session is already open or gets opened again once sessions_update
-    // (or a later poll) reports the same session.
-    if (parent && sessionWindows.has(buildSessionId(parent, null))) {
-        openSessionTerminal(sessionName, 'monitor');
+    // Already merged — e.g. a sessions_update poll beat this event to it —
+    // so the diff-driven path above won't fire for it again. registerBirth()
+    // checks the parent is genuinely open (not just present — not minimized
+    // either) before flying the ghost + revealing the child; it's a no-op
+    // fallback (no auto-open at all) otherwise, matching #745's graceful-
+    // fallback requirement.
+    if (parent) {
+        registerBirth({ name: sessionName, parent, machine: machine || null }, sessionsWithChild);
     }
+}
+
+/**
+ * Diff the latest session list against the last-known snapshot and register
+ * a birth for anything that just appeared with a recorded parent (#745).
+ * The very first snapshot after page load is a baseline, not a batch of
+ * births — the whole existing world shouldn't fly out of the parent window.
+ */
+function handleSessionsListUpdate(sessions) {
+    const currentNames = new Set(sessions.map((s) => s.name));
+    if (knownSessionNames === null) {
+        knownSessionNames = currentNames;
+        return;
+    }
+    for (const s of sessions) {
+        if (knownSessionNames.has(s.name) || !s.parent) continue;
+        registerBirth(s, sessions);
+    }
+    knownSessionNames = currentNames;
+}
+
+/**
+ * Record that `session` was just born to `session.parent`, and — if the
+ * parent's window happens to be open right now — birth it immediately
+ * rather than waiting for the user to notice it in the sidebar. "Watch it
+ * get born" only works while you're already looking at the parent.
+ */
+function registerBirth(session, allSessions) {
+    const machine = normalizeMachine(session.machine);
+    const id = buildSessionId(session.name, machine);
+    if (sessionWindows.has(id)) return;  // already open — nothing to place
+    // handleSessionCreated's desktop.emit('sessions', ...) can synchronously
+    // re-enter here via handleSessionsListUpdate before the ghost it may have
+    // just kicked off has settled (sessionWindows.has(id) is still false
+    // mid-flight) — without this guard that's a second ghost + a second
+    // openSessionTerminal() call for the same id.
+    if (recentBirths.has(id)) return;
+
+    recentBirths.set(id, {
+        parentName: session.parent,
+        tintVar: lineageTintVar(session.name, allSessions || desktop.sessions),
+        ts: Date.now(),
+    });
+
+    const parentSW = sessionWindows.get(session.parent);
+    if (parentSW && parentTitleBarRect(parentSW)) {
+        openSessionTerminal(session.name, 'monitor', machine);
+    }
+}
+
+/**
+ * The parent window's title-bar rect (viewport coords), or null when it's
+ * not open/minimized/not yet rendered — the graceful fallback signal for the
+ * birth ghost (#745). Anchored near the bar's right edge so the ghost reads
+ * as "growing out of" the parent, not "replacing" it.
+ */
+function parentTitleBarRect(parentSW) {
+    if (!parentSW || parentSW.isMinimized) return null;
+    const win = parentSW.winbox && parentSW.winbox.window;
+    const header = win && win.querySelector('.wb-header');
+    if (!header) return null;
+    const bar = header.getBoundingClientRect();
+    if (!bar.width || !bar.height) return null;
+    const w = Math.min(220, Math.max(80, bar.width * 0.35));
+    return new DOMRect(bar.right - w, bar.top, w, bar.height);
 }
 
 /**
@@ -634,9 +743,39 @@ export function openSessionTerminal(session, mode, machine = null) {
         return;
     }
 
+    // Born-from-parent placement (#745): a one-shot, time-boxed birth ticket,
+    // whether this open was auto-triggered by registerBirth() or is a manual
+    // click that happened to land on a session just born to a currently-open
+    // parent. Consumed immediately so a later reopen never re-animates, and
+    // dropped outright once stale so an old, never-opened child doesn't fly
+    // out of a parent window it wasn't actually just born next to.
+    const birth = recentBirths.get(id);
+    recentBirths.delete(id);
+    const freshBirth = birth && (Date.now() - birth.ts <= BIRTH_TTL_MS) ? birth : null;
+
+    if (freshBirth) {
+        const parentSW = sessionWindows.get(freshBirth.parentName);
+        const fromRect = parentSW ? parentTitleBarRect(parentSW) : null;
+        const toRect = elements.desktopArea.getBoundingClientRect();
+        // flyGhost() itself handles the graceful fallback (no fromRect, or
+        // prefers-reduced-motion): it calls onSettle immediately, no ghost
+        // shown, same as the plain-open path below.
+        flyGhost(fromRect, toRect, freshBirth.tintVar, () => {
+            desktop.minimizeAllExcept(null);
+            _mountSessionWindow(session, mode, machine, id);
+        });
+        return;
+    }
+
     // Minimize all other session windows before opening new one
     desktop.minimizeAllExcept(null);
+    _mountSessionWindow(session, mode, machine, id);
+}
 
+/** Construct and register the real SessionWindow. The only place `new
+ * SessionWindow(...)` is called — both the plain-open and birth-ghost paths
+ * above hand off to this once it's safe to create the real WinBox window. */
+function _mountSessionWindow(session, mode, machine, id) {
     const sw = new SessionWindow({
         session,
         mode,
