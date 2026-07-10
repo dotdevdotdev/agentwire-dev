@@ -284,6 +284,8 @@ class TestCmdNewSeedFallback:
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
         monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
         monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
+        monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+        monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
         monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
 
         calls = {}
@@ -440,6 +442,8 @@ class TestCmdNewDefaultCreatedByRooting:
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
         monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
         monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
+        monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+        monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
         monkeypatch.setattr(m.pane_manager, "get_current_session", lambda: None)
         monkeypatch.setattr(core, "_live_session_cwd", lambda s: caller_project_path)
 

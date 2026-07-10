@@ -294,11 +294,39 @@ function handleSessionClosed({ session }) {
 }
 
 /**
- * Handle session_created event from tmux hook.
- * Sessions list will be updated automatically via sessions_update.
+ * Handle session_created event (#747) — pushed the instant a session is
+ * created (agentwire new / worktree / portal), instead of waiting for the
+ * sessions_update broadcast that follows moments later.
  */
-function handleSessionCreated({ session }) {
-    // Sessions list will be updated by the sessions_update event
+function handleSessionCreated({ session, name, parent, role }) {
+    const sessionName = name || session;
+    if (!sessionName) return;
+
+    // Merge into the live list right away so the sidebar shows the birth
+    // without poll lag. Dedupe by session id (name): the sessions_update
+    // that follows always wins with the authoritative record (full-array
+    // replace), so this placeholder just needs to not double up before then.
+    const sessions = desktop.sessions || [];
+    if (!sessions.some((s) => s.name === sessionName)) {
+        desktop.sessions = [...sessions, {
+            name: sessionName,
+            parent: parent || null,
+            roles: role ? [role] : [],
+            windows: 1,
+            path: '',
+            machine: null,
+        }];
+        desktop.emit('sessions', desktop.sessions);
+    }
+
+    // If the parent's window is already open, reveal the child beside it
+    // immediately — openSessionTerminal dedupes by session id internally
+    // (sessionWindows.has(id)), so this is a no-op if a window for this
+    // session is already open or gets opened again once sessions_update
+    // (or a later poll) reports the same session.
+    if (parent && sessionWindows.has(buildSessionId(parent, null))) {
+        openSessionTerminal(sessionName, 'monitor');
+    }
 }
 
 /**

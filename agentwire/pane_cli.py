@@ -37,6 +37,7 @@ from .core import (
     build_agent_command,
     inject_session_env,
     load_config,
+    load_session_metadata,
     parse_env_args,
     tmux_session_exists,
 )
@@ -172,6 +173,7 @@ def list_local_sessions(show_context: bool = False) -> list[dict]:
             "posture": cfg.get("posture"),
             "roles": cfg.get("roles", []),
             "parent": _display_parent(parts[0], path),
+            "role": load_session_metadata(parts[0]).get("role"),
         }
         if usage_limit_parked(parts[0]):
             session_info["usage_limit"] = True

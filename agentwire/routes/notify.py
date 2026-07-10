@@ -66,9 +66,20 @@ class NotifyRoutesMixin:
                 await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
 
             elif event == "session_created":
+                # #747: name/parent/role travel in the payload when the
+                # creating process (cmd_new et al.) posts this explicitly —
+                # that's authoritative, no race. The bare global tmux hook
+                # (session-created, any tmux session) carries only the name,
+                # so fall back to a fresh lookup for that case (metadata may
+                # not be written yet on a very fast reattach — best-effort).
                 self._invalidate_session_caches()
-                await self.broadcast_dashboard("session_created", {"session": session})
                 sessions_data = await self._get_sessions_data()
+                entry = next((s for s in sessions_data if s.get("name") == session), None)
+                parent = data.get("parent") or (entry.get("parent") if entry else None)
+                role = data.get("role") or (entry.get("role") if entry else None)
+                await self.broadcast_dashboard("session_created", {
+                    "session": session, "name": session, "parent": parent, "role": role,
+                })
                 await self.broadcast_dashboard("sessions_update", {"sessions": sessions_data})
 
             elif event == "pane_died":
