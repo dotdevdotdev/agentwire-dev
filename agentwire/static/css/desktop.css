@@ -6293,3 +6293,84 @@ body.sidebar-pinned .sidebar-tab {
       never the resting state.
    Slices append their own subsections below as they ship; this anchor
    intentionally has no rules yet. */
+
+/* Collage hierarchy grouping (#748) — collage.js groups tiles into one grid
+   cell per session family (a parent + its descendants) instead of one per
+   window. A singleton family (no children open) renders as a plain tile
+   with a faint tint hint; a family with children renders as a cluster: the
+   parent tile on top, children nested in a wrapping row below it. Family
+   hue comes from --family-tint, set inline per family by collage.js as an
+   alias of --lineage-tint-1..6 (rule 1 above). overflow:hidden here is load
+   -bearing: it's what keeps a family with many children from ever pushing
+   the grid past the desktop edge — such a family scrolls vertically inside
+   its own cell instead of overflowing horizontally. */
+.collage-family {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--family-tint) 45%, var(--chrome-border));
+    background: color-mix(in srgb, var(--family-tint) 6%, transparent);
+    overflow: hidden;
+}
+
+.collage-family.is-singleton {
+    padding: 0;
+    border-color: color-mix(in srgb, var(--family-tint) 30%, var(--chrome-border));
+    background: transparent;
+}
+
+.collage-family-parent {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+}
+
+.collage-family-parent .collage-card {
+    flex: 1;
+}
+
+/* Reserve ~42% of the cluster for children so the parent tile — the
+   primary preview — never gets crowded out. A definite flex-basis (not
+   max-height) is load-bearing: with flex:0 0 auto the row would hug its
+   (initially empty-looking) content and collapse to header height only,
+   since each child card's own body has min-height:0. align-content:stretch
+   then splits that 42% evenly across wrapped lines so each child card
+   actually gets a real body, not just its header. Scrolls vertically past
+   that, never horizontally (overflow-x: hidden). */
+.collage-family-children {
+    flex: 0 0 42%;
+    min-height: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: stretch;
+    gap: 4px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.collage-card.is-child {
+    flex: 1 1 96px;
+    min-width: 72px;
+}
+
+.collage-card.is-child .collage-card-header {
+    height: 22px;
+}
+
+.collage-card.is-child .collage-card-label {
+    font-size: calc(var(--collage-label-size, 22px) * 0.62);
+    padding: 0.22em 0.7em;
+}
+
+.collage-family .collage-card {
+    border-color: color-mix(in srgb, var(--family-tint) 55%, var(--chrome-border));
+}
+
+.collage-family .collage-card.is-active {
+    border-color: var(--accent);
+}

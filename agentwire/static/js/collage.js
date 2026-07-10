@@ -39,6 +39,7 @@ import { wsProtocols } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { ansiToHtml } from './utils/ansi.js';
 import { isCommandPaletteOpen } from './command-palette.js';
+import { getAllSessions, ensureSessionsLoaded } from './sidebar/sessions-section.js';
 
 /** Overlay z-index: above all windows (WinBox's focus counter sets inline
  * z-indexes that grow from 10), below notification toasts (1500), modals
@@ -65,6 +66,13 @@ class Collage {
 
         /** @type {function(string): (object|null)} id → window instance lookup */
         this._lookup = () => null;
+
+        // Family grouping (#748) needs session/parent data that only loads
+        // once ensureSessionsLoaded() has resolved at least once (see there
+        // for why getAllSessions() alone isn't reliable at cold start). Once
+        // true, every subsequent build already has fresh data — no need to
+        // re-trigger the one-time post-load rebuild in enter() again.
+        this._sessionsReady = false;
 
         this._onKeydown = this._onKeydown.bind(this);
     }
@@ -127,6 +135,17 @@ class Collage {
             // Grid geometry depends on the desktop area size.
             desktop.on('viewport_resize', () => this._rebuild()),
         );
+
+        // First-ever open this page load: session/parent data may not have
+        // loaded yet (see ensureSessionsLoaded), so the grid above may have
+        // fallen back to ungrouped singletons. Rebuild once real data lands.
+        // A no-op on every later open, since _sessionsReady is already true.
+        if (!this._sessionsReady) {
+            ensureSessionsLoaded().then(() => {
+                this._sessionsReady = true;
+                if (this._active) this._rebuild();
+            });
+        }
     }
 
     /**
@@ -196,14 +215,21 @@ class Collage {
     }
 
     /**
-     * Build the preview grid for the given window ids.
+     * Build the preview grid for the given window ids. Grid cells are
+     * families (a session + its descendants), not raw windows — a family of
+     * one renders as a plain tile, a family with children renders as a
+     * tinted cluster with the parent on top and children nested below it
+     * (#748). This keeps the aspect-fit cols×rows math (proven not to
+     * overflow at 15+ tiles) exactly as it was, just computed over family
+     * count instead of window count.
      * @param {string[]} ids
      */
     _buildGrid(ids) {
         const area = document.getElementById('desktopArea');
         if (!area) return;
         const areaRect = area.getBoundingClientRect();
-        const n = ids.length;
+        const families = this._groupFamilies(ids);
+        const n = families.length;
 
         // Fit cols×rows to the desktop aspect so cells stay window-shaped.
         const aspect = areaRect.width / Math.max(1, areaRect.height);
@@ -226,9 +252,9 @@ class Collage {
         );
 
         const activeId = desktop.getActiveWindow();
-        for (const id of ids) {
-            this._grid.appendChild(this._buildTile(id, id === activeId, areaRect));
-        }
+        families.forEach((familyIds, familyIndex) => {
+            this._grid.appendChild(this._buildFamily(familyIds, familyIndex, activeId, areaRect));
+        });
         this._overlay.appendChild(this._grid);
 
         // Scale each miniature into its tile body. Overlay elements have no
@@ -242,6 +268,99 @@ class Collage {
             );
             mini.style.transform = `translate(-50%, -50%) scale(${scale})`;
         }
+    }
+
+    /**
+     * Resolve a session's family root and its depth below that root, by
+     * walking `.parent` (the same display linkage the sidebar's session
+     * tree uses — see sessions-section.js `buildSessionTree`). A parent
+     * that's absent, self-referential, or not in the current session list
+     * makes `name` its own root. `seen` guards against a parent cycle.
+     * @param {Map<string, object>} byName - session name → session record
+     * @param {string} name
+     * @returns {{root: string, depth: number}}
+     */
+    _lineageOf(byName, name) {
+        let cur = name;
+        let depth = 0;
+        const seen = new Set([name]);
+        while (true) {
+            const parent = byName.get(cur)?.parent;
+            if (!parent || parent === cur || !byName.has(parent) || seen.has(parent)) break;
+            seen.add(parent);
+            cur = parent;
+            depth++;
+        }
+        return { root: cur, depth };
+    }
+
+    /**
+     * Group open window ids into families keyed by session-tree root.
+     * Non-session windows (artifacts/panels) have no lineage and each form
+     * their own singleton family. Within a family, ids are ordered
+     * ancestor-first so nested descendants render under their parent even
+     * across multiple generations.
+     * @param {string[]} ids
+     * @returns {string[][]} One array of window ids per family.
+     */
+    _groupFamilies(ids) {
+        const byName = new Map(getAllSessions().map((s) => [s.name || '', s]));
+        const families = new Map();  // root key → [{id, depth}]
+        for (const id of ids) {
+            const inst = this._lookup(id);
+            const isSession = inst && typeof inst.session === 'string';
+            const { root, depth } = isSession
+                ? this._lineageOf(byName, inst.session)
+                : { root: id, depth: 0 };
+            if (!families.has(root)) families.set(root, []);
+            families.get(root).push({ id, depth });
+        }
+        return [...families.values()].map((entries) =>
+            entries.sort((a, b) => a.depth - b.depth).map((e) => e.id),
+        );
+    }
+
+    /**
+     * Build one grid cell for a family: a lone tile for a singleton family,
+     * or a tinted cluster (parent on top, children nested below in a
+     * wrapping row) for a family with descendants. Family hue cycles
+     * through the shared --lineage-tint-1..6 tokens by family index so
+     * lineage reads without labels (#748/#749). `overflow: hidden` on the
+     * cluster (CSS) is what keeps a family with many children from ever
+     * pushing the grid into horizontal overflow — it scrolls vertically
+     * instead.
+     * @param {string[]} familyIds - Ancestor-first window ids for this family.
+     * @param {number} familyIndex - Position among this grid's families.
+     * @param {string|null} activeId - Currently-active window id.
+     * @param {DOMRect} areaRect
+     */
+    _buildFamily(familyIds, familyIndex, activeId, areaRect) {
+        const wrap = document.createElement('div');
+        wrap.className = 'collage-family';
+        wrap.style.setProperty('--family-tint', `var(--lineage-tint-${(familyIndex % 6) + 1})`);
+
+        if (familyIds.length === 1) {
+            wrap.classList.add('is-singleton');
+            wrap.appendChild(this._buildTile(familyIds[0], familyIds[0] === activeId, areaRect));
+            return wrap;
+        }
+
+        const [parentId, ...childIds] = familyIds;
+        const parentWrap = document.createElement('div');
+        parentWrap.className = 'collage-family-parent';
+        parentWrap.appendChild(this._buildTile(parentId, parentId === activeId, areaRect));
+        wrap.appendChild(parentWrap);
+
+        const childrenWrap = document.createElement('div');
+        childrenWrap.className = 'collage-family-children';
+        for (const id of childIds) {
+            const tile = this._buildTile(id, id === activeId, areaRect);
+            tile.classList.add('is-child');
+            childrenWrap.appendChild(tile);
+        }
+        wrap.appendChild(childrenWrap);
+
+        return wrap;
     }
 
     /**
