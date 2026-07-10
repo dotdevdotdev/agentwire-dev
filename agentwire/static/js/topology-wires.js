@@ -9,16 +9,17 @@
  *
  * Parent/child pairing reuses sessions-section.js's `s.parent` linkage (the
  * same data the sidebar's nested tree renders from) rather than re-deriving
- * it — see initData()/getAllSessions()/activityStates there. Colors pull
- * from the lineage-tint + failure-state-parity tokens (#749) in desktop.css;
- * never a hardcoded hex.
+ * it — see ensureSessionsLoaded()/getAllSessions()/activityStates there
+ * (also used by collage.js's #748 family grouping). Colors pull from the
+ * lineage-tint + failure-state-parity tokens (#749) in desktop.css; never a
+ * hardcoded hex.
  *
  * @module topology-wires
  */
 
 import { desktop } from './desktop-manager.js';
 import { buildSessionId, normalizeMachine } from './session-id.js';
-import { getAllSessions, activityStates, onSessionsChanged, initData as ensureSessionsData } from './sidebar/sessions-section.js';
+import { getAllSessions, activityStates, onSessionsChanged, ensureSessionsLoaded } from './sidebar/sessions-section.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -136,8 +137,10 @@ class TopologyWires {
 
         // The shared session/activity pipeline (sessions-section.js) only goes
         // live once the Sessions sidebar accordion is expanded — ensure it's
-        // live regardless, so wires render on a fresh page load.
-        ensureSessionsData();
+        // live regardless, so wires render on a fresh page load. Same helper
+        // collage.js's #748 family grouping uses; memoized there so this
+        // isn't a second parallel fetch.
+        ensureSessionsLoaded();
 
         this._svg = document.createElementNS(SVG_NS, 'svg');
         this._svg.setAttribute('class', 'topology-wires-overlay' + (this._visible ? '' : ' hidden'));
