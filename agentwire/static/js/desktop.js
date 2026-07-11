@@ -990,7 +990,13 @@ let restoringTaskbar = false;
 
 function _lookupWindowInstance(id) {
     if (id === COUNCIL_WINDOW_ID && councilWindow) return councilWindow;
-    return sessionWindows.get(id) || artifactWindows.get(id) || null;
+    // Every registered window map must be here or the window can't be focused/
+    // restored via the taskbar-button click (:1116) or Alt+] cycling (:505),
+    // which resolve the live instance through this lookup. Workspace (#762) and
+    // review windows were both missing, so cycling/taskbar-click marked them
+    // active but never raised or un-minimized them.
+    return sessionWindows.get(id) || artifactWindows.get(id)
+        || reviewWindows.get(id) || workspaceWindows.get(id) || null;
 }
 
 function loadTaskbarState() {
