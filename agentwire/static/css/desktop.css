@@ -6691,6 +6691,67 @@ body.sidebar-pinned .sidebar-tab {
     }
 }
 
+/* --- card mini-terminal (#763) — click a card to expand it inline into a
+   live xterm (TerminalPane) + mic. Grows the card to full row width so the
+   terminal has room; the toolbar/terminal live inside .topology-card-expand-slot,
+   guarded (in topology-render.js's click handler) from bubbling into the
+   card's own collapse toggle. */
+.topology-card--expanded {
+    flex: 1 1 100%;
+    max-width: 100%;
+    cursor: default;
+}
+
+.topology-card--expanded:hover {
+    transform: none;
+}
+
+.topology-card-expand-slot {
+    margin-top: 2px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--chrome-border);
+    cursor: default;
+}
+
+.topology-card-mini-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 4px 6px;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--chrome-border);
+}
+
+.topology-card-mini-open {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin-left: 6px;
+    border-radius: 4px;
+    border: 1px solid var(--chrome-border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0;
+}
+
+.topology-card-mini-open:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Fixed height so TerminalPane's FitAddon has something real to measure —
+   overrides .session-window-content's height:100% via a higher-specificity
+   compound selector (TerminalPane adds that class onto this same element). */
+.topology-card-mini-terminal.session-window-content {
+    height: 280px;
+}
+
 /* --- phantom topology overlay (#764) — topology-overlay.js ---
    Transient, non-interactive pop-over of the shared renderer above: the
    instant a child session spawns, TopologyView mounts into the panel below

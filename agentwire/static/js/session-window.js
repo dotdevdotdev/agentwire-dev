@@ -4,23 +4,24 @@
  * SessionWindow class - encapsulates a terminal window for a session.
  * Wraps WinBox window, xterm.js Terminal, and WebSocket connection.
  * Supports two modes: Monitor (read-only) and Terminal (interactive).
+ *
+ * Terminal mode delegates the xterm/WS core to TerminalPane (#763,
+ * terminal-pane.js) — SessionWindow just owns the WinBox chrome, PTT
+ * titlebar button, and activity indicator around it. Monitor mode (a
+ * polling <pre> dump, not xterm) keeps its own WS/status/reconnect
+ * machinery here — it's a different beast, out of scope for TerminalPane.
  */
 
 
 import { apiFetch, wsProtocols } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { sessionIcons } from './icon-manager.js';
-import { getTerminalFontSize, FONT_SIZE_EVENT } from './terminal-font-prefs.js';
 import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
 import { ansiToHtml } from './utils/ansi.js';
 import { PttController } from './ptt.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
-
-const NARROW_VIEWPORT = '(max-width: 768px)';
-function pickTerminalFontSize() {
-    return getTerminalFontSize();
-}
+import { TerminalPane } from './terminal-pane.js';
 
 // Touch-primary devices (tablets/phones) raise the on-screen keyboard the
 // instant xterm's hidden textarea is focused. Opening or switching to a window
@@ -31,7 +32,7 @@ const TOUCH_PRIMARY = typeof window !== 'undefined'
     && window.matchMedia
     && window.matchMedia('(pointer: coarse)').matches;
 
-// Terminal WS reconnect tuning. A transient drop (portal restart, an
+// Monitor-mode WS reconnect tuning. A transient drop (portal restart, an
 // over-broad bg-process kill, a network blip) should heal silently rather than
 // dump the user onto the manual "Reconnect" wall — the tmux session almost
 // always outlives the WS. Mirrors the dashboard WS backoff in desktop-manager.js.
@@ -59,14 +60,12 @@ export class SessionWindow {
         this.onFocusCallback = options.onFocus || null;
 
         this.winbox = null;
-        this.terminal = null;
-        this.outputEl = null;  // For monitor mode
-        this.fitAddon = null;
-        this.ws = null;
-        this.resizeObserver = null;
+        this.pane = null;       // TerminalPane instance (terminal mode)
+        this.outputEl = null;   // <pre> element (monitor mode)
+        this.ws = null;         // monitor-mode WS
         this.isOpen = false;
 
-        // Silent reconnect state for the terminal/monitor WS.
+        // Silent reconnect state for the monitor-mode WS.
         this._autoReconnectAttempts = 0;
         this._autoReconnectTimer = null;
         this._destroyed = false;       // set in close() so a stray onclose can't re-dial
@@ -85,7 +84,7 @@ export class SessionWindow {
                 if (isAutoSend()) this._sendVoiceText(text);
                 else this._showTranscriptBar(text);
             },
-            onError: (kind, message) => this._updateStatus('error', message),
+            onError: (kind, message) => this.pane?.setStatus('error', message),
         });
 
         // Activity indicator state
@@ -114,19 +113,18 @@ export class SessionWindow {
         this._createWinBox(container);
         // Now create terminal - fit addon will have actual dimensions to work with
         this._createTerminal(container);
-        // Re-trigger resize after terminal is created — onmaximize fired before terminal
-        // existed so the initial fit was a no-op; now fit with real dimensions
+
         if (this.mode === 'terminal') {
-            this._handleResizeAfterAnimation();
-        }
-        this._connectWebSocket();
-        this._setupResizeObserver(container);
-        // Set up PTT button for terminal mode
-        if (this.mode === 'terminal') {
+            // Re-trigger fit after the WinBox maximize animation settles — the
+            // very first onmaximize fired before the pane existed (see
+            // _createWinBox's onmaximize), so that fit was a no-op.
+            this.pane.fit({ afterAnimation: true, watchEl: this.winbox.window });
             this._setupPTT(container);
+        } else {
+            this._connectWebSocket();
+            this._setupReconnectButton(container);
         }
-        // Set up reconnect button handler
-        this._setupReconnectButton(container);
+
         // Set up activity indicator in title bar
         this._setupActivityIndicator();
 
@@ -139,7 +137,7 @@ export class SessionWindow {
         // the user taps the terminal to type.
         if (this.mode === 'terminal' && !TOUCH_PRIMARY) {
             requestAnimationFrame(() => {
-                if (this.terminal) this.terminal.focus();
+                this.pane?.focus();
             });
         }
     }
@@ -163,23 +161,6 @@ export class SessionWindow {
         if (this._visibilityHandler) {
             document.removeEventListener('visibilitychange', this._visibilityHandler);
             this._visibilityHandler = null;
-        }
-
-        // Clean up resize observer
-        if (this.resizeObserver) {
-            this.resizeObserver.disconnect();
-            this.resizeObserver = null;
-        }
-
-        // Clean up viewport breakpoint listener
-        if (this._narrowMedia && this._narrowMediaHandler) {
-            this._narrowMedia.removeEventListener('change', this._narrowMediaHandler);
-            this._narrowMedia = null;
-            this._narrowMediaHandler = null;
-        }
-        if (this._fontPrefHandler) {
-            window.removeEventListener(FONT_SIZE_EVENT, this._fontPrefHandler);
-            this._fontPrefHandler = null;
         }
 
         // Clean up PTT keyboard handler
@@ -216,26 +197,19 @@ export class SessionWindow {
             this._cancelRecording();
         }
 
-        // Close WebSocket
+        // Terminal mode: the pane owns its own ws/xterm/resize/reconnect state.
+        if (this.pane) {
+            this.pane.dispose();
+            this.pane = null;
+        }
+
+        // Monitor mode: close its own WS
         if (this.ws) {
             this.ws.onclose = null; // _destroyed already guards, but don't even fire
             this.ws.close();
             this.ws = null;
         }
-
-        // Remove the two-finger touch-scroll listeners
-        if (this._touchScrollCleanup) {
-            this._touchScrollCleanup();
-            this._touchScrollCleanup = null;
-        }
-
-        // Dispose terminal (terminal mode) or output element (monitor mode)
-        if (this.terminal) {
-            this.terminal.dispose();
-            this.terminal = null;
-        }
         this.outputEl = null;
-        this.fitAddon = null;
 
         // Close WinBox (if not already closed)
         if (this.winbox) {
@@ -267,8 +241,8 @@ export class SessionWindow {
         // raises the soft keyboard on every window switch. Bring the window
         // forward only; tapping the terminal focuses it (and shows the keyboard)
         // when the user actually wants to type.
-        if (this.terminal && !TOUCH_PRIMARY) {
-            this.terminal.focus();
+        if (this.mode === 'terminal' && !TOUCH_PRIMARY) {
+            this.pane?.focus();
         }
     }
 
@@ -326,24 +300,9 @@ export class SessionWindow {
                     <span class="status-text">Connecting...</span>
                 </div>
             `;
-        } else {
-            // Terminal mode: xterm.js for interactive terminal. PTT button lives in the
-            // WinBox titlebar (see _setupPTTInTitlebar), not inside the content area.
-            container.innerHTML = `
-                <div class="session-terminal"></div>
-                <div class="session-disconnect-overlay hidden">
-                    <div class="disconnect-content">
-                        <div class="disconnect-message">Session Disconnected</div>
-                        <button class="btn btn-primary reconnect-btn">Reconnect</button>
-                        <div class="disconnect-hint">or press any key</div>
-                    </div>
-                </div>
-                <div class="session-status-bar">
-                    <span class="status-indicator connecting"></span>
-                    <span class="status-text">Connecting...</span>
-                </div>
-            `;
         }
+        // Terminal mode: TerminalPane builds its own DOM directly into this
+        // container (it's already sized and classed by WinBox's mount).
         return container;
     }
 
@@ -354,256 +313,17 @@ export class SessionWindow {
             return;
         }
 
-        // Terminal mode: full xterm.js setup
-        const terminalEl = container.querySelector('.session-terminal');
-        this._terminalEl = terminalEl;
-
-        const initialFontSize = pickTerminalFontSize();
-        terminalEl.style.setProperty('--terminal-font-size', `${initialFontSize}px`);
-
-        this.terminal = new Terminal({
-            cursorBlink: true,
-            fontSize: initialFontSize,
-            fontFamily: '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace',
-            altClickMovesCursor: false,
-            macOptionClickForcesSelection: true,  // Allow Option/Alt+drag for native selection (bypasses tmux mouse mode)
-            theme: {
-                background: '#000',
-                foreground: '#e6edf3',
-                cursor: '#2ea043',
-                selection: 'rgba(46, 160, 67, 0.3)',
+        // Terminal mode: the xterm + WS core lives in TerminalPane. PTT button
+        // lives in the WinBox titlebar (see _setupPTT), not inside the pane.
+        this.pane = new TerminalPane(container, {
+            session: this.session,
+            machine: this.machine,
+            onActivity: () => this._markActivity(),
+            onSessionEnded: () => {
+                this._sessionEnded = true;
+                this.close();
             },
         });
-
-        this.fitAddon = new FitAddon.FitAddon();
-        this.terminal.loadAddon(this.fitAddon);
-
-        // Add WebGL addon for performance (optional). Keep a reference: after a
-        // large container resize (tile grid→max) the WebGL renderer can leave
-        // the newly-exposed area transparent until its texture atlas is rebuilt.
-        this.webglAddon = null;
-        try {
-            if (typeof WebglAddon !== 'undefined') {
-                this.webglAddon = new WebglAddon.WebglAddon();
-                this.terminal.loadAddon(this.webglAddon);
-            }
-        } catch (e) {
-            console.warn('[SessionWindow] WebGL not available:', e);
-        }
-
-        this.terminal.open(terminalEl);
-
-        // xterm selections are canvas/WebGL-rendered, not DOM selections, so
-        // the scratch pad's selectionchange-based popover can't see them.
-        // Surface them via a custom event on mouseup (where the pointer is).
-        terminalEl.addEventListener('mouseup', (e) => {
-            const text = this.terminal?.getSelection();
-            if (text && text.trim()) {
-                window.dispatchEvent(new CustomEvent('terminal-selection', {
-                    detail: { text, x: e.clientX, y: e.clientY, session: this.session },
-                }));
-            }
-        });
-
-        // Touch devices emit no `wheel` events, so xterm's wheel-driven
-        // scrolling (tmux copy-mode / the app's own scroll) is unreachable on a
-        // tablet. Translate a two-finger vertical pan into synthetic wheel
-        // events so touch scrolls history exactly like a desktop mouse wheel.
-        // One finger stays free for tap/selection.
-        this._setupTouchScroll(terminalEl);
-
-        // Fit after font loads and layout is complete
-        const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
-        const fontSize = pickTerminalFontSize();
-
-        // Re-pick font size on viewport breakpoint changes (mobile rotation, window resize)
-        // and on user override via the sidebar Config slider.
-        const applyNewSize = () => {
-            if (!this.terminal) return;
-            const newSize = pickTerminalFontSize();
-            this._terminalEl?.style.setProperty('--terminal-font-size', `${newSize}px`);
-            this.terminal.options.fontSize = newSize;
-            this._handleResize();
-        };
-        this._narrowMedia = window.matchMedia(NARROW_VIEWPORT);
-        this._narrowMediaHandler = applyNewSize;
-        this._fontPrefHandler = applyNewSize;
-        this._narrowMedia.addEventListener('change', this._narrowMediaHandler);
-        window.addEventListener(FONT_SIZE_EVENT, this._fontPrefHandler);
-
-        const doInitialFit = (fontLoaded) => {
-            requestAnimationFrame(() => {
-                if (fontLoaded) {
-                    // Force xterm to recalculate cell dimensions by re-setting font
-                    // This triggers internal re-measurement with the now-loaded font
-                    this.terminal.options.fontFamily = fontFamily;
-                    this.terminal.options.fontSize = fontSize;
-                }
-                this._handleResize();
-                setTimeout(() => this._handleResize(), 100);
-            });
-        };
-
-        if (document.fonts && document.fonts.load) {
-            // Wait for font to load, then fit
-            document.fonts.load(`${fontSize}px ${fontFamily}`).then(() => {
-                doInitialFit(true);
-            }).catch(() => {
-                // Font load failed, fit anyway with fallback font
-                doInitialFit(false);
-            });
-        } else {
-            // Font loading API not available, use delayed fit
-            doInitialFit(false);
-        }
-    }
-
-    /**
-     * Translate a two-finger vertical pan into tmux mouse-wheel scroll.
-     *
-     * Touch devices emit no `wheel` events, so the desktop scroll path (mouse
-     * wheel → xterm encodes an SGR mouse event → tmux enters copy-mode and
-     * scrolls) never fires on a tablet. Rather than fake a WheelEvent and hope
-     * xterm's mouse encoder picks it up, we send the exact bytes a real wheel
-     * produces — the SGR-1006 mouse sequence — straight down the input
-     * WebSocket. tmux runs with `mouse on`, so it consumes these and scrolls
-     * history. One finger is left untouched for tap/selection.
-     *
-     * SGR wheel: ESC [ < Btn ; Col ; Row M  — Btn 64 = wheel-up, 65 = wheel-down
-     * (1-based Col/Row; any point inside the pane works for scroll).
-     */
-    _setupTouchScroll(terminalEl) {
-        // Finger travel, in text lines, that advances one tmux wheel tick. tmux
-        // scrolls 5 lines per wheel tick (its WheelUp/DownPane `-N 5` binding),
-        // so a strict 1:1 mapping would need 5 lines of finger travel per tick —
-        // on a short window that's nearly the whole draggable height, so you get
-        // one tick then nothing. Firing a tick every ~1.5 lines keeps it ticking
-        // continuously across the whole stroke; momentum then covers distance.
-        const FINGER_LINES_PER_TICK = 1.5;
-        // Cap ticks emitted per animation frame so a fast flick can't flood tmux
-        // faster than it can redraw (the source of the laggy/stuttery feel).
-        const MAX_TICKS_PER_FRAME = 8;
-        // First tick of a gesture fires after only this fraction of a full tick
-        // of travel, so the start feels immediate instead of dead until ~5 lines.
-        const FIRST_TICK_FRACTION = 0.35;
-        // Momentum: after lift, keep scrolling and decay velocity each frame.
-        const FRICTION = 0.94;          // per-frame velocity multiplier
-        const FLING_MIN_V = 0.04;       // px/ms at release needed to start a fling
-        const MOMENTUM_STOP_V = 0.012;  // px/ms below which momentum ends
-
-        let active = false;
-        let lastMidY = 0;
-        let accum = 0;        // unconsumed finger travel (px), sign = direction
-        let rafId = null;
-        let emitted = false;  // has any tick fired this gesture? (first-tick boost)
-        let velocity = 0;     // px/ms, smoothed — drives momentum
-        let lastMoveT = 0;
-        let lastFrameT = 0;
-        let momentum = false;
-
-        const midY = (touches) => (touches[0].clientY + touches[1].clientY) / 2;
-
-        // Finger pixels per tick = lines-per-tick × measured cell height.
-        const pxPerTick = () => {
-            const rows = this.terminal?.rows || 24;
-            const h = terminalEl.getBoundingClientRect().height;
-            const cell = rows > 0 && h > 0 ? h / rows : 18;
-            return FINGER_LINES_PER_TICK * cell;
-        };
-
-        // dir < 0 → wheel-up (older history); dir > 0 → wheel-down (newer).
-        const wheelSeq = (dir) => {
-            const col = Math.max(1, Math.floor(this.terminal.cols / 2));
-            const row = Math.max(1, Math.floor(this.terminal.rows / 2));
-            return `\x1b[<${dir < 0 ? 64 : 65};${col};${row}M`;
-        };
-
-        const sendTicks = (ticks) => {
-            if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.terminal) return;
-            this.ws.send(JSON.stringify({ type: 'input', data: wheelSeq(ticks).repeat(Math.abs(ticks)) }));
-        };
-
-        // One frame: advance momentum, then batch all due ticks into one message.
-        const flush = (now) => {
-            rafId = null;
-
-            if (momentum) {
-                const dt = Math.min(now - lastFrameT, 50);
-                lastFrameT = now;
-                accum += velocity * dt;
-                velocity *= FRICTION;
-                if (Math.abs(velocity) < MOMENTUM_STOP_V) momentum = false;
-            }
-            if (active || momentum) rafId = requestAnimationFrame(flush);
-
-            const step = pxPerTick();
-            // Snappier first tick: lower the threshold until the gesture moves.
-            const threshold = emitted ? step : step * FIRST_TICK_FRACTION;
-            let ticks = Math.trunc(accum / threshold);
-            if (ticks === 0) return;
-            if (ticks > MAX_TICKS_PER_FRAME) ticks = MAX_TICKS_PER_FRAME;
-            else if (ticks < -MAX_TICKS_PER_FRAME) ticks = -MAX_TICKS_PER_FRAME;
-            accum -= ticks * threshold;
-            emitted = true;
-            sendTicks(ticks);
-        };
-
-        const startRaf = () => { if (rafId === null) { lastFrameT = performance.now(); rafId = requestAnimationFrame(flush); } };
-        const stopRaf = () => { if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; } };
-
-        const onTouchStart = (e) => {
-            if (e.touches.length !== 2) { active = false; momentum = false; stopRaf(); return; }
-            active = true;
-            momentum = false;
-            emitted = false;
-            velocity = 0;
-            accum = 0;
-            lastMidY = midY(e.touches);
-            lastMoveT = performance.now();
-            e.preventDefault();  // stop the page/WinBox from claiming the gesture
-            startRaf();
-        };
-
-        const onTouchMove = (e) => {
-            if (!active || e.touches.length !== 2) return;
-            e.preventDefault();
-            const now = performance.now();
-            const y = midY(e.touches);
-            // Fingers up (y decreases) → newer/down; fingers down → older/up.
-            const dy = lastMidY - y;
-            accum += dy;
-            const dt = now - lastMoveT;
-            if (dt > 0) velocity = 0.6 * velocity + 0.4 * (dy / dt);  // smoothed px/ms
-            lastMidY = y;
-            lastMoveT = now;
-        };
-
-        const onTouchEnd = (e) => {
-            if (e.touches.length >= 2) return;
-            active = false;
-            // Carry a fast lift into a decaying fling; otherwise stop clean.
-            if (Math.abs(velocity) >= FLING_MIN_V) {
-                momentum = true;
-                lastFrameT = performance.now();
-                startRaf();
-            } else {
-                velocity = 0;
-                accum = 0;
-            }
-        };
-
-        terminalEl.addEventListener('touchstart', onTouchStart, { passive: false });
-        terminalEl.addEventListener('touchmove', onTouchMove, { passive: false });
-        terminalEl.addEventListener('touchend', onTouchEnd);
-        terminalEl.addEventListener('touchcancel', onTouchEnd);
-
-        this._touchScrollCleanup = () => {
-            stopRaf();
-            terminalEl.removeEventListener('touchstart', onTouchStart);
-            terminalEl.removeEventListener('touchmove', onTouchMove);
-            terminalEl.removeEventListener('touchend', onTouchEnd);
-            terminalEl.removeEventListener('touchcancel', onTouchEnd);
-        };
     }
 
     _createWinBox(container) {
@@ -632,11 +352,16 @@ export class SessionWindow {
                 }
             },
             onresize: () => {
-                this._handleResize();
+                if (this.mode === 'terminal') this.pane?.fit();
             },
             onmaximize: () => {
-                // WinBox animates maximize - wait for animation to complete
-                this._handleResizeAfterAnimation();
+                // WinBox animates maximize - wait for animation to complete.
+                // (Fires once synchronously during _createWinBox, before the
+                // pane exists yet — pane?. no-ops that first call; open()
+                // re-triggers once the pane is actually created.)
+                if (this.mode === 'terminal') {
+                    this.pane?.fit({ afterAnimation: true, watchEl: this.winbox.window });
+                }
                 // Update taskbar tab to active style
                 if (this.onFocusCallback) {
                     this.onFocusCallback(this);
@@ -649,10 +374,12 @@ export class SessionWindow {
             onrestore: () => {
                 // Emit restored event so tile manager can re-apply position
                 desktop.emit('window_restored', { id: this.sessionId });
-                // Restore from minimize animates
-                this._handleResizeAfterAnimation();
-                // Reconnect if disconnected
-                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                if (this.mode === 'terminal') {
+                    // Restore from minimize animates
+                    this.pane?.fit({ afterAnimation: true, watchEl: this.winbox.window });
+                    // Reconnect if disconnected while minimized
+                    this.pane?.reconnectIfNeeded();
+                } else if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
                     this._connectWebSocket();
                 }
                 // Update taskbar tab to active style
@@ -669,28 +396,12 @@ export class SessionWindow {
         desktop.registerWindow(this.sessionId, this.winbox);
     }
 
+    /** Monitor-mode WS: /ws/{session} — JSON messages (output frames, audio,
+     * lifecycle) rendered into a <pre>. Terminal mode's WS lives entirely in
+     * TerminalPane; this method is monitor-only. */
     _connectWebSocket() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const sessionPath = this.sessionId;
-
-        // Choose endpoint based on mode
-        // Terminal mode: /ws/terminal/{session} - bidirectional
-        // Monitor mode: /ws/{session} - JSON messages
-        let endpoint;
-        if (this.mode === 'terminal') {
-            // Force layout reflow so fitAddon.fit() gets real container dimensions,
-            // then pass cols/rows as query params so the server creates the PTY at
-            // the correct size from the start (avoids dots on first render).
-            if (this.fitAddon && this.terminal) {
-                try { this.fitAddon.fit(); } catch (e) {}
-            }
-            const cols = this.terminal ? this.terminal.cols : 80;
-            const rows = this.terminal ? this.terminal.rows : 24;
-            endpoint = `/ws/terminal/${sessionPath}?cols=${cols}&rows=${rows}`;
-        } else {
-            endpoint = `/ws/${sessionPath}`;
-        }
-
+        const endpoint = `/ws/${this.sessionId}`;
         const url = `${protocol}//${location.host}${endpoint}`;
 
         // Close any existing WS (even if still CONNECTING) to avoid orphaned
@@ -701,11 +412,6 @@ export class SessionWindow {
         }
 
         this.ws = new WebSocket(url, wsProtocols());
-
-        if (this.mode === 'terminal') {
-            // Binary data for terminal mode
-            this.ws.binaryType = 'arraybuffer';
-        }
 
         this.ws.onopen = () => {
             this._updateStatus('connected', 'Connected');
@@ -718,15 +424,6 @@ export class SessionWindow {
                 this._autoReconnectTimer = null;
             }
 
-            // Re-fit terminal before sending size — the maximize animation may have
-            // completed while the socket was connecting, so fit now to get current dims
-            if (this.mode === 'terminal' && this.fitAddon && this.terminal) {
-                this.fitAddon.fit();
-            }
-
-            // Send initial terminal size (both modes need it for proper display)
-            this._sendResize();
-
             // Report tab visibility so the server backs off polling when the
             // tab is hidden (#628). Listener registered once per window.
             this._sendVisibility();
@@ -737,85 +434,31 @@ export class SessionWindow {
         };
 
         this.ws.onmessage = (event) => {
-            if (this.mode === 'terminal') {
-                // Terminal mode: binary data or string to xterm
-                // But first check for JSON messages (audio, tts_start, etc.)
-                const data = event.data;
-
-                // Check if this looks like a JSON message from the server
-                if (typeof data === 'string') {
-                    // Check for JSON audio/control messages
-                    if (data.includes('"type"')) {
-                        try {
-                            const msg = JSON.parse(data);
-
-                            if (msg.type === 'audio' && msg.data) {
-                                desktop._playAudio(msg.data, this.sessionId);
-                                return;
-                            } else if (msg.type === 'speak_text' && msg.text) {
-                                desktop._speakText(msg.text, this.sessionId);
-                                return;
-                            } else if (msg.type === 'tts_start') {
-                                return;
-                            } else if (msg.type === 'session_unlocked' || msg.type === 'session_locked') {
-                                return; // Ignore lock messages
-                            } else if (msg.type === 'remote_session_ended' || msg.type === 'local_session_ended') {
-                                // Clean exit - tmux session truly ended, close window
-                                this._sessionEnded = true;
-                                this.close();
-                                return;
-                            } else if (msg.type === 'remote_disconnected' || msg.type === 'local_disconnected') {
-                                // Transient drop (bg process side effect, portal restart, etc) -
-                                // retry silently with backoff instead of dropping the user onto
-                                // the manual wall. The onclose that follows is deduped by the
-                                // scheduler's timer guard.
-                                this._scheduleAutoReconnect();
-                                return;
-                            }
-                            // Other JSON messages - don't write to terminal
-                            return;
-                        } catch (e) {
-                            // Fall through to terminal
-                        }
-                    }
+            if (!this.outputEl) return;
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'audio' && msg.data) {
+                    desktop._playAudio(msg.data, this.sessionId);
+                } else if (msg.type === 'speak_text' && msg.text) {
+                    desktop._speakText(msg.text, this.sessionId);
+                } else if (msg.type === 'remote_session_ended' || msg.type === 'local_session_ended') {
+                    // tmux session truly ended (e.g. monitor-loop eviction) —
+                    // close the window instead of auto-reconnecting forever
+                    this._sessionEnded = true;
+                    this.close();
+                    return;
+                } else if (msg.type === 'output' && msg.data) {
+                    // Incremental line-diff render (#628) — only changed
+                    // lines touch the DOM instead of a full innerHTML swap
+                    this._renderOutput(msg.data);
+                    this.outputEl.scrollTop = this.outputEl.scrollHeight;
+                    // Mark activity when output received
+                    this._markActivity();
                 }
-
-                if (!this.terminal) return;
-                if (data instanceof ArrayBuffer) {
-                    this.terminal.write(new Uint8Array(data));
-                } else {
-                    this.terminal.write(data);
-                }
-                // Mark activity when terminal data received
-                this._markActivity();
-            } else {
-                // Monitor mode: JSON messages to pre element
-                if (!this.outputEl) return;
-                try {
-                    const msg = JSON.parse(event.data);
-                    if (msg.type === 'audio' && msg.data) {
-                        desktop._playAudio(msg.data, this.sessionId);
-                    } else if (msg.type === 'speak_text' && msg.text) {
-                        desktop._speakText(msg.text, this.sessionId);
-                    } else if (msg.type === 'remote_session_ended' || msg.type === 'local_session_ended') {
-                        // tmux session truly ended (e.g. monitor-loop eviction) —
-                        // close the window instead of auto-reconnecting forever
-                        this._sessionEnded = true;
-                        this.close();
-                        return;
-                    } else if (msg.type === 'output' && msg.data) {
-                        // Incremental line-diff render (#628) — only changed
-                        // lines touch the DOM instead of a full innerHTML swap
-                        this._renderOutput(msg.data);
-                        this.outputEl.scrollTop = this.outputEl.scrollHeight;
-                        // Mark activity when output received
-                        this._markActivity();
-                    }
-                } catch (e) {
-                    // Fallback: display as plain text
-                    this.outputEl.textContent = event.data;
-                    this._renderedLines = null;
-                }
+            } catch (e) {
+                // Fallback: display as plain text
+                this.outputEl.textContent = event.data;
+                this._renderedLines = null;
             }
         };
 
@@ -836,18 +479,6 @@ export class SessionWindow {
             // (Deduped against the *_disconnected branch by the scheduler's timer guard.)
             this._scheduleAutoReconnect();
         };
-
-        // For terminal mode, send input to WebSocket. Only attach once — xterm.js
-        // stacks onData listeners, so re-attaching on every _connectWebSocket()
-        // (initial + reconnects) would multiply each keystroke.
-        if (this.mode === 'terminal' && this.terminal && !this._inputBound) {
-            this._inputBound = true;
-            this.terminal.onData((data) => {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ type: 'input', data }));
-                }
-            });
-        }
     }
 
     /**
@@ -874,111 +505,14 @@ export class SessionWindow {
             } else if (prev && i < prev.length && prev[i] === lines[i]) {
                 continue;  // unchanged line — skip the DOM entirely
             }
-            div.innerHTML = lines[i] ? ansiToHtml(lines[i]) : '<span> </span>';
+            div.innerHTML = lines[i] ? ansiToHtml(lines[i]) : '<span> </span>';
         }
         this._renderedLines = lines;
     }
 
     _sendVisibility() {
-        if (this.mode !== 'terminal' && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'visibility', visible: !document.hidden }));
-        }
-    }
-
-    _setupResizeObserver(container) {
-        const terminalEl = container.querySelector('.session-terminal');
-        if (!terminalEl) return;
-
-        // Only observe resize for terminal mode
-        if (terminalEl) {
-            this.resizeObserver = new ResizeObserver(() => {
-                this._handleResize();
-            });
-            this.resizeObserver.observe(terminalEl);
-        }
-    }
-
-    _handleResize() {
-        if (this.mode === 'terminal' && this.fitAddon && this.terminal) {
-            requestAnimationFrame(() => {
-                try {
-                    // Ensure font options are correct before fitting
-                    const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
-                    const fontSize = pickTerminalFontSize();
-                    this.terminal.options.fontFamily = fontFamily;
-                    this.terminal.options.fontSize = fontSize;
-
-                    this.fitAddon.fit();
-                    this._sendResize();
-                } catch (e) {
-                    console.error('[_handleResize] error:', e);
-                }
-            });
-        }
-    }
-
-    /**
-     * Force a full WebGL repaint. fit() resizes the buffer but doesn't redraw, so
-     * after a large container resize (tile grid → maximized) the newly-exposed
-     * canvas can stay transparent until interaction. The WebGL renderer needs its
-     * stale texture atlas rebuilt; then a full viewport refresh repaints every cell.
-     */
-    _forceRepaint() {
-        try { this.webglAddon?.clearTextureAtlas(); } catch (e) {}
-        this.terminal.refresh(0, this.terminal.rows - 1);
-    }
-
-    _handleResizeAfterAnimation() {
-        // Listen for CSS transition to complete before fitting terminal
-        if (this.mode !== 'terminal' || !this.fitAddon || !this.terminal || !this.winbox) return;
-
-        const doFit = () => {
-            try {
-                // Ensure font options are set before fitting (in case they weren't applied correctly)
-                const fontFamily = '"FiraMono Nerd Font Mono", Menlo, Monaco, "Courier New", monospace';
-                const fontSize = pickTerminalFontSize();
-                this.terminal.options.fontFamily = fontFamily;
-                this.terminal.options.fontSize = fontSize;
-
-                this.fitAddon.fit();
-                this._sendResize();
-                this._forceRepaint();
-            } catch (err) {
-                console.error('[SessionWindow] Fit error:', err);
-            }
-        };
-
-        const winboxEl = this.winbox.window;
-        let handled = false;
-
-        const onTransitionEnd = (e) => {
-            if (e.target === winboxEl && (e.propertyName === 'width' || e.propertyName === 'height')) {
-                handled = true;
-                winboxEl.removeEventListener('transitionend', onTransitionEnd);
-                doFit();
-            }
-        };
-
-        winboxEl.addEventListener('transitionend', onTransitionEnd);
-
-        // Fallback: if transitionend doesn't fire within 500ms, force fit
-        setTimeout(() => {
-            if (!handled) {
-                winboxEl.removeEventListener('transitionend', onTransitionEnd);
-                doFit();
-            }
-        }, 500);
-    }
-
-    _sendResize() {
-        // Only terminal mode sends resize (monitor doesn't need it)
-        if (this.mode === 'terminal' && this.ws && this.ws.readyState === WebSocket.OPEN && this.terminal) {
-            const msg = {
-                type: 'resize',
-                cols: this.terminal.cols,
-                rows: this.terminal.rows,
-            };
-            this.ws.send(JSON.stringify(msg));
         }
     }
 
@@ -1025,12 +559,11 @@ export class SessionWindow {
     }
 
     /**
-     * Schedule a silent reconnect with exponential backoff. The terminal heals
-     * itself when the WS comes back (portal restart, transient kill side-effect)
-     * instead of forcing a manual click. The manual "Reconnect" overlay surfaces
-     * only after TERM_RECONNECT_OVERLAY_AFTER silent attempts have failed, so a
-     * brief blip never throws up the wall. Re-entrant calls (e.g. a *_disconnected
-     * message immediately followed by onclose) are coalesced by the timer guard.
+     * Schedule a silent reconnect with exponential backoff (monitor-mode WS).
+     * The window heals itself when the WS comes back (portal restart,
+     * transient kill side-effect) instead of forcing a manual click. The
+     * manual "Reconnect" overlay surfaces only after TERM_RECONNECT_OVERLAY_AFTER
+     * silent attempts have failed, so a brief blip never throws up the wall.
      */
     _scheduleAutoReconnect() {
         if (this._destroyed || this._sessionEnded) return;
@@ -1100,11 +633,6 @@ export class SessionWindow {
             this.ws = null;
         }
 
-        // Clear terminal to avoid escape sequence garbage on reconnect
-        if (this.terminal) {
-            this.terminal.clear();
-        }
-
         // Reconnect
         this._connectWebSocket();
     }
@@ -1127,7 +655,7 @@ export class SessionWindow {
         return div.innerHTML;
     }
 
-    // Reconnect button handler
+    // Reconnect button handler (monitor mode; terminal mode's lives in TerminalPane)
 
     _setupReconnectButton(container) {
         const reconnectBtn = container.querySelector('.reconnect-btn');
@@ -1276,7 +804,7 @@ export class SessionWindow {
         this._transcriptBar?.remove();
         this._transcriptBar = null;
         // Hand focus back to the terminal so typing resumes naturally
-        this.terminal?.focus();
+        this.pane?.focus();
     }
 
     async _sendVoiceText(text) {
@@ -1288,13 +816,13 @@ export class SessionWindow {
             });
             const sendData = await sendRes.json();
             if (sendData.error) throw new Error(sendData.error);
-            this._updateStatus('connected', `Sent: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
+            this.pane?.setStatus('connected', `Sent: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
             setTimeout(() => {
-                if (this.pttState === 'idle') this._updateStatus('connected', 'Connected');
+                if (this.pttState === 'idle') this.pane?.setStatus('connected', 'Connected');
             }, 3000);
         } catch (err) {
             console.error('[SessionWindow] Voice send failed:', err);
-            this._updateStatus('error', err.message || 'Voice input failed');
+            this.pane?.setStatus('error', err.message || 'Voice input failed');
         }
     }
 

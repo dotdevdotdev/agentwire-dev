@@ -920,9 +920,6 @@ export function openSessionWorkspace(session, machine = null) {
         rootSession: root,
         windowId: id,
         root: elements.desktopArea,
-        onCardClick: (name, cardSession) => {
-            openSessionTerminal(name, 'terminal', normalizeMachine(cardSession?.machine));
-        },
         onClose: () => {
             workspaceWindows.delete(id);
             removeTaskbarButton(id);
