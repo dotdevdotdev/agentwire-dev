@@ -40,7 +40,7 @@ import { desktop } from './desktop-manager.js';
 import { ansiToHtml } from './utils/ansi.js';
 import { isCommandPaletteOpen } from './command-palette.js';
 import { getAllSessions, ensureSessionsLoaded } from './sidebar/sessions-section.js';
-import { lineageTintVar } from './lineage.js';
+import { lineageTintVar, lineageOf } from './lineage.js';
 
 /** Overlay z-index: above all windows (WinBox's focus counter sets inline
  * z-indexes that grow from 10), below notification toasts (1500), modals
@@ -272,37 +272,17 @@ class Collage {
     }
 
     /**
-     * Resolve a session's family root and its depth below that root, by
-     * walking `.parent` (the same display linkage the sidebar's session
-     * tree uses — see sessions-section.js `buildSessionTree`). A parent
-     * that's absent, self-referential, or not in the current session list
-     * makes `name` its own root. `seen` guards against a parent cycle.
-     * @param {Map<string, object>} byName - session name → session record
-     * @param {string} name
-     * @returns {{root: string, depth: number}}
-     */
-    _lineageOf(byName, name) {
-        let cur = name;
-        let depth = 0;
-        const seen = new Set([name]);
-        while (true) {
-            const parent = byName.get(cur)?.parent;
-            if (!parent || parent === cur || !byName.has(parent) || seen.has(parent)) break;
-            seen.add(parent);
-            cur = parent;
-            depth++;
-        }
-        return { root: cur, depth };
-    }
-
-    /**
      * Group open window ids into families keyed by session-tree root. The
-     * root name is threaded through to _buildFamily so it can look up the
-     * family's hue via lineage.js's lineageTintVar (#755) — the same
-     * assignment placement and the wire overlay use, instead of re-deriving
-     * one here. Non-session windows (artifacts/panels) have no lineage and
-     * each form their own singleton family (rooted at their own id). Within
-     * a family, ids are ordered ancestor-first so nested descendants render
+     * root-resolution walk itself is lineage.js's `lineageOf` (#761 — the
+     * same walk `groupFamilies` and `familyRootName` build on) rather than a
+     * copy kept here; this method only adds the window-id-specific parts:
+     * looking up each id's session name and giving non-session windows
+     * (artifacts/panels) their own singleton family (rooted at their own
+     * id, since they have no lineage to walk). The root name is threaded
+     * through to _buildFamily so it can look up the family's hue via
+     * lineage.js's lineageTintVar (#755) — the same assignment placement and
+     * the wire overlay use, instead of re-deriving one here. Within a
+     * family, ids are ordered ancestor-first so nested descendants render
      * under their parent even across multiple generations.
      * @param {string[]} ids
      * @returns {Array<{root: string, ids: string[]}>} One entry per family.
@@ -314,7 +294,7 @@ class Collage {
             const inst = this._lookup(id);
             const isSession = inst && typeof inst.session === 'string';
             const { root, depth } = isSession
-                ? this._lineageOf(byName, inst.session)
+                ? lineageOf(byName, inst.session)
                 : { root: id, depth: 0 };
             if (!families.has(root)) families.set(root, []);
             families.get(root).push({ id, depth });
