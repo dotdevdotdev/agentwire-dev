@@ -9,12 +9,25 @@
  * always lands on the same window regardless of which member opened it.
  * Mirrors ReviewWindow's WinBox lifecycle (register/unregister via
  * desktop-manager.js, `_createWinBox` + guarded close).
+ *
+ * Card interaction (#763): clicking a card expands it inline into a mini
+ * terminal — a TerminalPane (terminal-pane.js, the same xterm+WS core
+ * SessionWindow's full terminal window uses) plus a PttController mic,
+ * wired the same way SessionWindow's titlebar PTT is. TopologyView owns the
+ * expand/collapse DOM lifecycle (including cleanup when a session vanishes
+ * mid-expand); this module only supplies what to mount.
  */
 
 import { desktop } from './desktop-manager.js';
 import { TopologyView } from './topology-render.js';
 import { getAllSessions, onSessionsChanged, ensureSessionsLoaded } from './sidebar/sessions-section.js';
 import { familyRootName } from './lineage.js';
+import { TerminalPane } from './terminal-pane.js';
+import { PttController } from './ptt.js';
+import { apiFetch } from './api.js';
+import { buildSessionId, normalizeMachine } from './session-id.js';
+import { voicePromptWrap } from './voice/prompt.js';
+import { isAutoSend } from './voice/autosend-prefs.js';
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -28,7 +41,6 @@ export class WorkspaceWindow {
      * @param {string} options.rootSession - Family root session name (the window's identity)
      * @param {string} options.windowId - Unique window identifier
      * @param {HTMLElement} options.root - Parent element for WinBox
-     * @param {(name: string, session: object) => void} [options.onCardClick] - Fired on card click
      * @param {Function} options.onClose - Callback when window closes
      * @param {Function} options.onFocus - Callback when window gains focus
      */
@@ -37,7 +49,6 @@ export class WorkspaceWindow {
         this.windowId = options.windowId;
         this.root = options.root || document.body;
         this.title = `🛰 ${this.rootSession}`;
-        this.onCardClickCallback = options.onCardClick || null;
         this.onCloseCallback = options.onClose || null;
         this.onFocusCallback = options.onFocus || null;
 
@@ -55,7 +66,7 @@ export class WorkspaceWindow {
 
         const canvas = container.querySelector('.workspace-window-canvas');
         this._topologyView = new TopologyView(canvas, {
-            onCardClick: (name, session) => this.onCardClickCallback?.(name, session),
+            onCardExpand: (name, session, slotEl) => this._mountCardTerminal(name, session, slotEl),
             mode: 'window',
         });
 
@@ -137,5 +148,155 @@ export class WorkspaceWindow {
             return name && familyRootName(name, sessions) === this.rootSession;
         });
         this._topologyView.render(members);
+    }
+
+    /**
+     * Mount a mini-terminal (#763) into a card's expand slot: a TerminalPane
+     * over the session's real WS, plus a titlebar-style mic button wired the
+     * same way SessionWindow's PTT is (record → /transcribe → auto-send or
+     * edit-before-send bar). Returns a dispose function TopologyView calls on
+     * collapse/prune/view-teardown.
+     *
+     * @param {string} name - Session name
+     * @param {object} session - Session record (for machine)
+     * @param {HTMLElement} slotEl - Empty slot appended into the card
+     * @returns {() => void} cleanup
+     */
+    _mountCardTerminal(name, session, slotEl) {
+        const machine = normalizeMachine(session?.machine);
+        const sessionId = buildSessionId(name, machine);
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'topology-card-mini-toolbar';
+
+        const pttBtn = document.createElement('button');
+        pttBtn.type = 'button';
+        pttBtn.className = 'wb-title-ptt';
+        pttBtn.title = 'Hold to record voice input';
+        pttBtn.innerHTML = '<span class="ptt-icon">🎤</span>';
+
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'topology-card-mini-open';
+        openBtn.title = 'Open full terminal';
+        openBtn.textContent = '⤢';
+        openBtn.addEventListener('click', async () => {
+            const { openSessionTerminal } = await import('./desktop.js');
+            openSessionTerminal(name, 'terminal', machine);
+        });
+
+        toolbar.append(pttBtn, openBtn);
+
+        const termHost = document.createElement('div');
+        termHost.className = 'topology-card-mini-terminal';
+
+        slotEl.append(toolbar, termHost);
+
+        const pane = new TerminalPane(termHost, {
+            session: name,
+            machine,
+            onSessionEnded: () => this._topologyView?.collapseCard(name),
+        });
+
+        let transcriptBar = null;
+        const removeTranscriptBar = () => {
+            transcriptBar?.remove();
+            transcriptBar = null;
+            pane.focus();
+        };
+
+        const sendVoiceText = async (text) => {
+            try {
+                const res = await apiFetch(`/send/${sessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: voicePromptWrap(text) }),
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                pane.setStatus('connected', `Sent: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
+                setTimeout(() => pane.setStatus('connected', 'Connected'), 3000);
+            } catch (err) {
+                console.error('[WorkspaceWindow] Voice send failed:', err);
+                pane.setStatus('error', err.message || 'Voice input failed');
+            }
+        };
+
+        const showTranscriptBar = (text) => {
+            removeTranscriptBar();
+            const bar = document.createElement('div');
+            bar.className = 'wb-transcript-bar';
+            bar.innerHTML = `
+                <input type="text" class="wb-transcript-input" />
+                <button class="wb-transcript-send" title="Send (Enter)">➤</button>
+                <button class="wb-transcript-dismiss" title="Discard (Esc)">✕</button>
+            `;
+            const input = bar.querySelector('.wb-transcript-input');
+            input.value = text;
+
+            const send = () => {
+                const value = input.value.trim();
+                removeTranscriptBar();
+                if (value) sendVoiceText(value);
+            };
+            bar.querySelector('.wb-transcript-send').addEventListener('click', send);
+            bar.querySelector('.wb-transcript-dismiss').addEventListener('click', removeTranscriptBar);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); send(); }
+                else if (e.key === 'Escape') { e.preventDefault(); removeTranscriptBar(); }
+                e.stopPropagation();
+            });
+
+            toolbar.after(bar);
+            transcriptBar = bar;
+            input.focus();
+            input.select();
+        };
+
+        const ptt = new PttController({
+            getVoiceStatus: () => desktop.voiceStatus,
+            onState: (state) => {
+                pttBtn.classList.remove('recording', 'processing');
+                if (state === 'recording') {
+                    pttBtn.classList.add('recording');
+                    pttBtn.querySelector('.ptt-icon').textContent = '🔴';
+                } else if (state === 'processing') {
+                    pttBtn.classList.add('processing');
+                    pttBtn.querySelector('.ptt-icon').textContent = '🎤';
+                } else {
+                    pttBtn.querySelector('.ptt-icon').textContent = '🎤';
+                }
+            },
+            onResult: (text) => {
+                if (isAutoSend()) sendVoiceText(text);
+                else showTranscriptBar(text);
+            },
+            onError: (kind, message) => pane.setStatus('error', message),
+        });
+
+        // Same pointer-capture pattern as SessionWindow's titlebar PTT button.
+        const onDown = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            pttBtn.setPointerCapture?.(e.pointerId);
+            ptt.start();
+        };
+        const onUp = (e) => {
+            e.stopPropagation();
+            pttBtn.releasePointerCapture?.(e.pointerId);
+            if (ptt.state === 'recording') ptt.stop();
+        };
+        const onCancel = (e) => {
+            pttBtn.releasePointerCapture?.(e.pointerId);
+            if (ptt.state === 'recording') ptt.cancel();
+        };
+        pttBtn.addEventListener('pointerdown', onDown, true);
+        pttBtn.addEventListener('pointerup', onUp, true);
+        pttBtn.addEventListener('pointercancel', onCancel);
+
+        return () => {
+            removeTranscriptBar();
+            pane.dispose();
+        };
     }
 }

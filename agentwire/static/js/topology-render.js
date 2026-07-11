@@ -62,7 +62,12 @@ export class TopologyView {
     /**
      * @param {HTMLElement} container - Mount point; TopologyView owns everything appended under it.
      * @param {object} [opts]
-     * @param {(name: string, session: object) => void} [opts.onCardClick] - Fired on card click.
+     * @param {(name: string, session: object, slotEl: HTMLElement) => (() => void)|void} [opts.onCardExpand] -
+     *   Fired when a card is clicked and expands inline. Receives the session name, record, and an
+     *   empty slot element appended into the card — mount whatever content belongs there (e.g. a
+     *   mini-terminal) and optionally return a cleanup function. TopologyView calls that cleanup on
+     *   collapse (re-click), when the card is pruned (session disappeared), or on dispose(). Omitting
+     *   this makes cards inert (e.g. the non-interactive phantom overlay).
      * @param {boolean} [opts.showLinks=true] - Draw the connector SVG layer.
      * @param {'window'|'overlay'} [opts.mode='window'] - Styling hook only — 'overlay' renders
      *   translucent glass cards for popping over a live terminal window; 'window' (default)
@@ -70,10 +75,12 @@ export class TopologyView {
      */
     constructor(container, opts = {}) {
         this._container = container;
-        this._onCardClick = opts.onCardClick || null;
+        this._onCardExpand = opts.onCardExpand || null;
         this._showLinks = opts.showLinks !== false;
         this._mode = opts.mode === 'overlay' ? 'overlay' : 'window';
         this._lastSessions = [];
+        /** @type {string|null} name of the currently expanded card, if any (accordion — one at a time) */
+        this._expandedCard = null;
 
         /** @type {Map<string, {familyEl: HTMLElement, rows: Map<number, HTMLElement>}>} */
         this._families = new Map();
@@ -137,6 +144,7 @@ export class TopologyView {
 
     /** Tear down everything TopologyView appended into its container. */
     dispose() {
+        if (this._expandedCard) this._collapseCard(this._expandedCard);
         this._resizeObserver.disconnect();
         window.removeEventListener('resize', this._scheduleRedraw);
         if (this._raf !== null) cancelAnimationFrame(this._raf);
@@ -199,6 +207,7 @@ export class TopologyView {
     _pruneCards(seenCards) {
         for (const [name, entry] of this._cards) {
             if (!seenCards.has(name)) {
+                if (entry.expanded) this._collapseCard(name);
                 entry.card.remove();
                 this._cards.delete(name);
                 this._links.delete(name);
@@ -249,9 +258,12 @@ export class TopologyView {
         const card = document.createElement('div');
         card.className = 'topology-card';
         card.dataset.session = name;
-        card.addEventListener('click', () => {
-            const entry = this._cards.get(name);
-            this._onCardClick?.(name, entry?.session);
+        card.addEventListener('click', (e) => {
+            if (!this._onCardExpand) return;
+            // Clicks inside the expanded slot (the mounted mini-terminal, its
+            // mic button, etc.) must not bubble into a collapse toggle.
+            if (e.target.closest('.topology-card-expand-slot')) return;
+            this._toggleExpand(name);
         });
 
         const top = document.createElement('div');
@@ -281,7 +293,58 @@ export class TopologyView {
 
         card.append(top, meta);
 
-        return { card, dot, nameEl, roleEl, machineEl, sparkEl, state: null, tintVar: null, session: null };
+        return {
+            card, dot, nameEl, roleEl, machineEl, sparkEl, state: null, tintVar: null, session: null,
+            expanded: false, expandSlot: null, expandDispose: null,
+        };
+    }
+
+    _toggleExpand(name) {
+        const entry = this._cards.get(name);
+        if (!entry) return;
+        if (entry.expanded) this._collapseCard(name);
+        else this._expandCard(name);
+    }
+
+    _expandCard(name) {
+        const entry = this._cards.get(name);
+        if (!entry || entry.expanded || !this._onCardExpand) return;
+        // Accordion — only one card's mini-terminal (and its live WS) is open
+        // at a time, to keep resource use and visual noise bounded.
+        if (this._expandedCard && this._expandedCard !== name) {
+            this._collapseCard(this._expandedCard);
+        }
+
+        const slot = document.createElement('div');
+        slot.className = 'topology-card-expand-slot';
+        entry.card.appendChild(slot);
+        entry.card.classList.add('topology-card--expanded');
+        entry.expanded = true;
+        entry.expandSlot = slot;
+        this._expandedCard = name;
+
+        const dispose = this._onCardExpand(name, entry.session, slot);
+        entry.expandDispose = typeof dispose === 'function' ? dispose : null;
+        this._scheduleRedraw(); // card grew — links may need repositioning
+    }
+
+    _collapseCard(name) {
+        const entry = this._cards.get(name);
+        if (!entry || !entry.expanded) return;
+        entry.expandDispose?.();
+        entry.expandDispose = null;
+        entry.expandSlot?.remove();
+        entry.expandSlot = null;
+        entry.card.classList.remove('topology-card--expanded');
+        entry.expanded = false;
+        if (this._expandedCard === name) this._expandedCard = null;
+        this._scheduleRedraw();
+    }
+
+    /** Programmatically collapse an expanded card — e.g. the mounted content
+     * (a mini-terminal) signals its session ended. No-op if not expanded. */
+    collapseCard(name) {
+        this._collapseCard(name);
     }
 
     _scheduleRedraw() {

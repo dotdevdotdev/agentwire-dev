@@ -9,6 +9,7 @@ Mechanisms, shipped across #745–#749 and #761–#764, that make the parent→c
 | **Born-from-parent placement** | `static/js/spawn-ghost.js` (+ wiring in `desktop.js`) | A child session appears while its parent's window is open |
 | **Shared topology renderer** | `static/js/topology-render.js` (`TopologyView`) | Mounted by the two surfaces below — not triggered directly |
 | **Session Workspace window** | `static/js/workspace-window.js` | 🛰 launcher on a session card, or `openSessionWorkspace()` |
+| **Card mini-terminal** | `static/js/terminal-pane.js` (`TerminalPane`) + `workspace-window.js` | Click a card in the Workspace window |
 | **Phantom overlay** | `static/js/topology-overlay.js` | The live `session_created` event (a child spawns), or the Config sidebar "Topology overlay" checkbox |
 | **Grouped + tinted collage** | `static/js/collage.js` | F3 / `desktop_collage` MCP / command palette |
 | **Live appearance** | `desktop.js` `handleSessionCreated` + server `notify_portal_session_created` | A session is created via `agentwire new` / `worktree` / the portal |
@@ -37,6 +38,14 @@ Birth detection has two independent paths that land in the same place (`register
 `wireStateFor(name, record)` is the one shared status mapping ('idle' | 'flow' | 'awaiting' | 'stuck') every card (and the phantom overlay below) reads, so a card and the sidebar dot never disagree on what "awaiting"/"stuck" means.
 
 **`workspace-window.js`'s `WorkspaceWindow`** (#762) hosts `TopologyView` in `mode: 'window'` (solid chrome) as a first-class WinBox window — the 🛰 launcher on any session card in a family opens (or focuses) the one window for that family, keyed by family root so it doesn't matter which member you launched it from. Opens with `desktop.minimizeAllExcept(null)` maximized, re-renders on every `onSessionsChanged` tick, and disposes its `TopologyView` on close.
+
+## Card mini-terminal
+
+`TopologyView` (#763) supports an optional `onCardExpand(name, session, slotEl)` callback: clicking a card toggles an inline expand — the card grows to full row width, TopologyView appends an empty `.topology-card-expand-slot` into it, and calls `onCardExpand`, which mounts whatever content belongs there and returns a cleanup function. TopologyView owns the DOM lifecycle end to end: it calls that cleanup on re-click (collapse), when the underlying session disappears from a `render()` pass (pruned mid-expand), or when the whole view is disposed — the mounting code never has to track that itself. Only one card is expanded at a time (accordion), so at most one extra live WS connection is open. Clicks inside the slot are guarded (`e.target.closest('.topology-card-expand-slot')`) so interacting with the mounted content never bubbles into a collapse toggle.
+
+`workspace-window.js` is the only consumer today: its `_mountCardTerminal(name, session, slotEl)` mounts a `TerminalPane` (`terminal-pane.js` — the xterm + WS core extracted out of `SessionWindow`'s full terminal window, `new TerminalPane(container, {session, machine})` with `focus()`/`fit()`/`dispose()`) plus a titlebar-style mic button wired the same way `SessionWindow._setupPTT`'s is (`PttController` → `/transcribe` → auto-send or an edit-before-send `.wb-transcript-bar`). A small "⤢" button pops out to the full `SessionWindow` via a dynamic `import('./desktop.js')` (avoids a circular import — `desktop.js` is what constructs `WorkspaceWindow`). `SessionWindow` itself now just wraps `TerminalPane` with WinBox chrome, the titlebar PTT button, and the activity indicator — Monitor mode (a polling `<pre>` dump, not xterm) is untouched and keeps its own WS/reconnect machinery in `session-window.js`, since it's a different beast entirely.
+
+**Satisfies the live-pane-peek safety flag** ([Design tokens](#design-tokens) below): the mini-terminal only mounts on an explicit card click — opening the Workspace window itself shows no live terminal content, so the resting state stays inert and the peek is always an opt-in reveal, never automatic.
 
 ## Phantom overlay
 
