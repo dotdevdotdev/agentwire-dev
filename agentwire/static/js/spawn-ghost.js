@@ -17,7 +17,11 @@
  * toasts (1500) — same band as collage.js's OVERLAY_Z (1400). */
 const GHOST_Z = 1420;
 
-const FLY_MS = 480;
+/** Exported so other spawn-triggered overlays (topology-overlay.js, #764)
+ * share the exact same fly duration instead of picking their own — one
+ * "how long does a spawn animation take" constant, not two that can drift
+ * apart. */
+export const FLY_MS = 480;
 
 let root = null;
 
@@ -30,7 +34,10 @@ function ensureRoot() {
     return root;
 }
 
-function prefersReducedMotion() {
+/** Exported so other spawn-triggered overlays (topology-overlay.js, #764)
+ * make the same reduced-motion call this module does, rather than each
+ * re-querying matchMedia. */
+export function prefersReducedMotion() {
     return typeof window !== 'undefined' &&
         typeof window.matchMedia === 'function' &&
         window.matchMedia('(prefers-reduced-motion: reduce)').matches;

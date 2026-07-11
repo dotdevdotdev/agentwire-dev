@@ -8,7 +8,7 @@ import {
     getPermission, isMuted, setMuted, enableNotifications,
 } from '../notification-prefs.js';
 import { isAutoSend, setAutoSend, AUTOSEND_EVENT } from '../voice/autosend-prefs.js';
-import { topologyWires, TOPOLOGY_WIRES_EVENT } from '../topology-wires.js';
+import { topologyOverlay, TOPOLOGY_OVERLAY_EVENT } from '../topology-overlay.js';
 
 function renderDisplayPrefs() {
     const current = getTerminalFontSize();
@@ -106,36 +106,36 @@ function bindAutoSendPref(body) {
     body._autoSendRepaint = repaint;
 }
 
-function renderTopologyWiresPref() {
-    const on = topologyWires.visible;
-    return `<div class="sidebar-display-prefs" data-topology-wires-block>
+function renderTopologyOverlayPref() {
+    const on = topologyOverlay.visible;
+    return `<div class="sidebar-display-prefs" data-topology-overlay-block>
         <div class="sidebar-display-row">
-            <label class="sidebar-config-key">Topology wires</label>
-            <label class="sidebar-notif-mute"><input type="checkbox" data-action="topology-wires"${on ? ' checked' : ''}/> ${on ? 'on' : 'off'}</label>
+            <label class="sidebar-config-key">Topology overlay</label>
+            <label class="sidebar-notif-mute"><input type="checkbox" data-action="topology-overlay"${on ? ' checked' : ''}/> ${on ? 'on' : 'off'}</label>
         </div>
         <div class="sidebar-display-row">
-            <span class="sidebar-display-hint">Parent↔child connector lines (Alt+L)</span>
+            <span class="sidebar-display-hint">Phantom glimpse of the family tree when a child session spawns</span>
         </div>
     </div>`;
 }
 
-function bindTopologyWiresPref(body) {
+function bindTopologyOverlayPref(body) {
     const repaint = () => {
-        const block = body.querySelector('[data-topology-wires-block]');
+        const block = body.querySelector('[data-topology-overlay-block]');
         if (!block) return;
         const tmp = document.createElement('div');
-        tmp.innerHTML = renderTopologyWiresPref();
+        tmp.innerHTML = renderTopologyOverlayPref();
         block.replaceWith(tmp.firstElementChild);
         wire();
     };
     function wire() {
-        body.querySelector('[data-action="topology-wires"]')?.addEventListener('change', (e) => {
-            topologyWires.setVisible(e.target.checked);
+        body.querySelector('[data-action="topology-overlay"]')?.addEventListener('change', (e) => {
+            topologyOverlay.setVisible(e.target.checked);
         });
     }
     wire();
-    window.addEventListener(TOPOLOGY_WIRES_EVENT, repaint);
-    body._topologyWiresRepaint = repaint;
+    window.addEventListener(TOPOLOGY_OVERLAY_EVENT, repaint);
+    body._topologyOverlayRepaint = repaint;
 }
 
 function bindDisplayPrefs(body) {
@@ -172,17 +172,17 @@ export const configSection = {
                 else if (typeof value === 'object') display = `<code>${JSON.stringify(value)}</code>`;
                 return `<div class="sidebar-config-item"><span class="sidebar-config-key">${key}</span><span class="sidebar-config-val">${display}</span></div>`;
             }).join('');
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyWiresPref() + itemHtml;
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyOverlayPref() + itemHtml;
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
             bindAutoSendPref(body);
-            bindTopologyWiresPref(body);
+            bindTopologyOverlayPref(body);
         } catch (e) {
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyWiresPref() + '<div class="sidebar-empty">Failed to load config</div>';
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyOverlayPref() + '<div class="sidebar-empty">Failed to load config</div>';
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
             bindAutoSendPref(body);
-            bindTopologyWiresPref(body);
+            bindTopologyOverlayPref(body);
         }
     },
 };

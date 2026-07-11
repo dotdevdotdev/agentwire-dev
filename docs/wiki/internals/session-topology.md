@@ -2,16 +2,18 @@
 
 > Living wiki. Update this page, don't create new versions.
 
-Four mechanisms, shipped across #745–#749, that make the parent→child session tree visible and alive on the desktop instead of only existing in the sidebar's nested list:
+Mechanisms, shipped across #745–#749 and #761–#764, that make the parent→child session tree visible and alive on the desktop instead of only existing in the sidebar's nested list:
 
 | Mechanism | Module | Trigger |
 |-----------|--------|---------|
 | **Born-from-parent placement** | `static/js/spawn-ghost.js` (+ wiring in `desktop.js`) | A child session appears while its parent's window is open |
-| **Connector overlay** | `static/js/topology-wires.js` | Alt+L, or the Config sidebar "Topology wires" checkbox |
+| **Shared topology renderer** | `static/js/topology-render.js` (`TopologyView`) | Mounted by the two surfaces below — not triggered directly |
+| **Session Workspace window** | `static/js/workspace-window.js` | 🛰 launcher on a session card, or `openSessionWorkspace()` |
+| **Phantom overlay** | `static/js/topology-overlay.js` | The live `session_created` event (a child spawns), or the Config sidebar "Topology overlay" checkbox |
 | **Grouped + tinted collage** | `static/js/collage.js` | F3 / `desktop_collage` MCP / command palette |
 | **Live appearance** | `desktop.js` `handleSessionCreated` + server `notify_portal_session_created` | A session is created via `agentwire new` / `worktree` / the portal |
 
-All four share one palette (`--lineage-tint-1..6`) and one state vocabulary (`--topology-awaiting`, `--topology-stuck`) — see [Design tokens](#design-tokens) below. Static reference for those tokens (with the enforcement rules) also lives in the `agentwire-desktop-ui` skill's "Topology Design Tokens" section.
+All share one palette (`--lineage-tint-1..6`) and one state vocabulary (`--topology-awaiting`, `--topology-stuck`) — see [Design tokens](#design-tokens) below. Static reference for those tokens (with the enforcement rules) also lives in the `agentwire-desktop-ui` skill's "Topology Design Tokens" section.
 
 ## Born-from-parent placement
 
@@ -28,33 +30,33 @@ When a session's parent window is open and a child of it is created, the child's
 
 Birth detection has two independent paths that land in the same place (`registerBirth()`): the poll-driven `sessions` event diff (`handleSessionsListUpdate`, comparing against a baseline snapshot so page-load's existing world is never treated as a batch of births) and the live `session_created` push (see [Live appearance](#live-appearance) below) as a pure accelerant on top of it — session creation still gets a birth ghost even if the live event never arrives.
 
-## Connector overlay
+## Shared topology renderer + Session Workspace window
 
-**Alt+L** toggles a read-only SVG overlay (`.topology-wires-overlay`, `topology-wires.js`) drawing a bezier "wire" from each open parent window's title bar down to each of its open children's title bars. It's also toggleable from the Config sidebar's "Topology wires" checkbox (same `topologyWires.setVisible()` call); the on/off state persists across reloads in `localStorage['aw-topology-wires-visible']` (visible by default).
+`topology-render.js`'s `TopologyView` (#761) is the one mount-agnostic engine behind both surfaces below — "one engine, two mounts." Given a container and a session list, it groups sessions into families (`lineage.js`'s `groupFamilies`) and renders one card per session (status dot, name, role chip, activity sparkline, machine tag) plus curved SVG links from each card to its parent's, all tinted by the family's `lineageTintVar`. `render()` is idempotent — repeat calls diff cards/rows/links against the previous pass rather than tearing down and rebuilding, so a spawn or kill mid-view doesn't flash the tree. Cards lay out in normal flex-wrap flow, never an absolutely-positioned wide canvas, because the owner runs the portal in a narrow ~1/3-width window.
 
-Verified in `desktop.js`'s `setupTopologyWires()`: bound on `keydown` in the capture phase, gated on `e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyL'`, with the command palette / help modal open as an escape hatch and `e.repeat` ignored — the same idiom as the F3 collage toggle and the Alt+]/Alt+[ window-cycling bindings.
+`wireStateFor(name, record)` is the one shared status mapping ('idle' | 'flow' | 'awaiting' | 'stuck') every card (and the phantom overlay below) reads, so a card and the sidebar dot never disagree on what "awaiting"/"stuck" means.
 
-**Strictly read-only**, the same discipline as the collage: it only calls `getBoundingClientRect()` on each window's `.wb-header` to anchor a wire's endpoints, and never writes to a window's geometry. A minimized window (`display: none` via this app's `.winbox.min` override) collapses its rect to all-zero, which the module treats as "no anchor" — the wire for that pair is simply dropped until the window is restored, rather than hanging off the desktop's top-left corner.
+**`workspace-window.js`'s `WorkspaceWindow`** (#762) hosts `TopologyView` in `mode: 'window'` (solid chrome) as a first-class WinBox window — the 🛰 launcher on any session card in a family opens (or focuses) the one window for that family, keyed by family root so it doesn't matter which member you launched it from. Opens with `desktop.minimizeAllExcept(null)` maximized, re-renders on every `onSessionsChanged` tick, and disposes its `TopologyView` on close.
 
-**Wire state** mirrors each child's activity, reusing the same `activityStates` map the sidebar's status dot reads:
-- **idle** — the default, no state class, plain lineage-tinted line at low opacity.
-- **flow** — `processing`/`generating`/`playing`/`active` — a dashed line animates along its length (`topology-wire-flow`).
-- **awaiting** — the child's `state === 'needs_input'` — overrides the lineage tint with `--topology-awaiting` (amber) and pulses.
-- **stuck** — `state === 'off'` — overrides with `--topology-stuck` (red) and pulses faster.
+## Phantom overlay
 
-Failure-state parity is enforced in the CSS cascade order, not `!important`: the `--awaiting`/`--stuck` classes are declared after the base `.topology-wire` rule specifically so an equal-specificity override wins and a blocked/awaiting child's wire can never read as "fine" just because its family tint happens to look calm.
+`topology-overlay.js` (#764) mounts `TopologyView` in `mode: 'overlay'` (translucent glass cards) as a transient, non-interactive pop-over: the instant a live `session_created` event names a child with a known parent, `desktop.js`'s `handleSessionCreated` calls `topologyOverlay.pop(sessionName, allSessions)`, which resolves the child's family (root + descendants, `lineage.js`'s `familyRootName`) and renders it into a fixed-position panel that fades in, lingers ~2.6s (`LINGER_MS`), then fades out and tears itself down. This replaces the old connector-overlay's "see the topology over your terminals" job (#746, deleted by #764 — it only read sensibly on a wide tiled desktop the owner never runs) and needs no open parent window to fire.
 
-**Wire color** is a stable per-family hash (`tintIndexForRoot`, hashing the family-root session name into one of the 6 `--lineage-tint-N` slots) — the same 6-slot palette the collage and the birth-ghost use, computed independently rather than imported from `lineage.js` (see the open follow-up below).
+**Non-interactive by default:** `pointer-events: none` on `.topology-overlay-root` is a CSS-inherited property, so it cascades through every card `TopologyView` renders — the overlay never blocks a click through to the terminal underneath. Only the small `×` dismiss button opts back into `pointer-events: auto`; clicking it hides the current pop immediately (skipping any remaining linger) without touching the settings toggle, so the *next* spawn still pops normally.
 
-**Z-band:** the overlay sits at z-index 900 — above WinBox windows (whose inline z-indexes grow from 10) but below the collage overlay (1400), so entering the collage always wins and the wires never bleed through it.
+**Animation timing is shared with the birth ghost**, not reinvented: `topology-overlay.js` imports `FLY_MS` (480ms) and `prefersReducedMotion()` from `spawn-ghost.js` (both now exported for reuse) rather than picking its own duration or re-querying `matchMedia`. `prefers-reduced-motion: reduce` skips the pop-in transition entirely (`.topology-overlay-root--instant`) — the overlay just appears — matching `flyGhost()`'s own reduced-motion fallback.
 
-The redraw loop is a self-stopping `requestAnimationFrame` tick: it only keeps scheduling itself while at least one wire is actually on-screen (`_hasPairs`), and is woken by session/window/activity events (`onSessionsChanged`, `window_registered/unregistered/minimized/restored/tiled`, `viewport_resize`, `session_activity`, TTS/audio events) rather than polling on a timer.
+**Settings toggle:** the Config sidebar's "Topology overlay" checkbox calls `topologyOverlay.setVisible()`, persisted to `localStorage['aw-topology-overlay-visible']` (visible by default) — same pattern the old connector overlay used for its own `VISIBLE_KEY`. Turning it off also dismisses whatever pop is currently on screen.
+
+**Z-band:** the overlay sits at z-index 1000 — above WinBox windows (whose inline z-indexes grow from 10) but below the collage overlay (1400) and toasts/modals (1500/2000), so a spawn's ambient glimpse never competes with something the user actually needs to act on.
+
+A pop while a previous one is still showing/fading reuses the same panel and DOM (`TopologyView.render()`'s idempotent diffing) and restarts the linger, rather than stacking a second overlay on top.
 
 ## Grouped + tinted collage
 
 F3 (or the `desktop_collage` MCP tool, or the command palette) still enters the same Mission Control-style preview overlay documented in [Window collage](window-collage.md) — but the grid cells are now **families** (a session + its descendants), not raw windows (#748). `collage.js#_groupFamilies()` walks each window's `.parent` chain (via `_lineageOf()`, sessions-section.js's tree-linkage data) to a root, and groups every open window under that root. A singleton family (no open children) renders as a plain tile with a faint tint hint (`.collage-family.is-singleton`); a family with open children renders as a tinted cluster (`.collage-family`) — the parent's tile on top (`.collage-family-parent`), its children nested in a wrapping row below (`.collage-family-children`, reserved ~42% of the cluster height, scrolling vertically rather than ever overflowing the grid horizontally).
 
-Family hue cycles through `--lineage-tint-1..6` by **family index within the current grid** (`familyIndex % 6`), set inline as `--family-tint` — a different hashing scheme than the connector overlay's per-root hash (see the open follow-up below). The grid's cols×rows fitting and the underlying preview-tile mechanics (live monitor WebSocket per session tile, cloned iframe per artifact tile, the "never touch a real WinBox window" invariant) are unchanged — see `window-collage.md` for that architecture and its autopsy.
+Family hue comes from `lineage.js`'s `lineageTintVar()`, set inline as `--family-tint` — the same root-hash every topology surface uses (#755, unified). The grid's cols×rows fitting and the underlying preview-tile mechanics (live monitor WebSocket per session tile, cloned iframe per artifact tile, the "never touch a real WinBox window" invariant) are unchanged — see `window-collage.md` for that architecture and its autopsy.
 
 ## Live appearance
 
@@ -75,8 +77,4 @@ Both design rules that gate every rule appended to `desktop.css`'s `/* === topol
 
 **Live-pane-peek safety flag:** any live-pane content peek (e.g. a collage tile rendering a child's actual terminal output) must default off or blurred — surfacing a child session's live terminal by default is a screen-share / credential-exposure risk the moment topology becomes something people demo (council flag, #749). Peeks are opt-in reveals, never the resting state. Today's collage tiles already stream live content by design (see `window-collage.md`) — this rule governs any *future* peek surface layered on top of the topology visualization, not a retrofit of the existing collage.
 
-Both rules, plus `prefers-reduced-motion` handling for the wire animations, live in the CSS comment block at `desktop.css`'s `/* === topology === */` anchor.
-
-## Open follow-up
-
-**#755** — unify lineage-tint slot assignment across the three surfaces. #749 made the tint *palette* SSOT but not the *assignment*, so all three still pick a family's slot differently: placement calls `lineage.js`'s `lineageTintVar()` (string-hash of the family root), the connector overlay has its own near-identical hash in `tintIndexForRoot()`, and the collage instead keys on the family's *position in the current grid* (`familyIndex % 6`, which isn't even stable across rebuilds). Nothing is broken by this today (each surface's own tint is internally consistent), but the same family can render a different hue in the collage than on its connector wire or its birth ghost. The proposed fix points `topology-wires.js` and `collage.js` at `lineage.js` instead of each re-deriving its own assignment.
+Both rules, plus `prefers-reduced-motion` handling for the topology animations, live in the CSS comment block at `desktop.css`'s `/* === topology === */` anchor.

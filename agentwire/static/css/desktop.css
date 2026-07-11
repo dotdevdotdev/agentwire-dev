@@ -46,7 +46,7 @@
     --neon-purple: #c06cf0;
 
     /* Lineage-tint family palette (#749) — SSOT for the topology slices
-       (born-from-parent placement, connector overlay, hierarchy-grouped
+       (born-from-parent placement, phantom overlay, hierarchy-grouped
        collage). A session family (a parent + all its descendants) is
        assigned ONE hue by family index (index % 6) so lineage reads at a
        glance without labels. Every surface derives fills/borders/glows
@@ -6339,7 +6339,7 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 /* === topology ===
-   Session-family visualization (#749 slate: placement, connector overlay,
+   Session-family visualization (#749 slate: placement, phantom overlay,
    hierarchy-grouped collage). Every rule appended here must:
    1. Pull its family color from --lineage-tint-1..6 (never a hardcoded hex)
       so a parent and its descendants read as one hue family everywhere.
@@ -6432,69 +6432,6 @@ body.sidebar-pinned .sidebar-tab {
 
 .collage-family .collage-card.is-active {
     border-color: var(--accent);
-}
-
-/* --- connector overlay (#746) — topology-wires.js ---
-   SVG layer of thin wires from each parent session's title bar to each live
-   child's, appended into the same #desktopArea collage.js targets. Read-only:
-   the module only measures window rects, never moves/resizes a real WinBox. */
-.topology-wires-overlay {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    overflow: visible;
-}
-.topology-wires-overlay.hidden { display: none; }
-
-.topology-wire {
-    fill: none;
-    stroke: var(--wire-tint, var(--lineage-tint-1));
-    stroke-width: 2px;
-    stroke-linecap: round;
-    opacity: 0.4;
-    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--wire-tint, var(--lineage-tint-1)) 45%, transparent));
-}
-
-/* processing / generating / playing — a flowing dash reads as "working" */
-.topology-wire--flow {
-    opacity: 0.9;
-    stroke-dasharray: 7 7;
-    animation: topology-wire-flow 0.7s linear infinite;
-}
-
-/* Failure-state parity (#749): awaiting/stuck override the lineage tint
-   outright — amber/red must win over the family hue so a blocked child
-   never reads as "fine". Declared after .topology-wire so equal-specificity
-   cascade order (not !important) decides it. */
-.topology-wire--awaiting {
-    stroke: var(--topology-awaiting);
-    opacity: 0.95;
-    filter: drop-shadow(0 0 5px var(--topology-awaiting-glow));
-    animation: topology-wire-pulse 1.3s ease-in-out infinite;
-}
-.topology-wire--stuck {
-    stroke: var(--topology-stuck);
-    opacity: 1;
-    filter: drop-shadow(0 0 6px var(--topology-stuck-glow));
-    animation: topology-wire-pulse 0.7s ease-in-out infinite;
-}
-
-@keyframes topology-wire-flow {
-    to { stroke-dashoffset: -28; }
-}
-@keyframes topology-wire-pulse {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .topology-wire--flow,
-    .topology-wire--awaiting,
-    .topology-wire--stuck {
-        animation: none;
-    }
 }
 
 /* --- shared topology renderer (#761) — topology-render.js's TopologyView
@@ -6672,8 +6609,8 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 /* Failure-state parity (#749): awaiting/stuck override the lineage tint
-   outright, same rule as the connector overlay above — a blocked child must
-   never read as "fine" just because its family hue is calm. */
+   outright — a blocked child must never read as "fine" just because its
+   family hue is calm. */
 .topology-card--awaiting .topology-status-dot {
     background: var(--topology-awaiting);
     color: var(--topology-awaiting);
@@ -6751,6 +6688,76 @@ body.sidebar-pinned .sidebar-tab {
     .topology-link--awaiting,
     .topology-link--stuck {
         animation: none;
+    }
+}
+
+/* --- phantom topology overlay (#764) — topology-overlay.js ---
+   Transient, non-interactive pop-over of the shared renderer above: the
+   instant a child session spawns, TopologyView mounts into the panel below
+   with mode:'overlay' (the glass-card styling above) showing the new
+   session's family, then fades. pointer-events:none on the root cascades
+   through every card TopologyView renders — it's an inherited CSS property —
+   so the overlay never blocks a click through to the terminal underneath;
+   only the dismiss button opts back into pointer-events:auto. Width caps
+   narrow (min(94vw, 380px)) rather than spanning the viewport, matching the
+   renderer's narrow-first layout above. The fade duration is set inline as
+   --topology-overlay-fade-ms from spawn-ghost.js's FLY_MS, so the two spawn
+   animations share one timing constant instead of drifting apart. */
+.topology-overlay-root {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 9vh;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--topology-overlay-fade-ms, 480ms) ease-out;
+}
+
+.topology-overlay-root--visible {
+    opacity: 1;
+}
+
+.topology-overlay-root--instant {
+    transition: none;
+}
+
+.topology-overlay-panel {
+    position: relative;
+    width: min(94vw, 380px);
+    max-height: 78vh;
+    overflow-y: auto;
+    border-radius: 14px;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.35);
+}
+
+.topology-overlay-dismiss {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 1;
+    width: 22px;
+    height: 22px;
+    line-height: 20px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--chrome-border);
+    background: color-mix(in srgb, var(--chrome) 80%, transparent);
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.topology-overlay-dismiss:hover {
+    color: var(--text);
+    border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .topology-overlay-root {
+        transition: none !important;
     }
 }
 

@@ -89,7 +89,7 @@ and `custom` (any model behind a small HTTP shim).
 Implementation reference for contributors and advanced users.
 
 - **[Portal](internals/portal.md)** — modes, REST API, WebSocket events
-- **[Session topology](internals/session-topology.md)** — parent→child visualization: born-from-parent ghost placement, the Alt+L connector overlay, lineage-tinted/hierarchy-grouped collage, live `session_created` appearance, and the shared design tokens behind all four
+- **[Session topology](internals/session-topology.md)** — parent→child visualization: born-from-parent ghost placement, the shared `TopologyView` renderer + its Session Workspace window and phantom-overlay mounts, lineage-tinted/hierarchy-grouped collage, live `session_created` appearance, and the shared design tokens behind all of it
 - **[Large parallel refactors](internals/parallel-refactor.md)** — splitting a huge file across parallel worktrees: positional-interleaving conflicts, regenerate-against-fresh-base + sequential merges, foundation-first, verification discipline
 - **[Window collage](internals/window-collage.md)** — Mission Control overlay: preview-tile architecture + why mutating real WinBox windows can never work
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries
