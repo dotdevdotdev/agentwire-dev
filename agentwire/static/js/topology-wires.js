@@ -10,9 +10,10 @@
  * Parent/child pairing reuses sessions-section.js's `s.parent` linkage (the
  * same data the sidebar's nested tree renders from) rather than re-deriving
  * it — see ensureSessionsLoaded()/getAllSessions()/activityStates there
- * (also used by collage.js's #748 family grouping). Colors pull from the
- * lineage-tint + failure-state-parity tokens (#749) in desktop.css; never a
- * hardcoded hex.
+ * (also used by collage.js's #748 family grouping). Colors come from
+ * lineage.js's `lineageTintVar` (#755 — the same family → hue assignment
+ * placement and collage use) plus the failure-state-parity tokens (#749) in
+ * desktop.css; never a hardcoded hex.
  *
  * @module topology-wires
  */
@@ -20,6 +21,7 @@
 import { desktop } from './desktop-manager.js';
 import { buildSessionId, normalizeMachine } from './session-id.js';
 import { getAllSessions, activityStates, onSessionsChanged, ensureSessionsLoaded } from './sidebar/sessions-section.js';
+import { lineageTintVar } from './lineage.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -30,29 +32,6 @@ const WIRES_Z = 900;
 
 const VISIBLE_KEY = 'aw-topology-wires-visible';
 export const TOPOLOGY_WIRES_EVENT = 'topology-wires-change';
-
-/** Stable, order-independent family color: hash the family's root session
- * name into one of the 6 lineage-tint slots (#749 SSOT palette). Avoids
- * re-deriving a palette here — only picks which of the shared vars applies. */
-function tintIndexForRoot(root) {
-    let h = 0;
-    for (let i = 0; i < root.length; i++) h = (h * 31 + root.charCodeAt(i)) >>> 0;
-    return (h % 6) + 1;
-}
-
-/** Walk `s.parent` up to the family root, guarding against cycles the same
- * way sessions-section.js's buildSessionTree does. */
-function familyRootName(name, byName) {
-    const guard = new Set();
-    let cur = name;
-    for (;;) {
-        const rec = byName.get(cur);
-        const parent = rec && rec.parent;
-        if (!parent || parent === cur || !byName.has(parent) || guard.has(parent)) return cur;
-        guard.add(parent);
-        cur = parent;
-    }
-}
 
 /** 'idle' | 'flow' (processing/generating/playing) | 'awaiting' | 'stuck'.
  * `state`/`state_kind` (needs_input/off) only land on the session record
@@ -98,7 +77,7 @@ class TopologyWires {
     constructor() {
         /** @type {SVGSVGElement|null} */
         this._svg = null;
-        /** @type {Map<string, {path: SVGPathElement, stateClass: string|null, tintIdx: number|null}>} */
+        /** @type {Map<string, {path: SVGPathElement, stateClass: string|null, tintVar: string|null}>} */
         this._paths = new Map();
         /** @type {number|null} */
         this._raf = null;
@@ -198,7 +177,7 @@ class TopologyWires {
                 key: `${parentId}=>${childId}`,
                 parentWin,
                 childWin,
-                tintIdx: tintIndexForRoot(familyRootName(name, byName)),
+                tintVar: lineageTintVar(name, sessions),
                 state: wireStateFor(name, s),
             });
         }
@@ -229,7 +208,7 @@ class TopologyWires {
                 const path = document.createElementNS(SVG_NS, 'path');
                 path.setAttribute('class', 'topology-wire');
                 this._svg.appendChild(path);
-                entry = { path, stateClass: null, tintIdx: null };
+                entry = { path, stateClass: null, tintVar: null };
                 this._paths.set(pair.key, entry);
             }
             if (entry.path.getAttribute('d') !== d) entry.path.setAttribute('d', d);
@@ -240,9 +219,9 @@ class TopologyWires {
                 if (stateClass) entry.path.classList.add(stateClass);
                 entry.stateClass = stateClass;
             }
-            if (entry.tintIdx !== pair.tintIdx) {
-                entry.path.style.setProperty('--wire-tint', `var(--lineage-tint-${pair.tintIdx})`);
-                entry.tintIdx = pair.tintIdx;
+            if (entry.tintVar !== pair.tintVar) {
+                entry.path.style.setProperty('--wire-tint', `var(${pair.tintVar})`);
+                entry.tintVar = pair.tintVar;
             }
         }
 

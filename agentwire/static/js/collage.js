@@ -40,6 +40,7 @@ import { desktop } from './desktop-manager.js';
 import { ansiToHtml } from './utils/ansi.js';
 import { isCommandPaletteOpen } from './command-palette.js';
 import { getAllSessions, ensureSessionsLoaded } from './sidebar/sessions-section.js';
+import { lineageTintVar } from './lineage.js';
 
 /** Overlay z-index: above all windows (WinBox's focus counter sets inline
  * z-indexes that grow from 10), below notification toasts (1500), modals
@@ -252,8 +253,8 @@ class Collage {
         );
 
         const activeId = desktop.getActiveWindow();
-        families.forEach((familyIds, familyIndex) => {
-            this._grid.appendChild(this._buildFamily(familyIds, familyIndex, activeId, areaRect));
+        families.forEach((family) => {
+            this._grid.appendChild(this._buildFamily(family.ids, family.root, activeId, areaRect));
         });
         this._overlay.appendChild(this._grid);
 
@@ -295,13 +296,16 @@ class Collage {
     }
 
     /**
-     * Group open window ids into families keyed by session-tree root.
-     * Non-session windows (artifacts/panels) have no lineage and each form
-     * their own singleton family. Within a family, ids are ordered
-     * ancestor-first so nested descendants render under their parent even
-     * across multiple generations.
+     * Group open window ids into families keyed by session-tree root. The
+     * root name is threaded through to _buildFamily so it can look up the
+     * family's hue via lineage.js's lineageTintVar (#755) — the same
+     * assignment placement and the wire overlay use, instead of re-deriving
+     * one here. Non-session windows (artifacts/panels) have no lineage and
+     * each form their own singleton family (rooted at their own id). Within
+     * a family, ids are ordered ancestor-first so nested descendants render
+     * under their parent even across multiple generations.
      * @param {string[]} ids
-     * @returns {string[][]} One array of window ids per family.
+     * @returns {Array<{root: string, ids: string[]}>} One entry per family.
      */
     _groupFamilies(ids) {
         const byName = new Map(getAllSessions().map((s) => [s.name || '', s]));
@@ -315,29 +319,31 @@ class Collage {
             if (!families.has(root)) families.set(root, []);
             families.get(root).push({ id, depth });
         }
-        return [...families.values()].map((entries) =>
-            entries.sort((a, b) => a.depth - b.depth).map((e) => e.id),
-        );
+        return [...families.entries()].map(([root, entries]) => ({
+            root,
+            ids: entries.sort((a, b) => a.depth - b.depth).map((e) => e.id),
+        }));
     }
 
     /**
      * Build one grid cell for a family: a lone tile for a singleton family,
      * or a tinted cluster (parent on top, children nested below in a
-     * wrapping row) for a family with descendants. Family hue cycles
-     * through the shared --lineage-tint-1..6 tokens by family index so
-     * lineage reads without labels (#748/#749). `overflow: hidden` on the
-     * cluster (CSS) is what keeps a family with many children from ever
-     * pushing the grid into horizontal overflow — it scrolls vertically
-     * instead.
+     * wrapping row) for a family with descendants. Family hue comes from
+     * lineage.js's `lineageTintVar` (#755) — a root-hash, not grid position,
+     * so a family keeps the same hue here as on placement and the wire
+     * overlay. `overflow: hidden` on the cluster (CSS) is what keeps a
+     * family with many children from ever pushing the grid into horizontal
+     * overflow — it scrolls vertically instead.
      * @param {string[]} familyIds - Ancestor-first window ids for this family.
-     * @param {number} familyIndex - Position among this grid's families.
+     * @param {string} root - Family root session name (or window id, for a
+     *   singleton family rooted at a non-session window).
      * @param {string|null} activeId - Currently-active window id.
      * @param {DOMRect} areaRect
      */
-    _buildFamily(familyIds, familyIndex, activeId, areaRect) {
+    _buildFamily(familyIds, root, activeId, areaRect) {
         const wrap = document.createElement('div');
         wrap.className = 'collage-family';
-        wrap.style.setProperty('--family-tint', `var(--lineage-tint-${(familyIndex % 6) + 1})`);
+        wrap.style.setProperty('--family-tint', `var(${lineageTintVar(root, getAllSessions())})`);
 
         if (familyIds.length === 1) {
             wrap.classList.add('is-singleton');
