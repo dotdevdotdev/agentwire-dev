@@ -694,6 +694,48 @@ def test_remove_force_delete_branch_removes_unmerged(tmp_path, monkeypatch, wt_e
     assert not _local_branch_exists(clone, "wip2")
 
 
+def test_remove_force_delete_branch_refuses_open_pr(tmp_path, monkeypatch, wt_env):
+    """#756: --force-delete-branch alone must NOT close an OPEN PR by nuking
+    its remote head branch — that's the surprising destruction the guard
+    exists for. --close-pr-branch is the required, explicit override."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+
+    def _make_wip_worktree(name):
+        assert _run(monkeypatch, cfg, name=name, project=str(clone)) == 0
+        wt_path = wt_dir / "clone-repo" / name
+        (wt_path / "new.txt").write_text("still working\n")
+        _git(wt_path, "add", "-A")
+        _git(wt_path, "commit", "-qm", "wip commit")
+        return wt_path
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout='{"state": "OPEN", "number": 99}', stderr="",
+            )
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(m.shutil, "which", lambda *_: "/usr/bin/gh")
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+
+    wt_path_a = _make_wip_worktree("wip3a")
+    rc = _run(monkeypatch, cfg, name="wip3a", project=str(clone), remove=True, force_delete_branch=True)
+    assert rc == 0  # worktree teardown itself still succeeds
+    assert not wt_path_a.exists()
+    assert _local_branch_exists(clone, "wip3a")  # branch preserved — open PR guarded
+
+    wt_path_b = _make_wip_worktree("wip3b")
+    rc = _run(monkeypatch, cfg, name="wip3b", project=str(clone), remove=True,
+              force_delete_branch=True, close_pr_branch=True)
+    assert rc == 0
+    assert not wt_path_b.exists()
+    assert not _local_branch_exists(clone, "wip3b")  # explicit override deletes it
+
+
 def test_remove_keep_branch_flag_preserves_merged_branch(tmp_path, monkeypatch, wt_env):
     _, clone = _origin_and_clone(tmp_path, default_branch="develop")
     wt_dir = tmp_path / "worktrees"

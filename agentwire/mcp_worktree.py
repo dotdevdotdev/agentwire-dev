@@ -225,6 +225,7 @@ def worktree_remove(
     project_dir: str = "",
     keep_branch: bool = False,
     force_delete_branch: bool = False,
+    close_pr_branch: bool = False,
 ) -> str:
     """Tear down a worktree session: kill the session, remove the worktree + branch, unregister.
 
@@ -245,7 +246,12 @@ def worktree_remove(
         project_dir: Path to the git repo (default: server cwd).
         keep_branch: Skip branch cleanup entirely (leave the branch as-is).
         force_delete_branch: Delete the branch even if not confirmed merged —
-            use only when you're sure the work is safe to discard.
+            use only when you're sure the work is safe to discard. Still
+            refuses a branch with an OPEN PR (deleting it would silently
+            close the PR) unless close_pr_branch is also set.
+        close_pr_branch: Combined with force_delete_branch, also delete a
+            branch that has an OPEN PR, closing it. Explicit escape hatch —
+            only set this when you mean to close that PR.
 
     Returns:
         Success message describing what was removed, or a loud failure
@@ -258,6 +264,8 @@ def worktree_remove(
         args += ["--keep-branch"]
     if force_delete_branch:
         args += ["--force-delete-branch"]
+    if close_pr_branch:
+        args += ["--close-pr-branch"]
     data = run_agentwire_cmd(args)
     session = data.get("session", name)
     killed = " (killed live session)" if data.get("killed") else ""
