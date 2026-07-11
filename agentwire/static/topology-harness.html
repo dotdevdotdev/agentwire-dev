@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>topology-render.js harness</title>
+<link rel="stylesheet" href="css/desktop.css">
+<style>
+  /* Harness chrome only — everything inside #stage is styled by desktop.css
+     tokens, same as the real app. Deliberately narrow: this proves the
+     renderer packs a family into a ~1/3-screen-width column, not a wide
+     canvas (see feedback_owner_runs_portal_narrow). */
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 16px 60px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  h1 { font-size: 15px; color: var(--text); margin: 0; }
+  p { font-size: 12.5px; color: var(--text-muted); max-width: 60ch; text-align: center; margin: 0; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 7px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--chrome-border);
+    background: var(--chrome);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  #stage {
+    width: min(360px, 92vw);
+    border: 1px solid var(--chrome-border);
+    border-radius: 12px;
+    background: #05070a;
+    max-height: 70vh;
+    overflow: auto;
+  }
+  #log { font-size: 11px; color: var(--text-muted); min-height: 1.4em; }
+</style>
+</head>
+<body>
+  <h1>topology-render.js — TopologyView harness</h1>
+  <p>Mock family only, no live portal data. Proves cards + lineage-tinted links render inside a
+    narrow column, and that add/remove/state-change re-renders diff the existing DOM
+    instead of tearing it down.</p>
+  <div class="controls">
+    <button id="add">+ spawn child</button>
+    <button id="remove">- kill last</button>
+    <button id="cycle">cycle states</button>
+  </div>
+  <div id="stage"></div>
+  <div id="log"></div>
+
+<script type="module">
+import { TopologyView } from './js/topology-render.js';
+
+let sessions = [
+  { name: 'agentwire', parent: null, roles: ['orchestrator'], machine: 'jordans-mini', activity: 'idle' },
+  { name: 'feat-login-ui', parent: 'agentwire', roles: ['worker'], machine: 'jordans-mini', activity: 'processing' },
+  { name: 'docs-audit', parent: 'agentwire', roles: ['worker'], machine: 'popos', activity: 'idle' },
+  { name: 'api-rate-limit', parent: 'feat-login-ui', roles: ['worker'], machine: 'jordans-mini', state: 'needs_input' },
+];
+
+const logEl = document.getElementById('log');
+const log = (msg) => { logEl.textContent = msg; };
+
+const stage = document.getElementById('stage');
+const topo = new TopologyView(stage, {
+  mode: 'window',
+  onCardClick: (name) => log(`clicked: ${name}`),
+});
+topo.render(sessions);
+log(`rendered ${sessions.length} sessions`);
+
+let n = 0;
+document.getElementById('add').onclick = () => {
+  n++;
+  const parents = sessions.map((s) => s.name);
+  sessions.push({
+    name: `worker-${n}`,
+    parent: parents[Math.floor(Math.random() * parents.length)],
+    roles: ['worker'],
+    machine: n % 2 ? 'popos' : 'jordans-mini',
+    activity: 'processing',
+  });
+  topo.render(sessions);
+  log(`added worker-${n} (${sessions.length} total)`);
+};
+
+document.getElementById('remove').onclick = () => {
+  if (sessions.length <= 1) return;
+  const removed = sessions.pop();
+  // Drop anything whose parent no longer exists — a killed session takes
+  // its own children with it, same as the real teardown does.
+  const byName = new Set(sessions.map((s) => s.name));
+  sessions = sessions.filter((s) => !s.parent || byName.has(s.parent));
+  topo.render(sessions);
+  log(`removed ${removed.name} (${sessions.length} total)`);
+};
+
+document.getElementById('cycle').onclick = () => {
+  const pool = ['idle', 'processing', 'needs_input', 'off'];
+  sessions = sessions.map((s) => {
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (pick === 'needs_input' || pick === 'off') {
+      return { ...s, state: pick, activity: undefined };
+    }
+    return { ...s, state: undefined, activity: pick };
+  });
+  topo.render(sessions);
+  log('cycled states');
+};
+</script>
+</body>
+</html>

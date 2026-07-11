@@ -13,15 +13,19 @@
  * (also used by collage.js's #748 family grouping). Colors come from
  * lineage.js's `lineageTintVar` (#755 — the same family → hue assignment
  * placement and collage use) plus the failure-state-parity tokens (#749) in
- * desktop.css; never a hardcoded hex.
+ * desktop.css; never a hardcoded hex. Status mapping (`wireStateFor`) lives
+ * in topology-render.js (#761) — the shared card renderer this module is
+ * slated to be superseded by (#764) — so this overlay and the cards agree
+ * on what "awaiting"/"stuck" means from one implementation, not two.
  *
  * @module topology-wires
  */
 
 import { desktop } from './desktop-manager.js';
 import { buildSessionId, normalizeMachine } from './session-id.js';
-import { getAllSessions, activityStates, onSessionsChanged, ensureSessionsLoaded } from './sidebar/sessions-section.js';
+import { getAllSessions, onSessionsChanged, ensureSessionsLoaded } from './sidebar/sessions-section.js';
 import { lineageTintVar } from './lineage.js';
+import { wireStateFor } from './topology-render.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -32,21 +36,6 @@ const WIRES_Z = 900;
 
 const VISIBLE_KEY = 'aw-topology-wires-visible';
 export const TOPOLOGY_WIRES_EVENT = 'topology-wires-change';
-
-/** 'idle' | 'flow' (processing/generating/playing) | 'awaiting' | 'stuck'.
- * `state`/`state_kind` (needs_input/off) only land on the session record
- * right after an /api/sessions/local fetch — not on every periodic
- * sessions_update push — so treat them as a best-effort overlay on top of
- * the always-live activityStates map (same source the sidebar dot uses). */
-function wireStateFor(name, record) {
-    if (record?.state === 'needs_input') return 'awaiting';
-    if (record?.state === 'off') return 'stuck';
-    const activity = activityStates.get(name) || record?.activity || 'idle';
-    if (activity === 'processing' || activity === 'generating' || activity === 'playing' || activity === 'active') {
-        return 'flow';
-    }
-    return 'idle';
-}
 
 /**
  * A minimized WinBox is `display: none` (this app hides WinBox's own min-bar

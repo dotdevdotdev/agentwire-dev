@@ -5,9 +5,9 @@
  * `agentwire/static/css/desktop.css` `--lineage-tint-1..6`). A family is a
  * root session plus every descendant reachable by walking `.parent` links;
  * the whole family shares one hue so relatedness reads at a glance without
- * labels. Consumed by the born-from-parent ghost (#745) and meant to be
- * reused by the connector overlay / grouped collage slices rather than each
- * re-deriving its own palette.
+ * labels. Consumed by the born-from-parent ghost (#745) and reused by the
+ * connector overlay, grouped collage slices, and the shared topology
+ * renderer (#761) rather than each re-deriving its own palette or walk.
  *
  * @module lineage
  */
@@ -15,9 +15,34 @@
 const TINT_COUNT = 6;
 
 /**
- * Walk `.parent` links from `name` up to its root ancestor.
- * Tolerant of missing sessions, self-referencing parents, and cycles (caps
- * the walk depth rather than looping forever).
+ * Walk `.parent` links from `name` to its root ancestor, tracking depth.
+ * Cycle-safe via an exact `seen` set (a 2-cycle stops immediately rather than
+ * spinning for a fixed number of iterations). The one shared implementation
+ * of "resolve a session's family root" — `familyRootName` below and
+ * `groupFamilies` both build on it, and `collage.js`'s window-id family
+ * grouping calls it directly, so there is exactly one root-resolution walk
+ * in the codebase, not a copy per consumer.
+ *
+ * @param {Map<string, {name?: string, parent?: string|null}>} byName - Session name → record.
+ * @param {string} name - Session name to resolve.
+ * @returns {{root: string, depth: number}} Root ancestor's name and hop count to it.
+ */
+export function lineageOf(byName, name) {
+    let cur = name;
+    let depth = 0;
+    const seen = new Set([name]);
+    while (true) {
+        const parent = byName.get(cur)?.parent;
+        if (!parent || parent === cur || !byName.has(parent) || seen.has(parent)) break;
+        seen.add(parent);
+        cur = parent;
+        depth++;
+    }
+    return { root: cur, depth };
+}
+
+/**
+ * Tolerant of missing sessions, self-referencing parents, and cycles.
  *
  * @param {string} name - Session name to resolve.
  * @param {Array<{name: string, parent?: string|null}>} sessions - Full session list.
@@ -25,19 +50,35 @@ const TINT_COUNT = 6;
  */
 export function familyRootName(name, sessions) {
     const byName = new Map((sessions || []).map((s) => [s.name, s]));
-    let current = byName.get(name);
-    let depth = 0;
-    while (
-        current &&
-        current.parent &&
-        current.parent !== current.name &&
-        byName.has(current.parent) &&
-        depth < 32
-    ) {
-        current = byName.get(current.parent);
-        depth++;
+    return lineageOf(byName, name).root;
+}
+
+/**
+ * Group a session list into families (a root + every descendant reachable
+ * via `.parent`), each family's members ordered ancestor-first (root, then
+ * descendants by increasing depth) so parent-before-child render/layout
+ * order falls out for free. Shared by the topology renderer (#761) for its
+ * card layout; `collage.js` groups *window ids* instead (some of which are
+ * non-session windows with no lineage) so it calls `lineageOf` directly
+ * rather than this session-list form.
+ *
+ * @param {Array<{name: string, parent?: string|null}>} sessions
+ * @returns {Array<{root: string, members: Array<{name: string, depth: number}>}>}
+ */
+export function groupFamilies(sessions) {
+    const byName = new Map((sessions || []).map((s) => [s.name, s]));
+    const families = new Map(); // root name → [{name, depth}]
+    for (const s of sessions || []) {
+        const name = s.name;
+        if (!name) continue;
+        const { root, depth } = lineageOf(byName, name);
+        if (!families.has(root)) families.set(root, []);
+        families.get(root).push({ name, depth });
     }
-    return current ? current.name : name;
+    return [...families.entries()].map(([root, members]) => ({
+        root,
+        members: members.sort((a, b) => a.depth - b.depth),
+    }));
 }
 
 /** Deterministic small-int hash of a string, stable across reloads/renders. */

@@ -6438,6 +6438,263 @@ body.sidebar-pinned .sidebar-tab {
     }
 }
 
+/* --- shared topology renderer (#761) — topology-render.js's TopologyView
+   Mount-agnostic family-card renderer shared by the Session Workspace window
+   (#762) and the phantom overlay (#764) — "one engine, two mounts". Cards
+   stack in normal flex-wrap flow (never absolute-positioned on a wide
+   canvas) so a family packs into a narrow ~1/3-width portal column: one row
+   per lineage depth, 1-2 cards per row once wrapped. --family-tint /
+   --card-tint / --link-tint are set inline per family/card/link, always an
+   alias of --lineage-tint-1..6 (never a hardcoded hex, same rule as the rest
+   of this === topology === section). */
+.topology-view {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 10px;
+}
+
+.topology-view-links {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+}
+
+.topology-family {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.topology-row {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+}
+
+.topology-card {
+    position: relative;
+    flex: 1 1 150px;
+    max-width: 220px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--chrome);
+    border: 1px solid color-mix(in srgb, var(--card-tint, var(--lineage-tint-1)) 45%, var(--chrome-border));
+    border-radius: 10px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.topology-card:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--card-tint, var(--lineage-tint-1)) 75%, var(--chrome-border));
+}
+
+/* Overlay mount pops over a live terminal window, so its cards read as
+   glass; the workspace-window mount is a page in its own right and stays
+   solid chrome (the default above). */
+.topology-view--overlay .topology-card {
+    background: color-mix(in srgb, var(--chrome) 74%, transparent);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.topology-card-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.topology-status-dot {
+    position: relative;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--text-muted);
+    opacity: 0.5;
+}
+
+.topology-status-dot::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    opacity: 0;
+}
+
+.topology-card-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.topology-role-chip {
+    flex: 0 0 auto;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--neon-blue) 45%, transparent);
+    background: color-mix(in srgb, var(--neon-blue) 8%, transparent);
+    color: var(--neon-blue);
+}
+
+.topology-role-chip--orchestrator {
+    border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--accent);
+}
+
+.topology-card-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.topology-spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 12px;
+}
+
+.topology-spark i {
+    display: block;
+    width: 2px;
+    height: 3px;
+    border-radius: 1px;
+    background: var(--text-muted);
+    opacity: 0.5;
+}
+
+.topology-card-machine {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* flow (processing/generating/playing) — family-tinted "alive" treatment */
+.topology-card--flow .topology-status-dot {
+    background: var(--card-tint, var(--lineage-tint-1));
+    color: var(--card-tint, var(--lineage-tint-1));
+    opacity: 1;
+}
+.topology-card--flow .topology-status-dot::after {
+    opacity: 0.5;
+    animation: topology-dot-ring 1.8s ease-out infinite;
+}
+.topology-card--flow .topology-spark i {
+    background: var(--card-tint, var(--lineage-tint-1));
+    opacity: 0.9;
+    animation: topology-spark-eq 1s ease-in-out infinite;
+}
+
+/* Failure-state parity (#749): awaiting/stuck override the lineage tint
+   outright, same rule as the connector overlay above — a blocked child must
+   never read as "fine" just because its family hue is calm. */
+.topology-card--awaiting .topology-status-dot {
+    background: var(--topology-awaiting);
+    color: var(--topology-awaiting);
+    opacity: 1;
+}
+.topology-card--awaiting .topology-status-dot::after {
+    opacity: 0.6;
+    animation: topology-dot-ring 1.3s ease-out infinite;
+}
+.topology-card--awaiting .topology-spark i {
+    background: var(--topology-awaiting);
+    opacity: 0.7;
+}
+.topology-card--stuck .topology-status-dot {
+    background: var(--topology-stuck);
+    color: var(--topology-stuck);
+    opacity: 1;
+}
+.topology-card--stuck .topology-status-dot::after {
+    opacity: 0.7;
+    animation: topology-dot-ring 0.9s ease-out infinite;
+}
+.topology-card--stuck .topology-spark i {
+    background: var(--topology-stuck);
+    opacity: 0.7;
+}
+
+@keyframes topology-dot-ring {
+    0% { transform: scale(0.6); opacity: 0.7; }
+    100% { transform: scale(1.9); opacity: 0; }
+}
+@keyframes topology-spark-eq {
+    0%, 100% { height: 3px; }
+    50% { height: 11px; }
+}
+
+.topology-link {
+    fill: none;
+    stroke: var(--link-tint, var(--lineage-tint-1));
+    stroke-width: 2px;
+    stroke-linecap: round;
+    opacity: 0.45;
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--link-tint, var(--lineage-tint-1)) 45%, transparent));
+}
+.topology-link--flow {
+    opacity: 0.9;
+    stroke-dasharray: 7 7;
+    animation: topology-link-flow 0.7s linear infinite;
+}
+.topology-link--awaiting {
+    stroke: var(--topology-awaiting);
+    opacity: 0.95;
+    filter: drop-shadow(0 0 5px var(--topology-awaiting-glow));
+    animation: topology-link-pulse 1.3s ease-in-out infinite;
+}
+.topology-link--stuck {
+    stroke: var(--topology-stuck);
+    opacity: 1;
+    filter: drop-shadow(0 0 6px var(--topology-stuck-glow));
+    animation: topology-link-pulse 0.7s ease-in-out infinite;
+}
+
+@keyframes topology-link-flow {
+    to { stroke-dashoffset: -28; }
+}
+@keyframes topology-link-pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .topology-status-dot::after,
+    .topology-card--flow .topology-spark i,
+    .topology-link--flow,
+    .topology-link--awaiting,
+    .topology-link--stuck {
+        animation: none;
+    }
+}
+
 /* --- born-from-parent placement (#745) ---
    Overlay ghost that flies from a parent window's title-bar edge to the
    landing spot; the real WinBox window is only created once the ghost is
