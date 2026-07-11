@@ -13,10 +13,11 @@ import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
 import { topologyWires } from './topology-wires.js';
 import { flyGhost } from './spawn-ghost.js';
-import { lineageTintVar } from './lineage.js';
+import { lineageTintVar, familyRootName } from './lineage.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
 import { ReviewWindow } from './review-window.js';
+import { WorkspaceWindow } from './workspace-window.js';
 import { CouncilWindow, COUNCIL_WINDOW_ID } from './council-window.js';
 import { sidebar } from './sidebar.js';
 import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
@@ -26,7 +27,7 @@ import { configSection } from './sidebar/config-section.js';
 import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
 import { machinesSection } from './sidebar/machines-section.js';
-import { sessionsSection } from './sidebar/sessions-section.js';
+import { sessionsSection, getAllSessions } from './sidebar/sessions-section.js';
 import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
 import { councilSection } from './sidebar/council-section.js';
@@ -44,6 +45,7 @@ import { initAnnouncements } from './announcement-modal.js';
 const sessionWindows = new Map();  // sessionId -> SessionWindow instance
 const artifactWindows = new Map();  // artifactId -> ArtifactWindow instance
 const reviewWindows = new Map();  // windowId -> ReviewWindow instance
+const workspaceWindows = new Map();  // windowId (workspace-<familyRoot>) -> WorkspaceWindow instance
 let councilWindow = null;  // single CouncilWindow instance (one board at a time)
 
 // Born-from-parent placement (#745): sessions we've noticed appear (via the
@@ -900,6 +902,58 @@ export function openReviewWindow(session) {
 }
 
 /**
+ * Open (or focus) the Session Workspace window for a session's family — the
+ * shared topology renderer (#761) hosted as a first-class window (#762).
+ * Keyed off the family ROOT, not the clicked session, so the 🛰 launcher on
+ * any member (and taskbar restore) always lands on the one window for that
+ * family. Re-opening focuses (and live-updates) the existing window.
+ *
+ * @param {string} session - Any session in the family to open the workspace for
+ * @param {string|null} machine - Remote machine ID (unused for dedupe — a family is grouped by lineage, not machine)
+ */
+export function openSessionWorkspace(session, machine = null) {
+    const root = familyRootName(session, getAllSessions());
+    const id = `workspace-${root}`;
+
+    if (workspaceWindows.has(id)) {
+        const existing = workspaceWindows.get(id);
+        if (existing.isMinimized) {
+            if (!desktop.isTiled(id)) desktop.minimizeAllExcept(id);
+            existing.restore();
+        } else {
+            existing.focus();
+        }
+        return;
+    }
+
+    desktop.minimizeAllExcept(null);
+
+    const ww = new WorkspaceWindow({
+        rootSession: root,
+        windowId: id,
+        root: elements.desktopArea,
+        onCardClick: (name, cardSession) => {
+            openSessionTerminal(name, 'terminal', normalizeMachine(cardSession?.machine));
+        },
+        onClose: () => {
+            workspaceWindows.delete(id);
+            removeTaskbarButton(id);
+            unrecordTaskbarEntry(id);
+        },
+        onFocus: () => {
+            updateTaskbarActive(id);
+            desktop.setActiveWindow(id);
+            saveTaskbarState();
+        },
+    });
+
+    ww.open();
+    workspaceWindows.set(id, ww);
+    addTaskbarButton(id, ww);
+    recordTaskbarEntry({ kind: 'workspace', id, session: root, machine });
+}
+
+/**
  * Open the council workspace window. Registers through the same desktop path as
  * a session window (single-window maximize + taskbar tab), so it opens
  * maximized, appears in the open-sessions area, and is tabbable. Only one board
@@ -1006,6 +1060,8 @@ function _openByRecord(rec) {
         openCouncilWindow(rec.sitting || null);
     } else if (rec.kind === 'review') {
         openReviewWindow(rec.session);
+    } else if (rec.kind === 'workspace') {
+        openSessionWorkspace(rec.session, rec.machine || null);
     }
 }
 

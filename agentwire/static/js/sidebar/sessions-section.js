@@ -28,7 +28,14 @@ const killingSessions = new Set();
 const collapsedParents = new Set();
 
 export function getAllSessions() { return allSessions; }
-export function onSessionsChanged(fn) { listeners.add(fn); }
+// Returns an unsubscribe function — load-bearing for consumers with a
+// lifecycle shorter than the page (e.g. workspace-window.js opens/closes
+// many times), unlike the permanent sidebar-section/topology-wires
+// subscribers that never need to unhook.
+export function onSessionsChanged(fn) {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+}
 
 // getAllSessions() is only backed by a live fetch once something has called
 // initData()+fetchSessions() — normally sessionsSection.mount(), which only
@@ -111,6 +118,7 @@ export function renderCard(s, opts = {}) {
             <button class="sidebar-list-item-btn" data-action="connect" title="Connect">▸</button>
             <button class="sidebar-list-item-btn" data-action="monitor" title="Monitor">👁</button>
             <button class="sidebar-list-item-btn" data-action="review" title="Review diff (approve/deny)">🔍</button>
+            <button class="sidebar-list-item-btn" data-action="workspace" title="Open workspace">🛰</button>
             ${opts.closable ? renderCloseButton(name) : ''}
         </div>
         ${path ? `<div class="sidebar-session-row2"><span class="sidebar-session-path">${path}</span></div>` : ''}
@@ -190,6 +198,11 @@ export async function handleSessionClick(e) {
     if (action === 'review') {
         const { openReviewWindow } = await import('../desktop.js');
         openReviewWindow(session);
+        return;
+    }
+    if (action === 'workspace') {
+        const { openSessionWorkspace } = await import('../desktop.js');
+        openSessionWorkspace(session, machine);
         return;
     }
     const { openSessionTerminal } = await import('../desktop.js');
