@@ -281,7 +281,7 @@ class Collage {
      * id, since they have no lineage to walk). The root name is threaded
      * through to _buildFamily so it can look up the family's hue via
      * lineage.js's lineageTintVar (#755) — the same assignment placement and
-     * the wire overlay use, instead of re-deriving one here. Within a
+     * the shared topology renderer use, instead of re-deriving one here. Within a
      * family, ids are ordered ancestor-first so nested descendants render
      * under their parent even across multiple generations.
      * @param {string[]} ids
@@ -310,8 +310,8 @@ class Collage {
      * or a tinted cluster (parent on top, children nested below in a
      * wrapping row) for a family with descendants. Family hue comes from
      * lineage.js's `lineageTintVar` (#755) — a root-hash, not grid position,
-     * so a family keeps the same hue here as on placement and the wire
-     * overlay. `overflow: hidden` on the cluster (CSS) is what keeps a
+     * so a family keeps the same hue here as on placement and the shared
+     * topology renderer. `overflow: hidden` on the cluster (CSS) is what keeps a
      * family with many children from ever pushing the grid into horizontal
      * overflow — it scrolls vertically instead.
      * @param {string[]} familyIds - Ancestor-first window ids for this family.

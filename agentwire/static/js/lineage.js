@@ -5,9 +5,9 @@
  * `agentwire/static/css/desktop.css` `--lineage-tint-1..6`). A family is a
  * root session plus every descendant reachable by walking `.parent` links;
  * the whole family shares one hue so relatedness reads at a glance without
- * labels. Consumed by the born-from-parent ghost (#745) and reused by the
- * connector overlay, grouped collage slices, and the shared topology
- * renderer (#761) rather than each re-deriving its own palette or walk.
+ * labels. Consumed by the born-from-parent ghost (#745), grouped collage
+ * slices, and the shared topology renderer (#761) rather than each
+ * re-deriving its own palette or walk.
  *
  * @module lineage
  */

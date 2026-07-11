@@ -30,8 +30,8 @@ const collapsedParents = new Set();
 export function getAllSessions() { return allSessions; }
 // Returns an unsubscribe function — load-bearing for consumers with a
 // lifecycle shorter than the page (e.g. workspace-window.js opens/closes
-// many times), unlike the permanent sidebar-section/topology-wires
-// subscribers that never need to unhook.
+// many times), unlike the permanent sidebar-section subscriber that never
+// needs to unhook.
 export function onSessionsChanged(fn) {
     listeners.add(fn);
     return () => listeners.delete(fn);
@@ -246,8 +246,8 @@ async function handleCloseClick(session) {
 
 // Data fetching + WebSocket events (registered once by sessionsSection, but
 // exported so other consumers of getAllSessions()/activityStates — e.g.
-// topology-wires.js — can guarantee the pipeline is live without depending on
-// the Sessions sidebar accordion ever being expanded).
+// workspace-window.js — can guarantee the pipeline is live without depending
+// on the Sessions sidebar accordion ever being expanded).
 let dataInitialized = false;
 
 export function initData() {

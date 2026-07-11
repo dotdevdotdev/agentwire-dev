@@ -15,11 +15,11 @@
  * Deliberately narrow-first: cards lay out in normal document flow
  * (flex-wrap rows, 1-2 cards per row), never an absolutely-positioned wide
  * canvas — the owner runs the portal in a narrow ~1/3-width window, which is
- * exactly why the previous connector overlay (#746, topology-wires.js,
- * wiring title bars of spread-out windows) read as a stray line slashing
- * across terminal text. `wireStateFor` below is that overlay's status
- * mapping, extracted here as the one shared copy so a card, a wire, and the
- * sidebar dot never disagree on what "awaiting"/"stuck" means.
+ * exactly why the connector overlay this module superseded (#746, wiring
+ * title bars of spread-out windows — deleted by #764) read as a stray line
+ * slashing across terminal text. `wireStateFor` below is the one shared
+ * status mapping so a card and the sidebar dot never disagree on what
+ * "awaiting"/"stuck" means.
  *
  * @module topology-render
  */
@@ -52,7 +52,7 @@ export function wireStateFor(name, record) {
 
 /** Vertical S-curve from a parent card's bottom edge to a child card's top
  * edge — reads sensibly whether the pair ends up side by side or stacked
- * across a row wrap. Same shape as topology-wires.js's bezierPath. */
+ * across a row wrap. */
 function bezierPath(x1, y1, x2, y2) {
     const bend = Math.max(Math.abs(y2 - y1), 24) * 0.5;
     return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
