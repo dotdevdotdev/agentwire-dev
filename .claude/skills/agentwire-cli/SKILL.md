@@ -65,7 +65,8 @@ agentwire worktree --remove name  # ATOMIC teardown: kill session + force-remove
                                 #   merged branch (local+remote) + unregister — fails loudly (non-zero,
                                 #   registry entry kept) if the dir can't actually be cleared (#717).
                                 #   --keep-branch skips branch cleanup; --force-delete-branch deletes
-                                #   even if not confirmed merged.
+                                #   even if not confirmed merged (but refuses an OPEN PR — #756 — unless
+                                #   --close-pr-branch is also given, since that would silently close it).
 agentwire worktree --prune      # drop registry entries whose worktree is gone + git worktree prune
                                 #   --gc-merged: also tear down (session+worktree+branch) any
                                 #   still-present entry whose branch is confirmed merged

@@ -69,6 +69,31 @@ agentwire worktree --dangling --all  # every repo
 ```bash
 agentwire worktree --remove name --keep-branch          # skip branch cleanup entirely
 agentwire worktree --remove name --force-delete-branch  # delete even if not confirmed merged
+agentwire worktree --remove name --force-delete-branch --close-pr-branch  # ...even with an OPEN PR
+```
+
+#### The orchestrator flow: ready → merge → verify → THEN teardown
+
+Never teardown a worker's worktree before its work has actually landed. The order is: the worker reports **ready** (draft PR open, notified back) → the orchestrator **merges** the PR → the orchestrator **verifies** the merge landed (issue CLOSED via `Closes #N`, not just "PR shown green" — a draft PR or a still-open PR is not landed) → **only then** teardown. Tearing down first and checking later is how real work gets dropped.
+
+#### `--force-delete-branch` does not bypass an OPEN PR (#756)
+
+`--force-delete-branch` overrides the merge-state check for **plain unmerged/local-only work** — exactly as it always has. It does **not** also bypass an **OPEN PR** on that branch: deleting the remote head branch of an open PR silently closes it (GitHub loses the head ref), which is a different, more surprising destruction than dropping some unmerged commits nobody opened a PR for.
+
+Before a force delete, `_delete_branch_if_safe` checks `gh pr view <branch> --json state,number` for an OPEN PR. If found, it refuses and names the PR:
+
+```
+branch fix-bug has OPEN PR #123 — force-deleting closes it. Merge/close the PR first, or pass --close-pr-branch to override.
+```
+
+The guard only fires on the force path — a branch that's already confirmed merged, or genuinely has no PR at all, deletes exactly as before. The explicit escape hatch is `--close-pr-branch`, for when you actually mean to close that PR. As with the rest of this cleanup, it's best-effort: no `gh` / no GitHub remote → can't check → proceeds like before the guard existed. The same guard covers `--prune --gc-merged` (shared `_teardown_entry` → `_delete_branch_if_safe`), though it's rarely hit there since that sweep only force-deletes branches it just confirmed merged.
+
+**Real incident (2026-07-10)** that motivated this: an orchestrator tearing down a worker whose merge hadn't actually landed passed `--force-delete-branch` to silence gh's "branch used by worktree" warning, and it auto-closed the open PR. Recovery:
+
+```bash
+git fetch origin refs/pull/<N>/head   # pulls the PR's last commit down as FETCH_HEAD
+git push origin FETCH_HEAD:refs/heads/<branch>   # recreates the branch GitHub needs to reopen onto
+gh pr reopen <N>
 ```
 
 ### Browser verification tabs are torn down too (#717)

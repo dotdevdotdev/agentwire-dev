@@ -1462,9 +1462,39 @@ def _branch_merge_state(project_path: Path, branch: str, base: str | None) -> st
     return "unknown"
 
 
-def _delete_branch_if_safe(project_path: Path, branch: str, base: str | None, force: bool = False) -> tuple[bool, str]:
+def _open_pr_number(project_path: Path, branch: str) -> int | None:
+    """Best-effort: the OPEN PR number for `branch`, or None if there isn't one
+    (or `gh` is unavailable/unauthenticated) — never hard-fails, matching
+    `_branch_merge_state`'s best-effort posture.
+    """
+    if not shutil.which("gh"):
+        return None
+    result = subprocess.run(
+        ["gh", "pr", "view", branch, "--json", "state,number"],
+        cwd=project_path, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        pr = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if str(pr.get("state", "")).upper() == "OPEN":
+        return pr.get("number")
+    return None
+
+
+def _delete_branch_if_safe(
+    project_path: Path, branch: str, base: str | None, force: bool = False, close_pr_branch: bool = False,
+) -> tuple[bool, str]:
     """Best-effort local + remote branch cleanup. Never touches an unmerged branch
     unless `force` — deleting an unmerged branch would silently drop real work.
+
+    `force` bypasses the merge-state check but NOT an open PR: deleting the
+    remote head branch of an OPEN PR silently closes it (GitHub loses the head
+    ref), which is a different, more surprising destruction than "dropping
+    unmerged local work" — so it needs its own explicit override,
+    `close_pr_branch` (#756).
 
     Returns (deleted, note) — note explains a skip, or names the confirmed state
     on delete.
@@ -1473,6 +1503,13 @@ def _delete_branch_if_safe(project_path: Path, branch: str, base: str | None, fo
         state = _branch_merge_state(project_path, branch, base)
         if state != "merged":
             return False, f"not confirmed merged (state={state}); kept — pass --force-delete-branch to override"
+    elif not close_pr_branch:
+        open_pr = _open_pr_number(project_path, branch)
+        if open_pr is not None:
+            return False, (
+                f"branch {branch} has OPEN PR #{open_pr} — force-deleting closes it. "
+                "Merge/close the PR first, or pass --close-pr-branch to override."
+            )
 
     local = subprocess.run(
         ["git", "-C", str(project_path), "branch", "-D", branch],
@@ -1494,6 +1531,7 @@ def _delete_branch_if_safe(project_path: Path, branch: str, base: str | None, fo
 def _teardown_entry(
     project_path: Path, worktree_dir: Path, session_name: str, worktree_path: Path,
     branch: str | None, base: str | None, *, keep_branch: bool = False, force_branch: bool = False,
+    close_pr_branch: bool = False,
 ) -> dict:
     """Core atomic teardown: force-remove the worktree + prune, kill session,
     unregister, best-effort branch cleanup. Shared by --remove and
@@ -1530,7 +1568,9 @@ def _teardown_entry(
 
     branch_deleted, branch_note = (False, "")
     if branch and not keep_branch:
-        branch_deleted, branch_note = _delete_branch_if_safe(project_path, branch, base, force=force_branch)
+        branch_deleted, branch_note = _delete_branch_if_safe(
+            project_path, branch, base, force=force_branch, close_pr_branch=close_pr_branch,
+        )
 
     # Only unregister once the dir is confirmed gone (see docstring).
     worktree_registry.unregister(project_path, session=session_name, worktree_path=worktree_path)
@@ -1569,6 +1609,7 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
         project_path, worktree_dir, session_name, worktree_path, branch, base,
         keep_branch=getattr(args, 'keep_branch', False),
         force_branch=getattr(args, 'force_delete_branch', False),
+        close_pr_branch=getattr(args, 'close_pr_branch', False),
     )
 
     if json_mode:
@@ -2020,7 +2061,8 @@ def register_session_parser(subparsers) -> None:
                                  "remnant) — this flags a LIVE session no one is watching.")
         parser.add_argument("--remove", action="store_true", help="Atomic teardown: force-remove the worktree, kill the session, delete the branch once merged, and unregister (cleanup/recovery)")
         parser.add_argument("--keep-branch", action="store_true", help="With --remove: skip branch cleanup entirely (default: best-effort delete once confirmed merged)")
-        parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged")
+        parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged. Refuses if the branch has an OPEN PR (would silently close it) unless --close-pr-branch is also given")
+        parser.add_argument("--close-pr-branch", action="store_true", help="With --remove --force-delete-branch: also delete a branch that has an OPEN PR, closing it (explicit escape hatch for #756's guard)")
         parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
         parser.add_argument("--gc-merged", action="store_true", help="Tear down (session/worktree/branch) any registered entry whose branch is confirmed merged; implies --prune (runs standalone too)")
         parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")

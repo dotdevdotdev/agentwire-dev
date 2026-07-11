@@ -163,3 +163,115 @@ class TestDeleteBranchIfSafe:
         assert deleted is True
         assert note == "merged"
         assert not _git(clone, "branch", "--list", "feature").stdout.strip()
+
+
+class TestForceDeleteOpenPrGuard:
+    """#756: `force=True` bypasses the merge-state check, but must NOT bypass
+    an OPEN PR — deleting the remote head branch of an open PR silently
+    closes it. That's a distinct, more surprising destruction than dropping
+    unmerged local work, so it needs its own explicit override
+    (`close_pr_branch`)."""
+
+    def _stub_open_pr(self, monkeypatch, number=42):
+        real_run = subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f'{{"state": "OPEN", "number": {number}}}', stderr="",
+                )
+            return real_run(cmd, *a, **kw)
+
+        monkeypatch.setattr(m.shutil, "which", lambda *_: "/usr/bin/gh")
+        monkeypatch.setattr(m.subprocess, "run", fake_run)
+
+    def test_force_refuses_when_branch_has_open_pr(self, tmp_path, monkeypatch):
+        _, clone = _origin_and_clone(tmp_path)
+        _git(clone, "checkout", "-q", "-b", "feature")
+        (clone / "new.txt").write_text("x\n")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-qm", "wip")
+        _git(clone, "checkout", "-q", "main")
+        self._stub_open_pr(monkeypatch, number=42)
+
+        deleted, note = m._delete_branch_if_safe(clone, "feature", "main", force=True)
+        assert deleted is False
+        assert "#42" in note
+        assert "feature" in note
+        assert "--close-pr-branch" in note
+        assert _git(clone, "branch", "--list", "feature").stdout.strip()  # branch intact
+
+    def test_close_pr_branch_overrides_the_guard(self, tmp_path, monkeypatch):
+        _, clone = _origin_and_clone(tmp_path)
+        _git(clone, "checkout", "-q", "-b", "feature")
+        (clone / "new.txt").write_text("x\n")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-qm", "wip")
+        _git(clone, "checkout", "-q", "main")
+        self._stub_open_pr(monkeypatch, number=42)
+
+        deleted, note = m._delete_branch_if_safe(
+            clone, "feature", "main", force=True, close_pr_branch=True,
+        )
+        assert deleted is True
+        assert not _git(clone, "branch", "--list", "feature").stdout.strip()
+
+    def test_plain_unmerged_no_pr_still_force_deletable(self, tmp_path, monkeypatch):
+        """No PR at all (gh returns non-zero, e.g. no PR for this branch) —
+        force-delete proceeds exactly as before #756."""
+        _, clone = _origin_and_clone(tmp_path)
+        _git(clone, "checkout", "-q", "-b", "feature")
+        (clone / "new.txt").write_text("x\n")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-qm", "wip")
+        _git(clone, "checkout", "-q", "main")
+        real_run = subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no pull requests found")
+            return real_run(cmd, *a, **kw)
+
+        monkeypatch.setattr(m.shutil, "which", lambda *_: "/usr/bin/gh")
+        monkeypatch.setattr(m.subprocess, "run", fake_run)
+
+        deleted, note = m._delete_branch_if_safe(clone, "feature", "main", force=True)
+        assert deleted is True
+        assert not _git(clone, "branch", "--list", "feature").stdout.strip()
+
+    def test_gh_absent_proceeds_best_effort(self, tmp_path, monkeypatch):
+        """No `gh` on PATH -> can't check for an open PR -> proceed, same
+        best-effort posture as `_branch_merge_state`."""
+        _, clone = _origin_and_clone(tmp_path)
+        _git(clone, "checkout", "-q", "-b", "feature")
+        (clone / "new.txt").write_text("x\n")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-qm", "wip")
+        _git(clone, "checkout", "-q", "main")
+        monkeypatch.setattr(m.shutil, "which", lambda *_: None)
+
+        deleted, note = m._delete_branch_if_safe(clone, "feature", "main", force=True)
+        assert deleted is True
+        assert not _git(clone, "branch", "--list", "feature").stdout.strip()
+
+    def test_merged_branch_with_force_and_no_open_pr_still_deletes(self, tmp_path, monkeypatch):
+        """A confirmed-merged branch (state=="merged") has no OPEN PR by
+        definition, so force=True + a gh that reports MERGED/CLOSED lets the
+        delete proceed unhindered."""
+        _, clone = _origin_and_clone(tmp_path)
+        _git(clone, "branch", "feature")
+        real_run = subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout='{"state": "MERGED", "number": 7}', stderr="",
+                )
+            return real_run(cmd, *a, **kw)
+
+        monkeypatch.setattr(m.shutil, "which", lambda *_: "/usr/bin/gh")
+        monkeypatch.setattr(m.subprocess, "run", fake_run)
+
+        deleted, note = m._delete_branch_if_safe(clone, "feature", "main", force=True)
+        assert deleted is True
+        assert not _git(clone, "branch", "--list", "feature").stdout.strip()
