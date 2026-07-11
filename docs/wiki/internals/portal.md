@@ -47,6 +47,8 @@ async def api_create_session(self, request):
 
 The portal provides an OS-like desktop interface using WinBox.js for window management. Clean desktop by default with sessions opened as draggable, resizable windows.
 
+**Session topology:** the parent→child session tree is visible and live on the desktop, not just in the sidebar's nested list — a child session born while its parent's window is open flies out of the parent's title bar into place (born-from-parent placement) instead of just popping into existence, sessions created via `agentwire new`/`worktree`/the portal appear instantly rather than waiting for the next poll (live appearance, `session_created` event), and **Alt+L** toggles a read-only connector overlay wiring each open parent to its open children, activity-colored. Full reference: **[Session topology](session-topology.md)**.
+
 ### Menu Bar
 
 | Menu | Items |
@@ -118,7 +120,7 @@ Sessions can be opened from the Sessions dropdown in two modes:
 
 ### Window Collage
 
-F3 (or the `desktop_collage` MCP tool / command palette) shows a Mission Control-style grid of live previews of every open window — click a tile to focus, Esc to dismiss. The tiles are overlay-local live views (monitor WebSockets / cloned iframes); the real windows are never moved or resized. Architecture and the hard-won "never mutate real WinBox windows" lessons: **[Window collage](window-collage.md)**.
+F3 (or the `desktop_collage` MCP tool / command palette) shows a Mission Control-style grid of live previews of every open window — click a tile to focus, Esc to dismiss. Grid cells are grouped by session family (a parent + its open descendants) and lineage-tinted rather than one cell per window. The tiles are overlay-local live views (monitor WebSockets / cloned iframes); the real windows are never moved or resized. Architecture and the hard-won "never mutate real WinBox windows" lessons: **[Window collage](window-collage.md)**. Family grouping + the connector overlay's **Alt+L** toggle: **[Session topology](session-topology.md)**.
 
 ### Simultaneous Operation
 

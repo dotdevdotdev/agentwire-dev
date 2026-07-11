@@ -47,6 +47,8 @@ Both share session data from `sessions-section.js` (single fetch, shared activit
 
 F3 or Alt/Option+` / `desktop_collage` MCP / command palette → grid of live previews of every open window; click a tile to focus, Esc to exit.
 
+**Grid cells are families, not windows (#748):** `collage.js#_groupFamilies()` walks each window's `.parent` chain to a root and clusters every open descendant under it — a singleton family (no open children) is a plain tile, a family with children renders as a tinted cluster (parent tile on top, children in a wrapping row below). Hue cycles `--lineage-tint-1..6` by the family's position in the current grid.
+
 **The one rule: tiles are overlay-local previews — NEVER mutate the real WinBox windows.** Session tiles stream pane content over a second monitor WS (`/ws/{sessionId}`, rendered via shared `utils/ansi.js`); artifact tiles are cloned iframes. Real windows are never moved/resized/transformed/un-minimized, so exit has nothing to restore.
 
 Why this is load-bearing (each broke a previous implementation — full autopsy in `docs/wiki/internals/window-collage.md`):
@@ -56,6 +58,15 @@ Why this is load-bearing (each broke a previous implementation — full autopsy 
 - `registerWindow`/`setActiveWindow` auto-minimize all others (single-window mode) → any window event mid-overlay fights manual layouts.
 
 **Z-index landscape:** WinBox windows (inline, grows from 10) < collage overlay (1400) < toasts (1500) < modals (2000) < command palette (3000) < sidebar (9001) < tile drag overlay (99999).
+
+## Session Topology (#745–#749)
+
+Four mechanisms make the parent→child session tree visible and alive on the desktop (full reference: `docs/wiki/internals/session-topology.md`):
+
+- **Born-from-parent placement** (`spawn-ghost.js`, #745) — when a child session's parent window is open, the child's window flies out of the parent's title bar (a disposable overlay ghost, `flyGhost()`) before the real WinBox window is constructed in `onSettle` — never transform a real window mid-open (same #235 discipline as the collage). Falls back to instant placement with no ghost when the parent isn't open/minimized or `prefers-reduced-motion` is set.
+- **Connector overlay** (`topology-wires.js`, #746) — **Alt+L** (`e.code === 'KeyL'`, capture phase, same idiom as F3/Alt+`/Alt+bracket) toggles a read-only SVG of wires from each open parent's title bar to each open child's; also toggleable from the Config sidebar's "Topology wires" checkbox. Only reads `getBoundingClientRect()` on `.wb-header` elements, never writes window geometry. Wire color is family lineage tint; wire state (idle/flow/awaiting/stuck) mirrors the child's activity, with awaiting/stuck overriding the tint per failure-state parity. z-index 900 — above windows, below the collage (1400).
+- **Grouped + tinted collage** (`collage.js`, #748) — see "Window Collage" above.
+- **Live appearance** (`desktop.js` `handleSessionCreated` + `agentwire/core.py` `notify_portal_session_created`, #747) — `agentwire new`/`worktree` posts a `session_created` event as soon as the session exists, so the desktop merges it into the live list (and can trigger born-from-parent placement) without waiting for the next `sessions_update` poll.
 
 ## Topology Design Tokens (#749)
 

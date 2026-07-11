@@ -4,6 +4,8 @@
 
 F3 (or the `desktop_collage` MCP tool, or the command palette → "Window collage") lays a live preview of every open window into a grid so the whole desktop can be scanned at once. Click a tile to focus that window; Esc, the hotkey again, or clicking the backdrop exits.
 
+Grid cells are **families** (a session + its descendants), not raw windows (#748): a session with no open children renders as a plain singleton tile, one with open children renders as a tinted cluster — parent tile on top, children nested in a wrapping row below, hued from the shared `--lineage-tint-1..6` palette so relatedness reads at a glance. See [Session topology](session-topology.md) for the grouping mechanics and the sibling placement/connector-overlay/live-appearance features it shares a palette with.
+
 Module: `agentwire/static/js/collage.js`. Styles: the `.collage-*` block in `agentwire/static/css/desktop.css`. Hotkey wiring: `setupCollage()` in `agentwire/static/js/desktop.js`.
 
 ## The one rule
@@ -19,7 +21,8 @@ Any future feature that wants to show multiple windows at once — exposé varia
 | Piece | Implementation |
 |-------|----------------|
 | **Backdrop** | `.collage-overlay`, a fully opaque (`#0a0c10`) layer over the desktop area. Opaque is deliberate: any translucency lets the maximized window behind ghost through the gaps (bright artifact pages especially). No `backdrop-filter` — a blur here leaves a stale compositor layer that renders windows translucent after exit. |
-| **Grid** | cols = `round(sqrt(n × aspect))` fitted to the desktop area aspect, CSS Grid with `1fr` tracks. Rebuilt (not patched) on any churn. |
+| **Grid** | One cell per **family** (a session + its open descendants, grouped by walking `.parent` — `_groupFamilies()`/`_lineageOf()`), not per window. cols = `round(sqrt(n × aspect))` over family count, fitted to the desktop area aspect, CSS Grid with `1fr` tracks. Rebuilt (not patched) on any churn. |
+| **Family clusters** | A family with open children renders as `.collage-family` — parent tile (`.collage-family-parent`) on top, children (`.collage-family-children`, `is-child`) in a wrapping row below reserving ~42% of the cluster height, scrolling vertically rather than overflowing the grid. Tinted via `--family-tint` (an alias of `--lineage-tint-1..6`) so a family reads as one hue without labels. |
 | **Session tiles** | A second *monitor* WebSocket per tile (`/ws/{sessionId}`) — the server pushes the current pane content on connect and re-broadcasts on change (500ms poll). Rendered as ANSI→HTML via the shared `utils/ansi.js` into a `<pre>` sized at full desktop dimensions, then `transform: scale()`d into the tile (overlay-local element, so the transform is harmless). Bottom-anchored so the visible part is the live screen. Audio messages on tile sockets play through `desktop._playAudio` (device-level dedupe prevents double-play with a real window attached). |
 | **Artifact tiles** | A cloned `<iframe>` with the live window's `src` and sandbox attributes, scaled the same way, `pointer-events: none`. |
 | **Other windows** | Title-only fallback card ("no preview"). |
