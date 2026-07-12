@@ -6722,6 +6722,26 @@ body.sidebar-pinned .session-hud-drawer {
     opacity: 0.7;
 }
 
+/* "You-are-here" self/root card (#778) — the Session HUD's re-rooted view
+   dims the focused session itself rather than making it a normal
+   interactive card; click-exemption lives in topology-render.js's card
+   click handler, this is just the visual half. Hover-lift is suppressed
+   too (the card can't be clicked into, so the affordance is misleading). */
+.topology-card--self {
+    opacity: 0.6;
+    cursor: default;
+}
+.topology-card--self:hover {
+    transform: none;
+    border-color: color-mix(in srgb, var(--card-tint, var(--lineage-tint-1)) 45%, var(--chrome-border));
+}
+.topology-card--self .topology-card-name::after {
+    content: " \00b7 here";
+    font-weight: 400;
+    font-style: italic;
+    color: var(--text-muted);
+}
+
 @keyframes topology-dot-ring {
     0% { transform: scale(0.6); opacity: 0.7; }
     100% { transform: scale(1.9); opacity: 0; }
@@ -6813,6 +6833,17 @@ body.sidebar-pinned .session-hud-drawer {
     max-width: 128px;
     padding: 6px 8px;
     gap: 4px;
+}
+
+/* An expanded (mini-terminal open) card must win over the fixed 128px shade
+   card width above — `.topology-view--shade .topology-card` has two class
+   selectors to `.topology-card--expanded`'s one, so without this override
+   the higher-specificity shade rule would keep clamping an open mini-terminal
+   to 128px regardless. Narrow-first: this is still sized for the owner's
+   ~1/3-width portal, not a full desktop canvas. */
+.topology-view--shade .topology-card--expanded {
+    flex: 0 0 340px;
+    max-width: 340px;
 }
 
 /* --- card mini-terminal (#763) — click a card to expand it inline into a
