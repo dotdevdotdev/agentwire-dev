@@ -6714,13 +6714,23 @@ body.sidebar-pinned .sidebar-tab {
     cursor: default;
 }
 
-.topology-card-mini-toolbar {
+/* Mini-terminal actions (mic + open-full) live in the card's header row next
+   to the role chip (workspace-window.js appends .topology-card-actions there),
+   so there's no separate toolbar row stealing terminal height. */
+.topology-card-actions {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    padding: 4px 6px;
-    background: var(--chrome);
-    border-bottom: 1px solid var(--chrome-border);
+    gap: 4px;
+    flex: 0 0 auto;
+    margin-left: 4px;
+}
+
+.topology-card-actions .wb-title-ptt,
+.topology-card-actions .topology-card-mini-open {
+    width: 20px;
+    height: 20px;
+    font-size: 12px;
+    padding: 0;
 }
 
 .topology-card-mini-open {
@@ -6749,8 +6759,14 @@ body.sidebar-pinned .sidebar-tab {
    overrides .session-window-content's height:100% via a higher-specificity
    compound selector (TerminalPane adds that class onto this same element). */
 .topology-card-mini-terminal.session-window-content {
-    height: 280px;
+    height: 320px;
 }
+
+/* Expanded card hosts a live terminal — the activity sparkline is redundant
+   and just steals a row, so hide it, and tighten the card's gap. Reclaims
+   vertical space for terminal rows (the card was mostly chrome above it). */
+.topology-card--expanded .topology-card-meta { display: none; }
+.topology-card--expanded { gap: 4px; }
 
 /* --- phantom topology overlay (#764) — topology-overlay.js ---
    Transient, non-interactive pop-over of the shared renderer above: the

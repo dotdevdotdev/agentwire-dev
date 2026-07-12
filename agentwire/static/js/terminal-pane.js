@@ -58,6 +58,10 @@ export class TerminalPane {
         this.container = container;
         this.session = opts.session;
         this.machine = normalizeMachine(opts.machine);
+        // Per-instance font override: the card mini-terminal renders a smaller
+        // fixed size than the global terminal pref so more rows fit. null →
+        // follow the global pref + responsive default like the full window.
+        this._fontSizeOverride = opts.fontSize ?? null;
         this.onActivity = opts.onActivity || (() => {});
         this.onSessionEnded = opts.onSessionEnded || (() => {});
 
@@ -208,7 +212,7 @@ export class TerminalPane {
 
     _createTerminal() {
         const terminalEl = this._terminalEl;
-        const initialFontSize = pickTerminalFontSize();
+        const initialFontSize = this._fontSizeOverride ?? pickTerminalFontSize();
         terminalEl.style.setProperty('--terminal-font-size', `${initialFontSize}px`);
 
         this.terminal = new Terminal({
@@ -266,7 +270,7 @@ export class TerminalPane {
         // and on user override via the sidebar Config slider.
         const applyNewSize = () => {
             if (!this.terminal) return;
-            const newSize = pickTerminalFontSize();
+            const newSize = this._fontSizeOverride ?? pickTerminalFontSize();
             terminalEl.style.setProperty('--terminal-font-size', `${newSize}px`);
             this.terminal.options.fontSize = newSize;
             this._handleResize();
@@ -590,7 +594,7 @@ export class TerminalPane {
             if (!this.fitAddon || !this.terminal) return;
             try {
                 this.terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
-                this.terminal.options.fontSize = pickTerminalFontSize();
+                this.terminal.options.fontSize = this._fontSizeOverride ?? pickTerminalFontSize();
                 this.fitAddon.fit();
                 this._sendResize();
             } catch (e) {
@@ -618,7 +622,7 @@ export class TerminalPane {
             if (!this.fitAddon || !this.terminal) return;
             try {
                 this.terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
-                this.terminal.options.fontSize = pickTerminalFontSize();
+                this.terminal.options.fontSize = this._fontSizeOverride ?? pickTerminalFontSize();
                 this.fitAddon.fit();
                 this._sendResize();
                 this._forceRepaint();

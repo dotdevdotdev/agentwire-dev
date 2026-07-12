@@ -262,7 +262,7 @@ export class TopologyView {
             if (!this._onCardExpand) return;
             // Clicks inside the expanded slot (the mounted mini-terminal, its
             // mic button, etc.) must not bubble into a collapse toggle.
-            if (e.target.closest('.topology-card-expand-slot')) return;
+            if (e.target.closest('.topology-card-expand-slot, .topology-card-actions')) return;
             this._toggleExpand(name);
         });
 

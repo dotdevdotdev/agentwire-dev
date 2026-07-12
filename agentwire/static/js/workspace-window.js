@@ -166,8 +166,14 @@ export class WorkspaceWindow {
         const machine = normalizeMachine(session?.machine);
         const sessionId = buildSessionId(name, machine);
 
-        const toolbar = document.createElement('div');
-        toolbar.className = 'topology-card-mini-toolbar';
+        // Actions (mic + open-full) live in the card's own header row next to
+        // the role chip — not a dedicated toolbar row — so the mini-terminal
+        // reclaims that vertical space. topology-render.js's card-click collapse
+        // toggle exempts .topology-card-actions the same way it exempts the slot.
+        const card = slotEl.closest('.topology-card');
+        const headerRow = card?.querySelector('.topology-card-top');
+        const actions = document.createElement('div');
+        actions.className = 'topology-card-actions';
 
         const pttBtn = document.createElement('button');
         pttBtn.type = 'button';
@@ -185,16 +191,21 @@ export class WorkspaceWindow {
             openSessionTerminal(name, 'terminal', machine);
         });
 
-        toolbar.append(pttBtn, openBtn);
+        actions.append(pttBtn, openBtn);
+        headerRow?.appendChild(actions);
 
         const termHost = document.createElement('div');
         termHost.className = 'topology-card-mini-terminal';
 
-        slotEl.append(toolbar, termHost);
+        slotEl.append(termHost);
 
         const pane = new TerminalPane(termHost, {
             session: name,
             machine,
+            // A card is a compact peek — render smaller than the global terminal
+            // pref (16/20px) so more rows are visible; the ⤢ pop-out opens the
+            // full-size window for real work.
+            fontSize: 14,
             onSessionEnded: () => this._topologyView?.collapseCard(name),
         });
 
@@ -247,7 +258,7 @@ export class WorkspaceWindow {
                 e.stopPropagation();
             });
 
-            toolbar.after(bar);
+            termHost.before(bar);
             transcriptBar = bar;
             input.focus();
             input.select();
@@ -296,6 +307,7 @@ export class WorkspaceWindow {
 
         return () => {
             removeTranscriptBar();
+            actions.remove();
             pane.dispose();
         };
     }
