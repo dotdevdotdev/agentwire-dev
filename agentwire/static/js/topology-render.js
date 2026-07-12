@@ -235,7 +235,15 @@ export class TopologyView {
 
         if (entry.nameEl.textContent !== name) entry.nameEl.textContent = name;
 
-        const role = (session.roles && session.roles[0]) || 'worker';
+        // session.roles (plural) is the arbitrary persona/etiquette list from
+        // .agentwire.yml, not the orchestrator/worker axis — do not read it here.
+        // session.role (singular) is that axis but is only recorded for sessions
+        // created after #747, so long-lived root sessions still have it null;
+        // fall back to parentless-ness (this file already treats depth 0 as
+        // "root" for row layout above).
+        const role = session.role === 'worker' || session.role === 'orchestrator'
+            ? session.role
+            : (session.parent ? 'worker' : 'orchestrator');
         if (entry.roleEl.textContent !== role) {
             entry.roleEl.textContent = role;
             entry.roleEl.classList.toggle('topology-role-chip--orchestrator', role === 'orchestrator');
