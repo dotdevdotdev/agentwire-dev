@@ -2,7 +2,8 @@
  * topology-render.js
  *
  * Mount-agnostic session-family renderer (#761) — the shared engine behind
- * the Session Workspace window (#762) and the phantom overlay (#764).
+ * the Session Workspace window (#762), the phantom overlay (#764), and the
+ * Session HUD shade (#777, `mode:'shade'`).
  * Given a container element and a session list, TopologyView renders one
  * block per family (root + descendants, grouped by lineage.js's
  * `groupFamilies`): a card per session (status dot, name, role chip,
@@ -69,15 +70,17 @@ export class TopologyView {
      *   collapse (re-click), when the card is pruned (session disappeared), or on dispose(). Omitting
      *   this makes cards inert (e.g. the non-interactive phantom overlay).
      * @param {boolean} [opts.showLinks=true] - Draw the connector SVG layer.
-     * @param {'window'|'overlay'} [opts.mode='window'] - Styling hook only — 'overlay' renders
-     *   translucent glass cards for popping over a live terminal window; 'window' (default)
-     *   renders solid chrome for a first-class workspace window.
+     * @param {'window'|'overlay'|'shade'} [opts.mode='window'] - Styling hook only — 'overlay'
+     *   renders translucent glass cards for popping over a live terminal window; 'shade' renders
+     *   full-width, left-anchored compact family clusters for the short/narrow Session HUD shade
+     *   (#777); 'window' (default) renders solid chrome, centered, for a first-class workspace
+     *   window.
      */
     constructor(container, opts = {}) {
         this._container = container;
         this._onCardExpand = opts.onCardExpand || null;
         this._showLinks = opts.showLinks !== false;
-        this._mode = opts.mode === 'overlay' ? 'overlay' : 'window';
+        this._mode = opts.mode === 'overlay' ? 'overlay' : opts.mode === 'shade' ? 'shade' : 'window';
         this._lastSessions = [];
         /** @type {string|null} name of the currently expanded card, if any (accordion — one at a time) */
         this._expandedCard = null;
