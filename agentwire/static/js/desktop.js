@@ -34,6 +34,7 @@ import { councilSection } from './sidebar/council-section.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
+import { sessionHud } from './session-hud.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { PttController } from './ptt.js';
@@ -264,6 +265,10 @@ async function init() {
 
     // Scratch pad drawer (Alt+N, right-edge handle, selection capture)
     scratchpad.init();
+
+    // Session HUD drawer (Alt+T, top-center handle) — chrome only; #777
+    // mounts TopologyView into .session-hud-canvas.
+    sessionHud.init();
 
     // Click on a toast -> open the subject session it's about as interactive terminal.
     // No subject (e.g. a system-level toast) -> no-op, never fall back to the bridge.

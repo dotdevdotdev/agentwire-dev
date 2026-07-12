@@ -14,6 +14,7 @@
 
 import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
+import { sessionHud } from './session-hud.js';
 import { armDeadKeySuppressor } from './dead-key-suppressor.js';
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -182,6 +183,9 @@ class ScratchPad {
         this.open = force ?? !this.open;
         this.drawer.classList.toggle('open', this.open);
         this.handle.classList.toggle('drawer-open', this.open);
+        // Mutually exclusive with the top-edge Session HUD — mirrors
+        // sidebar.js's coordination with this drawer.
+        if (this.open && sessionHud.open) sessionHud.toggle(false);
     }
 
     _pulseHandle() {

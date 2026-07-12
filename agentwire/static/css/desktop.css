@@ -5952,6 +5952,102 @@ body.sidebar-pinned .sidebar-tab {
     color: var(--background);
 }
 
+/* ============================================
+   Session HUD — top-edge frosted drawer (#776, foundation shell)
+   Two detents (peek 33vh / half 50vh), top-center pull handle. Content is
+   mounted into .session-hud-canvas by a later issue (#777, TopologyView).
+   ============================================ */
+
+.session-hud-drawer {
+    position: fixed;
+    top: 0;
+    left: var(--sidebar-tab-width);
+    right: 0;
+    height: 33vh;
+    background: color-mix(in srgb, var(--background) 78%, transparent);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--accent);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+    z-index: 9001; /* same tier as the sidebar / scratchpad drawer — above WinBoxes */
+    display: flex;
+    flex-direction: column;
+    transform: translateY(-100%);
+    transition: transform var(--sidebar-transition), height 180ms ease;
+    overflow: hidden;
+}
+
+.session-hud-drawer.open {
+    transform: translateY(0);
+}
+
+.session-hud-drawer.detent-half {
+    height: 50vh;
+}
+
+.session-hud-drawer.dragging {
+    transition: none;
+}
+
+body.sidebar-pinned .session-hud-drawer {
+    left: var(--sidebar-width);
+}
+
+.session-hud-canvas {
+    flex: 1;
+    min-height: 0;
+}
+
+/* Pull handle — top-center twin of the sidebar/scratchpad edge handles */
+.session-hud-handle {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 64px;
+    height: var(--sidebar-tab-width);
+    z-index: 9002;
+    background: transparent;
+    border: 1px solid var(--primary-subtle);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    opacity: 0.5;
+    cursor: grab;
+    touch-action: none;
+    transition: opacity 150ms ease, top var(--sidebar-transition), background 150ms ease;
+    padding: 0;
+}
+
+.session-hud-handle:hover {
+    opacity: 1;
+    background: var(--hover);
+}
+
+.session-hud-handle.drawer-open {
+    top: 33vh;
+}
+
+.session-hud-handle.drawer-open.detent-half {
+    top: 50vh;
+}
+
+.session-hud-handle.dragging {
+    cursor: grabbing;
+    transition: none;
+}
+
+.session-hud-grip {
+    width: 28px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+    opacity: 0.8;
+}
+
 /* ── Mobile (≤768px): sidebar tab gets a real tap target, and the open
    sidebar leaves a tap-outside strip so it can always be closed
    (close tab would otherwise sit off-screen past a 400px sidebar).
