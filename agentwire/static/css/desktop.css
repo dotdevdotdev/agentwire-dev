@@ -5996,6 +5996,13 @@ body.sidebar-pinned .session-hud-drawer {
 .session-hud-canvas {
     flex: 1;
     min-height: 0;
+    /* TopologyView's mode:'shade' root grows to its natural content width
+       (families flow left-to-right, never wrap) instead of clipping itself —
+       this ancestor is the one that scrolls, so cards and their SVG links
+       (both positioned off getBoundingClientRect) move together as a rigid
+       block and never need a scroll-triggered redraw. */
+    overflow-x: auto;
+    overflow-y: auto;
 }
 
 /* Pull handle — top-center twin of the sidebar/scratchpad edge handles */
@@ -6512,7 +6519,8 @@ body.sidebar-pinned .session-hud-drawer {
 
 /* --- shared topology renderer (#761) — topology-render.js's TopologyView
    Mount-agnostic family-card renderer shared by the Session Workspace window
-   (#762) and the phantom overlay (#764) — "one engine, two mounts". Cards
+   (#762), the phantom overlay (#764), and the Session HUD shade (#777) —
+   "one engine, three mounts". Cards
    stack in normal flex-wrap flow (never absolute-positioned on a wide
    canvas) so a family packs into a narrow ~1/3-width portal column: one row
    per lineage depth, 1-2 cards per row once wrapped. --family-tint /
@@ -6765,6 +6773,46 @@ body.sidebar-pinned .session-hud-drawer {
     .topology-link--stuck {
         animation: none;
     }
+}
+
+/* --- shade mount (#777) — mode:'shade', the Session HUD's compact layout.
+   Window mode centers one family column top-to-bottom; the shade is the
+   opposite shape (full desktop width, only 33-50vh tall), so families flow
+   left-to-right as columns instead, each starting flush at the left edge and
+   extending right — "top-level roots starting at the left" per the owner's
+   spec. Within a family, depth rows stay stacked top-down (parent above
+   child, unchanged) but never wrap, trading the scarce vertical budget for
+   the abundant (scrollable) horizontal one. .topology-view--shade itself
+   never clips — it grows to natural content width so the mount container
+   (.session-hud-canvas) is the one that scrolls; see the comment there for
+   why that split matters for link redraw correctness. Card sizing/chrome is
+   otherwise inherited from the window-mode defaults above (only alignment/
+   flow changes), just denser: smaller fixed width, tighter gaps. */
+.topology-view--shade {
+    flex-direction: row;
+    align-items: flex-start;
+    width: max-content;
+    min-width: 100%;
+    gap: 20px;
+    padding: 8px 12px;
+}
+
+.topology-view--shade .topology-family {
+    flex: 0 0 auto;
+    gap: 6px;
+}
+
+.topology-view--shade .topology-row {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: 6px;
+}
+
+.topology-view--shade .topology-card {
+    flex: 0 0 128px;
+    max-width: 128px;
+    padding: 6px 8px;
+    gap: 4px;
 }
 
 /* --- card mini-terminal (#763) — click a card to expand it inline into a
