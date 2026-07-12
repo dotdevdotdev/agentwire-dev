@@ -4184,26 +4184,6 @@ body .winbox.max {
     color: var(--text);
 }
 
-.workspace-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    background: var(--chrome);
-    border-bottom: 1px solid var(--chrome-border);
-    flex: 0 0 auto;
-}
-
-.workspace-toolbar-icon {
-    font-size: 14px;
-}
-
-.workspace-toolbar-title {
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
 
 .workspace-window-canvas {
     flex: 1;

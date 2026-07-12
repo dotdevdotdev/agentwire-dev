@@ -29,12 +29,6 @@ import { buildSessionId, normalizeMachine } from './session-id.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
 
-function esc(s) {
-    return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-}
-
 export class WorkspaceWindow {
     /**
      * @param {Object} options
@@ -103,11 +97,9 @@ export class WorkspaceWindow {
     _createContainer() {
         const container = document.createElement('div');
         container.className = 'workspace-window-content';
+        // No in-content header — the WinBox title bar already shows the 🛰 icon
+        // + session name; a second toolbar row here just duplicated it.
         container.innerHTML = `
-            <div class="workspace-toolbar">
-                <span class="workspace-toolbar-icon">🛰</span>
-                <span class="workspace-toolbar-title" title="${esc(this.rootSession)}">${esc(this.rootSession)}</span>
-            </div>
             <div class="workspace-window-canvas desktop-dot-grid"></div>
         `;
         return container;
