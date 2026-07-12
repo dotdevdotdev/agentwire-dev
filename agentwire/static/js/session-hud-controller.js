@@ -96,8 +96,12 @@ class HudController {
         const sessions = getAllSessions();
         // The context session may have closed/renamed since it was last
         // focused — fall back to the global tree rather than rendering an
-        // empty subtree for a name nothing matches anymore.
-        if (this._contextSession && !sessions.some((s) => s.name === this._contextSession)) {
+        // empty subtree for a name nothing matches anymore. Gated on
+        // sessions.length: an empty list during the page-boot window (the
+        // sessions fetch hasn't resolved yet, e.g. mid-restoreTaskbarState())
+        // means "no data yet", not "this session is gone" — resetting on
+        // that would wipe a just-restored focus before it ever got to render.
+        if (this._contextSession && sessions.length > 0 && !sessions.some((s) => s.name === this._contextSession)) {
             this._contextSession = null;
             this._contextWindowId = null;
         }

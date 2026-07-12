@@ -772,8 +772,13 @@ export function openSessionTerminal(session, mode, machine = null) {
 
 /** Construct and register the real SessionWindow. The only place `new
  * SessionWindow(...)` is called — both the plain-open and birth-ghost paths
- * above hand off to this once it's safe to create the real WinBox window. */
+ * above hand off to this once it's safe to create the real WinBox window.
+ * `recordTaskbarEntry` runs BEFORE `sw.open()` — a brand-new WinBox can fire
+ * its `onfocus` synchronously during construction (it auto-focuses), which
+ * would call `getWindowSession(id)` (desktop.js, #778) before the record
+ * existed and misread a genuine session window as "no session focused". */
 function _mountSessionWindow(session, mode, machine, id) {
+    recordTaskbarEntry({ kind: 'session', id, session, mode, machine });
     const sw = new SessionWindow({
         session,
         mode,
@@ -800,7 +805,6 @@ function _mountSessionWindow(session, mode, machine, id) {
     sw.open();
     sessionWindows.set(id, sw);
     addTaskbarButton(id, sw);
-    recordTaskbarEntry({ kind: 'session', id, session, mode, machine });
 }
 
 /**

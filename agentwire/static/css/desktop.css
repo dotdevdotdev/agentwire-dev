@@ -6835,6 +6835,16 @@ body.sidebar-pinned .session-hud-drawer {
     gap: 4px;
 }
 
+/* The you-are-here self card (#778) carries a role chip AND a mic button in
+   its header — at the standard 128px shade width those two alone already
+   squeeze the name to ~0px (long words like "ORCHESTRATOR" leave no slack),
+   so it needs more room than a plain card. Same specificity trick as the
+   expanded-card override above (two classes beat the shade card rule's two). */
+.topology-view--shade .topology-card--self {
+    flex: 0 0 210px;
+    max-width: 210px;
+}
+
 /* An expanded (mini-terminal open) card must win over the fixed 128px shade
    card width above — `.topology-view--shade .topology-card` has two class
    selectors to `.topology-card--expanded`'s one, so without this override
