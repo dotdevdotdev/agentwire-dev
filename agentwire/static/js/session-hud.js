@@ -38,6 +38,8 @@ class SessionHud {
         this.canvas = null;
         this.open = false;
         this.detent = 'peek';
+        /** @type {string|null} detent to restore on restoreDetent(), set by growToHalf() */
+        this._grownFromDetent = null;
     }
 
     init() {
@@ -150,6 +152,30 @@ class SessionHud {
     _settle(detent) {
         this.detent = detent;
         this.toggle(true);
+    }
+
+    /**
+     * Programmatically grow to the half detent (e.g. a HUD card's mini-terminal
+     * just opened and needs the room) — remembers whatever detent was active
+     * so restoreDetent() can put it back. A no-op if already grown (the
+     * accordion-style switch between two expanded cards collapses the old
+     * one — which calls restoreDetent() — then expands the new one — which
+     * calls this again — within the same tick; only the first grab of a grow
+     * cycle should record what to restore).
+     */
+    growToHalf() {
+        if (this._grownFromDetent !== null) return;
+        this._grownFromDetent = this.detent;
+        if (this.detent !== 'half') this._settle('half');
+    }
+
+    /** Undo growToHalf() — restores the detent that was active before the
+     * grow. No-op if nothing is currently grown. */
+    restoreDetent() {
+        if (this._grownFromDetent === null) return;
+        const prior = this._grownFromDetent;
+        this._grownFromDetent = null;
+        if (this.detent !== prior) this._settle(prior);
     }
 
     // ─── State ──────────────────────────────────────────────────

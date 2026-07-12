@@ -81,6 +81,43 @@ export function groupFamilies(sessions) {
     }));
 }
 
+/**
+ * Build the subtree rooted at `name`: `name` itself plus every session
+ * reachable by walking descendant `.parent` links from it (ancestors and
+ * siblings excluded). Used by the Session HUD controller (#778) to re-root
+ * the view onto a focused session — passing the result back into
+ * `groupFamilies`/`TopologyView.render()` makes `name` resolve as the root
+ * (its real parent, if any, isn't in the subset so `lineageOf` stops there)
+ * without needing a second "root override" concept anywhere downstream.
+ *
+ * @param {string} name - Session name to re-root onto.
+ * @param {Array<{name: string, parent?: string|null}>} sessions - Full session list.
+ * @returns {Array<object>} The subset of `sessions` in the subtree, root first then descendants.
+ */
+export function subtreeOf(name, sessions) {
+    const list = sessions || [];
+    const byName = new Map(list.map((s) => [s.name, s]));
+    if (!byName.has(name)) return [];
+
+    const childrenOf = new Map();
+    for (const s of list) {
+        if (!s.name || !s.parent || s.parent === s.name) continue;
+        if (!childrenOf.has(s.parent)) childrenOf.set(s.parent, []);
+        childrenOf.get(s.parent).push(s.name);
+    }
+
+    const seen = new Set([name]);
+    const order = [name];
+    for (let i = 0; i < order.length; i++) {
+        for (const child of childrenOf.get(order[i]) || []) {
+            if (seen.has(child)) continue; // cycle-safe
+            seen.add(child);
+            order.push(child);
+        }
+    }
+    return order.map((n) => byName.get(n)).filter(Boolean);
+}
+
 /** Deterministic small-int hash of a string, stable across reloads/renders. */
 function hashIndex(str) {
     let h = 0;

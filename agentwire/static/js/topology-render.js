@@ -69,6 +69,11 @@ export class TopologyView {
      *   mini-terminal) and optionally return a cleanup function. TopologyView calls that cleanup on
      *   collapse (re-click), when the card is pruned (session disappeared), or on dispose(). Omitting
      *   this makes cards inert (e.g. the non-interactive phantom overlay).
+     * @param {(name: string, session: object, cardEl: HTMLElement) => (() => void)|void} [opts.onSelfMount] -
+     *   Fired whenever a card becomes (or, via its returned cleanup, stops being) the "self" session
+     *   set via `setSelfSession()`. The self-session equivalent of `onCardExpand` minus the
+     *   expand/collapse toggle — used by the Session HUD controller (#778) to mount a header-only PTT
+     *   mic onto the dimmed, non-interactive "you-are-here" root card.
      * @param {boolean} [opts.showLinks=true] - Draw the connector SVG layer.
      * @param {'window'|'overlay'|'shade'} [opts.mode='window'] - Styling hook only — 'overlay'
      *   renders translucent glass cards for popping over a live terminal window; 'shade' renders
@@ -79,11 +84,14 @@ export class TopologyView {
     constructor(container, opts = {}) {
         this._container = container;
         this._onCardExpand = opts.onCardExpand || null;
+        this._onSelfMount = opts.onSelfMount || null;
         this._showLinks = opts.showLinks !== false;
         this._mode = opts.mode === 'overlay' ? 'overlay' : opts.mode === 'shade' ? 'shade' : 'window';
         this._lastSessions = [];
         /** @type {string|null} name of the currently expanded card, if any (accordion — one at a time) */
         this._expandedCard = null;
+        /** @type {string|null} name of the dimmed, non-interactive "you-are-here" root card, if any */
+        this._selfSession = null;
 
         /** @type {Map<string, {familyEl: HTMLElement, rows: Map<number, HTMLElement>}>} */
         this._families = new Map();
@@ -145,9 +153,22 @@ export class TopologyView {
         this._scheduleRedraw();
     }
 
+    /**
+     * Set (or clear) the "you-are-here" self session — a dimmed, non-interactive
+     * root card (no expand/collapse, no mini-terminal) with its own `onSelfMount`
+     * hook (e.g. a header-only mic). Takes effect on the next `render()` call.
+     * @param {string|null} name
+     */
+    setSelfSession(name) {
+        this._selfSession = name || null;
+    }
+
     /** Tear down everything TopologyView appended into its container. */
     dispose() {
         if (this._expandedCard) this._collapseCard(this._expandedCard);
+        for (const entry of this._cards.values()) {
+            if (entry.selfDispose) entry.selfDispose();
+        }
         this._resizeObserver.disconnect();
         window.removeEventListener('resize', this._scheduleRedraw);
         if (this._raf !== null) cancelAnimationFrame(this._raf);
@@ -211,6 +232,7 @@ export class TopologyView {
         for (const [name, entry] of this._cards) {
             if (!seenCards.has(name)) {
                 if (entry.expanded) this._collapseCard(name);
+                if (entry.selfDispose) entry.selfDispose();
                 entry.card.remove();
                 this._cards.delete(name);
                 this._links.delete(name);
@@ -263,6 +285,24 @@ export class TopologyView {
             entry.card.style.setProperty('--card-tint', `var(${tintVar})`);
             entry.tintVar = tintVar;
         }
+
+        const isSelf = name === this._selfSession;
+        if (entry.isSelf !== isSelf) {
+            // A card can arrive already-expanded if it was clicked open before
+            // becoming the self session (e.g. re-rooting after a card's
+            // mini-terminal was opened) — self cards never carry one.
+            if (isSelf && entry.expanded) this._collapseCard(name);
+            entry.isSelf = isSelf;
+            entry.card.classList.toggle('topology-card--self', isSelf);
+            if (entry.selfDispose) {
+                entry.selfDispose();
+                entry.selfDispose = null;
+            }
+            if (isSelf && this._onSelfMount) {
+                const dispose = this._onSelfMount(name, session, entry.card);
+                entry.selfDispose = typeof dispose === 'function' ? dispose : null;
+            }
+        }
     }
 
     _buildCard(name) {
@@ -270,6 +310,9 @@ export class TopologyView {
         card.className = 'topology-card';
         card.dataset.session = name;
         card.addEventListener('click', (e) => {
+            // The dimmed "you-are-here" self card is inert — the user is
+            // already inside that session, so there's nothing to drill into.
+            if (name === this._selfSession) return;
             if (!this._onCardExpand) return;
             // Clicks inside the expanded slot (the mounted mini-terminal, its
             // mic button, etc.) must not bubble into a collapse toggle.
@@ -307,6 +350,7 @@ export class TopologyView {
         return {
             card, dot, nameEl, roleEl, machineEl, sparkEl, state: null, tintVar: null, session: null,
             expanded: false, expandSlot: null, expandDispose: null,
+            isSelf: false, selfDispose: null,
         };
     }
 

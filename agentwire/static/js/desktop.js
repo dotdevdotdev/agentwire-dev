@@ -35,6 +35,7 @@ import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
 import { sessionHud } from './session-hud.js';
+import { hudController } from './session-hud-controller.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { PttController } from './ptt.js';
@@ -266,9 +267,11 @@ async function init() {
     // Scratch pad drawer (Alt+N, right-edge handle, selection capture)
     scratchpad.init();
 
-    // Session HUD drawer (Alt+T, top-center handle) — chrome only; #777
-    // mounts TopologyView into .session-hud-canvas.
+    // Session HUD drawer (Alt+T, top-center handle) — #776 chrome, #777 shade
+    // layout. #778's controller decides what renders (global tree vs
+    // re-rooted onto the focused session) and mounts TopologyView itself.
     sessionHud.init();
+    hudController.init(sessionHud.canvas, getWindowSession);
 
     // Click on a toast -> open the subject session it's about as interactive terminal.
     // No subject (e.g. a system-level toast) -> no-op, never fall back to the bridge.
@@ -769,8 +772,13 @@ export function openSessionTerminal(session, mode, machine = null) {
 
 /** Construct and register the real SessionWindow. The only place `new
  * SessionWindow(...)` is called — both the plain-open and birth-ghost paths
- * above hand off to this once it's safe to create the real WinBox window. */
+ * above hand off to this once it's safe to create the real WinBox window.
+ * `recordTaskbarEntry` runs BEFORE `sw.open()` — a brand-new WinBox can fire
+ * its `onfocus` synchronously during construction (it auto-focuses), which
+ * would call `getWindowSession(id)` (desktop.js, #778) before the record
+ * existed and misread a genuine session window as "no session focused". */
 function _mountSessionWindow(session, mode, machine, id) {
+    recordTaskbarEntry({ kind: 'session', id, session, mode, machine });
     const sw = new SessionWindow({
         session,
         mode,
@@ -797,7 +805,6 @@ function _mountSessionWindow(session, mode, machine, id) {
     sw.open();
     sessionWindows.set(id, sw);
     addTaskbarButton(id, sw);
-    recordTaskbarEntry({ kind: 'session', id, session, mode, machine });
 }
 
 /**
@@ -1002,6 +1009,25 @@ function _lookupWindowInstance(id) {
     // active but never raised or un-minimized them.
     return sessionWindows.get(id) || artifactWindows.get(id)
         || reviewWindows.get(id) || workspaceWindows.get(id) || null;
+}
+
+/**
+ * Resolve a desktop window id back to the session name it belongs to, but
+ * only for a real session (terminal/monitor) window — `kind: 'session'`
+ * taskbar records, populated by `_mountSessionWindow` above. Every other
+ * window kind (artifact/review/workspace/council) returns null. This is the
+ * "is a session window focused, and which session" query the Session HUD
+ * controller (#778) re-roots its view on; passed in via DI rather than
+ * imported there, to avoid a static circular import (this module already
+ * imports WorkspaceWindow et al., and would need to import the HUD
+ * controller to call its init()).
+ *
+ * @param {string|null} id - Window id (desktop-manager.js's registry key)
+ * @returns {string|null}
+ */
+export function getWindowSession(id) {
+    const rec = taskbarRecords.get(id);
+    return rec && rec.kind === 'session' ? rec.session : null;
 }
 
 function loadTaskbarState() {
