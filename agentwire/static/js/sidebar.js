@@ -6,6 +6,7 @@
  */
 
 import { scratchpad } from './scratchpad.js';
+import { sessionHud } from './session-hud.js';
 import { armDeadKeySuppressor } from './dead-key-suppressor.js';
 
 const PIN_KEY = 'sidebar-pinned';
@@ -69,10 +70,12 @@ export const sidebar = {
         if (!this.el) return;
         this.el.classList.add('open');
         document.body.classList.add('sidebar-open');
-        // Mutually exclusive with the right-edge scratchpad drawer — opening
-        // the sidebar closes the pad (mirrors how clicking the pad's handle
-        // closes the sidebar via the click-away handler below).
+        // Mutually exclusive with the right-edge scratchpad drawer and the
+        // top-edge Session HUD — opening the sidebar closes both (mirrors how
+        // clicking the pad's handle closes the sidebar via the click-away
+        // handler below).
         if (scratchpad.open) scratchpad.toggle(false);
+        if (sessionHud.open) sessionHud.toggle(false);
     },
 
     close() {
