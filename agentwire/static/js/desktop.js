@@ -11,8 +11,8 @@ import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
 import { tileManager } from './tile-manager.js';
 import { collage } from './collage.js';
-import { topologyOverlay } from './topology-overlay.js';
 import { flyGhost } from './spawn-ghost.js';
+import { triggerSpawnPeek } from './session-hud-spawn.js';
 import { lineageTintVar, familyRootName } from './lineage.js';
 import { SessionWindow } from './session-window.js';
 import { ArtifactWindow } from './artifact-window.js';
@@ -370,11 +370,12 @@ function handleSessionCreated({ session, name, parent, role, machine }) {
         // mounts, so a second call this tick would sail past every guard
         // and fly a second ghost onto a second real window.
         desktop.emit('sessions', sessionsWithChild);
-        // Unlike the ghost above, the phantom overlay (#764) doesn't need a
-        // guard against double-firing — pop() just re-renders + restarts the
-        // linger if a previous pop is still showing — so it's safe to call
-        // directly here rather than threading it through the re-entrant path.
-        if (parent) topologyOverlay.pop(sessionName, sessionsWithChild);
+        // Unlike the ghost above, the HUD spawn peek (#780) doesn't need a
+        // guard against double-firing — triggerSpawnPeek() just restarts its
+        // own linger if a previous one is still pending — so it's safe to
+        // call directly here rather than threading it through the
+        // re-entrant path.
+        if (parent) triggerSpawnPeek(sessionName, sessionsWithChild);
         return;
     }
 
@@ -386,7 +387,7 @@ function handleSessionCreated({ session, name, parent, role, machine }) {
     // fallback requirement.
     if (parent) {
         registerBirth({ name: sessionName, parent, machine: machine || null }, sessionsWithChild);
-        topologyOverlay.pop(sessionName, sessionsWithChild);
+        triggerSpawnPeek(sessionName, sessionsWithChild);
     }
 }
 

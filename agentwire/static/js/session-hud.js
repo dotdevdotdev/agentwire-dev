@@ -178,6 +178,21 @@ class SessionHud {
         if (this.detent !== prior) this._settle(prior);
     }
 
+    /**
+     * Auto-peek for a spawn (#780) — opens to the peek detent (~33vh) if
+     * currently closed. A no-op if already open: an open HUD means the user
+     * is already looking at it (or grew it to half for a mini-terminal), and
+     * a spawn shouldn't yank it to a different detent out from under them.
+     * Returns whether it actually opened, so a caller knows whether it now
+     * owns retracting the HUD again later.
+     */
+    peekForSpawn() {
+        if (this.open) return false;
+        this.detent = 'peek';
+        this.toggle(true);
+        return true;
+    }
+
     // ─── State ──────────────────────────────────────────────────
 
     toggle(force = null) {
