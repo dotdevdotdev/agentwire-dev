@@ -28,6 +28,19 @@
  * this controller, and desktop.js↔session-hud-controller.js would otherwise
  * be a static circular import (the same reason `card-terminal.js`'s
  * "open full terminal" button dynamic-imports desktop.js instead).
+ *
+ * Ghost cards (#781): worktree folders left on disk with no live session
+ * (`agentwire worktree --list`'s "orphan" state) are polled from
+ * `/api/worktrees` separately from the live sessions feed — they're not
+ * sessions, so they don't belong in sidebar/sessions-section.js's shared
+ * `getAllSessions()` — and merged into the array passed to `render()` as
+ * pseudo-session records (`state: 'orphan'`, plus `branch`/`worktreePath`/
+ * `projectPath`). Each ghost's `parent` is whatever `--list` resolved as its
+ * dead session's recorded creator (may be undefined): `groupFamilies`/
+ * `lineageOf` (lineage.js) already treat an unresolvable parent name as "this
+ * is its own root", so a ghost with no known lineage naturally lands as its
+ * own single-card family — the "unattached / needs cleanup" case — with zero
+ * extra grouping logic here.
  */
 
 import { desktop } from './desktop-manager.js';
@@ -36,6 +49,10 @@ import { getAllSessions, onSessionsChanged, ensureSessionsLoaded } from './sideb
 import { subtreeOf } from './lineage.js';
 import { mountCardTerminal, mountSelfMic } from './card-terminal.js';
 import { sessionHud } from './session-hud.js';
+import { apiFetch } from './api.js';
+import { toastSuccess, toastError } from './toast.js';
+
+const GHOST_POLL_MS = 20000;
 
 class HudController {
     constructor() {
@@ -45,6 +62,9 @@ class HudController {
         this._contextSession = null;
         /** @type {string|null} window id backing _contextSession, for window_unregistered matching */
         this._contextWindowId = null;
+        /** @type {Array<object>} pseudo-session records for orphaned worktrees, refreshed via polling */
+        this._ghosts = [];
+        this._ghostTimer = null;
     }
 
     /**
@@ -60,6 +80,8 @@ class HudController {
             mode: 'shade',
             onCardExpand: (name, session, slotEl) => this._expandCard(name, session, slotEl),
             onSelfMount: (name, session, cardEl) => mountSelfMic(name, session, cardEl),
+            onGhostCleanup: (name, session) => this._cleanupGhost(name, session),
+            onGhostAdopt: (name, session) => this._adoptGhost(name, session),
         });
 
         // Seed from whatever's already focused when the HUD first mounts,
@@ -69,6 +91,9 @@ class HudController {
         ensureSessionsLoaded();
         this._render();
         onSessionsChanged(() => this._render());
+
+        this._fetchGhosts();
+        this._ghostTimer = setInterval(() => this._fetchGhosts(), GHOST_POLL_MS);
 
         desktop.on('active_window_changed', ({ id }) => this._applyFocus(id));
         // Closing the focused session's own window (with nothing else taking
@@ -105,8 +130,9 @@ class HudController {
             this._contextSession = null;
             this._contextWindowId = null;
         }
+        const merged = this._ghosts.length ? [...sessions, ...this._ghosts] : sessions;
         this._view.setSelfSession(this._contextSession);
-        this._view.render(this._contextSession ? subtreeOf(this._contextSession, sessions) : sessions);
+        this._view.render(this._contextSession ? subtreeOf(this._contextSession, merged) : merged);
     }
 
     _expandCard(name, session, slotEl) {
@@ -116,6 +142,85 @@ class HudController {
             cleanup();
             sessionHud.restoreDetent();
         };
+    }
+
+    // Ghosts (#781) aren't sessions — no WS push tells us when a worktree dir
+    // disappears or a dead one reappears — so this is a plain poll, refreshed
+    // eagerly right after an action instead of waiting out the interval.
+    async _fetchGhosts() {
+        try {
+            const res = await apiFetch('/api/worktrees');
+            const data = await res.json();
+            this._ghosts = (data.entries || [])
+                .filter((e) => e.exists && !e.alive)
+                .map((e) => this._toGhostRecord(e));
+        } catch (e) {
+            this._ghosts = [];
+        }
+        this._render();
+    }
+
+    _toGhostRecord(e) {
+        const branch = e.branch || (e.worktree_path || '').split('/').filter(Boolean).pop() || e.session;
+        return {
+            name: e.session,
+            parent: e.created_by || undefined,
+            state: 'orphan',
+            branch,
+            worktreePath: e.worktree_path,
+            projectPath: e.project,
+        };
+    }
+
+    async _cleanupGhost(name, session) {
+        try {
+            const res = await apiFetch('/api/worktree/cleanup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: session.branch, project: session.projectPath }),
+            });
+            const result = await res.json().catch(() => ({}));
+            if (!res.ok || result.success === false) {
+                const reason = result.error || `HTTP ${res.status}`;
+                toastError(`Clean up failed for ${name}: ${reason}`);
+                return { error: reason };
+            }
+            toastSuccess(`Removed worktree ${session.branch || name}`);
+            const note = (result.branch && !result.branch_deleted && result.branch_note)
+                ? `Removed — branch kept: ${result.branch_note}`
+                : null;
+            await this._fetchGhosts();
+            return note ? { note } : {};
+        } catch (e) {
+            toastError(`Clean up failed for ${name}: ${e.message}`);
+            return { error: e.message };
+        }
+    }
+
+    async _adoptGhost(name, session) {
+        try {
+            const res = await apiFetch('/api/worktree/adopt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: session.branch,
+                    project: session.projectPath,
+                    createdBy: session.parent || undefined,
+                }),
+            });
+            const result = await res.json().catch(() => ({}));
+            if (!res.ok || result.success === false) {
+                const reason = result.error || `HTTP ${res.status}`;
+                toastError(`Adopt failed for ${name}: ${reason}`);
+                return { error: reason };
+            }
+            toastSuccess(`Adopted ${result.session || name}`);
+            await this._fetchGhosts();
+            return {};
+        } catch (e) {
+            toastError(`Adopt failed for ${name}: ${e.message}`);
+            return { error: e.message };
+        }
     }
 }
 
