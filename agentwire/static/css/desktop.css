@@ -6838,14 +6838,22 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     gap: 4px;
 }
 
-/* The you-are-here self card (#778) carries a role chip AND a mic button in
-   its header — at the standard 128px shade width those two alone already
-   squeeze the name to ~0px (long words like "ORCHESTRATOR" leave no slack),
-   so it needs more room than a plain card. Same specificity trick as the
-   expanded-card override above (two classes beat the shade card rule's two). */
+/* Narrow shade cards (fixed 128px) can't fit both the session name and the
+   role word — "ORCHESTRATOR" (a non-shrinking chip) starves the name to an
+   "age…" ellipsis. The name is the identifier that matters, so it takes the
+   whole row; role still shows on the expanded card + the standalone
+   workspace window (non-shade), where there's room. */
+.topology-view--shade .topology-role-chip {
+    display: none;
+}
+
+/* The you-are-here self card (#778) carries a mic button in its header (the
+   role chip is hidden in shade — see the rule above), and it's the focused
+   root, so give its name + mic a little more room than a plain 128px card.
+   Same two-class specificity trick as the expanded-card override below. */
 .topology-view--shade .topology-card--self {
-    flex: 0 0 210px;
-    max-width: 210px;
+    flex: 0 0 168px;
+    max-width: 168px;
 }
 
 /* An expanded (mini-terminal open) card must win over the fixed 128px shade
