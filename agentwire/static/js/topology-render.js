@@ -246,6 +246,10 @@ export class TopologyView {
                 clearTimeout(entry.ghostConfirmTimer);
                 entry.card.remove();
                 this._cards.delete(name);
+                // Drop the DOM path too: deleting only the map entry orphans its
+                // <path> in the SVG (it's gone from _links, so _redrawLinks' stale
+                // sweep can't reach it) — a dangling connector after any re-root.
+                this._links.get(name)?.path.remove();
                 this._links.delete(name);
             }
         }

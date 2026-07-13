@@ -5958,10 +5958,17 @@ body.sidebar-pinned .sidebar-tab {
    mounted into .session-hud-canvas by a later issue (#777, TopologyView).
    ============================================ */
 
+/* Left offset shared by the drawer and its handle so the two never drift.
+   0 = flush to the screen's left edge; the sidebar tab (z 9002) still sits
+   above the shade (z 9001) and stays clickable. Shifts to the sidebar width
+   only while the sidebar is pinned, so the shade never covers an open sidebar. */
+:root { --hud-left: 0px; }
+body.sidebar-pinned { --hud-left: var(--sidebar-width); }
+
 .session-hud-drawer {
     position: fixed;
     top: 0;
-    left: var(--sidebar-tab-width);
+    left: var(--hud-left);
     right: 0;
     height: 33vh;
     background: color-mix(in srgb, var(--background) 78%, transparent);
@@ -5989,10 +5996,6 @@ body.sidebar-pinned .sidebar-tab {
     transition: none;
 }
 
-body.sidebar-pinned .session-hud-drawer {
-    left: var(--sidebar-width);
-}
-
 .session-hud-canvas {
     flex: 1;
     min-height: 0;
@@ -6009,7 +6012,7 @@ body.sidebar-pinned .session-hud-drawer {
 .session-hud-handle {
     position: fixed;
     top: 0;
-    left: 50%;
+    left: calc((100vw + var(--hud-left)) / 2);
     transform: translateX(-50%);
     width: 64px;
     height: var(--sidebar-tab-width);
