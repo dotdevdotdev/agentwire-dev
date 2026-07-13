@@ -6,18 +6,28 @@
  * top-center pull handle, which snaps to the nearest of closed/peek/half on
  * release. Clicking the handle (no drag) toggles open/closed.
  *
- * Chrome only for now: `.session-hud-canvas` is an empty mount point that a
- * later issue (#777) fills with TopologyView. Mirrors scratchpad.js's
- * create-once drawer lifecycle (`.open` class, keyboard toggle, teardown).
+ * `.session-hud-canvas` is the mount point session-hud-controller.js (#778)
+ * fills with TopologyView. Mirrors scratchpad.js's create-once drawer
+ * lifecycle (`.open` class, keyboard toggle, teardown).
  *
  * Toggle: Alt+T or the handle. Mutually exclusive with the left sidebar and
  * the right scratchpad drawer — mirrors their existing coordination
  * (sidebar.js:72): opening the HUD closes both, and opening either of them
  * closes the HUD.
+ *
+ * Header (#779): a Sessions|Services segmented control sits above the
+ * canvas. Sessions is the topology mounted into `.session-hud-canvas`;
+ * Services reuses sidebar/services-section.js's singleton, mounted into the
+ * sibling `.session-hud-services` container — same fetch/render/start-stop
+ * logic as the sidebar's Services accordion, no duplication. Switching
+ * segments only toggles CSS visibility (`data-segment` on the drawer); the
+ * topology is never unmounted, so its live state and focus-rerooting
+ * survive a round trip. Last-selected segment persists in localStorage.
  */
 
 import { sidebar } from './sidebar.js';
 import { scratchpad } from './scratchpad.js';
+import { servicesSection } from './sidebar/services-section.js';
 
 const PEEK_VH = 0.33;
 const HALF_VH = 0.50;
@@ -26,6 +36,9 @@ const MID_THRESHOLD = (PEEK_VH + HALF_VH) / 2;
 const DRAG_MIN_VH = 0.12;
 const DRAG_MAX_VH = 0.66;
 const CLICK_TOLERANCE_PX = 3;
+
+/** localStorage key for the last-selected header segment (#779). */
+const SEGMENT_KEY = 'aw-hud-segment';
 
 function clamp(v, min, max) {
     return Math.min(Math.max(v, min), max);
@@ -40,6 +53,13 @@ class SessionHud {
         this.detent = 'peek';
         /** @type {string|null} detent to restore on restoreDetent(), set by growToHalf() */
         this._grownFromDetent = null;
+        /** @type {HTMLElement|null} header strip hosting the Sessions|Services segmented control (#779) */
+        this.header = null;
+        /** @type {HTMLElement|null} sibling mount point for the Services segment's content */
+        this.servicesCanvas = null;
+        /** @type {'sessions'|'services'} currently active header segment */
+        this.segment = 'sessions';
+        this._servicesMounted = false;
     }
 
     init() {
@@ -66,10 +86,26 @@ class SessionHud {
     _buildDrawer() {
         const drawer = document.createElement('div');
         drawer.className = 'session-hud-drawer';
-        drawer.innerHTML = '<div class="session-hud-canvas"></div>';
+        drawer.innerHTML = `
+            <div class="session-hud-header">
+                <div class="session-hud-segmented" role="tablist" aria-label="Session HUD view">
+                    <button type="button" class="session-hud-segment-btn" data-segment="sessions" role="tab">Sessions</button>
+                    <button type="button" class="session-hud-segment-btn" data-segment="services" role="tab">Services</button>
+                </div>
+            </div>
+            <div class="session-hud-canvas"></div>
+            <div class="session-hud-services"></div>
+        `;
         document.body.appendChild(drawer);
         this.drawer = drawer;
+        this.header = drawer.querySelector('.session-hud-header');
         this.canvas = drawer.querySelector('.session-hud-canvas');
+        this.servicesCanvas = drawer.querySelector('.session-hud-services');
+
+        this.header.querySelectorAll('.session-hud-segment-btn').forEach((btn) => {
+            btn.addEventListener('click', () => this.setSegment(btn.dataset.segment));
+        });
+        this._applySegment(this._loadSegment());
 
         const handle = document.createElement('button');
         handle.className = 'session-hud-handle';
@@ -191,6 +227,51 @@ class SessionHud {
         this.detent = 'peek';
         this.toggle(true);
         return true;
+    }
+
+    // ─── Header segments (#779) ────────────────────────────────
+
+    _loadSegment() {
+        try {
+            return localStorage.getItem(SEGMENT_KEY) === 'services' ? 'services' : 'sessions';
+        } catch (e) {
+            return 'sessions';
+        }
+    }
+
+    /**
+     * Switch the HUD header between the Sessions topology and the Services
+     * list. Swaps visibility only (`data-segment` on the drawer drives the
+     * CSS) — the topology canvas is never unmounted, so session-hud-controller's
+     * live render/focus-rerooting keeps running underneath and is exactly as
+     * it was when the user switches back.
+     */
+    setSegment(segment) {
+        if (segment !== 'sessions' && segment !== 'services') return;
+        try { localStorage.setItem(SEGMENT_KEY, segment); } catch (e) {}
+        this._applySegment(segment);
+    }
+
+    _applySegment(segment) {
+        this.segment = segment;
+        this.drawer.dataset.segment = segment;
+        this.header.querySelectorAll('.session-hud-segment-btn').forEach((btn) => {
+            const active = btn.dataset.segment === segment;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-selected', String(active));
+        });
+        if (segment !== 'services') return;
+        // Reuse the sidebar's servicesSection singleton (SSOT for the
+        // fetch/render/start-stop logic) — mount once into our own
+        // container, then just re-render on every subsequent visit since
+        // its onSessionsChanged subscription already keeps content live
+        // while hidden.
+        if (!this._servicesMounted) {
+            this._servicesMounted = true;
+            servicesSection.mount(this.servicesCanvas);
+        } else {
+            servicesSection.refresh(this.servicesCanvas);
+        }
     }
 
     // ─── State ──────────────────────────────────────────────────
