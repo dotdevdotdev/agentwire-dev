@@ -6593,15 +6593,6 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     border-color: color-mix(in srgb, var(--card-tint, var(--lineage-tint-1)) 75%, var(--chrome-border));
 }
 
-/* Overlay mount pops over a live terminal window, so its cards read as
-   glass; the workspace-window mount is a page in its own right and stays
-   solid chrome (the default above). */
-.topology-view--overlay .topology-card {
-    background: color-mix(in srgb, var(--chrome) 74%, transparent);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-}
-
 .topology-card-top {
     display: flex;
     align-items: center;

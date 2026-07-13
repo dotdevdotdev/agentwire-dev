@@ -2,15 +2,15 @@
 
 > Living wiki. Update this page, don't create new versions.
 
-Mechanisms, shipped across #745–#749 and #761–#764, that make the parent→child session tree visible and alive on the desktop instead of only existing in the sidebar's nested list:
+Mechanisms, shipped across #745–#749, #761–#764, and the Session HUD epic #775–#781, that make the parent→child session tree visible and alive on the desktop instead of only existing in the sidebar's nested list:
 
 | Mechanism | Module | Trigger |
 |-----------|--------|---------|
-| **Born-from-parent placement** | `static/js/spawn-ghost.js` (+ wiring in `desktop.js`) | A child session appears while its parent's window is open |
+| **Born-from-parent placement** | `static/js/spawn-ghost.js` (+ wiring in `desktop.js`) | Manually opening a just-born child's window (within the birth-ticket TTL) while its parent's window is open |
 | **Shared topology renderer** | `static/js/topology-render.js` (`TopologyView`) | Mounted by the two surfaces below — not triggered directly |
 | **Session Workspace window** | `static/js/workspace-window.js` | 🛰 launcher on a session card, or `openSessionWorkspace()` |
 | **Card mini-terminal** | `static/js/terminal-pane.js` (`TerminalPane`) + `workspace-window.js` | Click a card in the Workspace window |
-| **Phantom overlay** | `static/js/topology-overlay.js` | The live `session_created` event (a child spawns), or the Config sidebar "Topology overlay" checkbox |
+| **Session HUD** (pull-down shade) | `static/js/session-hud.js` + `session-hud-controller.js` + `session-hud-spawn.js` | Alt+T / the top-edge pull handle; auto-peeks on the live `session_created` event |
 | **Grouped + tinted collage** | `static/js/collage.js` | F3 / `desktop_collage` MCP / command palette |
 | **Live appearance** | `desktop.js` `handleSessionCreated` + server `notify_portal_session_created` | A session is created via `agentwire new` / `worktree` / the portal |
 
@@ -18,7 +18,7 @@ All share one palette (`--lineage-tint-1..6`) and one state vocabulary (`--topol
 
 ## Born-from-parent placement
 
-When a session's parent window is open and a child of it is created, the child's window doesn't just pop into existence — it "flies" out of the parent's title bar to its landing spot, then mounts as a real window. Two modules split the job:
+When you open a just-born session's window (within the 15-second birth-ticket TTL, `BIRTH_TTL_MS`) while its parent's window is open, the child's window doesn't just pop into existence — it "flies" out of the parent's title bar to its landing spot, then mounts as a real window. (A spawn itself no longer *auto*-opens that window — the [Session HUD](#session-hud-pull-down-topology-shade) below owns spawn awareness now; this fly animates a *manual* open.) Two modules split the job:
 
 - **`desktop.js`** tracks *who was just born* (`recentBirths`, a one-shot, 15-second-TTL ticket per child id — `BIRTH_TTL_MS`) and computes the two rects: `parentTitleBarRect()` (a slice of the parent's `.wb-header`, clamped to 80–220px wide) as the start, and the desktop area as the end.
 - **`spawn-ghost.js`**'s `flyGhost(fromRect, toRect, tintVar, onSettle)` animates a plain overlay `<div>` (`.spawn-ghost`, tinted via `--ghost-tint`) between those two rects over 480ms (`FLY_MS`), then calls `onSettle`.
@@ -27,15 +27,15 @@ When a session's parent window is open and a child of it is created, the child's
 
 **Graceful fallback, in two independent layers:**
 - `flyGhost()` itself skips the animation and calls `onSettle()` synchronously whenever there's no usable `fromRect` (parent not open, or minimized — `parentTitleBarRect()` returns `null` for both) or the browser reports `prefers-reduced-motion: reduce`. Placement still happens — just instantly, no ghost shown.
-- If the parent isn't open at all, `registerBirth()` never calls `openSessionTerminal()` in the first place — the child is just recorded in `desktop.sessions` and shows up in the sidebar list like any other session, with no auto-open and no ghost. "Watch it get born" only fires while you're already looking at the parent.
+- `registerBirth()` no longer opens the child's window on spawn at all — #745's auto-open (a child Monitor window flying out and maximizing) was removed once the HUD took over spawn awareness, because it hijacked the screen on every worker spawn. `registerBirth()` just records the child in `desktop.sessions` (so it shows up in the sidebar + HUD) plus a short-lived `recentBirths` ticket. The ghost only flies if you then *manually* open that session's window while the parent is open; otherwise there's no ghost. "Watch it get born" is now the HUD's job.
 
-Birth detection has two independent paths that land in the same place (`registerBirth()`): the poll-driven `sessions` event diff (`handleSessionsListUpdate`, comparing against a baseline snapshot so page-load's existing world is never treated as a batch of births) and the live `session_created` push (see [Live appearance](#live-appearance) below) as a pure accelerant on top of it — session creation still gets a birth ghost even if the live event never arrives.
+Birth detection has two independent paths that land in the same place (`registerBirth()`): the poll-driven `sessions` event diff (`handleSessionsListUpdate`, comparing against a baseline snapshot so page-load's existing world is never treated as a batch of births) and the live `session_created` push (see [Live appearance](#live-appearance) below) as a pure accelerant on top of it. The live path additionally drives the HUD spawn peek (`triggerSpawnPeek`, see [Session HUD](#session-hud-pull-down-topology-shade) below); the poll path just records the session — it still appears in the sidebar + HUD, only without the peek animation.
 
 ## Shared topology renderer + Session Workspace window
 
 `topology-render.js`'s `TopologyView` (#761) is the one mount-agnostic engine behind both surfaces below — "one engine, two mounts." Given a container and a session list, it groups sessions into families (`lineage.js`'s `groupFamilies`) and renders one card per session (status dot, name, role chip, activity sparkline, machine tag) plus curved SVG links from each card to its parent's, all tinted by the family's `lineageTintVar`. `render()` is idempotent — repeat calls diff cards/rows/links against the previous pass rather than tearing down and rebuilding, so a spawn or kill mid-view doesn't flash the tree. Cards lay out in normal flex-wrap flow, never an absolutely-positioned wide canvas, because the owner runs the portal in a narrow ~1/3-width window.
 
-`wireStateFor(name, record)` is the one shared status mapping ('idle' | 'flow' | 'awaiting' | 'stuck') every card (and the phantom overlay below) reads, so a card and the sidebar dot never disagree on what "awaiting"/"stuck" means.
+`wireStateFor(name, record)` is the one shared status mapping ('idle' | 'flow' | 'awaiting' | 'stuck') every card reads, so a card and the sidebar dot never disagree on what "awaiting"/"stuck" means.
 
 **`workspace-window.js`'s `WorkspaceWindow`** (#762) hosts `TopologyView` in `mode: 'window'` (solid chrome) as a first-class WinBox window — the 🛰 launcher on any session card in a family opens (or focuses) the one window for that family, keyed by family root so it doesn't matter which member you launched it from. Opens with `desktop.minimizeAllExcept(null)` maximized, re-renders on every `onSessionsChanged` tick, and disposes its `TopologyView` on close.
 
@@ -47,19 +47,23 @@ Birth detection has two independent paths that land in the same place (`register
 
 **Satisfies the live-pane-peek safety flag** ([Design tokens](#design-tokens) below): the mini-terminal only mounts on an explicit card click — opening the Workspace window itself shows no live terminal content, so the resting state stays inert and the peek is always an opt-in reveal, never automatic.
 
-## Phantom overlay
+## Session HUD (pull-down topology shade)
 
-`topology-overlay.js` (#764) mounts `TopologyView` in `mode: 'overlay'` (translucent glass cards) as a transient, non-interactive pop-over: the instant a live `session_created` event names a child with a known parent, `desktop.js`'s `handleSessionCreated` calls `topologyOverlay.pop(sessionName, allSessions)`, which resolves the child's family (root + descendants, `lineage.js`'s `familyRootName`) and renders it into a fixed-position panel that fades in, lingers ~2.6s (`LINGER_MS`), then fades out and tears itself down. This replaces the old connector-overlay's "see the topology over your terminals" job (#746, deleted by #764 — it only read sensibly on a wide tiled desktop the owner never runs) and needs no open parent window to fire.
+The **Session HUD** (epic #775) is a pull-down top-edge frosted-glass shade — the **third mount surface** for `TopologyView`, alongside the Session Workspace window above and (until #780) the now-deleted phantom overlay. It's the always-available, glanceable situational-awareness layer: pull it down (Alt+T or the top-center handle) to see the live topology, click a card to drop into its mini-terminal, and it's where the spawn-relationship animation now plays. `session-hud.js` owns the drawer chrome (mirroring `scratchpad.js`'s edge-drawer mechanic), `session-hud-controller.js` drives the content, `session-hud-spawn.js` the spawn choreography.
 
-**Non-interactive by default:** `pointer-events: none` on `.topology-overlay-root` is a CSS-inherited property, so it cascades through every card `TopologyView` renders — the overlay never blocks a click through to the terminal underneath. Only the small `×` dismiss button opts back into `pointer-events: auto`; clicking it hides the current pop immediately (skipping any remaining linger) without touching the settings toggle, so the *next* spawn still pops normally.
+**Shell (#776):** a frosted drawer (`backdrop-filter: blur(20px)`) that drops from the top edge, flush to the left (`--hud-left`), spanning full width. Two detents — **peek** (33vh) ↔ **half** (50vh) — via a top-center pull handle (drag to snap) or Alt+T. Mutually exclusive with the left sidebar and right scratchpad (opening one closes the others), the same coordination those drawers already share.
 
-**Animation timing is shared with the birth ghost**, not reinvented: `topology-overlay.js` imports `FLY_MS` (480ms) and `prefersReducedMotion()` from `spawn-ghost.js` (both now exported for reuse) rather than picking its own duration or re-querying `matchMedia`. `prefers-reduced-motion: reduce` skips the pop-in transition entirely (`.topology-overlay-root--instant`) — the overlay just appears — matching `flyGhost()`'s own reduced-motion fallback.
+**Shade layout (#777):** `TopologyView` gains `mode: 'shade'` — a compact, full-width, left-anchored variant (denser 128px cards, families flowing left-to-right) for the short, narrow surface, instead of the workspace window's centered solid chrome. The canvas scrolls horizontally; a dot-grid texture (the `--dot-grid-image`/`--dot-grid-size` tokens shared with the Workspace window, applied as the image **only** — no opaque fill — so the frost shows through) reads behind the cards.
 
-**Settings toggle:** the Config sidebar's "Topology overlay" checkbox calls `topologyOverlay.setVisible()`, persisted to `localStorage['aw-topology-overlay-visible']` (visible by default) — same pattern the old connector overlay used for its own `VISIBLE_KEY`. Turning it off also dismisses whatever pop is currently on screen.
+**Context-following (#778):** the shade's default view follows window focus. Nothing focused → all root families (global tree). A **session window focused** → the shade re-roots onto that session's family: the focused session becomes a dimmed, non-interactive **"you-are-here" root** (header-only PTT mic, no drill-in — you're already in it), its children the interactive cards. Re-roots **live** on `desktop`'s `active_window_changed`, so Alt+]/Alt+[ window-cycling updates the shade in real time; focus on a non-session window retains the last session context. Clicking an interactive card mounts a mini-terminal into it (shared `card-terminal.js`, extracted from the Workspace window's card-terminal mount — one implementation, two mounts) and auto-grows the shade to half.
 
-**Z-band:** the overlay sits at z-index 1000 — above WinBox windows (whose inline z-indexes grow from 10) but below the collage overlay (1400) and toasts/modals (1500/2000), so a spawn's ambient glimpse never competes with something the user actually needs to act on.
+**Sessions ∣ Services (#779):** a segmented control in the header swaps the topology for the sidebar's live Services list — the `servicesSection` singleton (`sidebar/services-section.js`) mounted into a sibling container, one fetch/render/start-stop source, no duplication. The topology canvas is only hidden (never unmounted) on switch, so focus re-rooting survives a round-trip; the choice persists to `localStorage['aw-hud-segment']`.
 
-A pop while a previous one is still showing/fading reuses the same panel and DOM (`TopologyView.render()`'s idempotent diffing) and restarts the linger, rather than stacking a second overlay on top.
+**Absorbs the spawn animation (#780):** the standalone phantom overlay (`topology-overlay.js`, #764) is **deleted** — its spawn-relationship glimpse now lives in the HUD. On a live `session_created` with a known parent, `session-hud-spawn.js`'s `triggerSpawnPeek()` auto-peeks the shade (if closed, gated on the `aw-hud-autopeek-on-spawn` pref, on by default), flies a `spawn-ghost.js` ghost from the parent's card to the new child's (both already rendered by the controller's re-render), then retracts after a ~2600ms linger — unless the user grabs the pull handle meanwhile, which cancels the retract. The birth-ghost fly timing (`FLY_MS`) and `prefersReducedMotion()` are still shared from `spawn-ghost.js`. **This supersedes the born-from-parent window auto-open** (#745): a spawn no longer opens or maximizes a child Monitor window over your screen — the HUD is the spawn-awareness surface, and worker windows open on demand (see [Born-from-parent placement](#born-from-parent-placement) above).
+
+**Ghost cards for session-less worktrees (#781):** worktree folders with no live session (the `orphan` state from `agentwire worktree --list --all`, plus a disk-scan fallback) render as dimmed, dashed **ghost cards** — a "no session" badge, branch + worktree path — placed in their family when the dead session's recorded `created_by` still resolves, else in an "unattached" cluster. Two confirm-gated actions per ghost: **Clean up** (`POST /api/worktree/cleanup` → `agentwire worktree --remove`, the plain form — honors the merge/open-PR safety guard, surfaces the refusal reason, never escalates to `--force-delete-branch`) and **Adopt** (`POST /api/worktree/adopt` → `agentwire worktree <name> --existing --created-by <parent>`, re-parenting the new session onto the family so it reports back). Both endpoints are thin CLI wrappers — no git/registry logic in the portal.
+
+**Narrow-first polish:** the shade cards show the **session name, not the role chip** — at the fixed 128px width the non-shrinking "ORCHESTRATOR" chip starved the name, so the chip is hidden in shade mode (role still shows on the expanded card + the Workspace window). The handle centers on the shade via `--hud-left`, and `_pruneCards` removes a pruned card's SVG `<path>` so re-rooting never leaves a dangling connector.
 
 ## Grouped + tinted collage
 

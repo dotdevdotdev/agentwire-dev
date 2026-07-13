@@ -432,11 +432,13 @@ function registerBirth(session, allSessions) {
         tintVar: lineageTintVar(session.name, allSessions || desktop.sessions),
         ts: Date.now(),
     });
-
-    const parentSW = sessionWindows.get(session.parent);
-    if (parentSW && parentTitleBarRect(parentSW)) {
-        openSessionTerminal(session.name, 'monitor', machine);
-    }
+    // No longer auto-open the child's window on spawn. #745 did (a child Monitor
+    // window flew out of the parent's title bar and maximized) back when that was
+    // the only "watch it get born" surface — but it hijacked the screen on every
+    // worker spawn. The Session HUD (#780) owns spawn awareness now: a spawn
+    // auto-peeks the shade and flies the parent→child ghost there, non-disruptively.
+    // The birth ticket above still lets a MANUAL open within the TTL animate
+    // born-from-parent; worker windows otherwise open only on demand.
 }
 
 /**

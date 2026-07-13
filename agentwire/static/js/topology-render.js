@@ -82,8 +82,7 @@ export class TopologyView {
      * @param {(name: string, session: object) => Promise<{error?: string}>|void} [opts.onGhostAdopt] -
      *   Fired when a ghost card's "Adopt" button is confirmed. Same contract as `onGhostCleanup`.
      * @param {boolean} [opts.showLinks=true] - Draw the connector SVG layer.
-     * @param {'window'|'overlay'|'shade'} [opts.mode='window'] - Styling hook only — 'overlay'
-     *   renders translucent glass cards for popping over a live terminal window; 'shade' renders
+     * @param {'window'|'shade'} [opts.mode='window'] - Styling hook only — 'shade' renders
      *   full-width, left-anchored compact family clusters for the short/narrow Session HUD shade
      *   (#777); 'window' (default) renders solid chrome, centered, for a first-class workspace
      *   window.
@@ -95,7 +94,7 @@ export class TopologyView {
         this._onGhostCleanup = opts.onGhostCleanup || null;
         this._onGhostAdopt = opts.onGhostAdopt || null;
         this._showLinks = opts.showLinks !== false;
-        this._mode = opts.mode === 'overlay' ? 'overlay' : opts.mode === 'shade' ? 'shade' : 'window';
+        this._mode = opts.mode === 'shade' ? 'shade' : 'window';
         this._lastSessions = [];
         /** @type {string|null} name of the currently expanded card, if any (accordion — one at a time) */
         this._expandedCard = null;
