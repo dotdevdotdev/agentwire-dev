@@ -7080,6 +7080,12 @@ body.sidebar-pinned .session-hud-drawer {
     text-overflow: ellipsis;
 }
 
+/* [hidden] must win over the flex display below (equal specificity, later
+   author rule otherwise beats the UA [hidden]{display:none} stylesheet) —
+   the JS toggles this element's `hidden` attribute per card every render. */
+.topology-ghost-actions[hidden] {
+    display: none;
+}
 .topology-ghost-actions {
     display: flex;
     flex-wrap: wrap;
