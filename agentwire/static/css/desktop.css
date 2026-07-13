@@ -4158,14 +4158,18 @@ body .winbox.max {
    first-class window, the "home base" for a session family.
    ============================================ */
 
-/* Reusable full-bleed dot-grid canvas token — any surface that hosts the
-   shared topology renderer on open space (this window; the phantom overlay
-   in #764) composes this alongside its own layout class rather than
-   redefining the pattern. Tokens only, no hardcoded hex. */
+/* Reusable dot-grid texture shared by any surface that hosts the topology
+   renderer. The pattern lives in tokens so the solid Workspace window
+   (.desktop-dot-grid, opaque fill) and the frosted Session HUD shade
+   (.session-hud-canvas, image only — keeps its backdrop blur) stay in sync. */
+:root {
+    --dot-grid-image: radial-gradient(circle, var(--chrome-border) 1px, transparent 1px);
+    --dot-grid-size: 22px 22px;
+}
 .desktop-dot-grid {
     background-color: var(--background);
-    background-image: radial-gradient(circle, var(--chrome-border) 1px, transparent 1px);
-    background-size: 22px 22px;
+    background-image: var(--dot-grid-image);
+    background-size: var(--dot-grid-size);
 }
 
 .workspace-window .wb-body {
@@ -6006,6 +6010,11 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
        block and never need a scroll-triggered redraw. */
     overflow-x: auto;
     overflow-y: auto;
+    /* Dot-grid texture like the Workspace window, but the image ONLY (no
+       opaque background-color) so the drawer's frosted-glass blur shows
+       through. Shared pattern tokens — see .desktop-dot-grid. */
+    background-image: var(--dot-grid-image);
+    background-size: var(--dot-grid-size);
 }
 
 /* Pull handle — top-center twin of the sidebar/scratchpad edge handles */
