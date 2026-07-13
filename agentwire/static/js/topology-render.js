@@ -74,6 +74,13 @@ export class TopologyView {
      *   set via `setSelfSession()`. The self-session equivalent of `onCardExpand` minus the
      *   expand/collapse toggle — used by the Session HUD controller (#778) to mount a header-only PTT
      *   mic onto the dimmed, non-interactive "you-are-here" root card.
+     * @param {(name: string, session: object) => Promise<{error?: string, note?: string}>|void} [opts.onGhostCleanup] -
+     *   Fired when a ghost card's "Clean up" button is confirmed (session record has `state: 'orphan'`,
+     *   #781). May return a promise resolving `{error}` (shown inline, card stays) or `{note}` (shown
+     *   inline, informational only — the caller is expected to re-render without this card once the
+     *   underlying worktree is actually gone).
+     * @param {(name: string, session: object) => Promise<{error?: string}>|void} [opts.onGhostAdopt] -
+     *   Fired when a ghost card's "Adopt" button is confirmed. Same contract as `onGhostCleanup`.
      * @param {boolean} [opts.showLinks=true] - Draw the connector SVG layer.
      * @param {'window'|'overlay'|'shade'} [opts.mode='window'] - Styling hook only — 'overlay'
      *   renders translucent glass cards for popping over a live terminal window; 'shade' renders
@@ -85,6 +92,8 @@ export class TopologyView {
         this._container = container;
         this._onCardExpand = opts.onCardExpand || null;
         this._onSelfMount = opts.onSelfMount || null;
+        this._onGhostCleanup = opts.onGhostCleanup || null;
+        this._onGhostAdopt = opts.onGhostAdopt || null;
         this._showLinks = opts.showLinks !== false;
         this._mode = opts.mode === 'overlay' ? 'overlay' : opts.mode === 'shade' ? 'shade' : 'window';
         this._lastSessions = [];
@@ -168,6 +177,7 @@ export class TopologyView {
         if (this._expandedCard) this._collapseCard(this._expandedCard);
         for (const entry of this._cards.values()) {
             if (entry.selfDispose) entry.selfDispose();
+            clearTimeout(entry.ghostConfirmTimer);
         }
         this._resizeObserver.disconnect();
         window.removeEventListener('resize', this._scheduleRedraw);
@@ -233,6 +243,7 @@ export class TopologyView {
             if (!seenCards.has(name)) {
                 if (entry.expanded) this._collapseCard(name);
                 if (entry.selfDispose) entry.selfDispose();
+                clearTimeout(entry.ghostConfirmTimer);
                 entry.card.remove();
                 this._cards.delete(name);
                 this._links.delete(name);
@@ -251,14 +262,36 @@ export class TopologyView {
 
         entry.session = session;
 
+        const isGhost = session.state === 'orphan';
+        if (entry.isGhost !== isGhost) {
+            entry.isGhost = isGhost;
+            entry.card.classList.toggle('topology-card--ghost', isGhost);
+            entry.roleEl.hidden = isGhost;
+            entry.sparkEl.hidden = isGhost;
+            entry.ghostBadge.hidden = !isGhost;
+            entry.ghostInfoEl.hidden = !isGhost;
+            entry.ghostActions.hidden = !isGhost;
+        }
+
+        const tintVar = lineageTintVar(familyRoot, this._lastSessions);
+        if (entry.tintVar !== tintVar) {
+            entry.card.style.setProperty('--card-tint', `var(${tintVar})`);
+            entry.tintVar = tintVar;
+        }
+
+        if (entry.nameEl.textContent !== name) entry.nameEl.textContent = name;
+
+        if (isGhost) {
+            this._renderGhostCard(entry, session);
+            return; // ghost cards skip the live-state/role/self styling below
+        }
+
         const state = wireStateFor(name, session);
         if (entry.state !== state) {
             if (entry.state) entry.card.classList.remove(`topology-card--${entry.state}`);
             entry.card.classList.add(`topology-card--${state}`);
             entry.state = state;
         }
-
-        if (entry.nameEl.textContent !== name) entry.nameEl.textContent = name;
 
         // session.roles (plural) is the arbitrary persona/etiquette list from
         // .agentwire.yml, not the orchestrator/worker axis — do not read it here.
@@ -278,12 +311,6 @@ export class TopologyView {
         if (entry.machineEl.textContent !== machine) {
             entry.machineEl.textContent = machine;
             entry.machineEl.hidden = !machine;
-        }
-
-        const tintVar = lineageTintVar(familyRoot, this._lastSessions);
-        if (entry.tintVar !== tintVar) {
-            entry.card.style.setProperty('--card-tint', `var(${tintVar})`);
-            entry.tintVar = tintVar;
         }
 
         const isSelf = name === this._selfSession;
@@ -310,13 +337,16 @@ export class TopologyView {
         card.className = 'topology-card';
         card.dataset.session = name;
         card.addEventListener('click', (e) => {
+            // Ghost cards (no live session, #781) are inert outside their two
+            // explicit action buttons — there's no session to drill into.
+            if (this._cards.get(name)?.isGhost) return;
             // The dimmed "you-are-here" self card is inert — the user is
             // already inside that session, so there's nothing to drill into.
             if (name === this._selfSession) return;
             if (!this._onCardExpand) return;
             // Clicks inside the expanded slot (the mounted mini-terminal, its
             // mic button, etc.) must not bubble into a collapse toggle.
-            if (e.target.closest('.topology-card-expand-slot, .topology-card-actions')) return;
+            if (e.target.closest('.topology-card-expand-slot, .topology-card-actions, .topology-ghost-actions')) return;
             this._toggleExpand(name);
         });
 
@@ -328,7 +358,11 @@ export class TopologyView {
         nameEl.className = 'topology-card-name';
         const roleEl = document.createElement('span');
         roleEl.className = 'topology-role-chip';
-        top.append(dot, nameEl, roleEl);
+        const ghostBadge = document.createElement('span');
+        ghostBadge.className = 'topology-ghost-badge';
+        ghostBadge.textContent = 'no session';
+        ghostBadge.hidden = true;
+        top.append(dot, nameEl, roleEl, ghostBadge);
 
         const sparkEl = document.createElement('div');
         sparkEl.className = 'topology-spark';
@@ -341,17 +375,116 @@ export class TopologyView {
         machineEl.className = 'topology-card-machine';
         machineEl.hidden = true;
 
+        const ghostInfoEl = document.createElement('div');
+        ghostInfoEl.className = 'topology-ghost-info';
+        ghostInfoEl.hidden = true;
+
         const meta = document.createElement('div');
         meta.className = 'topology-card-meta';
-        meta.append(sparkEl, machineEl);
+        meta.append(sparkEl, machineEl, ghostInfoEl);
 
-        card.append(top, meta);
+        const ghostActions = document.createElement('div');
+        ghostActions.className = 'topology-ghost-actions';
+        ghostActions.hidden = true;
+        const cleanupBtn = document.createElement('button');
+        cleanupBtn.type = 'button';
+        cleanupBtn.className = 'topology-ghost-btn topology-ghost-btn--danger';
+        cleanupBtn.textContent = 'Clean up';
+        const adoptBtn = document.createElement('button');
+        adoptBtn.type = 'button';
+        adoptBtn.className = 'topology-ghost-btn topology-ghost-btn--adopt';
+        adoptBtn.textContent = 'Adopt';
+        const noteEl = document.createElement('div');
+        noteEl.className = 'topology-ghost-note';
+        noteEl.hidden = true;
+        ghostActions.append(cleanupBtn, adoptBtn, noteEl);
 
-        return {
+        card.append(top, meta, ghostActions);
+
+        const entry = {
             card, dot, nameEl, roleEl, machineEl, sparkEl, state: null, tintVar: null, session: null,
             expanded: false, expandSlot: null, expandDispose: null,
             isSelf: false, selfDispose: null,
+            isGhost: false, ghostBadge, ghostInfoEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
+            ghostConfirm: null, ghostConfirmTimer: null, ghostBusy: false,
         };
+
+        cleanupBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._handleGhostAction(name, entry, 'cleanup', cleanupBtn);
+        });
+        adoptBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._handleGhostAction(name, entry, 'adopt', adoptBtn);
+        });
+
+        return entry;
+    }
+
+    /** Ghost cards (session.state === 'orphan', #781) skip the live-status
+     * dot/spark/role logic and just show what's on disk: branch + worktree
+     * path, and the two action buttons built in `_buildCard`. */
+    _renderGhostCard(entry, session) {
+        const info = [
+            session.branch ? `⎇ ${session.branch}` : null,
+            session.worktreePath || null,
+        ].filter(Boolean).join('  ·  ');
+        if (entry.ghostInfoEl.textContent !== info) entry.ghostInfoEl.textContent = info;
+        entry.machineEl.hidden = true;
+    }
+
+    /** Two-step confirm (matches the sidebar's close-button "sure?" pattern) —
+     * first click on either button arms it and disarms the other; a second
+     * click on the SAME button within the window fires the action. Busy/error
+     * state is shown inline on the card; the caller (session-hud-controller.js)
+     * is responsible for re-rendering without this card once the underlying
+     * worktree is actually gone. */
+    _handleGhostAction(name, entry, kind, btn) {
+        if (entry.ghostBusy) return;
+
+        if (entry.ghostConfirm !== kind) {
+            entry.ghostConfirm = kind;
+            clearTimeout(entry.ghostConfirmTimer);
+            entry.cleanupBtn.textContent = kind === 'cleanup' ? 'sure?' : 'Clean up';
+            entry.adoptBtn.textContent = kind === 'adopt' ? 'sure?' : 'Adopt';
+            entry.ghostConfirmTimer = setTimeout(() => {
+                entry.ghostConfirm = null;
+                entry.cleanupBtn.textContent = 'Clean up';
+                entry.adoptBtn.textContent = 'Adopt';
+            }, 3000);
+            return;
+        }
+
+        clearTimeout(entry.ghostConfirmTimer);
+        entry.ghostConfirm = null;
+        const handler = kind === 'cleanup' ? this._onGhostCleanup : this._onGhostAdopt;
+        if (!handler) return;
+
+        entry.ghostBusy = true;
+        entry.cleanupBtn.disabled = true;
+        entry.adoptBtn.disabled = true;
+        btn.textContent = kind === 'cleanup' ? 'Removing…' : 'Adopting…';
+        entry.noteEl.hidden = true;
+
+        Promise.resolve(handler(name, entry.session))
+            .then((result) => {
+                const msg = result && (result.error || result.note);
+                if (msg) {
+                    entry.noteEl.textContent = msg;
+                    entry.noteEl.hidden = false;
+                }
+            })
+            .catch((err) => {
+                entry.noteEl.textContent = err?.message || 'Action failed';
+                entry.noteEl.hidden = false;
+            })
+            .finally(() => {
+                entry.ghostBusy = false;
+                entry.cleanupBtn.disabled = false;
+                entry.adoptBtn.disabled = false;
+                entry.cleanupBtn.textContent = 'Clean up';
+                entry.adoptBtn.textContent = 'Adopt';
+            });
     }
 
     _toggleExpand(name) {
@@ -444,8 +577,13 @@ export class TopologyView {
             }
             if (entry.path.getAttribute('d') !== d) entry.path.setAttribute('d', d);
 
-            const state = wireStateFor(name, session);
-            const stateClass = state === 'idle' ? null : `topology-link--${state}`;
+            let stateClass = null;
+            if (session.state === 'orphan') {
+                stateClass = 'topology-link--ghost';
+            } else {
+                const state = wireStateFor(name, session);
+                stateClass = state === 'idle' ? null : `topology-link--${state}`;
+            }
             if (entry.stateClass !== stateClass) {
                 if (entry.stateClass) entry.path.classList.remove(entry.stateClass);
                 if (stateClass) entry.path.classList.add(stateClass);

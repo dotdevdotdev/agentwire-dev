@@ -6974,3 +6974,98 @@ body.sidebar-pinned .session-hud-drawer {
         transition: none !important;
     }
 }
+
+/* --- Session HUD ghost cards (#781) — topology-render.js's `state: 'orphan'`
+   card variant: a worktree folder left on disk with no live session. Dashed
+   and muted rather than tinted-solid like a live card, with a "no session"
+   badge and two explicit action buttons instead of the click-to-expand
+   mini-terminal every other card carries. */
+.topology-card--ghost {
+    cursor: default;
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--text-muted) 40%, var(--chrome-border));
+    background: color-mix(in srgb, var(--chrome) 88%, transparent);
+    opacity: 0.7;
+}
+.topology-card--ghost:hover {
+    transform: none;
+    border-color: color-mix(in srgb, var(--text-muted) 40%, var(--chrome-border));
+}
+
+.topology-ghost-badge {
+    flex: 0 0 auto;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px dashed color-mix(in srgb, var(--text-muted) 55%, transparent);
+    color: var(--text-muted);
+}
+
+.topology-ghost-info {
+    flex: 1;
+    min-width: 0;
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* [hidden] must win over the flex display below (equal specificity, later
+   author rule otherwise beats the UA [hidden]{display:none} stylesheet) —
+   the JS toggles this element's `hidden` attribute per card every render. */
+.topology-ghost-actions[hidden] {
+    display: none;
+}
+.topology-ghost-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.topology-ghost-btn {
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 4px 9px;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.topology-ghost-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.topology-ghost-btn--danger {
+    border: 1px solid color-mix(in srgb, var(--error) 45%, var(--chrome-border));
+    color: var(--error);
+}
+.topology-ghost-btn--danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+}
+
+.topology-ghost-btn--adopt {
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--chrome-border));
+    color: var(--accent);
+}
+.topology-ghost-btn--adopt:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.topology-ghost-note {
+    flex: 1 1 100%;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+.topology-link--ghost {
+    stroke: var(--text-muted);
+    stroke-dasharray: 3 4;
+    opacity: 0.35;
+    filter: none;
+}

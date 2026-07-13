@@ -171,6 +171,8 @@ BASELINE_ROUTES = frozenset({
     ("POST", "/api/session/{name}/restart-service"),
     ("POST", "/api/session/{name}/spawn-sibling"),
     ("POST", "/api/sessions/refresh"),
+    ("POST", "/api/worktree/adopt"),
+    ("POST", "/api/worktree/cleanup"),
     ("POST", "/send/{name}"),
     ("POST", "/transcribe"),
     ("POST", "/upload"),
