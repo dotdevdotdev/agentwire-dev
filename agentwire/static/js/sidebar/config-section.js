@@ -8,7 +8,7 @@ import {
     getPermission, isMuted, setMuted, enableNotifications,
 } from '../notification-prefs.js';
 import { isAutoSend, setAutoSend, AUTOSEND_EVENT } from '../voice/autosend-prefs.js';
-import { topologyOverlay, TOPOLOGY_OVERLAY_EVENT } from '../topology-overlay.js';
+import { isAutoPeekEnabled, setAutoPeekEnabled, HUD_AUTOPEEK_EVENT } from '../session-hud-spawn.js';
 
 function renderDisplayPrefs() {
     const current = getTerminalFontSize();
@@ -106,36 +106,36 @@ function bindAutoSendPref(body) {
     body._autoSendRepaint = repaint;
 }
 
-function renderTopologyOverlayPref() {
-    const on = topologyOverlay.visible;
-    return `<div class="sidebar-display-prefs" data-topology-overlay-block>
+function renderHudAutopeekPref() {
+    const on = isAutoPeekEnabled();
+    return `<div class="sidebar-display-prefs" data-hud-autopeek-block>
         <div class="sidebar-display-row">
-            <label class="sidebar-config-key">Topology overlay</label>
-            <label class="sidebar-notif-mute"><input type="checkbox" data-action="topology-overlay"${on ? ' checked' : ''}/> ${on ? 'on' : 'off'}</label>
+            <label class="sidebar-config-key">HUD auto-peek on spawn</label>
+            <label class="sidebar-notif-mute"><input type="checkbox" data-action="hud-autopeek"${on ? ' checked' : ''}/> ${on ? 'on' : 'off'}</label>
         </div>
         <div class="sidebar-display-row">
-            <span class="sidebar-display-hint">Phantom glimpse of the family tree when a child session spawns</span>
+            <span class="sidebar-display-hint">Peek the Session HUD and animate the family tree when a child session spawns</span>
         </div>
     </div>`;
 }
 
-function bindTopologyOverlayPref(body) {
+function bindHudAutopeekPref(body) {
     const repaint = () => {
-        const block = body.querySelector('[data-topology-overlay-block]');
+        const block = body.querySelector('[data-hud-autopeek-block]');
         if (!block) return;
         const tmp = document.createElement('div');
-        tmp.innerHTML = renderTopologyOverlayPref();
+        tmp.innerHTML = renderHudAutopeekPref();
         block.replaceWith(tmp.firstElementChild);
         wire();
     };
     function wire() {
-        body.querySelector('[data-action="topology-overlay"]')?.addEventListener('change', (e) => {
-            topologyOverlay.setVisible(e.target.checked);
+        body.querySelector('[data-action="hud-autopeek"]')?.addEventListener('change', (e) => {
+            setAutoPeekEnabled(e.target.checked);
         });
     }
     wire();
-    window.addEventListener(TOPOLOGY_OVERLAY_EVENT, repaint);
-    body._topologyOverlayRepaint = repaint;
+    window.addEventListener(HUD_AUTOPEEK_EVENT, repaint);
+    body._hudAutopeekRepaint = repaint;
 }
 
 function bindDisplayPrefs(body) {
@@ -172,17 +172,17 @@ export const configSection = {
                 else if (typeof value === 'object') display = `<code>${JSON.stringify(value)}</code>`;
                 return `<div class="sidebar-config-item"><span class="sidebar-config-key">${key}</span><span class="sidebar-config-val">${display}</span></div>`;
             }).join('');
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyOverlayPref() + itemHtml;
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderHudAutopeekPref() + itemHtml;
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
             bindAutoSendPref(body);
-            bindTopologyOverlayPref(body);
+            bindHudAutopeekPref(body);
         } catch (e) {
-            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderTopologyOverlayPref() + '<div class="sidebar-empty">Failed to load config</div>';
+            body.innerHTML = renderDisplayPrefs() + renderNotificationPrefs() + renderAutoSendPref() + renderHudAutopeekPref() + '<div class="sidebar-empty">Failed to load config</div>';
             bindDisplayPrefs(body);
             bindNotificationPrefs(body);
             bindAutoSendPref(body);
-            bindTopologyOverlayPref(body);
+            bindHudAutopeekPref(body);
         }
     },
 };

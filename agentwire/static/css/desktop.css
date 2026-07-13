@@ -6933,81 +6933,14 @@ body.sidebar-pinned .session-hud-drawer {
 .topology-card--expanded .topology-card-meta { display: none; }
 .topology-card--expanded { gap: 4px; }
 
-/* --- phantom topology overlay (#764) — topology-overlay.js ---
-   Transient, non-interactive pop-over of the shared renderer above: the
-   instant a child session spawns, TopologyView mounts into the panel below
-   with mode:'overlay' (the glass-card styling above) showing the new
-   session's family, then fades. pointer-events:none on the root cascades
-   through every card TopologyView renders — it's an inherited CSS property —
-   so the overlay never blocks a click through to the terminal underneath;
-   only the dismiss button opts back into pointer-events:auto. Width caps
-   narrow (min(94vw, 380px)) rather than spanning the viewport, matching the
-   renderer's narrow-first layout above. The fade duration is set inline as
-   --topology-overlay-fade-ms from spawn-ghost.js's FLY_MS, so the two spawn
-   animations share one timing constant instead of drifting apart. */
-.topology-overlay-root {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 9vh;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity var(--topology-overlay-fade-ms, 480ms) ease-out;
-}
-
-.topology-overlay-root--visible {
-    opacity: 1;
-}
-
-.topology-overlay-root--instant {
-    transition: none;
-}
-
-.topology-overlay-panel {
-    position: relative;
-    width: min(94vw, 380px);
-    max-height: 78vh;
-    overflow-y: auto;
-    border-radius: 14px;
-    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.35);
-}
-
-.topology-overlay-dismiss {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    z-index: 1;
-    width: 22px;
-    height: 22px;
-    line-height: 20px;
-    padding: 0;
-    border-radius: 50%;
-    border: 1px solid var(--chrome-border);
-    background: color-mix(in srgb, var(--chrome) 80%, transparent);
-    color: var(--text-muted);
-    font-size: 13px;
-    cursor: pointer;
-    pointer-events: auto;
-}
-
-.topology-overlay-dismiss:hover {
-    color: var(--text);
-    border-color: var(--accent);
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .topology-overlay-root {
-        transition: none !important;
-    }
-}
-
-/* --- born-from-parent placement (#745) ---
-   Overlay ghost that flies from a parent window's title-bar edge to the
-   landing spot; the real WinBox window is only created once the ghost is
-   at rest (see spawn-ghost.js). --ghost-tint is set inline per-spawn to a
-   --lineage-tint-N value (lineage.js) — never a hardcoded hex. */
+/* --- born-from-parent placement (#745, absorbed into the HUD by #780) ---
+   Overlay ghost that flies from a parent's rect to a child's rect; the real
+   destination (a WinBox window, or — since #780 — a Session HUD topology
+   card) is only created/settled once the ghost is at rest (see
+   spawn-ghost.js). --ghost-tint is set inline per-spawn to a
+   --lineage-tint-N value (lineage.js) — never a hardcoded hex. flyGhost()'s
+   zIndex param lets session-hud-spawn.js paint this above the HUD drawer
+   (z 9001) instead of the default window-birth tier below. */
 .spawn-ghost-root {
     position: fixed;
     inset: 0;

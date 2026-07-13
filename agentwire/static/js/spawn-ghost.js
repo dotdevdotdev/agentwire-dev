@@ -17,7 +17,7 @@
  * toasts (1500) — same band as collage.js's OVERLAY_Z (1400). */
 const GHOST_Z = 1420;
 
-/** Exported so other spawn-triggered overlays (topology-overlay.js, #764)
+/** Exported so other spawn-triggered animations (session-hud-spawn.js, #780)
  * share the exact same fly duration instead of picking their own — one
  * "how long does a spawn animation take" constant, not two that can drift
  * apart. */
@@ -34,7 +34,7 @@ function ensureRoot() {
     return root;
 }
 
-/** Exported so other spawn-triggered overlays (topology-overlay.js, #764)
+/** Exported so other spawn-triggered animations (session-hud-spawn.js, #780)
  * make the same reduced-motion call this module does, rather than each
  * re-querying matchMedia. */
 export function prefersReducedMotion() {
@@ -55,8 +55,12 @@ export function prefersReducedMotion() {
  * @param {DOMRect} toRect - Landing spot (the desktop area), viewport coords.
  * @param {string} tintVar - A `--lineage-tint-N` custom property name.
  * @param {Function} onSettle - Called once the ghost is at rest (or immediately if skipped).
+ * @param {number} [zIndex=GHOST_Z] - Stacking tier for this fly. Defaults to the
+ *   window-birth tier; callers flying over something stacked above that (e.g. the
+ *   Session HUD drawer, z 9001) pass a higher value so the ghost isn't painted
+ *   underneath it.
  */
-export function flyGhost(fromRect, toRect, tintVar, onSettle) {
+export function flyGhost(fromRect, toRect, tintVar, onSettle, zIndex = GHOST_Z) {
     if (!fromRect || !toRect || prefersReducedMotion()) {
         onSettle();
         return;
@@ -70,7 +74,9 @@ export function flyGhost(fromRect, toRect, tintVar, onSettle) {
     el.style.width = `${fromRect.width}px`;
     el.style.height = `${fromRect.height}px`;
 
-    ensureRoot().appendChild(el);
+    const ghostRoot = ensureRoot();
+    ghostRoot.style.zIndex = String(zIndex);
+    ghostRoot.appendChild(el);
 
     // Force the browser to commit the start rect before the end-rect write
     // below, or both writes coalesce into one frame and nothing transitions.
