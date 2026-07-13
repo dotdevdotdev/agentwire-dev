@@ -1127,6 +1127,10 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
             r["git"] = worktree_status(Path(r.get("worktree_path", "")))
         dead_msgs = inbox.list_dead(r.get("session", ""))
         r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
+        # Recorded creator/parent (persists after the session dies) — lets a
+        # dead orphan entry still be placed in its family and re-adopted with
+        # the same reporting relationship it had before (#781 ghost cards).
+        r["created_by"] = _display_parent(r.get("session", ""), r.get("worktree_path", ""))
 
     if json_mode:
         _output_json({"success": True, "entries": rows})

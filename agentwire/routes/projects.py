@@ -379,6 +379,66 @@ class ProjectsRoutesMixin:
 
         return web.json_response({"existing": result.get("existing", [])})
 
+    async def api_worktree_cleanup(self, request: web.Request) -> web.Response:
+        """Tear down an orphaned worktree (Session HUD ghost card "Clean up").
+
+        Thin wrapper over the plain `agentwire worktree --remove` form — the
+        CLI's own merge/open-PR guard decides whether the branch is also
+        deleted; this never escalates to --force-delete-branch.
+
+        Body: {"name": "<branch or session>", "project": "/path/to/repo"}
+        Returns whatever the CLI returns verbatim: on success
+        {success, session, path, killed, worktree_removed, branch,
+        branch_deleted, branch_note, orphaned_tabs}; on failure
+        {success: false, error}.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        name = (data.get("name") or "").strip()
+        project = (data.get("project") or "").strip()
+        if not name or not project:
+            return web.json_response({"success": False, "error": "name and project are required"}, status=400)
+
+        # Thin wrapper: the git/registry/branch-safety logic lives in the CLI (SSOT).
+        success, result = await self.run_agentwire_cmd(
+            ["worktree", "--remove", name, "-p", project]
+        )
+        return web.json_response(result, status=200 if success else 400)
+
+    async def api_worktree_adopt(self, request: web.Request) -> web.Response:
+        """Spawn a session into an existing worktree (Session HUD ghost card "Adopt").
+
+        Thin wrapper over `agentwire worktree <name> -p <project> --existing
+        [--created-by <createdBy>]` — checks out the branch already on disk
+        (no new branch) and, when the dead session's recorded creator is
+        known, roots the new session under that same parent so it reports
+        back the way the original session would have.
+
+        Body: {"name": "<branch>", "project": "/path/to/repo", "createdBy": "<session>"}
+        Returns whatever the CLI returns verbatim (same shape as `agentwire new`'s
+        json — success/session/path/... — or {success: false, error}).
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        name = (data.get("name") or "").strip()
+        project = (data.get("project") or "").strip()
+        created_by = (data.get("createdBy") or "").strip()
+        if not name or not project:
+            return web.json_response({"success": False, "error": "name and project are required"}, status=400)
+
+        args = ["worktree", name, "-p", project, "--existing"]
+        if created_by:
+            args += ["--created-by", created_by]
+
+        success, result = await self.run_agentwire_cmd(args)
+        return web.json_response(result, status=200 if success else 400)
+
 
 def register_projects_routes(server, app):
     """Wire the projects domain's routes onto ``app``."""
@@ -389,3 +449,5 @@ def register_projects_routes(server, app):
     app.router.add_get("/api/session/defaults", server.api_session_defaults)
     app.router.add_get("/api/check-path", server.api_check_path)
     app.router.add_get("/api/check-branches", server.api_check_branches)
+    app.router.add_post("/api/worktree/cleanup", server.api_worktree_cleanup)
+    app.router.add_post("/api/worktree/adopt", server.api_worktree_adopt)
