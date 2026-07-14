@@ -50,6 +50,7 @@ import { subtreeOf } from './lineage.js';
 import { mountCardTerminal, mountSelfMic } from './card-terminal.js';
 import { sessionHud } from './session-hud.js';
 import { apiFetch } from './api.js';
+import { normalizeMachine } from './session-id.js';
 import { toastSuccess, toastError } from './toast.js';
 
 const GHOST_POLL_MS = 20000;
@@ -82,6 +83,8 @@ class HudController {
             onSelfMount: (name, session, cardEl) => mountSelfMic(name, session, cardEl),
             onGhostCleanup: (name, session) => this._cleanupGhost(name, session),
             onGhostAdopt: (name, session) => this._adoptGhost(name, session),
+            onCardOpen: (name, session) => this._openSession(name, session),
+            onCardKill: (name, session) => this._killSession(name, session),
         });
 
         // Seed from whatever's already focused when the HUD first mounts,
@@ -142,6 +145,36 @@ class HudController {
             cleanup();
             sessionHud.restoreDetent();
         };
+    }
+
+    // ⋯ menu "Open window" — pop the session into its own full terminal window.
+    // Dynamic-imports desktop.js for the same reason card-terminal.js does: it's
+    // the module that boots this controller, so a static import would be circular.
+    async _openSession(name, session) {
+        try {
+            const { openSessionTerminal } = await import('./desktop.js');
+            openSessionTerminal(name, 'terminal', normalizeMachine(session?.machine));
+        } catch (e) {
+            toastError(`Couldn't open ${name}: ${e.message}`);
+        }
+    }
+
+    // ⋯ menu "Kill session" — the two-step confirm already happened in-menu
+    // (topology-render.js), so this fires straight through. DELETE /api/sessions
+    // is the same thin `agentwire kill` wrapper the sidebar close button uses; the
+    // resulting lifecycle push re-renders the tree without this card.
+    async _killSession(name, session) {
+        try {
+            const res = await apiFetch(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const reason = await res.text().catch(() => '') || `HTTP ${res.status}`;
+                toastError(`Kill failed for ${name}: ${reason}`);
+                return;
+            }
+            toastSuccess(`Killed ${name}`);
+        } catch (e) {
+            toastError(`Kill failed for ${name}: ${e.message}`);
+        }
     }
 
     // Ghosts (#781) aren't sessions — no WS push tells us when a worktree dir
