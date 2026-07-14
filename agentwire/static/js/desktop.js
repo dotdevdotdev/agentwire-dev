@@ -267,7 +267,7 @@ async function init() {
     // Scratch pad drawer (Alt+N, right-edge handle, selection capture)
     scratchpad.init();
 
-    // Session HUD drawer (Alt+T, top-center handle) — #776 chrome, #777 shade
+    // Session HUD drawer (Alt+P, top-center handle) — #776 chrome, #777 shade
     // layout. #778's controller decides what renders (global tree vs
     // re-rooted onto the focused session) and mounts TopologyView itself.
     sessionHud.init();

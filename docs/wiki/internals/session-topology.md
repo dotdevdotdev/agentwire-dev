@@ -10,7 +10,7 @@ Mechanisms, shipped across #745–#749, #761–#764, and the Session HUD epic #7
 | **Shared topology renderer** | `static/js/topology-render.js` (`TopologyView`) | Mounted by the two surfaces below — not triggered directly |
 | **Session Workspace window** | `static/js/workspace-window.js` | 🛰 launcher on a session card, or `openSessionWorkspace()` |
 | **Card mini-terminal** | `static/js/terminal-pane.js` (`TerminalPane`) + `workspace-window.js` | Click a card in the Workspace window |
-| **Session HUD** (pull-down shade) | `static/js/session-hud.js` + `session-hud-controller.js` + `session-hud-spawn.js` | Alt+T / the top-edge pull handle; auto-peeks on the live `session_created` event |
+| **Session HUD** (pull-down shade) | `static/js/session-hud.js` + `session-hud-controller.js` + `session-hud-spawn.js` | Alt+P / the top-edge pull handle; auto-peeks on the live `session_created` event |
 | **Grouped + tinted collage** | `static/js/collage.js` | F3 / `desktop_collage` MCP / command palette |
 | **Live appearance** | `desktop.js` `handleSessionCreated` + server `notify_portal_session_created` | A session is created via `agentwire new` / `worktree` / the portal |
 
@@ -49,9 +49,9 @@ Birth detection has two independent paths that land in the same place (`register
 
 ## Session HUD (pull-down topology shade)
 
-The **Session HUD** (epic #775) is a pull-down top-edge frosted-glass shade — the **third mount surface** for `TopologyView`, alongside the Session Workspace window above and (until #780) the now-deleted phantom overlay. It's the always-available, glanceable situational-awareness layer: pull it down (Alt+T or the top-center handle) to see the live topology, click a card to drop into its mini-terminal, and it's where the spawn-relationship animation now plays. `session-hud.js` owns the drawer chrome (mirroring `scratchpad.js`'s edge-drawer mechanic), `session-hud-controller.js` drives the content, `session-hud-spawn.js` the spawn choreography.
+The **Session HUD** (epic #775) is a pull-down top-edge frosted-glass shade — the **third mount surface** for `TopologyView`, alongside the Session Workspace window above and (until #780) the now-deleted phantom overlay. It's the always-available, glanceable situational-awareness layer: pull it down (Alt+P or the top-center handle) to see the live topology, click a card to drop into its mini-terminal, and it's where the spawn-relationship animation now plays. `session-hud.js` owns the drawer chrome (mirroring `scratchpad.js`'s edge-drawer mechanic), `session-hud-controller.js` drives the content, `session-hud-spawn.js` the spawn choreography.
 
-**Shell (#776):** a frosted drawer (`backdrop-filter: blur(20px)`) that drops from the top edge, flush to the left (`--hud-left`), spanning full width. Two detents — **peek** (33vh) ↔ **half** (50vh) — via a top-center pull handle (drag to snap) or Alt+T. Mutually exclusive with the left sidebar and right scratchpad (opening one closes the others), the same coordination those drawers already share.
+**Shell (#776):** a frosted drawer (`backdrop-filter: blur(20px)`) that drops from the top edge, flush to the left (`--hud-left`), spanning full width. Two detents — **peek** (33vh) ↔ **half** (50vh) — via a top-center pull handle (drag to snap) or Alt+P. Mutually exclusive with the left sidebar and right scratchpad (opening one closes the others), the same coordination those drawers already share.
 
 **Shade layout (#777):** `TopologyView` gains `mode: 'shade'` — a compact, full-width, left-anchored variant (denser 128px cards, families flowing left-to-right) for the short, narrow surface, instead of the workspace window's centered solid chrome. The canvas scrolls horizontally; a dot-grid texture (the `--dot-grid-image`/`--dot-grid-size` tokens shared with the Workspace window, applied as the image **only** — no opaque fill — so the frost shows through) reads behind the cards.
 
