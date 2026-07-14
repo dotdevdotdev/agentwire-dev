@@ -51,6 +51,34 @@ export function wireStateFor(name, record) {
     return 'idle';
 }
 
+/**
+ * The label a card should show for a session. Roots keep their full name;
+ * children show their distinguishing branch/worktree tail instead of the
+ * project-prefixed full name — under the narrow shade the full name truncated
+ * every sibling to the same "project…" ellipsis, so children were
+ * indistinguishable (#792). Two signals, cwd-immune first:
+ *   1. strip the parent's name as a leading prefix — worktree sessions are
+ *      named "{project}-{branch}" and the parent ≈ the project — leaving the
+ *      branch tail (survives a `cd` inside the session);
+ *   2. else the worktree folder basename (path is ~/worktrees/<proj>/<branch>).
+ * Falls back to the full bare name when neither yields a distinct tail.
+ *
+ * @param {{name?: string, parent?: string, path?: string, worktreePath?: string}} session
+ * @returns {string}
+ */
+export function cardDisplayName(session) {
+    const raw = (session?.name || '').split('@')[0];
+    if (!session?.parent) return raw;
+    const parent = String(session.parent).split('@')[0];
+    if (parent && raw.length > parent.length && raw.startsWith(parent)) {
+        const tail = raw.slice(parent.length).replace(/^[-/_.:\s]+/, '');
+        if (tail) return tail;
+    }
+    const base = (session.path || session.worktreePath || '').replace(/\/+$/, '').split('/').pop();
+    if (base && base !== parent && base !== raw) return base;
+    return raw;
+}
+
 /** Vertical S-curve from a parent card's bottom edge to a child card's top
  * edge — reads sensibly whether the pair ends up side by side or stacked
  * across a row wrap. */
@@ -81,6 +109,12 @@ export class TopologyView {
      *   underlying worktree is actually gone).
      * @param {(name: string, session: object) => Promise<{error?: string}>|void} [opts.onGhostAdopt] -
      *   Fired when a ghost card's "Adopt" button is confirmed. Same contract as `onGhostCleanup`.
+     * @param {(name: string, session: object) => void} [opts.onCardOpen] -
+     *   Fired from a card's ⋯ menu "Open" item — pop the session into its own full window. Wiring
+     *   this (or `onCardKill`) is what surfaces the per-card ⋯ menu button; omit both and cards carry
+     *   no menu (the workspace window relies on click-to-expand instead).
+     * @param {(name: string, session: object) => void} [opts.onCardKill] -
+     *   Fired from a card's ⋯ menu "Kill" item after a two-step in-menu confirm — tear the session down.
      * @param {boolean} [opts.showLinks=true] - Draw the connector SVG layer.
      * @param {'window'|'shade'} [opts.mode='window'] - Styling hook only — 'shade' renders
      *   full-width, left-anchored compact family clusters for the short/narrow Session HUD shade
@@ -93,6 +127,11 @@ export class TopologyView {
         this._onSelfMount = opts.onSelfMount || null;
         this._onGhostCleanup = opts.onGhostCleanup || null;
         this._onGhostAdopt = opts.onGhostAdopt || null;
+        this._onCardOpen = opts.onCardOpen || null;
+        this._onCardKill = opts.onCardKill || null;
+        /** @type {object|null} card entry whose ⋯ menu is currently open (one at a time) */
+        this._openMenuEntry = null;
+        this._menuDismiss = null;
         this._showLinks = opts.showLinks !== false;
         this._mode = opts.mode === 'shade' ? 'shade' : 'window';
         this._lastSessions = [];
@@ -176,6 +215,7 @@ export class TopologyView {
         if (this._expandedCard) this._collapseCard(this._expandedCard);
         for (const entry of this._cards.values()) {
             if (entry.selfDispose) entry.selfDispose();
+            this._closeMenu(entry);
             clearTimeout(entry.ghostConfirmTimer);
         }
         this._resizeObserver.disconnect();
@@ -242,6 +282,7 @@ export class TopologyView {
             if (!seenCards.has(name)) {
                 if (entry.expanded) this._collapseCard(name);
                 if (entry.selfDispose) entry.selfDispose();
+                this._closeMenu(entry);
                 clearTimeout(entry.ghostConfirmTimer);
                 entry.card.remove();
                 this._cards.delete(name);
@@ -274,6 +315,7 @@ export class TopologyView {
             entry.ghostBadge.hidden = !isGhost;
             entry.ghostInfoEl.hidden = !isGhost;
             entry.ghostActions.hidden = !isGhost;
+            if (isGhost) { entry.menuBtn.hidden = true; this._closeMenu(entry); }
         }
 
         const tintVar = lineageTintVar(familyRoot, this._lastSessions);
@@ -282,7 +324,12 @@ export class TopologyView {
             entry.tintVar = tintVar;
         }
 
-        if (entry.nameEl.textContent !== name) entry.nameEl.textContent = name;
+        const label = cardDisplayName(session);
+        if (entry.nameEl.textContent !== label) {
+            entry.nameEl.textContent = label;
+            // Tooltip carries the full session name when the card shows only a tail.
+            entry.nameEl.title = label === name ? '' : name;
+        }
 
         if (isGhost) {
             this._renderGhostCard(entry, session);
@@ -333,6 +380,14 @@ export class TopologyView {
                 entry.selfDispose = typeof dispose === 'function' ? dispose : null;
             }
         }
+
+        // ⋯ menu: live, non-self cards only, and only when actions are wired
+        // (the workspace window omits both callbacks → no menu there). The self
+        // card carries a mic instead, and Open/Kill on the session you're already
+        // inside is either redundant or a foot-gun.
+        const wantMenu = !isSelf && !!(this._onCardOpen || this._onCardKill);
+        if (entry.menuBtn.hidden !== !wantMenu) entry.menuBtn.hidden = !wantMenu;
+        if (!wantMenu) this._closeMenu(entry);
     }
 
     _buildCard(name) {
@@ -348,8 +403,9 @@ export class TopologyView {
             if (name === this._selfSession) return;
             if (!this._onCardExpand) return;
             // Clicks inside the expanded slot (the mounted mini-terminal, its
-            // mic button, etc.) must not bubble into a collapse toggle.
-            if (e.target.closest('.topology-card-expand-slot, .topology-card-actions, .topology-ghost-actions')) return;
+            // mic button, etc.), the ⋯ menu, or the ghost actions must not
+            // bubble into a collapse toggle.
+            if (e.target.closest('.topology-card-expand-slot, .topology-card-actions, .topology-ghost-actions, .topology-card-menu, .topology-card-menu-btn')) return;
             this._toggleExpand(name);
         });
 
@@ -361,11 +417,21 @@ export class TopologyView {
         nameEl.className = 'topology-card-name';
         const roleEl = document.createElement('span');
         roleEl.className = 'topology-role-chip';
+        const menuBtn = document.createElement('button');
+        menuBtn.type = 'button';
+        menuBtn.className = 'topology-card-menu-btn';
+        menuBtn.title = 'Actions';
+        menuBtn.textContent = '⋯';
+        menuBtn.hidden = true; // _renderCard shows it for live, non-self cards when actions are wired
+        menuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._toggleMenu(name, this._cards.get(name));
+        });
         const ghostBadge = document.createElement('span');
         ghostBadge.className = 'topology-ghost-badge';
         ghostBadge.textContent = 'no session';
         ghostBadge.hidden = true;
-        top.append(dot, nameEl, roleEl, ghostBadge);
+        top.append(dot, nameEl, roleEl, menuBtn, ghostBadge);
 
         const sparkEl = document.createElement('div');
         sparkEl.className = 'topology-spark';
@@ -405,11 +471,12 @@ export class TopologyView {
         card.append(top, meta, ghostActions);
 
         const entry = {
-            card, dot, nameEl, roleEl, machineEl, sparkEl, state: null, tintVar: null, session: null,
+            card, dot, nameEl, roleEl, machineEl, sparkEl, menuBtn, state: null, tintVar: null, session: null,
             expanded: false, expandSlot: null, expandDispose: null,
             isSelf: false, selfDispose: null,
             isGhost: false, ghostBadge, ghostInfoEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
             ghostConfirm: null, ghostConfirmTimer: null, ghostBusy: false,
+            menuEl: null, menuOpen: false, resetKill: null,
         };
 
         cleanupBtn.addEventListener('click', (e) => {
@@ -422,6 +489,107 @@ export class TopologyView {
         });
 
         return entry;
+    }
+
+    /** Toggle a card's ⋯ action menu — closing any other open one first
+     * (accordion: one menu at a time across the whole view). */
+    _toggleMenu(name, entry) {
+        if (!entry) return;
+        if (entry.menuOpen) { this._closeMenu(entry); return; }
+        if (this._openMenuEntry && this._openMenuEntry !== entry) this._closeMenu(this._openMenuEntry);
+        if (!entry.menuEl) entry.menuEl = this._buildMenu(name, entry);
+        entry.menuEl.hidden = false;
+        entry.menuOpen = true;
+        entry.menuBtn.classList.add('is-open');
+        this._openMenuEntry = entry;
+        // Position `fixed` from the button rect so the popover escapes the HUD
+        // canvas's overflow clip (right-aligned under the ⋯; clamped into view).
+        const r = entry.menuBtn.getBoundingClientRect();
+        const menu = entry.menuEl;
+        menu.style.top = `${Math.round(r.bottom + 4)}px`;
+        menu.style.left = 'auto';
+        menu.style.right = `${Math.round(Math.max(6, window.innerWidth - r.right))}px`;
+        // Dismiss on outside pointerdown or Escape. Deferred bind so the click
+        // that opened the menu doesn't immediately close it; capture phase so a
+        // click anywhere (including another card) is caught first.
+        this._menuDismiss = (e) => {
+            if (e.type === 'keydown') { if (e.key === 'Escape') this._closeMenu(entry); return; }
+            if (e.target === entry.menuBtn || entry.menuEl.contains(e.target)) return;
+            this._closeMenu(entry);
+        };
+        setTimeout(() => {
+            if (!entry.menuOpen) return;
+            document.addEventListener('pointerdown', this._menuDismiss, true);
+            document.addEventListener('keydown', this._menuDismiss, true);
+        }, 0);
+    }
+
+    _closeMenu(entry) {
+        if (!entry || !entry.menuOpen) return;
+        entry.menuOpen = false;
+        entry.menuBtn?.classList.remove('is-open');
+        if (entry.menuEl) entry.menuEl.hidden = true;
+        entry.resetKill?.(); // disarm a half-confirmed Kill
+        if (this._menuDismiss) {
+            document.removeEventListener('pointerdown', this._menuDismiss, true);
+            document.removeEventListener('keydown', this._menuDismiss, true);
+            this._menuDismiss = null;
+        }
+        if (this._openMenuEntry === entry) this._openMenuEntry = null;
+    }
+
+    /** Build the ⋯ popover: an "Open" item (pop to full window) and a "Kill"
+     * item guarded by an in-menu two-step confirm (mirrors the sidebar close
+     * button's "click, then click again to confirm" pattern). Items appear only
+     * for the callbacks the caller wired. */
+    _buildMenu(name, entry) {
+        const menu = document.createElement('div');
+        menu.className = 'topology-card-menu';
+        menu.hidden = true;
+        menu.addEventListener('click', (e) => e.stopPropagation());
+
+        if (this._onCardOpen) {
+            const openBtn = document.createElement('button');
+            openBtn.type = 'button';
+            openBtn.className = 'topology-card-menu-item';
+            openBtn.innerHTML = '<span class="topology-card-menu-icon">⤢</span>Open window';
+            openBtn.addEventListener('click', () => {
+                this._closeMenu(entry);
+                this._onCardOpen(name, entry.session);
+            });
+            menu.appendChild(openBtn);
+        }
+
+        if (this._onCardKill) {
+            const KILL_HTML = '<span class="topology-card-menu-icon">✕</span>Kill session';
+            const killBtn = document.createElement('button');
+            killBtn.type = 'button';
+            killBtn.className = 'topology-card-menu-item topology-card-menu-item--danger';
+            killBtn.innerHTML = KILL_HTML;
+            let armed = false;
+            let timer = null;
+            entry.resetKill = () => {
+                armed = false;
+                if (timer) { clearTimeout(timer); timer = null; }
+                killBtn.innerHTML = KILL_HTML;
+                killBtn.classList.remove('is-armed');
+            };
+            killBtn.addEventListener('click', () => {
+                if (!armed) {
+                    armed = true;
+                    killBtn.textContent = 'Confirm kill';
+                    killBtn.classList.add('is-armed');
+                    timer = setTimeout(() => entry.resetKill?.(), 3000);
+                    return;
+                }
+                this._closeMenu(entry);
+                this._onCardKill(name, entry.session);
+            });
+            menu.appendChild(killBtn);
+        }
+
+        entry.card.appendChild(menu);
+        return menu;
     }
 
     /** Ghost cards (session.state === 'orphan', #781) skip the live-status
