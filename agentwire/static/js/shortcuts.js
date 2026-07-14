@@ -60,7 +60,7 @@ export const SHORTCUT_GROUPS = [
         title: 'Panels',
         items: [
             { combo: ['Alt', 'N'], desc: 'Toggle the scratchpad drawer', where: 'scratchpad.js' },
-            { combo: ['Alt', 'T'], desc: 'Toggle the Session HUD', where: 'session-hud.js' },
+            { combo: ['Alt', 'P'], desc: 'Toggle the Session HUD (peek)', where: 'session-hud.js' },
         ],
     },
     {

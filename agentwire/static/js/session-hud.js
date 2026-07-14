@@ -10,7 +10,7 @@
  * fills with TopologyView. Mirrors scratchpad.js's create-once drawer
  * lifecycle (`.open` class, keyboard toggle, teardown).
  *
- * Toggle: Alt+T or the handle. Mutually exclusive with the left sidebar and
+ * Toggle: Alt+P ("peek") or the handle. Mutually exclusive with the left sidebar and
  * the right scratchpad drawer — mirrors their existing coordination
  * (sidebar.js:72): opening the HUD closes both, and opening either of them
  * closes the HUD.
@@ -65,14 +65,17 @@ class SessionHud {
     init() {
         this._buildDrawer();
 
-        // Alt+T toggles the drawer. Capture phase + stopPropagation so xterm
-        // never sees the keystroke — mirrors scratchpad.js's Alt+N binding.
-        // e.code (not e.key): physical-key detection, consistent with every
-        // other Alt combo in the portal. Option+T isn't a macOS dead key (it
-        // types a literal † rather than composing), so no suppressor arm is
-        // needed here — same reasoning as the Alt+bracket window-cycle combo.
+        // Alt+P ("peek") toggles the drawer. Moved off Alt+T once Claude Code
+        // claimed Option+T for toggle-thinking — our capture-phase handler would
+        // otherwise swallow it before it reached a session running Claude Code.
+        // Capture phase + stopPropagation so xterm never sees the keystroke —
+        // mirrors scratchpad.js's Alt+N binding. e.code (not e.key):
+        // physical-key detection, consistent with every other Alt combo in the
+        // portal. Option+P isn't a macOS dead key (it types a literal π rather
+        // than composing), so no suppressor arm is needed — same reasoning as
+        // the Alt+bracket window-cycle combo.
         window.addEventListener('keydown', (e) => {
-            if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyT') {
+            if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyP') {
                 e.preventDefault();
                 e.stopPropagation();
                 if (e.repeat) return;
@@ -109,7 +112,7 @@ class SessionHud {
 
         const handle = document.createElement('button');
         handle.className = 'session-hud-handle';
-        handle.title = 'Session HUD (Alt+T)';
+        handle.title = 'Session HUD (Alt+P)';
         handle.innerHTML = '<span class="session-hud-grip" aria-hidden="true"></span>';
         document.body.appendChild(handle);
         this.handle = handle;
