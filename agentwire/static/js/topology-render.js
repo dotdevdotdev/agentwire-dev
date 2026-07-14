@@ -216,6 +216,7 @@ export class TopologyView {
         for (const entry of this._cards.values()) {
             if (entry.selfDispose) entry.selfDispose();
             this._closeMenu(entry);
+            entry.menuEl?.remove(); // portaled to <body>
             clearTimeout(entry.ghostConfirmTimer);
         }
         this._resizeObserver.disconnect();
@@ -283,6 +284,7 @@ export class TopologyView {
                 if (entry.expanded) this._collapseCard(name);
                 if (entry.selfDispose) entry.selfDispose();
                 this._closeMenu(entry);
+                entry.menuEl?.remove(); // portaled to <body>, so card.remove() won't take it
                 clearTimeout(entry.ghostConfirmTimer);
                 entry.card.remove();
                 this._cards.delete(name);
@@ -502,8 +504,10 @@ export class TopologyView {
         entry.menuOpen = true;
         entry.menuBtn.classList.add('is-open');
         this._openMenuEntry = entry;
-        // Position `fixed` from the button rect so the popover escapes the HUD
-        // canvas's overflow clip (right-aligned under the ⋯; clamped into view).
+        // Position `fixed` from the button's viewport rect (right-aligned under
+        // the ⋯, clamped into view). Correct because the menu is portaled to
+        // <body> in _buildMenu — see there for why nesting it under the drawer
+        // breaks fixed positioning.
         const r = entry.menuBtn.getBoundingClientRect();
         const menu = entry.menuEl;
         menu.style.top = `${Math.round(r.bottom + 4)}px`;
@@ -588,7 +592,13 @@ export class TopologyView {
             menu.appendChild(killBtn);
         }
 
-        entry.card.appendChild(menu);
+        // Portal to <body>, NOT the card: the HUD drawer's backdrop-filter +
+        // transform each make it the containing block for position:fixed
+        // descendants, so a menu nested under it would be positioned/clipped
+        // relative to the drawer (rendering "inside the fold") instead of the
+        // viewport. On body there's no such ancestor, so the fixed coords set
+        // from the button's viewport rect land correctly and nothing clips.
+        document.body.appendChild(menu);
         return menu;
     }
 

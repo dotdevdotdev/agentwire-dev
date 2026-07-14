@@ -6716,8 +6716,10 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
 }
 
 /* Popover positioned `fixed` (top/left set inline in JS from the ⋯ button's
-   rect) so it escapes the HUD canvas's `overflow:auto` clip — a bottom-row
-   card's menu must never get cut off. z above the drawer (9001) + sidebar tab. */
+   rect) and portaled to <body> (topology-render.js) so it escapes both the
+   HUD canvas's `overflow:auto` clip AND the drawer's backdrop-filter/transform
+   containing block — a collapsed bottom-row card's menu must never render
+   "inside the fold". z above the drawer (9001) + sidebar tab. */
 .topology-card-menu {
     position: fixed;
     z-index: 9050;
