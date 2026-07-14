@@ -61,6 +61,9 @@ class HudController {
         this._resolveWindowSession = null;
         /** @type {string|null} focused session name, or null = global tree */
         this._contextSession = null;
+        /** @type {boolean} "master" mode (showAll) — pin the global tree and
+         * ignore focus re-rooting until the drawer is closed. */
+        this._global = false;
         /** @type {string|null} window id backing _contextSession, for window_unregistered matching */
         this._contextWindowId = null;
         /** @type {Array<object>} pseudo-session records for orphaned worktrees, refreshed via polling */
@@ -98,6 +101,10 @@ class HudController {
         this._fetchGhosts();
         this._ghostTimer = setInterval(() => this._fetchGhosts(), GHOST_POLL_MS);
 
+        // Closing the drawer exits "master" mode, so the next Alt+P open is the
+        // normal context-following view again.
+        sessionHud.onClose(() => { this._global = false; });
+
         desktop.on('active_window_changed', ({ id }) => this._applyFocus(id));
         // Closing the focused session's own window (with nothing else taking
         // focus) falls back to the global tree, rather than leaving the HUD
@@ -112,10 +119,27 @@ class HudController {
     }
 
     _applyFocus(id) {
+        if (this._global) return; // master mode pins the global tree
         const session = this._resolveWindowSession(id);
         if (!session || session === this._contextSession) return;
         this._contextSession = session;
         this._contextWindowId = id;
+        this._render();
+    }
+
+    /**
+     * "Master" view — open the HUD showing the full session tree (every family,
+     * not the focused session's subtree) and pin it there: focus changes no
+     * longer re-root until the drawer closes. Entry points are the Sessions
+     * sidebar-header icon and the "Show all sessions" command-palette action
+     * (no hotkey — the plain Alt+P peek is the context-following view). Idempotent.
+     */
+    showAll() {
+        this._global = true;
+        this._contextSession = null;
+        this._contextWindowId = null;
+        if (sessionHud.segment !== 'sessions') sessionHud.setSegment('sessions');
+        if (!sessionHud.open) sessionHud.toggle(true);
         this._render();
     }
 

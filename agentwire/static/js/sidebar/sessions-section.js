@@ -321,6 +321,7 @@ async function fetchSessions() {
 export const sessionsSection = {
     title: 'Sessions',
     actions: [
+        { id: 'showall', label: '⧉', title: 'Show all sessions in the HUD' },
         { id: 'new', label: '+', title: 'New session' },
         { id: 'worktree', label: '⎇', title: 'New worktree session' },
     ],
@@ -339,6 +340,11 @@ export const sessionsSection = {
     },
 
     onAction(actionId, body) {
+        // Not a form toggle — pop the master Session HUD (all sessions).
+        if (actionId === 'showall') {
+            import('../session-hud-controller.js').then(({ hudController }) => hudController.showAll());
+            return;
+        }
         if (this._formType === actionId) {
             this._formType = null;
         } else {
