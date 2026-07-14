@@ -60,6 +60,14 @@ class SessionHud {
         /** @type {'sessions'|'services'} currently active header segment */
         this.segment = 'sessions';
         this._servicesMounted = false;
+        /** @type {Array<() => void>} fired when the drawer closes — lets the
+         * controller drop its pinned "master/global" view (see showAll). */
+        this._closeListeners = [];
+    }
+
+    /** Subscribe to drawer-close. */
+    onClose(fn) {
+        this._closeListeners.push(fn);
     }
 
     init() {
@@ -295,6 +303,7 @@ class SessionHud {
             this.open = false;
             this.drawer.classList.remove('open');
             this.handle.classList.remove('drawer-open');
+            this._closeListeners.forEach((fn) => fn());
         }
     }
 }

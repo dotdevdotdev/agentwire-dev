@@ -45,6 +45,11 @@ const COMMANDS = [
     { id: 'new-session', icon: '▶', label: 'New session', keywords: 'create new session start spawn run project', run: () => setView('new-session') },
     { id: 'worktree', icon: '⎇', label: 'New worktree', keywords: 'worktree branch quicktask task feat fix base', run: () => setView('worktree') },
     { id: 'open-session', icon: '👁', label: 'Open session', keywords: 'open attach connect existing session', run: () => setView('open-session') },
+    { id: 'show-all-sessions', icon: '⧉', label: 'Show all sessions', keywords: 'hud session topology tree map lineage parent child master overview show all every global peek', run: async () => {
+        closeCommandPalette();
+        const { hudController } = await import('./session-hud-controller.js');
+        hudController.showAll();
+    } },
     { id: 'collage', icon: '▦', label: 'Window collage', keywords: 'collage cascade grid windows overview show all tile mission', run: async () => {
         closeCommandPalette();
         const { collage } = await import('./collage.js');

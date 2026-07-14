@@ -82,6 +82,7 @@ export const FEATURE_TOUR = [
     { icon: '🏛', name: 'Council', desc: 'Ask one question, get six lenses (brain, conscience, …) deliberating in parallel. Command palette → Ask council.' },
     { icon: '🎙', name: 'Push-to-talk', desc: 'Hold Ctrl/⌘+Space to talk to a session. Or open /mobile to push-to-talk from your phone.' },
     { icon: '▦', name: 'Window collage', desc: 'F3 fans every window into a grid — click one to dive in. Great for juggling many sessions.' },
+    { icon: '⧉', name: 'Session HUD', desc: 'Alt+P peeks a live map of the session you’re in and its children. "Show all sessions" (command palette, or the Sessions panel ⧉) opens the full tree — every session at once.' },
     { icon: '💡', name: 'New idea', desc: 'Capture a thought and AgentWire spins up a project with an agent already working on it.' },
     { icon: '⎇', name: 'Worktrees', desc: 'Branch a session into an isolated git worktree for parallel work, from the palette or the Sessions panel.' },
     { icon: '📋', name: 'Scratchpad', desc: 'Alt+N opens a quick notes drawer that travels with you across sessions.' },
