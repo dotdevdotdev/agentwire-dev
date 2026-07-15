@@ -358,6 +358,15 @@ class TestUnattendedAllowlist:
         allow = bash_hook.resolve_unattended_allow({"safety": {}})
         assert {"task.rule-a", "task.rule-b"} <= allow
 
+    def test_default_allowlist_covers_agentwire_email(self, bash_hook, monkeypatch):
+        # `agentwire email` is a blanket unattended-allow (#804) — the primary
+        # way an unattended agent reports back, so fail-closed blocking it
+        # defeats the use case. `agentwire quo` (SMS) is deliberately NOT here.
+        monkeypatch.delenv("AGENTWIRE_UNATTENDED_ALLOW", raising=False)
+        allow = bash_hook.resolve_unattended_allow({"safety": {}})
+        assert "outbound.agentwire-email" in allow
+        assert "outbound.agentwire-quo" not in allow
+
 
 class TestUnattendedSubprocess:
     """End-to-end exit codes for the unattended ask resolution (#401)."""
@@ -414,6 +423,19 @@ class TestUnattendedSubprocess:
             allow_env="tooldef.github-cli-merge-a-pull-request",
         )
         assert proc.returncode == 0
+
+    def test_email_any_recipient_allowed_when_unattended(self):
+        # outbound.agentwire-email is a blanket unattended-allow (#804) — ANY
+        # recipient, not just the owner's own address (owner-accepted tradeoff).
+        proc = self._run("agentwire email --to anyone@example.com", unattended=True)
+        assert proc.returncode == 0
+
+    def test_quo_still_blocks_when_unattended(self):
+        # agentwire quo (SMS) is a separate outbound channel and unaffected —
+        # still fails closed unless explicitly allowlisted.
+        proc = self._run("agentwire quo --to +15551234567", unattended=True)
+        assert proc.returncode == 2
+        assert "outbound.agentwire-quo" in proc.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -738,15 +760,16 @@ class TestMcpHookSubprocess:
         proc = self._run("mcp__agentwire__say", {"text": "hi"})
         assert proc.returncode == 0
 
-    def test_email_unattended_not_allowlisted_blocks(self):
+    def test_email_unattended_allowed_by_default(self):
+        # outbound.agentwire-email is a blanket unattended-allow (#804) — no
+        # unattended_allow entry needed, and ANY recipient (owner-accepted
+        # tradeoff), not just the owner's own address.
         proc = self._run(
             "mcp__agentwire__email_send",
-            {"body": "x", "to": "a@b.com", "subject": "s"},
+            {"body": "x", "to": "someone-else@example.com", "subject": "s"},
             unattended=True,
         )
-        assert proc.returncode == 2
-        assert "unattended" in proc.stderr.lower()
-        assert "outbound.agentwire-email" in proc.stderr
+        assert proc.returncode == 0
 
     def test_quo_unattended_not_allowlisted_blocks(self):
         proc = self._run(
@@ -755,13 +778,7 @@ class TestMcpHookSubprocess:
         )
         assert proc.returncode == 2
         assert "unattended" in proc.stderr.lower()
-
-    def test_email_unattended_allowlisted_proceeds(self):
-        proc = self._run(
-            "mcp__agentwire__email_send", {"body": "x", "to": "a@b.com"},
-            unattended=True, allow_env="outbound.agentwire-email",
-        )
-        assert proc.returncode == 0
+        assert "outbound.agentwire-quo" in proc.stderr
 
     def test_quo_unattended_allowlisted_proceeds(self):
         proc = self._run(

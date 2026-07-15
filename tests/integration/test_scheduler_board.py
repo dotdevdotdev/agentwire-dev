@@ -124,6 +124,28 @@ class TestSchedulerBoardRoundTrip:
         assert board2.tasks["code-quality"].schedule.every == "1h"
         assert board2.tasks["doc-drift"].filler is True
 
+    def test_last_gate_skip_round_trips_and_surfaces_on_board(self, board_env):
+        # A currently-blocking gate (#803) must persist across save/load and
+        # surface on the board display so it reads as "waiting on gate", not
+        # silently-falling-behind overdue.
+        board = load_board()
+        board.state["code-quality"] = TaskState(
+            last_status="never",
+            last_gate_skip="command: exit 1",
+        )
+        save_board(board)
+
+        board2 = load_board()
+        assert board2.state["code-quality"].last_gate_skip == "command: exit 1"
+
+        row = next(r for r in get_board_display(board2) if r["name"] == "code-quality")
+        assert row["last_gate_skip"] == "command: exit 1"
+
+    def test_last_gate_skip_absent_when_not_gated(self, board_env):
+        board = load_board()
+        row = next(r for r in get_board_display(board) if r["name"] == "code-quality")
+        assert "last_gate_skip" not in row
+
 
 # Pure parser tests for _parse_duration / _parse_time / _day_matches live in
 # tests/unit/test_scheduler_parsing.py — they have no scheduler-board state

@@ -615,8 +615,8 @@ def load_config(
 # dispatch by the scheduler), the hook resolves ``ask`` by FAILING CLOSED:
 # block + notify the owner, UNLESS the matched rule's stable ID is on the
 # allowlist. The allowlist is the union of:
-#   1. ``DEFAULT_UNATTENDED_ALLOW`` below (tight — work + open a PR, nothing
-#      irreversible or outward-facing),
+#   1. ``DEFAULT_UNATTENDED_ALLOW`` below (work + open a PR + notify the owner
+#      by email — nothing else irreversible or outward-facing),
 #   2. ``safety.unattended_allow`` from global / project config,
 #   3. ``AGENTWIRE_UNATTENDED_ALLOW`` (comma-separated) — the per-task
 #      extension the scheduler stamps from a task's ``unattended_allow``.
@@ -631,6 +631,7 @@ DEFAULT_UNATTENDED_ALLOW = {
     "git.commit",    # commit
     "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
     "gh.pr-create",  # open a PR — the human-reviewed gate
+    "outbound.agentwire-email",  # blanket allow, any recipient (#804)
 }
 
 

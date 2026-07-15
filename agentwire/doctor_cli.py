@@ -19,6 +19,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .core import (
@@ -475,6 +476,75 @@ def _render_shim_liveness_section() -> int:
     return len(dead)
 
 
+def _scheduler_daemon_started_at() -> float | None:
+    """Epoch seconds the scheduler daemon process started, or ``None`` if not running.
+
+    Reads the daemon's own self-reported ``started_at`` from the live-state
+    file it already writes every loop tick (``scheduler/loop.py`` ->
+    ``_write_live_state`` -> ``read_live_state()``) rather than reimplementing
+    process-start-time discovery via ``ps``/``pgrep`` PID matching, which is
+    both platform-fragile (``ps`` elapsed-time output format varies) and
+    ambiguous if a stray/duplicate daemon process happens to be running.
+    ``tmux_session_exists`` confirms the daemon is actually alive, so a
+    leftover live-state file from a since-stopped daemon doesn't produce a
+    false "stale" reading.
+    """
+    from .scheduler import SCHEDULER_SESSION, read_live_state
+
+    if not tmux_session_exists(SCHEDULER_SESSION):
+        return None
+    state = read_live_state()
+    if not state:
+        return None
+    started_at = state.get("started_at")
+    if not started_at:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(started_at).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _newest_installed_source_mtime(pkg_dir: Path | None = None) -> float:
+    """Newest mtime among the installed ``agentwire`` package's ``.py`` files."""
+    if pkg_dir is None:
+        pkg_dir = Path(__file__).resolve().parent
+    try:
+        return max((f.stat().st_mtime for f in pkg_dir.rglob("*.py")), default=0.0)
+    except Exception:
+        return 0.0
+
+
+def _render_scheduler_staleness_section() -> int:
+    """Doctor section: flag a scheduler daemon older than the installed code (#803).
+
+    ``agentwire scheduler serve`` is a long-running Python process — like the
+    MCP server, it imports its modules once at start and never re-reads them.
+    ``agentwire rebuild`` updates the on-disk package but can't touch an
+    already-running interpreter's loaded bytecode, so a daemon that has been
+    up since before the last rebuild is silently executing stale dispatch
+    logic: any bug fixed since then stays live in production until the
+    daemon is restarted.
+    """
+    started_at = _scheduler_daemon_started_at()
+    if started_at is None:
+        print("  [..] Scheduler daemon not running — skipping staleness check")
+        return 0
+
+    newest_src = _newest_installed_source_mtime()
+    if not newest_src or newest_src <= started_at:
+        print("  [ok] Scheduler daemon is current with the installed package")
+        return 0
+
+    age_days = (time.time() - started_at) / 86400
+    print(f"  [!!] Scheduler daemon has been running {age_days:.1f}d — "
+          "predates the most recent `agentwire rebuild`")
+    print("       Any dispatch bug fixed since then is still live in the running daemon.")
+    print("       Fix: agentwire scheduler stop && agentwire scheduler start")
+    return 1
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -652,6 +722,14 @@ def cmd_doctor(args) -> int:
             issues_found += 1
         else:
             print("  [ok] Local main up to date with origin/main")
+
+    # 4d. Scheduler daemon staleness — the daemon is a long-running process
+    # that never re-imports its code, so it can silently run a dispatch bug
+    # that's since been fixed on disk (#803). Distinct from the git-drift
+    # check above: that flags an out-of-date CHECKOUT, this flags a
+    # currently-running PROCESS that predates the last install.
+    print("\nChecking scheduler daemon freshness...")
+    issues_found += _render_scheduler_staleness_section()
 
     # Check custom services (registry-driven: built-in notifications bridge
     # + user-defined services from services.custom)

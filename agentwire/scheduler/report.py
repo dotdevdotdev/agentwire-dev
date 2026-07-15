@@ -199,6 +199,8 @@ def get_board_display(board: Board) -> list[dict]:
             row["last_summary"] = state.last_summary
         if state.last_gate_error:
             row["last_gate_error"] = state.last_gate_error
+        if state.last_gate_skip:
+            row["last_gate_skip"] = state.last_gate_skip
         rows.append(row)
 
     # Sort: enabled first, then by overdue (most overdue first)

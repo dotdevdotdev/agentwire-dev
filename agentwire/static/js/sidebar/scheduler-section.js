@@ -99,8 +99,13 @@ export const schedulerSection = {
 
         // Overdue meta: real "+13h12m" string once it's run before; a plain
         // "due" badge for never-run tasks (their overdue_str is epoch garbage).
+        // A task with a currently-blocking gate (e.g. "run only when the CC
+        // version changes") reads as "gated", not "overdue" — it's waiting on
+        // a precondition by design, not silently falling behind (#803).
         let meta = '';
-        if (enabled && !isCurrent && obj.overdue_by > 0) {
+        if (enabled && !isCurrent && obj.last_gate_skip) {
+            meta = `<span class="sidebar-list-item-meta" title="${_escape(obj.last_gate_skip)}">gated</span>`;
+        } else if (enabled && !isCurrent && obj.overdue_by > 0) {
             meta = obj.last_run_iso
                 ? `<span class="sidebar-list-item-meta overdue">${_escape(obj.overdue_str || 'overdue')}</span>`
                 : `<span class="sidebar-list-item-meta">due</span>`;

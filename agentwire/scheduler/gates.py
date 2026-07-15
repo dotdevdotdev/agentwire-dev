@@ -46,7 +46,25 @@ def _check_gate(board, task_name: str) -> bool:
     project = task.project
 
     def _gate_skip(gate_type: str, reason: str, **extra):
-        """Record a gate skip, only logging on first occurrence."""
+        """Record a gate skip. Logs only on first occurrence (spam control),
+        but persists ``last_gate_skip`` on every REASON CHANGE.
+
+        Distinct from ``_gate_error`` below: this is the CLEAN "not ready
+        yet" path (e.g. a ``command`` gate legitimately returning nonzero),
+        not an exception. Recorded so the board can show "waiting on gate"
+        instead of reading as silently-falling-behind overdue (#803).
+        Persisting on reason-change (not just first-occurrence, which
+        ``_gated_tasks`` alone gates) matters for multi-condition gates: if
+        task's blocker shifts from ``git_commit`` to ``command`` without the
+        gate ever fully passing in between, ``task_name`` never leaves
+        ``_gated_tasks``, so a first-occurrence-only write would leave the
+        board showing the ORIGINAL, now-stale reason.
+        """
+        skip_text = f"{gate_type}: {reason}"
+        if state.last_gate_skip != skip_text:
+            state.last_gate_skip = skip_text
+            board.state[task_name] = state
+            _sched.save_board(board)
         if task_name not in _gated_tasks:
             _sched._log_event("task_gated", task=task_name, gate_type=gate_type,
                               reason=reason, **extra)
@@ -69,6 +87,7 @@ def _check_gate(board, task_name: str) -> bool:
             print(f"[{_ts()}] Gate error on {task_name}: {gate_type} "
                   f"({reason}) — failing open")
             state.last_gate_error = f"{gate_type}: {reason}"
+            state.last_gate_skip = ""  # failing open — no longer "waiting on gate"
             board.state[task_name] = state
             _sched.save_board(board)
         _gated_tasks.discard(task_name)
@@ -131,16 +150,20 @@ def _check_gate(board, task_name: str) -> bool:
 
 
 def _clear_gate_error(board, task_name: str) -> None:
-    """Clear a previously-recorded gate error once the gate evaluates cleanly.
+    """Clear a previously-recorded gate error/skip once the gate evaluates cleanly.
 
-    No-op (and no board write) unless this task actually had an error, so
-    the common clean path stays cheap.
+    No-op (and no board write) unless this task actually had something
+    recorded, so the common clean path stays cheap. Clears BOTH
+    ``last_gate_error`` (exception path) and ``last_gate_skip`` (clean
+    "not ready yet" path, #803) — both are stale the moment the gate passes.
     """
     from agentwire import scheduler as _sched
 
     state = board.state.get(task_name)
     had_tracked = _gate_errored.pop(task_name, None) is not None
-    if had_tracked or (state is not None and state.last_gate_error):
-        if state is not None and state.last_gate_error:
+    had_state = state is not None and (state.last_gate_error or state.last_gate_skip)
+    if had_tracked or had_state:
+        if state is not None and (state.last_gate_error or state.last_gate_skip):
             state.last_gate_error = ""
+            state.last_gate_skip = ""
             _sched.save_board(board)

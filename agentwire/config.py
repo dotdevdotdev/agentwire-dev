@@ -13,6 +13,14 @@ from typing import Optional
 
 import yaml
 
+# Gitignored files a fresh git worktree needs seeded — a worktree can't load
+# its session/task config without them. Single source of truth: referenced
+# by WorktreesConfig's default below, the config-loading fallback further
+# down, AND worktree.py's mandatory (never-omittable) seed set (#803) — a
+# stale `copy_files:` in a user's config.yaml that predates one of these
+# being added here must not silently drop it from every fresh worktree.
+DEFAULT_WORKTREE_COPY_FILES = [".env", ".agentwire.yml", ".agentwire.tasks.yml"]
+
 
 def _get_default_agent_command() -> str:
     """Get the default agent command.
@@ -105,7 +113,7 @@ class WorktreesConfig:
     # tasks can't load their session/task config without them when the project
     # gitignores them (the latter is the protected, host-authored task-exec file —
     # #720).
-    copy_files: list = field(default_factory=lambda: [".env", ".agentwire.yml", ".agentwire.tasks.yml"])
+    copy_files: list = field(default_factory=lambda: list(DEFAULT_WORKTREE_COPY_FILES))
 
 
 @dataclass
@@ -623,7 +631,7 @@ def _dict_to_config(data: dict) -> Config:
         enabled=worktrees_data.get("enabled", True),
         suffix=worktrees_data.get("suffix", "-worktrees"),
         auto_create_branch=worktrees_data.get("auto_create_branch", True),
-        copy_files=worktrees_data.get("copy_files", [".env", ".agentwire.yml", ".agentwire.tasks.yml"]),
+        copy_files=worktrees_data.get("copy_files", list(DEFAULT_WORKTREE_COPY_FILES)),
     )
     projects = ProjectsConfig(
         dir=projects_data.get("dir", "~/projects"),

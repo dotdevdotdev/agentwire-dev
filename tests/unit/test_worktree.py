@@ -245,6 +245,33 @@ class TestWorktreeSeeding:
         assert ensure_worktree(repo, "f3", wt, copy_files=["secret.env"])
         assert not (wt / "secret.env").exists()
 
+    def test_mandatory_files_seeded_even_when_copy_files_omits_them(self, tmp_path):
+        # #803: a config.yaml written before the #720 task-file split can
+        # carry a stale `copy_files: [.env, .agentwire.yml]` that predates
+        # `.agentwire.tasks.yml` — every worktree-dispatched scheduled task
+        # then fails with "No .agentwire.tasks.yml found". These three are
+        # mandatory regardless of what the configured list says.
+        repo, git = self._repo(tmp_path)
+        (repo / ".env").write_text("API_KEY=abc\n")
+        (repo / ".agentwire.yml").write_text("posture: bypass\n")
+        (repo / ".agentwire.tasks.yml").write_text("tasks:\n  x:\n    prompt: hi\n")
+
+        wt = tmp_path / "repo-worktrees" / "f4"
+        # Stale/narrow copy_files — omits .agentwire.tasks.yml entirely.
+        assert ensure_worktree(repo, "f4", wt, copy_files=[".env", ".agentwire.yml"])
+
+        assert (wt / ".env").read_text() == "API_KEY=abc\n"
+        assert (wt / ".agentwire.yml").read_text() == "posture: bypass\n"
+        assert (wt / ".agentwire.tasks.yml").exists()
+
+    def test_mandatory_files_seeded_with_empty_copy_files(self, tmp_path):
+        repo, git = self._repo(tmp_path)
+        (repo / ".agentwire.tasks.yml").write_text("tasks: {}\n")
+
+        wt = tmp_path / "repo-worktrees" / "f5"
+        assert ensure_worktree(repo, "f5", wt, copy_files=[])
+        assert (wt / ".agentwire.tasks.yml").exists()
+
 
 # --- remove_worktree (#717: force by default, reports (removed, error)) ---
 
