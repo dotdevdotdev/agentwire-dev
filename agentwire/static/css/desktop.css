@@ -6659,20 +6659,60 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     gap: 6px;
 }
 
-.topology-spark {
-    display: flex;
-    align-items: flex-end;
-    gap: 2px;
-    height: 12px;
+/* Full-width activity pulse strip (#800), replacing the old bar sparkline.
+   The rules below are the `idle` resting state — dim, slow, low-amplitude,
+   still visibly "alive". flow/awaiting/stuck override speed/amplitude/colour
+   further down, keyed off the card's state class. */
+.topology-pulse {
+    position: relative;
+    width: 100%;
+    height: 20px;
+    border-radius: 4px;
 }
 
-.topology-spark i {
+.topology-pulse-svg {
     display: block;
-    width: 2px;
-    height: 3px;
-    border-radius: 1px;
-    background: var(--text-muted);
-    opacity: 0.5;
+    width: 100%;
+    height: 100%;
+}
+
+.topology-pulse-base {
+    stroke: var(--text-muted);
+    stroke-width: 1px;
+    opacity: 0.18;
+}
+
+.topology-pulse-scroll {
+    animation: topology-pulse-scroll 3.2s linear infinite;
+}
+
+.topology-pulse-trace {
+    fill: none;
+    stroke: var(--text-muted);
+    stroke-width: 1.6px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.4;
+    vector-effect: non-scaling-stroke;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scaleY(0.32);
+}
+
+.topology-pulse-marker {
+    position: absolute;
+    top: 50%;
+    right: 3px;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+}
+
+@keyframes topology-pulse-scroll {
+    to { transform: translateX(-240px); }
 }
 
 .topology-card-machine {
@@ -6789,10 +6829,18 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     opacity: 0.5;
     animation: topology-dot-ring 1.8s ease-out infinite;
 }
-.topology-card--flow .topology-spark i {
-    background: var(--card-tint, var(--lineage-tint-1));
-    opacity: 0.9;
-    animation: topology-spark-eq 1s ease-in-out infinite;
+.topology-card--flow .topology-pulse-base {
+    stroke: var(--card-tint, var(--lineage-tint-1));
+    opacity: 0.22;
+}
+.topology-card--flow .topology-pulse-scroll {
+    animation-duration: 1.15s;
+}
+.topology-card--flow .topology-pulse-trace {
+    stroke: var(--card-tint, var(--lineage-tint-1));
+    opacity: 0.95;
+    transform: scaleY(1);
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--card-tint, var(--lineage-tint-1)) 55%, transparent));
 }
 
 /* Failure-state parity (#749): awaiting/stuck override the lineage tint
@@ -6807,9 +6855,19 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     opacity: 0.6;
     animation: topology-dot-ring 1.3s ease-out infinite;
 }
-.topology-card--awaiting .topology-spark i {
+.topology-card--awaiting .topology-pulse-trace {
+    stroke: var(--topology-awaiting);
+    opacity: 0.9;
+    transform: scaleY(0.7);
+}
+.topology-card--awaiting .topology-pulse-scroll {
+    animation-duration: 2s;
+}
+.topology-card--awaiting .topology-pulse-marker {
     background: var(--topology-awaiting);
-    opacity: 0.7;
+    box-shadow: 0 0 5px var(--topology-awaiting-glow);
+    opacity: 1;
+    animation: topology-pulse-blink 1.1s ease-in-out infinite;
 }
 .topology-card--stuck .topology-status-dot {
     background: var(--topology-stuck);
@@ -6820,9 +6878,23 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     opacity: 0.7;
     animation: topology-dot-ring 0.9s ease-out infinite;
 }
-.topology-card--stuck .topology-spark i {
+.topology-card--stuck .topology-pulse-base {
+    stroke: var(--topology-stuck);
+    opacity: 0.3;
+}
+.topology-card--stuck .topology-pulse-trace {
+    stroke: var(--topology-stuck);
+    opacity: 0.9;
+    transform: scaleY(0.16);
+}
+.topology-card--stuck .topology-pulse-scroll {
+    animation-duration: 0.9s;
+}
+.topology-card--stuck .topology-pulse-marker {
     background: var(--topology-stuck);
-    opacity: 0.7;
+    box-shadow: 0 0 6px var(--topology-stuck-glow);
+    opacity: 1;
+    animation: topology-pulse-blink 0.7s steps(2, jump-none) infinite;
 }
 
 /* "You-are-here" self/root card (#778) — the Session HUD's re-rooted view
@@ -6849,9 +6921,9 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     0% { transform: scale(0.6); opacity: 0.7; }
     100% { transform: scale(1.9); opacity: 0; }
 }
-@keyframes topology-spark-eq {
-    0%, 100% { height: 3px; }
-    50% { height: 11px; }
+@keyframes topology-pulse-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.15; }
 }
 
 .topology-link {
@@ -6890,7 +6962,8 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
 
 @media (prefers-reduced-motion: reduce) {
     .topology-status-dot::after,
-    .topology-card--flow .topology-spark i,
+    .topology-pulse-scroll,
+    .topology-pulse-marker,
     .topology-link--flow,
     .topology-link--awaiting,
     .topology-link--stuck {
@@ -7046,7 +7119,8 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
 /* Expanded card hosts a live terminal — the activity sparkline is redundant
    and just steals a row, so hide it, and tighten the card's gap. Reclaims
    vertical space for terminal rows (the card was mostly chrome above it). */
-.topology-card--expanded .topology-card-meta { display: none; }
+.topology-card--expanded .topology-card-meta,
+.topology-card--expanded .topology-pulse { display: none; }
 .topology-card--expanded { gap: 4px; }
 
 /* --- born-from-parent placement (#745, absorbed into the HUD by #780) ---
