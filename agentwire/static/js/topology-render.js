@@ -79,6 +79,40 @@ export function cardDisplayName(session) {
     return raw;
 }
 
+/** Compact git-status badges for a ghost card — same shape and CSS classes
+ * (`sidebar-git-badge` + `git-dirty`/`git-clean`/`git-ahead`/`git-behind`/
+ * `git-unpushed`/`git-pushed`) as the sidebar's `renderGitBadges`
+ * (sidebar/sessions-section.js) so a worktree reads identically whether it's
+ * shown as a live session or a ghost. Reimplemented, not imported: the
+ * sidebar version isn't just unexported, it's also keyed by session name and
+ * closes over that module's private `worktreeGit` map rather than taking a
+ * git-status object directly, so reusing it here would mean changing its
+ * signature — an edit to sidebar/sessions-section.js, which is out of this
+ * feature's edit scope (#801, parallel-worktree file split).
+ * @param {{exists?: boolean, dirty?: boolean, staged?: number, unstaged?: number,
+ *   untracked?: number, upstream?: string|null, ahead?: number, behind?: number,
+ *   pushed?: boolean}|null|undefined} git - `worktree_status()` shape (worktree.py).
+ * @returns {string} badge spans HTML, or '' when there's no git status to show.
+ */
+function gitBadgesHtml(git) {
+    if (!git || !git.exists) return '';
+    const badges = [];
+    if (git.dirty) {
+        const n = (git.staged || 0) + (git.unstaged || 0) + (git.untracked || 0);
+        badges.push(`<span class="sidebar-git-badge git-dirty" title="${git.staged || 0} staged, ${git.unstaged || 0} unstaged, ${git.untracked || 0} untracked">● dirty${n ? ` ${n}` : ''}</span>`);
+    } else {
+        badges.push('<span class="sidebar-git-badge git-clean" title="Working tree clean">clean</span>');
+    }
+    if (!git.upstream) {
+        badges.push('<span class="sidebar-git-badge git-unpushed" title="No upstream — branch not pushed">unpushed</span>');
+    } else {
+        if (git.ahead) badges.push(`<span class="sidebar-git-badge git-ahead" title="${git.ahead} commit(s) ahead of upstream">↑${git.ahead}</span>`);
+        if (git.behind) badges.push(`<span class="sidebar-git-badge git-behind" title="${git.behind} commit(s) behind upstream">↓${git.behind}</span>`);
+        if (git.pushed && !git.ahead) badges.push('<span class="sidebar-git-badge git-pushed" title="Pushed — upstream up to date">pushed</span>');
+    }
+    return badges.join('');
+}
+
 /** Vertical S-curve from a parent card's bottom edge to a child card's top
  * edge — reads sensibly whether the pair ends up side by side or stacked
  * across a row wrap. */
@@ -316,6 +350,7 @@ export class TopologyView {
             entry.sparkEl.hidden = isGhost;
             entry.ghostBadge.hidden = !isGhost;
             entry.ghostInfoEl.hidden = !isGhost;
+            entry.ghostGitEl.hidden = !isGhost;
             entry.ghostActions.hidden = !isGhost;
             if (isGhost) { entry.menuBtn.hidden = true; this._closeMenu(entry); }
         }
@@ -454,6 +489,10 @@ export class TopologyView {
         meta.className = 'topology-card-meta';
         meta.append(sparkEl, machineEl, ghostInfoEl);
 
+        const ghostGitEl = document.createElement('div');
+        ghostGitEl.className = 'topology-ghost-git';
+        ghostGitEl.hidden = true;
+
         const ghostActions = document.createElement('div');
         ghostActions.className = 'topology-ghost-actions';
         ghostActions.hidden = true;
@@ -470,13 +509,13 @@ export class TopologyView {
         noteEl.hidden = true;
         ghostActions.append(cleanupBtn, adoptBtn, noteEl);
 
-        card.append(top, meta, ghostActions);
+        card.append(top, meta, ghostGitEl, ghostActions);
 
         const entry = {
             card, dot, nameEl, roleEl, machineEl, sparkEl, menuBtn, state: null, tintVar: null, session: null,
             expanded: false, expandSlot: null, expandDispose: null,
             isSelf: false, selfDispose: null,
-            isGhost: false, ghostBadge, ghostInfoEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
+            isGhost: false, ghostBadge, ghostInfoEl, ghostGitEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
             ghostConfirm: null, ghostConfirmTimer: null, ghostBusy: false,
             menuEl: null, menuOpen: false, resetKill: null,
         };
@@ -604,7 +643,8 @@ export class TopologyView {
 
     /** Ghost cards (session.state === 'orphan', #781) skip the live-status
      * dot/spark/role logic and just show what's on disk: branch + worktree
-     * path, and the two action buttons built in `_buildCard`. */
+     * path, read-only git-status badges (#801), and the two action buttons
+     * built in `_buildCard`. */
     _renderGhostCard(entry, session) {
         const info = [
             session.branch ? `⎇ ${session.branch}` : null,
@@ -612,6 +652,10 @@ export class TopologyView {
         ].filter(Boolean).join('  ·  ');
         if (entry.ghostInfoEl.textContent !== info) entry.ghostInfoEl.textContent = info;
         entry.machineEl.hidden = true;
+
+        const gitHtml = gitBadgesHtml(session.git);
+        if (entry.ghostGitEl.innerHTML !== gitHtml) entry.ghostGitEl.innerHTML = gitHtml;
+        entry.ghostGitEl.hidden = !gitHtml;
     }
 
     /** Two-step confirm (matches the sidebar's close-button "sure?" pattern) —
