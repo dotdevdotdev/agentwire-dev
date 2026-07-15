@@ -7125,6 +7125,21 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     text-overflow: ellipsis;
 }
 
+/* Read-only git-status badges (#801) — reuses the sidebar's `.sidebar-git-badge`
+   + `.git-*` classes (sidebar/sessions-section.js's `renderGitBadges`) so a
+   worktree reads identically whether it's a live session or a ghost; only the
+   row layout is ghost-specific. Same [hidden]-override gotcha as
+   `.topology-ghost-actions` below — the JS toggles `hidden` every render. */
+.topology-ghost-git[hidden] {
+    display: none;
+}
+.topology-ghost-git {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
 /* [hidden] must win over the flex display below (equal specificity, later
    author rule otherwise beats the UA [hidden]{display:none} stylesheet) —
    the JS toggles this element's `hidden` attribute per card every render. */
