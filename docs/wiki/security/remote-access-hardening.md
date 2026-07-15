@@ -57,7 +57,7 @@ next request without a portal restart.
 |---|---|---|---|---|
 | **C** | Portal bind / host / token / TLS | `config.py` (`ServerConfig.host="127.0.0.1"` @ `config.py:70`, `SSLConfig`), `server.py`, `security.py` | **The actual boundary.** HTTP(S) listener, default `127.0.0.1:8765`; non-loopback bind requires a token; self-signed TLS when cert+key exist. | **KEEP** — the only thing #396 hardens |
 | **A** | `agentwire tunnels up/down/status/check` + MCP `tunnels_*` | `tunnels.py` (385 LOC), `network.py` (206), CLI handlers | SSH `-L` port-forward **manager** (create / track-PID / health / teardown) to reach a *service* on another box. Was auto-invoked at **portal startup** via `NetworkContext.get_required_tunnels()` + `TunnelManager.create_tunnel` (the old `__main__.py:835-857` call site no longer exists post-#495 split). | **CUT the auto-spawn** — since shipped; see "What shipped" above |
-| **B** | `agentwire network status` + MCP `network_status` | `tunnels_cli.py` | Read-only diagnostic: machine SSH reachability + service health + tunnel rows + worker sessions. | **SCOPE-DOWN** to read-only (decouple from create-missing) |
+| **B** | `agentwire network status` + MCP `network_status` | `doctor_cli.py::cmd_network_status` | Read-only diagnostic: machine SSH reachability + service health + tunnel rows + worker sessions. | **SCOPE-DOWN** to read-only (decouple from create-missing) |
 | **D** | Remote-machine wiring | `machines.json`, `machine add/remove/list`, MCP `machine_*` | SSH-based remote **session** management (`name@machine`, `ssh -t … tmux attach`). Core feature. But `machine add` prints `autossh -R` reverse-tunnel next-steps + references `~/.local/bin/agentwire-tunnels`. | **KEEP**, strip the reverse-tunnel print |
 | **E** | Tunnel-provider integration (cloudflared/ngrok/tailscale) | **none** | Doc-only (`remote-access.md`). `grep -rE 'cloudflared\|ngrok\|tailscale' agentwire/` over code returns only CORS comments. | **already BYO** — reframe docs only |
 
@@ -148,7 +148,7 @@ do nothing without the token, but confirm "an agentwire portal lives here" (fing
 4. **Safety rules are API-writable.** `POST /api/safety/config` can disable the rm-rf hooks with
    the same token — defense-in-depth defeated by one secret. → **#425** *(closed; **#466/#467** then went further — the kill switch, rules, and allowlist moved out of `config.yaml`/`.agentwire.yml` entirely into the protected, agent-unwritable `~/.agentwire/damagecontrol.yml` + `<repo>/.damagecontrol.yml`, closing the **local-agent** write path too, not just the token/API one.)*
 5. **No auth-failure logging, no lockout, no alerting.** 401s are silent. → backlog (action E).
-6. **Token transport relies on opt-in TLS.** SSL only turns on if cert+key exist (`SSLConfig.enabled`, `config.py:50-56`).
+6. **Token transport relies on opt-in TLS.** SSL only turns on if cert+key exist (`SSLConfig.enabled`, `config.py:52-60`).
    A non-loopback *plaintext* LAN bind sends the bearer token in cleartext. Fine when the BYO
    tunnel terminates TLS; a footgun for a bare LAN bind. → backlog (action F).
 7. **Unauthenticated fingerprint.** `/health`, `/`, `/mobile` confirm agentwire pre-token.

@@ -23,7 +23,7 @@ agentwire machine add gpu-server --host 192.168.1.50 --user ubuntu --projects-di
 ### Portal UI
 
 Machine registration is CLI-only today — the portal sidebar's Machines section
-is read-only. It lists machines (with a live tunnel-status dot) and lets you
+is read-only. It lists machines (with a live SSH-reachability status dot) and lets you
 spawn a new session on one, but has no add/remove controls.
 
 ---
