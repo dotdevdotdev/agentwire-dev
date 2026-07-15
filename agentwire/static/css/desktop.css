@@ -5958,8 +5958,12 @@ body.sidebar-pinned .sidebar-tab {
 
 /* ============================================
    Session HUD — top-edge frosted drawer (#776, foundation shell)
-   Two detents (peek 33vh / half 50vh), top-center pull handle. Content is
-   mounted into .session-hud-canvas by a later issue (#777, TopologyView).
+   Two detents, top-center pull handle: "peek" auto-sizes to content, floored
+   and capped at the fixed "half" (50vh) ceiling (#802, session-hud.js's
+   _applyAutoHeight); the 33vh height below is only the pre-JS-measurement
+   fallback for the instant the drawer is created, before content exists.
+   Content is mounted into .session-hud-canvas by a later issue (#777,
+   TopologyView).
    ============================================ */
 
 /* Left offset shared by the drawer and its handle so the two never drift.

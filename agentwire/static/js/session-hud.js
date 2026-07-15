@@ -2,9 +2,18 @@
  * Session HUD — top-edge frosted drawer (foundation shell, #776).
  *
  * Slides down from the top edge of the desktop area (right of the sidebar).
- * Two detents — peek (~33vh) and half (~50vh) — set by dragging the
- * top-center pull handle, which snaps to the nearest of closed/peek/half on
- * release. Clicking the handle (no drag) toggles open/closed.
+ * Two detents — peek and half (~50vh) — set by dragging the top-center pull
+ * handle, which snaps to the nearest of closed/peek/half on release.
+ * Clicking the handle (no drag) toggles open/closed.
+ *
+ * "Peek" auto-sizes to content (#802) rather than a fixed 33vh: it tracks
+ * `.session-hud-canvas`/`.session-hud-services`' `scrollHeight` (whichever
+ * segment is active) via a MutationObserver, floored at DRAG_MIN_VH so a
+ * single card never shrinks the drawer to nothing and capped at HALF_VH so
+ * it never grows past the "half" detent on its own — half stays a fixed,
+ * content-independent ceiling, reachable by dragging past the midpoint or
+ * via growToHalf(). PEEK_VH itself no longer renders anything; it only
+ * anchors the drag-release snap thresholds below.
  *
  * `.session-hud-canvas` is the mount point session-hud-controller.js (#778)
  * fills with TopologyView. Mirrors scratchpad.js's create-once drawer
@@ -63,6 +72,11 @@ class SessionHud {
         /** @type {Array<() => void>} fired when the drawer closes — lets the
          * controller drop its pinned "master/global" view (see showAll). */
         this._closeListeners = [];
+        /** @type {boolean} true while the handle is mid-drag — auto-height
+         * recomputes stand down so they don't fight the user's own gesture. */
+        this._dragging = false;
+        /** @type {number|null} pending rAF handle for a debounced auto-height pass */
+        this._autoRaf = null;
     }
 
     /** Subscribe to drawer-close. */
@@ -90,6 +104,11 @@ class SessionHud {
                 this.toggle();
             }
         }, true);
+
+        // The vh-based floor/cap move with the viewport (e.g. a resized
+        // browser window) — re-run auto-height so a stale px value doesn't
+        // linger outside the current clamp range.
+        window.addEventListener('resize', () => this._scheduleAutoHeight());
     }
 
     // ─── DOM ────────────────────────────────────────────────────
@@ -113,6 +132,8 @@ class SessionHud {
         this.canvas = drawer.querySelector('.session-hud-canvas');
         this.servicesCanvas = drawer.querySelector('.session-hud-services');
 
+        this._contentObserver = new MutationObserver(() => this._scheduleAutoHeight());
+
         this.header.querySelectorAll('.session-hud-segment-btn').forEach((btn) => {
             btn.addEventListener('click', () => this.setSegment(btn.dataset.segment));
         });
@@ -128,15 +149,31 @@ class SessionHud {
         this._wireHandleDrag();
     }
 
+    /** (Re)targets the content MutationObserver at whichever segment is
+     * currently visible — `_contentHeightPx()` only ever reads that one, so
+     * watching the hidden segment too would just schedule wasted recomputes
+     * of an unchanged, already-correct height (the segment switch itself
+     * re-measures fresh via `_applySegment()`). Rows/cards are added and
+     * removed as childList mutations (family/row/card elements — see
+     * topology-render.js), which covers "grow as rows are added"; `hidden`/
+     * `class` are also watched because a ghost↔live card swap (#781) or a
+     * card's live-state dot only flip those attributes — no element is
+     * added or removed, so childList alone would miss a card that got
+     * visibly taller or shorter without changing the DOM's shape. */
+    _observeContent() {
+        this._contentObserver.disconnect();
+        const el = this.segment === 'services' ? this.servicesCanvas : this.canvas;
+        this._contentObserver.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class'] });
+    }
+
     _wireHandleDrag() {
         const handle = this.handle;
-        let dragging = false;
         let moved = false;
         let startY = 0;
         let startHeight = 0;
 
         const onMove = (e) => {
-            if (!dragging) return;
+            if (!this._dragging) return;
             const dy = e.clientY - startY;
             if (!moved && Math.abs(dy) <= CLICK_TOLERANCE_PX) return;
             moved = true;
@@ -148,14 +185,26 @@ class SessionHud {
             this._applyDragHeight(heightPx);
         };
 
-        const onUp = (e) => {
-            if (!dragging) return;
-            dragging = false;
+        // Shared teardown for both a normal release and an interrupted
+        // gesture (OS/browser-cancelled pointer capture, e.g. a touch
+        // scroll takeover or focus loss mid-drag). `_dragging` is no longer
+        // just a cosmetic flag — `_applyAutoHeight()` bails out while it's
+        // true — so a `pointerup` that never arrives must not leave it
+        // stuck forever, or auto-sizing silently stops for the rest of the
+        // page's life.
+        const endDrag = (e) => {
+            this._dragging = false;
             handle.classList.remove('dragging');
             this.drawer.classList.remove('dragging');
             handle.releasePointerCapture?.(e.pointerId);
             window.removeEventListener('pointermove', onMove);
             window.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointercancel', onCancel);
+        };
+
+        const onUp = (e) => {
+            if (!this._dragging) return;
+            endDrag(e);
 
             if (!moved) {
                 this.toggle();
@@ -171,10 +220,18 @@ class SessionHud {
             }
         };
 
+        // No reliable final position on a cancel — just drop the gesture in
+        // place (leave the drawer at its current height) rather than
+        // guessing a detent to snap to.
+        const onCancel = (e) => {
+            if (!this._dragging) return;
+            endDrag(e);
+        };
+
         handle.addEventListener('pointerdown', (e) => {
             if (e.button !== undefined && e.button !== 0) return;
             e.preventDefault();
-            dragging = true;
+            this._dragging = true;
             moved = false;
             startY = e.clientY;
             startHeight = this.open ? this.drawer.getBoundingClientRect().height : 0;
@@ -183,6 +240,7 @@ class SessionHud {
             handle.setPointerCapture?.(e.pointerId);
             window.addEventListener('pointermove', onMove);
             window.addEventListener('pointerup', onUp);
+            window.addEventListener('pointercancel', onCancel);
         });
     }
 
@@ -199,6 +257,41 @@ class SessionHud {
     _settle(detent) {
         this.detent = detent;
         this.toggle(true);
+    }
+
+    /** Natural (unclipped) content height of whichever header segment is
+     * currently visible — `scrollHeight` reports the full content size
+     * regardless of the container's own clipped/`overflow:auto` box, so this
+     * is accurate even while the drawer itself is shorter than its content. */
+    _contentHeightPx() {
+        const el = this.segment === 'services' ? this.servicesCanvas : this.canvas;
+        return el ? el.scrollHeight : 0;
+    }
+
+    /** Debounced entry point for content-driven mutations (MutationObserver,
+     * window resize) — coalesces a burst of DOM changes from one render pass
+     * into a single measure-and-apply. */
+    _scheduleAutoHeight() {
+        if (this._autoRaf !== null) return;
+        this._autoRaf = requestAnimationFrame(() => {
+            this._autoRaf = null;
+            this._applyAutoHeight();
+        });
+    }
+
+    /** Resize the open drawer to fit its current content, floored at
+     * DRAG_MIN_VH and capped at HALF_VH — the "auto-size as the floor, half
+     * stays the max" behavior (#802). No-op while closed, while grown to
+     * half for a mini-terminal (growToHalf owns the height then), while
+     * settled on the fixed half detent, or mid-drag (the user's gesture
+     * wins). */
+    _applyAutoHeight() {
+        if (!this.open || this.detent !== 'peek' || this._grownFromDetent !== null || this._dragging) return;
+        const headerPx = this.header ? this.header.getBoundingClientRect().height : 0;
+        const rawPx = headerPx + this._contentHeightPx();
+        const heightPx = clamp(rawPx, window.innerHeight * DRAG_MIN_VH, window.innerHeight * HALF_VH);
+        this.drawer.style.height = `${heightPx}px`;
+        this.handle.style.top = `${heightPx}px`;
     }
 
     /**
@@ -226,9 +319,10 @@ class SessionHud {
     }
 
     /**
-     * Auto-peek for a spawn (#780) — opens to the peek detent (~33vh) if
-     * currently closed. A no-op if already open: an open HUD means the user
-     * is already looking at it (or grew it to half for a mini-terminal), and
+     * Auto-peek for a spawn (#780) — opens to the peek detent (auto-sized to
+     * content, #802) if currently closed. A no-op if already open: an open
+     * HUD means the user is already looking at it (or grew it to half for a
+     * mini-terminal), and
      * a spawn shouldn't yank it to a different detent out from under them.
      * Returns whether it actually opened, so a caller knows whether it now
      * owns retracting the HUD again later.
@@ -271,26 +365,27 @@ class SessionHud {
             btn.classList.toggle('active', active);
             btn.setAttribute('aria-selected', String(active));
         });
-        if (segment !== 'services') return;
         // Reuse the sidebar's servicesSection singleton (SSOT for the
         // fetch/render/start-stop logic) — mount once into our own
         // container, then just re-render on every subsequent visit since
         // its onSessionsChanged subscription already keeps content live
         // while hidden.
-        if (!this._servicesMounted) {
-            this._servicesMounted = true;
-            servicesSection.mount(this.servicesCanvas);
-        } else {
-            servicesSection.refresh(this.servicesCanvas);
+        if (segment === 'services') {
+            if (!this._servicesMounted) {
+                this._servicesMounted = true;
+                servicesSection.mount(this.servicesCanvas);
+            } else {
+                servicesSection.refresh(this.servicesCanvas);
+            }
         }
+        this._observeContent();
+        this._scheduleAutoHeight();
     }
 
     // ─── State ──────────────────────────────────────────────────
 
     toggle(force = null) {
         const next = force ?? !this.open;
-        this.drawer.style.height = '';
-        this.handle.style.top = '';
         if (next) {
             this.drawer.classList.toggle('detent-half', this.detent === 'half');
             this.handle.classList.toggle('detent-half', this.detent === 'half');
@@ -299,10 +394,34 @@ class SessionHud {
             this.handle.classList.add('drawer-open');
             sidebar.close();
             if (scratchpad.open) scratchpad.toggle(false);
+            // 'half' is a fixed CSS-driven height (see .detent-half) — only
+            // 'peek' (auto-size) needs a JS-measured inline height applied.
+            // Scheduled rather than applied inline: some callers (e.g.
+            // session-hud-controller.js's showAll()) open the drawer BEFORE
+            // re-rendering the canvas for the new context, so measuring
+            // synchronously here would size the drawer to the stale,
+            // about-to-be-replaced content — deferring a frame lets that
+            // synchronous re-render land first.
+            if (this.detent === 'peek') {
+                this._scheduleAutoHeight();
+            } else {
+                this.drawer.style.height = '';
+                this.handle.style.top = '';
+            }
         } else {
+            this.drawer.style.height = '';
+            this.handle.style.top = '';
             this.open = false;
             this.drawer.classList.remove('open');
             this.handle.classList.remove('drawer-open');
+            // A card left expanded (growToHalf'd) when the drawer itself
+            // closes — e.g. Alt+P, or the sidebar/scratchpad's own
+            // mutually-exclusive close — never gets its matching
+            // restoreDetent() (that only fires when the CARD collapses).
+            // Left stale, _applyAutoHeight()'s grown-guard would silently
+            // no-op forever on every future peek-open. Closing the drawer
+            // is a clean boundary to drop that leftover bookkeeping.
+            this._grownFromDetent = null;
             this._closeListeners.forEach((fn) => fn());
         }
     }
