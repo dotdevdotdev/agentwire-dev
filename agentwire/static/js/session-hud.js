@@ -259,13 +259,23 @@ class SessionHud {
         this.toggle(true);
     }
 
-    /** Natural (unclipped) content height of whichever header segment is
-     * currently visible — `scrollHeight` reports the full content size
-     * regardless of the container's own clipped/`overflow:auto` box, so this
-     * is accurate even while the drawer itself is shorter than its content. */
+    /** Natural content height of whichever header segment is currently
+     * visible. Measure the canvas's *content child*, not the canvas itself:
+     * the canvas is `flex:1 1 0` and stretches to fill the drawer, so its own
+     * `scrollHeight` is floored by its `clientHeight` and can never report
+     * *less* than the current drawer height — which let auto-size grow (content
+     * overflows) but never shrink below the peek detent for a single-card view
+     * (#802). The inner content root (`.topology-view` / the services list) is
+     * content-sized in both directions, so its rendered height + the canvas's
+     * own vertical padding is the height the canvas would take at rest. */
     _contentHeightPx() {
         const el = this.segment === 'services' ? this.servicesCanvas : this.canvas;
-        return el ? el.scrollHeight : 0;
+        if (!el) return 0;
+        const content = el.firstElementChild;
+        if (!content) return el.scrollHeight;
+        const cs = getComputedStyle(el);
+        const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+        return content.getBoundingClientRect().height + padV;
     }
 
     /** Debounced entry point for content-driven mutations (MutationObserver,
