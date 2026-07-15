@@ -148,7 +148,7 @@ def _recent_activity(events: list[dict], limit: int = 5) -> list[dict]:
     glance at `scheduler status` shows recent results — including the
     fail-open gate errors that used to vanish entirely.
     """
-    keep = {"task_completed", "task_failed", "gate_error"}
+    keep = {"task_completed", "task_failed", "gate_error", "task_gated"}
     out: list[dict] = []
     for evt in reversed(events):
         etype = evt.get("event")
@@ -165,6 +165,8 @@ def _recent_activity(events: list[dict], limit: int = 5) -> list[dict]:
             detail = f"{status}" + (f" — {summary}" if summary else "")
         elif etype == "task_failed":
             detail = "failed — " + (evt.get("summary") or evt.get("reason") or "?")
+        elif etype == "task_gated":
+            detail = f"[gated] {evt.get('gate_type', '?')}: {evt.get('reason', '?')}"
         else:  # gate_error
             detail = f"[gate-error] {evt.get('gate_type', '?')}: {evt.get('reason', '?')}"
         if len(detail) > 80:
@@ -254,10 +256,14 @@ def cmd_scheduler_board(args) -> int:
             )
 
             # Surface WHY: a gate-eval error (fail-open, would otherwise be
-            # invisible) takes precedence; else the summary behind a bad status.
+            # invisible) takes precedence; then a currently-blocking gate
+            # (so "+4h11m" reads as "waiting on gate", not silently falling
+            # behind, #803); else the summary behind a bad status.
             detail = ""
             if r.get("last_gate_error"):
                 detail = f"[gate-error] {r['last_gate_error']}"
+            elif r.get("last_gate_skip"):
+                detail = f"[gated] {r['last_gate_skip']}"
             elif status_str in _BAD_STATUSES and r.get("last_summary"):
                 detail = r["last_summary"]
             if detail:

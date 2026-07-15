@@ -359,7 +359,7 @@ unattended gate is inert too (enable safety for scheduled projects to engage it)
 
 | Source | Where | Scope |
 |--------|-------|-------|
-| `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create` — work + open a PR, nothing irreversible or outward-facing |
+| `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
 | `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project extension (list of rule ids) |
 | `unattended_allow` | per-task in `.agentwire.tasks.yml` | Per-task extension — the pressure-relief valve: widen for one task instead of loosening the global default |
 
@@ -372,6 +372,18 @@ description edits.
 When a command is blocked, the owner email and `agentwire safety logs` name the
 exact rule id, so widening is copy-paste: add that id to the task's
 `unattended_allow`.
+
+**`agentwire email` is a blanket unattended-allow, by design (#804).** Emailing
+the owner is the *primary* way an unattended agent reports back — fail-closed
+blocking it defeats the use case (a scheduled review silently never reaches the
+owner). `outbound.agentwire-email` is on `DEFAULT_UNATTENDED_ALLOW`
+unconditionally: **any** `--to`, not just the owner's own address. A narrower
+owner-address-only exemption was considered and rejected — the owner explicitly
+accepted the exfil tradeoff in favor of the simpler blanket allow. `agentwire
+quo` (SMS) is unaffected and still fails closed unattended; widen it per-task
+via `unattended_allow` (`outbound.agentwire-quo`) same as any other verb. This
+applies identically to the Bash shell-out and the `email_send` MCP tool (both
+resolve through the same `resolve_unattended_allow`).
 
 ```yaml
 # project .agentwire.tasks.yml — let ONE scheduled task run terraform apply unattended
@@ -414,7 +426,8 @@ catastrophic, never-reversible verbs are `block` (fire in every mode).
 | **Deploy — containers** | `kubectl apply` | ask | kubectl tooldef |
 | | `docker push`, `docker compose push` | ask | `containers.yaml` (`container.docker-push`) |
 | **Deploy — CI/release** | `gh release create`, `gh workflow run`, `gh pr merge` | ask | gh tooldef |
-| **Outbound comms** | `agentwire email`, `agentwire quo`, `twilio … messages create`, `aws ses send-email`, `aws sns publish`, `sendmail`, `mail -s` | ask | `outbound.yaml` (`outbound.*`) |
+| **Outbound comms** | `agentwire email` | ask (unattended-allowed by default, #804) | `outbound.yaml` (`outbound.agentwire-email`) |
+| | `agentwire quo`, `twilio … messages create`, `aws ses send-email`, `aws sns publish`, `sendmail`, `mail -s` | ask | `outbound.yaml` (`outbound.*`) |
 | **DB migrations** | `prisma migrate deploy`/`dev`, `prisma db push`, `supabase db push`, `supabase migration up`, `alembic upgrade`/`downgrade`, `manage.py migrate`, `rails`/`rake db:migrate`, `knex migrate:*`, `sequelize db:migrate`, `flyway migrate`, `liquibase update` | ask | `databases.yaml` (`db.*`) |
 | **DB raw writes** | `psql`/`mysql` executing INSERT/UPDATE/ALTER/CREATE/GRANT, `mongosh` insert/update/delete | ask | `databases.yaml` (`db.psql-write`, `db.mysql-write`, `db.mongosh-write`) |
 | **DB schema-drop** | `prisma migrate reset`, `flyway clean` | **block** | `databases.yaml` (`db.prisma-reset`, `db.flyway-clean`) |
@@ -424,8 +437,9 @@ catastrophic, never-reversible verbs are `block` (fire in every mode).
 
 **Allowlisting a covered verb for one task** — the block message and owner email
 name the exact rule id, so widening is copy-paste into the task's
-`unattended_allow` (e.g. `deploy.vercel`, `outbound.agentwire-email`,
-`db.prisma-migrate`).
+`unattended_allow` (e.g. `deploy.vercel`, `outbound.agentwire-quo`,
+`db.prisma-migrate`). `outbound.agentwire-email` doesn't need this — it's
+already on `DEFAULT_UNATTENDED_ALLOW`.
 
 **Residual gaps (intentional / known):**
 
@@ -469,9 +483,10 @@ hook gates them:
   `scripts/regen_damage_control_hooks.py` like the other three — never hand-edit
   between the GENERATED markers.
 
-Effect: an unattended scheduler dispatch can no longer send irreversible
-email/SMS silently, and an attended session now gets a real `ask` prompt instead
-of zero friction.
+Effect: an unattended scheduler dispatch can no longer send SMS silently (email
+is a deliberate exception — see the blanket-unattended-allow discussion above,
+#804), and an attended session now gets a real `ask` prompt instead of zero
+friction.
 
 ### MCP surface audit — what is gated vs left open
 

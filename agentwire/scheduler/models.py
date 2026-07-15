@@ -89,6 +89,7 @@ class TaskState:
     run_count: int = 0
     last_summary: str = ""
     last_gate_error: str = ""     # last gate-eval exception reason (failed open)
+    last_gate_skip: str = ""      # currently-blocking gate reason (clean skip, not an error)
     last_gate_commit: str = ""    # HEAD at last dispatch (for gate checks)
     last_dispatch: datetime | None = None  # set BEFORE running (restart safety)
     # Active worktree-PR tracking (set on finalize, cleared by the reaper on

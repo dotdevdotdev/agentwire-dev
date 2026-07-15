@@ -240,11 +240,20 @@ def _seed_worktree_files(
     `git worktree add` only checks out tracked files — untracked/ignored
     files like .env, .env.local, or local config never come along, so an
     agent working in the worktree can't authenticate. Copy a configured
-    seed list (relative paths) from the main repo. Best-effort: missing
-    sources are skipped and copy errors are swallowed. Files that are
-    gitignored in the repo stay ignored in the worktree, so they're never
-    committed.
+    seed list (relative paths) from the main repo, always including
+    :data:`config.DEFAULT_WORKTREE_COPY_FILES` regardless of what the
+    resolved `copy_files` says — a `config.yaml` written before
+    `.agentwire.tasks.yml` split out of `.agentwire.yml` (#720) can carry a
+    stale, narrower override (e.g. just `[.env, .agentwire.yml]`) that
+    silently drops the newer file, and every worktree-dispatched scheduled
+    task then fails with "No .agentwire.tasks.yml found" (#803).
+    `copy_files` can only extend this mandatory set, never shrink it.
+    Best-effort: missing sources are skipped and copy errors are swallowed.
+    Files that are gitignored in the repo stay ignored in the worktree, so
+    they're never committed.
     """
+    from .config import DEFAULT_WORKTREE_COPY_FILES
+
     if copy_files is None:
         try:
             from .config import load_config
@@ -252,9 +261,11 @@ def _seed_worktree_files(
         except Exception:
             copy_files = []
 
+    seed_files = list(dict.fromkeys([*DEFAULT_WORKTREE_COPY_FILES, *(copy_files or [])]))
+
     import shutil
 
-    for rel in copy_files or []:
+    for rel in seed_files:
         src = project_path / rel
         dst = worktree_path / rel
         if not src.exists() or dst.exists():

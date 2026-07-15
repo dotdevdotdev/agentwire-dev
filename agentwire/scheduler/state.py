@@ -112,6 +112,7 @@ def load_board() -> Board:
                 run_count=int(s.get("run_count", 0)),
                 last_summary=str(s.get("last_summary", "")),
                 last_gate_error=str(s.get("last_gate_error", "")),
+                last_gate_skip=str(s.get("last_gate_skip", "")),
                 last_gate_commit=str(s.get("last_gate_commit", "")),
                 last_dispatch=_parse_datetime_field(s.get("last_dispatch")),
                 worktree_branch=str(s.get("worktree_branch", "")),
@@ -163,6 +164,8 @@ def _state_to_dict(board: Board) -> dict:
             entry["last_summary"] = s.last_summary
         if s.last_gate_error:
             entry["last_gate_error"] = s.last_gate_error
+        if s.last_gate_skip:
+            entry["last_gate_skip"] = s.last_gate_skip
         if s.last_gate_commit:
             entry["last_gate_commit"] = s.last_gate_commit
         if s.last_dispatch:

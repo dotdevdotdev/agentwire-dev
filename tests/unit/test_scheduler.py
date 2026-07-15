@@ -61,6 +61,22 @@ class TestCheckGate:
     True so the task can run.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_real_board_write(self):
+        # A gate skip now persists `last_gate_skip` (#803) — patch save_board
+        # so these pure decision-logic tests never touch the real
+        # ~/.agentwire/scheduler-state.yaml (same hazard TestGateError already
+        # guards against for the gate-error path). Also reset the module-level
+        # `_gated_tasks` dedup set: it's keyed by task name ("t", shared by
+        # every test in this class) and only the FIRST transition into a
+        # gated state writes `last_gate_skip` — a leftover entry from an
+        # earlier test would silently skip that write here too.
+        import agentwire.scheduler as sched
+        sched._gated_tasks.clear()
+        with patch("agentwire.scheduler.save_board"):
+            yield
+        sched._gated_tasks.clear()
+
     @pytest.fixture
     def git_project(self, tmp_path):
         """Initialize a git repo with one commit; return the path."""
@@ -170,6 +186,56 @@ class TestCheckGate:
         board.tasks["t"].gate = {"git_commit": True, "command": "false"}
         assert _check_gate(board, "t") is False
 
+    def test_command_gate_skip_records_last_gate_skip(self, board, git_project):
+        # A clean "not ready yet" skip (distinct from a gate-eval exception)
+        # is recorded on state so the board can show it instead of reading
+        # as silently-falling-behind overdue (#803).
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"command": "false"}
+        assert _check_gate(board, "t") is False
+        assert "command" in board.state["t"].last_gate_skip
+        assert "exit 1" in board.state["t"].last_gate_skip
+
+    def test_gate_pass_clears_last_gate_skip(self, board, git_project):
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"command": "false"}
+        _check_gate(board, "t")
+        assert board.state["t"].last_gate_skip
+
+        board.tasks["t"].gate = {"command": "true"}
+        assert _check_gate(board, "t") is True
+        assert board.state["t"].last_gate_skip == ""
+
+    def test_no_gate_clears_stale_last_gate_skip(self, board, git_project):
+        # Removing the gate entirely (not just satisfying it) must also
+        # clear a stale skip note — same "gate no longer blocking" outcome.
+        from agentwire.scheduler import _check_gate
+        board.tasks["t"].gate = {"command": "false"}
+        _check_gate(board, "t")
+        assert board.state["t"].last_gate_skip
+
+        board.tasks["t"].gate = None
+        assert _check_gate(board, "t") is True
+        assert board.state["t"].last_gate_skip == ""
+
+    def test_gate_skip_reason_updates_when_blocker_changes(self, board, git_project):
+        # Multi-condition gate: the blocker shifts from git_commit to
+        # command WITHOUT the gate ever fully passing in between, so
+        # `_gated_tasks` (the log-spam dedup) never clears. The board must
+        # still track the CURRENT blocker, not the original one.
+        from agentwire.scheduler import _check_gate
+        old = self._head(git_project)
+        board.state["t"].last_gate_commit = old
+        board.tasks["t"].gate = {"git_commit": True, "command": "false"}
+
+        assert _check_gate(board, "t") is False
+        assert "git_commit" in board.state["t"].last_gate_skip
+
+        self._new_commit(git_project)  # git_commit now passes; command still fails
+        assert _check_gate(board, "t") is False
+        assert "command" in board.state["t"].last_gate_skip
+        assert "git_commit" not in board.state["t"].last_gate_skip
+
 
 # --- _check_gate: gate-eval errors surface instead of vanishing ---
 
@@ -244,6 +310,23 @@ class TestGateError:
         with patch("agentwire.scheduler.save_board"):
             assert _check_gate(board, "t") is True
         assert board.state["t"].last_gate_error == ""
+
+    def test_error_clears_stale_last_gate_skip(self, board):
+        # A gate that was previously a clean skip (#803) and now errors
+        # fails open (task runs) — a leftover "waiting on gate" note would
+        # be actively misleading once the task is about to dispatch.
+        import subprocess
+        from unittest.mock import patch
+
+        from agentwire.scheduler import _check_gate
+
+        board.state["t"].last_gate_skip = "command: exit 1"
+        boom = subprocess.TimeoutExpired(cmd="git", timeout=5)
+        with patch("agentwire.scheduler.subprocess.run", side_effect=boom), \
+             patch("agentwire.scheduler.save_board"), \
+             patch("agentwire.scheduler._log_event"):
+            assert _check_gate(board, "t") is True
+        assert board.state["t"].last_gate_skip == ""
 
 
 # --- _EXIT_TO_STATUS mapping ---
