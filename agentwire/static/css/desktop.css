@@ -6918,7 +6918,11 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
 
 .topology-view--shade .topology-family {
     flex: 0 0 auto;
-    gap: 6px;
+    /* Vertical gap between depth rows — the connector bezier's min bend is 24px
+       (bezierPath in topology-render.js), so give the wires at least that much
+       room to travel between a parent row and its children (#792 was 6px, too
+       tight for the S-curve to sit inside the gap). */
+    gap: 26px;
 }
 
 .topology-view--shade .topology-row {
