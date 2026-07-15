@@ -14,8 +14,8 @@ write a working shim from this page alone, without reading agentwire source.
 
 | | `default` | `cloud` (STT only) | `custom` |
 |---|---|---|---|
-| STT | Chrome SpeechRecognition in the portal (Chrome is the blessed browser) + jargon-correction map | audio upload → portal → hosted transcription API (key from env, server-side only) | audio upload → your shim (`POST /transcribe`) |
-| TTS | in-process Kokoro-82M (CPU, ~200MB auto-download on first portal start); browser `speechSynthesis` while the model warms up or if it can't load | — | text → your shim (`POST /tts`) → WAV broadcast |
+| STT | browser SpeechRecognition while the Moonshine shim (tmux `agentwire-stt`, `:8101`) warms up, then host transcription via that shim once ready; + jargon-correction map | audio upload → portal → hosted transcription API (key from env, server-side only) | audio upload → your shim (`POST /transcribe`) |
+| TTS | portal-managed Kokoro-82M shim subprocess (tmux `agentwire-kokoro`, `:8102`, CPU, ~200MB auto-download on first portal start); browser `speechSynthesis` while the model warms up or if it can't load | — | text → your shim (`POST /tts`) → WAV broadcast |
 | Setup | none | API key in the portal env | run your shim, point config at it |
 | Quality | good neural voice (32 presets, 8 languages), ~90% semantic STT accuracy | provider-grade STT (e.g. `gpt-4o-mini-transcribe`, ~$0.003/min) | whatever your model can do — cloning, emotion control, GPU engines |
 

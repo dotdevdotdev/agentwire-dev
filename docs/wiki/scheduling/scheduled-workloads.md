@@ -40,7 +40,6 @@ tasks:
   write-tests:
     # Execution control
     shell: /bin/bash         # Override shell for this task
-    priority: 10             # Pipeline ordering (lower = higher priority, default: 99)
     retries: 2               # Retry on failure (default: 0)
     retry_delay: 30          # Seconds between retries (default: 30)
     idle_timeout: 60         # Seconds of idle before completion (default: 30)
@@ -202,10 +201,10 @@ Environment variables use `${ENV_VAR}` syntax (expanded at runtime).
 ## `ensure` Command
 
 ```bash
-agentwire ensure -s session --task name              # Run named task
-agentwire ensure -s session --task name --timeout 600   # Custom timeout
-agentwire ensure -s session --task name --wait-lock     # Wait if locked
-agentwire ensure -s session --task name --dry-run       # Preview without executing
+agentwire ensure -s session --task name                        # Run named task
+agentwire ensure -s session --task name --lock-timeout 600      # Custom lock-wait timeout
+agentwire ensure -s session --task name --wait-lock             # Wait if locked
+agentwire ensure -s session --task name --dry-run               # Preview without executing
 ```
 
 **Lifecycle:**

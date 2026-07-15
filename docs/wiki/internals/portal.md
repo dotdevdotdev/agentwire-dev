@@ -8,15 +8,17 @@ The portal is a thin wrapper around CLI commands. All business logic lives in `a
 
 ### Design Principles
 
-1. **CLI is source of truth** - session/machine logic in `__main__.py`
+1. **CLI is source of truth** - session/machine logic lives in per-domain CLI modules (`agentwire/session_cli.py`, `agentwire/machine_cli.py`, ...) with shared helpers in `agentwire/core.py`; `__main__.py` is just the entry point/parser wiring
 2. **Portal wraps CLI** - calls `run_agentwire_cmd()` instead of direct implementations
 3. **JSON mode** - CLI commands support `--json` for machine-readable output
 4. **WebSocket for real-time** - portal adds WebSocket layer for live updates
 
 ### How Portal Calls CLI
 
+`server.py` is a thin base class composed with `routes/*.py` mixins (`sessions.py`, `sessions_admin.py`, `machines.py`, `scheduler.py`, `config.py`, `safety.py`, `voice.py`, `council.py`, `desktop.py`, `history.py`, `notify.py`, `palette.py`, `permission.py`, `projects.py`, `push.py`, `scratchpad.py`, `artifacts.py`) — the actual endpoint handlers live there:
+
 ```python
-# server.py
+# agentwire/routes/sessions_admin.py
 async def api_create_session(self, request):
     args = ["new", "-s", session_name, "--json"]
     success, result = await self.run_agentwire_cmd(args)

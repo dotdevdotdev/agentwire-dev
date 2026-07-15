@@ -94,7 +94,10 @@ unattended guardrail and [`secrets.md`](secrets.md) for the secret-path policy.
 `tests/unit/test_damage_control_bypass.py` loads the real bundled rule YAMLs and
 asserts both directions at once: the evasion corpus stays block/ask, and a
 false-positive corpus of common safe commands keeps passing (a safety layer that
-cries wolf gets disabled). The `.github/workflows/security.yml` workflow runs
-this corpus as a **hard merge gate**, plus advisory `bandit` and `pip-audit`
-passes (the latter advisory because most flagged CVEs are in heavy optional deps;
-direct portal-facing deps are bumped explicitly).
+cries wolf gets disabled). The `.github/workflows/security.yml` `bypass-corpus`
+job runs this corpus alongside `test_damage_control_sync.py` (hook/`_core.py`
+drift) and `test_control_plane_protection.py` (#466 control-plane lockdown) as
+one **hard merge gate**, plus a hooks-in-sync check
+(`scripts/regen_damage_control_hooks.py --check`) and advisory `bandit` and
+`pip-audit` passes (the latter advisory because most flagged CVEs are in heavy
+optional deps; direct portal-facing deps are bumped explicitly).

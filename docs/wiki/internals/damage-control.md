@@ -6,7 +6,7 @@
 
 ## Overview
 
-Damage Control is a security firewall system that protects AgentWire from dangerous operations during parallel agent execution. It intercepts tool calls (Bash, Edit, Write) via PreToolUse hooks and blocks operations matching security patterns.
+Damage Control is a security firewall system that protects AgentWire from dangerous operations during parallel agent execution. It intercepts tool calls (Bash, Edit, Write, Read, Grep, Glob) via PreToolUse hooks and blocks operations matching security patterns.
 
 **Why Critical for AgentWire**: Parallel remote agent execution multiplies risk. A single `rm -rf /` in a remote session is unrecoverable. Multi-agent execution amplifies the chance of catastrophic mistakes.
 
@@ -17,6 +17,7 @@ Damage Control is a security firewall system that protects AgentWire from danger
 | **Bash Tool** | Commands: `rm -rf`, `git push --force`, `systemctl stop`, database drops |
 | **Edit Tool** | File protections: SSH keys, credentials, `.env` files, system configs |
 | **Write Tool** | Same as Edit tool (creation protection) |
+| **Read/Grep/Glob** | `zeroAccessPaths` enforcement on content reads — blocks reads of secrets even without writing to them |
 | **Audit Logging** | All security decisions logged for analysis and debugging |
 
 ---
@@ -50,6 +51,7 @@ agentwire/hooks/damage-control/       # Bundled in package
 ├── bash-tool-damage-control.py       # Bash tool hook
 ├── edit-tool-damage-control.py       # Edit tool hook
 ├── write-tool-damage-control.py      # Write tool hook
+├── read-tool-damage-control.py       # Read/Grep/Glob hook (zeroAccessPaths enforcement)
 ├── mcp-tool-damage-control.py        # Outbound MCP tool hook (email_send/quo_send)
 ├── audit_logger.py                   # Audit logging framework
 └── rules/                            # Pattern files (categorized)
@@ -59,6 +61,7 @@ agentwire/hooks/damage-control/       # Bundled in package
     ├── containers.yaml               # docker prune/push, kubectl delete
     ├── cloud-hosting.yaml, aws.yaml, gcp.yaml, firebase.yaml  # incl. deploys
     ├── infrastructure.yaml, remote.yaml
+    ├── control-plane.yaml            # protected agentwire-owned paths (readOnlyPaths)
     ├── outbound.yaml                 # email/SMS send verbs (ask)
     ├── publish.yaml                  # package-registry publish (ask)
     ├── agentwire.yaml                # tmux/session protections
@@ -207,7 +210,7 @@ defense-in-depth on top of the split, not implemented here.
 
 ## Security Patterns
 
-Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (14 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
+Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (15 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
 
 ### Pattern Types
 
@@ -341,8 +344,8 @@ the matched rule's stable ID is on the unattended allowlist.
 **How a session is marked unattended.** The scheduler is the single chokepoint:
 on every headless dispatch it seeds `AGENTWIRE_UNATTENDED=1` (and any per-task
 `AGENTWIRE_UNATTENDED_ALLOW`) into the dispatch subprocess environment
-(`scheduler._unattended_env`). Session creation funnels that marker into the new
-tmux session via `tmux new-session -e K=V` (`__main__._with_unattended_env`), so
+(`scheduler/dispatch.py::_unattended_env`). Session creation funnels that marker into the new
+tmux session via `tmux new-session -e K=V` (`core.py::_with_unattended_env`), so
 it lands before the agent launches and the hook can read it. Interactive
 sessions never pass through that chokepoint, so the marker can't leak into a
 human's session — even though interactive sessions use the same

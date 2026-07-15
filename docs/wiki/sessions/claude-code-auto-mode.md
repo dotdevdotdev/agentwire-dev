@@ -88,11 +88,7 @@ AgentWire should inject these whenever it creates an `auto` session.
 These are commands any agentwire-managed agent might need:
 
 ```
-Bash(agentwire *)    Bash(tmux *)
-Bash(git status*)    Bash(git rev-parse*)   Bash(git checkout*)
-Bash(git branch*)    Bash(git add*)         Bash(git commit*)
-Bash(git push*)      Bash(git pull*)        Bash(git log*)
-Bash(git diff*)      Bash(git worktree*)
+Bash(agentwire *)    Bash(tmux *)    Bash(git *)
 Bash(gh pr create*)  Bash(gh pr view*)
 Read(*)  Edit(*)  Write(*)  Glob(*)  Grep(*)
 ```
@@ -158,7 +154,7 @@ Allowed actions execute immediately, zero classifier cost. Everything else: clas
 
 ## Comparison to Existing Modes
 
-| | `bypass` (current) | `auto` (proposed) |
+| | `bypass` (current) | `auto` (shipped) |
 |-|--------------------------|--------------------------|
 | Permission prompts | None | None (classifier decides) |
 | Safety checks | **None** | AI classifier blocks dangerous actions |
@@ -189,7 +185,7 @@ work, but prevents catastrophic failures at 3am when nobody's watching.
 
 ## Using `auto` in AgentWire
 
-The posture is wired through every entry point — `.agentwire.yml`, the CLI, and MCP — and `agentwire/__main__.py` injects a core allowlist at launch so the classifier doesn't review routine git/agentwire/tmux ops.
+The posture is wired through every entry point — `.agentwire.yml`, the CLI, and MCP — and `build_agent_command()` in `agentwire/core.py` injects a core allowlist at launch (called from `session_cli.py`/`pane_cli.py`/`history_cli.py` on every posture=`auto` spawn/resume/fork) so the classifier doesn't review routine git/agentwire/tmux ops.
 
 **`.agentwire.yml`:**
 ```yaml

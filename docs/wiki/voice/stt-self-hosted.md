@@ -2,32 +2,38 @@
 
 > Living document. Update this, don't create new versions.
 
-**Moonshine is the default STT — bundled and portal-owned, zero setup.** A fresh
+**Moonshine is the default STT — bundled and portal-managed, zero setup.** A fresh
 `pip install agentwire` + `agentwire portal start` gives you working host
-transcription with no extra install and no `agentwire stt start`. The portal owns
-one in-process Moonshine ONNX engine (the STT mirror of the default-tier Kokoro
-voice): on first boot it downloads the model (~200 MB, one-time) in the
-background; until it's ready, push-to-talk falls back to browser
-SpeechRecognition, then silently switches to host transcription once the model
-loads. This is the `stt.backend: default` tier and needs no config.
+transcription with no extra install and no manual `agentwire stt start`. Since
+the same shim-subprocess model was adopted for STT (mirroring the default-tier
+Kokoro voice), the portal auto-manages a Moonshine shim subprocess (tmux
+`agentwire-stt`, `:8101`) via `ensure_managed_stt()`: on first boot it downloads
+the model (~200 MB, one-time) and warms up (~19s ONNX load) in that isolated
+process, off the portal's event loop; until the shim's `/health` reports ready,
+push-to-talk falls back to browser SpeechRecognition, then silently switches to
+host transcription once the model loads. This is the `stt.backend: default` tier
+and needs no config.
 
 When you push-to-talk, the browser captures `audio/webm;codecs=opus`, the portal
 decodes it to 16 kHz mono PCM16 in-process via PyAV, then hands the WAV to the STT
 backend.
 
-## Default tier: portal-owned in-process Moonshine
+## Default tier: portal-managed Moonshine shim subprocess
 
 | | Detail |
 |---|---|
 | Package | `useful-moonshine-onnx` — in the **base** install (`pyproject.toml` `dependencies[]`), CPU ONNX, torch-free, alongside `kokoro-onnx`. |
-| Lifecycle | `agentwire/stt/local.py` `LocalMoonshine` — `absent → downloading → loading → ready` (mirrors `tts/local.py` `LocalKokoro`). The portal constructs `self.moonshine` and calls `.start()` on boot when `stt.backend: default`. |
+| Lifecycle | `agentwire/stt/local.py::moonshine_importable()` gates whether the portal spawns the shim at all (py3.14+ has no onnxruntime wheel → stays on browser). The actual load/warm-up lifecycle runs inside the standalone `stt_server.py` process, not in-process in the portal. |
+| Process | The portal calls `ensure_managed_stt()` on boot, which shells out to `agentwire stt start` (idempotent — reuses a live shim, self-heals a dead one per #734). |
 | Model | `moonshine/base` by default (`MOONSHINE_MODEL=moonshine/tiny` env for the faster/lighter variant), cached in `~/.cache/huggingface/`. |
 | Fallback | py3.14+ (no onnxruntime wheel) or any load failure → browser SpeechRecognition, exactly as before. Nothing to configure. |
 | Client switch | `/api/voice-status` reports `stt.server_transcribe` — `false` while warming up (browser), `true` once ready (the client uploads to `/transcribe`). |
 
-There is **no separate service** for the default tier — the model lives in the
-portal process, like Kokoro. `agentwire stt start` (below) is only for the
-`custom` shim tier and for `agentwire listen` (host CLI recording).
+The default and `custom` tiers run the **same** shim (`agentwire stt start`,
+`stt_server.py` on `:8101`) — the only difference is who starts it. Default:
+the portal auto-manages it via `ensure_managed_stt()`. Custom: the operator
+starts/stops it by hand. `agentwire listen` (host CLI recording, below) talks
+to whichever shim is already running.
 
 ## Shim engines (`custom` tier / `agentwire listen`)
 
@@ -195,16 +201,20 @@ places**. Symptom: push-to-talk produces no transcription and no visible error
 **Diagnose (in order):**
 
 ```bash
-agentwire doctor                                   # now prints [!!] Stt if :8101 is down
+agentwire doctor                                   # now prints [!!] STT process if :8101 is down
 curl -s http://localhost:8101/health               # {"status":"ok","model":{"backend":"moonshine",...}}
 tmux capture-pane -pt agentwire-stt -S -50         # shows the real crash (missing import)
 tmux capture-pane -pt agentwire-portal -S -200 | grep -i stt   # "Using STT shim" + backend name
 ```
 
-The portal log line at startup is the tell:
-- `Using STT shim at http://localhost:8101` + `STT backend: STTServerBackend` → good (custom tier wired).
-- `STT backend: in-process moonshine (default tier, host transcription)` → default tier, portal-owned Moonshine (not the shim).
-- `STT backend: default (browser speech recognition)` → default tier with Moonshine unavailable (py3.14+ / failed load) — browser fallback.
+The portal log line at startup is the tell — both tiers run the same
+`STTServerBackend` class, so a healthy shim (default or custom) logs:
+- `Using STT shim at http://localhost:8101 (default tier)` (or `custom tier`) + `STT backend: STTServerBackend` → good, shim wired.
+
+If Moonshine can't load at all (py3.14+ / failed load), there's no separate
+backend class for it — the client silently stays on browser SpeechRecognition
+(`stt.server_transcribe: false` from `/api/voice-status`) while the shim itself
+sits unhealthy.
 
 **Fix:** install the STT deps into the venv the server actually launches with
 (`.venv/bin/python`), restart the server, then **restart the portal** (it only picks
@@ -231,5 +241,5 @@ origin via `chrome://flags/#unsafely-treat-insecure-origin-as-secure`.
 
 - Portal endpoint: `POST /transcribe` — multipart `file=@audio.webm`. Returns `{"text": "..."}`.
 - STT server endpoint: `POST /transcribe` on port 8101 — accepts WAV, MP3, M4A, WEBM (any format libav can decode).
-- Source: `agentwire/server.py::handle_transcribe`, `agentwire/server.py::_decode_audio_to_wav`, `agentwire/stt/stt_server.py`.
+- Source: `agentwire/routes/voice.py::handle_transcribe`, `agentwire/routes/voice.py::_decode_audio_to_wav`, `agentwire/stt/stt_server.py`.
 - Config: `agentwire/config.py::STTConfig`.

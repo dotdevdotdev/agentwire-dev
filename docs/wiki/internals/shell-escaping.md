@@ -90,7 +90,7 @@ cmd = f'claude --append-system-prompt "$(<{prompt_file.name})"'
 
 ## Implementation Details
 
-Current implementation in `build_agent_command()` (`__main__.py`, e.g. the Claude path around line 309):
+Current implementation in `build_agent_command()` (`agentwire/core.py:216`, the `--append-system-prompt` line at `core.py:274`):
 
 ```python
 if merged.instructions:
@@ -103,7 +103,7 @@ if merged.instructions:
     parts.append(f'--append-system-prompt "$(<{temp_file})"')
 ```
 
-The temp file path is returned on `AgentCommand.temp_file` so the caller can clean it up after the agent starts. The pi path (around line 264) uses the same `$(<file)` technique with the combined global + role prompt.
+The temp file path is returned on `AgentCommand.temp_file` so the caller can clean it up after the agent starts.
 
 ---
 

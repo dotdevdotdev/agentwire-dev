@@ -12,13 +12,15 @@ tmux is the substrate. One agentwire session = one tmux session. Inside that ses
 
 ```
 tmux session "myproject"
-├── pane 0  → orchestrator   (Claude Code, pi)
+├── pane 0  → orchestrator   (Claude Code)
 ├── pane 1  → worker          (spawned via pane_spawn, auto-kills on idle)
 ├── pane 2  → worker
 └── ...
 ```
 
 The orchestrator coordinates work and dispatches workers via the MCP `pane_spawn` tool. Workers fire an *idle notification* on completion (via `~/.claude/hooks/idle-handler.sh`); the hook routes the alert to pane 0 and kills the worker. Pane 0's own idle notifications route to whatever session is named in `parent:` (typically the human-facing session).
+
+Role (orchestrator/worker) and topology (main/worktree/pane) are independent axes (#716): a worker doesn't have to live in a pane — `agentwire worktree <name>` spawns it as a standalone tmux session instead, pushing a branch and opening a draft PR on completion rather than firing a pane-idle notification. The pane diagram above is the pane-topology case; see [worktree sessions](sessions/worktree-sessions.md) for the other.
 
 For postures — bypass, prompted, auto (or bare) — see [Sessions index](INDEX.md#sessions). For the worker-pane lifecycle in detail, see [CLAUDE.md](../../CLAUDE.md#worker-pane-lifecycle).
 
@@ -31,12 +33,12 @@ Three surfaces, one source of truth.
 ```
 ┌──────────────────────────────┐  ┌──────────────────────────────┐
 │  Humans / scripts            │  │  Agents inside sessions      │
-│    agentwire <cmd>           │  │    MCP tools (~98 of them)   │
+│    agentwire <cmd>           │  │    MCP tools (107 of them)   │
 └─────────────┬────────────────┘  └─────────────┬────────────────┘
               │                                 │
               ▼                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  agentwire CLI  (agentwire/__main__.py)                         │
+│  agentwire CLI  (agentwire/core.py + agentwire/<domain>_cli.py) │
 │  • single source of truth for all session/machine/task logic    │
 │  • every command supports --json for machine-readable output    │
 └────────────────┬────────────────────────────────────────────────┘
@@ -65,7 +67,8 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 
 ```
 ~/.agentwire/
-├── config.yaml              # main config (TTS, channels, services, pi providers, …)
+├── config.yaml              # main config (TTS, STT, channels, services, session/posture defaults, …)
+├── .env                     # all API keys/secrets, chmod 600 (see security/secrets.md)
 ├── machines.json            # remote machines registry
 ├── scheduler.yaml           # scheduled tasks
 ├── scheduler-events.jsonl   # scheduler audit log
@@ -80,7 +83,7 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 ├── tooldefs/                # tool definitions for damage-control ask-patterns
 ├── tunnels/                 # SSH tunnel state
 ├── logs/                    # damage-control audit logs (per-day JSONL)
-├── docs/, scripts/          # wiki + machine-specific helpers (local, not synced)
+├── wiki/, scripts/          # wiki knowledge base + machine-specific helpers (local, not synced)
 └── cert.pem, key.pem        # self-signed TLS for the portal
 ```
 
@@ -129,7 +132,7 @@ tasks:
                   (browser if connected, else local)     ←── via portal WS
 ```
 
-- **Channels** are outbound-only notification integrations — a session calls `agentwire email` or `agentwire quo` to push a notification out. Inbound user input flows through the portal (web + tunnel), not channels. Inbound chat-platform bridges (Telegram, Discord, Slack) were removed; the portal is the single inbound surface. → [Channels](communication/channels.md).
+- **Channels** are outbound-only notification integrations — a session calls `agentwire email` or `agentwire quo` to push a notification out; a third channel, `push` (Web Push/VAPID), auto-mirrors portal toasts to subscribed devices rather than being invoked directly. Inbound user input flows through the portal (web + tunnel), not channels. Inbound chat-platform bridges (Telegram, Discord, Slack) were removed; the portal is the single inbound surface. → [Channels](communication/channels.md).
 - **Voice and STT** live on the portal side as `say()` / `listen()` agent tools.
 - **Idle notifications** form a tree: workers → pane 0 of the same session → the `parent:` session (typically human-facing). This is what makes hierarchical multi-session orchestration tractable.
 
@@ -165,7 +168,7 @@ Decision shortcut:
 
 Defense in depth, three layers:
 
-1. **Damage control hooks** (always on if `agentwire hooks install` was run): PreToolUse hooks on Bash/Edit/Write match commands and paths against `agentwire/hooks/damage-control/rules/*.yaml`. Block hard-blocked patterns, prompt for ask-patterns, run bypassable patterns through allowlist checks.
+1. **Damage control hooks** (always on if `agentwire hooks install` was run): PreToolUse hooks on Bash/Edit/Write/Read/Grep/Glob match commands and paths against `agentwire/hooks/damage-control/rules/*.yaml`. Block hard-blocked patterns, prompt for ask-patterns, run bypassable patterns through allowlist checks; the read-side hook additionally enforces `zeroAccessPaths` on content reads.
 2. **Per-project allowlists** (`allowed_paths` in the protected `.damagecontrol.yml` at the repo root): override the global rules for paths inside this project (e.g., `dist/*` allow-all, `.env.development` allow read/write/edit). The allowlist is host-owned — an agent can't edit `.damagecontrol.yml` to widen its own freedom (#466/#467).
 3. **Classifier-mode auto sessions** (`posture: auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Safe ops auto-approve at zero cost; dangerous ops are blocked. Layered on top of the hook-level checks.
 

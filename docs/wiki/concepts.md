@@ -38,6 +38,8 @@ When you ask "should this be one session or two?" the answer is almost always in
 
 Inside a session, **pane 0 is the orchestrator** — the agent the user (or another session) talks to. Workers live in panes 1+ and are spawned by the orchestrator (typically via the MCP `pane_spawn` tool) for bounded subtasks. When a worker goes idle, an idle-handler hook captures the worker's output, sends a summary alert to pane 0, and kills the worker. Pane 0 is then free to dispatch the next worker, talk to the user, or start another agent.
 
+Role and topology are independent axes (#716): a worker doesn't have to be a pane. `agentwire worktree <name>` spawns the same worker role as a standalone tmux session instead — its own worktree, its own pane 0 — reporting back with a draft PR rather than a pane-idle notification. Same etiquette, different substrate.
+
 This pattern is load-bearing in three ways. **First**, it bounds blast radius: a worker runs on its own isolated branch/worktree, so a mistake stays on a throwaway branch behind a draft PR the orchestrator reviews — and damage-control hooks guard every session regardless of posture. **Second**, it bounds context: workers run with a fresh prompt and a tiny system message, so they don't drag in the orchestrator's 200K-token conversation. **Third**, it bounds attention: pane 0 is where you look. Workers are noise that scrolls by; their summaries are the signal that surfaces.
 
 The pattern composes. An orchestrator in a "main" session can spawn workers AND send messages to other sessions. Those other sessions are also orchestrators with their own workers. The whole graph forms naturally: idle notifications flow upward (worker → orchestrator → `parent:` session → human), commands flow downward (human → main session → child sessions → workers).
@@ -50,7 +52,7 @@ It also explains a lot of design choices in the wiki. Damage-control rules are s
 
 ## How channels turn agents into pushers
 
-Inbound interaction with AgentWire flows through the **portal** — the web UI + WebSocket. Channels handle the *other* direction: outbound notifications from a session to a human reachable somewhere off the wire. Today that means email (Resend) and SMS (Quo / OpenPhone).
+Inbound interaction with AgentWire flows through the **portal** — the web UI + WebSocket. Channels handle the *other* direction: outbound notifications from a session to a human reachable somewhere off the wire. Today that means email (Resend) and SMS (Quo / OpenPhone), plus a third registered channel, `push` (Web Push/VAPID), that auto-mirrors portal toasts to subscribed devices rather than being called directly.
 
 The shape is dead simple. A channel is a `SendOnlyChannel` subclass with a `send()` coroutine, a YAML config slot, and a CLI wrapper. A session that wants to escalate runs `agentwire email --subject "..." --body "..."` or `agentwire quo --body "..."` and the channel module makes the API call. No background process, no inbound webhook, no public surface.
 

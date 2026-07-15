@@ -399,23 +399,13 @@ parent: agentwire  # Must be set for cross-session notifications
 
 ### Notifications Firing Too Often
 
-**Rate limiting:** Idle notifications have a 60-second cooldown per session/pane. If a pane goes idle multiple times within 60 seconds, only the first notification fires.
-
-**Cooldown files:**
-
-- `/tmp/agentwire-idle/session-pane.last`
-
-**Reset cooldown manually:**
-
-```bash
-rm -rf /tmp/agentwire-idle/
-```
+There is no cooldown/rate-limit mechanism in the current `idle-handler.sh` — every genuine idle event fires a notification. If notifications fire more often than expected, look for the agent re-entering an idle state repeatedly (e.g. a flapping tool call) rather than a rate-limiter to reset.
 
 ### Wrong Target Session
 
 **For workers (panes 1+):** Notifications go to pane 0 automatically.
 
-**For orchestrators (pane 0):** Notifications go to the `parent` session specified in `.agentwire.yml`.
+**For orchestrators (pane 0):** Notifications go to the resolved parent: the session recorded as `created_by` at creation time, falling back to `.agentwire.yml`'s `parent:` field if unset.
 
 **Check current session/pane:**
 
