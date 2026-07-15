@@ -31,6 +31,53 @@ import { activityStates } from './sidebar/sessions-section.js';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /**
+ * Full-width activity "pulse strip" (#800) — replaces the old 4-5 bar
+ * sparkline. A dim baseline plus a heartbeat trace that scrolls left; all of
+ * its state (speed, amplitude, colour, the trailing needs-input marker) is
+ * driven purely by the card's `topology-card--{idle,flow,awaiting,stuck}`
+ * class in CSS, so it stays inside the idempotent render — no per-card
+ * animation loop to start or tear down on spawn/kill.
+ *
+ * The <svg> stretches to card width (`preserveAspectRatio="none"`); the trace
+ * spans two identical periods (0..480, viewBox shows one) so the CSS
+ * translateX(-240) scroll loops seamlessly. `vector-effect: non-scaling-stroke`
+ * keeps the line crisp despite the non-uniform horizontal stretch. The
+ * needs-input marker is a DOM span (not an SVG circle) so the stretch can't
+ * squash it into an ellipse.
+ */
+const PULSE_VIEW_W = 240;
+const PULSE_BEAT_D =
+    'M0 12 H92 L100 9 L106 3 L112 21 L118 9 L126 12 H332 L340 9 L346 3 L352 21 L358 9 L366 12 H480';
+
+function buildPulseStrip() {
+    const wrap = document.createElement('div');
+    wrap.className = 'topology-pulse';
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'topology-pulse-svg');
+    svg.setAttribute('viewBox', `0 0 ${PULSE_VIEW_W} 24`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('aria-hidden', 'true');
+    const base = document.createElementNS(SVG_NS, 'line');
+    base.setAttribute('class', 'topology-pulse-base');
+    base.setAttribute('x1', '0');
+    base.setAttribute('y1', '12');
+    base.setAttribute('x2', String(PULSE_VIEW_W));
+    base.setAttribute('y2', '12');
+    const scroll = document.createElementNS(SVG_NS, 'g');
+    scroll.setAttribute('class', 'topology-pulse-scroll');
+    const trace = document.createElementNS(SVG_NS, 'path');
+    trace.setAttribute('class', 'topology-pulse-trace');
+    trace.setAttribute('d', PULSE_BEAT_D);
+    scroll.appendChild(trace);
+    svg.append(base, scroll);
+    const marker = document.createElement('span');
+    marker.className = 'topology-pulse-marker';
+    marker.setAttribute('aria-hidden', 'true');
+    wrap.append(svg, marker);
+    return wrap;
+}
+
+/**
  * 'idle' | 'flow' (processing/generating/playing) | 'awaiting' | 'stuck'.
  * `state`/`state_kind` (needs_input/off) only land on the session record
  * right after an /api/sessions/local fetch — not on every periodic
@@ -347,7 +394,7 @@ export class TopologyView {
             entry.isGhost = isGhost;
             entry.card.classList.toggle('topology-card--ghost', isGhost);
             entry.roleEl.hidden = isGhost;
-            entry.sparkEl.hidden = isGhost;
+            entry.pulseEl.hidden = isGhost;
             entry.ghostBadge.hidden = !isGhost;
             entry.ghostInfoEl.hidden = !isGhost;
             entry.ghostGitEl.hidden = !isGhost;
@@ -399,6 +446,10 @@ export class TopologyView {
             entry.machineEl.textContent = machine;
             entry.machineEl.hidden = !machine;
         }
+        // The meta row now holds only the (usually-absent) machine tag + ghost
+        // info, so collapse it when both are hidden — otherwise the empty flex
+        // item still draws the card's column-gap as a dead band under the pulse.
+        entry.metaEl.hidden = entry.machineEl.hidden && entry.ghostInfoEl.hidden;
 
         const isSelf = name === this._selfSession;
         if (entry.isSelf !== isSelf) {
@@ -470,13 +521,8 @@ export class TopologyView {
         ghostBadge.hidden = true;
         top.append(dot, nameEl, roleEl, menuBtn, ghostBadge);
 
-        const sparkEl = document.createElement('div');
-        sparkEl.className = 'topology-spark';
-        for (let i = 0; i < 5; i++) {
-            const bar = document.createElement('i');
-            bar.style.animationDelay = `${i * 90}ms`;
-            sparkEl.appendChild(bar);
-        }
+        const pulseEl = buildPulseStrip();
+
         const machineEl = document.createElement('span');
         machineEl.className = 'topology-card-machine';
         machineEl.hidden = true;
@@ -487,7 +533,7 @@ export class TopologyView {
 
         const meta = document.createElement('div');
         meta.className = 'topology-card-meta';
-        meta.append(sparkEl, machineEl, ghostInfoEl);
+        meta.append(machineEl, ghostInfoEl);
 
         const ghostGitEl = document.createElement('div');
         ghostGitEl.className = 'topology-ghost-git';
@@ -509,10 +555,10 @@ export class TopologyView {
         noteEl.hidden = true;
         ghostActions.append(cleanupBtn, adoptBtn, noteEl);
 
-        card.append(top, meta, ghostGitEl, ghostActions);
+        card.append(top, pulseEl, meta, ghostGitEl, ghostActions);
 
         const entry = {
-            card, dot, nameEl, roleEl, machineEl, sparkEl, menuBtn, state: null, tintVar: null, session: null,
+            card, dot, nameEl, roleEl, machineEl, metaEl: meta, pulseEl, menuBtn, state: null, tintVar: null, session: null,
             expanded: false, expandSlot: null, expandDispose: null,
             isSelf: false, selfDispose: null,
             isGhost: false, ghostBadge, ghostInfoEl, ghostGitEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
@@ -651,7 +697,9 @@ export class TopologyView {
             session.worktreePath || null,
         ].filter(Boolean).join('  ·  ');
         if (entry.ghostInfoEl.textContent !== info) entry.ghostInfoEl.textContent = info;
+        entry.ghostInfoEl.hidden = !info;
         entry.machineEl.hidden = true;
+        entry.metaEl.hidden = entry.machineEl.hidden && entry.ghostInfoEl.hidden;
 
         const gitHtml = gitBadgesHtml(session.git);
         if (entry.ghostGitEl.innerHTML !== gitHtml) entry.ghostGitEl.innerHTML = gitHtml;
