@@ -40,6 +40,7 @@ tasks:
   write-tests:
     # Execution control
     shell: /bin/bash         # Override shell for this task
+    priority: 10             # Pipeline ordering (lower = higher priority, default: 99)
     retries: 2               # Retry on failure (default: 0)
     retry_delay: 30          # Seconds between retries (default: 30)
     idle_timeout: 60         # Seconds of idle before completion (default: 30)
