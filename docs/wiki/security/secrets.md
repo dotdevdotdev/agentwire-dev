@@ -12,7 +12,6 @@ values.
 RESEND_API_KEY=re_...
 QUO_API_KEY=...
 OPENAI_API_KEY=sk-...
-ZAI_API_KEY=...
 ```
 
 ```bash
@@ -80,10 +79,10 @@ What this buys, in either form:
   can't read, edit, or even mention the file in shell commands
   ([damage control](../internals/damage-control.md)). Keys flow to features
   through the process environment only.
-- **pi caveat:** provider keys are injected into pi sessions via
-  `tmux set-environment` at creation (pi can't read the dotenv file itself).
-  That keeps them out of `ps auxwww` and shell history, but anything with
-  tmux access on the box can run `tmux show-environment -t <session>`.
+- **`--env` caveat:** secrets passed via `agentwire new --env KEY=VAL` (or
+  `recreate`/`fork --env`) are injected with `tmux set-environment` at session
+  creation. That keeps them out of `ps auxwww` and shell history, but anything
+  with tmux access on the box can run `tmux show-environment -t <session>`.
   Acceptable on a single-user box; know the trade-off.
 - Server-side only: no key is ever sent to the browser or echoed by a
   portal endpoint.

@@ -10,7 +10,7 @@ An agent-generated HTML file written to `~/.agentwire/artifacts/` and served by 
 
 ## C — Channel
 
-An outbound notification integration — a session pushes a message to an external platform (email via Resend, SMS via Quo / OpenPhone). Stateless `SendOnlyChannel` subclasses; no inbound surface. Inbound user input flows through the portal, not channels. → [Channels](communication/channels.md).
+An outbound notification integration — a session pushes a message to an external platform (email via Resend, SMS via Quo / OpenPhone). A third registered channel, `push` (Web Push/VAPID), auto-mirrors portal toasts to subscribed devices instead of being called directly. Stateless `SendOnlyChannel` subclasses; no inbound surface. Inbound user input flows through the portal, not channels. → [Channels](communication/channels.md).
 
 ## D — Damage Control
 
@@ -42,7 +42,7 @@ A registered remote host in `~/.agentwire/machines.json` (`id`, `host`, `user`, 
 
 ## O — Orchestrator
 
-The agent in pane 0 of a session. Coordinates work, spawns workers in panes 1+ (`pane_spawn`), receives idle notifications from workers, and routes alerts via `parent:` to the user-facing session.
+The agent holding the *orchestrator* role — durable, reviews + merges, directs children. Conventionally pane 0 of a session, spawning workers in panes 1+ (`pane_spawn`); can also run on worktree topology as its own standalone session (`agentwire orchestrator`). Receives idle notifications from workers and routes alerts to the resolved parent session. → [Sessions index](INDEX.md#sessions).
 
 ## P — Pane
 
@@ -58,7 +58,7 @@ The agentwire web UI + REST/WebSocket API at `https://localhost:8765`. Wraps CLI
 
 ## R — Role
 
-A reusable system-prompt persona stored at `~/.agentwire/roles/<name>.md`. Listed in `roles:` (project config) or `--role` (CLI). Roles are appended to the agent's system prompt at session creation. → `agentwire-config` skill.
+A reusable system-prompt persona stored at `~/.agentwire/roles/<name>.md`. Listed in `roles:` (project config) or `--roles` (CLI, comma-separated). Roles are appended to the agent's system prompt at session creation. → `agentwire-config` skill.
 
 ## S — Scheduled Task
 
@@ -66,7 +66,7 @@ An entry in `~/.agentwire/scheduler.yaml` that fires on a schedule (`every:`, `a
 
 ## S — Session
 
-A tmux session running an AI agent (claude-*, bare). Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
+A tmux session running Claude Code under one of four postures — bypass, prompted, auto, or bare. Created with `agentwire new`. Identified by name, with `@machine` suffix for remote sessions. → [Sessions index](INDEX.md#sessions).
 
 ## S — Soul
 
@@ -74,7 +74,7 @@ The bundled default-personality role (`agentwire/roles/soul.md`) — voice, rest
 
 ## T — Tunnel
 
-An SSH or Cloudflare Tunnel that exposes a local agentwire service (TTS server, portal) on a remote machine or to the public internet. → [Remote access](deployment/remote-access.md).
+An SSH tunnel (`agentwire tunnels up/down/status`) that exposes a local agentwire service (TTS server, portal) on a remote machine. No internet-facing tunnel router ships — that path was cut in #420. → [Remote access](deployment/remote-access.md).
 
 ## V — Voice
 
@@ -82,5 +82,5 @@ A TTS reference WAV (10–30 s) stored in `~/.agentwire/voices/`. Selected per-s
 
 ## W — Worker
 
-An agent in a pane 1+ of a session, spawned by the orchestrator (typically via the MCP `pane_spawn` tool) for a bounded task. Auto-kills after sending its idle notification. Pane numbering reflects spawn order.
+An agent running under the *worker* role (scoped task, report-back, draft-PR-don't-merge etiquette) — either a pane 1+ inside an orchestrator's session (spawned via `pane_spawn`, auto-kills on idle) or a standalone session on worktree topology (`agentwire worktree <name>`, pushes a branch and opens a draft PR). → [Sessions index](INDEX.md#sessions).
 

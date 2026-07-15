@@ -12,6 +12,11 @@ Access your AgentWire portal from anywhere using Cloudflare Tunnel with Zero Tru
 >
 > Pair a device once with `agentwire portal pair` (prints a code + QR); see
 > [remote-access-hardening](../security/remote-access-hardening.md) for the auth model.
+>
+> The "Failsafe Access" section below still uses the owner's personal
+> `solodev.dev` setup as a worked example rather than generic placeholders —
+> a known follow-up from the #420 doc pass, not yet done. Substitute your own
+> domain throughout.
 
 ## Overview
 

@@ -147,7 +147,6 @@ prompt_router:
   captures in `tests/unit/test_prompt_router.py`; unmatched menu-like screens
   land in the usage-limit `unmatched_dialog` events. Re-capture and update
   the fixtures.
-- **pi sessions**: not covered (different dialog text, no hooks).
 
 ## Related
 

@@ -2,7 +2,7 @@
 
 # Channels — Developer Guide
 
-AgentWire channels are **outbound-only notification integrations**. They let a session push a notification out (email, SMS) without exposing any inbound surface. Two channels ship: **email** (Resend) and **quo** (OpenPhone SMS).
+AgentWire channels are **outbound-only notification integrations**. They let a session push a notification out (email, SMS) without exposing any inbound surface. Three channels ship: **email** (Resend), **quo** (OpenPhone SMS), and **push** (Web Push/VAPID) — push differs from the other two in that nothing calls it directly; the portal auto-mirrors every toast (`notify_user`, etc.) to subscribed devices through it.
 
 > Inbound bridges (Telegram, Discord, Slack) were removed to keep the wire surface outbound-only. The portal remains the primary push-to-talk surface for inbound user input.
 
@@ -81,6 +81,7 @@ def my_channel_send(text: str, to: str | None = None) -> str:
 |---------|---------|------------|---------|
 | Email | resend | `email` | Branded HTML notifications via Resend |
 | Quo | stdlib | `quo` | SMS via OpenPhone API |
+| Push | pywebpush (VAPID) | `push` | Browser Web Push to a backgrounded/locked device via the installed PWA; auto-fanout of portal toasts, not directly invoked |
 
 ## Testing checklist
 
@@ -107,6 +108,6 @@ except ImportError:
 
 ## Security
 
-- API keys live in `~/.agentwire/.env` only ([Secrets & API keys](../security/secrets.md)) — `RESEND_API_KEY` for email, `QUO_API_KEY` for quo. Config never holds a key, so the portal's config editor never round-trips one.
+- API keys live in `~/.agentwire/.env` only ([Secrets & API keys](../security/secrets.md)) — `RESEND_API_KEY` for email, `QUO_API_KEY` for quo, `VAPID_PRIVATE_KEY`/`VAPID_PUBLIC_KEY` for push (generate via `agentwire push keygen`). Config never holds a key, so the portal's config editor never round-trips one.
 - Each channel only reads from its own `channels.{config_key}:` slot — no cross-channel config peeking.
 - Outbound-only means there's no public webhook endpoint on the portal for a channel to attack. The portal's `/ws/{session}` is the only WS surface; channels never expose HTTP.

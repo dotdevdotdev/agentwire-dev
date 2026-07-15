@@ -144,8 +144,8 @@ The agent picks a theme JSON block based on the session's emotional tone. The re
   - `parser.py` — line-anchored regex extraction (so diff-quoted tags like `+<theme>` don't confuse extraction)
   - `renderer.py` — Jinja2 → single-file HTML
 - Templates: `agentwire/templates/handoff/{show-the-story.html.j2, theme.css.j2}`
-- CLI: `agentwire handoff {init,render,list}` in `agentwire/__main__.py`
-- MCP: `handoff_init`, `handoff_render`, `handoff_list` in `agentwire/mcp_server.py`
+- CLI: `agentwire handoff {init,render,list}` in `agentwire/handoff_cli.py` (registered via `_REGISTRARS` in `agentwire/__main__.py`)
+- MCP: `handoff_init`, `handoff_render`, `handoff_list` in `agentwire/mcp_handoff.py`
 - Slash command: `.claude/commands/handoff.md`
 
 ## Out of scope (today)

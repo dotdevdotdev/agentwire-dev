@@ -6,7 +6,7 @@
 - **npm:** https://www.npmjs.com/package/@googleworkspace/cli
 - **License:** Apache-2.0
 - **Status:** Pre-v1.0, not officially supported by Google. Breaking changes expected.
-- **Latest (2026-03-10):** v0.9.1
+- **Latest (2026-03-10):** v0.9.1 — stale: `agentwire/tooldefs/gws.yaml` now notes behavior specific to v0.16.0 (`GOOGLE_WORKSPACE_CLI_ACCOUNT` no longer exists as of that version), so the CLI has moved well past v0.9.1. Check `npm view @googleworkspace/cli version` for the actual current release rather than trusting this line.
 
 ---
 

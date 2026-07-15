@@ -202,10 +202,10 @@ Environment variables use `${ENV_VAR}` syntax (expanded at runtime).
 ## `ensure` Command
 
 ```bash
-agentwire ensure -s session --task name              # Run named task
-agentwire ensure -s session --task name --timeout 600   # Custom timeout
-agentwire ensure -s session --task name --wait-lock     # Wait if locked
-agentwire ensure -s session --task name --dry-run       # Preview without executing
+agentwire ensure -s session --task name                        # Run named task
+agentwire ensure -s session --task name --lock-timeout 600      # Custom lock-wait timeout
+agentwire ensure -s session --task name --wait-lock             # Wait if locked
+agentwire ensure -s session --task name --dry-run               # Preview without executing
 ```
 
 **Lifecycle:**

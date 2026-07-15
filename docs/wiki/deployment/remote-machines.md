@@ -22,13 +22,9 @@ agentwire machine add gpu-server --host 192.168.1.50 --user ubuntu --projects-di
 
 ### Portal UI
 
-Dashboard → Machines → Add Machine
-
-Fill in:
-- **Machine ID** - Short identifier (e.g., `gpu-server`, `do-2`)
-- **Host** - IP address or hostname
-- **User** - SSH username
-- **Projects Directory** - Where projects live on the remote machine
+Machine registration is CLI-only today — the portal sidebar's Machines section
+is read-only. It lists machines (with a live SSH-reachability status dot) and lets you
+spawn a new session on one, but has no add/remove controls.
 
 ---
 
@@ -42,12 +38,7 @@ agentwire machine remove <id>
 
 This:
 - Removes from `machines.json`
-- Kills active SSH tunnel
-- Prints reminders for manual cleanup (SSH config, deploy keys, etc.)
-
-### Portal UI
-
-Dashboard → Machines → Click ✕ button on machine card
+- Prints manual cleanup reminders (SSH config entry, GitHub deploy keys, remote VM/user teardown, portal restart)
 
 ---
 
@@ -67,10 +58,21 @@ agentwire machine remove <id>
 ### Machine List Output
 
 ```
-MACHINES:
-  gpu-server: ubuntu@192.168.1.50 (~/projects) - online
-  do-2: root@167.99.123.45 (~/projects) - offline
+Registered machines (2):
+
+  gpu-server
+    Host: 192.168.1.50
+    Projects: ~/projects
+    Status: ✓ tunnel
+
+  do-2
+    Host: 167.99.123.45
+    Projects: ~/projects
+    Status: ✗ no tunnel
 ```
+
+`Status` reflects whether an `autossh` process for that machine is currently
+running (`pgrep -f "autossh.*<machine_id>"`), not a reachability ping.
 
 ---
 
@@ -239,23 +241,26 @@ distribution.
 
 ## machines.json Schema
 
-Machine configuration is stored in `~/.agentwire/machines.json`:
+Machine configuration is stored in `~/.agentwire/machines.json`, keyed under a
+`machines` array (not a bare top-level array):
 
 ```json
-[
-  {
-    "id": "gpu-server",
-    "host": "192.168.1.50",
-    "user": "ubuntu",
-    "projects_dir": "~/projects"
-  },
-  {
-    "id": "do-2",
-    "host": "167.99.123.45",
-    "user": "root",
-    "projects_dir": "~/projects"
-  }
-]
+{
+  "machines": [
+    {
+      "id": "gpu-server",
+      "host": "192.168.1.50",
+      "user": "ubuntu",
+      "projects_dir": "~/projects"
+    },
+    {
+      "id": "do-2",
+      "host": "167.99.123.45",
+      "user": "root",
+      "projects_dir": "~/projects"
+    }
+  ]
+}
 ```
 
 | Field | Description |

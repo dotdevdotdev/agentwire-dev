@@ -1,5 +1,16 @@
 # Session Card Redesign — Recommendation (#799)
 
+## Update: core recommendations shipped
+
+The full-width pulse-strip activity visualization (item 2 below) shipped in
+#809, replacing the sparkline exactly as proposed (`.topology-pulse-*` in
+`agentwire/static/js/topology-render.js`/`desktop.css`). The git dirty/clean/
+ahead-behind glyphs (part of item 3) shipped in #805
+(`sidebar-git-badge`/`git-dirty`/`git-ahead`/`git-behind` etc.). The
+context-remaining hairline and the header mic/inbox badge cluster are still
+open. The rest of this doc — including the "outside-AI pass didn't
+complete" status below — is kept as the original design-research record.
+
 ## Status: outside-AI pass did not complete — read this section first
 
 The plan was to brief `claude.ai/design` with the current-state screenshots + the
