@@ -174,8 +174,8 @@ agentwire listen stop --stdout  # transcribe + print raw transcript to stdout, n
 agentwire tts voices            # list available voices (custom-shim voices or Kokoro presets)
 
 # Artifact windows (agent visual canvas)
-agentwire open <url> --title "T"  # open URL or local file as artifact window
-agentwire open dashboard.html     # open from ~/.agentwire/artifacts/
+agentwire open <url> --title "T"  # announce URL/local file as a click-to-open artifact notification (#817)
+agentwire open dashboard.html     # announce from ~/.agentwire/artifacts/ — human clicks to open
 
 # Channels (outbound notification integrations — email + quo)
 agentwire channels list         # list all registered channels

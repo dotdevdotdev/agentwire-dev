@@ -5684,6 +5684,16 @@ body.sidebar-pinned .sidebar-tab {
     border-color: var(--error);
 }
 
+/* Artifact notices (#817): blue accent marks "click opens a deliverable",
+   distinct from the red actionable-high border. */
+.notification-toast.artifact {
+    border-color: var(--neon-blue-subtle);
+}
+
+.notification-toast.artifact .notification-toast-body:hover {
+    color: var(--neon-blue);
+}
+
 /* Transient info toasts: a thin bar drains over the auto-fade countdown so
    it's visually obvious the toast is ephemeral. Paused on hover / hidden tab
    (the .fading class is toggled in sync with the JS timer). */
@@ -7352,4 +7362,76 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
 
 .session-hud-drawer[data-segment="sessions"] .session-hud-services {
     display: none;
+}
+
+/* ============================================
+   Session HUD — pending artifact notices (#817)
+   Click-to-open deliverables (council minutes, reports) announced by
+   background producers. Strip sits between the header and the segment
+   canvases, visible in both segments. Neon-blue accent = artifact, keeping
+   green for session/live state (brand palette: green primary, blue secondary).
+   ============================================ */
+
+.session-hud-notices {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 12px 8px;
+}
+
+.hud-notice-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--neon-blue-hover);
+    border: 1px solid var(--neon-blue-subtle);
+    border-radius: 8px;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease;
+}
+
+.hud-notice-card:hover,
+.hud-notice-card:focus-visible {
+    background: color-mix(in srgb, var(--neon-blue) 18%, transparent);
+    border-color: var(--neon-blue);
+    outline: none;
+}
+
+.hud-notice-icon {
+    flex: 0 0 auto;
+    color: var(--neon-blue);
+    font-size: 14px;
+}
+
+.hud-notice-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.hud-notice-time {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.hud-notice-dismiss {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+}
+
+.hud-notice-dismiss:hover {
+    color: var(--text);
 }

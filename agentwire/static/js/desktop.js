@@ -36,6 +36,7 @@ import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
 import { sessionHud } from './session-hud.js';
 import { hudController } from './session-hud-controller.js';
+import { hudNotices } from './session-hud-notices.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { PttController } from './ptt.js';
@@ -217,14 +218,14 @@ async function init() {
         }
     });
 
-    // Desktop UI control (from MCP agents via portal API)
+    // Desktop UI control (from MCP agents via portal API). No artifact case:
+    // artifact producers can't broadcast a window open anymore (#817) — they
+    // arrive as notifications, and the open happens only on click (below).
     desktop.on('desktop_open_window', (msg) => {
         if (msg.window_type === 'session') {
             openSessionTerminal(msg.session, msg.mode || 'monitor');
         } else if (msg.window_type === 'panel') {
             sidebar.expandSection(msg.panel);
-        } else if (msg.window_type === 'artifact') {
-            openArtifactWindow(msg.url, msg.title || 'Artifact', msg.artifact_id);
         }
     });
 
@@ -272,6 +273,7 @@ async function init() {
     // re-rooted onto the focused session) and mounts TopologyView itself.
     sessionHud.init();
     hudController.init(sessionHud.canvas, getWindowSession);
+    hudNotices.init(sessionHud.noticesEl);
 
     // Click on a toast -> open the subject session it's about as interactive terminal.
     // No subject (e.g. a system-level toast) -> no-op, never fall back to the bridge.
@@ -280,6 +282,18 @@ async function init() {
         if (session) {
             openSessionTerminal(session, 'terminal');
         }
+    });
+
+    // Click on an artifact notice (toast body or HUD notice card) — the
+    // deliberate open (#817), and the ONLY path that opens an artifact
+    // window from a notification: dismiss the notice everywhere, drop the
+    // HUD peek if it's up, then run the standard focused open.
+    document.addEventListener('open-notification-artifact', (e) => {
+        const { url, title, artifactId, noticeId } = e.detail || {};
+        if (!url) return;
+        if (noticeId) notificationsPanel.dismiss(noticeId);
+        if (sessionHud.open) sessionHud.toggle(false);
+        openArtifactWindow(url, title || 'Artifact', artifactId || null);
     });
 
     // Set initial voice indicator state

@@ -106,9 +106,23 @@ def desktop_open_panel(panel_type: str) -> str:
     return f"Failed to open panel: {data.get('error', 'Unknown error')}"
 
 
+def _announce_artifact(url: str, title: str, artifact_id: str | None) -> dict:
+    """POST the click-to-open artifact notification (#817) — the single
+    portal-side path for surfacing an artifact; there is no force-open."""
+    artifact = {"url": url, "title": title}
+    if artifact_id:
+        artifact["artifact_id"] = artifact_id
+    return _portal_request("POST", "/api/desktop/notification", {"artifact": artifact})
+
+
 @mcp.tool()
 def desktop_open_artifact(url: str, title: str = "Artifact", artifact_id: str | None = None) -> str:
-    """Open a URL or local artifact file in an iframe window on the portal desktop.
+    """Announce a URL or local artifact file on the portal desktop (click-to-open).
+
+    Posts a notification (toast + Session HUD entry) carrying the artifact
+    target instead of force-opening a window (#817) — a background-produced
+    artifact must never steal focus. The human clicks the notice to open the
+    artifact window, focused.
 
     For local files, use a filename from ~/.agentwire/artifacts/ (e.g., "dashboard.html").
     For external sites, use a full URL (e.g., "https://example.com").
@@ -119,21 +133,12 @@ def desktop_open_artifact(url: str, title: str = "Artifact", artifact_id: str | 
         artifact_id: Optional unique window ID. If omitted, derived from URL.
 
     Returns:
-        Window ID of the opened window or error.
+        Notification ID or error description.
     """
-    body = {
-        "type": "artifact",
-        "url": url,
-        "title": title,
-    }
-    if artifact_id:
-        body["artifact_id"] = artifact_id
-
-    data = _portal_request("POST", "/api/desktop/window/open", body)
+    data = _announce_artifact(url, title, artifact_id)
     if data.get("success"):
-        wid = data.get("window_id", "unknown")
-        return f"Opened artifact window '{title}' (id: {wid})."
-    return f"Failed to open artifact window: {data.get('error', 'Unknown error')}"
+        return f"Artifact '{title}' announced (notification id: {data.get('id', 'unknown')}) — the human clicks to open."
+    return f"Failed to announce artifact: {data.get('error', 'Unknown error')}"
 
 
 @mcp.tool()
@@ -143,11 +148,12 @@ def desktop_write_artifact(
     title: str = "Artifact",
     artifact_id: str | None = None,
 ) -> str:
-    """Write HTML content to a file and open it as an artifact window.
+    """Write HTML content to a file and announce it as a click-to-open artifact.
 
-    Atomically writes content to ~/.agentwire/artifacts/<filename>, then opens
-    it in an iframe window on the portal desktop. Use this to display
-    dashboards, diagrams, reports, or any HTML content.
+    Atomically writes content to ~/.agentwire/artifacts/<filename>, then posts
+    a click-to-open notification (toast + Session HUD entry, #817) — the human
+    clicks to open the artifact window; it never steals focus. Use this to
+    deliver dashboards, diagrams, reports, or any HTML content.
 
     Args:
         filename: Output filename (must end in .html, e.g., "dashboard.html")
@@ -156,9 +162,8 @@ def desktop_write_artifact(
         artifact_id: Optional unique window ID. If omitted, derived from filename.
 
     Returns:
-        Window ID of the opened window or error.
+        Notification ID or error description.
     """
-    # Step 1: Upload the file
     upload_data = _portal_request("POST", "/api/artifacts/upload", {
         "filename": filename,
         "content": html_content,
@@ -166,20 +171,10 @@ def desktop_write_artifact(
     if not upload_data.get("success"):
         return f"Failed to write artifact: {upload_data.get('error', 'Unknown error')}"
 
-    # Step 2: Open it as a window
-    body = {
-        "type": "artifact",
-        "url": filename,
-        "title": title,
-    }
-    if artifact_id:
-        body["artifact_id"] = artifact_id
-
-    open_data = _portal_request("POST", "/api/desktop/window/open", body)
+    open_data = _announce_artifact(filename, title, artifact_id)
     if open_data.get("success"):
-        wid = open_data.get("window_id", "unknown")
-        return f"Artifact '{filename}' written and opened (id: {wid})."
-    return f"File written but failed to open window: {open_data.get('error', 'Unknown error')}"
+        return f"Artifact '{filename}' written and announced (notification id: {open_data.get('id', 'unknown')})."
+    return f"File written but failed to announce it: {open_data.get('error', 'Unknown error')}"
 
 
 @mcp.tool()

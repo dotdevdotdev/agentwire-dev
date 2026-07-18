@@ -164,11 +164,14 @@ def current_session() -> str | None:
     return pane_manager.get_current_session()
 
 
-def open_artifact_window(url: str, title: str) -> bool:
-    """Best-effort: open a rendered artifact as a portal window.
+def notify_artifact(url: str, title: str) -> bool:
+    """Best-effort: announce a rendered artifact via a portal notification.
 
-    Returns True only when the portal accepted the open; a down or erroring
-    portal returns False — the artifact file exists on disk either way.
+    Posts a click-to-open notice (toast + HUD entry, #817) rather than
+    force-opening a window — a background render must never steal focus from
+    whatever the human is working in. Returns True only when the portal
+    accepted the notification; a down or erroring portal returns False — the
+    artifact file exists on disk either way.
     """
     import os
 
@@ -184,8 +187,8 @@ def open_artifact_window(url: str, title: str) -> bool:
     try:
         resp = core.portal_request(
             "POST",
-            f"{portal}/api/desktop/window/open",
-            json={"type": "artifact", "url": url, "title": title},
+            f"{portal}/api/desktop/notification",
+            json={"artifact": {"url": url, "title": title}},
             timeout=5,
         )
         return resp.status_code == 200 and bool(resp.json().get("success"))
@@ -372,20 +375,20 @@ def _synthesis_text(value: str | None) -> str:
 def _render_minutes(
     name: str, prompt_ids: list[int] | None = None, synthesis: str = ""
 ) -> tuple[str | None, bool | None]:
-    """Write the minutes artifact and best-effort open it in the portal.
+    """Write the minutes artifact and best-effort announce it in the portal.
 
-    Returns ``(path, opened)`` — both None when the sitting has no matching
-    prompt history (nothing rendered, nothing opened).
+    Returns ``(path, notified)`` — both None when the sitting has no matching
+    prompt history (nothing rendered, nothing announced).
     """
     from agentwire.council import minutes
 
     path = minutes.write_minutes(name, prompt_ids, synthesis=synthesis)
     if path is None:
         return None, None
-    opened = open_artifact_window(
+    notified = notify_artifact(
         minutes.artifact_url(name), f"Council minutes — {name}"
     )
-    return str(path), opened
+    return str(path), notified
 
 
 def cmd_council_stop(args) -> int:
@@ -399,9 +402,9 @@ def cmd_council_stop(args) -> int:
     # Minutes before teardown (#708): tri-state --minutes/--no-minutes,
     # default (None) renders exactly when any prompt history exists.
     minutes_path: str | None = None
-    minutes_opened: bool | None = None
+    minutes_notified: bool | None = None
     if getattr(args, "minutes", None) is not False:
-        minutes_path, minutes_opened = _render_minutes(
+        minutes_path, minutes_notified = _render_minutes(
             name, synthesis=_synthesis_text(getattr(args, "synthesis", None))
         )
 
@@ -420,7 +423,7 @@ def cmd_council_stop(args) -> int:
         "killed": killed,
         "not_running": not_running,
         "minutes": minutes_path,
-        "minutes_opened": minutes_opened,
+        "minutes_notified": minutes_notified,
     }
     human = (
         f"Council '{name}' stopped ({len(killed)} sessions killed). "
@@ -456,14 +459,14 @@ def cmd_council_minutes(args) -> int:
                 f"(available: {', '.join(map(str, available))})",
             )
 
-    path, opened = _render_minutes(
+    path, notified = _render_minutes(
         name, prompt_ids, synthesis=_synthesis_text(getattr(args, "synthesis", None))
     )
 
-    payload = {"success": True, "path": path, "opened": opened}
+    payload = {"success": True, "path": path, "notified": notified}
     human = f"Minutes: {path}"
-    if opened:
-        human += "\nOpened as a portal artifact window."
+    if notified:
+        human += "\nAnnounced in the portal — click the notification to open."
     return _emit(args, payload, human, council=name)
 
 

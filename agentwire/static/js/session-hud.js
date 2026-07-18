@@ -32,6 +32,12 @@
  * segments only toggles CSS visibility (`data-segment` on the drawer); the
  * topology is never unmounted, so its live state and focus-rerooting
  * survive a round trip. Last-selected segment persists in localStorage.
+ *
+ * Notices strip (#817): `.session-hud-notices` sits between the header and
+ * the segment canvases, visible in BOTH segments — session-hud-notices.js
+ * renders pending artifact notifications (click-to-open deliverables not
+ * tied to any live session card) into it. Its height joins the header's in
+ * the peek auto-size sum below.
  */
 
 import { sidebar } from './sidebar.js';
@@ -64,6 +70,8 @@ class SessionHud {
         this._grownFromDetent = null;
         /** @type {HTMLElement|null} header strip hosting the Sessions|Services segmented control (#779) */
         this.header = null;
+        /** @type {HTMLElement|null} pending artifact-notice strip, filled by session-hud-notices.js (#817) */
+        this.noticesEl = null;
         /** @type {HTMLElement|null} sibling mount point for the Services segment's content */
         this.servicesCanvas = null;
         /** @type {'sessions'|'services'} currently active header segment */
@@ -123,12 +131,14 @@ class SessionHud {
                     <button type="button" class="session-hud-segment-btn" data-segment="services" role="tab">Services</button>
                 </div>
             </div>
+            <div class="session-hud-notices" hidden></div>
             <div class="session-hud-canvas"></div>
             <div class="session-hud-services"></div>
         `;
         document.body.appendChild(drawer);
         this.drawer = drawer;
         this.header = drawer.querySelector('.session-hud-header');
+        this.noticesEl = drawer.querySelector('.session-hud-notices');
         this.canvas = drawer.querySelector('.session-hud-canvas');
         this.servicesCanvas = drawer.querySelector('.session-hud-services');
 
@@ -164,6 +174,10 @@ class SessionHud {
         this._contentObserver.disconnect();
         const el = this.segment === 'services' ? this.servicesCanvas : this.canvas;
         this._contentObserver.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class'] });
+        // The notices strip (#817) is segment-independent and part of the
+        // auto-size sum, so it's watched alongside whichever segment is up —
+        // a notice arriving/clearing must resize the open drawer too.
+        this._contentObserver.observe(this.noticesEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class'] });
     }
 
     _wireHandleDrag() {
@@ -298,7 +312,9 @@ class SessionHud {
     _applyAutoHeight() {
         if (!this.open || this.detent !== 'peek' || this._grownFromDetent !== null || this._dragging) return;
         const headerPx = this.header ? this.header.getBoundingClientRect().height : 0;
-        const rawPx = headerPx + this._contentHeightPx();
+        const noticesPx = this.noticesEl && !this.noticesEl.hidden
+            ? this.noticesEl.getBoundingClientRect().height : 0;
+        const rawPx = headerPx + noticesPx + this._contentHeightPx();
         const heightPx = clamp(rawPx, window.innerHeight * DRAG_MIN_VH, window.innerHeight * HALF_VH);
         this.drawer.style.height = `${heightPx}px`;
         this.handle.style.top = `${heightPx}px`;

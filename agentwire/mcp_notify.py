@@ -65,7 +65,8 @@ def notify_event(event: str, session: str | None = None) -> str:
 
 
 @mcp.tool()
-def notify_user(text: str, session: str | None = None, priority: str = "normal") -> str:
+def notify_user(text: str, session: str | None = None, priority: str = "normal",
+                artifact_url: str | None = None, artifact_title: str | None = None) -> str:
     """Show the HUMAN a desktop toast on the portal (persistent, visual).
 
     The human-screen channel — the asymmetric text partner to `say` (audio).
@@ -74,11 +75,18 @@ def notify_user(text: str, session: str | None = None, priority: str = "normal")
     (portal lifecycle). Clicking the toast opens the session that generated the
     notification (the `session` below); a toast with no session is non-clickable.
 
+    With `artifact_url` set, the toast instead becomes a click-to-open artifact
+    notice (#817): it sticks until dismissed, also appears in the Session HUD,
+    and clicking it opens that artifact window — use this to hand the human a
+    rendered deliverable without stealing focus.
+
     Args:
         text: Notification text. Bold (**x**), line breaks, and [links](https://…)
             render; everything else is escaped.
         session: Session this relates to (shown as a badge).
         priority: 'normal' or 'high' (high gets an accent border).
+        artifact_url: URL or ~/.agentwire/artifacts/ filename to open on click.
+        artifact_title: Window title for the artifact (default: "Artifact").
 
     Returns:
         Notification ID or error description.
@@ -86,6 +94,8 @@ def notify_user(text: str, session: str | None = None, priority: str = "normal")
     body = {"text": text, "priority": priority}
     if session:
         body["session"] = session
+    if artifact_url:
+        body["artifact"] = {"url": artifact_url, "title": artifact_title or "Artifact"}
     data = _portal_request("POST", "/api/desktop/notification", body)
     if not data.get("success"):
         return f"Failed to post notification: {data.get('error', 'Unknown error')}"

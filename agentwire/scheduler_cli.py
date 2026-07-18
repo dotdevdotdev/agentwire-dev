@@ -714,7 +714,7 @@ def cmd_scheduler_live(args) -> int:
 
 
 def cmd_scheduler_dashboard(args) -> int:
-    """Generate and open a live HTML dashboard as a portal artifact."""
+    """Generate a live HTML dashboard and announce it as a portal artifact."""
     no_open = getattr(args, 'no_open', False)
 
     html = _generate_dashboard_html()
@@ -990,12 +990,12 @@ def register_scheduler_parser(subparsers) -> None:
 
     # scheduler dashboard
     sched_dashboard = scheduler_subparsers.add_parser("dashboard", help="Open scheduler dashboard")
-    sched_dashboard.add_argument("--no-open", action="store_true", help="Generate HTML without opening")
+    sched_dashboard.add_argument("--no-open", action="store_true", help="Generate HTML without announcing it in the portal")
     sched_dashboard.set_defaults(func=cmd_scheduler_dashboard)
 
     # scheduler report
     sched_report = scheduler_subparsers.add_parser("report", help="Generate morning report of recent task runs")
     sched_report.add_argument("--since", default="8h", metavar="DURATION", help="Time window (e.g. 8h, 12h, 1d) default: 8h")
-    sched_report.add_argument("--artifact", action="store_true", help="Open report as portal artifact")
+    sched_report.add_argument("--artifact", action="store_true", help="Announce report as a click-to-open portal notification")
     sched_report.add_argument("--json", action="store_true", help="Output JSON")
     sched_report.set_defaults(func=cmd_scheduler_report)

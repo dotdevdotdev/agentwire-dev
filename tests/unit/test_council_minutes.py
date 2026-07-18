@@ -2,8 +2,8 @@
 
 Covers the pure renderer (``agentwire/council/minutes.py``), the
 ``council minutes`` CLI handler, and the ``council stop`` auto-minutes
-integration. Artifacts land in a tmp dir and the portal open is mocked, so
-nothing touches ``~/.agentwire`` or the network.
+integration. Artifacts land in a tmp dir and the portal notification is mocked,
+so nothing touches ``~/.agentwire`` or the network.
 """
 
 import argparse
@@ -32,15 +32,15 @@ def artifacts_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def portal_opens(monkeypatch):
-    """Mock the best-effort portal window open; record calls."""
+def portal_notices(monkeypatch):
+    """Mock the best-effort portal artifact notification; record calls."""
     calls = []
 
-    def fake_open(url, title):
+    def fake_notify(url, title):
         calls.append((url, title))
         return True
 
-    monkeypatch.setattr(cli, "open_artifact_window", fake_open)
+    monkeypatch.setattr(cli, "notify_artifact", fake_notify)
     return calls
 
 
@@ -201,24 +201,24 @@ class TestMinutesCmd:
         kw.setdefault("synthesis", None)
         return cli.cmd_council_minutes(_args(**kw))
 
-    def test_renders_prints_path_and_opens_window(self, capsys, portal_opens):
+    def test_renders_prints_path_and_notifies(self, capsys, portal_notices):
         seat()
         make_round()
         assert self._run() == 0
         payload = _payload(capsys)
-        assert payload["success"] and payload["opened"]
+        assert payload["success"] and payload["notified"]
         assert payload["path"].endswith(f"council-{NAME}-minutes/index.html")
-        assert portal_opens == [
+        assert portal_notices == [
             (f"council-{NAME}-minutes/index.html", f"Council minutes — {NAME}")
         ]
 
     def test_portal_down_is_best_effort(self, capsys, monkeypatch):
         seat()
         make_round()
-        monkeypatch.setattr(cli, "open_artifact_window", lambda url, title: False)
+        monkeypatch.setattr(cli, "notify_artifact", lambda url, title: False)
         assert self._run() == 0
         payload = _payload(capsys)
-        assert payload["success"] and payload["opened"] is False
+        assert payload["success"] and payload["notified"] is False
 
     def test_zero_prompts_errors(self, capsys):
         seat()
