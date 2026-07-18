@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import shlex
 
 import pytest
 
@@ -90,6 +91,59 @@ class TestGetProjectsWithRegistry:
 
         matches = [p for p in self.mod.get_projects() if p["name"] == "dup"]
         assert len(matches) == 1
+
+
+# --- _resolve_extra_projects: remote path must never reach the shell unquoted ---
+#
+# `path` here is registry-supplied (ultimately user input via `agentwire
+# projects add` / POST /api/projects/bind), and _resolve_extra_projects
+# splices it into a command string handed to a remote shell over SSH on
+# every get_projects() poll. A shell metacharacter in a stored path is a
+# command-injection vector against the remote machine unless it's quoted.
+
+class TestResolveExtraProjectsRemoteShellSafety:
+    def test_malicious_path_is_quoted_as_a_single_token(self, monkeypatch):
+        import agentwire.projects as mod
+
+        monkeypatch.setattr(mod, "_get_machine_config", lambda mid: {"id": mid, "host": "example.com"})
+
+        captured = {}
+
+        def fake_run_ssh_command(machine, command, timeout=10):
+            captured["cmd"] = command
+            return False, ""
+
+        monkeypatch.setattr(mod, "_run_ssh_command", fake_run_ssh_command)
+
+        malicious = '/tmp/x"; touch /tmp/pwned; echo "'
+        mod._resolve_extra_projects([{"path": malicious, "machine": "remote-1"}])
+
+        cmd = captured["cmd"]
+        # The generated `[ -d ... ]` line must be shell-quoted, so a POSIX
+        # shell tokenizes the malicious string as ONE literal argument —
+        # never as separate injected commands.
+        d_line = next(line for line in cmd.splitlines() if line.strip().startswith("if [ -d"))
+        assert malicious in shlex.split(d_line)
+
+    def test_quoted_path_used_for_both_test_and_cat(self, monkeypatch):
+        import agentwire.projects as mod
+
+        monkeypatch.setattr(mod, "_get_machine_config", lambda mid: {"id": mid, "host": "example.com"})
+
+        captured = {}
+
+        def fake_run_ssh_command(machine, command, timeout=10):
+            captured["cmd"] = command
+            return False, ""
+
+        monkeypatch.setattr(mod, "_run_ssh_command", fake_run_ssh_command)
+
+        malicious = "/tmp/$(whoami)"
+        mod._resolve_extra_projects([{"path": malicious, "machine": "remote-1"}])
+
+        quoted = shlex.quote(malicious)
+        cmd = captured["cmd"]
+        assert cmd.count(quoted) == 4  # the -d test, the -f test, and both cat invocations
 
 
 # --- cmd_projects_add: the CLI command itself ---

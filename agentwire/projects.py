@@ -11,6 +11,7 @@ field, which had no writer and required hand-editing config.yaml (#814).
 """
 
 import json
+import shlex
 from pathlib import Path
 
 import yaml
@@ -311,10 +312,15 @@ def _resolve_extra_projects(extra: list[dict], machine_filter: str | None = None
             m = _get_machine_config(entry_machine)
             if not m:
                 continue
+            # `path` is registry-supplied (user input via `agentwire projects add` /
+            # POST /api/projects/bind) — shlex.quote it before it ever reaches a
+            # remote shell, or a shell metacharacter becomes a command injection
+            # replayed on every get_projects() poll.
+            quoted_path = shlex.quote(path)
             cmd = f'''
-if [ -d "{path}" ]; then
-  if [ -f "{path}/.agentwire.yml" ]; then
-    cat "{path}/.agentwire.yml" | base64 -w0 2>/dev/null || cat "{path}/.agentwire.yml" | base64
+if [ -d {quoted_path} ]; then
+  if [ -f {quoted_path}/.agentwire.yml ]; then
+    cat {quoted_path}/.agentwire.yml | base64 -w0 2>/dev/null || cat {quoted_path}/.agentwire.yml | base64
   else
     echo ""
   fi
