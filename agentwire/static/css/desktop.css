@@ -7402,6 +7402,14 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     padding: 4px 12px 8px;
 }
 
+/* Same [hidden]-override gotcha as .topology-ghost-actions: the author
+   display:flex above beats the UA [hidden]{display:none}, so without this
+   the empty strip still renders its 12px of padding — phantom height the
+   peek auto-size sum counts as 0 (#823). */
+.session-hud-notices[hidden] {
+    display: none;
+}
+
 .hud-notice-card {
     display: flex;
     align-items: center;

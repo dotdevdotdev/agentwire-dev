@@ -51,6 +51,14 @@ const MID_THRESHOLD = (PEEK_VH + HALF_VH) / 2;
 const DRAG_MIN_VH = 0.12;
 const DRAG_MAX_VH = 0.66;
 const CLICK_TOLERANCE_PX = 3;
+/** Reserved gap between the last card and the drawer's border-bottom in the
+ * peek auto-size sum (#823). Deliberate and segment-independent: the mounted
+ * content's own bottom padding (8px on .topology-view--shade, 12px on
+ * .session-hud-services) is incidental and not guaranteed, and measurement
+ * timing slop (rAF firing before an in-progress card animation settles) can
+ * leave the real render slightly taller than what was measured — this margin
+ * absorbs both so content never sits flush against the border. */
+const PEEK_BOTTOM_MARGIN_PX = 10;
 
 /** localStorage key for the last-selected header segment (#779). */
 const SEGMENT_KEY = 'aw-hud-segment';
@@ -274,22 +282,39 @@ class SessionHud {
     }
 
     /** Natural content height of whichever header segment is currently
-     * visible. Measure the canvas's *content child*, not the canvas itself:
+     * visible. Measure the canvas's *content children*, not the canvas itself:
      * the canvas is `flex:1 1 0` and stretches to fill the drawer, so its own
      * `scrollHeight` is floored by its `clientHeight` and can never report
      * *less* than the current drawer height — which let auto-size grow (content
      * overflows) but never shrink below the peek detent for a single-card view
-     * (#802). The inner content root (`.topology-view` / the services list) is
-     * content-sized in both directions, so its rendered height + the canvas's
-     * own vertical padding is the height the canvas would take at rest. */
+     * (#802). The children are content-sized in both directions, so their
+     * rendered heights + the canvas's own vertical padding is the height the
+     * canvas would take at rest. Summed over ALL children (+ their vertical
+     * margins), not just the first: the topology mounts a single
+     * `.topology-view` root, but the services section renders a flat list of
+     * sibling cards — measuring only the first child sized the drawer to one
+     * card and left the rest scrolled out of view (#823). */
     _contentHeightPx() {
         const el = this.segment === 'services' ? this.servicesCanvas : this.canvas;
         if (!el) return 0;
-        const content = el.firstElementChild;
-        if (!content) return el.scrollHeight;
+        // A classic (non-overlay) horizontal scrollbar consumes canvas inner
+        // height without appearing in the children's own measured heights —
+        // omit it and the drawer clips exactly that many px off the last
+        // row of cards (#823). offsetHeight−clientHeight is its current
+        // rendered thickness (0 for overlay scrollbars or no horizontal
+        // overflow), and it's stable across the height change this measure
+        // feeds: presence depends on content width vs canvas width, not on
+        // the drawer's height.
+        const scrollbarPx = el.offsetHeight - el.clientHeight;
+        if (!el.firstElementChild) return el.scrollHeight + scrollbarPx;
         const cs = getComputedStyle(el);
-        const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-        return content.getBoundingClientRect().height + padV;
+        let heightPx = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + scrollbarPx;
+        for (const child of el.children) {
+            const ccs = getComputedStyle(child);
+            heightPx += child.getBoundingClientRect().height
+                + parseFloat(ccs.marginTop) + parseFloat(ccs.marginBottom);
+        }
+        return heightPx;
     }
 
     /** Debounced entry point for content-driven mutations (MutationObserver,
@@ -314,7 +339,7 @@ class SessionHud {
         const headerPx = this.header ? this.header.getBoundingClientRect().height : 0;
         const noticesPx = this.noticesEl && !this.noticesEl.hidden
             ? this.noticesEl.getBoundingClientRect().height : 0;
-        const rawPx = headerPx + noticesPx + this._contentHeightPx();
+        const rawPx = headerPx + noticesPx + this._contentHeightPx() + PEEK_BOTTOM_MARGIN_PX;
         const heightPx = clamp(rawPx, window.innerHeight * DRAG_MIN_VH, window.innerHeight * HALF_VH);
         this.drawer.style.height = `${heightPx}px`;
         this.handle.style.top = `${heightPx}px`;
