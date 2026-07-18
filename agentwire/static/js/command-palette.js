@@ -1025,12 +1025,14 @@ async function setView(view) {
         } catch (err) {
             const { toastError } = await import('./toast.js');
             toastError(err?.message || 'Failed to browse folders');
+            if (!paletteEl) return;  // palette closed while loading
             currentView = 'root';
             renderView();
             focusActiveInput();
             return;
         }
     }
+    if (!paletteEl) return;  // palette closed while loading
     renderView();
     focusActiveInput();
 }
