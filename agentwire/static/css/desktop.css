@@ -5310,23 +5310,43 @@ body.sidebar-pinned .sidebar-tab {
     flex: 1;
     overflow-y: auto;
     padding: var(--spacing-base);
+}
 
-    /* Thin, muted scrollbar that blends into the sidebar chrome.
-       Firefox uses the `scrollbar-*` properties; WebKit/Blink uses
-       the `::-webkit-scrollbar*` pseudo-elements below. */
+/* Thin, muted scrollbar that blends into the frosted-glass chrome — shared
+   by the sidebar and the Session HUD's scroll containers. Firefox uses the
+   `scrollbar-*` properties; WebKit/Blink uses the `::-webkit-scrollbar*`
+   pseudo-elements below. */
+.sidebar-sections,
+.session-hud-canvas,
+.session-hud-services {
     scrollbar-width: thin;
     scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 
-.sidebar-sections::-webkit-scrollbar {
+.sidebar-sections::-webkit-scrollbar,
+.session-hud-canvas::-webkit-scrollbar,
+.session-hud-services::-webkit-scrollbar {
     width: 6px;
+    /* height covers the horizontal scrollbar — .session-hud-canvas scrolls
+       both ways (shade-mode topology flows left-to-right). */
+    height: 6px;
 }
 
-.sidebar-sections::-webkit-scrollbar-track {
+.sidebar-sections::-webkit-scrollbar-track,
+.session-hud-canvas::-webkit-scrollbar-track,
+.session-hud-services::-webkit-scrollbar-track {
     background: transparent;
 }
 
-.sidebar-sections::-webkit-scrollbar-thumb {
+/* Corner square where the two scrollbars meet on the both-axis canvas —
+   defaults to an opaque box that punches a hole in the frosted glass. */
+.session-hud-canvas::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+.sidebar-sections::-webkit-scrollbar-thumb,
+.session-hud-canvas::-webkit-scrollbar-thumb,
+.session-hud-services::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.12);
     border-radius: 3px;
     /* Inset the thumb so it sits at the edge rather than filling the gutter,
@@ -5335,7 +5355,9 @@ body.sidebar-pinned .sidebar-tab {
     background-clip: padding-box;
 }
 
-.sidebar-sections::-webkit-scrollbar-thumb:hover {
+.sidebar-sections::-webkit-scrollbar-thumb:hover,
+.session-hud-canvas::-webkit-scrollbar-thumb:hover,
+.session-hud-services::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.28);
     background-clip: padding-box;
 }
