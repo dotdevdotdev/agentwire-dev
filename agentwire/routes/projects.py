@@ -202,6 +202,98 @@ class ProjectsRoutesMixin:
             return web.json_response({"success": False, "error": result.get("error", "Unknown error")}, status=400)
         return web.json_response(result)
 
+    async def api_projects_browse(self, request: web.Request) -> web.Response:
+        """List subdirectories of a local path for the bind-folder picker (#814).
+
+        Read-only, local machine only (no SSH) — direct filesystem access
+        rather than a CLI round-trip, mirroring ``api_artifacts_list``'s
+        ``iterdir()`` precedent: this is a plain directory listing, not the
+        session/machine orchestration the CLI-is-SSOT rule targets.
+
+        Query params:
+            path: directory to list (default: ``projects.dir``, the picker's root)
+
+        Response:
+            {"path": ..., "parent": str|null, "entries": [{name, path, hasConfig}]}
+            or {"error": "..."} with 400 if the path doesn't exist / isn't a directory.
+        """
+        raw_path = request.query.get("path") or str(self.config.projects.dir)
+        target = Path(raw_path).expanduser().resolve()
+
+        if not target.exists() or not target.is_dir():
+            return web.json_response({"error": f"'{target}' is not a directory"}, status=400)
+
+        entries = []
+        try:
+            children = list(target.iterdir())
+        except PermissionError:
+            return web.json_response({"error": f"Permission denied: {target}"}, status=400)
+
+        for child in children:
+            if child.name.startswith('.'):
+                continue
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            entries.append({
+                "name": child.name,
+                "path": str(child),
+                "hasConfig": (child / ".agentwire.yml").exists(),
+            })
+
+        entries.sort(key=lambda e: e["name"].lower())
+        parent = str(target.parent) if target != target.parent else None
+
+        return web.json_response({
+            "path": str(target),
+            "parent": parent,
+            "entries": entries[:500],
+        })
+
+    async def api_projects_bind(self, request: web.Request) -> web.Response:
+        """Bind an existing folder as a project (#814).
+
+        Thin wrapper over ``agentwire projects add`` — no route-level logic,
+        per the CLI-is-SSOT convention. Two-step UX: the portal's bind modal
+        calls this with ``dryRun: true`` first (non-mutating preview: resolved
+        canonical path, git status, collision/already-bound state), then
+        again with ``dryRun: false`` once the user confirms.
+
+        Body:
+            {
+                "path": "/path/to/folder",     # required
+                "machine": "local" | "<id>",   # optional, default "local"
+                "dryRun": false                 # optional, default false
+            }
+
+        Response: whatever the CLI returns verbatim —
+            {success, path, machine, already_bound, wrote_config?, is_git,
+             branch, mechanism, dry_run}
+            or {success: false, error}.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        path = (data.get("path") or "").strip()
+        machine = (data.get("machine") or "local").strip() or "local"
+        dry_run = bool(data.get("dryRun"))
+
+        if not path:
+            return web.json_response({"success": False, "error": "path is required"}, status=400)
+
+        args = ["projects", "add", path, "--machine", machine]
+        if dry_run:
+            args.append("--check")
+
+        success, result = await self.run_agentwire_cmd(args)
+        if not success:
+            return web.json_response({"success": False, "error": result.get("error", "Unknown error")}, status=400)
+        return web.json_response(result)
+
     async def api_projects_delete(self, request: web.Request) -> web.Response:
         """Delete a project (remove .agentwire.yml or entire folder).
 
@@ -444,6 +536,8 @@ def register_projects_routes(server, app):
     """Wire the projects domain's routes onto ``app``."""
     app.router.add_get("/api/projects", server.api_projects)
     app.router.add_post("/api/projects/create", server.api_projects_create)
+    app.router.add_get("/api/projects/browse", server.api_projects_browse)
+    app.router.add_post("/api/projects/bind", server.api_projects_bind)
     app.router.add_post("/api/projects/delete", server.api_projects_delete)
     app.router.add_get("/api/roles", server.api_roles)
     app.router.add_get("/api/session/defaults", server.api_session_defaults)

@@ -2,9 +2,16 @@
 Project discovery for AgentWire.
 
 Discovers projects by scanning for folders with .agentwire.yml in each machine's projects_dir.
+
+Out-of-tree projects (paths that don't live under `projects.dir` and so are
+never seen by the non-recursive scan) are reached via a separate CLI-owned
+registry file (``PROJECTS_REGISTRY_FILE``), written by ``agentwire projects
+add`` (see ``roles_cli.py``). This replaces the old ``config.projects.extra``
+field, which had no writer and required hand-editing config.yaml (#814).
 """
 
 import json
+import shlex
 from pathlib import Path
 
 import yaml
@@ -14,6 +21,64 @@ from .ssh import ssh_base_opts
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
+
+# Registry of explicitly-bound out-of-tree projects: {"projects": [{"path", "machine"}, ...]}
+PROJECTS_REGISTRY_FILE = CONFIG_DIR / "projects.json"
+
+
+def load_registry() -> list[dict]:
+    """Load the out-of-tree project registry.
+
+    Returns:
+        List of {"path": str, "machine": str} entries. Empty list if the
+        registry doesn't exist yet or is unreadable.
+    """
+    if not PROJECTS_REGISTRY_FILE.exists():
+        return []
+    try:
+        data = json.loads(PROJECTS_REGISTRY_FILE.read_text())
+    except (json.JSONDecodeError, IOError):
+        return []
+    entries = data.get("projects", [])
+    return entries if isinstance(entries, list) else []
+
+
+def _save_registry(entries: list[dict]) -> None:
+    PROJECTS_REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PROJECTS_REGISTRY_FILE.write_text(json.dumps({"projects": entries}, indent=2) + "\n")
+
+
+def is_registered(path: str, machine: str = "local") -> bool:
+    """Whether `path`/`machine` is already in the registry."""
+    return any(e.get("path") == path and e.get("machine", "local") == machine for e in load_registry())
+
+
+def add_registry_entry(path: str, machine: str = "local") -> bool:
+    """Append {path, machine} to the registry if not already present.
+
+    Returns:
+        True if a new entry was added, False if it was already registered.
+    """
+    entries = load_registry()
+    if any(e.get("path") == path and e.get("machine", "local") == machine for e in entries):
+        return False
+    entries.append({"path": path, "machine": machine})
+    _save_registry(entries)
+    return True
+
+
+def remove_registry_entry(path: str, machine: str = "local") -> bool:
+    """Remove a {path, machine} entry from the registry.
+
+    Returns:
+        True if an entry was removed, False if it wasn't registered.
+    """
+    entries = load_registry()
+    kept = [e for e in entries if not (e.get("path") == path and e.get("machine", "local") == machine)]
+    if len(kept) == len(entries):
+        return False
+    _save_registry(kept)
+    return True
 
 
 def _get_machine_config(machine_id: str) -> dict | None:
@@ -247,10 +312,15 @@ def _resolve_extra_projects(extra: list[dict], machine_filter: str | None = None
             m = _get_machine_config(entry_machine)
             if not m:
                 continue
+            # `path` is registry-supplied (user input via `agentwire projects add` /
+            # POST /api/projects/bind) — shlex.quote it before it ever reaches a
+            # remote shell, or a shell metacharacter becomes a command injection
+            # replayed on every get_projects() poll.
+            quoted_path = shlex.quote(path)
             cmd = f'''
-if [ -d "{path}" ]; then
-  if [ -f "{path}/.agentwire.yml" ]; then
-    cat "{path}/.agentwire.yml" | base64 -w0 2>/dev/null || cat "{path}/.agentwire.yml" | base64
+if [ -d {quoted_path} ]; then
+  if [ -f {quoted_path}/.agentwire.yml ]; then
+    cat {quoted_path}/.agentwire.yml | base64 -w0 2>/dev/null || cat {quoted_path}/.agentwire.yml | base64
   else
     echo ""
   fi
@@ -309,8 +379,8 @@ def get_projects(machine: str | None = None) -> list[dict]:
             remote_projects = _discover_remote_projects(m)
             projects.extend(remote_projects)
 
-    # Extra projects from config (explicit paths outside projects_dir)
-    extra_projects = _resolve_extra_projects(config.projects.extra, machine)
+    # Registry-bound projects (explicit paths outside projects_dir, #814)
+    extra_projects = _resolve_extra_projects(load_registry(), machine)
     # Deduplicate by (machine, path) — extras don't override discovered projects
     seen = {(p["machine"], p["path"]) for p in projects}
     for ep in extra_projects:

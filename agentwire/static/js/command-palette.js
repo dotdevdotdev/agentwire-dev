@@ -10,6 +10,10 @@
  *   - New session   → pick existing project → spawn session → open
  *   - New worktree  → quicktask flow (project, base, branch, pull-first) → open
  *   - Open session  → pick a running tmux session → attach
+ *   - Bind folder   → browse the filesystem (rooted at projects.dir, browsable
+ *                     above it) → dry-run preview (resolved path, git status,
+ *                     any collision) → confirm writes .agentwire.yml and
+ *                     registers out-of-tree paths (#814)
  *
  * User-defined items (config.yaml palette.items, #676) render alongside the
  * built-ins: no fields → run immediately (toast reports the outcome); with
@@ -35,13 +39,17 @@ let sessionsCache = null;
 let customCommandsCache = null;  // user-defined items from ~/.agentwire/config.yaml (#676)
 let selectedIndex = 0;
 let currentItems = [];           // filtered, runnable items in the active list view
-let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'worktree' | 'open-session' | 'custom-item'
+let currentView = 'root';        // 'root' | 'new-idea' | 'new-session' | 'worktree' | 'open-session' | 'custom-item' | 'bind-folder' | 'bind-confirm'
 let prefillProject = '';
 let currentCustomItem = null;    // the custom item whose field form is open
+let bindBrowsePath = '';         // '' = server default (projects.dir) for the bind-folder picker
+let bindBrowseCache = null;      // {path, parent, entries} — last-loaded directory listing
+let bindPreview = null;          // dry-run /api/projects/bind response shown in bind-confirm
 
 const COMMANDS = [
     { id: 'ask-council', icon: '🏛', label: 'Ask council', keywords: 'council ask question deliberate lenses brainstorm advice decide soul', run: () => setView('ask-council') },
     { id: 'new-idea', icon: '💡', label: 'New idea', keywords: 'idea create new project repo clone git init build start', run: () => setView('new-idea') },
+    { id: 'bind-folder', icon: '📁', label: 'Bind folder', keywords: 'bind existing folder path project import register directory attach out-of-tree', run: () => setView('bind-folder') },
     { id: 'new-session', icon: '▶', label: 'New session', keywords: 'create new session start spawn run project', run: () => setView('new-session') },
     { id: 'worktree', icon: '⎇', label: 'New worktree', keywords: 'worktree branch quicktask task feat fix base', run: () => setView('worktree') },
     { id: 'open-session', icon: '👁', label: 'Open session', keywords: 'open attach connect existing session', run: () => setView('open-session') },
@@ -143,6 +151,52 @@ async function loadSessions() {
     } catch (e) { /* ignore */ }
     sessionsCache = out.filter((s) => !isService(s.name || '') && !isCouncil(s.name || ''));
     return sessionsCache;
+}
+
+/** Load one directory level for the bind-folder picker. `path` empty/omitted
+ *  = server default (projects.dir, the picker's root). Throws on failure so
+ *  callers can toast the error instead of silently showing an empty list. */
+async function loadBindBrowse(path) {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+    const res = await apiFetch(`/api/projects/browse${qs}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `Browse failed (HTTP ${res.status})`);
+    bindBrowseCache = data;
+    bindBrowsePath = data.path;
+    return data;
+}
+
+/** Navigate the bind-folder picker into `path` and re-render in place. */
+async function navigateBindFolder(path) {
+    try {
+        await loadBindBrowse(path);
+        renderView();
+        focusActiveInput();
+    } catch (err) {
+        const { toastError } = await import('./toast.js');
+        toastError(err?.message || 'Failed to open folder');
+    }
+}
+
+/** Move from browsing into the confirm step: dry-run the bind so the user
+ *  sees the resolved path + git status + any collision before committing. */
+async function startBindPreview(path) {
+    currentView = 'bind-confirm';
+    bindPreview = null;
+    renderView();
+    try {
+        const res = await apiFetch('/api/projects/bind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path, dryRun: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.error || `Check failed (HTTP ${res.status})`);
+        bindPreview = data;
+    } catch (err) {
+        bindPreview = { success: false, error: err?.message || 'Failed to check folder' };
+    }
+    if (currentView === 'bind-confirm') renderView();
 }
 
 /** User-defined palette items (config.yaml palette.items). Best-effort:
@@ -268,6 +322,68 @@ function projectOptionsHtml() {
 
 function findProject(name) {
     return (projectsCache || []).find((p) => p.name === name) || null;
+}
+
+/** Bind-confirm: shows the dry-run preview (resolved path, git status, any
+ *  collision) from startBindPreview(), then writes on explicit confirm. */
+function bindConfirmHtml() {
+    if (!bindPreview) {
+        return `<div class="quicktask-progress"><div class="quicktask-spinner" aria-hidden="true"></div><div class="quicktask-progress-label">Checking…</div></div>`;
+    }
+    if (!bindPreview.success) {
+        return `
+            <div class="quicktask-error">${escapeHtml(bindPreview.error || 'Failed to check folder')}</div>
+            <div class="quicktask-footer">
+                <button type="button" class="quicktask-btn-cancel" data-action="back">Back</button>
+            </div>`;
+    }
+    const gitLine = bindPreview.is_git
+        ? (bindPreview.branch ? `Git repo — branch <strong>${escapeHtml(bindPreview.branch)}</strong>` : 'Git repo (no commits yet)')
+        : 'Not a git repository';
+    const note = bindPreview.already_bound
+        ? `<div class="cmdk-bind-note">Already bound — a .agentwire.yml is already there. Binding again just makes sure it's registered; your existing config is left untouched.</div>`
+        : '';
+    return `
+        <div class="quicktask-field">
+            <span class="quicktask-label">Path</span>
+            <div class="cmdk-bind-path">${escapeHtml(bindPreview.path)}</div>
+        </div>
+        <div class="quicktask-field">
+            <span class="quicktask-label">Git</span>
+            <div>${gitLine}</div>
+        </div>
+        ${note}
+        <div class="quicktask-footer">
+            <button type="button" class="quicktask-btn-cancel" data-action="back">Back</button>
+            <button type="button" class="quicktask-btn-submit" data-action="confirm-bind">Bind folder</button>
+        </div>`;
+}
+
+function wireBindConfirmButtons(body) {
+    const confirmBtn = body.querySelector('[data-action="confirm-bind"]');
+    confirmBtn?.addEventListener('click', async () => {
+        if (!bindPreview?.success) return;
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Binding…';
+        try {
+            const res = await apiFetch('/api/projects/bind', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: bindPreview.path, machine: bindPreview.machine, dryRun: false }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.error || `Bind failed (HTTP ${res.status})`);
+            projectsCache = null;  // invalidate so the bound folder shows up next time
+            const { toastSuccess } = await import('./toast.js');
+            toastSuccess(`Bound '${data.path}' ✓`);
+            closeCommandPalette();
+        } catch (err) {
+            const { toastError } = await import('./toast.js');
+            toastError(err?.message || 'Bind failed');
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = 'Bind folder';
+        }
+    });
 }
 
 function newIdeaFormHtml() {
@@ -774,6 +890,39 @@ function openSessionItems(query) {
         }));
 }
 
+/** Bind-folder picker: "bind this folder" + "up" + subdirectories, all
+ *  filterable by the search input like every other list view. Navigation
+ *  and preview are async, so entries fetch on demand via loadBindBrowse. */
+function bindFolderItems(query) {
+    if (!bindBrowseCache) return [];
+    const items = [{
+        icon: '✓',
+        label: 'Bind this folder',
+        sublabel: bindBrowseCache.path,
+        keywords: 'bind here confirm current this',
+        run: () => startBindPreview(bindBrowseCache.path),
+    }];
+    if (bindBrowseCache.parent) {
+        items.push({
+            icon: '⬆',
+            label: '.. (up)',
+            sublabel: bindBrowseCache.parent,
+            keywords: 'up parent back',
+            run: () => navigateBindFolder(bindBrowseCache.parent),
+        });
+    }
+    for (const e of bindBrowseCache.entries) {
+        items.push({
+            icon: '📁',
+            label: e.name,
+            sublabel: e.hasConfig ? 'already bound' : '',
+            keywords: e.name,
+            run: () => navigateBindFolder(e.path),
+        });
+    }
+    return items.filter((it) => matches(query, `${it.label} ${it.keywords || ''}`));
+}
+
 function renderListView(items) {
     currentItems = items;
     if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
@@ -798,7 +947,7 @@ function updateSelection() {
     sel?.scrollIntoView({ block: 'nearest' });
 }
 
-const LIST_VIEWS = { root: rootItems, 'open-session': openSessionItems };
+const LIST_VIEWS = { root: rootItems, 'open-session': openSessionItems, 'bind-folder': bindFolderItems };
 
 function isListView() {
     return Object.prototype.hasOwnProperty.call(LIST_VIEWS, currentView);
@@ -816,7 +965,9 @@ function renderView() {
 
     if (isListView()) {
         search.hidden = false;
-        input.placeholder = currentView === 'open-session' ? 'Search sessions…' : 'Type a command or search…';
+        input.placeholder = currentView === 'open-session' ? 'Search sessions…'
+            : currentView === 'bind-folder' ? 'Filter folders…'
+            : 'Type a command or search…';
         footer.textContent = '↑↓ navigate · ↵ select · esc ' + (currentView === 'root' ? 'close' : 'back');
         renderListView(LIST_VIEWS[currentView](input.value));
         return;
@@ -837,6 +988,9 @@ function renderView() {
     else if (currentView === 'custom-item') {
         footer.textContent = '↵ run · esc back';
         body.innerHTML = customItemFormHtml(currentCustomItem);
+    } else if (currentView === 'bind-confirm') {
+        footer.textContent = 'esc back';
+        body.innerHTML = bindConfirmHtml();
     }
     const form = body.querySelector('.quicktask-form');
     if (currentView === 'new-idea') bindNewIdeaForm(form);
@@ -844,11 +998,14 @@ function renderView() {
     else if (currentView === 'new-session') bindNewSessionForm(form);
     else if (currentView === 'worktree') bindWorktreeForm(form);
     else if (currentView === 'custom-item') bindCustomItemForm(form);
+    else if (currentView === 'bind-confirm') wireBindConfirmButtons(body);
 }
 
 function focusActiveInput() {
     if (isListView()) {
         paletteEl.querySelector('.cmdk-input')?.focus();
+    } else if (currentView === 'bind-confirm') {
+        paletteEl.querySelector('[data-action="confirm-bind"], [data-action="back"]')?.focus();
     } else {
         paletteEl.querySelector('.quicktask-form textarea, .quicktask-form input')?.focus();
     }
@@ -862,6 +1019,18 @@ async function setView(view) {
     if (view === 'open-session') await loadSessions();
     if (view === 'new-session' || view === 'worktree') await loadProjects();
     if (view === 'root') await loadCustomCommands();
+    if (view === 'bind-folder') {
+        try {
+            await loadBindBrowse(bindBrowsePath);
+        } catch (err) {
+            const { toastError } = await import('./toast.js');
+            toastError(err?.message || 'Failed to browse folders');
+            currentView = 'root';
+            renderView();
+            focusActiveInput();
+            return;
+        }
+    }
     renderView();
     focusActiveInput();
 }
@@ -871,8 +1040,18 @@ function goBack() {
         closeCommandPalette();
         return;
     }
+    if (currentView === 'bind-confirm') {
+        // Back from the confirm step resumes browsing at the same spot,
+        // rather than discarding however many folders were clicked through.
+        bindPreview = null;
+        setView('bind-folder');
+        return;
+    }
     prefillProject = '';
     currentCustomItem = null;
+    bindBrowsePath = '';
+    bindBrowseCache = null;
+    bindPreview = null;
     setView('root');
 }
 
@@ -968,6 +1147,9 @@ export function closeCommandPalette() {
     selectedIndex = 0;
     prefillProject = '';
     currentCustomItem = null;
+    bindBrowsePath = '';
+    bindBrowseCache = null;
+    bindPreview = null;
     if (lastFocus && typeof lastFocus.focus === 'function') {
         try { lastFocus.focus(); } catch (e) { /* ignore */ }
     }
