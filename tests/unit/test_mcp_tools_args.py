@@ -240,11 +240,27 @@ class TestDesktopTools:
         from agentwire.mcp_desktop import desktop_write_artifact
         mock_req.side_effect = [
             {"success": True, "path": "/tmp/x.html", "url": "/artifacts/x.html"},
-            {"success": True, "window_id": "art-1"},
+            {"success": True, "id": "toast-1234", "clients": 1},
         ]
         result = desktop_write_artifact(filename="x.html", html_content="<h1>Hi</h1>")
-        assert "art-1" in result
+        assert "toast-1234" in result
+        assert "announced" in result
         assert mock_req.call_count == 2
+        # Step 2 is the click-to-open notification (#817), never a window open.
+        assert mock_req.call_args_list[1].args == (
+            "POST", "/api/desktop/notification",
+            {"artifact": {"url": "x.html", "title": "Artifact"}},
+        )
+
+    @patch("agentwire.mcp_desktop._portal_request")
+    def test_open_artifact_announces_not_opens(self, mock_req):
+        from agentwire.mcp_desktop import desktop_open_artifact
+        mock_req.return_value = {"success": True, "id": "toast-5678", "clients": 0}
+        result = desktop_open_artifact(url="report.html", title="Report", artifact_id="rep-1")
+        mock_req.assert_called_once_with("POST", "/api/desktop/notification", {
+            "artifact": {"url": "report.html", "title": "Report", "artifact_id": "rep-1"},
+        })
+        assert "toast-5678" in result
 
     @patch("agentwire.mcp_desktop._portal_request")
     def test_write_artifact_upload_failure(self, mock_req):

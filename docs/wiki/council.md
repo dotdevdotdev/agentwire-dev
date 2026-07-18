@@ -135,8 +135,9 @@ section per prompt — following the handoff pattern
   artifact CSP blocks external fetches; verbatim text is HTML-escaped),
   theme-aware light/dark, at
   `~/.agentwire/artifacts/council-<name>-minutes/index.html`. The command
-  prints the path and best-effort opens it as a portal artifact window when
-  the portal is up (`opened` in the `--json` payload).
+  prints the path and best-effort announces it as a click-to-open portal
+  notification — toast + Session HUD entry, never a focus-stealing window
+  open (#817) — when the portal is up (`notified` in the `--json` payload).
 - **`council stop` renders minutes automatically** when any prompt exists
   (`--no-minutes` to skip, `--synthesis` to include your synthesis), so
   closing a sitting leaves the record behind. Prompt history survives stop,

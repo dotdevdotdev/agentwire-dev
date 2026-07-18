@@ -149,7 +149,11 @@ def cmd_notify_parent(args) -> int:
 
 
 def cmd_open(args) -> int:
-    """Open a URL or local file as an artifact window in the portal.
+    """Announce a URL or local file as a click-to-open artifact notification.
+
+    Posts a portal notification (toast + Session HUD entry) carrying the
+    artifact target instead of force-opening a window (#817) — the window
+    opens, focused, only when the human clicks the notice.
 
     Examples:
         agentwire open dashboard.html --title "Dashboard"
@@ -167,26 +171,23 @@ def cmd_open(args) -> int:
 
     portal_url = _get_portal_url()
 
-    body = {
-        "type": "artifact",
-        "url": url,
-        "title": title,
-    }
+    artifact = {"url": url, "title": title}
     if artifact_id:
-        body["artifact_id"] = artifact_id
+        artifact["artifact_id"] = artifact_id
 
     try:
         resp = portal_request(
             "POST",
-            f"{portal_url}/api/desktop/window/open",
-            json=body,
+            f"{portal_url}/api/desktop/notification",
+            json={"artifact": artifact},
         )
         data = resp.json()
 
         if json_output:
             print(json.dumps(data))
         elif data.get("success"):
-            print(f"Opened artifact window: {title} (id: {data.get('window_id', 'unknown')})")
+            print(f"Artifact announced: {title} (notification id: {data.get('id', 'unknown')}) "
+                  "— click the toast or HUD entry to open")
         else:
             print(f"Failed: {data.get('error', 'Unknown error')}", file=sys.stderr)
             return 1
@@ -311,11 +312,11 @@ def register_notify_parser(subparsers) -> None:
     notify_cmd_parser.add_argument("--json", action="store_true", help="Output as JSON")
     notify_cmd_parser.set_defaults(func=cmd_notify_parent)
 
-    # === open command (artifact windows) ===
-    open_parser = subparsers.add_parser("open", help="Open a URL or local file as an artifact window in the portal")
-    open_parser.add_argument("url", help="URL or filename to open (filenames served from ~/.agentwire/artifacts/)")
+    # === open command (artifact notifications) ===
+    open_parser = subparsers.add_parser("open", help="Announce a URL or local file as a click-to-open artifact notification in the portal")
+    open_parser.add_argument("url", help="URL or filename to announce (filenames served from ~/.agentwire/artifacts/)")
     open_parser.add_argument("--title", "-t", type=str, default="Artifact", help="Window title")
-    open_parser.add_argument("--artifact-id", type=str, help="Unique window ID (auto-generated if omitted)")
+    open_parser.add_argument("--artifact-id", type=str, help="Unique window ID for the opened artifact (auto-generated if omitted)")
     open_parser.add_argument("--json", action="store_true", help="Output JSON")
     open_parser.set_defaults(func=cmd_open)
 

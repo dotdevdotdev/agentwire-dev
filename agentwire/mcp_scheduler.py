@@ -258,7 +258,7 @@ def scheduler_report(since: str = "8h", artifact: bool = False) -> str:
 
     Args:
         since: Time window to cover (e.g. '8h', '12h', '1d') default: '8h'
-        artifact: If True, open the report as a portal artifact window
+        artifact: If True, announce the report as a click-to-open portal notification
 
     Returns:
         Path to generated HTML report and summary statistics.

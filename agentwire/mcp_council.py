@@ -212,9 +212,10 @@ def council_minutes(name: str = "", prompt: str = "", synthesis: str = "") -> st
     Deterministically renders the sitting's persisted prompt history
     (question + attributed take/ack/pass replies) plus your optional
     synthesis into a self-contained HTML artifact at
-    ``~/.agentwire/artifacts/council-<name>-minutes/index.html``, and opens
-    it as a portal artifact window when the portal is up. Works for live and
-    dismissed sittings alike — prompt history survives ``council_stop``.
+    ``~/.agentwire/artifacts/council-<name>-minutes/index.html``, and
+    announces it as a click-to-open portal notification when the portal is
+    up (#817 — never steals focus). Works for live and dismissed sittings
+    alike — prompt history survives ``council_stop``.
 
     Args:
         prompt: Prompt id to render, or 'all' (empty = all)
@@ -222,7 +223,7 @@ def council_minutes(name: str = "", prompt: str = "", synthesis: str = "") -> st
         name: Sitting name (empty = cwd-repo-slug / sole live sitting)
 
     Returns:
-        The rendered artifact's path, and whether a portal window opened.
+        The rendered artifact's path, and whether the portal was notified.
     """
     args = ["council", "minutes"]
     if name:
@@ -235,6 +236,6 @@ def council_minutes(name: str = "", prompt: str = "", synthesis: str = "") -> st
     if not data.get("success"):
         return f"Failed to render minutes: {data.get('error') or data}"
     out = f"{_council_tag(data)}Minutes: {data.get('path')}"
-    if data.get("opened"):
-        out += "\nOpened as a portal artifact window."
+    if data.get("notified"):
+        out += "\nAnnounced in the portal — the human clicks the notification to open."
     return out

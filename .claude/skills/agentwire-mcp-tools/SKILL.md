@@ -162,8 +162,8 @@ up|down`) — the MCP surface is read-only introspection.
 | Preview windows in a collage overlay | `desktop_collage()` |
 | Open session window | `desktop_open_session(session="...", mode="monitor")` |
 | Open panel | `desktop_open_panel(panel_type="sessions")` |
-| Open artifact window (URL/file) | `desktop_open_artifact(url="...", title="...")` |
-| Write HTML + open as artifact | `desktop_write_artifact(filename="...", html_content="...", title="...")` |
+| Announce artifact, click-to-open (URL/file) | `desktop_open_artifact(url="...", title="...")` — notification, never steals focus (#817) |
+| Write HTML + announce as artifact | `desktop_write_artifact(filename="...", html_content="...", title="...")` |
 | Post toast to the human | `notify_user(text="...", session="...", priority="normal")` (safe markdown: bold, [links](url), line breaks) |
 | Close window | `desktop_close_window(window_id="...")` |
 | Focus window | `desktop_focus_window(window_id="...")` |

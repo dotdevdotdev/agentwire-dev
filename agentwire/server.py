@@ -1784,7 +1784,8 @@ class AgentWireServer(
     async def _post_toast(self, text: str, session: str | None = None,
                           priority: str = "normal", id_prefix: str = "toast",
                           notification_id: str | None = None,
-                          timeout: float | None = None) -> str:
+                          timeout: float | None = None,
+                          artifact: dict | None = None) -> str:
         """Post a dashboard toast notification, replacing any stale toast
         for the same session key. Single emit path — the HTTP endpoint
         delegates here too.
@@ -1793,14 +1794,30 @@ class AgentWireServer(
         auto-fade after a default timeout, ``high`` toasts stick until
         dismissed. An explicit ``timeout`` (seconds) overrides the default;
         0 means sticky. Returns the notification id.
+
+        ``artifact`` (#817) is a ``{url, title, artifact_id}`` click-to-open
+        target: the frontend renders these as actionable notices (toast + HUD
+        entry) and only opens the artifact window when the human clicks. They
+        default to sticky — an unclicked deliverable must not silently fade —
+        dedup against their own ``artifact_id`` (a re-render replaces the old
+        notice), and are exempt from the same-session sweep in both
+        directions: seeing the session ≠ seeing the artifact.
         """
         notification_id = notification_id or f"{id_prefix}-{str(uuid.uuid4())[:8]}"
         if session:
             stale = [nid for nid, n in self.active_notifications.items()
-                     if n.get("session") == session]
+                     if n.get("session") == session and not n.get("artifact")]
             for nid in stale:
                 self.active_notifications.pop(nid, None)
                 await self.broadcast_dashboard("notification_dismiss", {"id": nid})
+        if artifact:
+            stale = [nid for nid, n in self.active_notifications.items()
+                     if (n.get("artifact") or {}).get("artifact_id") == artifact.get("artifact_id")]
+            for nid in stale:
+                self.active_notifications.pop(nid, None)
+                await self.broadcast_dashboard("notification_dismiss", {"id": nid})
+            if timeout is None:
+                timeout = 0
         notification = {
             "id": notification_id,
             "text": text,
@@ -1810,6 +1827,8 @@ class AgentWireServer(
         }
         if timeout is not None:
             notification["timeout"] = timeout
+        if artifact:
+            notification["artifact"] = artifact
         self.active_notifications[notification_id] = notification
         await self.broadcast_dashboard("notification", notification)
         await self._fanout_push(text, session=session, priority=priority)

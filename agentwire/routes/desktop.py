@@ -44,7 +44,12 @@ class DesktopRoutesMixin:
         return web.json_response({"success": True, "windows": windows})
 
     async def api_desktop_open(self, request):
-        """POST /api/desktop/window/open — open a window in the portal."""
+        """POST /api/desktop/window/open — open a window in the portal.
+
+        Session and panel windows only. Artifacts deliberately have no
+        force-open path (#817): producers POST /api/desktop/notification with
+        an ``artifact`` target and the window opens when the human clicks.
+        """
         data = await request.json()
         window_type = data.get("type", "session")
         window_id = None
@@ -68,18 +73,6 @@ class DesktopRoutesMixin:
             await self.broadcast_dashboard("desktop_open_window", {
                 "window_type": "panel",
                 "panel": panel,
-            })
-        elif window_type == "artifact":
-            url = data.get("url")
-            title = data.get("title", "Artifact")
-            if not url:
-                return web.json_response({"success": False, "error": "url required"}, status=400)
-            window_id = data.get("artifact_id") or f"artifact-{url.replace('/', '-').replace('.', '-')}"
-            await self.broadcast_dashboard("desktop_open_window", {
-                "window_type": "artifact",
-                "url": url,
-                "title": title,
-                "artifact_id": window_id,
             })
         else:
             return web.json_response({"success": False, "error": f"unknown type: {window_type}"}, status=400)
@@ -160,9 +153,31 @@ class DesktopRoutesMixin:
         One toast per session: if a toast with the same `session` is already
         active, it is dismissed before the new one is posted. Keeps the nagger
         from stacking N toasts for the same idle session across nag cycles.
+
+        Optional ``artifact`` ``{url, title, artifact_id}`` (#817) makes the
+        notification a click-to-open artifact notice — the sole portal-side
+        path for announcing a background-produced artifact. ``text`` may be
+        omitted then (a default is synthesized from the title); ``artifact_id``
+        defaults to the same url-derived window id the frontend uses.
         """
         data = await request.json()
         text = data.get("text", "")
+
+        artifact = data.get("artifact")
+        if artifact is not None:
+            url = (artifact or {}).get("url")
+            if not url:
+                return web.json_response({"success": False, "error": "artifact.url required"}, status=400)
+            title = artifact.get("title") or "Artifact"
+            artifact = {
+                "url": url,
+                "title": title,
+                "artifact_id": artifact.get("artifact_id")
+                or f"artifact-{url.replace('/', '-').replace('.', '-')}",
+            }
+            if not text:
+                text = f"**{title}** is ready — click to open"
+
         if not text:
             return web.json_response({"success": False, "error": "text required"}, status=400)
 
@@ -180,6 +195,7 @@ class DesktopRoutesMixin:
             priority=data.get("priority", "normal"),
             notification_id=data.get("id"),
             timeout=timeout,
+            artifact=artifact,
         )
 
         # Report how many dashboards saw it live. 0 isn't a failure — the toast

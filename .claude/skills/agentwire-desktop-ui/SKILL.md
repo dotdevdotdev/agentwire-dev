@@ -85,10 +85,11 @@ Agents can display HTML content in sandboxed iframe windows on the portal deskto
 
 **Agent workflow (MCP):**
 ```python
-# Write HTML and open in one step
+# Write HTML and announce in one step (click-to-open notification, #817 —
+# artifacts never force-open a window or steal focus)
 desktop_write_artifact(filename="dashboard.html", html_content="<h1>Hello</h1>", title="Dashboard")
 
-# Or open an existing file or external URL
+# Or announce an existing file or external URL
 desktop_open_artifact(url="dashboard.html", title="Dashboard")
 desktop_open_artifact(url="https://example.com", title="External")
 ```

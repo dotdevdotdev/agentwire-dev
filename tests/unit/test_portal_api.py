@@ -628,6 +628,71 @@ class TestApiDesktopNotification:
         assert data["clients"] == 1
         assert "id" in data
 
+    async def test_artifact_notice_defaults(self, portal_client):
+        """#817: an artifact notice needs no text (synthesized from the title),
+        derives the frontend's url-slug window id, and defaults to sticky —
+        an unclicked deliverable must never silently fade."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        resp = await client.post("/api/desktop/notification", json={
+            "artifact": {"url": "council-proj-minutes/index.html",
+                         "title": "Council minutes — proj"},
+        })
+        assert resp.status == 200
+        [notice] = server.active_notifications.values()
+        assert notice["text"] == "**Council minutes — proj** is ready — click to open"
+        assert notice["timeout"] == 0
+        assert notice["artifact"] == {
+            "url": "council-proj-minutes/index.html",
+            "title": "Council minutes — proj",
+            "artifact_id": "artifact-council-proj-minutes-index-html",
+        }
+
+    async def test_artifact_requires_url(self, portal_client):
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        resp = await client.post("/api/desktop/notification", json={
+            "artifact": {"title": "No url"},
+        })
+        assert resp.status == 400
+
+    async def test_artifact_dedup_by_artifact_id(self, portal_client):
+        """A re-render of the same artifact replaces its pending notice
+        instead of stacking a second one."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        for _ in range(2):
+            await client.post("/api/desktop/notification", json={
+                "artifact": {"url": "report.html", "title": "Report"},
+            })
+        assert len(server.active_notifications) == 1
+
+    async def test_session_sweep_spares_artifact_notices(self, portal_client):
+        """The one-toast-per-session replacement must not eat a pending
+        artifact notice tagged with the same session — seeing the session
+        is not seeing the artifact (#817)."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        await client.post("/api/desktop/notification", json={
+            "session": "proj",
+            "artifact": {"url": "report.html", "title": "Report"},
+        })
+        await client.post("/api/desktop/notification", json={
+            "session": "proj", "text": "idle nag",
+        })
+        texts = sorted(n["text"] for n in server.active_notifications.values())
+        assert texts == ["**Report** is ready — click to open", "idle nag"]
+
+    async def test_window_open_rejects_artifact_type(self, portal_client):
+        """#817: the force-open path for artifacts is gone — producers go
+        through /api/desktop/notification instead."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        resp = await client.post("/api/desktop/window/open", json={
+            "type": "artifact", "url": "x.html", "title": "X",
+        })
+        assert resp.status == 400
+
 
 # ---------------------------------------------------------------------------
 # Security middleware: Origin validation (CSRF guard)
