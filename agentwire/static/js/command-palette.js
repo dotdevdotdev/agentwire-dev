@@ -496,10 +496,11 @@ function bindNewSessionForm(form) {
         const name = form.querySelector('input[name="project"]').value.trim();
         if (!name) { showError('Pick a project.'); return; }
         const proj = findProject(name);
+        if (!proj) { showError(`Unknown project "${name}" — pick one from the list.`); return; }
         showProgress(`Starting session for ${name}…`);
         try {
             await spawnAndOpen({
-                name, path: proj?.path, machine: proj?.machine,
+                name, path: proj.path, machine: proj.machine,
                 roles, posture: postureSel.value || undefined,
             });
         } catch (err) {
