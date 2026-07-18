@@ -170,6 +170,7 @@ async function loadBindBrowse(path) {
 async function navigateBindFolder(path) {
     try {
         await loadBindBrowse(path);
+        if (!paletteEl) return;  // palette closed while loading
         renderView();
         focusActiveInput();
     } catch (err) {
