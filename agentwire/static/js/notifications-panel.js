@@ -14,6 +14,7 @@
 
 import { apiFetch } from './api.js';
 import { desktop } from './desktop-manager.js';
+import { escapeHtml, renderRichText } from './utils/rich-text.js';
 
 const MAX_TOASTS = 8;
 // Lifecycle contract: `normal` toasts are transient info — they auto-fade
@@ -108,13 +109,17 @@ class NotificationsPanel {
 
         const timeStr = this._formatTime(timestamp);
 
+        // Artifact notices render with links OFF (#821 review): the text
+        // embeds the caller-supplied artifact title, and the whole body is
+        // already a click-to-open button — link syntax in a title must show
+        // as literal text, never a spoofable anchor.
         toast.innerHTML = `
             <div class="notification-toast-header">
-                ${session ? `<span class="notification-session-badge">${this._escapeHtml(session)}</span>` : ''}
+                ${session ? `<span class="notification-session-badge">${escapeHtml(session)}</span>` : ''}
                 <span class="notification-time">${timeStr}</span>
                 <button class="notification-dismiss" title="Dismiss">&times;</button>
             </div>
-            <div class="notification-toast-body">${this._renderRichText(text)}</div>
+            <div class="notification-toast-body">${renderRichText(text, { links: !artifact })}</div>
         `;
 
         // Click body -> artifact notices open their artifact (the deliberate
@@ -267,29 +272,6 @@ class NotificationsPanel {
         if (!timestamp) return '';
         const d = new Date(timestamp * 1000);
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    _escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
-    }
-
-    // Render a SAFE markdown subset: bold, links, line breaks. Escape everything
-    // FIRST so no source HTML survives, then introduce only our own known tags.
-    // Links are restricted to http(s)/mailto (no javascript:/data:), and because
-    // quotes are already escaped, the agent text can't break out of the href.
-    _renderRichText(str) {
-        let s = this._escapeHtml(str);
-        // Links before bold so [**label**](url) composes. URL came through escape,
-        // so any " is already &quot; — it can't close the attribute.
-        s = s.replace(
-            /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
-            (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`
-        );
-        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        s = s.replace(/\n/g, '<br>');
-        return s;
     }
 }
 
