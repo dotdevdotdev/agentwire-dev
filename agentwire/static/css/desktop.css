@@ -1841,6 +1841,23 @@ body {
     color: var(--background);
 }
 
+/* Bind-folder picker (command palette bind-confirm view) */
+.cmdk-bind-path {
+    font-family: var(--mono, monospace);
+    font-size: 13px;
+    color: var(--text);
+    word-break: break-all;
+}
+
+.cmdk-bind-note {
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--background);
+    border: 1px solid var(--chrome-border);
+    border-radius: 4px;
+    padding: 8px 10px;
+}
+
 /* Idea capture (command palette new-idea view) */
 .cmdk-idea-wrap {
     position: relative;

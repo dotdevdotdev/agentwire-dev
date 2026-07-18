@@ -7,6 +7,7 @@ sources. Projects are directories carrying a ``.agentwire.yml`` config.
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -200,6 +201,134 @@ def cmd_projects_create(args) -> int:
     return 0
 
 
+def cmd_projects_add(args) -> int:
+    """Bind an existing folder as a project without hand-editing config.yaml (#814).
+
+    Local: resolve+canonicalize the path, require it to exist, write a minimal
+    .agentwire.yml unless one is already there (collision = "already bound",
+    never overwritten), then register it in the out-of-tree registry unless
+    the scan of projects.dir already covers it.
+
+    Remote (--machine): validated against machines.json, existence checked
+    over SSH (informational — mirrors repo-info's local/remote split), then
+    registered. Writing .agentwire.yml remotely and the projects.dir-child
+    skip-check are local-only concerns — the existing remote scan
+    (`_discover_remote_projects`) already reads .agentwire.yml over SSH once
+    a path is registered, so bind doesn't re-derive that logic per transport.
+
+    --check runs the same resolution/validation/collision-detection with no
+    writes (no .agentwire.yml, no registry entry) — the portal's bind modal
+    uses it for the non-mutating preview step before the user confirms.
+    """
+    from .config import get_config
+    from .core import _get_machine_config, _run_remote
+    from .project_config import ProjectConfig, save_project_config
+    from .projects import add_registry_entry, is_registered
+
+    json_mode = getattr(args, "json", False)
+    check_mode = bool(getattr(args, "check", False))
+    machine = (getattr(args, "machine", None) or "local").strip() or "local"
+    raw_path = (args.path or "").strip()
+
+    def _fail(msg: str) -> int:
+        if json_mode:
+            _output_json({"success": False, "error": msg})
+        else:
+            print(f"Error: {msg}", file=sys.stderr)
+        return 1
+
+    if not raw_path:
+        return _fail("Path is required")
+
+    if machine != "local":
+        if not _get_machine_config(machine):
+            return _fail(f"Unknown machine '{machine}' — run 'agentwire machine list' to see registered machines")
+
+        path = raw_path.rstrip("/") or raw_path
+        result = _run_remote(machine, f"test -d {shlex.quote(path)} && echo exists")
+        if result.returncode != 0 or "exists" not in (result.stdout or ""):
+            return _fail(f"'{path}' does not exist or is not a directory on '{machine}'")
+
+        already_registered = is_registered(path, machine)
+        newly_registered = False
+        if not check_mode and not already_registered:
+            newly_registered = add_registry_entry(path, machine)
+
+        payload = {
+            "success": True,
+            "path": path,
+            "machine": machine,
+            "already_bound": already_registered,
+            "mechanism": "registry",
+            "dry_run": check_mode,
+        }
+        if json_mode:
+            _output_json(payload)
+        else:
+            if check_mode:
+                verb = "Already registered" if already_registered else "Would register"
+            else:
+                verb = "Already registered" if already_registered else "Bound"
+            print(f"{verb} '{path}' on '{machine}' (registry)")
+            if not check_mode and not already_registered and not newly_registered:
+                print("Warning: registry write failed", file=sys.stderr)
+        return 0
+
+    # Local path: canonicalize symlinks/~ so what's stored is the real target.
+    p = Path(raw_path).expanduser().resolve()
+    if not p.exists() or not p.is_dir():
+        return _fail(f"'{p}' does not exist or is not a directory")
+
+    config_file = p / ".agentwire.yml"
+    already_bound = config_file.exists()
+
+    if not already_bound and not check_mode:
+        cfg = ProjectConfig(posture="bypass", roles=[], voice=None)
+        if not save_project_config(cfg, p):
+            return _fail(f"Failed to write .agentwire.yml at {p}")
+
+    # Git status is informational only — never gates the bind (reuses repo_cli's logic).
+    from .repo_cli import _repo_info
+    info = _repo_info(str(p), "local")
+
+    projects_dir = get_config().projects.dir.expanduser().resolve()
+    under_scan = p.parent == projects_dir
+    already_registered = is_registered(str(p), "local")
+    newly_registered = False
+    if not under_scan and not already_registered and not check_mode:
+        newly_registered = add_registry_entry(str(p), "local")
+
+    mechanism = "scan" if under_scan else "registry"
+
+    payload = {
+        "success": True,
+        "path": str(p),
+        "machine": "local",
+        "already_bound": already_bound,
+        "wrote_config": (not already_bound) and not check_mode,
+        "is_git": info["is_git"],
+        "branch": info["current_branch"],
+        "mechanism": mechanism,
+        "dry_run": check_mode,
+    }
+    if json_mode:
+        _output_json(payload)
+    else:
+        if already_bound:
+            print(f"'{p}' already has .agentwire.yml — already bound")
+        elif check_mode:
+            print(f"'{p}' would be bound — .agentwire.yml would be written")
+        else:
+            print(f"Bound '{p}' — wrote .agentwire.yml")
+        print(f"  git: {'branch ' + info['current_branch'] if info['is_git'] and info['current_branch'] else ('git repo' if info['is_git'] else 'not a git repository')}")
+        if under_scan:
+            print(f"  discovered via scan of {projects_dir}")
+        else:
+            verb = "would be registered" if check_mode else ("newly registered" if newly_registered else "already registered")
+            print(f"  discovered via registry ({verb})")
+    return 0
+
+
 def cmd_roles_show(args) -> int:
     """Show details for a specific role."""
     from .roles import discover_role, parse_role_file
@@ -302,3 +431,17 @@ def register_projects_parser(subparsers) -> None:
     )
     projects_create.add_argument("--json", action="store_true", help="Output as JSON")
     projects_create.set_defaults(func=cmd_projects_create)
+
+    # projects add
+    projects_add = projects_subparsers.add_parser(
+        "add",
+        help="Bind an existing folder as a project (writes .agentwire.yml + registers out-of-tree paths)",
+    )
+    projects_add.add_argument("path", help="Path to an existing folder")
+    projects_add.add_argument("--machine", help="Machine ID the path lives on (default: local)")
+    projects_add.add_argument(
+        "--check", action="store_true",
+        help="Resolve and validate only — don't write .agentwire.yml or register anything (dry run)",
+    )
+    projects_add.add_argument("--json", action="store_true", help="Output as JSON")
+    projects_add.set_defaults(func=cmd_projects_add)
