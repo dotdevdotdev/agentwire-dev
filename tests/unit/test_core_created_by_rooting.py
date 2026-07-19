@@ -115,3 +115,14 @@ class TestResolveDefaultCreatedBy:
         monkeypatch.setattr(core, "tmux_session_exists", lambda s: False)
         repo = _make_repo(tmp_path)
         assert core.resolve_default_created_by("myproject-fix-bug", repo) is None
+
+    def test_service_session_caller_returns_none(self, monkeypatch, tmp_path):
+        # Regression (2026-07-19): a session created via the portal web UI
+        # inherits the portal server subprocess's TMUX_PANE, so `caller`
+        # resolves to the "agentwire-portal" service session. Parenting to it
+        # is a bug even when same_project would otherwise match — a service
+        # session never drains its msg inbox, so anything parented to it
+        # dead-letters forever (147-message escalation-email storm).
+        repo = _make_repo(tmp_path)
+        monkeypatch.setattr(core, "_live_session_cwd", lambda s: repo)
+        assert core.resolve_default_created_by("agentwire-portal", repo) is None
