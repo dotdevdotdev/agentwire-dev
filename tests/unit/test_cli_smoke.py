@@ -66,3 +66,20 @@ def test_subcommand_help_renders(path, capsys):
     assert exc_info.value.code == 0
     # Help should actually print something.
     assert capsys.readouterr().out.strip()
+
+
+# --- #827: --kind reviewer is a valid argparse choice everywhere --kind is
+# accepted (new/worktree/session-defaults) — a bad choice would raise
+# SystemExit(2) at the parser layer before any handler runs.
+
+@pytest.mark.parametrize("argv", [
+    ["new", "-s", "proj", "--kind", "reviewer"],
+    ["worktree", "some-name", "--kind", "reviewer"],
+    ["session-defaults", "--kind", "reviewer"],
+])
+def test_kind_reviewer_is_accepted(argv):
+    from agentwire.__main__ import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    assert args.kind == "reviewer"

@@ -56,6 +56,13 @@ agentwire worktree name --kind orchestrator  # ROLE override (#716): a durable, 
 agentwire orchestrator [name] -p <project>  # sugar for `worktree --kind orchestrator`
                                 #   (name defaults to "orchestrator") — the durable-window
                                 #   one-liner for a monorepo/large-repo project.
+agentwire worktree name --kind reviewer  # ROLE override (#827): a PR-review station — safety-
+                                #   railed the other way (never opens/merges its own PR,
+                                #   iterates via msg_send, reports a verdict via notify_parent).
+                                #   Stays parented like worker (not rooted). Pane/main topology
+                                #   is the typical default (`agentwire new --kind reviewer`);
+                                #   use `worktree --kind reviewer` for a local checkout to e2e
+                                #   a sibling's branch.
 agentwire worktree --list       # list this repo's worktree sessions + read-only git status; --all = every repo
 agentwire worktree --status name  # read-only git status (dirty/ahead/behind/pushed) for one worktree
 agentwire worktree --dangling    # LIVE worker sessions with an OPEN PR and no live recorded

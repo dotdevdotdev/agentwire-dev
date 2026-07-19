@@ -33,9 +33,10 @@ def worktree_create(
     Args:
         name: Worktree/branch name (becomes the branch + session suffix).
         project_dir: Path to the git repo (default: server cwd).
-        roles: Comma-separated roles STACKED on the intrinsic worker etiquette
-            (e.g. "correspondent"). Never replaces the safety rail (kind=worker;
-            for kind="orchestrator" these REPLACE the default persona instead).
+        roles: Comma-separated roles STACKED on the intrinsic worker/reviewer
+            etiquette (e.g. "correspondent"). Never replaces the safety rail
+            (kind=worker or kind=reviewer; for kind="orchestrator" these
+            REPLACE the default persona instead).
         base: Base branch to fork from (default: the repo's origin/HEAD).
         prompt: Optional first message — delivered once the agent is booted and
             ready (verified paste). Lets you spawn AND seed the task in one call
@@ -50,9 +51,13 @@ def worktree_create(
             roots by default (a durable orchestrator shouldn't inherit
             whoever spawned it).
         kind: Session role — "worker" (default: safety-railed, isolation/
-            verify/draft-PR/notify, non-overridable) or "orchestrator" (a
+            verify/draft-PR/notify, non-overridable), "orchestrator" (a
             durable, replaceable-persona project window instead of a
-            subordinate). Leave empty for the default.
+            subordinate), or "reviewer" (safety-railed the other way:
+            adversarially reviews a sibling session's PR, never opens or
+            merges one of its own; stays parented like worker, not rooted
+            like orchestrator — for anyone who needs a local checkout to e2e
+            a sibling's branch). Leave empty for the default.
 
     Returns:
         Success message with the session name + worktree path, or an error.

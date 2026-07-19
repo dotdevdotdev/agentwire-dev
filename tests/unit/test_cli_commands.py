@@ -515,6 +515,20 @@ class TestCmdNewDefaultCreatedByRooting:
         )
         assert recorded["created_by"] == "orchestrator"
 
+    def test_explicit_kind_reviewer_stays_parented_same_project_caller(self, monkeypatch, tmp_path):
+        # #827: unlike orchestrator, --kind reviewer must NOT join the joint
+        # rooting default — the gate is an exact string match against
+        # 'orchestrator', so reviewer falls through to the normal
+        # same-project inherit path below. A reviewer is scoped to a specific
+        # sibling's PR, so it should nest under its spawner (sidebar tree,
+        # notify-parent) rather than rooting like a durable orchestrator.
+        recorded = self._run(
+            monkeypatch, tmp_path,
+            caller_session="orchestrator", caller_project_path=Path(tmp_path),
+            kind="reviewer",
+        )
+        assert recorded["created_by"] == "orchestrator"
+
 
 # --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
 #

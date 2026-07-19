@@ -151,12 +151,16 @@ def session_create(
             spawns already auto-root (#715), so this is mainly for a
             same-project session you want detached, or to force standalone
             explicitly. Ignored when `created_by` is set (that wins).
-        kind: Session role — "worker" or "orchestrator". A flat name (no
-            branch) already defaults to orchestrator; a project/branch name
-            defaults to worker (safety-railed: isolation/verify/draft-PR/
-            notify). Pass "orchestrator" to override that default for a
-            project/branch name — e.g. a durable branch-pinned project
-            window. Leave empty for the derived default.
+        kind: Session role — "worker", "orchestrator", or "reviewer". A flat
+            name (no branch) already defaults to orchestrator; a
+            project/branch name defaults to worker (safety-railed:
+            isolation/verify/draft-PR/notify). Pass "orchestrator" to
+            override that default for a project/branch name — e.g. a durable
+            branch-pinned project window. Pass "reviewer" for a PR-review
+            station that adversarially reviews a sibling session's PR and
+            never opens/merges one of its own (safety-railed the other way —
+            non-overridable, parented rooting like worker, not rooted like
+            orchestrator). Leave empty for the derived default.
 
     Returns:
         Success message or error description.

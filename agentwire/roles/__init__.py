@@ -162,7 +162,7 @@ def merge_roles(roles: list[RoleConfig]) -> MergedRole:
 
 # Roles whose whole job is autonomous execution — personality actively
 # conflicts with them ("run, don't ask"), so soul is never injected.
-HEADLESS_ROLES = {"worker", "task-runner", "notifications"}
+HEADLESS_ROLES = {"worker", "reviewer", "task-runner", "notifications"}
 
 
 def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool = False) -> list[str]:
@@ -199,39 +199,48 @@ def inject_soul(role_names: list[str], config: dict | None = None, no_soul: bool
     return [*role_names, "soul"]
 
 
-# ROLE ∈ {orchestrator, worker} is authority + etiquette — what the session
-# IS and what it's allowed to do — and says nothing about WHERE it runs.
-# TOPOLOGY (main checkout / worktree branch / pane) is a separate axis. A
-# worker's concrete etiquette payload still differs by topology (a worktree
+# ROLE ∈ {orchestrator, worker, reviewer} is authority + etiquette — what the
+# session IS and what it's allowed to do — and says nothing about WHERE it
+# runs. TOPOLOGY (main checkout / worktree branch / pane) is a separate axis.
+# A worker's concrete etiquette payload still differs by topology (a worktree
 # worker pushes a branch and opens a draft PR, keeps voice, and can ask via
 # prompt-routing; a pane/main-topology worker is headless, writes an
 # exit-summary, and gets auto-killed) — that composition lives in
 # WORKTREE_TOPOLOGY_ETIQUETTE + _intrinsic_role_name below, not in the kind
 # itself. Kind is derived from the spawn verb — `agentwire new`/`worktree` →
 # orchestrator or worker (never user-configured except via --kind); `spawn`
-# → worker, always pane topology. These are the ONLY roles agentwire injects
-# on its own behalf.
+# → worker, always pane topology. `reviewer` is never derived, only ever
+# explicit (#827) — a worker's mandatory-PR rail inverted: adversarially
+# reviews a sibling's PR and never opens/merges its own. These are the ONLY
+# roles agentwire injects on its own behalf.
 INTRINSIC_ETIQUETTE: dict[str, str] = {
     "orchestrator": "orchestrator",
     "worker": "worker",
+    "reviewer": "reviewer",
 }
 
-# Override for role=worker on worktree topology (its own branch/worktree, not
-# a pane): isolation/verify/draft-PR/don't-merge/notify. Only "worker" has a
-# topology-specific variant — "orchestrator" is topology-invariant.
+# Override for role=worker/reviewer on worktree topology (its own
+# branch/worktree, not a pane): isolation/verify + a role-specific finish
+# (worker: draft-PR/notify; reviewer: pull the sibling's branch in for local
+# e2e, never push/PR/merge). "orchestrator" is topology-invariant — no
+# worktree-specific variant.
 WORKTREE_TOPOLOGY_ETIQUETTE: dict[str, str] = {
     "worker": "worker-worktree",
+    "reviewer": "reviewer-worktree",
 }
 
 # SAFETY-RAIL kinds carry a STRUCTURAL contract that must always be present —
 # it describes what the session *is*, and dropping it is a safety regression.
 # For these, the intrinsic etiquette is NON-OVERRIDABLE: user/project roles
-# STACK on top of it, never replace it.
+# STACK on top of it, never replace it. worker's rail is "must open a PR";
+# reviewer's is the inverse — "must never open/merge one, never patch the
+# branch under review directly" (#827) — equally worth protecting from a
+# later --roles silently erasing it.
 #
 # Every other kind (orchestrator) is a PERSONA: a sensible zero-config default
 # that explicit roles are free to REPLACE — that's what keeps council /
 # scheduler / task sessions clean when they pass their own roles.
-SAFETY_RAIL_KINDS: set[str] = {"worker"}
+SAFETY_RAIL_KINDS: set[str] = {"worker", "reviewer"}
 
 
 def _intrinsic_role_name(kind: str | None, worktree_topology: bool) -> str | None:
@@ -247,15 +256,17 @@ def derive_session_kind(has_branch: bool, explicit_kind: str | None = None) -> s
     """The session's ROLE for an `agentwire new` (or worktree) dispatch.
 
     Role is derived from what's being created, never user-configured:
-    - An explicit kind wins.
+    - An explicit kind wins — including "reviewer", which this function never
+      derives on its own (there's no signal in has_branch that means
+      "review", so it's explicit-only).
     - Otherwise a worktree (a ``project/branch`` name, which is also how the
       scheduler and portal dispatch worktrees) is a subordinate — "worker" —
       regardless of entrypoint. A plain name is an orchestrator.
 
-    This is the ROLE axis only (authority: orchestrator vs worker) — it says
-    nothing about topology. The concrete etiquette payload for a worker still
-    varies by topology (worktree vs pane/main); that composition happens in
-    :func:`resolve_roles`, not here.
+    This is the ROLE axis only (authority: orchestrator vs worker vs
+    reviewer) — it says nothing about topology. The concrete etiquette
+    payload for a worker/reviewer still varies by topology (worktree vs
+    pane/main); that composition happens in :func:`resolve_roles`, not here.
     """
     if explicit_kind:
         return explicit_kind
@@ -273,13 +284,15 @@ def resolve_roles(
 
     Two rules, by kind:
 
-    - **Safety-rail kinds** (``worker``): the intrinsic etiquette is
-      structural and non-overridable. Result = intrinsic + project roles +
-      cli roles, stacked and de-duplicated (etiquette always first/present).
-      ``--roles`` ADDS to the contract, never removes it. Which etiquette
-      file is intrinsic depends on ``worktree_topology`` — a worker on its
-      own worktree gets the isolation/draft-PR/notify contract; a pane (or
-      main-topology) worker gets the exit-summary/auto-kill contract.
+    - **Safety-rail kinds** (``worker``, ``reviewer``): the intrinsic
+      etiquette is structural and non-overridable. Result = intrinsic +
+      project roles + cli roles, stacked and de-duplicated (etiquette always
+      first/present). ``--roles`` ADDS to the contract, never removes it.
+      Which etiquette file is intrinsic depends on ``worktree_topology`` — a
+      worker on its own worktree gets the isolation/draft-PR/notify contract;
+      a pane (or main-topology) worker gets the exit-summary/auto-kill
+      contract. Reviewer mirrors the same topology split, inverted: never
+      opens/merges a PR, reports a verdict via notify_parent instead.
     - **Persona kind** (``orchestrator``, and ``kind=None``): the intrinsic
       etiquette is just a zero-config default. Precedence ``--roles`` >
       ``.agentwire.yml roles:`` > intrinsic — user roles REPLACE it. So a
@@ -291,11 +304,12 @@ def resolve_roles(
     visibly distinct phases.
 
     Args:
-        kind: Session kind ("orchestrator" | "worker"), or None (treated as
-            a persona with no default).
+        kind: Session kind ("orchestrator" | "worker" | "reviewer"), or None
+            (treated as a persona with no default).
         worktree_topology: True when this is a standalone session on its own
             git worktree/branch (vs a pane, or a plain main-topology
-            session) — selects which "worker" etiquette file applies.
+            session) — selects which "worker"/"reviewer" etiquette file
+            applies.
         cli_roles: Roles from ``--roles`` (highest-precedence user source).
         project_roles: Roles from ``.agentwire.yml roles:``.
 
