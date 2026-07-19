@@ -126,7 +126,7 @@ class TestMergeRoles:
 class TestDiscoverRole:
     def test_bundled_roles_found(self):
         """All bundled roles should be discoverable."""
-        for name in ["agentwire", "contributor", "voice", "worker", "task-runner", "chatbot", "init", "soul"]:
+        for name in ["agentwire", "contributor", "voice", "worker", "reviewer", "task-runner", "chatbot", "init", "soul"]:
             path = discover_role(name)
             assert path is not None, f"Bundled role '{name}' not found"
 
@@ -158,7 +158,7 @@ class TestInjectSoul:
         assert inject_soul([]) == ["soul"]
 
     def test_headless_roles_excluded(self):
-        for headless in ["worker", "task-runner", "notifications"]:
+        for headless in ["worker", "reviewer", "task-runner", "notifications"]:
             assert inject_soul([headless]) == [headless]
 
     def test_headless_mixed_excluded(self):
@@ -215,6 +215,7 @@ class TestResolveRolesZeroConfig:
         # Zero-config: each verb's kind yields exactly its intrinsic etiquette.
         assert resolve_roles("orchestrator") == ["orchestrator"]
         assert resolve_roles("worker") == ["worker"]
+        assert resolve_roles("reviewer") == ["reviewer"]
 
     def test_worktree_topology_selects_the_worktree_flavored_worker_role(self):
         # ROLE (worker) is topology-independent; the FILE it resolves to
@@ -223,6 +224,13 @@ class TestResolveRolesZeroConfig:
         # (headless, exit-summary/auto-kill).
         assert resolve_roles("worker", worktree_topology=True) == ["worker-worktree"]
         assert resolve_roles("worker", worktree_topology=False) == ["worker"]
+
+    def test_worktree_topology_selects_the_worktree_flavored_reviewer_role(self):
+        # Mirrors the worker split: a reviewer with its own worktree (to pull
+        # in a sibling's branch for e2e) gets a different etiquette file than
+        # the pane/main default.
+        assert resolve_roles("reviewer", worktree_topology=True) == ["reviewer-worktree"]
+        assert resolve_roles("reviewer", worktree_topology=False) == ["reviewer"]
 
     def test_worktree_topology_is_a_no_op_for_orchestrator(self):
         # Orchestrator is topology-invariant — no worktree-specific variant.
@@ -302,6 +310,42 @@ class TestResolveRolesSafetyRail:
         assert inject_soul(resolve_roles("worker", worktree_topology=True)) == ["worker-worktree", "soul"]
 
 
+class TestResolveRolesSafetyRailReviewer:
+    """reviewer (#827) — worker's non-overridable contract, inverted: never
+    opens/merges a PR instead of always opening one. Same stacking shape."""
+
+    def test_reviewer_etiquette_always_present_cli_stacks(self):
+        assert resolve_roles("reviewer", cli_roles=["domain"]) == ["reviewer", "domain"]
+
+    def test_reviewer_etiquette_always_present_project_stacks(self):
+        assert resolve_roles("reviewer", project_roles=["domain"]) == ["reviewer", "domain"]
+
+    def test_reviewer_worktree_etiquette_always_present_cli_stacks(self):
+        assert resolve_roles("reviewer", worktree_topology=True, cli_roles=["domain"]) == ["reviewer-worktree", "domain"]
+
+    def test_project_and_cli_both_stack(self):
+        assert resolve_roles("reviewer", cli_roles=["b"], project_roles=["a"]) == ["reviewer", "a", "b"]
+
+    def test_intrinsic_not_duplicated(self):
+        assert resolve_roles("reviewer", cli_roles=["reviewer", "extra"]) == ["reviewer", "extra"]
+
+    def test_reviewer_etiquette_stays_voiceless(self):
+        # Mirrors worker: pane/main-topology reviewer is headless too.
+        assert inject_soul(resolve_roles("reviewer", cli_roles=["x"])) == ["reviewer", "x"]
+
+    def test_reviewer_worktree_etiquette_keeps_voice(self):
+        assert inject_soul(resolve_roles("reviewer", worktree_topology=True)) == ["reviewer-worktree", "soul"]
+
+    def test_custom_roles_can_never_erase_the_never_merge_contract(self):
+        # The whole point of a dedicated kind over a --roles bundle (#827):
+        # no combination of user/project roles can drop the intrinsic
+        # reviewer etiquette the way it could on a replaceable persona kind.
+        roles = resolve_roles("reviewer", worktree_topology=True,
+                               cli_roles=["some-custom-role"], project_roles=["another"])
+        assert roles[0] == "reviewer-worktree"
+        assert "reviewer-worktree" in roles
+
+
 class TestDeriveSessionKind:
     def test_explicit_kind_wins(self):
         assert derive_session_kind(True, "worker") == "worker"
@@ -309,6 +353,9 @@ class TestDeriveSessionKind:
         # The scheduler overrides the derived worker with a replaceable
         # orchestrator so its task-runner roles win (no agent PR).
         assert derive_session_kind(True, "orchestrator") == "orchestrator"
+        # reviewer is explicit-only — never derived, but always honored.
+        assert derive_session_kind(True, "reviewer") == "reviewer"
+        assert derive_session_kind(False, "reviewer") == "reviewer"
 
     def test_branch_means_worker(self):
         # `new project/branch`, portal worktree dispatch (C3) — no explicit kind.
@@ -344,18 +391,22 @@ class TestSchedulerWorktreeOptsOutOfPrEtiquette:
 
 
 class TestIntrinsicEtiquette:
-    def test_maps_two_kinds(self):
+    def test_maps_three_kinds(self):
         assert INTRINSIC_ETIQUETTE == {
             "orchestrator": "orchestrator",
             "worker": "worker",
+            "reviewer": "reviewer",
         }
 
-    def test_worktree_topology_etiquette_overrides_worker_only(self):
-        # Only "worker" has a topology-specific variant; orchestrator doesn't.
-        assert WORKTREE_TOPOLOGY_ETIQUETTE == {"worker": "worker-worktree"}
+    def test_worktree_topology_etiquette_overrides_worker_and_reviewer_only(self):
+        # "worker" and "reviewer" have topology-specific variants; orchestrator doesn't.
+        assert WORKTREE_TOPOLOGY_ETIQUETTE == {
+            "worker": "worker-worktree",
+            "reviewer": "reviewer-worktree",
+        }
 
     def test_safety_rail_kinds(self):
-        assert SAFETY_RAIL_KINDS == {"worker"}
+        assert SAFETY_RAIL_KINDS == {"worker", "reviewer"}
 
     def test_every_intrinsic_role_is_discoverable(self):
         for role_name in INTRINSIC_ETIQUETTE.values():
@@ -396,6 +447,43 @@ class TestBundledWorkerWorktreeRole:
         # parent via prompt-routing instead, and no disallowedTools frontmatter.
         assert "AskUserQuestion" not in (role.disallowed_tools or [])
         assert "breadcrumb" not in role.instructions.lower()
+
+
+class TestBundledReviewerRole:
+    """#827 — reviewer's core invariant (never patch/merge/open a PR; report
+    a structured verdict) must be present in BOTH topology flavors, since
+    resolve_roles picks exactly one file per session, never both."""
+
+    @pytest.mark.parametrize("name", ["reviewer", "reviewer-worktree"])
+    def test_core_invariants_present(self, name):
+        role = parse_role_file(discover_role(name))
+        assert role is not None
+        lowered = role.instructions.lower()
+        for needle in ["never merge", "never patch", "notify_parent", "msg_send", "verdict"]:
+            assert needle in lowered, f"{name}: missing '{needle}'"
+        # The never-open-a-PR-of-its-own invariant, spelled out somewhere.
+        assert "own pr" in lowered or "own draft" in lowered or "opens/merges" in lowered or "opens or merges" in lowered
+
+    def test_pane_flavor_is_headless_no_questions(self):
+        role = parse_role_file(discover_role("reviewer"))
+        assert role is not None
+        assert "AskUserQuestion" in (role.disallowed_tools or [])
+
+    def test_worktree_flavor_has_isolation_and_keeps_voice(self):
+        role = parse_role_file(discover_role("reviewer-worktree"))
+        assert role is not None
+        assert "AskUserQuestion" not in (role.disallowed_tools or [])
+        for needle in ["agentwire rebuild", "portal restart"]:
+            assert needle in role.instructions, f"isolation guardrail missing: {needle}"
+        # No draft-PR/push contract — the opposite of worker-worktree's Finish step.
+        assert "git push" not in role.instructions.lower()
+
+    def test_no_pm_no_templating(self):
+        for name in ["reviewer", "reviewer-worktree"]:
+            role = parse_role_file(discover_role(name))
+            assert role is not None
+            assert "{{" not in role.instructions
+            assert "Closes #" not in role.instructions
 
 
 # --- council roles (#213) ---

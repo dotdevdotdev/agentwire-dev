@@ -57,7 +57,7 @@ The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, 
 
 **Three independent axes (#716):** every session has a ROLE, a TOPOLOGY, and a ROOTING — none inferable from the others.
 
-- **ROLE** ∈ {`orchestrator`, `worker`} — authority + etiquette. Orchestrator = durable window, reviews + merges, directs children (a replaceable persona — explicit `--roles` swaps it out cleanly). Worker = scoped task, report-back, draft-PR-don't-merge (a non-overridable safety rail — `--roles` STACKS on top, never replaces it). Says nothing about location.
+- **ROLE** ∈ {`orchestrator`, `worker`, `reviewer`} — authority + etiquette. Orchestrator = durable window, reviews + merges, directs children (a replaceable persona — explicit `--roles` swaps it out cleanly). Worker = scoped task, report-back, draft-PR-don't-merge (a non-overridable safety rail — `--roles` STACKS on top, never replaces it). Reviewer = worker's rail inverted (#827) — adversarially reviews a sibling's PR, never opens/merges its own, reports a verdict via `notify_parent`; also non-overridable, parented like worker (not rooted). Says nothing about location.
 - **TOPOLOGY** ∈ {`main`, `worktree`, `pane`} — where it runs. A worker's concrete etiquette differs by topology (a worktree worker pushes a branch and opens a draft PR, keeps voice, and can ask via prompt-routing; a pane/main-topology worker is headless, writes an exit-summary, and gets auto-killed) — but the ROLE name itself (`worker`) is the same either way.
 - **ROOTING** ∈ {root, parented} (#715) — `created_by`, drives prompt routing + notify-parent.
 

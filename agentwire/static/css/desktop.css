@@ -6701,6 +6701,12 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     color: var(--accent);
 }
 
+.topology-role-chip--reviewer {
+    border-color: color-mix(in srgb, var(--warning, #f59e0b) 50%, transparent);
+    background: color-mix(in srgb, var(--warning, #f59e0b) 8%, transparent);
+    color: var(--warning, #f59e0b);
+}
+
 .topology-card-meta {
     display: flex;
     align-items: center;

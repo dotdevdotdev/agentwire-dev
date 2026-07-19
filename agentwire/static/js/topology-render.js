@@ -428,17 +428,22 @@ export class TopologyView {
         }
 
         // session.roles (plural) is the arbitrary persona/etiquette list from
-        // .agentwire.yml, not the orchestrator/worker axis — do not read it here.
-        // session.role (singular) is that axis but is only recorded for sessions
-        // created after #747, so long-lived root sessions still have it null;
-        // fall back to parentless-ness (this file already treats depth 0 as
-        // "root" for row layout above).
-        const role = session.role === 'worker' || session.role === 'orchestrator'
+        // .agentwire.yml, not the orchestrator/worker/reviewer axis — do not
+        // read it here. session.role (singular) is that axis but is only
+        // recorded for sessions created after #747, so long-lived root
+        // sessions still have it null; fall back to parentless-ness (this
+        // file already treats depth 0 as "root" for row layout above) —
+        // that fallback can only ever mean worker/orchestrator (#827's
+        // reviewer kind is always explicit, never derived, so it's always
+        // present in session.role when applicable and never needs guessing).
+        const KNOWN_ROLES = ['worker', 'orchestrator', 'reviewer'];
+        const role = KNOWN_ROLES.includes(session.role)
             ? session.role
             : (session.parent ? 'worker' : 'orchestrator');
         if (entry.roleEl.textContent !== role) {
             entry.roleEl.textContent = role;
             entry.roleEl.classList.toggle('topology-role-chip--orchestrator', role === 'orchestrator');
+            entry.roleEl.classList.toggle('topology-role-chip--reviewer', role === 'reviewer');
         }
 
         const machine = session.machine ? `⌂ ${session.machine}` : '';

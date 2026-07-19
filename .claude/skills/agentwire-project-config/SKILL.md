@@ -263,7 +263,7 @@ By default, `agentwire new` flags (`--posture`, `--roles`) are session-level ove
 
 Roles define agent behavior and are composable. Mix and match roles in `.agentwire.yml` to configure orchestrators, workers, or specialized agents.
 
-**ROLE vs TOPOLOGY (#716):** the session `kind` (`orchestrator` | `worker`) is a pure authority/etiquette axis — it says nothing about WHERE the session runs. TOPOLOGY (main checkout / worktree branch / pane) is separate and independent. `worker`'s intrinsic etiquette FILE still varies by topology, though: a worktree-topology worker gets `worker-worktree` (isolation, draft-PR, notify, keeps voice); a pane/main-topology worker gets `worker` (headless, exit-summary, auto-kill). Neither is user-selectable directly — they're resolved from `kind` + topology by `resolve_roles`.
+**ROLE vs TOPOLOGY (#716, #827):** the session `kind` (`orchestrator` | `worker` | `reviewer`) is a pure authority/etiquette axis — it says nothing about WHERE the session runs. TOPOLOGY (main checkout / worktree branch / pane) is separate and independent. `worker`'s and `reviewer`'s intrinsic etiquette FILE still varies by topology, though: a worktree-topology worker gets `worker-worktree` (isolation, draft-PR, notify, keeps voice), a pane/main-topology worker gets `worker` (headless, exit-summary, auto-kill); a worktree-topology reviewer gets `reviewer-worktree` (isolation, pulls the sibling's branch in for local e2e, keeps voice), a pane/main-topology reviewer gets `reviewer` (headless). Neither is user-selectable directly — they're resolved from `kind` + topology by `resolve_roles`.
 
 **Available roles:**
 
@@ -274,6 +274,8 @@ Roles define agent behavior and are composable. Mix and match roles in `.agentwi
 | `voice` | Voice communication (speak/listen) |
 | `worker` | Receive tasks, execute autonomously, report back. Intrinsic etiquette for a pane (`agentwire spawn`) or a main-topology session — headless, exit-summary, auto-kill. Not directly selectable via `--roles` as a *replacement* for the worktree flavor; it's resolved from kind + topology. |
 | `worker-worktree` | Intrinsic etiquette for `agentwire worktree` sessions (isolation, no rebuild/restart, verify in-worktree, draft PR + notify-back, keeps voice) — auto-injected when kind=worker on worktree topology, not configurable |
+| `reviewer` | Adversarially reviews a sibling session's PR — never opens/merges its own PR, never patches the branch under review. Headless pane/main-topology default; safety-rail (non-overridable, like `worker`). |
+| `reviewer-worktree` | Intrinsic etiquette for `agentwire worktree --kind reviewer` (isolation, pull the sibling's branch in for local e2e, never push/PR/merge, keeps voice) — auto-injected when kind=reviewer on worktree topology, not configurable |
 | `task-runner` | Scheduled task execution |
 | `chatbot` | Conversational personality |
 | `init` | Setup wizard behavior |

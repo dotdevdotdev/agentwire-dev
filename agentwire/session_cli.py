@@ -477,6 +477,13 @@ def cmd_new(args) -> int:
     # its own `--kind` straight through as `kind` here, so `agentwire
     # worktree --kind orchestrator` / `agentwire orchestrator` compose with
     # it for free.
+    #
+    # `reviewer` (#827) deliberately does NOT join this rule — it's an
+    # exact-string match against 'orchestrator', so `--kind reviewer` falls
+    # through to the elif below and gets the normal same-project inherit
+    # behavior. A reviewer is scoped to reviewing a specific sibling's PR, so
+    # it should nest under whoever spawned it (for sidebar/prompt-routing),
+    # unlike a durable orchestrator that outlives any one spawner.
     created_by = getattr(args, 'created_by', None)
     caller = None
     if created_by is None and getattr(args, 'kind', None) == 'orchestrator':
@@ -846,15 +853,18 @@ def cmd_worktree(args) -> int:
     ROLE and TOPOLOGY are independent axes — this verb picks worktree
     topology; role defaults to "worker" (--kind orchestrator overrides it,
     for a durable branch-pinned project window — see the `orchestrator`
-    sugar verb). Kind "worker" is a safety-rail kind: its intrinsic
-    etiquette (isolation, no live-tool mutation, in-worktree verification,
-    draft-PR + notify-back) is auto-injected by resolve_roles for every
-    dispatch and is non-overridable: it's always present, no opt-out, no
-    templating. `--roles` / `.agentwire.yml roles:` ADD to it, they never
-    replace it. Kind "orchestrator" is a replaceable persona instead — and,
-    unless --created-by says otherwise, roots itself (no parent) rather than
-    inheriting the caller, since a durable orchestrator shouldn't be a
-    subordinate of whoever happened to spawn it.
+    sugar verb; --kind reviewer overrides it for a PR-review station). Kind
+    "worker" is a safety-rail kind: its intrinsic etiquette (isolation, no
+    live-tool mutation, in-worktree verification, draft-PR + notify-back) is
+    auto-injected by resolve_roles for every dispatch and is non-overridable:
+    it's always present, no opt-out, no templating. `--roles` /
+    `.agentwire.yml roles:` ADD to it, they never replace it. Kind "reviewer"
+    is the same non-overridable shape, inverted — never opens/merges its own
+    PR, reports a verdict via notify_parent instead — and stays parented like
+    worker (no rooting override). Kind "orchestrator" is a replaceable
+    persona instead — and, unless --created-by says otherwise, roots itself
+    (no parent) rather than inheriting the caller, since a durable
+    orchestrator shouldn't be a subordinate of whoever happened to spawn it.
     """
     json_mode = getattr(args, 'json', False)
     name = getattr(args, 'name', None)
@@ -1363,6 +1373,13 @@ def scan_dangling_worktrees(rows: list[dict]) -> list[dict]:
     orchestrator-role verification of that parent (that's not durably
     stored anywhere today and is out of scope — see #716's deferred
     merge-authority-per-edge north star).
+
+    `reviewer`-kind entries need no equivalent skip (#827): a reviewer never
+    opens a PR at all, so the `gh pr view <branch>` check below already comes
+    back empty-handed for it — and its pane/main-topology default means it's
+    typically never even in this registry (only worktree-topology sessions
+    are registered here); a reviewer on worktree topology just falls through
+    the same PR-existence check as any other never-PRing entry.
     """
     if not shutil.which("gh"):
         return []
@@ -1990,12 +2007,16 @@ def register_session_parser(subparsers) -> None:
     _add_posture_flag(new_parser)
     # Roles
     new_parser.add_argument("--roles", help="Comma-separated roles (replaces the default orchestrator persona)")
-    new_parser.add_argument("--kind", choices=["orchestrator", "worker"],
+    new_parser.add_argument("--kind", choices=["orchestrator", "worker", "reviewer"],
                             help="Override the derived session role (advanced). A project/branch name "
                                  "normally derives 'worker' (draft-PR + notify etiquette on worktree "
                                  "topology). Pass 'orchestrator' for a worktree that is finalized "
                                  "externally — e.g. the scheduler, which opens/reaps the PR itself, so "
-                                 "the task agent must NOT open its own.")
+                                 "the task agent must NOT open its own. Pass 'reviewer' for a PR-review "
+                                 "station: adversarially reviews a sibling session's PR and never opens "
+                                 "or merges one of its own (non-overridable, like worker's rail — "
+                                 "inverted); parented rooting (not rooted like orchestrator), pane/main "
+                                 "topology by default.")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
     new_parser.add_argument("--persist", action="store_true", help="Write the resolved posture/--roles to .agentwire.yml (default: session-level override only)")
@@ -2023,7 +2044,7 @@ def register_session_parser(subparsers) -> None:
 
     # === session-defaults command (resolver — backs the portal endpoint) ===
     sd_parser = subparsers.add_parser("session-defaults", help="Resolve a new session's composed type + intrinsic roles (JSON)")
-    sd_parser.add_argument("--kind", choices=["orchestrator", "worker"], default="orchestrator",
+    sd_parser.add_argument("--kind", choices=["orchestrator", "worker", "reviewer"], default="orchestrator",
                            help="Spawn-verb role (default: orchestrator = `agentwire new`)")
     _add_posture_flag(sd_parser)
     sd_parser.add_argument("--json", action="store_true", default=True, help="Output as JSON (default)")
@@ -2071,7 +2092,7 @@ def register_session_parser(subparsers) -> None:
         parser.add_argument("--gc-merged", action="store_true", help="Tear down (session/worktree/branch) any registered entry whose branch is confirmed merged; implies --prune (runs standalone too)")
         parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")
         _add_posture_flag(parser)
-        parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worker etiquette (kind=orchestrator: REPLACES the default persona instead)")
+        parser.add_argument("--roles", help="Comma-separated roles, STACKED on top of the always-present worker/reviewer etiquette (kind=orchestrator: REPLACES the default persona instead)")
         parser.add_argument("--prompt", help="First message to deliver once the agent is booted/ready (spawn + seed in one step)")
         parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
         parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable)")
@@ -2090,14 +2111,17 @@ def register_session_parser(subparsers) -> None:
 
     wt_parser = subparsers.add_parser("worktree", help="Create a git worktree + session in one command")
     wt_parser.add_argument("name", nargs="?", help="Name (becomes branch name in default mode, session suffix always)")
-    wt_parser.add_argument("--kind", choices=["orchestrator", "worker"], default=None,
+    wt_parser.add_argument("--kind", choices=["orchestrator", "worker", "reviewer"], default=None,
                            help="Session role (default: worker — the common dispatched-task case, "
                                 "safety-railed: isolation/verify/draft-PR/notify, non-overridable). "
                                 "'orchestrator' makes this worktree a durable, replaceable-persona "
                                 "project window instead of a subordinate, and — unless --created-by "
                                 "says otherwise — roots it (no parent), since a durable orchestrator "
                                 "shouldn't answer to whoever happened to spawn it. See also the "
-                                "`orchestrator` sugar verb.")
+                                "`orchestrator` sugar verb. 'reviewer' is a PR-review station "
+                                "(safety-railed the other way: never opens/merges its own PR) for "
+                                "anyone who needs a local checkout to e2e a sibling's branch — stays "
+                                "parented like worker, not rooted.")
     _add_worktree_flags(wt_parser)
     wt_parser.set_defaults(func=cmd_worktree)
 

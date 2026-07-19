@@ -161,6 +161,30 @@ def test_kind_orchestrator_overrides_default(tmp_path, monkeypatch, wt_env):
     assert wt_env["args"].kind == "orchestrator"
 
 
+def test_kind_reviewer_overrides_default(tmp_path, monkeypatch, wt_env):
+    """--kind reviewer flows through instead of the worker default (#827)."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone), kind="reviewer")
+    assert rc == 0
+    assert wt_env["args"].kind == "reviewer"
+
+
+def test_kind_reviewer_created_by_stays_unresolved(tmp_path, monkeypatch, wt_env):
+    """Unlike kind=orchestrator, reviewer does NOT get the '' rooting default
+    forced here — cmd_worktree/_launch_session forwards created_by=None
+    straight through for reviewer just like it does for worker, so cmd_new's
+    own same-project inheritance (#715) decides, not a joint default (#827)."""
+    _, clone = _origin_and_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    rc = _run(monkeypatch, cfg, name="fix-bug", project=str(clone), kind="reviewer")
+    assert rc == 0
+    assert wt_env["args"].kind == "reviewer"
+    assert wt_env["args"].created_by is None
+
+
 def test_kind_orchestrator_passes_created_by_through_unresolved(tmp_path, monkeypatch, wt_env):
     """cmd_worktree/_launch_session does NOT resolve the joint rooting
     default itself — it just forwards kind + created_by=None through to

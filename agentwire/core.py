@@ -741,7 +741,7 @@ def _record_session_creator(session_name: str, created_by: str | None, via: str)
 
 
 def _record_session_role(session_name: str, role: str | None) -> None:
-    """Record the session's ROLE axis (orchestrator/worker) to disk (merge-preserving).
+    """Record the session's ROLE axis (orchestrator/worker/reviewer) to disk (merge-preserving).
 
     Distinct from the etiquette/persona ``roles:`` list in ``.agentwire.yml`` —
     this is the fundamental authority axis derived at creation time (``kind``
