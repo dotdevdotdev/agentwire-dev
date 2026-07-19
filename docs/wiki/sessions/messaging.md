@@ -143,8 +143,14 @@ lands in a durable inbox and is injected only at a safe boundary.
      / `escalation`) does dead-letter, the owner is emailed via the shared Resend
      wiring (the same channel usage-limit parking uses) so the loss is surfaced
      even if nobody runs `msg dead`. `note` is fire-and-forget and `ingest` never
-     auto-delivers, so neither is escalated. Escalation is best-effort — a send
-     failure is logged (`dead_letter_escalate_failed`) and never breaks the drain.
+     auto-delivers, so neither is escalated. Escalation is **batched per drain
+     pass, not per message** (#829/#830): every message dead-lettered in the
+     same batch for one recipient gets a single digest email (detail capped at
+     the first 10, "...and N more" beyond that) instead of one email each — a
+     recipient stuck permanently undeliverable (e.g. wrongly parented to a
+     service session that never drains) can't spam the owner one email per
+     stuck message. Escalation is best-effort — a send failure is logged
+     (`dead_letter_escalate_failed`) and never breaks the drain.
 
 ### `prompt_is_empty` — the collision detector
 

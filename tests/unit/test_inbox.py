@@ -812,6 +812,32 @@ class TestDeadLetterEscalation:
         assert len(sent) == 1
         assert "20 undelivered messages" in sent[0]["subject"]
 
+    def _msg(self, i):
+        return inbox.Message(
+            id=f"id{i}", sender="w", to="s", kind="done", text=f"report {i}",
+            ts=1000 + i, dead_ts=2000 + i,
+        )
+
+    def test_digest_detail_cap_boundary(self, isolate, monkeypatch):
+        # Exactly at the cap: every message gets detail, no truncation line.
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        batch = [self._msg(i) for i in range(inbox._ESCALATE_DIGEST_DETAIL_CAP)]
+        inbox._escalate_dead_letters(batch, "target_gone")
+        assert len(sent) == 1
+        assert "...and" not in sent[0]["body"]
+        assert all(f"report {i}" in sent[0]["body"] for i in range(len(batch)))
+
+    def test_digest_detail_cap_truncates_beyond_boundary(self, isolate, monkeypatch):
+        # One over the cap: detail for the first CAP, a single "...and 1 more."
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        batch = [self._msg(i) for i in range(inbox._ESCALATE_DIGEST_DETAIL_CAP + 1)]
+        inbox._escalate_dead_letters(batch, "target_gone")
+        assert len(sent) == 1
+        assert "...and 1 more." in sent[0]["body"]
+        assert f"report {inbox._ESCALATE_DIGEST_DETAIL_CAP}" not in sent[0]["body"]
+
 
 class TestIdempotentDelivery:
     """#621: a delivery_unverified false-negative must NOT re-inject a landed
@@ -1020,6 +1046,24 @@ class TestGcSender:
         assert res == {"dead": 0, "dropped": 0}
         assert len(inbox.list_messages("orch")) == 1  # other sender's done kept
         assert inbox.list_ingest("orch")  # ingest untouched
+
+    def test_gc_batches_one_email_per_recipient(self, isolate, monkeypatch):
+        # Regression (#829/#830): gc_sender must send ONE digest email per
+        # recipient, not one per dead-lettered message — exercised against the
+        # real send_email seam (not a stubbed _escalate_dead_letters), so a
+        # regression back to per-message escalation inside the gc loop would
+        # actually be caught here.
+        sent = []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: sent.append(kw) or SimpleNamespace(success=True),
+        )
+        inbox.enqueue("orch", "PR drafted", kind="done", sender="worker")
+        inbox.enqueue("orch", "need review", kind="request", sender="worker")
+        res = inbox.gc_sender("worker")
+        assert res["dead"] == 2
+        assert len(sent) == 1
+        assert "2 undelivered messages" in sent[0]["subject"]
 
 
 # =============================================================================

@@ -654,9 +654,12 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
             subject = (
                 f"[agentwire] {len(batch)} undelivered messages → {to} (dead-lettered)"
             )
+        noun = "message" if len(batch) == 1 else "messages"
+        verb = "was" if len(batch) == 1 else "were"
         lines = [
-            f"{len(batch)} load-bearing message(s) on `{host}` were never delivered "
-            f"and have been dead-lettered (last defer reason: {reason}).",
+            f"{len(batch)} load-bearing {noun} on `{host}` {verb} never delivered "
+            f"and {'has' if len(batch) == 1 else 'have'} been dead-lettered "
+            f"(last defer reason: {reason}).",
             "",
         ]
         for msg in batch[:_ESCALATE_DIGEST_DETAIL_CAP]:
