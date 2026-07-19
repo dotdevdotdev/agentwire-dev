@@ -13,7 +13,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def _no_real_outbound_email(request, monkeypatch):
     """No test may send real email — ever.
 
-    ``_escalate_dead_letter`` (and friends) call the live Resend wiring, so a
+    ``_escalate_dead_letters`` (and friends) call the live Resend wiring, so a
     test that dead-letters a done/request/escalation message without mocking
     ``send_email`` silently emails the owner on every suite run (found the hard
     way: ``test_purge_leaves_ingest_and_dead`` flooded the inbox with

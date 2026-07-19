@@ -760,6 +760,8 @@ class TestDeadLetterEscalation:
         assert len(inbox.list_dead("s")) == 1  # still archived for audit
 
     def test_request_and_escalation_also_email(self, isolate, monkeypatch):
+        # Both dead-letter in the same drain pass (same recipient) — one
+        # digest email covers the batch, not one email per kind (#836).
         inbox.enqueue("s", "need creds", kind="request", sender="w")
         inbox.enqueue("s", "stuck!", kind="escalation", sender="w")
         self._occupied_agent(monkeypatch)
@@ -767,8 +769,9 @@ class TestDeadLetterEscalation:
         self._capture_email(monkeypatch, sent)
         for _ in range(inbox.MAX_ATTEMPTS):
             inbox.flush_session("s")
-        kinds = sorted(k["subject"].split("undelivered ")[1].split(":")[0] for k in sent)
-        assert kinds == ["escalation", "request"]
+        assert len(sent) == 1
+        assert "2 undelivered messages" in sent[0]["subject"]
+        assert "request" in sent[0]["body"] and "escalation" in sent[0]["body"]
 
     def test_note_dead_letter_does_not_email(self, isolate, monkeypatch):
         inbox.enqueue("s", "fyi", kind="note", sender="worker")
@@ -791,6 +794,49 @@ class TestDeadLetterEscalation:
         for _ in range(inbox.MAX_ATTEMPTS):
             inbox.flush_session("s")
         assert len(inbox.list_dead("s")) == 1  # drain survived; corpse archived
+
+    def test_large_batch_sends_one_digest_not_one_per_message(self, isolate, monkeypatch):
+        # Regression (2026-07-19): a recipient stuck permanently undeliverable
+        # (e.g. wrongly parented to a service session) can accumulate a large
+        # backlog that all crosses MAX_ATTEMPTS in the same drain pass. That
+        # must fire ONE digest email, not one per message (147 individual
+        # emails in ~2s was the real incident).
+        for i in range(20):
+            inbox.enqueue("s", f"report {i}", kind="done", sender="w")
+        self._occupied_agent(monkeypatch)
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        for _ in range(inbox.MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        assert len(inbox.list_dead("s")) == 20
+        assert len(sent) == 1
+        assert "20 undelivered messages" in sent[0]["subject"]
+
+    def _msg(self, i):
+        return inbox.Message(
+            id=f"id{i}", sender="w", to="s", kind="done", text=f"report {i}",
+            ts=1000 + i, dead_ts=2000 + i,
+        )
+
+    def test_digest_detail_cap_boundary(self, isolate, monkeypatch):
+        # Exactly at the cap: every message gets detail, no truncation line.
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        batch = [self._msg(i) for i in range(inbox._ESCALATE_DIGEST_DETAIL_CAP)]
+        inbox._escalate_dead_letters(batch, "target_gone")
+        assert len(sent) == 1
+        assert "...and" not in sent[0]["body"]
+        assert all(f"report {i}" in sent[0]["body"] for i in range(len(batch)))
+
+    def test_digest_detail_cap_truncates_beyond_boundary(self, isolate, monkeypatch):
+        # One over the cap: detail for the first CAP, a single "...and 1 more."
+        sent = []
+        self._capture_email(monkeypatch, sent)
+        batch = [self._msg(i) for i in range(inbox._ESCALATE_DIGEST_DETAIL_CAP + 1)]
+        inbox._escalate_dead_letters(batch, "target_gone")
+        assert len(sent) == 1
+        assert "...and 1 more." in sent[0]["body"]
+        assert f"report {inbox._ESCALATE_DIGEST_DETAIL_CAP}" not in sent[0]["body"]
 
 
 class TestIdempotentDelivery:
@@ -959,8 +1005,8 @@ class TestForceFlush:
 class TestGcSender:
     def test_gc_dead_letters_load_bearing(self, isolate, monkeypatch):
         emailed = []
-        monkeypatch.setattr(inbox, "_escalate_dead_letter",
-                            lambda m, r: emailed.append((m.kind, r)))
+        monkeypatch.setattr(inbox, "_escalate_dead_letters",
+                            lambda batch, r: emailed.extend((m.kind, r) for m in batch))
         inbox.enqueue("orch", "PR drafted", kind="done", sender="worker")
         inbox.enqueue("orch", "need review", kind="request", sender="worker")
         res = inbox.gc_sender("worker")
@@ -970,7 +1016,7 @@ class TestGcSender:
         assert emailed and all(r == "sender_exited" for _, r in emailed)
 
     def test_gc_drops_non_load_bearing(self, isolate, monkeypatch):
-        monkeypatch.setattr(inbox, "_escalate_dead_letter", lambda m, r: None)
+        monkeypatch.setattr(inbox, "_escalate_dead_letters", lambda batch, r: None)
         inbox.enqueue("orch", "fyi", kind="note", sender="worker")
         res = inbox.gc_sender("worker")
         assert res["dropped"] == 1 and res["dead"] == 0
@@ -981,8 +1027,8 @@ class TestGcSender:
         # A flush draining this inbox holds the per-session lock; gc must NOT
         # dead-letter (and email) a message that flush is mid-delivery on.
         emailed = []
-        monkeypatch.setattr(inbox, "_escalate_dead_letter",
-                            lambda m, r: emailed.append(m.id))
+        monkeypatch.setattr(inbox, "_escalate_dead_letters",
+                            lambda batch, r: emailed.extend(m.id for m in batch))
         inbox.enqueue("orch", "in flight", kind="done", sender="worker")
         held = inbox._acquire_lock("orch")  # simulate an in-flight flush
         try:
@@ -1000,6 +1046,24 @@ class TestGcSender:
         assert res == {"dead": 0, "dropped": 0}
         assert len(inbox.list_messages("orch")) == 1  # other sender's done kept
         assert inbox.list_ingest("orch")  # ingest untouched
+
+    def test_gc_batches_one_email_per_recipient(self, isolate, monkeypatch):
+        # Regression (#829/#830): gc_sender must send ONE digest email per
+        # recipient, not one per dead-lettered message — exercised against the
+        # real send_email seam (not a stubbed _escalate_dead_letters), so a
+        # regression back to per-message escalation inside the gc loop would
+        # actually be caught here.
+        sent = []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: sent.append(kw) or SimpleNamespace(success=True),
+        )
+        inbox.enqueue("orch", "PR drafted", kind="done", sender="worker")
+        inbox.enqueue("orch", "need review", kind="request", sender="worker")
+        res = inbox.gc_sender("worker")
+        assert res["dead"] == 2
+        assert len(sent) == 1
+        assert "2 undelivered messages" in sent[0]["subject"]
 
 
 # =============================================================================

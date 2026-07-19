@@ -479,8 +479,20 @@ def resolve_default_created_by(caller: str | None, target_path: Path) -> str | N
     `{project}-{name}`, and would misjudge same/cross-project); if the
     caller's real cwd can't be confirmed, treat it as unknown (no inheritance)
     rather than risk a wrong guess.
+
+    A service session (agentwire-portal, -tts, -stt, -kokoro, ...) never
+    qualifies as a parent: it's infrastructure, not an agent that will ever
+    drain its msg inbox, so anything parented to it dead-letters forever. A
+    subprocess the portal shells out to inherits its TMUX_PANE and resolves
+    ``caller`` right back to "agentwire-portal" — this was the root cause of
+    a 147-message dead-letter storm (each mailing the owner individually,
+    2026-07-19).
     """
     if not caller:
+        return None
+    from .services import is_service_session
+
+    if is_service_session(caller):
         return None
     caller_path = _live_session_cwd(caller)
     if caller_path is None:

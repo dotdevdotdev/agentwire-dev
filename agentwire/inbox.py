@@ -453,6 +453,7 @@ def gc_sender(sender: str) -> dict:
             # delivered, not lost. Skip GC for this recipient this round.
             continue
         try:
+            newly_dead: list[Message] = []
             for path in paths:
                 if not path.exists():
                     continue  # delivered + unlinked just before we locked
@@ -472,7 +473,7 @@ def gc_sender(sender: str) -> dict:
                             attempts=msg.attempts, reason="sender_exited",
                         )
                         dead += 1
-                        _escalate_dead_letter(msg, "sender_exited")
+                        newly_dead.append(msg)
                     except OSError:
                         pass
                 else:
@@ -481,6 +482,8 @@ def gc_sender(sender: str) -> dict:
                         dropped += 1
                     except OSError:
                         pass
+            # One digest per recipient, not one email per message (#836).
+            _escalate_dead_letters(newly_dead, "sender_exited")
         finally:
             _release_lock(lock)
 
@@ -608,17 +611,32 @@ def _fmt_ts(ms: int) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ms / 1000))
 
 
-def _escalate_dead_letter(msg: Message, reason: str) -> None:
-    """Email the owner when a load-bearing report-back dead-letters.
+# A single stuck recipient (e.g. a session wrongly parented to a service
+# session that can never drain its inbox) can dead-letter dozens of messages
+# in one drain pass — cap the per-message detail in the digest so the email
+# stays readable instead of dumping an unbounded wall of text.
+_ESCALATE_DIGEST_DETAIL_CAP = 10
+
+
+def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
+    """Email the owner once per batch when load-bearing report-backs dead-letter.
 
     ``done`` / ``request`` / ``escalation`` are load-bearing — a silently-dropped
     one is a real loss, so we surface it out-of-band via the shared Resend wiring
     (the same owner-escalation channel usage-limit parking uses). ``note`` and
-    ``ingest`` are not escalated. Best-effort: a missing key or send failure must
-    never break the drain — the corpse already sits in ``dead/`` for
-    ``agentwire msg dead``.
+    ``ingest`` are not escalated.
+
+    *messages* is everything dead-lettered by one caller's batch (one drain
+    pass for one recipient, or one sender's GC sweep) — a single digest email
+    covers the whole batch instead of one email per message, so a recipient
+    that's been permanently undeliverable for a while (e.g. parented to a
+    service session that never drains) can't spam the owner's inbox one email
+    per stuck message (147 individual emails in ~2s, 2026-07-19). Best-effort:
+    a missing key or send failure must never break the drain — each corpse
+    already sits in ``dead/`` for ``agentwire msg dead``.
     """
-    if msg.kind not in ESCALATE_KINDS:
+    batch = [m for m in messages if m.kind in ESCALATE_KINDS]
+    if not batch:
         return
     try:
         import socket
@@ -626,36 +644,47 @@ def _escalate_dead_letter(msg: Message, reason: str) -> None:
         from .channels.email import send_email
 
         host = socket.gethostname()
-        subject = (
-            f"[agentwire] undelivered {msg.kind}: {msg.sender} → {msg.to} (dead-lettered)"
-        )
-        body = "\n".join([
-            f"A **{msg.kind}** message from **{msg.sender}** to **{msg.to}** on "
-            f"`{host}` was never delivered after {msg.attempts} attempts and has "
-            f"been dead-lettered.",
+        if len(batch) == 1:
+            msg = batch[0]
+            subject = (
+                f"[agentwire] undelivered {msg.kind}: {msg.sender} → {msg.to} (dead-lettered)"
+            )
+        else:
+            to = batch[0].to
+            subject = (
+                f"[agentwire] {len(batch)} undelivered messages → {to} (dead-lettered)"
+            )
+        noun = "message" if len(batch) == 1 else "messages"
+        verb = "was" if len(batch) == 1 else "were"
+        lines = [
+            f"{len(batch)} load-bearing {noun} on `{host}` {verb} never delivered "
+            f"and {'has' if len(batch) == 1 else 'have'} been dead-lettered "
+            f"(last defer reason: {reason}).",
             "",
-            f"- **Kind:** {msg.kind}",
-            f"- **From:** {msg.sender}",
-            f"- **To:** {msg.to}",
-            f"- **Last defer reason:** {reason}",
-            f"- **Sent:** {_fmt_ts(msg.ts)}",
-            f"- **Dead-lettered:** {_fmt_ts(msg.dead_ts)}",
+        ]
+        for msg in batch[:_ESCALATE_DIGEST_DETAIL_CAP]:
+            lines += [
+                f"- **{msg.kind}** {msg.sender} → {msg.to}, sent {_fmt_ts(msg.ts)}, "
+                f"dead-lettered {_fmt_ts(msg.dead_ts)}, {msg.attempts} attempts:",
+                "  ```",
+                f"  {msg.text}",
+                "  ```",
+            ]
+        remaining = len(batch) - _ESCALATE_DIGEST_DETAIL_CAP
+        if remaining > 0:
+            lines.append(f"- ...and {remaining} more.")
+        lines += [
             "",
-            "Message text:",
-            "",
-            "```",
-            msg.text,
-            "```",
-            "",
-            f"Saved in the dead-letter store — review with `agentwire msg dead -s {msg.to}`.",
-        ])
-        result = send_email(subject=subject, body=body)
+            f"Saved in the dead-letter store — review with "
+            f"`agentwire msg dead -s {batch[0].to}`.",
+        ]
+        result = send_email(subject=subject, body="\n".join(lines))
         _log_event(
-            "dead_letter_escalated", id=msg.id, to=msg.to, kind=msg.kind,
+            "dead_letter_escalated", to=batch[0].to, count=len(batch), reason=reason,
             ok=bool(getattr(result, "success", False)),
         )
     except Exception as exc:  # escalation is best-effort; never break the drain
-        _log_event("dead_letter_escalate_failed", id=msg.id, to=msg.to, error=str(exc))
+        _log_event("dead_letter_escalate_failed", to=batch[0].to, count=len(batch), error=str(exc))
 
 
 def _bump_attempts(messages: list[Message], reason: str = "") -> int:
@@ -675,6 +704,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     burns out on schedule.
     """
     dead = 0
+    newly_dead: list[Message] = []
     for msg in messages:
         if msg.path is None:
             continue
@@ -705,7 +735,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
                     attempts=msg.attempts, reason=reason,
                 )
                 dead += 1
-                _escalate_dead_letter(msg, reason)
+                newly_dead.append(msg)
             except OSError:
                 pass
         else:
@@ -713,6 +743,9 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
                 _write_message(msg.path, msg)
             except OSError:
                 pass
+    # One digest email for the whole batch (all share the same recipient —
+    # `messages` is always one session's inbox), not one per message (#836).
+    _escalate_dead_letters(newly_dead, reason)
     return dead
 
 
