@@ -825,6 +825,24 @@ function _mountSessionWindow(session, mode, machine, id) {
 }
 
 /**
+ * FNV-1a 32-bit hash of `url`, as 8 lowercase hex chars. Must match
+ * `_artifact_url_hash` in routes/desktop.py byte-for-byte — server and
+ * frontend both derive the same fallback artifact id from the same URL. A
+ * hash isn't lossy the way the prior char-substitution slug was (distinct
+ * URLs like "reports/jan.html" and "reports-jan.html" collided onto the
+ * same id).
+ */
+function artifactUrlHash(url) {
+    let h = 0x811c9dc5;
+    const bytes = new TextEncoder().encode(url);
+    for (const b of bytes) {
+        h ^= b;
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+}
+
+/**
  * Open an artifact window (agent-generated HTML or external URL).
  *
  * @param {string} url - URL or filename to load
@@ -832,7 +850,7 @@ function _mountSessionWindow(session, mode, machine, id) {
  * @param {string|null} artifactId - Optional explicit window ID
  */
 export function openArtifactWindow(url, title = 'Artifact', artifactId = null) {
-    const id = artifactId || `artifact-${url.replace(/[\/\.]/g, '-')}`;
+    const id = artifactId || `artifact-${artifactUrlHash(url)}`;
 
     // Check if already open — restore if minimized, otherwise focus
     if (artifactWindows.has(id)) {

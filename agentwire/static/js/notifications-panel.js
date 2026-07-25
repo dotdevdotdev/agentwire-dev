@@ -86,10 +86,19 @@ class NotificationsPanel {
             this._removeToast(id, false);
         }
 
-        // Evict oldest if at capacity
+        // Evict the oldest toast NOT carrying an artifact notice, if at
+        // capacity. Artifact toasts are exempt regardless of priority: an
+        // unclicked deliverable must not silently fade (#817) — the cap
+        // only trims ordinary toasts (sticky `high`-priority ones included).
+        // If every current toast is an artifact notice, the panel
+        // temporarily exceeds MAX_TOASTS rather than dropping one.
         if (this.toasts.size >= MAX_TOASTS) {
-            const oldest = this.toasts.keys().next().value;
-            this._removeToast(oldest, false);
+            for (const id of this.toasts.keys()) {
+                if (!this.artifactNotices.has(id)) {
+                    this._removeToast(id, false);
+                    break;
+                }
+            }
         }
 
         // Resolve auto-fade: explicit timeout wins (0 = sticky); otherwise

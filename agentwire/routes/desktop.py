@@ -10,6 +10,22 @@ through the composed server's MRO.
 from aiohttp import web
 
 
+def _artifact_url_hash(url: str) -> str:
+    """FNV-1a 32-bit hash of ``url``, as 8 lowercase hex chars.
+
+    Must match ``artifactUrlHash`` in static/js/desktop.js byte-for-byte —
+    the server and frontend both derive the same fallback artifact id from
+    the same URL, and a naive char-substitution slug (the prior approach)
+    let distinct URLs like "reports/jan.html" and "reports-jan.html" collide
+    onto the same id. A hash isn't lossy the way substitution is.
+    """
+    h = 0x811C9DC5
+    for b in url.encode("utf-8"):
+        h ^= b
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
 class DesktopRoutesMixin:
     async def api_desktop_windows(self, request):
         """GET /api/desktop/windows — query browser clients for open windows."""
@@ -173,7 +189,7 @@ class DesktopRoutesMixin:
                 "url": url,
                 "title": title,
                 "artifact_id": artifact.get("artifact_id")
-                or f"artifact-{url.replace('/', '-').replace('.', '-')}",
+                or f"artifact-{_artifact_url_hash(url)}",
             }
             if not text:
                 text = f"**{title}** is ready — click to open"

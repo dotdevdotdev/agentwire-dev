@@ -614,6 +614,35 @@ class TestApiNotify:
         assert data["clients"] == 2
 
 
+class TestArtifactUrlHash:
+    """#822: pins `_artifact_url_hash` (routes/desktop.py) against known
+    vectors, independently cross-checked in Node against its JS twin
+    (`artifactUrlHash` in static/js/desktop.js) — the two have no shared
+    source and no JS test harness exists in this repo, so this is the only
+    automated guard against the two silently drifting apart. If you change
+    the hash algorithm on either side, recompute vectors on the OTHER side
+    (e.g. `node -e "..."` mirroring this function) before touching this
+    test — a passing Python-only test proves nothing about JS parity."""
+
+    @pytest.mark.parametrize("url,expected", [
+        ("", "811c9dc5"),
+        ("a", "e40c292c"),
+        ("reports/jan.html", "7084fac5"),
+        ("reports-jan.html", "b5f6349b"),
+        ("https://example.com", "6fbc04d3"),
+        ("council-proj-minutes/index.html", "d569834e"),
+        ("日本語", "805f5ce7"),  # multi-byte UTF-8
+        ("🦉", "11131011"),  # astral/surrogate-pair UTF-8
+    ])
+    def test_pinned_vectors(self, url, expected):
+        from agentwire.routes.desktop import _artifact_url_hash
+        assert _artifact_url_hash(url) == expected
+
+    def test_distinct_urls_that_collided_under_the_old_slug_now_differ(self):
+        from agentwire.routes.desktop import _artifact_url_hash
+        assert _artifact_url_hash("reports/jan.html") != _artifact_url_hash("reports-jan.html")
+
+
 class TestApiDesktopNotification:
     async def test_toast_reports_client_count(self, portal_client):
         """#444: posting a toast reports how many dashboards saw it live (the
@@ -630,8 +659,10 @@ class TestApiDesktopNotification:
 
     async def test_artifact_notice_defaults(self, portal_client):
         """#817: an artifact notice needs no text (synthesized from the title),
-        derives the frontend's url-slug window id, and defaults to sticky —
-        an unclicked deliverable must never silently fade."""
+        derives the frontend's hash-based window id (#822 — a lossy
+        char-substitution slug let distinct URLs collide onto the same id),
+        and defaults to sticky — an unclicked deliverable must never
+        silently fade."""
         client, server = portal_client
         server.broadcast_dashboard = AsyncMock()
         resp = await client.post("/api/desktop/notification", json={
@@ -645,8 +676,26 @@ class TestApiDesktopNotification:
         assert notice["artifact"] == {
             "url": "council-proj-minutes/index.html",
             "title": "Council minutes — proj",
-            "artifact_id": "artifact-council-proj-minutes-index-html",
+            "artifact_id": "artifact-d569834e",
         }
+
+    async def test_artifact_id_does_not_collide_across_similar_urls(self, portal_client):
+        """#822: the fallback id used to be a lossy char-substitution slug —
+        "reports/jan.html" and "reports-jan.html" both became
+        "artifact-reports-jan-html", so a new artifact could dedup-clobber a
+        different still-pending one. A hash of the full url doesn't collide
+        on this pair, so both notices coexist."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        await client.post("/api/desktop/notification", json={
+            "artifact": {"url": "reports/jan.html", "title": "Jan (nested)"},
+        })
+        await client.post("/api/desktop/notification", json={
+            "artifact": {"url": "reports-jan.html", "title": "Jan (flat)"},
+        })
+        assert len(server.active_notifications) == 2
+        ids = {n["artifact"]["artifact_id"] for n in server.active_notifications.values()}
+        assert len(ids) == 2
 
     async def test_artifact_requires_url(self, portal_client):
         client, server = portal_client
@@ -666,6 +715,23 @@ class TestApiDesktopNotification:
                 "artifact": {"url": "report.html", "title": "Report"},
             })
         assert len(server.active_notifications) == 1
+
+    async def test_two_distinct_artifact_notices_coexist(self, portal_client):
+        """Two different concurrent unclicked artifact deliverables must both
+        stay pending — dedup keys on artifact_id, so distinct artifacts must
+        never clobber each other the way a same-id re-render intentionally
+        does above."""
+        client, server = portal_client
+        server.broadcast_dashboard = AsyncMock()
+        await client.post("/api/desktop/notification", json={
+            "artifact": {"url": "report-a.html", "title": "Report A"},
+        })
+        await client.post("/api/desktop/notification", json={
+            "artifact": {"url": "report-b.html", "title": "Report B"},
+        })
+        assert len(server.active_notifications) == 2
+        titles = sorted(n["artifact"]["title"] for n in server.active_notifications.values())
+        assert titles == ["Report A", "Report B"]
 
     async def test_session_sweep_spares_artifact_notices(self, portal_client):
         """The one-toast-per-session replacement must not eat a pending
