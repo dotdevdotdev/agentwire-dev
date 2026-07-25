@@ -212,6 +212,35 @@ class TestVoiceTools:
         assert "parked" in result
 
 
+class TestNotifyUserArtifactParams:
+    """#822: notify_user's artifact_url/artifact_title params (#821) had zero
+    test coverage — cover the body it builds for /api/desktop/notification."""
+
+    @patch("agentwire.mcp_notify._portal_request")
+    def test_artifact_url_sets_artifact_body_with_default_title(self, mock_req):
+        from agentwire.mcp_notify import notify_user
+        mock_req.return_value = _success(id="n1", clients=1)
+        notify_user(text="ready", artifact_url="report.html")
+        body = mock_req.call_args[0][2]
+        assert body["artifact"] == {"url": "report.html", "title": "Artifact"}
+
+    @patch("agentwire.mcp_notify._portal_request")
+    def test_artifact_title_overrides_default(self, mock_req):
+        from agentwire.mcp_notify import notify_user
+        mock_req.return_value = _success(id="n1", clients=1)
+        notify_user(text="ready", artifact_url="report.html", artifact_title="Q3 Report")
+        body = mock_req.call_args[0][2]
+        assert body["artifact"] == {"url": "report.html", "title": "Q3 Report"}
+
+    @patch("agentwire.mcp_notify._portal_request")
+    def test_no_artifact_url_omits_artifact_body(self, mock_req):
+        from agentwire.mcp_notify import notify_user
+        mock_req.return_value = _success(id="n1", clients=1)
+        notify_user(text="plain toast", artifact_title="ignored without a url")
+        body = mock_req.call_args[0][2]
+        assert "artifact" not in body
+
+
 # ---------------------------------------------------------------------------
 # Desktop tools
 # ---------------------------------------------------------------------------
