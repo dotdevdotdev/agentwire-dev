@@ -614,6 +614,35 @@ class TestApiNotify:
         assert data["clients"] == 2
 
 
+class TestArtifactUrlHash:
+    """#822: pins `_artifact_url_hash` (routes/desktop.py) against known
+    vectors, independently cross-checked in Node against its JS twin
+    (`artifactUrlHash` in static/js/desktop.js) — the two have no shared
+    source and no JS test harness exists in this repo, so this is the only
+    automated guard against the two silently drifting apart. If you change
+    the hash algorithm on either side, recompute vectors on the OTHER side
+    (e.g. `node -e "..."` mirroring this function) before touching this
+    test — a passing Python-only test proves nothing about JS parity."""
+
+    @pytest.mark.parametrize("url,expected", [
+        ("", "811c9dc5"),
+        ("a", "e40c292c"),
+        ("reports/jan.html", "7084fac5"),
+        ("reports-jan.html", "b5f6349b"),
+        ("https://example.com", "6fbc04d3"),
+        ("council-proj-minutes/index.html", "d569834e"),
+        ("日本語", "805f5ce7"),  # multi-byte UTF-8
+        ("🦉", "11131011"),  # astral/surrogate-pair UTF-8
+    ])
+    def test_pinned_vectors(self, url, expected):
+        from agentwire.routes.desktop import _artifact_url_hash
+        assert _artifact_url_hash(url) == expected
+
+    def test_distinct_urls_that_collided_under_the_old_slug_now_differ(self):
+        from agentwire.routes.desktop import _artifact_url_hash
+        assert _artifact_url_hash("reports/jan.html") != _artifact_url_hash("reports-jan.html")
+
+
 class TestApiDesktopNotification:
     async def test_toast_reports_client_count(self, portal_client):
         """#444: posting a toast reports how many dashboards saw it live (the
