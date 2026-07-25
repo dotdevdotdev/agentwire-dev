@@ -62,6 +62,7 @@ from .worktree import (
     default_base_branch,
     ensure_worktree,
     git_root,
+    is_registered_worktree,
     is_valid_branch_name,
     parse_session_name,
     remove_worktree,
@@ -1561,7 +1562,17 @@ def _teardown_entry(
     Never reports worktree_removed=True while the dir is still on disk: if
     `git worktree remove --force` can't clear it, this fails LOUDLY
     (success: False) and leaves the registry entry in place, instead of
-    silently "unregistering" an orphan.
+    silently "unregistering" an orphan — UNLESS git *already had no record of
+    the path before we touched it* (see `is_registered_worktree`), in which
+    case there's no registered worktree left to protect and the leftover
+    directory (a stale build-tool cache, typically) is hard-deleted instead.
+
+    That pre-check matters: `git worktree prune` below runs unconditionally
+    and clears any entry git marks "prunable" (e.g. one whose linked `.git`
+    file was deleted) as a side effect of THIS call — checking registration
+    after prune would misread a worktree that was real and registered right
+    up until this attempt as a pre-existing orphan, and hard-delete content
+    the fail-loud path exists to protect.
 
     The worktree removal is attempted BEFORE the session is killed, and the
     session is only killed once removal is confirmed — never the reverse.
@@ -1569,9 +1580,14 @@ def _teardown_entry(
     disk with no session left to notice, on any removal failure (bad
     project_path, a stuck worktree, ...) (#740).
     """
+    was_registered = is_registered_worktree(project_path, worktree_path)
+
     # Force-remove the git worktree, then prune admin files either way.
     _, remove_error = remove_worktree(project_path, worktree_path, force=True)
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"], capture_output=True)
+
+    if worktree_path.exists() and not was_registered:
+        shutil.rmtree(worktree_path, ignore_errors=True)
 
     if worktree_path.exists():
         reason = remove_error or "worktree directory still present after `git worktree remove --force`"

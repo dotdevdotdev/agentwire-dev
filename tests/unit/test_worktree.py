@@ -12,6 +12,7 @@ from agentwire.worktree import (
     git_common_dir,
     git_root,
     is_git_repo,
+    is_registered_worktree,
     is_valid_branch_name,
     parse_session_name,
     remove_worktree,
@@ -303,3 +304,36 @@ class TestRemoveWorktree:
         removed, error = remove_worktree(not_repo, tmp_path / "wherever")
         assert removed is False
         assert error
+
+
+# --- is_registered_worktree ---
+
+class TestIsRegisteredWorktree:
+    def test_true_for_a_live_worktree(self, tmp_path):
+        repo, _ = _make_repo(tmp_path)
+        wt = tmp_path / "repo-worktrees" / "feature"
+        assert ensure_worktree(repo, "feature", wt)
+        assert is_registered_worktree(repo, wt) is True
+
+    def test_false_once_gits_own_admin_dir_is_gone(self, tmp_path):
+        """A directory can outlive its registration (e.g. a prior teardown's
+        `rm` half crashed, or the admin dir was pruned independently) — once
+        git's `.git/worktrees/<name>` entry is gone, git itself no longer
+        considers this path a worktree, even though it still exists on disk.
+        """
+        import shutil
+
+        repo, _ = _make_repo(tmp_path)
+        wt = tmp_path / "repo-worktrees" / "feature"
+        assert ensure_worktree(repo, "feature", wt)
+
+        shutil.rmtree(repo / ".git" / "worktrees" / "feature")
+
+        assert wt.exists()  # leftover directory content untouched
+        assert is_registered_worktree(repo, wt) is False
+
+    def test_false_for_a_path_never_registered(self, tmp_path):
+        repo, _ = _make_repo(tmp_path)
+        bogus = tmp_path / "never-a-worktree"
+        bogus.mkdir()
+        assert is_registered_worktree(repo, bogus) is False

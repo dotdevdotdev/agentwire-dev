@@ -309,6 +309,32 @@ def remove_worktree(project_path: Path, worktree_path: Path, *, force: bool = Tr
     return False, (result.stderr or result.stdout).strip()
 
 
+def is_registered_worktree(project_path: Path, worktree_path: Path) -> bool:
+    """Does git's own worktree registry (still) know about ``worktree_path``?
+
+    A directory can outlive its registration — e.g. `git worktree remove`
+    succeeded on a prior teardown attempt but the `rm -rf` half crashed
+    before clearing a build-tool cache dir left inside, or the admin file
+    under `.git/worktrees/` was pruned independently. In that state git
+    reports "fatal: ... is not a working tree" for every future removal
+    attempt, forever — this lets a caller distinguish that (provably safe
+    to hard-delete, git has nothing to lose) from a real registered
+    worktree that `remove --force` merely failed to clear.
+    """
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=project_path, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return False
+    target = str(worktree_path.resolve())
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            if str(Path(line[len("worktree "):]).resolve()) == target:
+                return True
+    return False
+
+
 def worktree_status(worktree_path: Path) -> dict:
     """Read-only git status for a worktree. Local git only — no network, no gh.
 

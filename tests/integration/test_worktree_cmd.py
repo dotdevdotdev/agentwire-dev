@@ -643,6 +643,37 @@ def test_remove_fails_loudly_when_dir_survives(tmp_path, monkeypatch, wt_env, ca
     assert payload["error"]
 
 
+def test_remove_hard_deletes_unregistered_orphan_directory(tmp_path, monkeypatch, wt_env, capsys):
+    """A directory git no longer registers as a worktree at all (its
+    `.git/worktrees/<name>` admin entry is gone, e.g. from a prior teardown
+    that crashed mid-way) must not get stuck failing `git worktree remove`
+    forever — since git has nothing left to lose, the leftover directory is
+    hard-deleted and teardown proceeds and succeeds."""
+    import shutil
+
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="orphan", project=str(clone)) == 0
+    wt_path = wt_dir / "clone-repo" / "orphan"
+    assert wt_path.exists()
+
+    # Simulate the crashed-partial-teardown state: git's own registration is
+    # gone, but the directory (with leftover content) survives on disk.
+    shutil.rmtree(clone / ".git" / "worktrees" / "orphan")
+    (wt_path / "stale-cache-file").write_text("leftover\n")
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="orphan", project=str(clone), remove=True)
+    assert rc == 0
+    assert not wt_path.exists()
+    assert reg.entries(clone.resolve()) == []
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is True
+    assert payload["worktree_removed"] is True
+
+
 def test_remove_kills_alive_session(tmp_path, monkeypatch, wt_env, capsys):
     _, clone = _origin_and_clone(tmp_path, default_branch="develop")
     wt_dir = tmp_path / "worktrees"
