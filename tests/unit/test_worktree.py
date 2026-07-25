@@ -337,3 +337,12 @@ class TestIsRegisteredWorktree:
         bogus = tmp_path / "never-a-worktree"
         bogus.mkdir()
         assert is_registered_worktree(repo, bogus) is False
+
+    def test_fails_closed_toward_registered_when_git_errors(self, tmp_path):
+        """An inconclusive `git worktree list` (corrupt repo, I/O error, ...)
+        must not be read as "definitely orphaned" — a caller gating a
+        destructive hard-delete on this should default to treating it as a
+        real worktree when unsure, not as safe to discard."""
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        assert is_registered_worktree(not_a_repo, tmp_path / "wherever") is True

@@ -317,16 +317,23 @@ def is_registered_worktree(project_path: Path, worktree_path: Path) -> bool:
     before clearing a build-tool cache dir left inside, or the admin file
     under `.git/worktrees/` was pruned independently. In that state git
     reports "fatal: ... is not a working tree" for every future removal
-    attempt, forever — this lets a caller distinguish that (provably safe
-    to hard-delete, git has nothing to lose) from a real registered
-    worktree that `remove --force` merely failed to clear.
+    attempt, forever — this lets a caller distinguish that from a real
+    registered worktree that `remove --force` merely failed to clear. It
+    says nothing about whether the directory holds valuable content — that
+    judgment (e.g. "orphaned + unregistered is safe to hard-delete") belongs
+    to the caller, not this function.
+
+    Fails closed on an inconclusive read: if `git worktree list` itself
+    errors (corrupt repo, I/O, lock contention), that's reported as
+    registered rather than not — a caller gating a destructive action on
+    this should default to "assume real" when unsure, not "assume orphan".
     """
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         cwd=project_path, capture_output=True, text=True,
     )
     if result.returncode != 0:
-        return False
+        return True
     target = str(worktree_path.resolve())
     for line in result.stdout.splitlines():
         if line.startswith("worktree "):

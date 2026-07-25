@@ -1586,8 +1586,10 @@ def _teardown_entry(
     _, remove_error = remove_worktree(project_path, worktree_path, force=True)
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"], capture_output=True)
 
+    hard_deleted_orphan = False
     if worktree_path.exists() and not was_registered:
         shutil.rmtree(worktree_path, ignore_errors=True)
+        hard_deleted_orphan = not worktree_path.exists()
 
     if worktree_path.exists():
         reason = remove_error or "worktree directory still present after `git worktree remove --force`"
@@ -1621,7 +1623,7 @@ def _teardown_entry(
     return {"success": True, "session": session_name, "path": str(worktree_path),
             "killed": killed, "worktree_removed": True,
             "branch": branch, "branch_deleted": branch_deleted, "branch_note": branch_note,
-            "orphaned_tabs": orphaned_tabs}
+            "orphaned_tabs": orphaned_tabs, "hard_deleted_orphan": hard_deleted_orphan}
 
 
 def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
@@ -1657,7 +1659,9 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
     else:
         msg = (f"Removed worktree session '{result['session']}'"
                + (" (killed live session)" if result["killed"] else "")
-               + f"; worktree {result['path']} removed")
+               + f"; worktree {result['path']} removed"
+               + (" (git had no registration for it — hard-deleted the leftover directory)"
+                  if result.get("hard_deleted_orphan") else ""))
         if result["branch"]:
             msg += f"; branch '{result['branch']}' " + ("deleted" if result["branch_deleted"] else f"kept ({result['branch_note']})")
         if result["orphaned_tabs"]:

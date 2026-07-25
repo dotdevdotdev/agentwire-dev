@@ -672,6 +672,7 @@ def test_remove_hard_deletes_unregistered_orphan_directory(tmp_path, monkeypatch
     payload = json.loads(capsys.readouterr().out)
     assert payload["success"] is True
     assert payload["worktree_removed"] is True
+    assert payload["hard_deleted_orphan"] is True
 
 
 def test_remove_kills_alive_session(tmp_path, monkeypatch, wt_env, capsys):
