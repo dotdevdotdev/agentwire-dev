@@ -307,6 +307,31 @@ class TestApiCreateSession:
             assert "paste it manually" not in toasts[0]["text"]
             assert "queued" in toasts[0]["text"]
 
+    async def test_create_first_message_already_delivered_does_not_say_paste_manually(self, portal_client):
+        """#835 second-pass review: the 'already_delivered' arm of the same
+        ternary had no direct test -- only 'inbox' was exercised."""
+        import asyncio
+
+        client, server = portal_client
+
+        async def cmd_router(args, json_output=True):
+            if args[0] == "send":
+                return (False, {"error": "Delivery not verified", "fallback": "already_delivered"})
+            return (True, {"session": "ideaproj", "path": "/p"})
+
+        with patch.object(server, "run_agentwire_cmd", side_effect=cmd_router):
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/create", json={
+                "name": "ideaproj", "first_message": "an idea",
+            })
+            assert (await resp.json()).get("success") is True
+            await asyncio.gather(*server._background_tasks)
+            toasts = [n for n in server.active_notifications.values()
+                      if n["session"] == "ideaproj"]
+            assert len(toasts) == 1
+            assert "paste it manually" not in toasts[0]["text"]
+            assert "delivered" in toasts[0]["text"]
+
     async def test_create_without_first_message_no_background_task(self, portal_client):
         client, server = portal_client
         with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:

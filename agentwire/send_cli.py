@@ -44,6 +44,22 @@ def _recover_unverified_send(session: str, prompt: str, sender: str) -> "str | N
     duplicate — accepted per this codebase's existing bias that a
     recoverable duplicate beats a silently dropped message.
 
+    Known residual risk (#835 second-pass review): this is the same bare
+    whitespace-normalized substring match ``_deliver_once`` already uses for
+    its own internal idempotent-paste guard — not a new invention — but
+    reused here it trades in the *opposite* direction from most of this
+    file's checks. A false match reports "already delivered" and SKIPS the
+    inbox enqueue entirely: for a short or generic message (a bare "yes",
+    "continue", "approved") that happens to already sit in the last
+    ``VERIFY_SCROLLBACK_LINES`` for an unrelated reason, a send that
+    genuinely never landed could be silently dropped instead of queued —
+    the one outcome this whole fallback exists to prevent. Tracked as a
+    follow-up (a lightweight per-attempt marker, mirroring
+    ``send_verified``'s own ``marker`` param, would close this precisely);
+    not fixed here because it's strictly narrower than the bug this
+    function was written to close (needs a coincidental/repeated-text
+    match, not just any unverified send).
+
     Returns ``"already_delivered"``, ``"inbox"``, or ``None`` (the inbox
     fallback itself failed).
     """

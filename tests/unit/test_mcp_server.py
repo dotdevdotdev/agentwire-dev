@@ -166,6 +166,15 @@ class TestDeliveryResultBehavior:
         assert "queued to its msg inbox" in result
         assert "No action needed" in result
 
+    def test_unverified_but_already_delivered_reports_no_action_needed(self):
+        """#835 second-pass review: the 'already_delivered' branch (the
+        confirm read was ambiguous but the message was actually on
+        scrollback already) had no direct test pinning its wording."""
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": False, "fallback": "already_delivered"}, "to session 'proj'")
+        assert "already visible on scrollback" in result
+        assert "No action needed" in result
+
     def test_unverified_with_no_fallback_still_warns(self):
         from agentwire.mcp_core import _delivery_result
         result = _delivery_result({"verified": False, "fallback": None}, "to session 'proj'")
