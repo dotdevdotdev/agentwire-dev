@@ -68,6 +68,18 @@ class TestHealthEndpoint:
         assert data["status"] == "ok"
         assert "version" in data
 
+    async def test_health_reports_the_real_package_version(self, portal_client):
+        """server.py used to hardcode its own __version__ = "1.3.0",
+        disconnected from agentwire/__init__.py and stale since 2026-02 --
+        /health silently lied about what was actually running. Pin against
+        the real SSOT so a reintroduced hardcode fails this test."""
+        from agentwire import __version__ as real_version
+
+        client, _ = portal_client
+        resp = await client.get("/health")
+        data = await resp.json()
+        assert data["version"] == real_version
+
 
 class TestPwaSurface:
     """PWA manifest + service worker + push API (#483)."""
