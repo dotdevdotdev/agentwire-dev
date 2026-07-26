@@ -215,7 +215,11 @@ class TestCmdSendWaitReady:
         assert payload["success"] is False
         assert "not ready" in payload["error"]
 
-    def test_unverified_fails(self, capsys, monkeypatch):
+    def test_unverified_falls_back_to_inbox(self, capsys, monkeypatch):
+        """#834: an unverified send must never just hand the problem back to
+        whichever caller reads the response — it queues to the durable msg
+        inbox so delivery is retried and eventually dead-lettered LOUDLY
+        instead of silently depending on the caller noticing and resending."""
         from agentwire import session_ready
         from agentwire.send_cli import cmd_send
 
@@ -223,10 +227,27 @@ class TestCmdSendWaitReady:
         monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        monkeypatch.setattr(session_ready, "recover_failed_seed", lambda s, m, sender=None: "inbox")
 
         assert cmd_send(self._args()) == 1
         payload = self._payload(capsys)
         assert payload["verified"] is False
+        assert payload["fallback"] == "inbox"
+
+    def test_unverified_and_fallback_fails_is_still_reported(self, capsys, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.send_cli import cmd_send
+
+        has_session = MagicMock(returncode=0)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        monkeypatch.setattr(session_ready, "recover_failed_seed", lambda s, m, sender=None: None)
+
+        assert cmd_send(self._args()) == 1
+        payload = self._payload(capsys)
+        assert payload["verified"] is False
+        assert payload["fallback"] is None
 
     def test_remote_rejected(self, capsys):
         from agentwire.send_cli import cmd_send
@@ -241,6 +262,54 @@ class TestCmdSendWaitReady:
         assert cmd_send(self._args(pane=1)) == 1
         payload = self._payload(capsys)
         assert "--pane" in payload["error"]
+
+
+# --- cmd_send --verify (no --wait-ready) ---
+
+class TestCmdSendVerify:
+    def _args(self, **overrides):
+        defaults = dict(
+            session="proj", pane=None, prompt=["my", "idea"],
+            json=True, wait_ready=False, verify=True, timeout=None,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def _payload(self, capsys):
+        return json.loads(capsys.readouterr().out.strip())
+
+    def _mock_has_session(self, monkeypatch):
+        has_session = MagicMock(returncode=0)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+
+    def test_happy_path_verified_skips_fallback(self, capsys, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.send_cli import cmd_send
+
+        self._mock_has_session(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, retries=1: True)
+        recover = MagicMock()
+        monkeypatch.setattr(session_ready, "recover_failed_seed", recover)
+
+        assert cmd_send(self._args()) == 0
+        payload = self._payload(capsys)
+        assert payload["verified"] is True
+        assert payload["fallback"] is None
+        recover.assert_not_called()
+
+    def test_unverified_falls_back_to_inbox(self, capsys, monkeypatch):
+        """#834: same durable-fallback guarantee as --wait-ready."""
+        from agentwire import session_ready
+        from agentwire.send_cli import cmd_send
+
+        self._mock_has_session(monkeypatch)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, retries=1: False)
+        monkeypatch.setattr(session_ready, "recover_failed_seed", lambda s, m, sender=None: "inbox")
+
+        assert cmd_send(self._args()) == 0  # verify-without-wait-ready reports success=True; verified carries the real state
+        payload = self._payload(capsys)
+        assert payload["verified"] is False
+        assert payload["fallback"] == "inbox"
 
 
 # --- cmd_new --first-message ---

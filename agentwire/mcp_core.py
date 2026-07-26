@@ -162,11 +162,30 @@ def _delivery_result(data: dict, where: str) -> str:
     returns ``verified``: True (landed), False (sent but not seen — likely a
     busy/booting pane that dropped it), or None (remote — unverifiable across
     SSH). Surface that instead of a blind "sent".
+
+    A ``False`` verify from a *session*-level send no longer just hands the
+    problem back to whichever caller reads this string (#834) — the CLI
+    falls back to the durable msg inbox (retried across ticks, dead-lettered
+    + emailed on true exhaustion) when the direct paste can't be confirmed,
+    so report THAT outcome rather than telling the caller to notice and
+    resend by hand. A worker *pane* send has no such fallback (the msg inbox
+    only addresses sessions, not individual panes) — ``data`` won't carry a
+    ``fallback`` key at all in that case, distinguishing "not attempted"
+    from "attempted and failed" so this never claims a fallback that never
+    ran.
     """
     verified = data.get("verified")
     if verified is True:
         return f"Message delivered {where} (verified in pane)."
     if verified is False:
+        if "fallback" in data:
+            if data.get("fallback") == "inbox":
+                return (f"Message sent {where} but delivery could NOT be verified in the pane — "
+                        f"queued to its msg inbox instead, which guarantees delivery (retried "
+                        f"automatically, dead-lettered + emailed to the owner only if it truly "
+                        f"can't land). No action needed.")
+            return (f"Message sent {where} but delivery could NOT be verified, AND the msg-inbox "
+                    f"fallback also failed — this message may be lost. Check the pane or resend.")
         return (f"Message sent {where} but delivery could NOT be verified — it may "
                 f"have been dropped (busy/booting pane). Check the pane or resend.")
     if verified is None and "verified" in data:

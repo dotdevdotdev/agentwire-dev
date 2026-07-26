@@ -167,16 +167,29 @@ def cmd_send(args) -> int:
     if wait_ready:
         # Wait for the agent to be ready, then send with delivery
         # verification (a paste into a booting Claude vanishes silently).
-        from agentwire.session_ready import send_verified, wait_for_session_ready
+        from agentwire.session_ready import (
+            recover_failed_seed,
+            send_verified,
+            wait_for_session_ready,
+        )
 
         timeout = getattr(args, 'timeout', None) or 30.0
         if not wait_for_session_ready(session, timeout=timeout):
             return _output_result(False, json_mode, f"Agent in '{session}' not ready after {timeout:.0f}s")
         if not send_verified(session, prompt):
+            # A caller acting on "not verified" text is optional, not
+            # guaranteed — under load this is exactly the class of message
+            # that must never depend on an LLM noticing and manually
+            # resending. Fall back to the durable msg inbox (retried across
+            # ticks, dead-lettered + emailed on true exhaustion) instead of
+            # returning inert advisory text (#834).
+            fallback = recover_failed_seed(session, prompt, sender="agentwire")
             if json_mode:
-                print(json.dumps({"success": False, "session": session_full, "verified": False, "error": "Delivery not verified"}))
+                print(json.dumps({"success": False, "session": session_full, "verified": False,
+                                  "fallback": fallback, "error": "Delivery not verified"}))
             else:
-                print(f"Sent to {session} but delivery could not be verified", file=sys.stderr)
+                suffix = " — queued to its msg inbox for guaranteed delivery" if fallback == "inbox" else " and could not be queued — resend manually"
+                print(f"Sent to {session} but delivery could not be verified{suffix}", file=sys.stderr)
             return 1
         if json_mode:
             print(json.dumps({"success": True, "session": session_full, "machine": None, "verified": True, "message": "Prompt sent"}))
@@ -194,15 +207,26 @@ def cmd_send(args) -> int:
         # the old double-delivery worry the retries=0 choice guarded against
         # can't happen anymore. Staying patient here is what keeps a laggy host
         # from surfacing a false failure the parent has to clean up by hand.
-        from agentwire.session_ready import send_verified
+        from agentwire.session_ready import recover_failed_seed, send_verified
 
         ok = send_verified(session, prompt, retries=1)
+        fallback = None
+        if not ok:
+            # Same durable fallback as --wait-ready (#834): the drain's
+            # scrollback dedup makes this safe even if the direct send
+            # actually landed and only the confirm read was ambiguous —
+            # it will see the message already delivered and skip re-sending.
+            fallback = recover_failed_seed(session, prompt, sender="agentwire")
         if json_mode:
             print(json.dumps({"success": True, "session": session_full, "machine": None,
-                              "verified": ok,
+                              "verified": ok, "fallback": fallback,
                               "message": "Prompt sent" if ok else "Prompt sent but delivery could not be verified"}))
         else:
-            print(f"Sent to {session}" + (" (verified)" if ok else " (delivery NOT verified)"))
+            if ok:
+                print(f"Sent to {session} (verified)")
+            else:
+                suffix = " — queued to its msg inbox for guaranteed delivery" if fallback == "inbox" else " and could not be queued — resend manually"
+                print(f"Sent to {session} (delivery NOT verified){suffix}")
         return 0
 
     # Delegate paste + Enter handling to the shared pane_manager helper so

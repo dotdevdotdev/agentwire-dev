@@ -151,6 +151,48 @@ class TestFormatProjectsBehavior:
         assert ".agentwire.yml" not in result
 
 
+class TestDeliveryResultBehavior:
+    """#834: an unverified send must report its inbox fallback, not just
+    hand an inert 'check the pane or resend' string back to the caller."""
+
+    def test_verified_true(self):
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": True}, "to session 'proj'")
+        assert "verified in pane" in result
+
+    def test_unverified_with_inbox_fallback_reports_no_action_needed(self):
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": False, "fallback": "inbox"}, "to session 'proj'")
+        assert "queued to its msg inbox" in result
+        assert "No action needed" in result
+
+    def test_unverified_with_no_fallback_still_warns(self):
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": False, "fallback": None}, "to session 'proj'")
+        assert "may be lost" in result
+
+    def test_pane_send_has_no_fallback_key_and_must_not_claim_one_failed(self):
+        """pane_send's `agentwire send --pane` branch never attempts the
+        inbox fallback (the msg inbox only addresses sessions, not panes) —
+        it omits the `fallback` key entirely. This must read as the original
+        'may have been dropped' warning, not falsely claim a fallback ran
+        and failed."""
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": False}, "to pane 1")
+        assert "may have been dropped" in result
+        assert "msg-inbox fallback" not in result
+
+    def test_remote_unverifiable(self):
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": None}, "to session 'proj'")
+        assert "can't be verified across SSH" in result
+
+    def test_no_verified_key_plain_sent(self):
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({}, "to session 'proj'")
+        assert result == "Message sent to session 'proj'."
+
+
 class TestFormatRolesBehavior:
     def test_full_role_format(self):
         from agentwire.mcp_core import format_roles
