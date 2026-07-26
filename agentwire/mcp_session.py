@@ -227,6 +227,11 @@ def session_send(session: str, message: str) -> str:
             f"{message}"
         )
     args = ["send", "-s", session, "--verify", message]
+    if caller:
+        # Attributes a msg-inbox delivery fallback to the real caller instead
+        # of the generic "agentwire" (#835 review) — the CLI subprocess can't
+        # auto-detect the caller across the MCP boundary itself.
+        args.extend(["--caller-session", caller])
     data = run_agentwire_cmd(args)
     if not data.get("success"):
         return f"Failed to send message: {data.get('error', 'Unknown error')}"

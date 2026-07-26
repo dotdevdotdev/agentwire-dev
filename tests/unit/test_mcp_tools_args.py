@@ -129,6 +129,10 @@ class TestSessionTools:
         sent_msg = args[4]  # message follows --verify
         assert '[MESSAGE FROM SESSION "orchestrator"' in sent_msg
         assert 'session_send(session="orchestrator"' in sent_msg
+        # #835 review: a msg-inbox fallback attributes to the real caller
+        # (dead-letter emails, the rendered header) instead of the generic
+        # "agentwire" -- the CLI subprocess can't auto-detect it itself.
+        assert args[5:] == ["--caller-session", "orchestrator"]
 
     @patch("agentwire.mcp_session.run_agentwire_cmd")
     @patch("agentwire.mcp_session.get_caller_session", return_value=None)
