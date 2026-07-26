@@ -24,6 +24,44 @@ from .core import (
 )
 
 
+def _recover_unverified_send(session: str, prompt: str, sender: str) -> "str | None":
+    """Fallback when `send_verified` can't confirm delivery (#834, #835 review).
+
+    First checks whether the bare message is already on scrollback outside
+    the input box. A `send_verified` failure can mean the paste genuinely
+    never landed/submitted, OR that it fully submitted and only the
+    *confirm* read was ambiguous (an unparseable box frame, or a laggy host
+    blowing the submit budget). The msg-inbox drain's own dedup can't catch
+    the latter case on its own: it matches the WRAPPED ``[MSG from ... ]
+    ... <id>`` render (see ``inbox.Message.render``), never the bare text
+    this path pasted directly — enqueuing unconditionally would risk a real
+    duplicate delivery rather than the safe no-op the drain's dedup gives
+    its own messages. Checking here first avoids that duplicate in the
+    common case.
+
+    A message that lands only *after* this check runs (queued invisibly
+    mid-generation, per ``submit_confirmed``'s own docstring) can still
+    duplicate — accepted per this codebase's existing bias that a
+    recoverable duplicate beats a silently dropped message.
+
+    Returns ``"already_delivered"``, ``"inbox"``, or ``None`` (the inbox
+    fallback itself failed).
+    """
+    from agentwire.session_ready import message_on_scrollback, recover_failed_seed, scrollback
+
+    if message_on_scrollback(scrollback(session), prompt):
+        return "already_delivered"
+    return recover_failed_seed(session, prompt, sender=sender)
+
+
+def _fallback_suffix(fallback: "str | None") -> str:
+    if fallback == "already_delivered":
+        return " — already delivered directly (the confirmation read was just ambiguous); no action needed"
+    if fallback == "inbox":
+        return " — queued to its msg inbox for guaranteed delivery"
+    return " and could not be queued — resend manually"
+
+
 def cmd_send(args) -> int:
     """Send a prompt to a tmux session or pane (adds Enter automatically).
 
@@ -36,6 +74,13 @@ def cmd_send(args) -> int:
     json_mode = getattr(args, 'json', False)
     wait_ready = getattr(args, 'wait_ready', False)
     verify = getattr(args, 'verify', False)
+    # Candidate sender for a msg-inbox fallback's attribution (#835 review):
+    # prefer the real calling session over the generic "agentwire" so
+    # dead-letter emails and the rendered [MSG from ...] header stay
+    # meaningful. MCP forwards --caller-session explicitly (can't reliably
+    # auto-detect the caller across that boundary); a bare CLI invocation
+    # falls back to auto-detecting its own tmux session.
+    fallback_sender = getattr(args, 'caller_session', None) or pane_manager.get_current_session() or "agentwire"
 
     if wait_ready and pane_index is not None:
         return _output_result(False, json_mode, "--wait-ready targets a session's pane 0; it can't be combined with --pane")
@@ -167,11 +212,7 @@ def cmd_send(args) -> int:
     if wait_ready:
         # Wait for the agent to be ready, then send with delivery
         # verification (a paste into a booting Claude vanishes silently).
-        from agentwire.session_ready import (
-            recover_failed_seed,
-            send_verified,
-            wait_for_session_ready,
-        )
+        from agentwire.session_ready import send_verified, wait_for_session_ready
 
         timeout = getattr(args, 'timeout', None) or 30.0
         if not wait_for_session_ready(session, timeout=timeout):
@@ -183,16 +224,16 @@ def cmd_send(args) -> int:
             # resending. Fall back to the durable msg inbox (retried across
             # ticks, dead-lettered + emailed on true exhaustion) instead of
             # returning inert advisory text (#834).
-            fallback = recover_failed_seed(session, prompt, sender="agentwire")
+            fallback = _recover_unverified_send(session, prompt, fallback_sender)
             if json_mode:
                 print(json.dumps({"success": False, "session": session_full, "verified": False,
                                   "fallback": fallback, "error": "Delivery not verified"}))
             else:
-                suffix = " — queued to its msg inbox for guaranteed delivery" if fallback == "inbox" else " and could not be queued — resend manually"
-                print(f"Sent to {session} but delivery could not be verified{suffix}", file=sys.stderr)
+                print(f"Sent to {session} but delivery could not be verified{_fallback_suffix(fallback)}", file=sys.stderr)
             return 1
         if json_mode:
-            print(json.dumps({"success": True, "session": session_full, "machine": None, "verified": True, "message": "Prompt sent"}))
+            print(json.dumps({"success": True, "session": session_full, "machine": None,
+                              "verified": True, "fallback": None, "message": "Prompt sent"}))
         else:
             print(f"Sent to {session} (verified)")
         return 0
@@ -207,16 +248,13 @@ def cmd_send(args) -> int:
         # the old double-delivery worry the retries=0 choice guarded against
         # can't happen anymore. Staying patient here is what keeps a laggy host
         # from surfacing a false failure the parent has to clean up by hand.
-        from agentwire.session_ready import recover_failed_seed, send_verified
+        from agentwire.session_ready import send_verified
 
         ok = send_verified(session, prompt, retries=1)
         fallback = None
         if not ok:
-            # Same durable fallback as --wait-ready (#834): the drain's
-            # scrollback dedup makes this safe even if the direct send
-            # actually landed and only the confirm read was ambiguous —
-            # it will see the message already delivered and skip re-sending.
-            fallback = recover_failed_seed(session, prompt, sender="agentwire")
+            # Same durable fallback as --wait-ready (#834).
+            fallback = _recover_unverified_send(session, prompt, fallback_sender)
         if json_mode:
             print(json.dumps({"success": True, "session": session_full, "machine": None,
                               "verified": ok, "fallback": fallback,
@@ -225,8 +263,7 @@ def cmd_send(args) -> int:
             if ok:
                 print(f"Sent to {session} (verified)")
             else:
-                suffix = " — queued to its msg inbox for guaranteed delivery" if fallback == "inbox" else " and could not be queued — resend manually"
-                print(f"Sent to {session} (delivery NOT verified){suffix}")
+                print(f"Sent to {session} (delivery NOT verified){_fallback_suffix(fallback)}")
         return 0
 
     # Delegate paste + Enter handling to the shared pane_manager helper so
@@ -337,6 +374,11 @@ def register_send_parser(subparsers) -> None:
                                   "report verified vs unconfirmed instead of blind success")
     send_parser.add_argument("--timeout", type=float, default=30.0,
                              help="Readiness wait timeout in seconds (with --wait-ready, default: 30)")
+    send_parser.add_argument("--caller-session", dest="caller_session",
+                             help="Internal: attribute a msg-inbox delivery fallback to this sender "
+                                  "instead of auto-detecting the calling tmux session. MCP forwards "
+                                  "this explicitly, since the CLI subprocess can't reliably "
+                                  "auto-detect the caller across that boundary.")
     send_parser.add_argument("--json", action="store_true", help="Output as JSON")
     send_parser.set_defaults(func=cmd_send)
 

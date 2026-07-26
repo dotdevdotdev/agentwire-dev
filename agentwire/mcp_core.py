@@ -179,6 +179,10 @@ def _delivery_result(data: dict, where: str) -> str:
         return f"Message delivered {where} (verified in pane)."
     if verified is False:
         if "fallback" in data:
+            if data.get("fallback") == "already_delivered":
+                return (f"Message sent {where} — the pane confirmation was ambiguous, but the "
+                        f"message is already visible on scrollback, so it was in fact delivered. "
+                        f"No action needed.")
             if data.get("fallback") == "inbox":
                 return (f"Message sent {where} but delivery could NOT be verified in the pane — "
                         f"queued to its msg inbox instead, which guarantees delivery (retried "

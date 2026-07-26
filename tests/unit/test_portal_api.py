@@ -280,6 +280,33 @@ class TestApiCreateSession:
                             if c[0][0] == "notification"]
             assert len(notify_calls) == 1
 
+    async def test_create_first_message_unverified_but_queued_does_not_say_paste_manually(self, portal_client):
+        """#835: an unverified first-message send that recovered via the
+        msg-inbox fallback (or was found already delivered) must not show
+        the stale 'paste it manually' toast -- the system already handled
+        it, and telling the human to intervene would be actively wrong."""
+        import asyncio
+
+        client, server = portal_client
+
+        async def cmd_router(args, json_output=True):
+            if args[0] == "send":
+                return (False, {"error": "Delivery not verified", "fallback": "inbox"})
+            return (True, {"session": "ideaproj", "path": "/p"})
+
+        with patch.object(server, "run_agentwire_cmd", side_effect=cmd_router):
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/create", json={
+                "name": "ideaproj", "first_message": "an idea",
+            })
+            assert (await resp.json()).get("success") is True
+            await asyncio.gather(*server._background_tasks)
+            toasts = [n for n in server.active_notifications.values()
+                      if n["session"] == "ideaproj"]
+            assert len(toasts) == 1
+            assert "paste it manually" not in toasts[0]["text"]
+            assert "queued" in toasts[0]["text"]
+
     async def test_create_without_first_message_no_background_task(self, portal_client):
         client, server = portal_client
         with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:

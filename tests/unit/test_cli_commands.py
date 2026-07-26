@@ -188,12 +188,19 @@ class TestCmdSendWaitReady:
     def _payload(self, capsys):
         return json.loads(capsys.readouterr().out.strip())
 
+    def _mock_has_session(self, monkeypatch):
+        has_session = MagicMock(returncode=0)
+        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        # get_current_session shells out to real tmux and depends on the test
+        # runner's own environment ($TMUX_PANE) -- pin it so fallback_sender
+        # resolution is deterministic regardless of where tests run.
+        monkeypatch.setattr("agentwire.send_cli.pane_manager.get_current_session", lambda: None)
+
     def test_happy_path_verified(self, capsys, monkeypatch):
         from agentwire import session_ready
         from agentwire.send_cli import cmd_send
 
-        has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: True)
 
@@ -201,13 +208,13 @@ class TestCmdSendWaitReady:
         payload = self._payload(capsys)
         assert payload["success"] is True
         assert payload["verified"] is True
+        assert payload["fallback"] is None
 
     def test_not_ready_fails(self, capsys, monkeypatch):
         from agentwire import session_ready
         from agentwire.send_cli import cmd_send
 
-        has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: False)
 
         assert cmd_send(self._args()) == 1
@@ -220,34 +227,51 @@ class TestCmdSendWaitReady:
         whichever caller reads the response — it queues to the durable msg
         inbox so delivery is retried and eventually dead-lettered LOUDLY
         instead of silently depending on the caller noticing and resending."""
-        from agentwire import session_ready
+        from agentwire import session_ready, send_cli
         from agentwire.send_cli import cmd_send
 
-        has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
-        monkeypatch.setattr(session_ready, "recover_failed_seed", lambda s, m, sender=None: "inbox")
+        recover = MagicMock(return_value="inbox")
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
         assert cmd_send(self._args()) == 1
         payload = self._payload(capsys)
         assert payload["verified"] is False
         assert payload["fallback"] == "inbox"
+        recover.assert_called_once_with("proj", "my idea", "agentwire")
 
     def test_unverified_and_fallback_fails_is_still_reported(self, capsys, monkeypatch):
-        from agentwire import session_ready
+        from agentwire import session_ready, send_cli
         from agentwire.send_cli import cmd_send
 
-        has_session = MagicMock(returncode=0)
-        monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
-        monkeypatch.setattr(session_ready, "recover_failed_seed", lambda s, m, sender=None: None)
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", lambda s, m, sender: None)
 
         assert cmd_send(self._args()) == 1
         payload = self._payload(capsys)
         assert payload["verified"] is False
         assert payload["fallback"] is None
+
+    def test_caller_session_arg_wins_over_autodetect(self, capsys, monkeypatch):
+        """#835 review: attribute a fallback's msg-inbox entry to the real
+        calling session (threaded via --caller-session from the MCP layer),
+        not the generic 'agentwire' -- matters for dead-letter email
+        attribution and the rendered [MSG from ...] header."""
+        from agentwire import session_ready, send_cli
+        from agentwire.send_cli import cmd_send
+
+        self._mock_has_session(monkeypatch)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        recover = MagicMock(return_value="inbox")
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
+
+        cmd_send(self._args(caller_session="council-brain"))
+        recover.assert_called_once_with("proj", "my idea", "council-brain")
 
     def test_remote_rejected(self, capsys):
         from agentwire.send_cli import cmd_send
@@ -281,15 +305,16 @@ class TestCmdSendVerify:
     def _mock_has_session(self, monkeypatch):
         has_session = MagicMock(returncode=0)
         monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
+        monkeypatch.setattr("agentwire.send_cli.pane_manager.get_current_session", lambda: None)
 
     def test_happy_path_verified_skips_fallback(self, capsys, monkeypatch):
-        from agentwire import session_ready
+        from agentwire import send_cli, session_ready
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m, retries=1: True)
         recover = MagicMock()
-        monkeypatch.setattr(session_ready, "recover_failed_seed", recover)
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
         assert cmd_send(self._args()) == 0
         payload = self._payload(capsys)
@@ -299,17 +324,76 @@ class TestCmdSendVerify:
 
     def test_unverified_falls_back_to_inbox(self, capsys, monkeypatch):
         """#834: same durable-fallback guarantee as --wait-ready."""
-        from agentwire import session_ready
+        from agentwire import send_cli, session_ready
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "send_verified", lambda s, m, retries=1: False)
-        monkeypatch.setattr(session_ready, "recover_failed_seed", lambda s, m, sender=None: "inbox")
+        recover = MagicMock(return_value="inbox")
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
         assert cmd_send(self._args()) == 0  # verify-without-wait-ready reports success=True; verified carries the real state
         payload = self._payload(capsys)
         assert payload["verified"] is False
         assert payload["fallback"] == "inbox"
+        recover.assert_called_once_with("proj", "my idea", "agentwire")
+
+    def test_remote_with_verify_never_touches_the_fallback(self, capsys, monkeypatch):
+        """Remote (session@machine) sends return from an earlier branch
+        entirely -- verify=True there only marks the result unverifiable
+        across SSH, and must never reach the new fallback machinery."""
+        from agentwire import send_cli
+        from agentwire.send_cli import cmd_send
+
+        recover = MagicMock()
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
+        monkeypatch.setattr(
+            "agentwire.send_cli._run_remote",
+            lambda machine_id, cmd: MagicMock(returncode=0),
+        )
+        monkeypatch.setattr(
+            "agentwire.send_cli._get_machine_config",
+            lambda machine_id: {"host": "example.com"},
+        )
+
+        assert cmd_send(self._args(session="proj@gpu")) == 0
+        payload = self._payload(capsys)
+        assert payload["verified"] is None
+        assert "fallback" not in payload
+        recover.assert_not_called()
+
+
+class TestRecoverUnverifiedSend:
+    """#835 review finding 2: the msg-inbox drain's dedup matches the
+    WRAPPED `[MSG from ... ] ... <id>` render, never the bare text a direct
+    paste puts on screen -- so blindly enqueuing risks a real duplicate
+    delivery when the original send actually landed and only the confirm
+    read was ambiguous. _recover_unverified_send closes the common case by
+    checking scrollback for the bare message first."""
+
+    def test_already_on_scrollback_skips_the_inbox_enqueue(self, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.send_cli import _recover_unverified_send
+
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "...fake capture...")
+        monkeypatch.setattr(session_ready, "message_on_scrollback", lambda cap, msg: True)
+        recover = MagicMock()
+        monkeypatch.setattr(session_ready, "recover_failed_seed", recover)
+
+        assert _recover_unverified_send("proj", "already sent", "agentwire") == "already_delivered"
+        recover.assert_not_called()
+
+    def test_not_on_scrollback_falls_back_to_the_inbox(self, monkeypatch):
+        from agentwire import session_ready
+        from agentwire.send_cli import _recover_unverified_send
+
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "...fake capture...")
+        monkeypatch.setattr(session_ready, "message_on_scrollback", lambda cap, msg: False)
+        recover = MagicMock(return_value="inbox")
+        monkeypatch.setattr(session_ready, "recover_failed_seed", recover)
+
+        assert _recover_unverified_send("proj", "genuinely stuck", "council-brain") == "inbox"
+        recover.assert_called_once_with("proj", "genuinely stuck", sender="council-brain")
 
 
 # --- cmd_new --first-message ---

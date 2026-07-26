@@ -590,6 +590,19 @@ def clear_input_box(session: str, pane_index: int = 0) -> bool:
     text]`` chip) and confirms emptiness with the drain's own SGR-aware gate
     (``prompt_router.prompt_is_empty``), so "cleared" here means exactly
     "the drain will deliver". Returns True iff the box ends up empty.
+
+    Refuses to press Escape while the screen shows a live select-menu/dialog
+    (#835 review): this function was written for a brand-new session's
+    failed first-message seed, where nothing else could plausibly be on
+    screen. It is also reused for an already-running, independently-busy
+    session (``agentwire send --verify`` falling back after a failed
+    delivery) — there, "box not empty" can mean a permission dialog or
+    ``AskUserQuestion`` menu belonging to the recipient's own unrelated
+    work, not our stuck paste. Escape is the conventional cancel/decline key
+    for those, so pressing it blind would silently cancel a decision that
+    had nothing to do with us. Returns False without touching the pane in
+    that case; the caller's msg-inbox fallback still gets enqueued and
+    waits for the box to become genuinely idle on its own.
     """
     from agentwire import pane_manager, prompt_router
 
@@ -602,6 +615,8 @@ def clear_input_box(session: str, pane_index: int = 0) -> bool:
         try:
             if empty():
                 return True
+            if prompt_router.screen_shows_live_menu(_snapshot(session, pane_index)):
+                return False
             pane_manager.run_command(
                 ["tmux", "send-keys", "-t", target, "Escape"], timeout=5
             )

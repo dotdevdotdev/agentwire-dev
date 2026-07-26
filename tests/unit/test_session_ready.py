@@ -702,13 +702,17 @@ class TestClearInputBox:
     the drain's own SGR-aware emptiness gate (so 'cleared' means exactly 'the
     inbox fallback can deliver')."""
 
-    def _wire(self, monkeypatch, empty_after: int):
+    def _wire(self, monkeypatch, empty_after: int, live_menu: bool = False):
         """prompt_is_empty flips True after N Escapes; returns the key log."""
         from agentwire import pane_manager, prompt_router
         state = {"escapes": 0}
         monkeypatch.setattr(
             prompt_router, "prompt_is_empty",
             lambda s, p=0: state["escapes"] >= empty_after)
+        # No live menu on screen by default -- the snapshot content itself
+        # doesn't matter here, only screen_shows_live_menu's verdict on it.
+        monkeypatch.setattr(session_ready, "capture_session", lambda *a, **k: "")
+        monkeypatch.setattr(prompt_router, "screen_shows_live_menu", lambda cap: live_menu)
 
         def run(cmd, timeout=5):
             if cmd[-1] == "Escape":
@@ -745,6 +749,23 @@ class TestClearInputBox:
         monkeypatch.setattr(prompt_router, "prompt_is_empty", boom)
         monkeypatch.setattr(pane_manager, "run_command", lambda *a, **k: None)
         assert session_ready.clear_input_box("s") is False
+
+    def test_live_menu_refuses_to_press_escape(self, monkeypatch):
+        """#835 review: reused against an already-running, independently-busy
+        session (agentwire send --verify's fallback), 'box not empty' can
+        mean a permission dialog or AskUserQuestion menu belonging to the
+        recipient's own unrelated work. Escape is the conventional
+        cancel/decline key for those -- must never press it blind."""
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=1, live_menu=True)
+        assert session_ready.clear_input_box("s") is False
+        assert state["escapes"] == 0
+
+    def test_no_live_menu_still_clears_normally(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=1, live_menu=False)
+        assert session_ready.clear_input_box("s") is True
+        assert state["escapes"] == 1
 
 
 class TestRecoverFailedSeed:
