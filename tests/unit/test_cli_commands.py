@@ -227,7 +227,7 @@ class TestCmdSendWaitReady:
         whichever caller reads the response — it queues to the durable msg
         inbox so delivery is retried and eventually dead-lettered LOUDLY
         instead of silently depending on the caller noticing and resending."""
-        from agentwire import session_ready, send_cli
+        from agentwire import send_cli, session_ready
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
@@ -243,7 +243,7 @@ class TestCmdSendWaitReady:
         recover.assert_called_once_with("proj", "my idea", "agentwire")
 
     def test_unverified_and_fallback_fails_is_still_reported(self, capsys, monkeypatch):
-        from agentwire import session_ready, send_cli
+        from agentwire import send_cli, session_ready
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
@@ -261,7 +261,7 @@ class TestCmdSendWaitReady:
         calling session (threaded via --caller-session from the MCP layer),
         not the generic 'agentwire' -- matters for dead-letter email
         attribution and the rendered [MSG from ...] header."""
-        from agentwire import session_ready, send_cli
+        from agentwire import send_cli, session_ready
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
