@@ -33,7 +33,7 @@ import jinja2
 import yaml
 from aiohttp import web
 
-from . import prompt_router, security
+from . import __version__, prompt_router, security
 from .cached_status import CachedStatusChecker
 from .config import Config, load_config
 from .routes.artifacts import ArtifactsRoutesMixin, register_artifacts_routes
@@ -65,8 +65,6 @@ from .security import (
 )
 from .ssh import ssh_base_opts
 from .worktree import parse_session_name
-
-__version__ = "1.3.0"
 
 logger = logging.getLogger(__name__)
 
