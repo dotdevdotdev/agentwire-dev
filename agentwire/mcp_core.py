@@ -188,6 +188,11 @@ def _delivery_result(data: dict, where: str) -> str:
                         f"queued to its msg inbox instead, which guarantees delivery (retried "
                         f"automatically, dead-lettered + emailed to the owner only if it truly "
                         f"can't land). No action needed.")
+            if data.get("fallback") == "inbox_stuck":
+                return (f"Message sent {where} but delivery could NOT be verified in the pane — "
+                        f"queued to its msg inbox as a durable backup, but the ORIGINAL stale draft "
+                        f"could NOT be confirmed cleared from the input box. It may still be sitting "
+                        f"there and get submitted later by an unrelated Enter. Check the pane manually.")
             return (f"Message sent {where} but delivery could NOT be verified, AND the msg-inbox "
                     f"fallback also failed — this message may be lost. Check the pane or resend.")
         return (f"Message sent {where} but delivery could NOT be verified — it may "

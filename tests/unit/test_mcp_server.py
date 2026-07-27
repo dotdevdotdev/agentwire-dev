@@ -175,6 +175,17 @@ class TestDeliveryResultBehavior:
         assert "already visible on scrollback" in result
         assert "No action needed" in result
 
+    def test_unverified_with_inbox_stuck_fallback_warns_to_check_pane(self):
+        """#843: "inbox_stuck" (queued, but the original stale draft could
+        not be confirmed cleared from the input box) must read as an honest
+        warning, distinct from the calm "No action needed" wording used for
+        a fully-recovered "inbox" fallback."""
+        from agentwire.mcp_core import _delivery_result
+        result = _delivery_result({"verified": False, "fallback": "inbox_stuck"}, "to session 'proj'")
+        assert "could NOT be confirmed cleared" in result
+        assert "Check the pane manually" in result
+        assert "No action needed" not in result
+
     def test_unverified_with_no_fallback_still_warns(self):
         from agentwire.mcp_core import _delivery_result
         result = _delivery_result({"verified": False, "fallback": None}, "to session 'proj'")

@@ -801,15 +801,41 @@ class TestRecoverFailedSeed:
         assert seen["sender"] == "agentwire"
 
     def test_clear_failure_still_queues(self, monkeypatch):
+        """#843: clear_input_box raising must not be reported as full
+        recovery -- the box's actual state was never confirmed, so the
+        original stale draft may still be sitting there."""
         from agentwire import inbox
 
         def boom(*a, **k):
             raise RuntimeError("no pane")
 
         monkeypatch.setattr(session_ready, "clear_input_box", boom)
+        enqueued = {}
         monkeypatch.setattr(
-            inbox, "enqueue", lambda to, text, kind="note", sender=None, ref="": [])
-        assert session_ready.recover_failed_seed("sess", "x") == "inbox"
+            inbox, "enqueue",
+            lambda to, text, kind="note", sender=None, ref="": enqueued.setdefault("called", True) or [])
+        assert session_ready.recover_failed_seed("sess", "x") == "inbox_stuck"
+        assert enqueued["called"]  # durable copy still queued -- better than nothing
+
+    def test_clear_returns_false_reports_stuck_not_inbox(self, monkeypatch):
+        """#843: recover_failed_seed must never report "inbox" (implying full
+        recovery) when clear_input_box returns False -- the caller needs an
+        honest signal that the box wasn't confirmed cleared, since the
+        original draft could otherwise get flushed later by an unrelated
+        Enter looking like a fresh, legitimate instruction."""
+        from agentwire import inbox
+
+        monkeypatch.setattr(session_ready, "clear_input_box", lambda s, pane_index=0: False)
+        enqueued = {}
+        monkeypatch.setattr(
+            inbox, "enqueue",
+            lambda to, text, kind="note", sender=None, ref="": enqueued.setdefault("called", True) or [])
+
+        result = session_ready.recover_failed_seed("sess", "x")
+
+        assert result == "inbox_stuck"
+        assert result != "inbox"
+        assert enqueued["called"]  # durable copy still queued -- better than nothing
 
     def test_enqueue_failure_returns_none_never_raises(self, monkeypatch):
         from agentwire import inbox

@@ -273,6 +273,24 @@ class TestCmdSendWaitReady:
         cmd_send(self._args(caller_session="council-brain"))
         recover.assert_called_once_with("proj", "my idea", "council-brain")
 
+    def test_unverified_falls_back_to_stuck_inbox(self, capsys, monkeypatch):
+        """#843: an "inbox_stuck" fallback (queued, but the stale draft in
+        the input box could not be confirmed cleared) must propagate through
+        untouched -- never collapsed into the plain "inbox" success case."""
+        from agentwire import send_cli, session_ready
+        from agentwire.send_cli import cmd_send
+
+        self._mock_has_session(monkeypatch)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        recover = MagicMock(return_value="inbox_stuck")
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
+
+        assert cmd_send(self._args()) == 1
+        payload = self._payload(capsys)
+        assert payload["verified"] is False
+        assert payload["fallback"] == "inbox_stuck"
+
     def test_remote_rejected(self, capsys):
         from agentwire.send_cli import cmd_send
 
@@ -361,6 +379,29 @@ class TestCmdSendVerify:
         assert payload["verified"] is None
         assert "fallback" not in payload
         recover.assert_not_called()
+
+
+class TestFallbackSuffix:
+    """#843: the human-readable suffix must distinguish a fully-recovered
+    "inbox" fallback from "inbox_stuck", where the original draft could not
+    be confirmed cleared from the input box."""
+
+    def test_inbox_suffix_says_guaranteed_delivery(self):
+        from agentwire.send_cli import _fallback_suffix
+
+        assert "guaranteed delivery" in _fallback_suffix("inbox")
+
+    def test_inbox_stuck_suffix_warns_of_leftover_draft(self):
+        from agentwire.send_cli import _fallback_suffix
+
+        suffix = _fallback_suffix("inbox_stuck")
+        assert "could NOT be confirmed cleared" in suffix
+        assert "guaranteed delivery" not in suffix
+
+    def test_none_suffix_says_resend_manually(self):
+        from agentwire.send_cli import _fallback_suffix
+
+        assert "resend manually" in _fallback_suffix(None)
 
 
 class TestRecoverUnverifiedSend:
@@ -472,6 +513,19 @@ class TestCmdNewSeedFallback:
         assert payload["first_message_delivered"] is False
         assert payload["first_message_fallback"] == "inbox"
         # Recovery got the prompt and the creator as sender.
+        assert calls["recover"] == ("proj", "do the thing", "orch")
+
+    def test_seed_failure_reports_stuck_draft_distinctly(self, capsys, monkeypatch, tmp_path):
+        """#843: cmd_new's JSON contract must carry "inbox_stuck" through
+        untouched -- collapsing it into "inbox" would tell the caller the
+        box was cleared when it wasn't."""
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=False, verified=False, fallback="inbox_stuck")
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["success"] is True
+        assert payload["first_message_delivered"] is False
+        assert payload["first_message_fallback"] == "inbox_stuck"
         assert calls["recover"] == ("proj", "do the thing", "orch")
 
     def test_seed_failure_fallback_also_failed(self, capsys, monkeypatch, tmp_path):

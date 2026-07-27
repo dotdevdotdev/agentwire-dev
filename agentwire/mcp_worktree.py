@@ -104,13 +104,23 @@ def worktree_create(
     # invisible to an orchestrator skimming results, and the session then sits
     # idle with the task never delivered.
     if prompt and not data.get("first_message_delivered"):
-        if data.get("first_message_fallback") == "inbox":
+        fallback = data.get("first_message_fallback")
+        if fallback == "inbox":
             return (
                 f"Created worktree session '{session}' at {path}. "
                 "WARNING: seed prompt NOT delivered — the input box was not ready. "
                 "The prompt was queued to the session's msg inbox and the watchdog "
                 "will deliver it once the box is ready; verify with msg_inbox / "
                 "session_output before assuming the task started."
+            )
+        if fallback == "inbox_stuck":
+            return (
+                f"Created worktree session '{session}' at {path}. "
+                "WARNING: seed prompt NOT delivered — the input box was not ready, AND the "
+                "stale draft could NOT be confirmed cleared from it. The prompt was queued to "
+                "the session's msg inbox as a durable backup, but a leftover draft may still be "
+                "sitting in the pane and could get submitted later by an unrelated Enter — check "
+                f"session_output for '{session}' before assuming the box is clean."
             )
         return (
             f"Created worktree session '{session}' at {path}. "

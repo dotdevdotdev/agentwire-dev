@@ -2477,18 +2477,34 @@ class AgentWireServer(
             ["send", "-s", session_name, "--wait-ready", "--timeout", "60", "--", message]
         )
         if not success:
-            if result.get("fallback") in ("inbox", "already_delivered"):
+            fallback = result.get("fallback")
+            if fallback in ("inbox", "already_delivered"):
                 # #835: an unverified send now recovers on its own -- either
                 # it was already delivered and the confirm read was just
                 # ambiguous, or it's queued to the durable msg inbox. Either
                 # way the old "paste it manually" toast would be stale,
                 # actively wrong advice.
-                logger.info(f"First message for {session_name} recovered via {result.get('fallback')} fallback")
+                logger.info(f"First message for {session_name} recovered via {fallback} fallback")
                 await self._post_toast(
                     f"First message to {session_name} queued for guaranteed delivery"
-                    if result.get("fallback") == "inbox" else
+                    if fallback == "inbox" else
                     f"First message to {session_name} delivered (confirmation was just delayed)",
                     session=session_name, priority="normal", id_prefix="firstmsg")
+                return
+            if fallback == "inbox_stuck":
+                # #843: queued to the msg inbox, but the ORIGINAL stale draft
+                # could not be confirmed cleared from the input box -- unlike
+                # the plain "inbox" case above, this is NOT fully resolved:
+                # a leftover draft may still be sitting there for a later
+                # unrelated Enter to submit. Surface that distinctly instead
+                # of the calm "queued for guaranteed delivery" toast.
+                logger.warning(
+                    f"First message for {session_name} queued to inbox, but its input box "
+                    "could not be confirmed cleared -- a stale draft may still be stuck there")
+                await self._post_toast(
+                    f"First message to {session_name} queued, but a stuck draft in its input "
+                    "box could not be confirmed cleared — check the pane",
+                    session=session_name, priority="high", id_prefix="firstmsg")
                 return
             logger.warning(f"First message delivery failed for {session_name}: {result.get('error')}")
             await self._post_toast(
