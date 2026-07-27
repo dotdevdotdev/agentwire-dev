@@ -60,7 +60,9 @@ def _recover_unverified_send(session: str, prompt: str, sender: str) -> "str | N
     function was written to close (needs a coincidental/repeated-text
     match, not just any unverified send).
 
-    Returns ``"already_delivered"``, ``"inbox"``, or ``None`` (the inbox
+    Returns ``"already_delivered"``, ``"inbox"``, ``"inbox_stuck"`` (queued,
+    but the original stale draft couldn't be confirmed cleared from the
+    input box — see ``recover_failed_seed``, #843), or ``None`` (the inbox
     fallback itself failed).
     """
     from agentwire.session_ready import message_on_scrollback, recover_failed_seed, scrollback
@@ -75,6 +77,10 @@ def _fallback_suffix(fallback: "str | None") -> str:
         return " — already delivered directly (the confirmation read was just ambiguous); no action needed"
     if fallback == "inbox":
         return " — queued to its msg inbox for guaranteed delivery"
+    if fallback == "inbox_stuck":
+        return (" — queued to its msg inbox, but the stale draft could NOT be confirmed cleared "
+                "from the input box; it may still be sitting there and get submitted later by an "
+                "unrelated Enter — check the pane")
     return " and could not be queued — resend manually"
 
 

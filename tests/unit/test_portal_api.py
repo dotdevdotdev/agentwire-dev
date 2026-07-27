@@ -344,6 +344,34 @@ class TestApiCreateSession:
             assert "paste it manually" not in toasts[0]["text"]
             assert "delivered" in toasts[0]["text"]
 
+    async def test_create_first_message_stuck_draft_warns_not_calm_queued_toast(self, portal_client):
+        """#843: an "inbox_stuck" fallback (queued, but the stale draft in
+        the input box could not be confirmed cleared) must NOT reuse the
+        calm "queued for guaranteed delivery" toast the plain "inbox" case
+        gets -- the original draft may still be sitting there."""
+        import asyncio
+
+        client, server = portal_client
+
+        async def cmd_router(args, json_output=True):
+            if args[0] == "send":
+                return (False, {"error": "Delivery not verified", "fallback": "inbox_stuck"})
+            return (True, {"session": "ideaproj", "path": "/p"})
+
+        with patch.object(server, "run_agentwire_cmd", side_effect=cmd_router):
+            server.broadcast_dashboard = AsyncMock()
+            resp = await client.post("/api/create", json={
+                "name": "ideaproj", "first_message": "an idea",
+            })
+            assert (await resp.json()).get("success") is True
+            await asyncio.gather(*server._background_tasks)
+            toasts = [n for n in server.active_notifications.values()
+                      if n["session"] == "ideaproj"]
+            assert len(toasts) == 1
+            assert "paste it manually" not in toasts[0]["text"]
+            assert "queued for guaranteed delivery" not in toasts[0]["text"]
+            assert "could not be confirmed cleared" in toasts[0]["text"]
+
     async def test_create_without_first_message_no_background_task(self, portal_client):
         client, server = portal_client
         with patch.object(server, "run_agentwire_cmd", new_callable=AsyncMock) as mock_cmd:

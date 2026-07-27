@@ -639,18 +639,29 @@ def recover_failed_seed(
        that can never deliver dead-letters LOUDLY (owner email) instead of
        vanishing.
 
-    Returns ``"inbox"`` when the prompt was queued, None when even the
-    fallback failed (the caller must tell the user to deliver manually).
-    Never raises.
+    Step 1's outcome is NOT assumed (#843): if ``clear_input_box`` can't
+    confirm the box ended up empty (Escape did nothing, or the call raised),
+    the ORIGINAL stale, unsubmitted draft may still be sitting in the box —
+    live for whatever unrelated Enter reaches the pane next (a later
+    message's own retry, a human keypress) to submit it, looking exactly
+    like a fresh, legitimate instruction. The durable copy still gets
+    queued either way — still better than nothing — but the return value
+    is honest about which happened instead of reporting blanket success.
+
+    Returns ``"inbox"`` when the box was confirmed cleared AND the prompt
+    was queued, ``"inbox_stuck"`` when the prompt was queued but the box
+    could NOT be confirmed cleared (a stale draft may still be sitting
+    there — needs manual intervention), or None when even the durable
+    enqueue failed. Never raises.
     """
     try:
-        clear_input_box(session, pane_index=pane_index)
+        cleared = clear_input_box(session, pane_index=pane_index)
     except Exception:
-        pass
+        cleared = False
     try:
         from agentwire import inbox
 
         inbox.enqueue(session, message, kind="request", sender=sender or "agentwire")
-        return "inbox"
+        return "inbox" if cleared else "inbox_stuck"
     except Exception:
         return None

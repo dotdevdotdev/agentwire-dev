@@ -550,6 +550,21 @@ class TestWorktreeCreateSeedResult:
 
     @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
     @patch("agentwire.mcp_worktree.run_agentwire_cmd")
+    def test_seed_failure_with_inbox_stuck_fallback_warns_of_leftover_draft(self, mock_cmd, _caller):
+        """#843: "inbox_stuck" (queued, but the stale draft could not be
+        confirmed cleared from the input box) must read distinctly from the
+        plain "inbox" success-ish case above — the caller needs to know a
+        leftover draft may still be sitting in the pane."""
+        result = self._create(mock_cmd, _success(
+            session="proj-x", path="/w/proj-x",
+            first_message_delivered=False, first_message_fallback="inbox_stuck"))
+        assert "WARNING" in result
+        assert "NOT delivered" in result
+        assert "could NOT be confirmed cleared" in result
+        assert "(seeded)" not in result
+
+    @patch("agentwire.mcp_worktree.get_caller_session", return_value=None)
+    @patch("agentwire.mcp_worktree.run_agentwire_cmd")
     def test_seed_failure_without_fallback_is_loud(self, mock_cmd, _caller):
         result = self._create(mock_cmd, _success(
             session="proj-x", path="/w/proj-x",

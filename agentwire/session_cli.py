@@ -578,6 +578,13 @@ def cmd_new(args) -> int:
                         "queued to its msg inbox for delivery once the input box is ready",
                         file=sys.stderr,
                     )
+                elif first_message_fallback == "inbox_stuck":
+                    print(
+                        f"WARNING: first message NOT delivered to '{session_name}' — "
+                        "queued to its msg inbox, but the stuck draft in the input box "
+                        "could not be confirmed cleared; check the pane manually",
+                        file=sys.stderr,
+                    )
                 else:
                     print(
                         f"WARNING: first message NOT delivered to '{session_name}' "
@@ -596,8 +603,10 @@ def cmd_new(args) -> int:
         if first_message:
             result["first_message_delivered"] = bool(first_message_delivered)
             if not first_message_delivered:
-                # "inbox" (queued for watchdog delivery) or None (fallback
-                # failed too — the prompt is gone; caller must redeliver).
+                # "inbox" (queued, box confirmed cleared), "inbox_stuck"
+                # (queued, but the stale draft in the box couldn't be
+                # confirmed cleared — #843), or None (fallback failed too —
+                # the prompt is gone; caller must redeliver).
                 result["first_message_fallback"] = first_message_fallback
         _output_json(result)
     else:
