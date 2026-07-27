@@ -740,8 +740,13 @@ def _record_session_creator(session_name: str, created_by: str | None, via: str)
 
     The creator becomes the session's parent for prompt routing
     (prompt_router.resolve_parent), winning over .agentwire.yml `parent:`.
+
+    ``created_by`` of ``''`` means "explicitly rootless" and must still be
+    written — otherwise a re-`new`/`recreate` that forces standalone (e.g.
+    `--created-by ''`) leaves a stale parent from a prior creation in place,
+    since `not created_by` is also true for `''`.
     """
-    if not created_by or created_by == session_name.split("@")[0]:
+    if created_by is None or created_by == session_name.split("@")[0]:
         return
     metadata = load_session_metadata(session_name)
     metadata.update({
