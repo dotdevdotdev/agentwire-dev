@@ -23,11 +23,12 @@ If you open a claude-in-chrome tab to verify your work (dev server, screenshots)
 
 When the task is done:
 
-1. Close any claude-in-chrome tabs you opened (`tabs_close_mcp`) and drop their tracking (`chrome_tab_untrack`). A verification tab must never survive your teardown.
-2. Commit with a clear message, following any commit-footer conventions from your global instructions.
-3. Push your branch (`git push -u origin <branch>`).
-4. Open a DRAFT pull request against the base branch.
-5. Report back to your creator with a **polite, non-interrupting** message so you never clobber a draft they're half-way through typing:
+1. If you ever used `/loop` (self-paced iteration via `ScheduleWakeup`) at any point in this session, call `ScheduleWakeup(stop: true)` now, before anything else below. A scheduled wakeup outlives task completion — it fires later regardless of whether the work is done, re-injecting its prompt as fresh input, which reads as a stray, unprompted instruction to whoever's watching the pane and re-engages you on a task that's already finished.
+2. Close any claude-in-chrome tabs you opened (`tabs_close_mcp`) and drop their tracking (`chrome_tab_untrack`). A verification tab must never survive your teardown.
+3. Commit with a clear message, following any commit-footer conventions from your global instructions.
+4. Push your branch (`git push -u origin <branch>`).
+5. Open a DRAFT pull request against the base branch.
+6. Report back to your creator with a **polite, non-interrupting** message so you never clobber a draft they're half-way through typing:
 
    ```
    agentwire msg send --to <creator> --kind done "<session>: <one-liner + PR URL>"
