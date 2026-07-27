@@ -27,6 +27,8 @@ If you open a claude-in-chrome tab to test the branch, track it immediately with
 
 ## Reporting
 
+If you ever used `/loop` (self-paced iteration via `ScheduleWakeup`) at any point in this session, call `ScheduleWakeup(stop: true)` before reporting. A scheduled wakeup outlives task completion — it fires later regardless of whether the review is done, re-injecting its prompt as fresh input, which reads as a stray, unprompted instruction and re-engages you on a review that's already concluded.
+
 When your review reaches a conclusion, `notify_parent` with a structured verdict — never leave it implicit and never just exit:
 
 - **approve** — no blocking findings; safe to merge as-is (note any non-blocking nits separately)
