@@ -692,12 +692,39 @@ def cmd_kill(args) -> int:
         return 0
 
     # Local
+    result = kill_local_session(session, force=force, timeout=timeout,
+                                verbose=not json_mode)
+    if not result["success"]:
+        return _output_result(False, json_mode, result["error"])
+
+    if json_mode:
+        _output_json({
+            "success": True,
+            "session": session_full,
+            "graceful": result["graceful"],
+            "agent_exited": result["agent_exited"],
+        })
+    return 0
+
+
+def kill_local_session(session: str, force: bool = False, timeout: int = 10,
+                       verbose: bool = False) -> dict:
+    """Kill a local session: graceful ``/exit``, then tmux, then cleanup.
+
+    The reusable half of :func:`cmd_kill`'s session mode — teardown that isn't
+    initiated by a human still has to drop the metadata record and GC the dead
+    session's outbound, so the cohort sweeper (#852) shares this path instead
+    of reaching for raw tmux.
+
+    Returns ``{success, graceful, agent_exited, error}``.
+    """
     result = subprocess.run(
         ["tmux", "has-session", "-t", session],
         capture_output=True
     )
     if result.returncode != 0:
-        return _output_result(False, json_mode, f"Session '{session}' not found")
+        return {"success": False, "graceful": False, "agent_exited": False,
+                "error": f"Session '{session}' not found"}
 
     pane_command, pane_path = _pane0_state(session)
     posture = _get_session_posture_from_path(pane_path) if pane_path else None
@@ -711,7 +738,7 @@ def cmd_kill(args) -> int:
             ["tmux", "send-keys", "-t", f"{session}.0", "/exit", "Enter"],
             capture_output=True
         )
-        if not json_mode:
+        if verbose:
             print(f"Sent /exit to {session}, waiting for agent to exit (up to {timeout}s)...")
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -727,7 +754,7 @@ def cmd_kill(args) -> int:
 
     # Kill the session (no-op if the agent exit already tore it down)
     subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
-    if not json_mode:
+    if verbose:
         print(f"Killed session '{session}'")
 
     # Drop session metadata (creator record) so a future unrelated session
@@ -749,15 +776,8 @@ def cmd_kill(args) -> int:
         pass
 
     _notify_portal_sessions_changed()
-
-    if json_mode:
-        _output_json({
-            "success": True,
-            "session": session_full,
-            "graceful": graceful,
-            "agent_exited": agent_exited,
-        })
-    return 0
+    return {"success": True, "graceful": graceful,
+            "agent_exited": agent_exited, "error": ""}
 
 
 def _wait_for_worker_ready(session: str, pane_index: int, timeout: int = 30, agent_type: str = "claude") -> bool:

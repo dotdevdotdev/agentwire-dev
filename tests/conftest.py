@@ -126,6 +126,21 @@ def isolated_device_registry(tmp_path, monkeypatch):
     devices._cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def isolated_cohort_ledgers(tmp_path, monkeypatch):
+    """Point the fan-out cohort ledger (#852) at a temp dir for every test.
+
+    ``cmd_new`` enrolls every spawn in the CALLER's cohort, and the caller is
+    resolved from the live tmux session — so without this, any test exercising
+    ``cmd_new`` writes a real ledger for whatever session is running the suite,
+    which would then suppress that session's own idle handling.
+    """
+    from agentwire import cohort
+
+    monkeypatch.setattr(cohort, "COHORT_ROOT", tmp_path / "aw-cohorts")
+    monkeypatch.setattr(cohort, "EVENTS_FILE", tmp_path / "aw-cohort-events.jsonl")
+
+
 @pytest.fixture
 def clean_env(monkeypatch):
     """Remove all AGENTWIRE_* env vars."""

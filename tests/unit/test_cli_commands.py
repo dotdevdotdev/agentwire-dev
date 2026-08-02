@@ -737,6 +737,84 @@ class TestCmdNewDefaultCreatedByRooting:
         assert recorded["created_by"] == "orchestrator"
 
 
+class TestCmdNewCohortEnrollment:
+    """#852 — every spawn enrolls in the CALLER's fan-out cohort, independent
+    of the rooting decision. Rooting (#715) deliberately drops the parent link
+    for a cross-project spawn; deriving cohort membership from it would have
+    protected exactly one of the 2026-08-01 fan-out's four children and reaped
+    the parent out from under the other three."""
+
+    def _run(self, monkeypatch, tmp_path, *, caller_session="memory-manager",
+             caller_project_path=None, kind=None, no_cohort=False,
+             session="memrev-playchek"):
+        from types import SimpleNamespace
+
+        from agentwire import cohort, core
+        from agentwire import session_cli as m
+
+        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
+        monkeypatch.setattr(
+            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
+        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
+        monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
+        monkeypatch.setattr(
+            m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
+        monkeypatch.setattr(
+            m, "build_agent_command",
+            lambda *a, **k: SimpleNamespace(command="claude", env={}))
+        monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
+        monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
+        monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+        monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
+        monkeypatch.setattr(m.pane_manager, "get_current_session", lambda: None)
+        monkeypatch.setattr(
+            core, "_live_session_cwd",
+            lambda s: caller_project_path if caller_project_path else Path(tmp_path))
+
+        self.rooted_as = {}
+        monkeypatch.setattr(
+            m, "_record_session_creator",
+            lambda name, created_by, via: self.rooted_as.update(v=created_by))
+
+        enrolled = []
+        monkeypatch.setattr(
+            cohort, "enroll",
+            lambda parent, child, **kw: enrolled.append((parent, child)) or True)
+
+        args = argparse.Namespace(
+            session=session, path=str(tmp_path), force=False, json=True,
+            created_by=None, caller_session=caller_session, kind=kind,
+            no_cohort=no_cohort,
+        )
+        assert m.cmd_new(args) == 0
+        return enrolled
+
+    def test_same_project_child_is_enrolled(self, monkeypatch, tmp_path):
+        assert self._run(monkeypatch, tmp_path) == [
+            ("memory-manager", "memrev-playchek")]
+
+    def test_cross_project_child_is_still_enrolled(self, monkeypatch, tmp_path):
+        # The correction that makes #852 work: this child roots standalone
+        # (no created_by), but its LIFECYCLE still belongs to the caller.
+        enrolled = self._run(
+            monkeypatch, tmp_path,
+            caller_project_path=tmp_path.parent / "some-other-project")
+        assert self.rooted_as["v"] is None, "expected the cross-project rooting path"
+        assert enrolled == [("memory-manager", "memrev-playchek")]
+
+    def test_no_cohort_opts_out(self, monkeypatch, tmp_path):
+        assert self._run(monkeypatch, tmp_path, no_cohort=True) == []
+
+    def test_explicit_orchestrator_is_not_a_cohort_member(self, monkeypatch, tmp_path):
+        # A durable orchestrator outlives whoever spawned it (it roots for the
+        # same reason) — it must never be torn down by a spawner's join.
+        assert self._run(monkeypatch, tmp_path, kind="orchestrator") == []
+
+    def test_no_caller_means_no_cohort(self, monkeypatch, tmp_path):
+        assert self._run(monkeypatch, tmp_path, caller_session=None) == []
+
+
 # --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
 #
 # Both commands used to copy `project_config.roles` raw, bypassing

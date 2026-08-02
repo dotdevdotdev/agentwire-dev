@@ -41,6 +41,27 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
     exit 0
   fi
 
+  # Fan-out cohort guard (#852): this session spawned children that haven't
+  # reported yet. Idle here means "waiting", not "done" — the summary prompt
+  # would elicit a roll-up with nothing in it, and the second-idle /exit would
+  # reap the parent while its children are still working (and orphan their
+  # report-backs into dead-letter + owner email).
+  #
+  # Fails OPEN by design: a missing, corrupt, or past-deadline ledger must not
+  # be able to wedge a task alive forever. The watchdog sweeper is the other
+  # half — it reaps an orphaned cohort if THIS session dies first, and marks
+  # children whose sessions have vanished, so the guard self-clears.
+  cohort_file="$HOME/.agentwire/cohorts/${tmux_session}.json"
+  if [[ -n "$tmux_session" && -f "$cohort_file" ]]; then
+    pending=$(jq -r '[.children[]? | select(.state == "pending")] | length' "$cohort_file" 2>/dev/null || echo 0)
+    deadline=$(jq -r '.deadline // 0' "$cohort_file" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    if [[ "$pending" =~ ^[0-9]+$ && "$deadline" =~ ^[0-9]+$ && "$pending" -gt 0 && "$now" -lt "$deadline" ]]; then
+      log "Session $tmux_session waiting on $pending cohort child(ren) — skipping idle handling"
+      exit 0
+    fi
+  fi
+
   # Try to get config from .agentwire.yml
   session_name=""
   is_chatbot=false

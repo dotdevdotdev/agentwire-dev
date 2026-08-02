@@ -399,3 +399,59 @@ def session_fork(session: str, target: str, commit: str = "") -> str:
         forked = data.get("session", target)
         return f"Session '{session}' forked to '{forked}'."
     return f"Failed to fork session: {data.get('error', 'Unknown error')}"
+
+
+@mcp.tool()
+def wait_children(timeout: int = 300) -> str:
+    """Block until the child sessions YOU spawned report back, then reap them.
+
+    Use this after fanning out work with session_create / worktree_create,
+    instead of polling or "waiting" idly. Waiting idly is what gets a fan-out
+    parent reaped mid-flight: the idle handler reads idle as done, prompts for
+    a roll-up you can't write yet, and then /exit-s the session while its
+    children are still working (#852). This call blocks INSIDE a tool call,
+    which is not idle, so the handler never fires.
+
+    Each pass collects any report waiting in your inbox, tears down the child
+    it collected, and marks a child whose session has already exited. Children
+    still outstanding when the cohort deadline passes are torn down too and
+    returned as failures — name them in your roll-up rather than pretending
+    the run was clean.
+
+    Bounded and re-callable: if it returns with children still pending, call
+    it again to keep waiting.
+
+    Args:
+        timeout: Seconds to block in THIS call (default: 300)
+
+    Returns:
+        The children's reports, plus any that failed or are still pending.
+    """
+    args = ["wait", "--children", "--timeout", str(timeout)]
+    caller = get_caller_session()
+    if caller:
+        args.extend(["-s", caller])
+    data = run_agentwire_cmd(args, timeout=timeout + 30)
+    if not data.get("success"):
+        return f"Failed to wait on children: {data.get('error', 'Unknown error')}"
+    if not data.get("cohort"):
+        return "No fan-out cohort registered for this session — nothing to wait on."
+
+    lines = []
+    for entry in data.get("reports") or []:
+        lines.append(f"── {entry['session']} ──\n{entry.get('report') or '(no report text)'}")
+    for entry in data.get("failed") or []:
+        why = "never reported" if entry.get("state") == "timeout" else "session gone"
+        lines.append(f"── {entry['session']} ── FAILED: {why}")
+    left = data.get("left_alive") or []
+    if left:
+        lines.append(
+            "Left running (worktree children — their branch/PR teardown follows merge "
+            f"verification, #756): {', '.join(left)}")
+    pending = data.get("pending") or []
+    if pending:
+        lines.append(
+            f"Still pending: {', '.join(pending)} — call wait_children again to keep waiting.")
+    elif not lines:
+        lines.append("Cohort resolved with no reports.")
+    return "\n\n".join(lines)

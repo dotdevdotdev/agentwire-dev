@@ -28,6 +28,13 @@ agentwire info -s name          # session metadata (cwd, panes) as JSON
 agentwire kill -s name          # not: tmux kill-session
 agentwire list                  # not: tmux list-sessions
 agentwire recreate -s name      # destroy and recreate with fresh worktree
+agentwire wait --children       # BLOCK on the child sessions you spawned (#852) — collects
+                                #   each report, tears the child down, names the ones that
+                                #   never reported. Waiting idly instead gets YOU reaped
+                                #   mid-fan-out (idle != done). --timeout bounds this call;
+                                #   exit 1 = still pending, just call it again.
+                                #   Enrollment is automatic on `new`/`worktree` (opt out with
+                                #   --no-cohort; --kind orchestrator never enrolls).
 agentwire worktree name         # new branch + worktree + STANDALONE session
                                 #   "worktree session" ALWAYS means this command — never
                                 #   `spawn --branch` (that makes a pane). Defaults to the

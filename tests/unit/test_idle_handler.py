@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -102,3 +103,81 @@ class TestUsageLimitParkGuard:
         assert guard != -1 and worker_branch != -1 and task_branch != -1
         assert guard < worker_branch, "guard must precede worker-pane handling"
         assert guard < task_branch, "guard must precede scheduled-task handling"
+
+
+class TestCohortGuard:
+    """#852 — a parent with outstanding fan-out children is WAITING, not done.
+
+    The guard block is extracted from the hook and executed for real, so the
+    deadline arithmetic and the jq reads are exercised rather than grepped.
+    """
+
+    @staticmethod
+    def _guard_block() -> str:
+        lines = HOOK_PATH.read_text().splitlines()
+        start = next(i for i, ln in enumerate(lines) if "cohort_file=" in ln)
+        depth = 0
+        for end in range(start, len(lines)):
+            stripped = lines[end].strip()
+            if stripped.startswith("if "):
+                depth += 1
+            elif stripped == "fi":
+                depth -= 1
+                if depth == 0:
+                    return "\n".join(lines[start:end + 1])
+        raise AssertionError("cohort guard block is unterminated")
+
+    def _run(self, tmp_path, ledger: dict | str | None, session="memory-manager"):
+        """Run the guard with a fake HOME. Returns True if idle handling continues."""
+        if ledger is not None:
+            path = tmp_path / ".agentwire" / "cohorts"
+            path.mkdir(parents=True, exist_ok=True)
+            body = ledger if isinstance(ledger, str) else json.dumps(ledger)
+            (path / f"{session}.json").write_text(body)
+        script = (
+            "log() { :; }\n"
+            f'tmux_session="{session}"\n'
+            f"{self._guard_block()}\n"
+            "echo CONTINUED\n"
+        )
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True,
+            env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin:/usr/local/bin"},
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        return "CONTINUED" in result.stdout
+
+    def _ledger(self, states, deadline_offset=3600):
+        return {
+            "parent": "memory-manager",
+            "deadline": int(time.time()) + deadline_offset,
+            "children": [{"session": f"c{i}", "state": s, "report": None}
+                         for i, s in enumerate(states)],
+        }
+
+    def test_pending_children_suppress_idle_handling(self, tmp_path):
+        assert not self._run(tmp_path, self._ledger(["pending", "reported"]))
+
+    def test_resolved_cohort_resumes_normal_handling(self, tmp_path):
+        assert self._run(tmp_path, self._ledger(["reported", "gone", "timeout"]))
+
+    def test_past_deadline_resumes_normal_handling(self, tmp_path):
+        # Bounded: a wedged child cannot pin a task alive forever.
+        assert self._run(tmp_path, self._ledger(["pending"], deadline_offset=-1))
+
+    def test_no_ledger_is_untouched(self, tmp_path):
+        assert self._run(tmp_path, None)
+
+    def test_corrupt_ledger_fails_open(self, tmp_path):
+        assert self._run(tmp_path, "{ this is not json")
+
+    def test_missing_fields_fail_open(self, tmp_path):
+        assert self._run(tmp_path, {"parent": "memory-manager"})
+
+    def test_guard_runs_before_all_idle_handling(self):
+        source = HOOK_PATH.read_text()
+        guard = source.find("cohort_file=")
+        assert guard != -1, "cohort guard missing from idle-handler.sh"
+        assert guard < source.find("Worker pane detected")
+        assert guard < source.find("task_context_file=")
