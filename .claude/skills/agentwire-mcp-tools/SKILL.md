@@ -7,7 +7,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 
 **Agents running in agentwire sessions should use MCP tools instead of CLI commands.** The agentwire MCP server provides tools that wrap CLI functionality. Use these instead of `Bash: agentwire <cmd>`.
 
-## Session Management (12 tools)
+## Session Management (13 tools)
 
 | CLI Command | MCP Tool |
 |-------------|----------|
@@ -27,10 +27,13 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire recreate -s name` | `session_recreate(session="...")` |
 | `agentwire fork -s name -t project/branch` | `session_fork(session="...", target="...")` |
 | `agentwire fork -s name -t project/branch --commit abc` | `session_fork(session="...", target="...", commit="abc")` |
+| `agentwire wait --children` | `wait_children(timeout=300)` — block on the children YOU spawned; see below |
 
 **`session_send` vs `msg_send`:** `session_send` pastes + Enter **immediately** — and clobbers a human's half-typed draft if the box is occupied. Use it only when you must forcibly drive a session *now*. `msg_send` is the polite path: it queues a typed message into a file inbox and the watchdog injects it only when the recipient's box is empty and the pane is safe (≤60s). For routine peer updates ("PR drafted", "picking up the footer"), prefer `msg_send`. `kind` ∈ note|done|request|escalation|**ingest**; `to="@all"` broadcasts to live agent sessions except you. See wiki sessions/messaging.md.
 
 **Passive `ingest` messages (Briefing Mode):** `kind="ingest"` is **never auto-delivered** — it lands silently and waits until the recipient calls `msg_pull()`. Use it for "output ready" awareness signals that must NOT drive the recipient into a turn. Pair with `ref="<path>"` so the pointer is machine-readable. `msg_flush` forces a (still-gated) drain of the *driving* queue; it never touches passive messages.
+
+**`wait_children` after any fan-out.** If you spawn child sessions, do NOT just "wait" — idle ≠ done for a parent with outstanding children, and the idle handler will prompt you for a roll-up you can't write and then `/exit` you while they work (#852). `wait_children()` blocks inside the tool call (not idle), collects each child's report from your inbox, tears the child down, and names any that never reported. Bounded and re-callable — call it again if it comes back with children still pending. Enrollment is automatic on `session_create` / `worktree_create`, and survives a cross-project spawn even though the `created_by` link does not. See wiki sessions/fan-out-cohorts.md.
 
 **Note:** `session_create` (via `agentwire new`) records the calling session as the new session's creator ONLY when `project_dir` is the same project you're already running in — interactive prompts (permission/plan/AskUserQuestion) in that child then route back to you as `[PROMPT from ...]` messages. Spawning into a genuinely different project defaults to a standalone root instead of nesting under you (#715); pass `created_by=<name>` to force a specific parent regardless of project (e.g. for a closely related project). Answer routed prompts with `agentwire prompts answer -s <session> --expect <hash> <key>` via Bash (guarded compare-and-send), NEVER with raw `session_send_keys` — a late keystroke races the portal and can type into the child's input or abort its turn.
 

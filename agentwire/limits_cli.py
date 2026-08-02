@@ -178,18 +178,21 @@ def cmd_limits_tick(args) -> int:
 
     Runs the usage-limit sweep FIRST, then prompt routing (#276), then the
     polite-message inbox drain (#296), then context auto-management (#442),
-    then the zombie-scheduler-session reap (#739) — the ordering guarantees a
-    usage-limit dialog is parked before any sweep looks at the pane, that the
-    inbox only ever delivers to panes the prompt sweep already cleared, that
-    auto-``/clear`` runs before the reap so it never fights a pending
-    paste/prompt for the same idle, empty box, and that the reap runs LAST
-    since it kills sessions outright (nothing later should still be acting on
-    one).
+    then the zombie-scheduler-session reap (#739), then the fan-out cohort
+    sweep (#852) — the ordering guarantees a usage-limit dialog is parked
+    before any sweep looks at the pane, that the inbox only ever delivers to
+    panes the prompt sweep already cleared, that auto-``/clear`` runs before
+    the reap so it never fights a pending paste/prompt for the same idle,
+    empty box, and that the two teardown stages run LAST since they kill
+    sessions outright (nothing later should still be acting on one). The
+    cohort sweep goes after the zombie reap so a parent killed by that reap is
+    already gone when its cohort is evaluated — its orphaned children are
+    reaped in the same tick rather than the next.
 
     Each stage runs inside :func:`_run_stage` so an exception in one subsystem
     is logged and skipped rather than aborting the whole cycle (#490).
     """
-    from agentwire import inbox, prompt_router, session_context
+    from agentwire import cohort, inbox, prompt_router, session_context
     from agentwire.scheduler import zombie as scheduler_zombie
 
     result = _run_stage(
@@ -203,10 +206,12 @@ def cmd_limits_tick(args) -> int:
         "session_context", session_context.tick, {"acted": [], "deferred": []})
     zombies = _run_stage(
         "scheduler_zombie", scheduler_zombie.tick, {"killed": []})
+    cohorts = _run_stage(
+        "cohort", cohort.tick, {"reaped": [], "swept": []})
     if getattr(args, "json", False):
         print(json.dumps({
             **result, "prompts": prompts, "messages": messages,
-            "context": context, "zombies": zombies,
+            "context": context, "zombies": zombies, "cohorts": cohorts,
         }))
         return 0
     if result.get("skipped"):
@@ -247,6 +252,10 @@ def cmd_limits_tick(args) -> int:
     killed = zombies.get("killed") or []
     if killed:
         print("zombie scheduler sessions reaped: " + ", ".join(killed))
+    orphans = cohorts.get("reaped") or []
+    if orphans:
+        print("orphaned cohort children reaped: " + ", ".join(
+            f"{e['child']}(of {e['parent']})" for e in orphans))
     return 0
 
 

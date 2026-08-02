@@ -40,13 +40,34 @@ EMULATOR = r'''
 import os, sys, time, tty
 RULE = "─" * 20
 buf = ""
+# argv[2]: cap the box at N visible rows — Claude Code's input box has a
+# bounded height and SCROLLS, so a draft taller than it renders only its tail
+# (#851). 0 (default) keeps the old unbounded rendering.
+MAX_ROWS = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+
+def wrap(text, width):
+    out = []
+    for line in text.split("\n"):
+        while len(line) > width:
+            out.append(line[:width]); line = line[width:]
+        out.append(line)
+    return out
 
 def draw():
     # Clear screen, render only the input box (submitted turns scrolled away).
     # Render embedded newlines with \r\n so a multi-line buffer displays as
     # clean stacked rows between the rules (Claude's pasted-text rendering).
     sys.stdout.write("\x1b[2J\x1b[H")
-    body = buf.replace("\n", "\r\n")
+    if MAX_ROWS:
+        try:
+            width = os.get_terminal_size(sys.stdout.fileno()).columns
+        except OSError:
+            width = 80
+        rows = wrap(buf, width - 2) if buf else [""]
+        rows = rows[-MAX_ROWS:]          # only the tail window is on screen
+        body = "\r\n".join(rows)         # glyph goes on the first VISIBLE row
+    else:
+        body = buf.replace("\n", "\r\n")
     glyph = "❯ " + body if buf else "❯"
     sys.stdout.write(RULE + "\r\n" + glyph + "\r\n" + RULE + "\r\n")
     sys.stdout.flush()
@@ -120,7 +141,8 @@ def emulator_factory(tmp_path):
     script.write_text(EMULATOR)
     created = []
 
-    def make(wire_delay: float = 0.0):
+    def make(wire_delay: float = 0.0, box_rows: int = 0,
+             width: int = 120, height: int = 40):
         session = f"awtest-{uuid.uuid4().hex[:8]}"
         # Dedicated server socket so we never touch the user's live tmux. The
         # socket path MUST be short — macOS caps Unix-domain socket paths at
@@ -135,9 +157,12 @@ def emulator_factory(tmp_path):
             )
 
         cmd = f"{sys.executable} {script}"
-        if wire_delay:
+        if wire_delay or box_rows:
             cmd += f" {wire_delay}"
-        tmux_s("new-session", "-d", "-s", session, "-x", "120", "-y", "40", cmd)
+        if box_rows:
+            cmd += f" {box_rows}"
+        tmux_s("new-session", "-d", "-s", session,
+               "-x", str(width), "-y", str(height), cmd)
         # Wait for the box to render.
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -276,3 +301,106 @@ def test_wait_ready_holds_until_input_handler_wired(emulator_factory, monkeypatc
     assert session_ready.input_box(cap) == "", "buffered probes not erased"
     # The seed that used to fragment/sit unsubmitted now delivers.
     assert session_ready.send_verified(session, "seed after late wiring")
+
+
+# The production message shape behind #851: one long line (Claude only
+# collapses MULTI-line pastes to a [Pasted text] chip, so this one has no chip
+# fallback), too tall for the box's visible region once it wraps.
+TALL_MSG = (
+    "Review the file-based memory store for this project and prune whatever "
+    "has "
+    "rotted. The current memories are in the store's REVIEW.md. Verify each "
+    "one against the current state of this repo before deciding anything. "
+    "Bump verified: on the "
+    "memories you confirm, delete the ones the code now contradicts, and merge "
+    "duplicates into a single file. Report back with a one-paragraph summary "
+    "naming any systemic pattern you noticed (vs a one-off), and send it back "
+    "with the command agentwire msg send --to memory-manager --kind done."
+)
+
+
+def _patch_prompt_router(monkeypatch, socket):
+    """Point prompt_router's own tmux captures at our private socket.
+
+    prompt_router reads the pane through ``usage_limit._capture`` → ``_tmux``,
+    not through pane_manager, so a test that exercises ``prompt_is_empty``
+    (clear_input_box) must redirect that path too — otherwise it inspects the
+    developer's live tmux server.
+    """
+    from agentwire import usage_limit
+
+    real = usage_limit._tmux
+    monkeypatch.setattr(
+        usage_limit, "_tmux", lambda args, timeout=5: real(["-S", socket, *args], timeout)
+    )
+
+
+def test_tall_single_line_draft_delivers(emulator_factory, monkeypatch):
+    # #851: an 80x24 pane whose input box shows at most 3 rows. A 500+ char
+    # single-line message renders only its TAIL there, so the pre-fix landing
+    # gate (full message must be visible in the box) could never pass — Enter
+    # was never pressed and the prompt sat unsent, which is how a 4-child
+    # fan-out hung silently.
+    session, socket, _ = emulator_factory(box_rows=3, width=80, height=24)
+    _patch_pane_manager(monkeypatch, socket)
+
+    assert len(TALL_MSG) > 500
+    assert session_ready.send_verified(session, TALL_MSG)
+    box = session_ready.input_box(
+        _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    )
+    assert box == "", f"draft still sitting unsent: {box!r}"
+
+
+def test_tall_draft_retry_does_not_double_paste(emulator_factory, monkeypatch):
+    # The corruption half of #851: the whole-send retry could not recognize its
+    # OWN landed paste through the window, so it pasted again — the child's
+    # transcript showed the 517-char instruction concatenated with itself.
+    # Here Enter is never delivered (press_enter stubbed out), so every retry
+    # re-enters the pre-paste guard against a box holding only the tail window.
+    session, socket, _ = emulator_factory(box_rows=3, width=80, height=24)
+    _patch_pane_manager(monkeypatch, socket)
+    monkeypatch.setattr(session_ready, "press_enter", lambda s, pane_index=0: None)
+    # Every submit attempt is doomed (no Enter ever reaches the pane), so keep
+    # the per-attempt budget short — this test is about the PASTE count.
+    monkeypatch.setattr(session_ready, "SUBMIT_BUDGET", 1.0)
+    monkeypatch.setattr(session_ready, "MIN_ENTER_ATTEMPTS", 1)
+
+    real_paste = session_ready.paste_no_enter
+    pastes = []
+
+    def counting_paste(s, m, pane_index=0):
+        pastes.append(m)
+        real_paste(s, m, pane_index=pane_index)
+
+    monkeypatch.setattr(session_ready, "paste_no_enter", counting_paste)
+
+    assert not session_ready.send_verified(session, TALL_MSG, retries=2)
+    # Three whole-send attempts, ONE paste: attempts 2 and 3 recognized their
+    # own draft through the window instead of stacking another copy on it.
+    # (A visible-window check can't catch this — the tail of a doubled draft is
+    # still a suffix of the message. The paste count is the real invariant.)
+    assert len(pastes) == 1, f"re-pasted a landed draft {len(pastes)}x"
+
+
+def test_clear_input_box_empties_a_tall_draft(emulator_factory, monkeypatch):
+    # #851: Escape is inert on a tall draft (the emulator, like Claude, does
+    # nothing with it), so "inbox_stuck" was terminal — the drain's empty-box
+    # gate stayed blocked by the very draft it was meant to replace. The
+    # backspace escalation must actually empty it.
+    session, socket, _ = emulator_factory(box_rows=3, width=80, height=24)
+    _patch_pane_manager(monkeypatch, socket)
+    _patch_prompt_router(monkeypatch, socket)
+
+    session_ready.paste_no_enter(session, TALL_MSG)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+        if session_ready.text_landed(cap, TALL_MSG):
+            break
+        time.sleep(0.1)
+    assert session_ready.text_landed(cap, TALL_MSG), "stuck-draft setup failed"
+
+    assert session_ready.clear_input_box(session)
+    cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    assert session_ready.input_box(cap) == ""

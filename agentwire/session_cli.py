@@ -485,12 +485,20 @@ def cmd_new(args) -> int:
     # behavior. A reviewer is scoped to reviewing a specific sibling's PR, so
     # it should nest under whoever spawned it (for sidebar/prompt-routing),
     # unlike a durable orchestrator that outlives any one spawner.
+    #
+    # The caller is resolved UNCONDITIONALLY, separately from the rooting
+    # decision, because cohort membership (#852) must not inherit rooting's
+    # cross-project rule: the 2026-08-01 fan-out was three cross-project
+    # children (rooted standalone, no parent recorded) and one same-project
+    # one, and a cohort derived from `created_by` would have protected exactly
+    # that one child while the parent was reaped out from under the other
+    # three. Rooting answers "who has authority"; the cohort answers "who owns
+    # this session's lifecycle" — same caller, different questions.
     created_by = getattr(args, 'created_by', None)
-    caller = None
+    caller = getattr(args, 'caller_session', None) or pane_manager.get_current_session()
     if created_by is None and getattr(args, 'kind', None) == 'orchestrator':
         created_by = ''
     elif created_by is None:
-        caller = getattr(args, 'caller_session', None) or pane_manager.get_current_session()
         created_by = resolve_default_created_by(caller, session_path)
 
     # Build agent command
@@ -521,6 +529,26 @@ def cmd_new(args) -> int:
     _record_session_creator(session_name, created_by, via="new")
     _record_session_role(session_name, kind)
     notify_portal_session_created(session_name, created_by, kind)
+
+    # Enroll in the caller's fan-out cohort (#852) so the caller can be told
+    # "your children are still working" and can join on them later. Automatic
+    # by design — the failure this prevents is silent and unattended, so it
+    # must not depend on a task author remembering to register anything.
+    # Skipped for an explicit orchestrator (durable by definition, and rooted
+    # for the same reason) and for --no-cohort's genuinely fire-and-forget
+    # spawn. Enrollment is bookkeeping only: nothing kills a child until the
+    # caller joins, the cohort deadline passes, or the caller itself dies.
+    if (
+        caller
+        and caller != session_name
+        and not getattr(args, 'no_cohort', False)
+        and getattr(args, 'kind', None) != 'orchestrator'
+    ):
+        from agentwire import cohort
+        cohort.enroll(
+            caller, session_name,
+            topology="worktree" if worktree_topology else "main",
+        )
 
     # Update project config (.agentwire.yml) - only if --persist is given.
     # Persist USER roles (--roles) only — the intrinsic etiquette and soul are
@@ -973,6 +1001,7 @@ def cmd_worktree(args) -> int:
             'env': getattr(args, 'env', None),
             'created_by': getattr(args, 'created_by', None),
             'caller_session': getattr(args, 'caller_session', None),
+            'no_cohort': getattr(args, 'no_cohort', False),
         })())
 
     # If worktree already exists, reattach (and heal the registry entry).
@@ -2061,6 +2090,8 @@ def register_session_parser(subparsers) -> None:
                             help="Force this session's recorded creator/parent for prompt routing, "
                                  "overriding the default same-project-only inheritance below; pass "
                                  "'' to force standalone (no parent) regardless of project")
+    new_parser.add_argument("--no-cohort", dest="no_cohort", action="store_true",
+                            help="Do not enroll this session in the calling session's fan-out cohort (#852) — a genuinely fire-and-forget spawn the caller will never wait on or tear down")
     new_parser.add_argument("--caller-session", dest="caller_session",
                             help="Internal: candidate caller session for computing the default "
                                  "--created-by — inherited only if this session's project matches "
@@ -2129,6 +2160,8 @@ def register_session_parser(subparsers) -> None:
                             help="Force this session's recorded creator/parent for prompt routing, "
                                  "overriding the default below; pass '' to force standalone (no "
                                  "parent) regardless of project")
+        parser.add_argument("--no-cohort", dest="no_cohort", action="store_true",
+                            help="Do not enroll this session in the calling session's fan-out cohort (#852) — a genuinely fire-and-forget spawn the caller will never wait on or tear down")
         parser.add_argument("--caller-session", dest="caller_session",
                             help="Internal: candidate caller session for computing the default "
                                  "--created-by — inherited only if this worktree's project matches "

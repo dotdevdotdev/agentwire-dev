@@ -784,6 +784,28 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
     return consumed
 
 
+def _cohort_held(session: str, messages: list[Message]) -> list[Message]:
+    """Messages from *session*'s still-pending fan-out children (#852).
+
+    Their owner is the parent's ``wait --children`` join, not the drain. Keyed
+    on the cohort being ACTIVE (pending children, deadline not passed), so an
+    expired ledger releases its messages immediately instead of waiting for the
+    sweeper to clean it up. Fails open (returns nothing held) on any error, so
+    a broken cohort ledger can never withhold a message.
+    """
+    try:
+        from . import cohort
+
+        if not cohort.blocking(session):
+            return []
+        pending = set(cohort.pending(session))
+    except Exception:
+        return []
+    if not pending:
+        return []
+    return [m for m in messages if m.sender in pending]
+
+
 def flush_session(session: str, force: bool = False) -> dict:
     """Attempt to drain one session's inbox now.
 
@@ -805,6 +827,23 @@ def flush_session(session: str, force: bool = False) -> dict:
         messages = list_messages(session)
         if not messages:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
+
+        # Cohort hold (#852): a report from a child this session is still
+        # waiting on belongs to `agentwire wait --children`, which reads it
+        # straight off disk and consumes it before tearing the child down.
+        # Pasting it into the parent's box instead would (a) race that
+        # collection, leaving the child unresolved until its deadline, and
+        # (b) push a long report through the one delivery path #851 shows is
+        # fragile. Deferred WITHOUT penalty and bounded by the cohort's own
+        # deadline: once the ledger resolves or the sweeper drops it, these
+        # deliver normally.
+        held = _cohort_held(session, messages)
+        if held:
+            messages = [m for m in messages if m not in held]
+            _log_event("deferred", to=session, count=len(held), reason="cohort_held")
+            if not messages:
+                return {"session": session, "delivered": 0, "deferred": True,
+                        "reason": "cohort_held"}
 
         # Gone gate FIRST (#694): a recipient that positively doesn't exist can
         # never clear a box, and the ordinary gates misread it — capturing a
