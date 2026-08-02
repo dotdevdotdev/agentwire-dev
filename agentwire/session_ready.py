@@ -61,6 +61,23 @@ PROBE_ERASE_TIMEOUT = 3.0
 # large paste's ``[Pasted text]`` chip), and the per-attempt confirm budget.
 CLEAR_BOX_ATTEMPTS = 3
 CLEAR_BOX_TIMEOUT = 3.0
+# Escape is a no-op on a draft taller than the box's visible region (#851 —
+# measured: 3 Escapes, 9.4s, box unchanged), so clearing escalates to erasing
+# the draft a character at a time. Backspaces are sent in chunks (one
+# ``send-keys`` call each) and the box is re-checked between chunks, so a short
+# draft costs one round and a tall one is bounded at CHUNK * ROUNDS characters.
+ERASE_CHUNK = 200
+ERASE_ROUNDS = 12
+
+# Minimum box-content length that may be accepted as a *window* of a longer
+# message (#851). A draft taller than the input box's visible region renders
+# only part of itself, so full-message identity can never hold; the fragment
+# test fills that gap. The floor keeps the false-positive direction closed: a
+# short foreign draft that happens to be a substring of our message
+# ("ok", "yes") must never read as our paste landing. Real scrolled windows are
+# hundreds of characters (~460 on an 80x24 pane), so this is far below any
+# genuine window and far above any plausible accidental collision.
+MIN_BOX_FRAGMENT = 80
 
 # Substrings that mean "Claude is actively working" — a spinner footer, the
 # token counter, the esc-to-interrupt hint, or tool-output glyphs. A
@@ -129,20 +146,23 @@ def input_box(capture: str) -> "str | None":
 def text_landed(capture: str, message: str) -> bool:
     """Has *message* landed in the input box, ready to submit?
 
-    True iff the box is parseable and shows the message fragment (or Claude's
-    ``[Pasted text …]`` placeholder for a large paste).
+    True iff the box is parseable and holds the message — whole, as Claude's
+    ``[Pasted text …]`` placeholder, or as the rendered window of a draft too
+    tall to display at once (see :func:`box_shows_message`).
     """
     box = input_box(capture)
     if box is None:
         return False
-    return message_visible(box, message)
+    return box_shows_message(box, message)
 
 
 def submit_confirmed(capture: str, message: str) -> bool:
     """Phase-2 confirm: did the (already-landed) paste actually *submit*? (#621)
 
     By Phase 2 the text has been proven to land in the input box, so the
-    submission signal is: **a parseable box no longer holds our text.** An
+    submission signal is: **a parseable box no longer holds our text** — not
+    even as the rendered window of a too-tall draft (#851), or a message
+    bigger than the box would read as submitted the instant it landed. An
     empty box, or a box now showing a different/next prompt, both count —
     including the submitted-while-generating case, where the text queues
     invisibly and never echoes until the turn ends. While a multi-line paste's
@@ -168,7 +188,7 @@ def submit_confirmed(capture: str, message: str) -> bool:
     box = input_box(capture)
     if box is None:
         return False
-    return not message_visible(box, message)
+    return not box_shows_message(box, message)
 
 
 def _poll(predicate, timeout: float) -> bool:
@@ -315,25 +335,47 @@ def wait_for_session_ready(
     return False
 
 
-def message_visible(capture: str, message: str) -> bool:
-    """Did *message* land in the pane?
+def box_shows_message(box: str, message: str, allow_chip: bool = True) -> bool:
+    """Does the input-box content *box* hold *message*?
 
-    Keys on the **full** whitespace-normalized message, never a fixed-length
-    prefix (#667): all worktree idle notifications share a long
-    ``[NOTIFY from agentwire-dev-issue-…`` prefix, so a 32-char fragment
-    false-matched a *pile* of other sessions' notifications sitting in the box
-    — Phase 1 passed against text that wasn't ours, and Phase 2's
-    "box no longer shows our text" could never come true. tmux
-    ``capture-pane`` wraps long lines at pane width mid-word, so both sides
-    are compared with all whitespace stripped. Large multiline pastes may
-    render only as Claude's ``[Pasted text #N +M lines]`` placeholder, which
-    counts as landed (the failure mode being defended against is the paste
-    vanishing entirely).
+    Three ways it can, in descending strength:
+
+    1. **Whole-message identity** — the full whitespace-normalized message is
+       visible in the box. Keyed on the FULL message, never a fixed-length
+       prefix (#667): all worktree idle notifications share a long
+       ``[NOTIFY from agentwire-dev-issue-…`` prefix, so a 32-char fragment
+       false-matched a *pile* of other sessions' notifications sitting in the
+       box — Phase 1 passed against text that wasn't ours, and Phase 2's
+       "box no longer shows our text" could never come true. tmux
+       ``capture-pane`` wraps long lines at pane width mid-word, so both sides
+       are compared with all whitespace stripped.
+    2. **The ``[Pasted text #N +M lines]`` placeholder**, which is all a large
+       multiline paste renders (the failure mode being defended against is the
+       paste vanishing entirely). Suppressed by ``allow_chip=False`` for
+       callers reasoning about a box they have not pasted into yet, where a
+       chip can only be somebody ELSE's draft.
+    3. **A rendered window of the message** (#851). The input box has a bounded
+       visible height and scrolls: a draft taller than that height renders only
+       part of itself, so (1) is *impossible* for it and a long single-line
+       message — exactly what programmatic ``--first-message`` callers produce
+       — could never pass the landing gate, so Enter was never pressed and the
+       prompt sat unsent. Accepted when the box content is a contiguous
+       fragment of the message (in practice its tail: the cursor sits at the
+       end), is at least ``MIN_BOX_FRAGMENT`` long, and is shorter than the
+       message itself — a box holding MORE than we sent is somebody else's
+       draft, not our window (that is what keeps the #667 pile out).
     """
-    needle = "".join(message.split())
-    if needle and needle in "".join(capture.split()):
+    nb = "".join(box.split())
+    nm = "".join(message.split())
+    if not nm:
+        return False
+    if nb and nm in nb:
         return True
-    return "[Pasted text" in capture
+    if allow_chip and "[Pasted text" in box:
+        return True
+    if len(nb) < MIN_BOX_FRAGMENT or len(nb) >= len(nm):
+        return False
+    return nb in nm
 
 
 def strip_input_box(capture: str) -> "str | None":
@@ -422,16 +464,20 @@ def _deliver_once(
     # box — landed but unsubmitted. Blindly pasting again doubles the draft
     # (the observed "issue-659 twice" pile).
     #
-    # The short-circuit demands POSITIVE full-message identity — the full
-    # whitespace-normalized message visible in the box (→ landed: skip the
-    # paste, retry only the submit) or on scrollback outside the box
-    # (→ already submitted). Nothing weaker counts before we have pasted:
+    # The short-circuit demands POSITIVE identity — our message in the box
+    # (→ landed: skip the paste, retry only the submit) or on scrollback
+    # outside the box (→ already submitted). "In the box" is window-aware
+    # (#851): a draft taller than the box's visible region renders only part of
+    # itself, so a full-message test can't recognize our OWN previous paste
+    # either — which is how the whole-send retry re-pasted and left the child a
+    # 1034-char box holding the 517-char instruction twice. Nothing weaker
+    # counts before we have pasted:
     # NOT empty-box+activity (real agent panes show ⏺/⎿/spinner glyphs in
     # scrollback almost always — accepting that as "delivered" makes the msg
     # drain unlink queued messages that were never sent: silent deletion),
     # NOT the ``[Pasted text]`` placeholder (pre-paste it can only be someone
     # ELSE's draft — skipping our paste and pressing Enter would force-submit
-    # a foreign draft; see message_on_scrollback), and NOT the caller marker
+    # a foreign draft; hence ``allow_chip=False``), and NOT the caller marker
     # (markers like council's are constant across messages, so a hit may be
     # the PREVIOUS message). When identity is not provable, paste again — the
     # existing full-line dedup makes duplicates recoverable; deletions aren't.
@@ -439,9 +485,8 @@ def _deliver_once(
     try:
         cap = _snapshot(session, pane_index)
         box = input_box(cap)
-        needle = "".join(message.split())
-        if box is not None and needle:
-            if needle in "".join(box.split()):
+        if box is not None:
+            if box_shows_message(box, message, allow_chip=False):
                 already_landed = True
             elif message_on_scrollback(cap, message):
                 return True
@@ -580,6 +625,46 @@ def send_verified(
     return False
 
 
+def _erase_box_draft(session: str, pane_index: int = 0) -> bool:
+    """Backspace an unsubmitted draft out of the input box (#851).
+
+    The escalation behind :func:`clear_input_box` when Escape doesn't take.
+    Backspace is the one key that acts on the draft regardless of how it
+    renders — it deletes a large paste's ``[Pasted text]`` chip whole, and it
+    joins lines at a line start, so a wrapped multi-line draft erases the same
+    way a short one does.
+
+    The draft's true length is unknowable from a box that shows only a window
+    of it, so this sends ``ERASE_CHUNK`` backspaces at a time and re-checks
+    emptiness between chunks: a short draft costs one round, a tall one is
+    bounded at ``ERASE_CHUNK * ERASE_ROUNDS`` characters rather than looping
+    forever. Over-pressing is harmless (backspace on an empty box is a no-op),
+    but a live select-menu aborts before the first keystroke — the same
+    protection Escape gets, because a decision belonging to the recipient's own
+    work must not be edited by us.
+    """
+    from agentwire import pane_manager, prompt_router
+
+    target = f"{session}.{pane_index}"
+
+    def empty() -> bool:
+        return prompt_router.prompt_is_empty(session, pane_index)
+
+    for _ in range(ERASE_ROUNDS):
+        try:
+            if prompt_router.screen_shows_live_menu(_snapshot(session, pane_index)):
+                return False
+            pane_manager.run_command(
+                ["tmux", "send-keys", "-t", target] + ["BSpace"] * ERASE_CHUNK,
+                timeout=15,
+            )
+            if _poll(empty, CLEAR_BOX_TIMEOUT):
+                return True
+        except Exception:
+            return False
+    return False
+
+
 def clear_input_box(session: str, pane_index: int = 0) -> bool:
     """Best-effort: clear whatever sits unsubmitted in the input box (#695).
 
@@ -590,6 +675,17 @@ def clear_input_box(session: str, pane_index: int = 0) -> bool:
     text]`` chip) and confirms emptiness with the drain's own SGR-aware gate
     (``prompt_router.prompt_is_empty``), so "cleared" here means exactly
     "the drain will deliver". Returns True iff the box ends up empty.
+
+    Escape alone is not enough (#851). A draft taller than the box's visible
+    region ignores it — measured on the wedged pane: 3 Escapes, 9.4s, box
+    unchanged, and ``C-u`` (kill-to-line-start) is equally inert on a draft
+    that wrapped onto many lines. That made ``"inbox_stuck"`` terminal: the
+    durable copy was queued but the drain's empty-box gate stayed blocked by
+    the very draft it was meant to replace, so the session never received the
+    prompt by ANY route until a human pressed Enter. So each Escape that
+    doesn't take escalates to :func:`_erase_box_draft`, which backspaces the
+    draft away in bounded chunks — slower, but it works on the render form
+    Escape can't touch.
 
     Refuses to press Escape while the screen shows a live select-menu/dialog
     (#835 review): this function was written for a brand-new session's
@@ -621,6 +717,8 @@ def clear_input_box(session: str, pane_index: int = 0) -> bool:
                 ["tmux", "send-keys", "-t", target, "Escape"], timeout=5
             )
             if _poll(empty, CLEAR_BOX_TIMEOUT):
+                return True
+            if _erase_box_draft(session, pane_index):
                 return True
         except Exception:
             pass

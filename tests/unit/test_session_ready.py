@@ -143,23 +143,31 @@ class TestWaitForSessionReady:
         assert len(bspaces) == 3
 
 
-class TestMessageVisible:
+class TestBoxShowsMessage:
     def test_exact_match(self):
         msg = "build a voice diary app"
-        assert session_ready.message_visible(f"❯ {msg}\n", msg)
+        assert session_ready.box_shows_message(f"❯ {msg}\n", msg)
 
     def test_wrapped_mid_word(self):
         # tmux wraps at pane width with no regard for word boundaries
         msg = "build a voice diary app with daily summaries"
         capture = "❯ build a voice di\nary app with dai\nly summaries"
-        assert session_ready.message_visible(capture, msg)
+        assert session_ready.box_shows_message(capture, msg)
 
     def test_pasted_placeholder_fallback(self):
         msg = "line one\nline two\nline three"
-        assert session_ready.message_visible("❯ [Pasted text #1 +3 lines]", msg)
+        assert session_ready.box_shows_message("❯ [Pasted text #1 +3 lines]", msg)
+
+    def test_pasted_placeholder_suppressed_for_pre_paste_callers(self):
+        # #851/#621: before WE have pasted, a chip can only be somebody else's
+        # draft -- skipping our paste and pressing Enter would force-submit it.
+        msg = "line one\nline two\nline three"
+        assert not session_ready.box_shows_message(
+            "❯ [Pasted text #1 +3 lines]", msg, allow_chip=False)
 
     def test_miss(self):
-        assert not session_ready.message_visible("❯ \nBypassing Permissions", "my unique idea")
+        assert not session_ready.box_shows_message(
+            "❯ \nBypassing Permissions", "my unique idea")
 
     def test_same_prefix_pile_does_not_false_match(self):
         # #667 fragment-collision repro: every worktree idle notification
@@ -170,16 +178,115 @@ class TestMessageVisible:
             "[NOTIFY from agentwire-dev-issue-659-shift-tab] is idle and done working"
         )
         ours = "[NOTIFY from agentwire-dev-issue-661-bar] is idle and done working"
-        assert not session_ready.message_visible(pile, ours)
+        assert not session_ready.box_shows_message(pile, ours)
         # ...while the actual message in the pile still matches.
         theirs = "[NOTIFY from agentwire-dev-issue-655-foo] is idle and done working"
-        assert session_ready.message_visible(pile, theirs)
+        assert session_ready.box_shows_message(pile, theirs)
 
     def test_full_message_keying_not_prefix(self):
         # Two messages identical for well past 32 chars, differing in the tail.
         a = "[NOTIFY from agentwire-dev-issue-100] finished task alpha"
         b = "[NOTIFY from agentwire-dev-issue-100] finished task bravo"
-        assert not session_ready.message_visible(f"❯ {a}", b)
+        assert not session_ready.box_shows_message(f"❯ {a}", b)
+
+
+class TestTallDraftWindow:
+    """#851 — the input box has a bounded visible height and SCROLLS. A draft
+    taller than that height renders only a window of itself, so full-message
+    identity is impossible for it: Phase 1 could never pass, Enter was never
+    pressed, and a 517-char single-line --first-message sat unsent (4/4
+    children of the 2026-08-01 memory-manager fan-out)."""
+
+    # The shape of the production message: one long line, no newlines, so
+    # Claude never collapses it to a [Pasted text] chip.
+    MSG = (
+        "Review the file-based memory store for this project and prune what has "
+        "rotted. The current memories are in the store's REVIEW.md. Verify each "
+        "one against this repo before deciding anything. Bump verified: on the "
+        "memories you confirm, delete the ones the code now contradicts, and "
+        "merge duplicates into a single file. Report back with a one-paragraph "
+        "summary naming any systemic pattern you noticed (vs a one-off), via "
+        "agentwire msg send --to memory-manager --kind done."
+    )
+
+    def _tail(self, chars: int) -> str:
+        return self.MSG[-chars:]
+
+    def _window_of(self, normalized_chars: int) -> str:
+        """A tail of MSG holding exactly *normalized_chars* non-space chars."""
+        tail = self.MSG
+        while len("".join(tail.split())) > normalized_chars:
+            tail = tail[1:]
+        return tail
+
+    def test_scrolled_tail_reads_as_landed(self):
+        box = self._tail(454)  # measured box length on an 80x24 pane
+        assert len(box) < len(self.MSG)
+        assert session_ready.box_shows_message(box, self.MSG)
+        assert session_ready.box_shows_message(box, self.MSG, allow_chip=False)
+
+    def test_landed_through_the_real_gate(self):
+        capture = render_box(self._tail(454))
+        assert session_ready.text_landed(capture, self.MSG)
+
+    def test_scrolled_tail_is_not_submitted(self):
+        # The mirror direction: while a window of our draft is still in the
+        # box, the message has NOT submitted -- keep pressing Enter.
+        assert not session_ready.submit_confirmed(
+            render_box(self._tail(454)), self.MSG)
+
+    def test_empty_box_is_submitted(self):
+        assert session_ready.submit_confirmed(render_box(""), self.MSG)
+
+    def test_short_foreign_draft_is_not_landed(self):
+        # A human's own short draft that happens to be a substring of our
+        # message must not read as our paste landing (and must not get
+        # force-submitted by the Enter that would follow).
+        assert not session_ready.box_shows_message("Report back", self.MSG)
+        assert not session_ready.text_landed(render_box("ok"), self.MSG)
+
+    def test_fragment_floor_is_the_guard(self):
+        # Just under the floor: refuse. At the floor: accept.
+        assert not session_ready.box_shows_message(
+            self._window_of(session_ready.MIN_BOX_FRAGMENT - 1), self.MSG)
+        assert session_ready.box_shows_message(
+            self._window_of(session_ready.MIN_BOX_FRAGMENT), self.MSG)
+
+    def test_longer_foreign_draft_is_not_our_window(self):
+        # A box holding MORE than we sent, without our text in it, is somebody
+        # else's draft -- never a window of ours, however long it is.
+        assert not session_ready.box_shows_message(
+            "a totally different instruction. " * 30, self.MSG)
+
+    def test_delivers_end_to_end(self, monkeypatch):
+        # The acceptance case: the box only EVER shows the tail window, so the
+        # pre-#851 gate pressed Enter zero times and the prompt sat unsent.
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return render_box()
+            if a["enters"] == 0:
+                return render_box(self._tail(454))
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", self.MSG)
+        assert actions["pastes"] == 1
+        assert actions["enters"] == 1
+
+    def test_retry_does_not_double_paste_a_tall_draft(self, monkeypatch):
+        # The observed corruption: the whole-send retry couldn't recognize its
+        # OWN landed paste through the window, so it pasted again and the child
+        # ended up with the 517-char instruction concatenated with itself.
+        _fake_clock(monkeypatch)
+        actions = _env(
+            monkeypatch,
+            lambda a: render_box(self._tail(454)) if a["pastes"] else render_box(),
+        )
+        assert not session_ready.send_verified("s", self.MSG, retries=1)
+        assert actions["pastes"] == 1
+        assert actions["enters"] > 0  # it kept retrying the SUBMIT
 
 
 def _fake_clock(monkeypatch, step: float = 0.5):
@@ -702,13 +809,19 @@ class TestClearInputBox:
     the drain's own SGR-aware emptiness gate (so 'cleared' means exactly 'the
     inbox fallback can deliver')."""
 
-    def _wire(self, monkeypatch, empty_after: int, live_menu: bool = False):
-        """prompt_is_empty flips True after N Escapes; returns the key log."""
+    def _wire(self, monkeypatch, empty_after: int, live_menu: bool = False,
+              erased_after: int | None = None):
+        """prompt_is_empty flips True after N Escapes (or, when *erased_after*
+        is given, after that many backspaces); returns the key log."""
         from agentwire import pane_manager, prompt_router
-        state = {"escapes": 0}
-        monkeypatch.setattr(
-            prompt_router, "prompt_is_empty",
-            lambda s, p=0: state["escapes"] >= empty_after)
+        state = {"escapes": 0, "bspaces": 0}
+
+        def is_empty(s, p=0):
+            if erased_after is not None and state["bspaces"] >= erased_after:
+                return True
+            return state["escapes"] >= empty_after
+
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", is_empty)
         # No live menu on screen by default -- the snapshot content itself
         # doesn't matter here, only screen_shows_live_menu's verdict on it.
         monkeypatch.setattr(session_ready, "capture_session", lambda *a, **k: "")
@@ -717,6 +830,7 @@ class TestClearInputBox:
         def run(cmd, timeout=5):
             if cmd[-1] == "Escape":
                 state["escapes"] += 1
+            state["bspaces"] += sum(1 for k in cmd if k == "BSpace")
 
         monkeypatch.setattr(pane_manager, "run_command", run)
         return state
@@ -766,6 +880,36 @@ class TestClearInputBox:
         state = self._wire(monkeypatch, empty_after=1, live_menu=False)
         assert session_ready.clear_input_box("s") is True
         assert state["escapes"] == 1
+
+    def test_tall_draft_escalates_to_backspace(self, monkeypatch):
+        """#851 — Escape is inert on a draft taller than the box's visible
+        region (measured: 3 Escapes, 9.4s, unchanged), and so is C-u. Without
+        an escalation, recover_failed_seed's "inbox_stuck" is TERMINAL: the
+        durable copy is queued but the drain's empty-box gate stays blocked by
+        the very draft it is meant to replace."""
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=10**9, erased_after=500)
+        assert session_ready.clear_input_box("s") is True
+        assert state["escapes"] == 1  # tried Escape first, then escalated
+        assert state["bspaces"] >= 500
+
+    def test_backspace_sweep_is_bounded(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=10**9, erased_after=10**9)
+        assert session_ready.clear_input_box("s") is False
+        assert state["bspaces"] == (
+            session_ready.ERASE_CHUNK
+            * session_ready.ERASE_ROUNDS
+            * session_ready.CLEAR_BOX_ATTEMPTS
+        )
+
+    def test_live_menu_stops_the_backspace_sweep(self, monkeypatch):
+        # Backspace edits whatever owns the keystrokes; a dialog belonging to
+        # the recipient's own work must not be typed into.
+        _fake_clock(monkeypatch)
+        state = self._wire(monkeypatch, empty_after=10**9, live_menu=True)
+        assert session_ready.clear_input_box("s") is False
+        assert state["bspaces"] == 0
 
 
 class TestRecoverFailedSeed:
