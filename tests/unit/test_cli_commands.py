@@ -560,7 +560,7 @@ class TestCmdNewWorktreeMissingDirFailsLoud:
         )
 
     def test_ensure_worktree_lies_about_success(self, capsys, monkeypatch, tmp_path):
-        """`ensure_worktree` returns True without the dir existing (the #739
+        """Worktree creation reports ok without the dir existing (the #739
         symptom: `agentwire new` proceeded past worktree creation with a path
         whose directory was never actually created)."""
         from agentwire import session_cli as m
@@ -571,7 +571,7 @@ class TestCmdNewWorktreeMissingDirFailsLoud:
         monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
         monkeypatch.setattr(
             m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
-        monkeypatch.setattr(m, "ensure_worktree", lambda *a, **k: True)
+        monkeypatch.setattr(m, "create_and_register_worktree", lambda *a, **k: (True, ""))
         monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
 
         rc = m.cmd_new(self._base_args(project_path))
@@ -593,14 +593,14 @@ class TestCmdNewWorktreeMissingDirFailsLoud:
         project_path.mkdir()
         session_path = tmp_path / "proj-worktrees" / "mybranch"
 
-        def fake_ensure_worktree(proj, branch, wt_path, **kw):
-            wt_path.mkdir(parents=True)
-            return True
+        def fake_create_worktree(proj, *, worktree_path, **kw):
+            worktree_path.mkdir(parents=True)
+            return True, ""
 
         monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
         monkeypatch.setattr(
             m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
-        monkeypatch.setattr(m, "ensure_worktree", fake_ensure_worktree)
+        monkeypatch.setattr(m, "create_and_register_worktree", fake_create_worktree)
         monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
         monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
         monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
@@ -857,11 +857,11 @@ def _patch_role_pipeline(monkeypatch, projects_dir, project_config_roles):
     monkeypatch.setattr(mod, "load_project_config", lambda p: cfg)
     monkeypatch.setattr(mod, "build_agent_command", lambda *a, **k: AgentCommand(command=""))
 
-    def fake_ensure_worktree(base, branch, wt, **kw):
-        Path(wt).mkdir(parents=True, exist_ok=True)
-        return True
+    def fake_create_worktree(project, *, worktree_path, **kw):
+        Path(worktree_path).mkdir(parents=True, exist_ok=True)
+        return True, ""
 
-    monkeypatch.setattr(mod, "ensure_worktree", fake_ensure_worktree)
+    monkeypatch.setattr(mod, "create_and_register_worktree", fake_create_worktree)
 
     def fake_load_roles(role_names, path):
         cap.role_names = list(role_names)

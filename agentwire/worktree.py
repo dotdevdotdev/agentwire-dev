@@ -309,6 +309,219 @@ def remove_worktree(project_path: Path, worktree_path: Path, *, force: bool = Tr
     return False, (result.stderr or result.stdout).strip()
 
 
+def _worktree_porcelain(project_path: Path) -> tuple[bool, str]:
+    """Raw ``git worktree list --porcelain`` output + whether git succeeded.
+
+    Split out so the two readers can keep their *different* failure
+    postures over one shared call: :func:`list_git_worktrees` reports
+    "nothing known" on error, while :func:`is_registered_worktree` fails
+    closed to "assume registered".
+    """
+    result = subprocess.run(
+        ["git", "-C", str(project_path), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0, result.stdout
+
+
+def list_git_worktrees(project_path: Path) -> list[dict]:
+    """Every worktree git itself knows about for ``project_path``'s repo.
+
+    The single source of truth for "where does this worktree actually live"
+    (#855). Path conventions are a *default*, not a guarantee — two layouts
+    are live on real machines (``~/worktrees/<project>/<name>/`` and
+    ``~/projects/<project>-worktrees/<name>/``), and a hand-created worktree
+    can sit anywhere. String-building a path from a convention and acting on
+    it is how a teardown reports success while removing nothing; asking git
+    is how it doesn't.
+
+    Returns one dict per worktree, in git's own order — **the main checkout
+    is always first** (see :func:`linked_git_worktrees` to drop it):
+
+        path:     Path — absolute worktree directory
+        branch:   short branch name, or None when detached/bare
+        head:     commit sha, or None for a bare repo
+        detached: bool
+        bare:     bool
+        locked:   bool
+
+    Empty list when ``project_path`` isn't a repo or git errors — callers
+    that mutate must treat "empty" as "don't know", never as "nothing there".
+    """
+    ok, text = _worktree_porcelain(project_path)
+    if not ok:
+        return []
+
+    out: list[dict] = []
+    cur: dict | None = None
+    for line in text.splitlines():
+        key, _, val = line.partition(" ")
+        if key == "worktree":
+            if cur is not None:
+                out.append(cur)
+            cur = {"path": Path(val), "branch": None, "head": None,
+                   "detached": False, "bare": False, "locked": False}
+        elif cur is None:
+            continue
+        elif key == "HEAD":
+            cur["head"] = val
+        elif key == "branch":
+            cur["branch"] = val.removeprefix("refs/heads/")
+        elif key == "detached":
+            cur["detached"] = True
+        elif key == "bare":
+            cur["bare"] = True
+        elif key == "locked":
+            cur["locked"] = True
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def linked_git_worktrees(project_path: Path) -> list[dict]:
+    """:func:`list_git_worktrees` minus the main checkout and any bare entry.
+
+    Resolution and teardown must never be able to select the repo's own
+    working copy — `git worktree remove` refuses it, but a caller that also
+    kills a session or deletes a branch off the "resolved" entry would be
+    acting on the main checkout. Excluding it here makes that unreachable
+    rather than merely unlikely.
+    """
+    return [e for e in list_git_worktrees(project_path)[1:] if not e["bare"]]
+
+
+def main_worktree(project_path: Path) -> Path:
+    """The repo's MAIN checkout, per git — ``project_path`` itself as fallback.
+
+    The registry is keyed by repo, so every entry for one logical project must
+    land in one file. A caller can legitimately hand us a *linked worktree* as
+    its "project path" (``agentwire fork`` forks from a worktree source), and
+    keying off that would silently shard the registry per worktree — entries
+    written under one key and looked up under another.
+    """
+    entries = list_git_worktrees(project_path)
+    return entries[0]["path"] if entries else Path(project_path)
+
+
+def find_git_worktree(
+    project_path: Path,
+    *,
+    path: Path | str | None = None,
+    branch: str | None = None,
+    name: str | None = None,
+) -> dict | None:
+    """Ask git for the worktree matching ``path``, ``branch``, or ``name``.
+
+    Tried in that order of authority: an exact (resolved) path match beats a
+    branch match beats a directory-basename match. Never returns the main
+    checkout (see :func:`linked_git_worktrees`). Returns None when git knows
+    of no such worktree — which callers must treat as "not found", never as
+    "assume the conventional path".
+    """
+    entries = linked_git_worktrees(project_path)
+    if not entries:
+        return None
+
+    if path is not None:
+        target = str(Path(path).expanduser().resolve())
+        for e in entries:
+            if str(e["path"].resolve()) == target:
+                return e
+
+    if branch:
+        for e in entries:
+            if e["branch"] == branch:
+                return e
+
+    if name:
+        for e in entries:
+            if e["path"].name == name:
+                return e
+
+    return None
+
+
+def register_worktree(
+    project_path: Path,
+    *,
+    branch: str | None,
+    session: str,
+    base: str | None,
+    worktree_path: Path,
+    kind: str | None = None,
+    topology: str = "worktree",
+) -> dict:
+    """Record a worktree in the local registry at the path **git** reports.
+
+    The one registration entry point (#837) — every creation site routes
+    through here (usually via :func:`create_and_register_worktree`) so a
+    worktree can't exist on disk while being invisible to
+    ``agentwire worktree --list`` / ``--dangling`` / ``--prune`` / ``--remove``.
+
+    The recorded path is git's own (symlinks resolved, ``/private/var`` vs
+    ``/var`` normalized) whenever git knows the worktree, so later lookups
+    compare like with like instead of re-deriving a convention. The registry
+    file is keyed by the repo's MAIN checkout (see :func:`main_worktree`), so
+    passing a linked worktree as ``project_path`` still writes where lookups
+    will read.
+    """
+    from . import worktree_registry
+
+    found = find_git_worktree(project_path, path=worktree_path, branch=branch)
+    actual = found["path"] if found else Path(worktree_path)
+    return worktree_registry.register(
+        main_worktree(project_path),
+        branch=branch,
+        session=session,
+        base=base,
+        worktree_path=actual,
+        kind=kind,
+        topology=topology,
+    )
+
+
+def create_and_register_worktree(
+    project_path: Path,
+    *,
+    branch: str,
+    worktree_path: Path,
+    session: str,
+    base: str | None = None,
+    kind: str | None = None,
+    topology: str = "worktree",
+    auto_create_branch: bool = True,
+    commit: str | None = None,
+    copy_files: list[str] | None = None,
+) -> tuple[bool, str]:
+    """Create a worktree **and** register it — the SSOT creation path (#837).
+
+    Wraps :func:`ensure_worktree` (idempotent: an existing worktree is
+    adopted, not recreated) and always registers the result, so re-running a
+    creation heals a missing registry entry instead of leaving an orphan.
+
+    A pre-existing directory that git does **not** know as a worktree is a
+    hard failure, not something to register: launching an agent into a plain
+    directory that merely sits at the worktree path is the silent-corruption
+    case this guards.
+
+    Returns ``(ok, error)`` — ``error`` is "" on success.
+    """
+    if not ensure_worktree(
+        project_path, branch, worktree_path,
+        auto_create_branch=auto_create_branch, commit=commit, copy_files=copy_files,
+    ):
+        return False, f"Failed to create worktree for branch '{branch}' in {project_path}"
+
+    if not is_registered_worktree(project_path, worktree_path):
+        return False, f"Path exists but is not a git worktree: {worktree_path}"
+
+    register_worktree(
+        project_path, branch=branch, session=session, base=base,
+        worktree_path=worktree_path, kind=kind, topology=topology,
+    )
+    return True, ""
+
+
 def is_registered_worktree(project_path: Path, worktree_path: Path) -> bool:
     """Does git's own worktree registry (still) know about ``worktree_path``?
 
@@ -328,14 +541,11 @@ def is_registered_worktree(project_path: Path, worktree_path: Path) -> bool:
     registered rather than not — a caller gating a destructive action on
     this should default to "assume real" when unsure, not "assume orphan".
     """
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=project_path, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
+    ok, text = _worktree_porcelain(project_path)
+    if not ok:
         return True
-    target = str(worktree_path.resolve())
-    for line in result.stdout.splitlines():
+    target = str(Path(worktree_path).resolve())
+    for line in text.splitlines():
         if line.startswith("worktree "):
             if str(Path(line[len("worktree "):]).resolve()) == target:
                 return True

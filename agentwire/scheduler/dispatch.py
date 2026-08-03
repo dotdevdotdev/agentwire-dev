@@ -292,11 +292,31 @@ def _is_worktree_task(task: SchedulerTask) -> bool:
     return _is_git_repo(task.project)
 
 
-def _remove_scheduler_worktree(worktree_path: str, branch: str) -> None:
-    """Remove a scheduler worktree and delete its local branch (best-effort)."""
+def _remove_scheduler_worktree(worktree_path: str, branch: str,
+                               project: str | None = None) -> None:
+    """Remove a scheduler worktree, unregister it, delete its branch (best-effort).
+
+    The canonical repo is resolved by ASKING GIT (``main_worktree``) while the
+    worktree still exists — not by string-munging the ``<repo>-worktrees``
+    parent, which only holds for one of the two path conventions in the wild
+    and silently no-ops against the other (#855). Resolved BEFORE removal for
+    the same reason: once the directory is gone, git can't answer — which is
+    what ``project`` (the task's repo) is the fallback for.
+    """
     from agentwire import scheduler as _sched
+    from agentwire import worktree_registry
+    from agentwire.worktree import main_worktree
 
     wt = Path(worktree_path)
+    canonical: Path | None = None
+    if wt.is_dir():
+        resolved = main_worktree(wt)
+        if resolved.is_dir() and resolved != wt:
+            canonical = resolved
+    if canonical is None and project:
+        proj = Path(project).expanduser()
+        canonical = proj if proj.is_dir() else None
+
     if wt.exists():
         subprocess.run(
             ["git", "worktree", "remove", "--force", str(wt)],
@@ -304,12 +324,14 @@ def _remove_scheduler_worktree(worktree_path: str, branch: str) -> None:
             timeout=_sched._sched_config().git_op_timeout,
             cwd=str(wt) if wt.is_dir() else None,
         )
-    # Best-effort branch cleanup from the canonical repo (parent of the
-    # `<repo>-worktrees` dir, with the suffix dropped).
-    if branch:
-        worktrees_parent = wt.parent
-        canonical = worktrees_parent.parent / worktrees_parent.name.removesuffix("-worktrees")
-        if canonical.is_dir():
+
+    if canonical is not None:
+        # Drop the registry entry created by `agentwire new` (#837) so a reaped
+        # scheduler worktree doesn't linger in --list/--dangling.
+        worktree_registry.unregister(
+            canonical, branch=branch or None, worktree_path=str(wt),
+        )
+        if branch:
             subprocess.run(
                 ["git", "branch", "-D", branch],
                 capture_output=True, text=True, timeout=_sched._sched_config().git_timeout,
@@ -345,7 +367,7 @@ def _finalize_worktree_pr(task: SchedulerTask, task_name: str, status: str,
         return {}
     if not st.stdout.strip():
         # Task produced no changes — don't leave an empty worktree lying around.
-        _sched._remove_scheduler_worktree(worktree_path, branch)
+        _sched._remove_scheduler_worktree(worktree_path, branch, task.project)
         print(f"[{_ts()}] {task_name}: no changes — worktree removed, no PR")
         return {}
 
@@ -438,7 +460,9 @@ def reap_worktree_prs(board: Board) -> list[dict]:
 
         if st.worktree_session:
             _sched._kill_session(st.worktree_session)
-        _sched._remove_scheduler_worktree(st.worktree_path, st.worktree_branch)
+        task = board.tasks.get(name)
+        _sched._remove_scheduler_worktree(st.worktree_path, st.worktree_branch,
+                                         task.project if task else None)
 
         record = {"task": name, "pr": st.pr_number, "pr_state": state,
                   "worktree": st.worktree_path}
@@ -806,7 +830,7 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
     if exit_code == _EXIT_LOCK_CONFLICT:
         _sched._log_event("task_skipped", task=task_name, session=wt_session,
                           reason="lock_conflict")
-        _sched._remove_scheduler_worktree(worktree_path, branch)  # task didn't run
+        _sched._remove_scheduler_worktree(worktree_path, branch, task.project)  # task didn't run
         return TaskState(
             last_run=existing_state.last_run, last_status="lock_conflict",
             last_duration=duration, run_count=existing_state.run_count,

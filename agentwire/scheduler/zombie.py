@@ -8,9 +8,12 @@ shell — which the idle-reaper correctly never touches, since it only reaps a
 *running* agent that goes idle. Nothing else would ever clean that up, so it
 lingers indefinitely. This module finds and kills those sessions.
 
-Detected by branch naming rather than ``worktree_registry`` — scheduler
-dispatch goes through ``agentwire new``, which (unlike ``agentwire
-worktree``) never registers there.
+Detected by branch naming rather than ``worktree_registry``. Scheduler
+dispatch does register now (#837 routed ``agentwire new``'s worktree
+creation through the shared create+register helper), but registration is not
+the right signal here: the zombie case is precisely a session whose worktree
+DIRECTORY went missing after creation, and the tmux+branch-name scan finds
+it without depending on any bookkeeping surviving the crash.
 """
 
 import subprocess

@@ -12,6 +12,7 @@ Key concepts:
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .utils.subprocess import run_command
 
@@ -441,15 +442,29 @@ def get_repo_info(cwd: str | None = None) -> RepoInfo | None:
     return RepoInfo(root=root, name=name, current_branch=current_branch)
 
 
-def create_worker_worktree(branch_name: str, cwd: str | None = None) -> str:
-    """Create a git worktree for a worker branch.
+def create_worker_worktree(
+    branch_name: str, cwd: str | None = None, session: str | None = None,
+) -> str:
+    """Create **and register** a git worktree for a worker pane's branch.
 
-    Creates a new branch from current HEAD and a worktree in a sibling directory.
-    If the branch already exists, uses it. If the worktree already exists, returns its path.
+    Creates a new branch from current HEAD and a worktree in a sibling
+    directory. If the branch already exists, uses it. If the worktree already
+    exists, adopts it (and heals its registry entry).
+
+    Routed through the shared ``worktree.create_and_register_worktree`` (#837):
+    this used to be a second, independent worktree-creation implementation
+    that never touched the registry, so every `agentwire spawn --branch` left
+    real on-disk state that `worktree --list`/`--dangling`/`--prune` couldn't
+    see — an orphan by construction.
+
+    Registered with ``topology="pane"``: ``session`` names the *owning*
+    session (whose pane 0 is an unrelated orchestrator), not a session that
+    IS this worktree, so teardown must never kill it.
 
     Args:
         branch_name: Name for the new branch
         cwd: Working directory (default: current)
+        session: Owning tmux session (default: the current one)
 
     Returns:
         Absolute path to the worktree directory.
@@ -457,6 +472,8 @@ def create_worker_worktree(branch_name: str, cwd: str | None = None) -> str:
     Raises:
         RuntimeError: If not in a git repo or worktree creation fails.
     """
+    from .worktree import create_and_register_worktree
+
     repo = get_repo_info(cwd)
     if repo is None:
         raise RuntimeError("Not in a git repository")
@@ -466,43 +483,16 @@ def create_worker_worktree(branch_name: str, cwd: str | None = None) -> str:
     parent_dir = os.path.dirname(repo.root)
     worktree_path = os.path.join(parent_dir, f"{repo.name}-{branch_name}")
 
-    # Check if worktree already exists
-    if os.path.exists(worktree_path):
-        # Verify it's a valid worktree
-        result = run_command(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=worktree_path,
-            timeout=5,
-        )
-        if result.success and result.stdout.strip() == "true":
-            return worktree_path
-        else:
-            raise RuntimeError(f"Path exists but is not a git worktree: {worktree_path}")
-
-    # Check if branch exists
-    result = run_command(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
-        cwd=repo.root,
-        timeout=5,
+    ok, err = create_and_register_worktree(
+        Path(repo.root),
+        branch=branch_name,
+        worktree_path=Path(worktree_path),
+        session=session or get_current_session() or repo.name,
+        base=repo.current_branch,
+        kind="worker",
+        topology="pane",
     )
-    branch_exists = result.success
-
-    if branch_exists:
-        # Create worktree from existing branch
-        result = run_command(
-            ["git", "worktree", "add", worktree_path, branch_name],
-            cwd=repo.root,
-            timeout=30,
-        )
-    else:
-        # Create new branch and worktree from current HEAD
-        result = run_command(
-            ["git", "worktree", "add", "-b", branch_name, worktree_path],
-            cwd=repo.root,
-            timeout=30,
-        )
-
-    if not result.success:
-        raise RuntimeError(f"Failed to create worktree: {result.stderr}")
+    if not ok:
+        raise RuntimeError(err)
 
     return worktree_path

@@ -516,7 +516,7 @@ class TestFinalizeWorktree:
 
         removed = {}
         monkeypatch.setattr(scheduler, "_remove_scheduler_worktree",
-                            lambda p, b: removed.update(path=p, branch=b))
+                            lambda p, b, proj=None: removed.update(path=p, branch=b))
 
         task = SchedulerTask(name="t", project=str(tmp_path), session="t", task="t",
                              schedule=Schedule(every="1h"))
@@ -545,7 +545,7 @@ class TestReapWorktreePrs:
         monkeypatch.setattr(scheduler, "_pr_state", lambda n, cwd: pr_state)
         monkeypatch.setattr(scheduler, "_kill_session", lambda s: killed.append(s))
         monkeypatch.setattr(scheduler, "_remove_scheduler_worktree",
-                            lambda p, b: removed.append((p, b)))
+                            lambda p, b, proj=None: removed.append((p, b)))
         monkeypatch.setattr(scheduler, "save_board", lambda b: None)
         return killed, removed
 
