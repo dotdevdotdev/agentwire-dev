@@ -92,6 +92,21 @@ agentwire tabs list [--session name]  # list tracked tabs (debug leaked verifica
 agentwire fork -s name          # fork session into new worktree
 agentwire fork -s name -t project/branch --commit abc123  # fork from specific commit
 
+# Helper session — a worker session with NO isolation (#838): shares the
+# caller's checkout, so zero git work at creation (no worktree, no branch,
+# nothing in the worktree registry). Reproduces a worker pane's one real
+# advantage while keeping msg inbox / voice / prompt routing / portal
+# visibility. `wait --children` collects its report then reaps it (topology
+# "main"), unlike a worktree child which is left alive.
+agentwire helper name           # worker session sharing this checkout
+agentwire helper name -p ~/projects/repo --prompt "run the suite, report failures"
+agentwire helper name --roles wiki  # extra roles STACK on worker + shared-checkout
+                                #   The `shared-checkout` role is auto-injected:
+                                #   read/edit freely, NEVER commit/branch/checkout/
+                                #   stash/reset/pull — the checkout's owner commits.
+                                #   Needs a commit or a PR? Use `worktree` instead.
+                                #   Teardown is just `agentwire kill -s name`.
+
 # Pane commands (worker PANES inside the current session — NOT worktree
 # sessions; for parallel autonomous work use `agentwire worktree` above)
 agentwire spawn --roles worker  # spawn worker pane
