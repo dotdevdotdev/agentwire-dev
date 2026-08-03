@@ -11,7 +11,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -70,6 +69,7 @@ from .worktree import (
     parse_session_name,
     register_worktree,
     remove_worktree,
+    safe_worktree_name,
     worktree_status,
 )
 
@@ -1043,7 +1043,7 @@ def cmd_worktree(args) -> int:
     # branch may be templated separately via worktree.naming. The worktree
     # nests per project — ~/worktrees/<project>/<name>/ — mirroring
     # ~/projects/<project>/; the tmux session name stays flat {project}-{name}.
-    safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+    safe_name = safe_worktree_name(name)
     session_name = f"{project_name}-{safe_name}"
     worktree_path = worktree_dir / project_name / safe_name
 
@@ -1473,7 +1473,7 @@ def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -
 
     # No registry entry — ask git directly. Covers hand-created worktrees,
     # pre-registry ones, and any layout that isn't the documented default.
-    safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+    safe_name = safe_worktree_name(name)
     if safe_name.startswith(f"{project_name}-"):
         safe_name = safe_name[len(project_name) + 1:]
 
