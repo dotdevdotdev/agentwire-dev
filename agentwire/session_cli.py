@@ -584,53 +584,109 @@ def cmd_new(args) -> int:
             )
         save_project_config(project_config, session_path)
 
-    # Deliver the first message once the agent is ready (verified paste).
-    # Delivery failure doesn't fail the command — the session exists — but it
-    # must be LOUD (#695): clear the partial paste out of the box and fall
-    # back to the msg inbox so the prompt still arrives once the box is ready.
+    # Deliver the first message once the agent is ready, through the SAME
+    # guarded send path every other sender uses (#840). Seeding used to paste
+    # bare and, on an unverified confirm, call recover_failed_seed directly —
+    # the one send path that skipped the marker-based already-delivered check
+    # (#839) and the foreign-draft pre-flight (#845), so a seed that actually
+    # landed could be enqueued a second time and a human's half-typed draft
+    # could be erased to make room for it. Delivery failure still doesn't fail
+    # the command — the session exists — but it must be LOUD (#695).
     first_message_delivered = None
     first_message_fallback = None
     if first_message and agent_cmd:
+        from agentwire.send_cli import _foreign_draft_block, _recover_unverified_send
         from agentwire.session_ready import (
+            new_delivery_marker,
             recover_failed_seed,
             send_verified,
+            tag_message,
             wait_for_session_ready,
         )
 
+        # created_by can be None for a legitimate cross-project standalone
+        # spawn (#715) even though a real caller made the call — fall back to
+        # that caller for the recovery message's sender rather than the generic
+        # "agentwire" so the fallback attribution stays accurate.
+        seed_sender = created_by or caller or "agentwire"
         if not json_mode:
             print("Waiting for agent to deliver first message...")
-        first_message_delivered = (
-            wait_for_session_ready(session_name, timeout=60)
-            and send_verified(session_name, first_message)
-        )
-        if not first_message_delivered:
-            # created_by can be None for a legitimate cross-project standalone
-            # spawn (#715) even though a real caller made the call — fall back
-            # to that caller for the recovery message's sender rather than the
-            # generic "agentwire" so the fallback attribution stays accurate.
-            first_message_fallback = recover_failed_seed(
-                session_name, first_message, sender=created_by or caller or "agentwire"
+
+        # marker stays None until we actually paste. That distinction is
+        # load-bearing for the recovery below: "already delivered" is only a
+        # fact when a per-attempt marker could have reached scrollback.
+        marker = None
+        blocked = False
+        verified = False
+        if wait_for_session_ready(session_name, timeout=60):
+            # #845 — a fresh session's box is normally empty, but boot can take
+            # the full 60s above, which is ample room for a human to attach and
+            # start typing. Pasting on top of that garbles both, and the
+            # recovery below would then erase their draft as if it were the
+            # wreckage of our own paste. Look before touching it.
+            blocked, first_message_fallback = _foreign_draft_block(
+                session_name, first_message, seed_sender
             )
-            if not json_mode:
-                if first_message_fallback == "inbox":
-                    print(
-                        f"WARNING: first message NOT delivered to '{session_name}' — "
-                        "queued to its msg inbox for delivery once the input box is ready",
-                        file=sys.stderr,
-                    )
-                elif first_message_fallback == "inbox_stuck":
-                    print(
-                        f"WARNING: first message NOT delivered to '{session_name}' — "
-                        "queued to its msg inbox, but the stuck draft in the input box "
-                        "could not be confirmed cleared; check the pane manually",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"WARNING: first message NOT delivered to '{session_name}' "
-                        "and could not be queued — paste it manually",
-                        file=sys.stderr,
-                    )
+            if not blocked:
+                marker = new_delivery_marker()
+                verified = send_verified(
+                    session_name, tag_message(first_message, marker), marker=marker
+                )
+
+        if verified:
+            first_message_delivered = True
+        elif blocked:
+            first_message_delivered = False
+        else:
+            first_message_fallback = (
+                # We pasted and the confirm was ambiguous — the shared guard
+                # checks scrollback for THIS attempt's marker before enqueuing,
+                # so a seed that really landed is a no-op instead of a duplicate.
+                _recover_unverified_send(
+                    session_name, first_message, seed_sender, marker=marker
+                )
+                if marker
+                # The agent never became ready, so nothing was ever pasted:
+                # there is no marker to match and a bare-text scrollback check
+                # could only produce a false "already delivered" that DROPS the
+                # seed. Go straight to the durable enqueue.
+                else recover_failed_seed(
+                    session_name, first_message, sender=seed_sender
+                )
+            )
+            # A marker on scrollback proves this attempt's paste submitted; the
+            # confirm read was just ambiguous. That is delivered, not failed —
+            # reporting otherwise sends the caller chasing a message that landed.
+            first_message_delivered = first_message_fallback == "already_delivered"
+
+        if not json_mode and not first_message_delivered:
+            if first_message_fallback == "inbox":
+                print(
+                    f"WARNING: first message NOT delivered to '{session_name}' — "
+                    "queued to its msg inbox for delivery once the input box is ready",
+                    file=sys.stderr,
+                )
+            elif first_message_fallback == "inbox_stuck":
+                print(
+                    f"WARNING: first message NOT delivered to '{session_name}' — "
+                    "queued to its msg inbox, but the stuck draft in the input box "
+                    "could not be confirmed cleared; check the pane manually",
+                    file=sys.stderr,
+                )
+            elif first_message_fallback == "inbox_blocked":
+                print(
+                    f"WARNING: first message NOT pasted into '{session_name}' — its "
+                    "input box already held an unrelated unsent draft, which was left "
+                    "untouched; the prompt was queued to its msg inbox and the drain "
+                    "delivers it once the box goes idle",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"WARNING: first message NOT delivered to '{session_name}' "
+                    "and could not be queued — paste it manually",
+                    file=sys.stderr,
+                )
 
     if json_mode:
         result = {
@@ -642,11 +698,15 @@ def cmd_new(args) -> int:
         }
         if first_message:
             result["first_message_delivered"] = bool(first_message_delivered)
-            if not first_message_delivered:
-                # "inbox" (queued, box confirmed cleared), "inbox_stuck"
-                # (queued, but the stale draft in the box couldn't be
-                # confirmed cleared — #843), or None (fallback failed too —
-                # the prompt is gone; caller must redeliver).
+            # Present whenever the straight verified paste didn't carry the
+            # seed on its own: "inbox" (queued, box confirmed cleared),
+            # "inbox_stuck" (queued, but the stale draft in the box couldn't be
+            # confirmed cleared — #843), "inbox_blocked" (queued, a foreign
+            # draft was left untouched — #845), "already_delivered" (the paste
+            # DID land, only the confirm read was ambiguous — #840, and the one
+            # value that pairs with delivered=True), or None (fallback failed
+            # too — the prompt is gone; caller must redeliver).
+            if not first_message_delivered or first_message_fallback:
                 result["first_message_fallback"] = first_message_fallback
         _output_json(result)
     else:

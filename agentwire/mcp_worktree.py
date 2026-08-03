@@ -113,6 +113,16 @@ def worktree_create(
                 "will deliver it once the box is ready; verify with msg_inbox / "
                 "session_output before assuming the task started."
             )
+        if fallback == "inbox_blocked":
+            return (
+                f"Created worktree session '{session}' at {path}. "
+                "WARNING: seed prompt NOT pasted — the input box already held an "
+                "unrelated unsent draft (someone typing, or an earlier message whose "
+                "Enter was swallowed), which was left untouched rather than clobbered. "
+                "The prompt was queued to the session's msg inbox and the drain "
+                "delivers it once the box goes idle; verify with msg_inbox / "
+                "session_output before assuming the task started."
+            )
         if fallback == "inbox_stuck":
             return (
                 f"Created worktree session '{session}' at {path}. "
