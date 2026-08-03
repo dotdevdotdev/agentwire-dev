@@ -1,6 +1,7 @@
 """Tests for agentwire/project_config.py — resolve_posture, ProjectConfig."""
 
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from agentwire.project_config import (
     WorktreeOverrides,
     ensure_gitignored,
     find_project_config,
+    get_parent_from_config,
+    get_voice_from_config,
     load_project_config,
     resolve_posture,
     save_project_config,
@@ -366,6 +369,102 @@ class TestEnsureGitignored:
         gitignore = (tmp_path / ".gitignore").read_text()
         assert ".agentwire.tasks*.yml" in gitignore
         assert ".agentwire.yml" not in gitignore
+
+
+# --- deleted cwd (#850) ---
+#
+# These tests really chdir into a directory and really delete it, because the
+# bug only exists in that state: a guard can look correct and a test can pass
+# green while never once putting the process somewhere that no longer exists.
+
+
+@pytest.fixture
+def dead_cwd(tmp_path, monkeypatch):
+    """Put the process in a directory, then delete it under its own feet.
+
+    Mirrors a worktree being torn down while a session is still attached to it.
+    ``$PWD`` is unset by default so the fallback can't quietly rescue us —
+    tests that want the fallback set it back themselves.
+    """
+    doomed = tmp_path / "worktree-about-to-die"
+    doomed.mkdir()
+    original = os.getcwd()
+    os.chdir(doomed)
+    doomed.rmdir()
+    monkeypatch.delenv("PWD", raising=False)
+
+    # Precondition: the process really is somewhere that no longer exists.
+    with pytest.raises(FileNotFoundError):
+        Path.cwd()
+
+    try:
+        yield doomed
+    finally:
+        os.chdir(original)
+
+
+class TestDeletedCwd:
+    def test_find_project_config_degrades_instead_of_raising(self, dead_cwd):
+        """The reported crash: zero-arg call with a cwd that's gone (#850)."""
+        assert find_project_config() is None
+
+    def test_get_voice_from_config_returns_none(self, dead_cwd):
+        """The observed symptom — `agentwire say` dying on the voice lookup.
+
+        Returning None is what lets the caller's `or` chain reach the global
+        default voice; raising is what stopped it.
+        """
+        assert get_voice_from_config() is None
+
+    def test_get_parent_from_config_returns_none(self, dead_cwd):
+        assert get_parent_from_config() is None
+
+    def test_load_project_config_returns_none(self, dead_cwd):
+        assert load_project_config() is None
+
+    def test_relative_start_path_degrades(self, dead_cwd):
+        """`.resolve()` needs the cwd to anchor a relative path, so it raises too."""
+        assert find_project_config(Path("some/relative/dir")) is None
+
+    def test_absolute_paths_still_work(self, dead_cwd, tmp_path):
+        """Degrading gracefully must not mean degrading always.
+
+        An absolute path never needs the cwd, so a dead cwd is irrelevant to it.
+        """
+        project = tmp_path / "live-project"
+        project.mkdir()
+        (project / ".agentwire.yml").write_text("posture: bare\nvoice: echo\n")
+
+        assert find_project_config(project) == project / ".agentwire.yml"
+        assert get_voice_from_config(project) == "echo"
+
+    def test_falls_back_to_pwd_env(self, dead_cwd, tmp_path, monkeypatch):
+        """$PWD survives the deletion, so a live $PWD still finds the config."""
+        project = tmp_path / "still-here"
+        project.mkdir()
+        (project / ".agentwire.yml").write_text("posture: bare\nvoice: shimmer\n")
+        monkeypatch.setenv("PWD", str(project))
+
+        assert find_project_config() == project / ".agentwire.yml"
+        assert get_voice_from_config() == "shimmer"
+
+    def test_stale_pwd_env_does_not_rescue(self, dead_cwd, monkeypatch):
+        """A $PWD pointing at the same deleted dir degrades, it doesn't raise."""
+        monkeypatch.setenv("PWD", str(dead_cwd))
+        assert find_project_config() is None
+
+    def test_save_project_config_returns_false_for_relative(self, dead_cwd):
+        """Unwritable, but by returning False — its documented failure mode."""
+        assert save_project_config(ProjectConfig(posture="bypass"), Path("rel/dir")) is False
+
+    def test_save_project_config_still_works_for_absolute(self, dead_cwd, tmp_path):
+        target = tmp_path / "writable"
+        target.mkdir()
+        assert save_project_config(ProjectConfig(posture="bare"), target) is True
+        assert (target / ".agentwire.yml").exists()
+
+    def test_ensure_gitignored_returns_false_for_relative(self, dead_cwd):
+        assert ensure_gitignored(Path("rel/dir")) is False
 
     def test_custom_filename_idempotent_via_glob(self, tmp_path):
         _git(tmp_path, "init")

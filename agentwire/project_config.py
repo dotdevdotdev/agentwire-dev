@@ -4,6 +4,7 @@ Project-level configuration (.agentwire.yml).
 This file lives in project directories and is the source of truth for session config.
 """
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -143,6 +144,55 @@ class ProjectConfig:
         )
 
 
+# --- Deleted-cwd guards (#850) ---
+#
+# A worktree torn down while a session is still attached leaves that process
+# with a working directory that no longer exists. Every cwd-dependent pathlib
+# call then raises FileNotFoundError: `Path.cwd()` directly, and `.resolve()`
+# on a RELATIVE path because it needs the cwd to anchor against. (`.exists()`
+# and `.is_dir()` swallow the OSError and answer False, so the directory walk
+# itself is already safe.) Nothing downstream of this module can recover from
+# that, so the guards live here and degrade to "no project config" — an
+# ordinary, already-handled state — instead of propagating a raw traceback.
+
+
+def _safe_cwd() -> Optional[Path]:
+    """The process cwd, or None if it has been deleted out from under us.
+
+    Falls back to ``$PWD`` (the shell's idea of where we are, which survives
+    the directory's deletion) when it still names a real directory.
+    """
+    try:
+        return Path.cwd()
+    except OSError:
+        pass
+    env_pwd = os.environ.get("PWD")
+    if env_pwd:
+        candidate = Path(env_pwd)
+        try:
+            if candidate.is_dir():
+                return candidate
+        except OSError:
+            pass
+    return None
+
+
+def _safe_resolve(path: Path) -> Optional[Path]:
+    """``Path(path).resolve()``, or None when a dead cwd makes it impossible.
+
+    An absolute path never needs the cwd, so it resolves either way; a relative
+    one is anchored against :func:`_safe_cwd` when ``resolve()`` itself fails.
+    """
+    p = Path(path)
+    try:
+        return p.resolve()
+    except OSError:
+        if p.is_absolute():
+            return p
+        base = _safe_cwd()
+        return base / p if base is not None else None
+
+
 def find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
     """Find project config by walking up from start_path.
 
@@ -156,12 +206,13 @@ def find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
         start_path: Directory to start searching from. Defaults to cwd.
 
     Returns:
-        Path to the resolved config file if found, None otherwise.
+        Path to the resolved config file if found, None otherwise — including
+        when the cwd has been deleted and there is nowhere to start walking
+        from (#850).
     """
+    start_path = _safe_cwd() if start_path is None else _safe_resolve(start_path)
     if start_path is None:
-        start_path = Path.cwd()
-    else:
-        start_path = Path(start_path).resolve()
+        return None
 
     current = start_path
     while True:
@@ -217,9 +268,13 @@ def save_project_config(config: ProjectConfig, project_dir: Path) -> bool:
         project_dir: Directory to save config in
 
     Returns:
-        True if saved successfully, False otherwise.
+        True if saved successfully, False otherwise (including a relative
+        ``project_dir`` that a deleted cwd leaves unanchorable — #850).
     """
-    project_dir = Path(project_dir).resolve()
+    resolved = _safe_resolve(project_dir)
+    if resolved is None:
+        return False
+    project_dir = resolved
     config_file = project_dir / ".agentwire.yml"
 
     try:
@@ -252,10 +307,14 @@ def ensure_gitignored(
             pass a glob to also cover sibling files, e.g. a staging draft).
 
     Returns:
-        True if .gitignore was modified, False otherwise.
+        True if .gitignore was modified, False otherwise (including a relative
+        ``project_dir`` that a deleted cwd leaves unanchorable — #850).
     """
     pattern = pattern or filename
-    project_dir = Path(project_dir).resolve()
+    resolved = _safe_resolve(project_dir)
+    if resolved is None:
+        return False
+    project_dir = resolved
     try:
         in_repo = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
