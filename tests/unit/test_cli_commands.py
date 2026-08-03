@@ -3,7 +3,7 @@
 import argparse
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import yaml
 
@@ -189,12 +189,17 @@ class TestCmdSendWaitReady:
         return json.loads(capsys.readouterr().out.strip())
 
     def _mock_has_session(self, monkeypatch):
+        from agentwire import session_ready
+
         has_session = MagicMock(returncode=0)
         monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         # get_current_session shells out to real tmux and depends on the test
         # runner's own environment ($TMUX_PANE) -- pin it so fallback_sender
         # resolution is deterministic regardless of where tests run.
         monkeypatch.setattr("agentwire.send_cli.pane_manager.get_current_session", lambda: None)
+        # #845 pre-flight: box is clear unless a test says otherwise (the real
+        # one captures a live pane).
+        monkeypatch.setattr(session_ready, "box_holds_foreign_draft", lambda *a, **k: False)
 
     def test_happy_path_verified(self, capsys, monkeypatch):
         from agentwire import session_ready
@@ -202,13 +207,68 @@ class TestCmdSendWaitReady:
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: True)
 
         assert cmd_send(self._args()) == 0
         payload = self._payload(capsys)
         assert payload["success"] is True
         assert payload["verified"] is True
         assert payload["fallback"] is None
+
+    def test_paste_carries_a_per_attempt_delivery_marker(self, capsys, monkeypatch):
+        """#839: the text pasted must carry a marker unique to this attempt,
+        and the SAME marker must reach send_verified + the fallback -- that is
+        what turns 'already delivered' from a text-similarity guess into a
+        fact about this specific send."""
+        from agentwire import send_cli, session_ready
+        from agentwire.send_cli import cmd_send
+
+        self._mock_has_session(monkeypatch)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        seen = {}
+
+        def fake_send(s, m, marker=None):
+            seen["pasted"] = m
+            seen["marker"] = marker
+            return False
+
+        monkeypatch.setattr(session_ready, "send_verified", fake_send)
+        recover = MagicMock(return_value="inbox")
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
+
+        cmd_send(self._args())
+
+        assert seen["marker"].startswith("⟨#send-")
+        assert seen["pasted"] == f"my idea  {seen['marker']}"
+        # The inbox copy is the BARE prompt (the drain adds its own ⟨#id⟩),
+        # while the marker rides along for the scrollback check.
+        recover.assert_called_once_with(
+            "proj", "my idea", "agentwire", marker=seen["marker"])
+
+    def test_foreign_draft_blocks_the_send_without_clearing(self, capsys, monkeypatch):
+        """#845: a draft that was already in the box before we tried anything
+        is not ours to paste over OR to erase -- queue and leave it alone."""
+        from agentwire import session_ready
+        from agentwire.send_cli import cmd_send
+
+        self._mock_has_session(monkeypatch)
+        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
+        monkeypatch.setattr(session_ready, "box_holds_foreign_draft", lambda *a, **k: True)
+        sent = MagicMock()
+        monkeypatch.setattr(session_ready, "send_verified", sent)
+        cleared = MagicMock()
+        monkeypatch.setattr(session_ready, "clear_input_box", cleared)
+        seed = MagicMock(return_value="inbox_blocked")
+        monkeypatch.setattr(session_ready, "recover_failed_seed", seed)
+
+        assert cmd_send(self._args()) == 1
+        payload = self._payload(capsys)
+        assert payload["verified"] is False
+        assert payload["fallback"] == "inbox_blocked"
+        sent.assert_not_called()      # never pasted on top of the draft
+        cleared.assert_not_called()   # and never erased it
+        seed.assert_called_once_with(
+            "proj", "my idea", sender="agentwire", clear=False)
 
     def test_not_ready_fails(self, capsys, monkeypatch):
         from agentwire import session_ready
@@ -232,7 +292,7 @@ class TestCmdSendWaitReady:
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
         recover = MagicMock(return_value="inbox")
         monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
@@ -240,7 +300,7 @@ class TestCmdSendWaitReady:
         payload = self._payload(capsys)
         assert payload["verified"] is False
         assert payload["fallback"] == "inbox"
-        recover.assert_called_once_with("proj", "my idea", "agentwire")
+        recover.assert_called_once_with("proj", "my idea", "agentwire", marker=ANY)
 
     def test_unverified_and_fallback_fails_is_still_reported(self, capsys, monkeypatch):
         from agentwire import send_cli, session_ready
@@ -248,8 +308,8 @@ class TestCmdSendWaitReady:
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", lambda s, m, sender: None)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
+        monkeypatch.setattr(send_cli, "_recover_unverified_send", lambda s, m, sender, marker=None: None)
 
         assert cmd_send(self._args()) == 1
         payload = self._payload(capsys)
@@ -266,12 +326,12 @@ class TestCmdSendWaitReady:
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
         recover = MagicMock(return_value="inbox")
         monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
         cmd_send(self._args(caller_session="council-brain"))
-        recover.assert_called_once_with("proj", "my idea", "council-brain")
+        recover.assert_called_once_with("proj", "my idea", "council-brain", marker=ANY)
 
     def test_unverified_falls_back_to_stuck_inbox(self, capsys, monkeypatch):
         """#843: an "inbox_stuck" fallback (queued, but the stale draft in
@@ -282,7 +342,7 @@ class TestCmdSendWaitReady:
 
         self._mock_has_session(monkeypatch)
         monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m: False)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
         recover = MagicMock(return_value="inbox_stuck")
         monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
@@ -321,16 +381,19 @@ class TestCmdSendVerify:
         return json.loads(capsys.readouterr().out.strip())
 
     def _mock_has_session(self, monkeypatch):
+        from agentwire import session_ready
+
         has_session = MagicMock(returncode=0)
         monkeypatch.setattr("agentwire.send_cli.subprocess.run", lambda *a, **k: has_session)
         monkeypatch.setattr("agentwire.send_cli.pane_manager.get_current_session", lambda: None)
+        monkeypatch.setattr(session_ready, "box_holds_foreign_draft", lambda *a, **k: False)
 
     def test_happy_path_verified_skips_fallback(self, capsys, monkeypatch):
         from agentwire import send_cli, session_ready
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, retries=1: True)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None, retries=1: True)
         recover = MagicMock()
         monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
@@ -346,7 +409,7 @@ class TestCmdSendVerify:
         from agentwire.send_cli import cmd_send
 
         self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, retries=1: False)
+        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None, retries=1: False)
         recover = MagicMock(return_value="inbox")
         monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
 
@@ -354,7 +417,7 @@ class TestCmdSendVerify:
         payload = self._payload(capsys)
         assert payload["verified"] is False
         assert payload["fallback"] == "inbox"
-        recover.assert_called_once_with("proj", "my idea", "agentwire")
+        recover.assert_called_once_with("proj", "my idea", "agentwire", marker=ANY)
 
     def test_remote_with_verify_never_touches_the_fallback(self, capsys, monkeypatch):
         """Remote (session@machine) sends return from an earlier branch
@@ -403,6 +466,15 @@ class TestFallbackSuffix:
 
         assert "resend manually" in _fallback_suffix(None)
 
+    def test_inbox_blocked_suffix_says_the_draft_was_left_alone(self):
+        """#845: distinct from inbox_stuck -- nothing was pasted and nothing
+        was erased, so the operator should NOT go hunting for our wreckage."""
+        from agentwire.send_cli import _fallback_suffix
+
+        suffix = _fallback_suffix("inbox_blocked")
+        assert "left untouched" in suffix
+        assert "could NOT be confirmed cleared" not in suffix
+
 
 class TestRecoverUnverifiedSend:
     """#835 review finding 2: the msg-inbox drain's dedup matches the
@@ -435,6 +507,48 @@ class TestRecoverUnverifiedSend:
 
         assert _recover_unverified_send("proj", "genuinely stuck", "council-brain") == "inbox"
         recover.assert_called_once_with("proj", "genuinely stuck", sender="council-brain")
+
+    def test_marker_is_what_gets_matched_when_supplied(self, monkeypatch):
+        """#839: with a per-attempt marker, 'already delivered' keys on THIS
+        attempt's token, not on how much the prompt resembles the scrollback."""
+        from agentwire import session_ready
+        from agentwire.send_cli import _recover_unverified_send
+
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "cap")
+        needles = []
+        monkeypatch.setattr(
+            session_ready, "message_on_scrollback",
+            lambda cap, msg: needles.append(msg) or False)
+        monkeypatch.setattr(
+            session_ready, "recover_failed_seed",
+            lambda *a, **k: "inbox")
+
+        _recover_unverified_send("proj", "continue", "agentwire", marker="⟨#send-abc123⟩")
+        assert needles == ["⟨#send-abc123⟩"]
+
+    def test_generic_prompt_on_scrollback_no_longer_swallows_a_failed_send(
+            self, monkeypatch):
+        """#839's false positive, end to end: a bare 'continue' from an
+        UNRELATED earlier send sits in the scrollback window. Matching the bare
+        text reports already_delivered and skips the inbox enqueue entirely --
+        silently dropping a send that never landed. The marker makes the
+        difference."""
+        from agentwire import session_ready
+        from agentwire.send_cli import _recover_unverified_send
+
+        old_marker = session_ready.new_delivery_marker()
+        this_marker = session_ready.new_delivery_marker()
+        rule = "─" * 20
+        cap = f"> continue  {old_marker}\n{rule}\n❯\n{rule}"
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: cap)
+        monkeypatch.setattr(
+            session_ready, "recover_failed_seed", lambda *a, **k: "inbox")
+
+        # Bare text (the pre-#839 behavior): the unrelated echo swallows it.
+        assert _recover_unverified_send("proj", "continue", "agentwire") == "already_delivered"
+        # Per-attempt marker: this send is correctly recognized as NOT delivered.
+        assert _recover_unverified_send(
+            "proj", "continue", "agentwire", marker=this_marker) == "inbox"
 
 
 # --- cmd_new --first-message ---

@@ -2506,6 +2506,20 @@ class AgentWireServer(
                     "box could not be confirmed cleared — check the pane",
                     session=session_name, priority="high", id_prefix="firstmsg")
                 return
+            if fallback == "inbox_blocked":
+                # #845: the box already held an unrelated unsent draft, so
+                # nothing was pasted (and nothing erased). The durable copy is
+                # queued and the drain delivers once the box goes idle — same
+                # calm outcome as "inbox", just with a different cause, and
+                # emphatically NOT the "paste it manually" advice below.
+                logger.info(
+                    f"First message for {session_name} queued to inbox — its input box "
+                    "held an unrelated unsent draft, which was left untouched")
+                await self._post_toast(
+                    f"First message to {session_name} queued — its input box held an "
+                    "unrelated draft, so nothing was pasted over it",
+                    session=session_name, priority="normal", id_prefix="firstmsg")
+                return
             logger.warning(f"First message delivery failed for {session_name}: {result.get('error')}")
             await self._post_toast(
                 f"First message not delivered to {session_name} — paste it manually",

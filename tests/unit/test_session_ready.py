@@ -1,8 +1,10 @@
 """Tests for agentwire.session_ready — readiness detection + verified delivery."""
 
+import pytest
+
 from agentwire import session_ready
 
-BANNER = "❯ \nBypassing Permissions"
+BANNER ="❯ \nBypassing Permissions"
 TRUST = "Do you trust this folder?\nPress Enter to confirm"
 
 RULE = "─" * 20
@@ -324,6 +326,17 @@ def _env(monkeypatch, frame):
     monkeypatch.setattr(session_ready, "paste_no_enter", paste)
     monkeypatch.setattr(session_ready, "press_enter", enter)
     monkeypatch.setattr(session_ready, "capture_session", capture)
+
+    # The #845 foreign-draft guard asks prompt_router's SGR-aware gate for a
+    # second opinion before refusing (dim ghost text is not a draft). These
+    # frames carry no SGR, so mirror the plain parse -- and, crucially, keep
+    # the guard from shelling out to the developer's LIVE tmux server.
+    from agentwire import prompt_router
+
+    def is_empty(session, pane_index=0):
+        return session_ready.input_box(frame(actions)) == ""
+
+    monkeypatch.setattr(prompt_router, "prompt_is_empty", is_empty)
     return actions
 
 
@@ -443,10 +456,13 @@ class TestSendVerifiedAdaptive:
 
     def test_large_paste_placeholder_lands(self, monkeypatch):
         # Large paste renders as the [Pasted text] placeholder in the box; that
-        # counts as landed, then submits.
+        # counts as landed, then submits. (The box is empty until we paste --
+        # a chip sitting there BEFORE the paste is a foreign draft, #845.)
         _fake_clock(monkeypatch)
 
         def frame(a):
+            if a["pastes"] == 0:
+                return render_box()
             if a["enters"] == 0:
                 return render_box("[Pasted text #1 +40 lines]")
             return render_working()
@@ -511,12 +527,15 @@ class TestNoDoublePaste:
         )
         ours = "[NOTIFY from agentwire-dev-issue-661-bar] is idle and done working"
         # Box shows only OTHER sessions' same-prefix notifications, ours never
-        # renders: Phase 1 must fail (no false landing) and Enter must never be
-        # pressed into the pile (the old 32-char fragment matched instantly and
-        # then hammered Enter for 20s against a pile that could never clear).
+        # renders: no false landing, and Enter must never be pressed into the
+        # pile (the old 32-char fragment matched instantly and then hammered
+        # Enter for 20s against a pile that could never clear). Post-#845 the
+        # pile is also recognized as a foreign draft, so we never paste our
+        # message on top of it either.
         actions = _env(monkeypatch, lambda a: render_box(pile))
         assert not session_ready.send_verified("s", ours)
         assert actions["enters"] == 0
+        assert actions["pastes"] == 0
 
 
 class TestPrePasteGuardIdentity:
@@ -560,28 +579,18 @@ class TestPrePasteGuardIdentity:
     def test_foreign_pasted_placeholder_is_not_our_landing(self, monkeypatch):
         # A human's half-composed large paste sits in the target box as
         # [Pasted text ...]. Pre-paste that placeholder can only be someone
-        # ELSE's draft: we must not skip our paste, and we must never press
-        # Enter before pasting (which would force-submit the foreign draft).
+        # ELSE's draft (or an earlier attempt's), so it never counts as our
+        # landing: no Enter may be pressed before we paste, which would
+        # force-submit the foreign draft.
+        #
+        # #845 goes further than #621 did: pasting our text ON TOP of that
+        # draft concatenates the two into one garbled turn, so the send is
+        # refused outright and the caller's durable fallback takes over.
         _fake_clock(monkeypatch)
-
-        def frame(a):
-            if a["pastes"] == 0:
-                return render_box("[Pasted text #1 +57 lines]")
-            if a["enters"] == 0:
-                return render_box("our own report")
-            return render_working()
-
-        actions = _env(monkeypatch, frame)
-
-        real_enter = session_ready.press_enter
-
-        def guarded_enter(s, pane_index=0):
-            assert actions["pastes"] > 0, "Enter pressed into a foreign draft before pasting"
-            real_enter(s, pane_index=pane_index)
-
-        monkeypatch.setattr(session_ready, "press_enter", guarded_enter)
-        assert session_ready.send_verified("s", "our own report")
-        assert actions["pastes"] == 1
+        actions = _env(monkeypatch, lambda a: render_box("[Pasted text #1 +57 lines]"))
+        assert not session_ready.send_verified("s", "our own report")
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 0
 
     def test_full_message_on_scrollback_short_circuits_as_submitted(self, monkeypatch):
         # Positive identity: our FULL rendered message already on scrollback
@@ -990,6 +999,252 @@ class TestRecoverFailedSeed:
 
         monkeypatch.setattr(inbox, "enqueue", boom)
         assert session_ready.recover_failed_seed("sess", "x") is None
+
+
+class TestDeliveryMarker:
+    """#839 — a per-attempt marker appended to the paste turns 'is this attempt
+    already on scrollback?' from a text-similarity guess into a fact."""
+
+    def test_marker_is_unique_per_attempt(self):
+        markers = {session_ready.new_delivery_marker() for _ in range(200)}
+        assert len(markers) == 200
+
+    def test_marker_shape_mirrors_inbox_render(self):
+        marker = session_ready.new_delivery_marker()
+        assert marker.startswith("⟨#send-")
+        assert marker.endswith("⟩")
+
+    def test_tag_appends_the_marker(self):
+        marker = session_ready.new_delivery_marker()
+        assert session_ready.tag_message("continue", marker) == f"continue  {marker}"
+
+    def test_tagged_paste_is_what_lands_and_submits(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        marker = session_ready.new_delivery_marker()
+        tagged = session_ready.tag_message("yes", marker)
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return render_box()
+            if a["enters"] == 0:
+                return render_box(tagged)
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", tagged, marker=marker)
+        assert actions["enters"] == 1
+
+    def test_marker_on_scrollback_is_per_attempt(self):
+        # The false positive #839 is about: a bare generic message coincidentally
+        # already on scrollback from an UNRELATED earlier send.
+        old = session_ready.new_delivery_marker()
+        new = session_ready.new_delivery_marker()
+        cap = f"> continue  {old}\n" + render_box()
+        assert session_ready.message_on_scrollback(cap, "continue")   # bare: collides
+        assert session_ready.message_on_scrollback(cap, old)
+        assert not session_ready.message_on_scrollback(cap, new)      # marker: precise
+
+    def test_marker_in_the_box_is_not_on_scrollback(self):
+        # Composes with #689: a tagged paste sitting UNSENT in the box must
+        # never read as delivered just because its marker is on screen.
+        marker = session_ready.new_delivery_marker()
+        tagged = session_ready.tag_message("continue", marker)
+        cap = "some history\n" + render_box(tagged)
+        assert not session_ready.message_on_scrollback(cap, marker)
+
+
+class TestForeignDraftGuard:
+    """#845 — a stale, DIFFERENT draft in the box was invisible to the
+    idempotent-paste guard, which only knew 'holds our message' vs 'live menu'.
+    Pasting on top concatenates the two into one garbled submitted turn."""
+
+    def _wire(self, monkeypatch, box_content):
+        _fake_clock(monkeypatch)
+        return _env(monkeypatch, lambda a: render_box(box_content))
+
+    def test_refuses_to_paste_over_a_stale_draft(self, monkeypatch):
+        actions = self._wire(monkeypatch, "half-typed thought from a human")
+        assert not session_ready.send_verified("s", "our new instruction")
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 0
+
+    def test_refuses_a_wedged_message_from_another_sender(self, monkeypatch):
+        stale = "[MSG from other-worker · done] PR 41 drafted  ⟨#aaa111⟩"
+        actions = self._wire(monkeypatch, stale)
+        assert not session_ready.send_verified("s", "unrelated instruction")
+        assert actions["pastes"] == 0
+
+    def test_never_clears_the_draft_itself(self, monkeypatch):
+        """The delivery primitive refuses; it does not do box surgery. It
+        cannot tell a human's half-typed sentence from a wedged paste, and the
+        recovery layer (which saw the box BEFORE the attempt) can."""
+        self._wire(monkeypatch, "someone else's words")
+        cleared = []
+        monkeypatch.setattr(
+            session_ready, "clear_input_box",
+            lambda s, pane_index=0: cleared.append(s) or True)
+        assert not session_ready.send_verified("s", "ours")
+        assert cleared == []
+
+    def test_empty_box_still_pastes(self, monkeypatch):
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return render_box()
+            if a["enters"] == 0:
+                return render_box("ours")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "ours")
+        assert actions["pastes"] == 1
+
+    def test_our_own_landed_copy_is_not_foreign(self, monkeypatch):
+        # #667 must keep holding: our own landed-but-unsubmitted paste means
+        # retry the SUBMIT, not refuse.
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box("leftover from a prior attempt")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "leftover from a prior attempt")
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 1
+
+    def test_our_own_tall_draft_window_is_not_foreign(self, monkeypatch):
+        # #851 must keep holding: a draft too tall to render whole shows only a
+        # window of itself, and that window is still OURS.
+        msg = TestTallDraftWindow.MSG
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box(msg[-454:])
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", msg)
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 1
+
+    def test_already_submitted_wins_over_a_foreign_draft(self, monkeypatch):
+        # Our message echoed OUTSIDE the box means a prior attempt submitted
+        # it -- report success rather than refusing over whatever the recipient
+        # has since started typing.
+        _fake_clock(monkeypatch)
+        msg = "[MSG from w · done] finished  ⟨#abc123⟩"
+        actions = _env(
+            monkeypatch, lambda a: f"{msg}\n" + render_box("a new thought"))
+        assert session_ready.send_verified("s", msg)
+        assert actions["pastes"] == 0
+        assert actions["enters"] == 0
+
+    def test_dim_ghost_text_is_not_a_foreign_draft(self, monkeypatch):
+        """#669 composition: Claude renders autosuggest/ghost text inside the
+        box DIM, and the plain parse can't tell it from a draft. Without the
+        SGR-aware second opinion, an idle session showing a suggestion would
+        refuse every send."""
+        _fake_clock(monkeypatch)
+        ghost = "try asking about the build failure"
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return render_box(ghost)   # plain parse: looks like a draft
+            if a["enters"] == 0:
+                return render_box("ours")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        # prompt_is_empty is the authority and it sees dim text as empty.
+        from agentwire import prompt_router
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: True)
+        assert session_ready.send_verified("s", "ours")
+        assert actions["pastes"] == 1
+
+    def test_unparseable_box_still_pastes(self, monkeypatch):
+        # No box parse → nothing is provable, and refusing must be positively
+        # justified. Unchanged from before #845.
+        _fake_clock(monkeypatch)
+        busy = "⏺ Bash(build)\n✶ Working… (esc to interrupt)\nno box parses here"
+
+        def frame(a):
+            if a["pastes"] == 0:
+                return busy
+            if a["enters"] == 0:
+                return render_box("ours")
+            return render_working()
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.send_verified("s", "ours")
+        assert actions["pastes"] == 1
+
+    def test_predicate_is_conservative_on_a_dead_pane(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("no such pane")
+
+        monkeypatch.setattr(session_ready, "capture_session", boom)
+        assert session_ready.box_holds_foreign_draft("s", "ours") is False
+
+    def test_predicate_accepts_a_supplied_capture(self, monkeypatch):
+        from agentwire import prompt_router
+
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: False)
+        monkeypatch.setattr(
+            session_ready, "capture_session",
+            lambda *a, **k: pytest.fail("re-captured instead of using the frame"))
+        assert session_ready.box_holds_foreign_draft(
+            "s", "ours", capture=render_box("theirs"))
+        assert not session_ready.box_holds_foreign_draft(
+            "s", "ours", capture=render_box("ours"))
+        assert not session_ready.box_holds_foreign_draft(
+            "s", "ours", capture=render_box(""))
+
+
+class TestRecoverFailedSeedNoClear:
+    """#845 — the recovery layer must be able to queue WITHOUT clearing, so a
+    draft that predates our attempt (a human mid-typing) isn't erased to make
+    room for a message we already declined to paste."""
+
+    def _no_clear(self, monkeypatch):
+        from agentwire import inbox
+        seen = {"cleared": False, "enqueued": None}
+
+        def clear(s, pane_index=0):
+            seen["cleared"] = True
+            return True
+
+        monkeypatch.setattr(session_ready, "clear_input_box", clear)
+        monkeypatch.setattr(
+            inbox, "enqueue",
+            lambda to, text, kind="note", sender=None, ref="":
+                seen.update(enqueued=(to, text, kind, sender)) or [])
+        return seen
+
+    def test_clear_false_queues_and_leaves_the_box_alone(self, monkeypatch):
+        seen = self._no_clear(monkeypatch)
+        result = session_ready.recover_failed_seed(
+            "sess", "our prompt", sender="orch", clear=False)
+        assert result == "inbox_blocked"
+        assert seen["cleared"] is False
+        assert seen["enqueued"] == ("sess", "our prompt", "request", "orch")
+
+    def test_clear_true_is_unchanged(self, monkeypatch):
+        seen = self._no_clear(monkeypatch)
+        assert session_ready.recover_failed_seed("sess", "x", clear=True) == "inbox"
+        assert seen["cleared"] is True
+
+    def test_enqueue_failure_still_returns_none(self, monkeypatch):
+        from agentwire import inbox
+
+        def boom(*a, **k):
+            raise OSError("inbox unwritable")
+
+        monkeypatch.setattr(inbox, "enqueue", boom)
+        assert session_ready.recover_failed_seed("s", "x", clear=False) is None
 
 
 class TestLiveMenuAbort:

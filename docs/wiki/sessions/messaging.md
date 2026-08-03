@@ -72,7 +72,42 @@ lands in a durable inbox and is injected only at a safe boundary.
    *pile* of other sessions' notifications sitting in the box); and **(b) no
    blind re-paste** — before pasting, each attempt checks whether the message
    already sits landed-but-unsubmitted in the box, and if so retries only the
-   *submit*, so a whole-send retry can never double the draft.
+   *submit*, so a whole-send retry can never double the draft. "Already in the
+   box" is **window-aware** (#851): the input box has a bounded visible height
+   and scrolls, so a draft taller than it renders only a contiguous window of
+   itself — accepted as ours when it is at least `MIN_BOX_FRAGMENT` (80
+   normalized chars) long and shorter than the message, which is what keeps a
+   short foreign draft ("ok") from reading as our paste landing. When Escape
+   can't clear such a draft, `clear_input_box` escalates to a bounded backspace
+   sweep.
+
+   **Nothing pastes onto a foreign draft (#845).** The identity guard above
+   proves only that the box does *not* hold our message; it said nothing about
+   what it *does* hold, so a stale, different draft — a previous sender's
+   swallowed message, a human mid-typing, a half-composed large paste — got our
+   text pasted on top of it, and one Enter submitted the concatenation as a
+   single garbled turn. `session_ready.box_holds_foreign_draft` names that
+   state (plain box parse says non-empty and not-ours, then the SGR-aware
+   `prompt_is_empty` vetoes, so dim ghost/autosuggest text never counts), and
+   `_deliver_once` **refuses** rather than pasting — it is the delivery
+   primitive and cannot tell a human's sentence from wedged wreckage. Box
+   surgery stays in the recovery layer: `agentwire send --verify/--wait-ready`
+   look at the box *before* attempting anything, and a draft that predates the
+   attempt is queued to the msg inbox with `recover_failed_seed(clear=False)`
+   → outcome **`inbox_blocked`** (queued, box left untouched) rather than the
+   `inbox`/`inbox_stuck` clear-then-queue path (#843/#844).
+
+   **Per-attempt delivery markers (#839).** A direct verified send tags its
+   paste with `session_ready.new_delivery_marker()` — a unique
+   `⟨#send-xxxxxx⟩` token appended via `tag_message`, mirroring the drain's own
+   `⟨#id6⟩` tail. The token rides inside the pasted text, so the landing gate,
+   the idempotent-paste guard and the unverified-send fallback all key on
+   something unique to *this* attempt. Without it, `_recover_unverified_send`
+   matched the bare prompt against scrollback, and a short or generic message
+   ("yes", "continue", "approved") that happened to sit in the last 200 lines
+   for an unrelated reason reported `already_delivered` and **skipped the inbox
+   enqueue entirely** — silently dropping a send that never landed, the one
+   outcome the fallback exists to prevent.
 
    **Pasted ≠ submitted (#689, hardened by #698).** Closures for the
    paste-lands-but-Enter-is-swallowed failure: **(a)** `message_on_scrollback`

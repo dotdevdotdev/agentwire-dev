@@ -105,7 +105,15 @@ while True:
         # If the remaining bytes could be the start of the marker, wait for more.
         if marker.startswith(data):
             break
-        ch = data[:1].decode("utf-8", "replace"); data = data[1:]
+        # Consume a WHOLE utf-8 sequence, not one byte: delivery markers are
+        # non-ASCII by design (⟨#send-xxxxxx⟩, mirroring inbox's ⟨#id⟩), and a
+        # byte-at-a-time decode turns each into three replacement chars, so
+        # the box would never render what was actually pasted.
+        lead = data[0]
+        n = 4 if lead >= 0xF0 else 3 if lead >= 0xE0 else 2 if lead >= 0xC0 else 1
+        if len(data) < n:
+            break                    # rest of the sequence hasn't arrived yet
+        ch = data[:n].decode("utf-8", "replace"); data = data[n:]
         progressed = True
         if in_paste:
             buf += ch                # pasted bytes are literal (incl. \n / \r)
@@ -381,6 +389,59 @@ def test_tall_draft_retry_does_not_double_paste(emulator_factory, monkeypatch):
     # (A visible-window check can't catch this — the tail of a doubled draft is
     # still a suffix of the message. The paste count is the real invariant.)
     assert len(pastes) == 1, f"re-pasted a landed draft {len(pastes)}x"
+
+
+def test_foreign_draft_is_never_pasted_over(emulator_factory, monkeypatch):
+    # #845 against a real pane: a stale draft (a previous sender's message
+    # whose Enter was swallowed) sits unsubmitted in the box. The pre-fix
+    # guard only knew "does the box hold OUR message" and fell through to
+    # paste_no_enter, concatenating the two drafts into one string that the
+    # next Enter submits as a single garbled turn. This asserts the real
+    # emulator's buffer is left holding EXACTLY the stale draft.
+    session, socket, _ = emulator_factory()
+    _patch_pane_manager(monkeypatch, socket)
+    _patch_prompt_router(monkeypatch, socket)
+
+    stale = "[MSG from other-worker - done] PR 41 drafted, needs review"
+    session_ready.paste_no_enter(session, stale)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+        if session_ready.text_landed(cap, stale):
+            break
+        time.sleep(0.1)
+    assert session_ready.text_landed(cap, stale), "stale-draft setup failed"
+
+    ours = "run the full suite and report back"
+    assert session_ready.box_holds_foreign_draft(session, ours)
+    assert not session_ready.send_verified(session, ours, retries=1)
+
+    box = session_ready.input_box(
+        _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    )
+    assert box == stale, f"box was mutated: {box!r}"
+    assert ours not in box  # no concatenation — the whole point of #845
+
+
+def test_tagged_paste_delivers_and_the_marker_lands_on_scrollback(
+        emulator_factory, monkeypatch):
+    # #839 against a real pane: the per-attempt marker rides inside the paste,
+    # so after a genuine submit it is findable OUTSIDE the input box — which
+    # is what makes _recover_unverified_send's "already_delivered" a fact
+    # rather than a text-similarity guess. The emulator scrolls submitted
+    # turns away, so we keep the turn on screen by checking the box first.
+    session, socket, _ = emulator_factory()
+    _patch_pane_manager(monkeypatch, socket)
+
+    marker = session_ready.new_delivery_marker()
+    tagged = session_ready.tag_message("continue", marker)
+    assert session_ready.send_verified(session, tagged, marker=marker)
+
+    cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
+    assert session_ready.input_box(cap) == "", "tagged draft sat unsent"
+    # A DIFFERENT attempt's marker must never match this one's echo.
+    assert not session_ready.message_on_scrollback(
+        cap, session_ready.new_delivery_marker())
 
 
 def test_clear_input_box_empties_a_tall_draft(emulator_factory, monkeypatch):
