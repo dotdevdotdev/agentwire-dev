@@ -160,6 +160,22 @@ def is_git_repo(path: Path) -> bool:
     return (path / ".git").exists()
 
 
+def worktree_session_name(project_path: Path, name: str) -> str:
+    """tmux session name for a child session on ``project_path``.
+
+    The flat ``{project}-{safe_name}`` convention every child-session verb
+    shares — deliberately NOT ``project/name``, which
+    :func:`parse_session_name` would read as a branch (and which ``cmd_new``
+    would then try to build a worktree for).
+
+    One convention, one implementation: ``agentwire helper`` (#838) calls
+    this, and ``session_cli.cmd_worktree`` inlines a byte-identical copy that
+    can collapse to this call whenever that file is free to edit.
+    """
+    safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
+    return f"{Path(project_path).name}-{safe_name}"
+
+
 def ensure_worktree(
     project_path: Path,
     branch: str,
