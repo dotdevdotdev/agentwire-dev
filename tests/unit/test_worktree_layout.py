@@ -20,28 +20,34 @@ def iso_registry(tmp_path, monkeypatch):
 
 
 # --- _resolve_worktree_entry: fallback (registry miss) path construction ---
+#
+# The conventional path is only ever a LAST-RESORT GUESS, flagged
+# source="convention" (#855) so a mutating caller can refuse it.
 
 class TestResolveFallback:
     def test_short_name(self, tmp_path, iso_registry):
         project = tmp_path / "myapp"
         wt_dir = tmp_path / "worktrees"
-        session, path = _resolve_worktree_entry("fix-bug", project, wt_dir)
-        assert session == "myapp-fix-bug"
-        assert path == wt_dir / "myapp" / "fix-bug"
+        ref = _resolve_worktree_entry("fix-bug", project, wt_dir)
+        assert ref.session == "myapp-fix-bug"
+        assert ref.path == wt_dir / "myapp" / "fix-bug"
+        assert ref.source == "convention"
+        assert not ref.found
 
     def test_full_session_name_strips_project_prefix(self, tmp_path, iso_registry):
         project = tmp_path / "myapp"
         wt_dir = tmp_path / "worktrees"
-        session, path = _resolve_worktree_entry("myapp-fix-bug", project, wt_dir)
-        assert session == "myapp-fix-bug"
-        assert path == wt_dir / "myapp" / "fix-bug"
+        ref = _resolve_worktree_entry("myapp-fix-bug", project, wt_dir)
+        assert ref.session == "myapp-fix-bug"
+        assert ref.path == wt_dir / "myapp" / "fix-bug"
+        assert ref.source == "convention"
 
     def test_unsafe_chars_sanitized(self, tmp_path, iso_registry):
         project = tmp_path / "myapp"
         wt_dir = tmp_path / "worktrees"
-        session, path = _resolve_worktree_entry("feat/auth v2", project, wt_dir)
-        assert session == "myapp-feat-auth-v2"
-        assert path == wt_dir / "myapp" / "feat-auth-v2"
+        ref = _resolve_worktree_entry("feat/auth v2", project, wt_dir)
+        assert ref.session == "myapp-feat-auth-v2"
+        assert ref.path == wt_dir / "myapp" / "feat-auth-v2"
 
     def test_registry_entry_wins_over_convention(self, tmp_path, iso_registry):
         project = tmp_path / "myapp"
@@ -50,9 +56,20 @@ class TestResolveFallback:
         custom = tmp_path / "elsewhere" / "fix-bug"
         reg.register(project, branch="fix-bug", session="myapp-fix-bug",
                      base="main", worktree_path=custom)
-        session, path = _resolve_worktree_entry("fix-bug", project, wt_dir)
-        assert session == "myapp-fix-bug"
-        assert path == custom
+        ref = _resolve_worktree_entry("fix-bug", project, wt_dir)
+        assert ref.session == "myapp-fix-bug"
+        assert ref.path == custom
+        assert ref.source == "registry"
+        assert ref.found
+
+    def test_registry_entry_carries_branch_base_and_topology(self, tmp_path, iso_registry):
+        project = tmp_path / "myapp"
+        project.mkdir()
+        reg.register(project, branch="fix-bug", session="myapp", base="develop",
+                     worktree_path=tmp_path / "elsewhere" / "fix-bug",
+                     kind="worker", topology="pane")
+        ref = _resolve_worktree_entry("fix-bug", project, tmp_path / "worktrees")
+        assert (ref.branch, ref.base, ref.topology) == ("fix-bug", "develop", "pane")
 
 
 # --- _cleanup_empty_project_dir ---

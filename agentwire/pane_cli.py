@@ -856,10 +856,14 @@ def cmd_spawn(args) -> int:
 
     worktree_path = None
 
-    # Handle --branch: create worktree for isolated work
+    # Handle --branch: create worktree for isolated work. The owning session is
+    # passed explicitly so the registry entry (#837) names the session this
+    # pane lives in rather than guessing from the pane's own environment.
     if branch:
         try:
-            worktree_path = pane_manager.create_worker_worktree(branch, cwd)
+            worktree_path = pane_manager.create_worker_worktree(
+                branch, cwd, session=session or pane_manager.get_current_session(),
+            )
             cwd = worktree_path
             if not json_mode:
                 print(f"Created worktree at {worktree_path}")

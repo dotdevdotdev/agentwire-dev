@@ -8,12 +8,14 @@ launch stubbed out so the tests stay hermetic.
 import json
 import subprocess
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
 from agentwire import session_cli as m
 from agentwire import worktree_registry as reg
 from agentwire.config import Config, WorktreeConfig
+from agentwire.worktree import find_git_worktree, main_worktree
 
 
 def _git(repo, *a):
@@ -963,3 +965,156 @@ def test_gc_merged_alone_runs_as_standalone_action(tmp_path, monkeypatch, wt_env
     rc = _run(monkeypatch, cfg, gc_merged=True, project=str(clone))
     assert rc == 0
     assert reg.entries(clone.resolve()) == []
+
+
+# --- #855: the worktree path comes from GIT, never from a convention ---
+
+def _worktree_at(clone, path, branch):
+    """Create a real worktree at an arbitrary path (i.e. NOT the convention)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _git(clone, "worktree", "add", "-b", branch, str(path))
+    return path
+
+
+def test_remove_fails_loudly_when_nothing_resolves(tmp_path, monkeypatch, wt_env, capsys):
+    """The #855 false success: --remove derived the conventional path, found
+    nothing there, and still printed a removal. Nothing to remove must be a
+    LOUD failure — an operator who believes a teardown happened never goes
+    looking for the surviving session/worktree/branch."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    cfg = _config(tmp_path / "worktrees")
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="never-existed", project=str(clone), remove=True)
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is False
+    assert "nothing removed" in payload["error"]
+
+
+def test_remove_finds_worktree_at_the_other_path_convention(tmp_path, monkeypatch, wt_env):
+    """A worktree under `~/projects/<project>-worktrees/<name>/` (the OTHER
+    live convention) must be found and removed — #855's exact scenario, where
+    the `~/worktrees/<project>/<name>/` derivation matched nothing."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    cfg = _config(tmp_path / "worktrees")  # configured convention: NOT where it lives
+    other = _worktree_at(clone, tmp_path / "clone-repo-worktrees" / "fix-851", "fix-851")
+    assert other.exists()
+
+    rc = _run(monkeypatch, cfg, name="fix-851", project=str(clone), remove=True, json=False)
+    assert rc == 0
+    assert not other.exists()
+    assert find_git_worktree(clone, path=other) is None
+
+
+def test_remove_reports_the_real_path_not_the_derived_one(tmp_path, monkeypatch, wt_env, capsys):
+    """The success line must name the path git knows, not a reconstruction."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    cfg = _config(tmp_path / "worktrees")
+    other = _worktree_at(clone, tmp_path / "elsewhere" / "odd-place", "odd-place")
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="odd-place", project=str(clone), remove=True)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert Path(payload["path"]).resolve() == other.resolve()
+    assert payload["resolved_by"] == "git"
+    assert payload["worktree_existed"] is True
+
+
+def test_remove_heals_a_registry_entry_whose_recorded_path_is_stale(tmp_path, monkeypatch, wt_env):
+    """Registry says one path, git says another → git wins. The registry is
+    agentwire's bookkeeping; git is ground truth."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    cfg = _config(tmp_path / "worktrees")
+    real = _worktree_at(clone, tmp_path / "real-place" / "drifted", "drifted")
+    reg.register(clone.resolve(), branch="drifted", session="clone-repo-drifted",
+                 base="develop", worktree_path=tmp_path / "worktrees" / "clone-repo" / "drifted")
+
+    ref = m._resolve_worktree_entry("drifted", clone.resolve(), tmp_path / "worktrees")
+    assert ref.path.resolve() == real.resolve()
+    assert ref.source == "registry"
+
+    assert _run(monkeypatch, cfg, name="drifted", project=str(clone), remove=True) == 0
+    assert not real.exists()
+
+
+def test_status_says_not_found_instead_of_showing_a_guess(tmp_path, monkeypatch, wt_env, capsys):
+    """--status on an unknown name must not print a guessed path as if it were
+    this worktree's real (merely missing) location."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    cfg = _config(tmp_path / "worktrees")
+
+    capsys.readouterr()
+    rc = _run(monkeypatch, cfg, name="ghost", project=str(clone), status=True, json=False)
+    assert rc == 0
+    assert "No worktree found for 'ghost'" in capsys.readouterr().out
+
+
+def test_registry_records_the_path_git_reports(tmp_path, monkeypatch, wt_env):
+    """Registration goes through register_worktree, which asks git — so the
+    recorded path is already canonical and later lookups compare like with
+    like (on macOS, /var vs /private/var)."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    assert _run(monkeypatch, _config(wt_dir), name="canon", project=str(clone)) == 0
+
+    recorded = Path(reg.entries(clone.resolve())[0]["worktree_path"])
+    assert recorded == find_git_worktree(clone, branch="canon")["path"]
+
+
+def test_main_checkout_is_never_resolvable_as_a_worktree(tmp_path, monkeypatch, wt_env):
+    """Resolution must never select the repo's own working copy — a caller
+    that also kills a session or deletes a branch off the 'resolved' entry
+    would be acting on the main checkout."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    assert find_git_worktree(clone, path=clone) is None
+    assert find_git_worktree(clone, branch="develop") is None
+    assert find_git_worktree(clone, name="clone-repo") is None
+    assert main_worktree(clone).resolve() == clone.resolve()
+
+
+# --- #837: `agentwire new -s project/branch` registers too ---
+
+def test_cmd_new_worktree_session_is_registered(tmp_path, monkeypatch):
+    """The scheduler's worktree dispatch shells out to exactly this path, so
+    an unregistered `new` meant every scheduled worktree was invisible to
+    --list/--dangling/--prune."""
+    monkeypatch.setattr(reg, "REGISTRY_DIR", tmp_path / "registry")
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    (projects_dir / "clone-repo").symlink_to(clone)
+
+    monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
+    monkeypatch.setattr(m, "load_config", lambda *a, **k: {
+        "projects": {"dir": str(projects_dir), "worktrees": {"suffix": "-worktrees"}},
+    })
+    monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
+    monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
+    monkeypatch.setattr(m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
+    monkeypatch.setattr(m, "build_agent_command",
+                        lambda *a, **k: Namespace(command="true", env={}, temp_file=None))
+    monkeypatch.setattr(m, "_launch_tmux_session",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+    monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda *a, **k: None)
+
+    rc = m.cmd_new(Namespace(
+        session="clone-repo/sched-task", path=None, force=False, json=True,
+        base="develop", pull_first=True, roles=None, no_soul=True, bare=False,
+        prompted=False, kind="orchestrator", posture=None, model=None, env=None,
+        instructions=None, persist=False, first_message=None, created_by=None,
+        caller_session=None, no_cohort=True, worktree_topology=None,
+    ))
+    assert rc == 0
+
+    entries = reg.entries(clone.resolve())
+    assert [e["branch"] for e in entries] == ["sched-task"]
+    assert entries[0]["session"] == "clone-repo/sched-task"
+    assert entries[0]["base"] == "develop"
+    assert entries[0]["topology"] == "worktree"
+    # Recorded at the path git reports, not a string-built one.
+    assert Path(entries[0]["worktree_path"]) == find_git_worktree(clone, branch="sched-task")["path"]

@@ -40,7 +40,11 @@ Placeholders: `{name}` (verbatim), `{slug}` (slugified — lowercased, hyphenate
 
 ## Branch↔session registry
 
-agentwire keeps a small **local, per-repo registry** (one JSON file per repo under `~/.agentwire/worktrees/`, keyed by branch) recording `branch → session, base, worktree path, created-at`. It's populated on spawn and is **agentwire-owned local state — never provider data**. The files are plain JSON and hand-editable.
+agentwire keeps a small **local, per-repo registry** (one JSON file per repo under `~/.agentwire/worktrees/`, keyed by branch) recording `branch → session, base, worktree path, created-at, kind, topology`. It's populated on spawn and is **agentwire-owned local state — never provider data**. The files are plain JSON and hand-editable.
+
+**Every creation site registers (#837).** Worktree creation used to live in five places with only `agentwire worktree` registering, so `agentwire spawn --branch`, `agentwire new -s project/branch` (which every scheduler worktree dispatch shells out to), `recreate`, and `fork` each produced a real git worktree that `--list`/`--dangling`/`--prune`/`--remove` could not see — an orphan by construction. They now all route through one helper (`worktree.create_and_register_worktree`), and registration is idempotent, so re-running a creation *heals* a missing entry rather than duplicating it.
+
+**`topology` distinguishes the two shapes.** `worktree` means the recorded `session` **is** this worktree's session. `pane` means it's a worker pane's isolated branch from `agentwire spawn --branch`, where `session` is the **owning** session (whose pane 0 is an unrelated orchestrator) — so several pane entries legitimately share one session name, teardown never kills it, and `--dangling` skips them (a pane worker's parent is pane 0 of that same live session, so it can't be dangling). `--list` tags them `[pane worker]`.
 
 ```bash
 agentwire worktree --list          # this repo's worktree sessions (live / orphan / stale)
@@ -49,16 +53,30 @@ agentwire worktree --remove name   # kill the session + remove the worktree + br
 agentwire worktree --prune         # drop entries whose worktree is gone + `git worktree prune`
 ```
 
-`--list` annotates each entry: **live** (tmux session running), **orphan** (worktree on disk, no session), **stale** (registry entry, worktree gone). `--remove` is the cleanup/recovery path; it still works on hand-created worktrees not in the registry by falling back to the conventional `<worktree_dir>/<project>/<name>/` layout. Removing (or pruning) a project's last worktree also removes the now-empty `<worktree_dir>/<project>/` dir.
+`--list` annotates each entry: **live** (tmux session running), **orphan** (worktree on disk, no session), **stale** (registry entry, worktree gone). Removing (or pruning) a project's last worktree also removes the now-empty `<worktree_dir>/<project>/` dir.
+
+### Paths come from git, never from the convention (#855)
+
+`--remove`/`--status` resolve a name to a worktree by **asking git** (`git worktree list --porcelain`), in this order: registry entry (cross-checked against git, and *healed* to git's path if the recorded one drifted) → git's own worktree list → the documented layout as a last, explicitly-flagged guess.
+
+This matters because the layout is a *default*, not a guarantee: `~/worktrees/<project>/<name>/` and `~/projects/<project>-worktrees/<name>/` are both live in the wild, and a hand-created worktree can sit anywhere. `--remove` used to reconstruct the conventional path, find nothing there, and **print a success line anyway** — so an operator believed a teardown had happened while the session, worktree and branch all survived, and the #756 merged-branch safety checks were skipped along with everything else.
+
+Now, when nothing real resolves, `--remove` **fails loudly** (non-zero exit, `success: false`) and lists the worktrees git *does* know for that repo, instead of tearing down a guess. The JSON result carries `resolved_by` (`registry` / `git` / `convention`) and `worktree_existed`, so the human line says "no worktree at X (already gone)" rather than claiming a removal that didn't happen. `--status` likewise says "no worktree found" instead of printing a guessed path as though it were a real-but-missing one.
+
+Session lookup is convention-blind too: the owning session is found by matching a live tmux pane's working directory against the resolved worktree path first, falling back to the `{project}-{name}` and `{project}/{name}` forms — #855's false success also named the wrong session (`agentwire-dev-fix-851-852` for a live `agentwire-dev/fix-851-852`).
 
 ### Dangling PRs — a different kind of orphan (#716)
 
 `--list`'s "orphan" above means a **dead** session with a worktree dir still on disk. `agentwire worktree --dangling` (and `agentwire doctor`) flag the opposite failure: a **LIVE worker session** with an OPEN PR and no live parent — the concrete shape from #716, where a rooted-but-still-subordinate session correctly refuses to self-merge its own green PR, so it just dangles with nothing positioned to review/merge it. Orchestrator-kind entries are excluded entirely — a durable orchestrator roots by design and is itself the reviewer/merger, so a parentless orchestrator with an open PR is healthy, not dangling. It's a shallow "has any live parent" check (recorded creator, or the `.agentwire.yml parent:` fallback — the same precedence prompt-routing already uses) via `gh pr view <branch>` per live entry, not a full orchestrator-role verification of that parent (that's not durably stored anywhere and is out of scope — the deferred merge-authority-per-edge model is the eventual fuller fix).
 
+`topology: pane` entries are skipped as well (#837) — a worker pane's parent *is* pane 0 of the very session on its entry, so the liveness gate already proves the parent is live.
+
 ```bash
 agentwire worktree --dangling        # this repo
 agentwire worktree --dangling --all  # every repo
 ```
+
+`agentwire doctor` also sweeps for the plain **orphan** shape now that every creation site registers: a worktree still on disk whose owning session is gone. It reports only — teardown stays with `--remove`/`--prune`, where the #756 merged-branch guards live.
 
 ### Teardown is atomic (#717)
 

@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import chrome_tabs, pane_manager, services, worktree_registry
@@ -59,12 +60,15 @@ from .roles import (
 )
 from .worktree import (
     apply_naming,
+    create_and_register_worktree,
     default_base_branch,
-    ensure_worktree,
+    find_git_worktree,
     git_root,
     is_registered_worktree,
     is_valid_branch_name,
+    linked_git_worktrees,
     parse_session_name,
+    register_worktree,
     remove_worktree,
     worktree_status,
 )
@@ -325,7 +329,14 @@ def cmd_new(args) -> int:
     pull_first = True if _pull_first is None else _pull_first
 
     def _spawn_worktree(project_path: Path, session_path: Path) -> tuple[bool, str | None]:
-        """Fetch origin/<base> if requested, then create worktree starting at that ref."""
+        """Fetch origin/<base> if requested, then create + REGISTER the worktree.
+
+        Routed through ``create_and_register_worktree`` (#837) so a worktree
+        session created by `agentwire new -s project/branch` — including every
+        scheduler worktree dispatch, which shells out to exactly this — is
+        visible to `worktree --list`/`--dangling`/`--prune`/`--remove` instead
+        of being an orphan by construction.
+        """
         worktree_commit: str | None = None
         if pull_first:
             fetch = subprocess.run(
@@ -338,16 +349,17 @@ def cmd_new(args) -> int:
                 stderr = (fetch.stderr or fetch.stdout or "").strip()
                 return False, f"git fetch origin {base_branch} failed: {stderr}"
             worktree_commit = f"origin/{base_branch}"
-        ok = ensure_worktree(
+        ok, err = create_and_register_worktree(
             project_path,
-            branch,
-            session_path,
+            branch=branch,
+            worktree_path=session_path,
+            session=session_name,
+            base=base_branch,
+            kind=kind,
             auto_create_branch=auto_create_branch,
             commit=worktree_commit,
         )
-        if not ok:
-            return False, f"Failed to create worktree for branch '{branch}' in {project_path}"
-        return True, None
+        return (True, None) if ok else (False, err)
 
     if path and branch and worktrees_enabled:
         # Path + branch: use provided path as main repo, create worktree from it
@@ -789,6 +801,10 @@ def cmd_recreate(args) -> int:
         # Force remove if git worktree remove still left it on disk
         if worktree_path.exists():
             shutil.rmtree(worktree_path, ignore_errors=True)
+        # Drop the old registry entry — Step 4 re-registers under the fresh
+        # timestamped branch, and a leftover entry pointing at the discarded
+        # branch would show up in --list/--dangling as a live worktree.
+        worktree_registry.unregister(project_path, worktree_path=worktree_path)
 
     # Step 3: Pull latest on main repo
     if project_path.exists():
@@ -803,14 +819,17 @@ def cmd_recreate(args) -> int:
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         new_branch = f"{branch}-{timestamp}"
 
-        success = ensure_worktree(
+        ok, err = create_and_register_worktree(
             project_path,
-            new_branch,
-            worktree_path,
+            branch=new_branch,
+            worktree_path=worktree_path,
+            session=session_name,
+            base=getattr(args, 'base', None),
+            kind=derive_session_kind(True, getattr(args, 'kind', None)),
             auto_create_branch=True,
         )
-        if not success:
-            return _output_result(False, json_mode, f"Failed to create worktree for branch '{new_branch}'")
+        if not ok:
+            return _output_result(False, json_mode, err)
 
     session_path = worktree_path if branch else project_path
 
@@ -1014,7 +1033,7 @@ def cmd_worktree(args) -> int:
             reattach_branch = name
         else:
             reattach_branch = templated_branch
-        worktree_registry.register(
+        register_worktree(
             project_path, branch=reattach_branch,
             session=session_name, base=default_base,
             worktree_path=worktree_path, kind=effective_kind,
@@ -1125,8 +1144,11 @@ def cmd_worktree(args) -> int:
             _cleanup_empty_project_dir(worktree_path, worktree_dir)
             return _output_result(False, json_mode, f"Failed to create branch '{new_branch}': {branch_result.stderr.strip()}")
 
-    # Record the branch↔session association in the local registry.
-    worktree_registry.register(
+    # Record the branch↔session association in the local registry, at the path
+    # GIT reports for it (#855) — this flow builds the worktree itself (detach
+    # at the base ref, then `checkout -b`), so it registers directly rather
+    # than through create_and_register_worktree.
+    register_worktree(
         project_path,
         branch=new_branch if new_branch else (name if use_existing else None),
         session=session_name,
@@ -1156,6 +1178,21 @@ def cmd_orchestrator(args) -> int:
     """
     args.kind = 'orchestrator'
     return cmd_worktree(args)
+
+
+def _format_worktree_row(r: dict) -> str:
+    """Two-line human rendering of one registry entry — shared by --list/--watch.
+
+    A ``pane`` entry (#837) is tagged, because its ``session`` column names the
+    OWNING session rather than a session that IS this worktree, and its "live"
+    badge therefore reads on that owner.
+    """
+    live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
+    dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
+    tag = "  [pane worker]" if r.get("topology") == "pane" else ""
+    return (f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} "
+            f"base={r.get('base')}  {_git_badge(r.get('git'))}{tag}{dead_warn}\n"
+            f"      {r.get('worktree_path')}")
 
 
 def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
@@ -1191,10 +1228,7 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
         return 0
 
     for r in rows:
-        live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
-        dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
-        print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}{dead_warn}")
-        print(f"      {r.get('worktree_path')}")
+        print(_format_worktree_row(r))
     return 0
 
 
@@ -1233,10 +1267,7 @@ def _worktree_watch(args, project_path: Path, json_mode: bool) -> int:
                 if not rows:
                     print("No worktree sessions registered.")
                 for r in rows:
-                    live = "live" if r["alive"] else ("orphan" if r["exists"] else "stale")
-                    dead_warn = " !! DEAD-LETTERED REPORT-BACK !!" if r.get("dead_reports") else ""
-                    print(f"  {r.get('session'):<32} {live:<7} branch={r.get('branch')} base={r.get('base')}  {_git_badge(r.get('git'))}{dead_warn}")
-                    print(f"      {r.get('worktree_path')}")
+                    print(_format_worktree_row(r))
                 print("\nPress Ctrl+C to stop.")
                 sys.stdout.flush()
             time.sleep(5)
@@ -1267,23 +1298,139 @@ def _git_badge(git: dict | None) -> str:
     return " ".join(parts)
 
 
-def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -> tuple[str, Path]:
-    """Resolve a name/session/branch to (session_name, worktree_path).
+@dataclass
+class WorktreeRef:
+    """A resolved worktree target, plus how confident we are that it's real.
 
-    Registry first; falls back to the conventional layout — session
-    ``{project}-{name}``, worktree ``worktree_dir/<project>/<name>/`` — so
-    recovery still works on hand-created or pre-registry worktrees.
+    ``source`` is the whole point (#855):
+
+    - ``"registry"`` — an agentwire registry entry, cross-checked against git.
+    - ``"git"``      — git itself knows this worktree (no registry entry, or
+                       the entry's recorded path was stale).
+    - ``"convention"`` — **nothing real was found.** The path is a guess from
+                       the documented layout. Read-only callers may show it;
+                       any caller that mutates MUST refuse, because acting on
+                       a guessed path is exactly how a teardown "succeeds"
+                       while removing nothing.
+    """
+
+    session: str
+    path: Path
+    branch: str | None = None
+    base: str | None = None
+    source: str = "convention"
+    entry: dict | None = None
+    topology: str = "worktree"
+
+    @property
+    def found(self) -> bool:
+        """True when git or the registry actually knows this worktree."""
+        return self.source != "convention"
+
+
+def _sessions_by_path() -> dict[str, str]:
+    """Map resolved pane working directory → tmux session name.
+
+    Lets a worktree path find *its* session regardless of naming convention —
+    ``{project}-{name}`` and ``{project}/{name}`` are both live in the wild,
+    and #855's false success came partly from guessing the wrong one.
+    """
+    out: dict[str, str] = {}
+    result = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return out
+    for line in result.stdout.splitlines():
+        sess, _, pane_path = line.partition("\t")
+        if not sess or not pane_path:
+            continue
+        try:
+            out.setdefault(str(Path(pane_path).resolve()), sess)
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+def _session_for_worktree(worktree_path: Path, project_name: str, name: str) -> str:
+    """Best available session name for a worktree, most authoritative first.
+
+    1. A live tmux session whose pane cwd IS the worktree (convention-blind).
+    2. A live session among the known naming conventions.
+    3. The flat ``{project}-{name}`` default — nothing live to act on anyway.
+    """
+    try:
+        resolved = str(worktree_path.resolve())
+    except (OSError, RuntimeError):
+        resolved = str(worktree_path)
+    by_path = _sessions_by_path().get(resolved)
+    if by_path:
+        return by_path
+
+    flat = f"{project_name}-{name}"
+    for candidate in (flat, f"{project_name}/{name}", name):
+        if tmux_session_exists(candidate):
+            return candidate
+    return flat
+
+
+def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -> WorktreeRef:
+    """Resolve a name/session/branch to a :class:`WorktreeRef` by asking GIT.
+
+    Order: registry entry (verified against git) → git's own worktree list →
+    the documented convention as a last, explicitly-flagged guess.
+
+    A registry entry whose recorded ``worktree_path`` no longer matches what
+    git reports is *healed* to git's path rather than trusted — the registry
+    is agentwire's bookkeeping, git is the ground truth (#855).
     """
     project_name = project_path.name
-    candidates = {name, f"{project_name}-{name}"}
-    for e in worktree_registry.entries(project_path):
-        if e.get("session") in candidates or e.get("branch") == name or Path(e.get("worktree_path", "")).name in candidates:
-            return e.get("session"), Path(e.get("worktree_path"))
+    candidates = {name, f"{project_name}-{name}", f"{project_name}/{name}"}
 
+    entry = None
+    for e in worktree_registry.entries(project_path):
+        if (e.get("session") in candidates or e.get("branch") == name
+                or Path(e.get("worktree_path", "")).name in candidates):
+            entry = e
+            break
+
+    if entry is not None:
+        recorded = Path(entry.get("worktree_path", ""))
+        found = find_git_worktree(
+            project_path, path=recorded, branch=entry.get("branch"),
+        )
+        path = found["path"] if found else recorded
+        return WorktreeRef(
+            session=entry.get("session") or _session_for_worktree(path, project_name, name),
+            path=path,
+            branch=entry.get("branch") or (found or {}).get("branch"),
+            base=entry.get("base"),
+            source="registry",
+            entry=entry,
+            topology=entry.get("topology") or "worktree",
+        )
+
+    # No registry entry — ask git directly. Covers hand-created worktrees,
+    # pre-registry ones, and any layout that isn't the documented default.
     safe_name = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
     if safe_name.startswith(f"{project_name}-"):
         safe_name = safe_name[len(project_name) + 1:]
-    return f"{project_name}-{safe_name}", worktree_dir / project_name / safe_name
+
+    found = find_git_worktree(project_path, branch=name, name=name)
+    if found is None and safe_name != name:
+        found = find_git_worktree(project_path, branch=safe_name, name=safe_name)
+    if found is not None:
+        return WorktreeRef(
+            session=_session_for_worktree(found["path"], project_name, safe_name),
+            path=found["path"], branch=found["branch"], source="git",
+        )
+
+    return WorktreeRef(
+        session=f"{project_name}-{safe_name}",
+        path=worktree_dir / project_name / safe_name,
+        source="convention",
+    )
 
 
 def _cleanup_empty_project_dir(worktree_path: Path, worktree_dir: Path) -> None:
@@ -1308,19 +1455,25 @@ def _worktree_status(args, project_path: Path, worktree_dir: Path, json_mode: bo
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire worktree --status <name|session>")
 
-    session_name, worktree_path = _resolve_worktree_entry(name, project_path, worktree_dir)
-    git = worktree_status(worktree_path)
+    ref = _resolve_worktree_entry(name, project_path, worktree_dir)
+    git = worktree_status(ref.path)
 
     if json_mode:
-        _output_json({"success": True, "session": session_name,
-                      "worktree_path": str(worktree_path),
-                      "alive": tmux_session_exists(session_name), **git})
+        _output_json({"success": True, "session": ref.session,
+                      "worktree_path": str(ref.path), "resolved_by": ref.source,
+                      "alive": tmux_session_exists(ref.session), **git})
         return 0
 
     if not git.get("exists"):
-        print(f"Worktree path missing: {worktree_path}")
+        # Say plainly that nothing was found, rather than reporting a guessed
+        # path as if it were this worktree's real (merely missing) location.
+        if not ref.found:
+            print(f"No worktree found for '{name}' in {project_path} "
+                  f"(not in the registry or `git worktree list`)")
+        else:
+            print(f"Worktree path missing: {ref.path}")
         return 0
-    print(f"{session_name}  branch={git.get('branch')}  {_git_badge(git)}")
+    print(f"{ref.session}  branch={git.get('branch')}  {_git_badge(git)}")
     return 0
 
 
@@ -1359,6 +1512,9 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                 result = _teardown_entry(
                     project_path, worktree_dir, e["session"], wt_path,
                     e["branch"], e.get("base"), force_branch=True,
+                    # A pane entry's session is the OWNING orchestrator (#837) —
+                    # GC'ing a merged worker branch must not kill it.
+                    kill_session=e.get("topology") != "pane",
                 )
                 if result["success"]:
                     gc_merged_out.append(e["session"])
@@ -1419,12 +1575,17 @@ def scan_dangling_worktrees(rows: list[dict]) -> list[dict]:
     typically never even in this registry (only worktree-topology sessions
     are registered here); a reviewer on worktree topology just falls through
     the same PR-existence check as any other never-PRing entry.
+
+    ``topology == "pane"`` entries (#837) are SKIPPED too: a worker pane's
+    parent is pane 0 of the very session recorded on the entry, so the
+    liveness check below already proves the parent is live whenever the
+    entry qualifies at all — it can never be dangling by this definition.
     """
     if not shutil.which("gh"):
         return []
     dangling = []
     for r in rows:
-        if r.get("kind") == "orchestrator":
+        if r.get("kind") == "orchestrator" or r.get("topology") == "pane":
             continue
         session = r.get("session", "")
         branch = r.get("branch")
@@ -1591,7 +1752,7 @@ def _delete_branch_if_safe(
 def _teardown_entry(
     project_path: Path, worktree_dir: Path, session_name: str, worktree_path: Path,
     branch: str | None, base: str | None, *, keep_branch: bool = False, force_branch: bool = False,
-    close_pr_branch: bool = False,
+    close_pr_branch: bool = False, kill_session: bool = True,
 ) -> dict:
     """Core atomic teardown: force-remove the worktree + prune, kill session,
     unregister, best-effort branch cleanup. Shared by --remove and
@@ -1617,8 +1778,17 @@ def _teardown_entry(
     Killing first would leave a live session's worktree+branch orphaned on
     disk with no session left to notice, on any removal failure (bad
     project_path, a stuck worktree, ...) (#740).
+
+    ``kill_session=False`` for a "pane"-topology entry (#837): its
+    ``session_name`` is the OWNING session, whose pane 0 is an unrelated
+    orchestrator — killing it would take down the wrong thing entirely.
+
+    ``worktree_existed`` in the result distinguishes "removed it" from
+    "there was nothing at that path", so no caller can print a removal that
+    didn't happen (#855).
     """
     was_registered = is_registered_worktree(project_path, worktree_path)
+    worktree_existed = worktree_path.exists()
 
     # Force-remove the git worktree, then prune admin files either way.
     _, remove_error = remove_worktree(project_path, worktree_path, force=True)
@@ -1632,10 +1802,11 @@ def _teardown_entry(
     if worktree_path.exists():
         reason = remove_error or "worktree directory still present after `git worktree remove --force`"
         return {"success": False, "session": session_name, "path": str(worktree_path),
-                "killed": False, "worktree_removed": False, "error": reason}
+                "killed": False, "worktree_removed": False,
+                "worktree_existed": worktree_existed, "error": reason}
 
     killed = False
-    if tmux_session_exists(session_name):
+    if kill_session and tmux_session_exists(session_name):
         subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
         killed = True
 
@@ -1659,35 +1830,73 @@ def _teardown_entry(
     orphaned_tabs = chrome_tabs.clear(session_name)
 
     return {"success": True, "session": session_name, "path": str(worktree_path),
-            "killed": killed, "worktree_removed": True,
+            "killed": killed, "worktree_removed": worktree_existed,
+            "worktree_existed": worktree_existed,
             "branch": branch, "branch_deleted": branch_deleted, "branch_note": branch_note,
             "orphaned_tabs": orphaned_tabs, "hard_deleted_orphan": hard_deleted_orphan}
 
 
+def _unresolved_remove_error(name: str, project_path: Path, ref: WorktreeRef) -> str:
+    """Message for a --remove that resolved to nothing real (#855).
+
+    Names what git *does* know, so the operator can see immediately whether
+    they're in the wrong repo or just used the wrong name — the alternative
+    (a success line for a no-op) is how a teardown reports a session, worktree
+    and branch gone while all three are still alive.
+    """
+    known = linked_git_worktrees(project_path)
+    if known:
+        listing = "\n".join(
+            f"  {e['path']}  branch={e['branch'] or '(detached)'}" for e in known
+        )
+        hint = f"git knows these worktrees for {project_path}:\n{listing}"
+    else:
+        hint = f"git reports no linked worktrees for {project_path}."
+    return (
+        f"No worktree found for '{name}' in {project_path} — nothing removed. "
+        f"(Neither the agentwire registry nor `git worktree list` knows it; the "
+        f"conventional path {ref.path} does not exist.) {hint}"
+    )
+
+
 def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bool) -> int:
     """Teardown: force-remove the worktree + prune, kill the session, unregister,
-    and (best-effort) delete the branch — one atomic call (#717)."""
+    and (best-effort) delete the branch — one atomic call (#717).
+
+    The target path comes from GIT (via ``_resolve_worktree_entry``), never
+    from string-building the documented convention. When nothing real
+    resolves, this FAILS instead of tearing down a guess — a false success
+    here is the dangerous direction, since the operator then never notices the
+    surviving session/worktree/branch, and the #756 merged-branch safety
+    checks are skipped along with everything else (#855).
+    """
     name = getattr(args, 'name', None)
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire worktree --remove <name|session>")
 
-    session_name, worktree_path = _resolve_worktree_entry(name, project_path, worktree_dir)
-    entry = next((e for e in worktree_registry.entries(project_path) if e.get("session") == session_name), None)
+    ref = _resolve_worktree_entry(name, project_path, worktree_dir)
 
-    # Capture the branch before the worktree disappears. Registry first (set
-    # at creation time); fall back to the worktree's own HEAD for a
-    # hand-created/unregistered worktree so branch cleanup still works.
-    branch = entry.get("branch") if entry else None
-    base = entry.get("base") if entry else None
-    if branch is None and worktree_path.exists():
-        branch = worktree_status(worktree_path).get("branch")
+    # Guessed path + nothing on disk + no live session = nothing to remove.
+    if not ref.found and not ref.path.exists() and not tmux_session_exists(ref.session):
+        return _output_result(False, json_mode, _unresolved_remove_error(name, project_path, ref))
+
+    # Capture the branch before the worktree disappears. Registry/git first
+    # (recorded at creation); fall back to the worktree's own HEAD so branch
+    # cleanup still works for a hand-created worktree.
+    branch = ref.branch
+    base = ref.base
+    if branch is None and ref.path.exists():
+        branch = worktree_status(ref.path).get("branch")
 
     result = _teardown_entry(
-        project_path, worktree_dir, session_name, worktree_path, branch, base,
+        project_path, worktree_dir, ref.session, ref.path, branch, base,
         keep_branch=getattr(args, 'keep_branch', False),
         force_branch=getattr(args, 'force_delete_branch', False),
         close_pr_branch=getattr(args, 'close_pr_branch', False),
+        # A pane entry's session belongs to the orchestrator, not the worktree.
+        kill_session=ref.topology != "pane",
     )
+    result["resolved_by"] = ref.source
 
     if json_mode:
         _output_json(result)
@@ -1695,9 +1904,11 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
         print(f"FAILED to remove worktree at {result['path']}: {result['error']}"
               + (" (session killed)" if result["killed"] else ""))
     else:
+        removal = (f"; worktree {result['path']} removed" if result.get("worktree_existed")
+                   else f"; no worktree at {result['path']} (already gone)")
         msg = (f"Removed worktree session '{result['session']}'"
                + (" (killed live session)" if result["killed"] else "")
-               + f"; worktree {result['path']} removed"
+               + removal
                + (" (git had no registration for it — hard-deleted the leftover directory)"
                   if result.get("hard_deleted_orphan") else ""))
         if result["branch"]:
@@ -1984,26 +2195,34 @@ def cmd_fork(args) -> int:
 
     # Create new worktree from source
     fork_commit = getattr(args, "commit", None) or None
-    success = ensure_worktree(
+    target_session = f"{target_project}/{target_branch}".replace(".", "_")
+    fork_kind = derive_session_kind(True, None)
+    ok, err = create_and_register_worktree(
         source_path,  # Use source as base for the worktree
-        target_branch,
-        target_path,
+        branch=target_branch,
+        worktree_path=target_path,
+        session=target_session,
+        base=source_branch,
+        kind=fork_kind,
         auto_create_branch=True,
         commit=fork_commit,
     )
-    if not success:
-        # Try from project path instead
-        if project_path.exists():
-            success = ensure_worktree(
-                project_path,
-                target_branch,
-                target_path,
-                auto_create_branch=True,
-                commit=fork_commit,
-            )
+    if not ok and project_path.exists():
+        # Retry against the canonical repo — the registry is keyed by repo, so
+        # this also records the entry under the right project.
+        ok, err = create_and_register_worktree(
+            project_path,
+            branch=target_branch,
+            worktree_path=target_path,
+            session=target_session,
+            base=source_branch,
+            kind=fork_kind,
+            auto_create_branch=True,
+            commit=fork_commit,
+        )
 
-    if not success:
-        return _output_result(False, json_mode, f"Failed to create worktree for branch '{target_branch}'")
+    if not ok:
+        return _output_result(False, json_mode, err or f"Failed to create worktree for branch '{target_branch}'")
 
     # Determine posture from --posture flag or source config (before session
     # creation, so we can inject env via `tmux new-session -e K=V`).

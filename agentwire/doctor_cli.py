@@ -476,6 +476,53 @@ def _render_shim_liveness_section() -> int:
     return len(dead)
 
 
+def find_orphaned_worktrees(rows: list[dict]) -> list[dict]:
+    """Registered worktrees still on disk whose owning session is gone (#837).
+
+    ``rows`` are registry entries (``worktree_registry.all_entries()``). An
+    orphan is a directory (and usually a branch) that outlived the session
+    that made it, so nothing is left to notice it — the failure mode
+    ``agentwire spawn --branch`` used to guarantee by never registering at
+    all. Read-only: reports, never removes (``worktree --prune``/``--remove``
+    own that, with the #756 merged-branch guards).
+
+    A "pane"-topology entry keys on its OWNING session, so it is only an
+    orphan once that whole session is gone — an idle-reaped worker pane
+    inside a still-live session is normal, not an orphan.
+    """
+    orphans = []
+    for r in rows:
+        wt_path = r.get("worktree_path") or ""
+        if not wt_path or not Path(wt_path).exists():
+            continue  # stale entry, not an orphan — `--prune` sweeps those
+        if tmux_session_exists(r.get("session", "")):
+            continue
+        orphans.append({
+            "session": r.get("session"), "branch": r.get("branch"),
+            "project": r.get("project"), "worktree_path": wt_path,
+            "topology": r.get("topology") or "worktree",
+        })
+    return orphans
+
+
+def _render_orphaned_worktrees_section() -> int:
+    """Doctor section: on-disk worktrees whose session is dead (#837)."""
+    from . import worktree_registry
+
+    orphans = find_orphaned_worktrees(worktree_registry.all_entries())
+    if not orphans:
+        print("  [ok] No orphaned worktrees found")
+        return 0
+    print(f"  [!!] {len(orphans)} registered worktree(s) on disk with no live session:")
+    for o in orphans:
+        tag = " [pane worker]" if o["topology"] == "pane" else ""
+        print(f"       - {o['session']} branch={o['branch']}{tag}")
+        print(f"         {o['worktree_path']}")
+    print("       Review with `agentwire worktree --list --all`, then tear down with "
+          "`agentwire worktree --remove <name> -p <repo>` (merged-branch guards apply).")
+    return len(orphans)
+
+
 def _scheduler_daemon_started_at() -> float | None:
     """Epoch seconds the scheduler daemon process started, or ``None`` if not running.
 
@@ -1063,6 +1110,16 @@ def cmd_doctor(args) -> int:
             print("       Assign a parent (agentwire msg send / --created-by) or merge/close the PR yourself.")
     except Exception as e:
         print(f"  [..] Could not check for dangling worktree sessions: {e}")
+
+    # 11b. Registered worktrees whose owning session is dead but whose
+    # directory (and branch) survive on disk (#837). Every creation site now
+    # registers, so this sweep finally sees ALL of them — including the worker
+    # worktrees `agentwire spawn --branch` used to create invisibly.
+    print("\nChecking for orphaned worktrees (#837)...")
+    try:
+        issues_found += _render_orphaned_worktrees_section()
+    except Exception as e:
+        print(f"  [..] Could not check for orphaned worktrees: {e}")
 
     # 12. Projects whose inline .agentwire.yml tasks were never migrated to the
     # promoted .agentwire.tasks.yml (#736). The #720/#721 task-split moved where

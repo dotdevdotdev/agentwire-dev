@@ -14,7 +14,8 @@ the repo's absolute path. Each file holds a list of entries:
       "entries": [
         {"branch": "fix-bug", "session": "monorepo-fix-bug",
          "base": "develop", "worktree_path": "/Users/me/worktrees/monorepo/fix-bug",
-         "created_at": "2026-06-14T10:30:00-04:00"}
+         "created_at": "2026-06-14T10:30:00-04:00",
+         "kind": "worker", "topology": "worktree"}
       ]
     }
 
@@ -108,8 +109,14 @@ def register(
     worktree_path: Path,
     created_at: str | None = None,
     kind: str | None = None,
+    topology: str = "worktree",
 ) -> dict:
     """Record (or replace) a worktree session. Idempotent per session/path.
+
+    Prefer ``worktree.register_worktree`` /
+    ``worktree.create_and_register_worktree`` over calling this directly —
+    they record the path git actually reports rather than whatever the
+    caller string-built (#855).
 
     ``kind`` (#716) is the session's ROLE at registration time ("worker" or
     "orchestrator") — recorded so the dangling-PR detector (see
@@ -117,6 +124,14 @@ def register(
     (which structurally can't self-merge and needs a live reviewer) apart
     from a self-rooted orchestrator (full authority, expected to be
     parentless — flagging it as "dangling" would be a false positive).
+
+    ``topology`` (#837) is the orthogonal WHERE axis: "worktree" for a
+    standalone worktree *session* (``session`` names a tmux session that IS
+    this worktree), "pane" for a worker pane's isolated branch created by
+    ``agentwire spawn --branch`` (``session`` names the *owning* session,
+    whose pane 0 is an unrelated orchestrator). Teardown must not kill the
+    session of a "pane" entry — that would take down the orchestrator, not
+    the worker.
 
     The full read-modify-write is held under an exclusive flock so
     concurrent registration processes serialize instead of clobbering.
@@ -131,15 +146,25 @@ def register(
         "worktree_path": str(worktree_path),
         "created_at": created_at,
         "kind": kind,
+        "topology": topology,
     }
     with _locked(path):
         data = _load(path)
         data["project"] = str(Path(project_path).expanduser().resolve())
-        # Drop any prior entry for the same session or worktree path, then append.
+        # Drop any prior entry for the same worktree path, then append. The
+        # session name is a second identity key ONLY for worktree topology,
+        # where one session IS one worktree — a "pane" entry's session is the
+        # OWNING session, and several worker panes legitimately share it, so
+        # deduping those by session would silently evict every branch but the
+        # newest (#837).
         data["entries"] = [
             e for e in data["entries"]
-            if e.get("session") != session
-            and e.get("worktree_path") != str(worktree_path)
+            if e.get("worktree_path") != str(worktree_path)
+            and not (
+                topology == "worktree"
+                and e.get("topology", "worktree") == "worktree"
+                and e.get("session") == session
+            )
         ]
         data["entries"].append(entry)
         _save(path, data)
