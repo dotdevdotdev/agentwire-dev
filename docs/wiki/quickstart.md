@@ -70,6 +70,23 @@ set -g window-size largest
 
 `agentwire doctor` warns if the running tmux server has `focus-events` or `mouse` off.
 
+### Recommended Claude Code status line
+
+The bundled `agentwire/templates/statusline.sh` renders a two-line status line inside every agent pane: **model, directory, branch** on line 1, a full-width context battery on line 2. Same field order as the tmux status bar above, so a session and its workers read the same left-to-right.
+
+Copy it out of the installed package (or your checkout) and make it executable:
+
+```bash
+cp "$(python3 -c 'import agentwire, pathlib; print(pathlib.Path(agentwire.__file__).parent)')/templates/statusline.sh" ~/.claude/statusline.sh
+chmod +x ~/.claude/statusline.sh
+```
+
+Then point Claude Code at it in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "~/.claude/statusline.sh", "padding": 0 }
+```
+
 ---
 
 ## Have the repo cloned? `agentwire dev`
