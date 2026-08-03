@@ -430,6 +430,39 @@ def _create_task_pr(project_path, task, work_branch, last_summary, json_mode) ->
     return pr_url
 
 
+def _pane_diagnosis(session: str, pane_index: int = 0) -> str:
+    """A one-line "what is that pane actually doing" for a readiness failure.
+
+    ``Agent not running in session '<name>'`` on its own is unactionable, and
+    the session it names is usually GONE by the time a human reads it — the
+    zombie reaper kills a bare-shell scheduler session 60s later (#739), so
+    the scrollback that would explain the failure is destroyed before anyone
+    looks. #856 sat unexplained for 17 nightly runs behind exactly that.
+
+    Returns ``pane=<current command>, last: <last non-empty rendered line>``,
+    or ``""`` if tmux can't answer (the caller then reports the bare message).
+    """
+    parts: list[str] = []
+    try:
+        r = subprocess.run(
+            ["tmux", "list-panes", "-t", f"={session}", "-F", "#{pane_current_command}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        cmds = [c for c in r.stdout.strip().splitlines() if c] if r.returncode == 0 else []
+        if cmds:
+            parts.append(f"pane={','.join(cmds)}")
+    except Exception:
+        pass
+    try:
+        capture = pane_manager.capture_pane(session, pane_index, lines=40)
+        tail = [ln.rstrip() for ln in capture.splitlines() if ln.strip()]
+        if tail:
+            parts.append(f"last: {tail[-1].strip()[:200]}")
+    except Exception:
+        pass
+    return ", ".join(parts)
+
+
 def _dispatch_shares_dir(task) -> bool:
     """Whether this dispatch may attach its session to a working dir another
     session already occupies (#854).
@@ -549,10 +582,16 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
             print("Waiting for agent to be ready...")
         from agentwire.session_ready import wait_for_session_ready
         if not wait_for_session_ready(session, timeout=30):
-            # Agent never started — session is dead, bail out
+            # Agent never started — session is dead, bail out. Say WHY while
+            # the pane still exists to be asked (#856): the reaper deletes
+            # the evidence a minute later.
+            diagnosis = _pane_diagnosis(session)
+            message = f"Agent not running in session '{session}'"
+            if diagnosis:
+                message = f"{message} ({diagnosis})"
             if not json_mode:
                 print(f"Agent not ready in session '{session}' after 30s")
-            return _output_result(False, json_mode, f"Agent not running in session '{session}'", exit_code=ENSURE_EXIT_SESSION_ERROR)
+            return _output_result(False, json_mode, message, exit_code=ENSURE_EXIT_SESSION_ERROR)
 
         # Set up work branch if starting_ref is configured
         work_branch = None

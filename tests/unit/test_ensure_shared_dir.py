@@ -6,6 +6,8 @@ always False and any live session sitting in the task's project dir killed every
 dispatch into it.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from agentwire import ensure_cli
@@ -95,3 +97,39 @@ def test_dispatch_passes_allow_shared_dir_for_branchless_task(captured_new_args)
 def test_dispatch_keeps_guard_for_git_task(captured_new_args):
     args = captured_new_args(_task(starting_ref="main"))
     assert args.allow_shared_dir is False
+
+
+class TestPaneDiagnosis:
+    """#856: `Agent not running in session '<name>'` names a session that the
+    zombie reaper deletes 60s later — the message must carry the evidence."""
+
+    def test_reports_pane_command_and_last_line(self, monkeypatch):
+        monkeypatch.setattr(
+            ensure_cli.subprocess, "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="zsh\n"),
+        )
+        monkeypatch.setattr(
+            ensure_cli.pane_manager, "capture_pane",
+            lambda *a, **k: 'cd /tmp/wt && claude \\\n\n  --append-system-prompt "$(</var/f\n',
+        )
+        out = ensure_cli._pane_diagnosis("proj/scheduler-a-1")
+        assert "pane=zsh" in out
+        assert "--append-system-prompt" in out
+
+    def test_degrades_to_empty_when_tmux_cannot_answer(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("no tmux")
+
+        monkeypatch.setattr(ensure_cli.subprocess, "run", boom)
+        monkeypatch.setattr(ensure_cli.pane_manager, "capture_pane", boom)
+        assert ensure_cli._pane_diagnosis("proj/scheduler-a-1") == ""
+
+    def test_long_lines_are_truncated(self, monkeypatch):
+        monkeypatch.setattr(
+            ensure_cli.subprocess, "run",
+            lambda *a, **k: SimpleNamespace(returncode=1, stdout=""),
+        )
+        monkeypatch.setattr(
+            ensure_cli.pane_manager, "capture_pane", lambda *a, **k: "x" * 5000,
+        )
+        assert len(ensure_cli._pane_diagnosis("s")) < 300

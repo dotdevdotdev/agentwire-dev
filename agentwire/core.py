@@ -968,6 +968,28 @@ def _guarded_launch_command(path_str: str, agent_cmd: str | None) -> str:
     return f"{guard} && {agent_cmd}" if agent_cmd else guard
 
 
+# The pane's launch command travels as an ENV VAR, not as keystrokes (#856).
+#
+# `send-keys` fires 0.1s after `tmux new-session`, before the shell has put
+# its tty into raw mode, so the keystrokes land in the tty's CANONICAL-mode
+# input buffer — which is capped at 1024 bytes per line on macOS
+# (MAX_CANON/`N_TTY_BUF_SIZE`; Linux is 4096). Everything past the cap is
+# discarded SILENTLY, and since the launch line ends in
+# `--append-system-prompt "$(</tmp/…)"`, a truncated one is syntactically
+# incomplete: zsh sits at a continuation prompt forever, `claude` never runs,
+# and the session is a bare shell that `wait_for_session_ready` can only
+# report as "Agent not running". #742/#743 grew `_guarded_launch_command` by
+# ~700 chars, which pushed long-named worktree sessions (the scheduler's
+# `scheduler-<task>-<timestamp>`, whose path is interpolated FOUR times) over
+# the cap — deterministically, since the length is a pure function of the
+# session name.
+#
+# tmux `-e` is not keyboard input, so it has no such cap. Sending a fixed
+# ~70-char `eval` line instead makes the launch length-independent.
+LAUNCH_CMD_ENV = "AGENTWIRE_LAUNCH_CMD"
+_LAUNCH_EVAL = f'eval "${{{LAUNCH_CMD_ENV}:?agentwire: launch command not injected}}"'
+
+
 def _launch_tmux_session(
     session_name: str,
     session_path,
@@ -980,9 +1002,14 @@ def _launch_tmux_session(
     The one launch sequence shared by ``new`` / ``recreate`` / ``fork`` (#630):
     `tmux new-session -e K=V` injects *env* into the session environment
     BEFORE the initial shell starts (post-hoc `set-environment` never reaches
-    it), then `send-keys` cd's into place (guarded — see
-    ``_guarded_launch_command``) and, if *agent_cmd* is non-empty, starts the
-    agent after a short settle.
+    it), then `send-keys` runs the guarded launch line (see
+    ``_guarded_launch_command``) which cd's into place and, if *agent_cmd* is
+    non-empty, starts the agent after a short settle.
+
+    That launch line rides in as ``AGENTWIRE_LAUNCH_CMD`` and is `eval`'d by
+    the pane, rather than being typed out in full — see
+    :data:`LAUNCH_CMD_ENV` for why typing it is length-limited and fails
+    silently.
 
     Local (machine_id None): runs subprocess calls with check=True (raises on
     tmux failure) and returns None. Remote: runs one composite shell command
@@ -992,23 +1019,25 @@ def _launch_tmux_session(
 
     path_str = str(session_path)
     launch_cmd = _guarded_launch_command(path_str, agent_cmd)
+    # Copy, never mutate: callers reuse `agent.env` after the launch.
+    launch_env = {**env, LAUNCH_CMD_ENV: launch_cmd}
     if machine_id:
-        env_flags = _build_tmux_env_flags_shell(env)
+        env_flags = _build_tmux_env_flags_shell(launch_env)
         create_cmd = (
             f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(path_str)} {env_flags}&& "
             f"sleep 0.1 && "
-            f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(launch_cmd)} Enter"
+            f"tmux send-keys -t {shlex.quote(session_name)} {shlex.quote(_LAUNCH_EVAL)} Enter"
         )
         return _run_remote(machine_id, create_cmd)
 
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", session_name, "-c", path_str,
-         *_build_tmux_env_flags(env)],
+         *_build_tmux_env_flags(launch_env)],
         check=True,
     )
     time.sleep(0.1)
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, launch_cmd, "Enter"],
+        ["tmux", "send-keys", "-t", session_name, _LAUNCH_EVAL, "Enter"],
         check=True,
     )
     return None

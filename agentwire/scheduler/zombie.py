@@ -80,7 +80,29 @@ def scan() -> list[dict]:
     return zombies
 
 
-def _notify(session: str, branch: str, command: str) -> None:
+def _pane_tail(session: str, lines: int = 3) -> str:
+    """The last few rendered lines of a zombie's pane, joined with ' / '.
+
+    Captured BEFORE the kill, because the kill is what destroys the only
+    record of why the launch never reached its agent (#856: a launch line
+    truncated at the tty's canonical-input cap left an unterminated
+    `--append-system-prompt "$(<…` sitting at a continuation prompt — visible
+    here, invisible everywhere else). Best-effort: "" when tmux can't answer.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", f"={session}", "-p", "-S", "-40"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return ""
+        rendered = [ln.rstrip() for ln in result.stdout.splitlines() if ln.strip()]
+        return " / ".join(ln.strip()[:200] for ln in rendered[-lines:])
+    except Exception:
+        return ""
+
+
+def _notify(session: str, branch: str, command: str, pane_tail: str = "") -> None:
     """Alert on a reaped zombie session (#739 + #743).
 
     Always posts a portal toast, so the reap is visible in-band rather than
@@ -100,6 +122,8 @@ def _notify(session: str, branch: str, command: str) -> None:
         f"`{branch}`) — launch crashed at a bare shell (`{command}`) before "
         "the agent started."
     )
+    if pane_tail:
+        text += f" Pane tail: {pane_tail}"
 
     try:
         from ..core import _post_desktop_notification
@@ -135,7 +159,8 @@ def _notify(session: str, branch: str, command: str) -> None:
                 "failure mode where the worktree launch crashes before "
                 "`claude` starts (e.g. a missing worktree directory). The "
                 "watchdog killed the session so it can't linger.\n\n"
-                "Check the scheduler events log for the originating "
+                + (f"Pane tail before the kill:\n\n    {pane_tail}\n\n" if pane_tail else "")
+                + "Check the scheduler events log for the originating "
                 "dispatch failure."
             ),
         )
@@ -149,11 +174,14 @@ def reap() -> dict:
 
     killed = []
     for z in scan():
+        # Read the pane BEFORE killing it — the kill is what erases the only
+        # evidence of why the launch never reached its agent (#856).
+        pane_tail = _pane_tail(z["session"])
         _sched._kill_session(z["session"])
         _sched._log_event("zombie_session_reaped", session=z["session"],
                           branch=z["branch"], command=z["command"],
-                          age_seconds=z["age_seconds"])
-        _notify(z["session"], z["branch"], z["command"])
+                          age_seconds=z["age_seconds"], pane_tail=pane_tail)
+        _notify(z["session"], z["branch"], z["command"], pane_tail)
         killed.append(z["session"])
     return {"killed": killed}
 
