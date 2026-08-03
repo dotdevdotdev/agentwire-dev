@@ -115,6 +115,11 @@ class TaskConfig:
     starting_session: str | None = None  # Fork Claude context from this session before running
     role: str | None = None              # Role override for this task
 
+    # #854: override the shared-working-dir guard for this task's dispatch.
+    # None = derive from starting_ref (branchless tasks co-reside, git tasks
+    # keep the guard) — see ensure_cli._dispatch_shares_dir.
+    allow_shared_dir: bool | None = None
+
     # Unattended (no-human) safety: damage-control rule ids this scheduled task
     # is permitted to run when the dispatch is unattended, EXTENDING the global
     # default allowlist (safety.unattended_allow / DEFAULT_UNATTENDED_ALLOW).
@@ -218,6 +223,10 @@ def parse_task_config(name: str, config: dict, default_shell: str | None = None)
         pr_draft=config.get("pr_draft", True),
         starting_session=config.get("starting_session"),
         role=config.get("role"),
+        allow_shared_dir=(
+            None if config.get("allow_shared_dir") is None
+            else bool(config["allow_shared_dir"])
+        ),
         unattended_allow=(
             list(config.get("unattended_allow", []))
             if isinstance(config.get("unattended_allow"), list)

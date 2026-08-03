@@ -52,6 +52,8 @@ tasks:
     work_branch: agent/task  # Branch for agent's work (default: agent/<task>-<date>)
     pr_target: main          # PR target branch (default: starting_ref)
     pr_draft: true           # Create as draft PR (default: true)
+    allow_shared_dir: true   # Attach even if another session sits in the project
+                             # dir (default: derived — see below)
 
     # Context inheritance
     starting_session: ctx-loaded  # Fork Claude context from this session before running
@@ -115,6 +117,29 @@ When `starting_ref` is set, the task lifecycle handles all git plumbing automati
 |----------|-------------|
 | `{{ work_branch }}` | Branch name used for agent's work |
 | `{{ pr_url }}` | URL of the created PR (empty if no PR was created) |
+
+### Sharing a working dir with a live session (#854)
+
+`agentwire new` refuses to attach a session to a directory that is already some
+other live session's working dir — two agents in one tree means dirty state
+bleeding across and branches mixing. That guard is written for the *accidental*
+case; a scheduled dispatch is declared intent (the task config names the
+project, on a schedule, on purpose), so `ensure` opts out of it — but only when
+the dispatch does no branch work of its own.
+
+The derivation keys off `starting_ref`, since that is the field that makes
+`ensure` check out, branch, and reset the tree:
+
+| Task | Guard | Why |
+|------|-------|-----|
+| no `starting_ref` | **off** — dispatch proceeds | branchless: fans out, writes files, opens no branches |
+| `starting_ref` set | **on** — dispatch refuses | mutates the shared checkout; use a worktree task instead |
+
+Set `allow_shared_dir` explicitly to override in either direction — `false`
+re-arms the guard for a branchless task whose *prompt* does git work, `true`
+opens it for a `starting_ref` task whose tree is known to be private. The
+dispatch never uses `--force` for this: force would kill-replace a live
+same-name session.
 
 ---
 
