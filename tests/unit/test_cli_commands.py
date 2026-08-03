@@ -572,7 +572,8 @@ class TestCmdNewSeedFallback:
     box + msg-inbox fallback) and `first_message_fallback` tells the caller
     (mcp_worktree) which fallback fired, so the failure is never silent."""
 
-    def _run_cmd_new(self, monkeypatch, tmp_path, *, ready, verified, fallback):
+    def _run_cmd_new(self, monkeypatch, tmp_path, *, ready, verified, fallback,
+                     foreign_draft=False, on_scrollback=False):
         from types import SimpleNamespace
 
         from agentwire import session_cli as m
@@ -600,13 +601,26 @@ class TestCmdNewSeedFallback:
         monkeypatch.setattr(
             session_ready, "wait_for_session_ready",
             lambda s, timeout=30.0, pane_index=0: ready)
-        monkeypatch.setattr(
-            session_ready, "send_verified",
-            lambda s, msg, **k: verified)
 
-        def fake_recover(session, message, sender=None, pane_index=0):
+        def fake_send_verified(session, msg, **k):
+            calls["pasted"] = (msg, k.get("marker"))
+            return verified
+
+        monkeypatch.setattr(session_ready, "send_verified", fake_send_verified)
+        # #845 pre-flight and #839 scrollback check both read the live pane —
+        # stub the two primitives so the unit test stays hermetic.
+        monkeypatch.setattr(
+            session_ready, "box_holds_foreign_draft",
+            lambda s, msg, **k: foreign_draft)
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "")
+        monkeypatch.setattr(
+            session_ready, "message_on_scrollback",
+            lambda cap, rendered: on_scrollback)
+
+        def fake_recover(session, message, sender=None, pane_index=0, clear=True):
             calls["recover"] = (session, message, sender)
-            return fallback
+            calls["recover_clear"] = clear
+            return "inbox_blocked" if not clear else fallback
 
         monkeypatch.setattr(session_ready, "recover_failed_seed", fake_recover)
 
@@ -658,6 +672,80 @@ class TestCmdNewSeedFallback:
         assert payload["first_message_delivered"] is True
         assert "first_message_fallback" not in payload
         assert "recover" not in calls  # recovery never runs on success
+
+
+class TestCmdNewSeedGuardedPath:
+    """#840 — the seed goes through the SAME guarded send path as every other
+    sender: a per-attempt marker rides inside the paste (#839), an ambiguous
+    confirm consults scrollback before enqueuing a second copy, and a foreign
+    draft in the box is left alone rather than clobbered (#845)."""
+
+    _run_cmd_new = TestCmdNewSeedFallback._run_cmd_new
+
+    def test_seed_paste_carries_a_delivery_marker(self, capsys, monkeypatch, tmp_path):
+        """Without the marker riding inside the paste, the scrollback check
+        below could only guess from bare text."""
+        _rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=True, verified=True, fallback="inbox")
+        pasted, marker = calls["pasted"]
+        assert marker and marker.startswith("⟨#send-")
+        assert pasted == f"do the thing  {marker}"
+
+    def test_ambiguous_confirm_that_actually_landed_is_not_re_enqueued(
+            self, capsys, monkeypatch, tmp_path):
+        """THE bug: an unverified confirm whose paste really did submit used to
+        enqueue a duplicate copy unconditionally. The marker is on scrollback,
+        so this is a delivery, not a failure."""
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=True, verified=False, fallback="inbox",
+            on_scrollback=True)
+        assert rc == 0
+        assert "recover" not in calls  # no second copy queued
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["first_message_delivered"] is True
+        assert payload["first_message_fallback"] == "already_delivered"
+
+    def test_ambiguous_confirm_that_did_not_land_still_queues(
+            self, capsys, monkeypatch, tmp_path):
+        """The guard must not swallow a genuinely failed seed — no marker on
+        scrollback means the durable enqueue still runs."""
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=True, verified=False, fallback="inbox",
+            on_scrollback=False)
+        assert rc == 0
+        assert calls["recover"] == ("proj", "do the thing", "orch")
+        assert calls["recover_clear"] is True  # our own wreckage — clear it
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["first_message_delivered"] is False
+        assert payload["first_message_fallback"] == "inbox"
+
+    def test_foreign_draft_is_queued_not_clobbered(self, capsys, monkeypatch, tmp_path):
+        """#845 — boot can take the full 60s wait, ample room for a human to
+        attach and start typing. Their draft is neither pasted over nor erased."""
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=True, verified=True, fallback="inbox",
+            foreign_draft=True)
+        assert rc == 0
+        assert "pasted" not in calls  # never pasted on top of the draft
+        assert calls["recover_clear"] is False  # and never erased it either
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["first_message_delivered"] is False
+        assert payload["first_message_fallback"] == "inbox_blocked"
+
+    def test_unready_session_never_guesses_from_bare_text(
+            self, capsys, monkeypatch, tmp_path):
+        """Nothing was pasted, so there is no marker to match — a bare-text
+        scrollback hit could only produce a false "already delivered" that
+        DROPS the seed. Enqueue directly instead."""
+        rc, calls = self._run_cmd_new(
+            monkeypatch, tmp_path, ready=False, verified=False, fallback="inbox",
+            on_scrollback=True)
+        assert rc == 0
+        assert "pasted" not in calls
+        assert calls["recover"] == ("proj", "do the thing", "orch")
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["first_message_delivered"] is False
+        assert payload["first_message_fallback"] == "inbox"
 
 
 class TestCmdNewWorktreeMissingDirFailsLoud:
