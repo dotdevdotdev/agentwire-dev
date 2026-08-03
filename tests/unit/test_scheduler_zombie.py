@@ -141,8 +141,9 @@ class TestReap:
         monkeypatch.setattr(sched_pkg, "_kill_session", lambda s: killed.append(s))
         monkeypatch.setattr(sched_pkg, "_log_event",
                             lambda event, **f: logged.append((event, f)))
+        monkeypatch.setattr(zombie, "_pane_tail", lambda session, lines=3: "")
         monkeypatch.setattr(zombie, "_notify",
-                            lambda session, branch, command: notified.append(session))
+                            lambda session, branch, command, tail="": notified.append(session))
 
         result = zombie.reap()
 
@@ -267,3 +268,74 @@ class TestNotifyRouting:
         monkeypatch.setattr(core_mod, "load_session_metadata", lambda s: {})
         monkeypatch.setattr("agentwire.channels.email.send_email", lambda **k: None)
         zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh")  # must not raise
+
+
+class TestPaneTail:
+    """#856: the kill destroys the only record of why the launch failed, so
+    the pane must be read BEFORE it, and the tail carried into the alert."""
+
+    def test_returns_last_non_empty_lines(self, monkeypatch):
+        capture = "cd /tmp/wt && claude \\\n\n  --append-system-prompt \"$(</var/f\n\n"
+        monkeypatch.setattr(
+            zombie.subprocess, "run",
+            lambda *a, **k: MagicMock(returncode=0, stdout=capture),
+        )
+        tail = zombie._pane_tail("proj/scheduler-a-1", lines=2)
+        assert "--append-system-prompt" in tail
+        assert " / " in tail  # two lines joined
+        assert "\n" not in tail
+
+    def test_empty_on_tmux_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            zombie.subprocess, "run",
+            lambda *a, **k: MagicMock(returncode=1, stdout=""),
+        )
+        assert zombie._pane_tail("proj/scheduler-a-1") == ""
+
+    def test_never_raises(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("tmux gone")
+
+        monkeypatch.setattr(zombie.subprocess, "run", boom)
+        assert zombie._pane_tail("proj/scheduler-a-1") == ""
+
+    def test_reap_reads_the_pane_before_killing_it(self, monkeypatch):
+        order = []
+        monkeypatch.setattr(zombie, "scan", lambda: [
+            {"session": "proj/scheduler-a-1", "branch": "scheduler-a-1",
+             "command": "zsh", "age_seconds": 90},
+        ])
+        monkeypatch.setattr(zombie, "_pane_tail",
+                            lambda s, lines=3: order.append("read") or "stuck line")
+
+        import agentwire.scheduler as sched_pkg
+        monkeypatch.setattr(sched_pkg, "_kill_session",
+                            lambda s: order.append("kill"))
+        logged = []
+        monkeypatch.setattr(sched_pkg, "_log_event",
+                            lambda event, **f: logged.append(f))
+        notified = []
+        monkeypatch.setattr(zombie, "_notify",
+                            lambda s, b, c, tail="": notified.append(tail))
+
+        zombie.reap()
+
+        assert order == ["read", "kill"]
+        assert notified == ["stuck line"]
+        assert logged[0]["pane_tail"] == "stuck line"
+
+    def test_tail_reaches_the_parent_escalation(self, monkeypatch):
+        import agentwire.core as core_mod
+        import agentwire.inbox as inbox_mod
+
+        monkeypatch.setattr(core_mod, "_post_desktop_notification", lambda *a, **k: None)
+        monkeypatch.setattr(core_mod, "load_session_metadata",
+                            lambda s: {"created_by": "orchestrator"})
+        sent = {}
+        monkeypatch.setattr(inbox_mod, "enqueue",
+                            lambda target, text, **k: sent.update(text=text))
+
+        zombie._notify("proj/scheduler-a-1", "scheduler-a-1", "zsh",
+                       'claude --append-system-prompt "$(</var/f')
+
+        assert "--append-system-prompt" in sent["text"]
