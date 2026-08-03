@@ -781,14 +781,27 @@ class TestRecordSessionCreator:
         assert meta["created_via"] == "new"
         assert meta["existing"] == "kept"
 
-    def test_self_and_empty_creator_skipped(self, tmp_path, monkeypatch):
+    def test_self_and_none_creator_skipped(self, tmp_path, monkeypatch):
         import agentwire.__main__ as cli
 
         monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         cli._record_session_creator("child", "child", via="new")
-        cli._record_session_creator("child", "", via="new")
         cli._record_session_creator("child", None, via="new")
         assert cli.load_session_metadata("child") == {}
+
+    def test_empty_creator_recorded_as_explicitly_rootless(self, tmp_path, monkeypatch):
+        """`--created-by ''` means "no parent" and must be written (#848).
+
+        Skipping it left a stale parent from a prior creation in place, so
+        `resolve_parent` kept routing to a creator the caller had explicitly
+        disowned. Only `None` — no signal at all — is a skip.
+        """
+        import agentwire.__main__ as cli
+
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
+        cli.store_session_metadata("child", {"created_by": "stale-orch"})
+        cli._record_session_creator("child", "", via="new")
+        assert cli.load_session_metadata("child")["created_by"] == ""
 
 
 class TestNotifyPermissionRequest:
