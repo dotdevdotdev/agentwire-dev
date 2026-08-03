@@ -24,41 +24,41 @@ from .core import (
 )
 
 
-def _recover_unverified_send(session: str, prompt: str, sender: str) -> "str | None":
+def _recover_unverified_send(
+    session: str, prompt: str, sender: str, marker: "str | None" = None
+) -> "str | None":
     """Fallback when `send_verified` can't confirm delivery (#834, #835 review).
 
-    First checks whether the bare message is already on scrollback outside
-    the input box. A `send_verified` failure can mean the paste genuinely
-    never landed/submitted, OR that it fully submitted and only the
-    *confirm* read was ambiguous (an unparseable box frame, or a laggy host
-    blowing the submit budget). The msg-inbox drain's own dedup can't catch
-    the latter case on its own: it matches the WRAPPED ``[MSG from ... ]
-    ... <id>`` render (see ``inbox.Message.render``), never the bare text
-    this path pasted directly — enqueuing unconditionally would risk a real
-    duplicate delivery rather than the safe no-op the drain's dedup gives
-    its own messages. Checking here first avoids that duplicate in the
-    common case.
+    First checks whether this attempt is already on scrollback outside the
+    input box. A `send_verified` failure can mean the paste genuinely never
+    landed/submitted, OR that it fully submitted and only the *confirm* read
+    was ambiguous (an unparseable box frame, or a laggy host blowing the
+    submit budget). The msg-inbox drain's own dedup can't catch the latter
+    case on its own: it matches the WRAPPED ``[MSG from ... ] ... <id>``
+    render (see ``inbox.Message.render``), never the bare text this path
+    pasted directly — enqueuing unconditionally would risk a real duplicate
+    delivery rather than the safe no-op the drain's dedup gives its own
+    messages. Checking here first avoids that duplicate in the common case.
+
+    *marker* is the per-attempt delivery marker (``session_ready``'s
+    :func:`new_delivery_marker`) that was appended to the pasted text, and it
+    is what makes this check safe (#839). Matching the BARE prompt instead
+    trades in the opposite direction from every other check in this file: a
+    false match reports "already delivered" and SKIPS the inbox enqueue
+    entirely, so a short or generic message (a bare "yes", "continue",
+    "approved") that happens to sit in the last ``VERIFY_SCROLLBACK_LINES``
+    for an unrelated reason — a legitimate earlier send, coincidental text —
+    silently drops a send that never landed. That is the one outcome this
+    whole fallback exists to prevent. A marker minted per attempt can only
+    appear on scrollback if THIS attempt's paste submitted, so
+    "already_delivered" becomes a fact rather than a text-similarity guess.
+    Callers that pass no marker keep the old bare-text behavior (and the old
+    risk); every caller in this module passes one.
 
     A message that lands only *after* this check runs (queued invisibly
     mid-generation, per ``submit_confirmed``'s own docstring) can still
     duplicate — accepted per this codebase's existing bias that a
     recoverable duplicate beats a silently dropped message.
-
-    Known residual risk (#835 second-pass review): this is the same bare
-    whitespace-normalized substring match ``_deliver_once`` already uses for
-    its own internal idempotent-paste guard — not a new invention — but
-    reused here it trades in the *opposite* direction from most of this
-    file's checks. A false match reports "already delivered" and SKIPS the
-    inbox enqueue entirely: for a short or generic message (a bare "yes",
-    "continue", "approved") that happens to already sit in the last
-    ``VERIFY_SCROLLBACK_LINES`` for an unrelated reason, a send that
-    genuinely never landed could be silently dropped instead of queued —
-    the one outcome this whole fallback exists to prevent. Tracked as a
-    follow-up (a lightweight per-attempt marker, mirroring
-    ``send_verified``'s own ``marker`` param, would close this precisely);
-    not fixed here because it's strictly narrower than the bug this
-    function was written to close (needs a coincidental/repeated-text
-    match, not just any unverified send).
 
     Returns ``"already_delivered"``, ``"inbox"``, ``"inbox_stuck"`` (queued,
     but the original stale draft couldn't be confirmed cleared from the
@@ -67,9 +67,39 @@ def _recover_unverified_send(session: str, prompt: str, sender: str) -> "str | N
     """
     from agentwire.session_ready import message_on_scrollback, recover_failed_seed, scrollback
 
-    if message_on_scrollback(scrollback(session), prompt):
+    if message_on_scrollback(scrollback(session), marker or prompt):
         return "already_delivered"
     return recover_failed_seed(session, prompt, sender=sender)
+
+
+def _foreign_draft_block(
+    session: str, prompt: str, sender: str
+) -> "tuple[bool, str | None]":
+    """Pre-flight (#845): never paste over a draft that was already there.
+
+    ``_deliver_once`` refuses to paste onto a foreign draft, but refusing is
+    only half an answer here: the unverified-send fallback below would then
+    call ``recover_failed_seed``, whose whole job is to Escape/backspace the
+    box clear — erasing the very draft we declined to paste over. That clear
+    is correct for the wreckage of OUR failed paste and wrong for a human's
+    half-typed sentence, and the only way to tell them apart is to look at
+    the box BEFORE trying anything.
+
+    So: look first. If the box already holds unsent content that isn't ours,
+    don't paste and don't clear — queue the durable copy to the msg inbox
+    (``clear=False``) and let the drain deliver it once the box goes idle on
+    its own, exactly as it would for any other polite message.
+
+    Returns ``(False, None)`` when the box is clear to paste into, else
+    ``(True, <recover_failed_seed outcome>)`` — ``"inbox_blocked"`` on a
+    successful enqueue, ``None`` if even that failed.
+    """
+    from agentwire import session_ready
+
+    if not session_ready.box_holds_foreign_draft(session, prompt):
+        return (False, None)
+    return (True, session_ready.recover_failed_seed(
+        session, prompt, sender=sender, clear=False))
 
 
 def _fallback_suffix(fallback: "str | None") -> str:
@@ -81,6 +111,9 @@ def _fallback_suffix(fallback: "str | None") -> str:
         return (" — queued to its msg inbox, but the stale draft could NOT be confirmed cleared "
                 "from the input box; it may still be sitting there and get submitted later by an "
                 "unrelated Enter — check the pane")
+    if fallback == "inbox_blocked":
+        return (" — queued to its msg inbox instead; the existing draft was left untouched and the "
+                "drain delivers once the box goes idle")
     return " and could not be queued — resend manually"
 
 
@@ -121,9 +154,19 @@ def cmd_send(args) -> int:
                 # pane can scroll the echo out of the capture window and produce
                 # a false miss; re-pasting there would deliver the instruction
                 # twice, which is worse than a false "not verified" warning.
-                from agentwire.session_ready import send_verified
+                from agentwire.session_ready import (
+                    new_delivery_marker,
+                    send_verified,
+                    tag_message,
+                )
 
-                ok = send_verified(target_session, prompt, pane_index=pane_index, retries=0)
+                # Tag the paste with a per-attempt marker (#839) so every
+                # internal identity check — landing, idempotent-paste guard,
+                # already-submitted — keys on something unique to THIS send
+                # instead of on how much the text resembles the scrollback.
+                marker = new_delivery_marker()
+                ok = send_verified(target_session, tag_message(prompt, marker),
+                                   marker=marker, pane_index=pane_index, retries=0)
                 if json_mode:
                     _output_json({
                         "success": True, "pane": pane_index, "session": target_session,
@@ -234,19 +277,38 @@ def cmd_send(args) -> int:
     if wait_ready:
         # Wait for the agent to be ready, then send with delivery
         # verification (a paste into a booting Claude vanishes silently).
-        from agentwire.session_ready import send_verified, wait_for_session_ready
+        from agentwire.session_ready import (
+            new_delivery_marker,
+            send_verified,
+            tag_message,
+            wait_for_session_ready,
+        )
 
         timeout = getattr(args, 'timeout', None) or 30.0
         if not wait_for_session_ready(session, timeout=timeout):
             return _output_result(False, json_mode, f"Agent in '{session}' not ready after {timeout:.0f}s")
-        if not send_verified(session, prompt):
+        blocked, fallback = _foreign_draft_block(session, prompt, fallback_sender)
+        if blocked:
+            # #845 — something unsent already owns the box. Readiness probing
+            # normally rules this out for a fresh session, but --wait-ready is
+            # also pointed at sessions that were merely slow to boot.
+            if json_mode:
+                print(json.dumps({"success": False, "session": session_full, "verified": False,
+                                  "fallback": fallback,
+                                  "error": "Input box holds an unrelated unsent draft"}))
+            else:
+                print(f"Not sent to {session}: its input box holds an unrelated unsent draft"
+                      f"{_fallback_suffix(fallback)}", file=sys.stderr)
+            return 1
+        marker = new_delivery_marker()
+        if not send_verified(session, tag_message(prompt, marker), marker=marker):
             # A caller acting on "not verified" text is optional, not
             # guaranteed — under load this is exactly the class of message
             # that must never depend on an LLM noticing and manually
             # resending. Fall back to the durable msg inbox (retried across
             # ticks, dead-lettered + emailed on true exhaustion) instead of
             # returning inert advisory text (#834).
-            fallback = _recover_unverified_send(session, prompt, fallback_sender)
+            fallback = _recover_unverified_send(session, prompt, fallback_sender, marker=marker)
             if json_mode:
                 print(json.dumps({"success": False, "session": session_full, "verified": False,
                                   "fallback": fallback, "error": "Delivery not verified"}))
@@ -270,20 +332,36 @@ def cmd_send(args) -> int:
         # the old double-delivery worry the retries=0 choice guarded against
         # can't happen anymore. Staying patient here is what keeps a laggy host
         # from surfacing a false failure the parent has to clean up by hand.
-        from agentwire.session_ready import send_verified
+        from agentwire.session_ready import (
+            new_delivery_marker,
+            send_verified,
+            tag_message,
+        )
 
-        ok = send_verified(session, prompt, retries=1)
-        fallback = None
-        if not ok:
-            # Same durable fallback as --wait-ready (#834).
-            fallback = _recover_unverified_send(session, prompt, fallback_sender)
+        # #845 — an already-running session is exactly where a stale draft
+        # lives, so look before pasting: a foreign draft means we neither
+        # paste over it nor clear it, just queue the durable copy.
+        blocked, fallback = _foreign_draft_block(session, prompt, fallback_sender)
+        ok = False
+        if not blocked:
+            marker = new_delivery_marker()
+            ok = send_verified(session, tag_message(prompt, marker), marker=marker, retries=1)
+            if not ok:
+                # Same durable fallback as --wait-ready (#834).
+                fallback = _recover_unverified_send(session, prompt, fallback_sender, marker=marker)
+        if blocked:
+            note = "Not sent: the input box holds an unrelated unsent draft"
+        else:
+            note = "Prompt sent" if ok else "Prompt sent but delivery could not be verified"
         if json_mode:
             print(json.dumps({"success": True, "session": session_full, "machine": None,
-                              "verified": ok, "fallback": fallback,
-                              "message": "Prompt sent" if ok else "Prompt sent but delivery could not be verified"}))
+                              "verified": ok, "fallback": fallback, "message": note}))
         else:
             if ok:
                 print(f"Sent to {session} (verified)")
+            elif blocked:
+                print(f"Not sent to {session}: its input box holds an unrelated unsent draft"
+                      f"{_fallback_suffix(fallback)}")
             else:
                 print(f"Sent to {session} (delivery NOT verified){_fallback_suffix(fallback)}")
         return 0

@@ -10,6 +10,7 @@ through here.
 """
 
 import time
+import uuid
 
 # How far back into scrollback to look when verifying delivery. A fast bypass
 # agent consumes the paste, submits it, and emits tool output within the settle
@@ -444,6 +445,90 @@ def message_on_scrollback(capture: str, rendered: str) -> bool:
     return needle in "".join(outside.split())
 
 
+def new_delivery_marker() -> str:
+    """A ``⟨#send-xxxxxx⟩`` token unique to ONE delivery attempt (#839).
+
+    ``send_verified``'s ``marker`` parameter answers "did this attempt reach
+    the recipient's scrollback?" — but only as precisely as the marker is
+    unique, and until now nothing minted a unique one. Council passes a
+    CONSTANT marker (``[COUNCIL PROMPT #1]``), so a hit may be the previous
+    message; a caller passing no marker falls back to matching the bare
+    message text, which for a short or generic prompt ("yes", "continue",
+    "approved") collides with any coincidental earlier occurrence inside the
+    same ``VERIFY_SCROLLBACK_LINES`` window. Both make "already delivered" an
+    inference. A token minted per attempt and APPENDED to the pasted text
+    (:func:`tag_message`) makes it a fact: the token is on scrollback iff
+    *this* attempt's paste submitted.
+
+    Deliberately mirrors ``inbox.Message.render``'s trailing ``⟨#id⟩``, which
+    exists for exactly this reason (#621) and is already familiar on screen —
+    the recipient sees one short tag, the same shape msg deliveries carry.
+    """
+    return f"⟨#send-{uuid.uuid4().hex[:6]}⟩"
+
+
+def tag_message(message: str, marker: str) -> str:
+    """*message* with *marker* appended, ready to paste (#839).
+
+    Pass the same *marker* as :func:`send_verified`'s ``marker`` argument and
+    to :func:`message_on_scrollback` afterwards. Because the token rides
+    INSIDE the pasted text, every downstream check keys on it for free: the
+    landing gate, the pre-paste identity guard, and the caller's
+    already-delivered fallback all become per-attempt precise rather than
+    text-similarity guesses. Two spaces before the token mirror
+    ``inbox.Message.render`` so the rendered line reads the same way.
+    """
+    return f"{message}  {marker}"
+
+
+def box_holds_foreign_draft(
+    session: str,
+    message: str,
+    pane_index: int = 0,
+    capture: "str | None" = None,
+) -> bool:
+    """Is the input box occupied by unsent content that is NOT *message*? (#845)
+
+    The state the idempotent-paste guard had no name for: a stale draft — a
+    previous sender's message whose Enter was swallowed, a human mid-typing, a
+    half-composed large paste — sitting unsubmitted in the box. Pasting on top
+    of it concatenates the two into one garbled string that the next Enter
+    submits as a single turn, a broader corruption than the "a later bare
+    Enter submits the old draft alone" hole #843/#844 addressed.
+
+    Two-stage on purpose, cheapest and most conservative first:
+
+    1. The plain box parse must show non-empty content that fails
+       :func:`box_shows_message` — including its #851 window test, so a draft
+       too tall to render whole still reads as OURS, not foreign. Chips are
+       excluded (``allow_chip=False``): pre-paste a ``[Pasted text …]``
+       placeholder is either somebody else's draft or an earlier attempt's,
+       and both want the same answer (don't paste on top of it).
+    2. Only then, the SGR-aware gate ``prompt_router.prompt_is_empty`` gets a
+       veto. Claude Code renders ghost/autosuggest text inside the box DIM
+       (#669), and the plain parse can't tell it from a draft — without this
+       second opinion an idle session showing an autosuggestion would refuse
+       every send. It is the same gate the msg drain delivers behind, so
+       "foreign draft" here means exactly "the drain would defer".
+
+    Every ambiguity resolves to False (an unparseable box, a capture that
+    raised): refusing to deliver is not free, so it must be positively
+    justified.
+    """
+    from agentwire import prompt_router
+
+    try:
+        cap = _snapshot(session, pane_index) if capture is None else capture
+        box = input_box(cap)
+        if box is None or not box.strip():
+            return False
+        if box_shows_message(box, message, allow_chip=False):
+            return False
+        return not prompt_router.prompt_is_empty(session, pane_index)
+    except Exception:
+        return False
+
+
 def scrollback(session: str, pane_index: int = 0) -> str:
     """Public capture of a pane's verify-window scrollback (#621 dedup)."""
     return _snapshot(session, pane_index)
@@ -499,6 +584,21 @@ def _deliver_once(
             from agentwire import prompt_router
 
             if prompt_router.screen_shows_live_menu(cap):
+                return False
+            # A stale, DIFFERENT draft owns the box (#845). The guard above
+            # proves only that the box does not hold OUR message; it said
+            # nothing about what it does hold, so the fall-through pasted on
+            # top of foreign content and let one Enter submit the concatenation
+            # as a single garbled turn. Refuse instead of pasting, and refuse
+            # instead of clearing: this is the delivery primitive, and it
+            # cannot tell a human's half-typed sentence from a wedged paste.
+            # Box surgery belongs to the recovery layer, which knows whether
+            # the draft predates our attempt (see ``send_cli``'s pre-flight
+            # and :func:`recover_failed_seed`). Every caller already handles
+            # False — the msg drain retries next tick behind safe_deliver's
+            # own empty-box gate, `send --verify` falls back to the durable
+            # inbox — so refusing defers delivery without dropping it.
+            if box_holds_foreign_draft(session, message, pane_index, capture=cap):
                 return False
     except Exception:
         pass
@@ -726,7 +826,11 @@ def clear_input_box(session: str, pane_index: int = 0) -> bool:
 
 
 def recover_failed_seed(
-    session: str, message: str, sender: "str | None" = None, pane_index: int = 0
+    session: str,
+    message: str,
+    sender: "str | None" = None,
+    pane_index: int = 0,
+    clear: bool = True,
 ) -> "str | None":
     """Recover a first-message seed that failed to deliver (#695).
 
@@ -746,20 +850,36 @@ def recover_failed_seed(
     queued either way — still better than nothing — but the return value
     is honest about which happened instead of reporting blanket success.
 
+    Step 1 is also SKIPPABLE (``clear=False``, #845). Clearing is right when
+    the draft in the box is the wreckage of our own failed paste — the case
+    this function was written for. It is wrong when the draft was already
+    there before we tried: erasing a human's half-typed sentence (or another
+    sender's landed-but-unsubmitted message) to make room for ours is the
+    clobber the whole polite-messaging design exists to prevent. Only the
+    caller knows which it is, because only the caller saw the box BEFORE the
+    attempt; ``send_cli``'s pre-flight passes ``clear=False`` for a draft it
+    positively knows predates us, and the queued copy simply waits for the
+    box to go idle on its own.
+
     Returns ``"inbox"`` when the box was confirmed cleared AND the prompt
     was queued, ``"inbox_stuck"`` when the prompt was queued but the box
     could NOT be confirmed cleared (a stale draft may still be sitting
-    there — needs manual intervention), or None when even the durable
-    enqueue failed. Never raises.
+    there — needs manual intervention), ``"inbox_blocked"`` when the prompt
+    was queued and the box was deliberately left alone (``clear=False``), or
+    None when even the durable enqueue failed. Never raises.
     """
-    try:
-        cleared = clear_input_box(session, pane_index=pane_index)
-    except Exception:
-        cleared = False
+    cleared = False
+    if clear:
+        try:
+            cleared = clear_input_box(session, pane_index=pane_index)
+        except Exception:
+            cleared = False
     try:
         from agentwire import inbox
 
         inbox.enqueue(session, message, kind="request", sender=sender or "agentwire")
+        if not clear:
+            return "inbox_blocked"
         return "inbox" if cleared else "inbox_stuck"
     except Exception:
         return None
