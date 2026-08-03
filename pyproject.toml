@@ -122,6 +122,7 @@ include = [
     "agentwire/templates/**/*.css.j2",
     "agentwire/templates/**/*.txt",
     "agentwire/templates/**/*.conf",
+    "agentwire/templates/**/*.sh",
     "agentwire/static/**/*",
     # Role/prompt content bundled with the CLI
     "agentwire/roles/*.md",
