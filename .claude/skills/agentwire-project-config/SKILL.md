@@ -173,6 +173,10 @@ tasks:
     work_branch: agent/task    # Branch for agent's work (default: agent/<task>-<date>)
     pr_target: main            # PR target branch (default: starting_ref)
     pr_draft: true             # Create as draft PR (default: true)
+    allow_shared_dir: true     # Let the dispatch attach even when another live
+                               # session's cwd is the project dir. Default is
+                               # derived: off for tasks with `starting_ref`
+                               # (they mutate the tree), on for branchless ones.
 
     # Context inheritance
     starting_session: ctx-loaded  # Fork Claude context from this session before running

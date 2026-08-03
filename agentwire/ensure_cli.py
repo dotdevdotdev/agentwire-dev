@@ -430,6 +430,31 @@ def _create_task_pr(project_path, task, work_branch, last_summary, json_mode) ->
     return pr_url
 
 
+def _dispatch_shares_dir(task) -> bool:
+    """Whether this dispatch may attach its session to a working dir another
+    session already occupies (#854).
+
+    The shared-working-dir guard in ``session_cli.cmd_new`` exists to stop two
+    agents mutating one git working tree — one's dirty state visible to the
+    other, branches mixing. That is an *accident* an interactive `agentwire new`
+    can stumble into; a scheduled dispatch is declared intent, so the guard
+    should only bind it when the dispatch actually manipulates the tree.
+
+    ``starting_ref`` is exactly that dividing line: it is the field that makes
+    ``ensure`` run ``git checkout`` / create a work branch / reset the tree
+    around the task (``_setup_task_branch`` and ``_commit_and_pr``). With it
+    set, the guard stays armed and refuses with its usual "use a worktree"
+    hint. Without it, the dispatch touches no branch state and can co-reside.
+
+    ``allow_shared_dir`` in the task config overrides the derivation in either
+    direction — re-arm it for a branchless task whose *prompt* does git work,
+    or open it for a ``starting_ref`` task whose tree is known to be private.
+    """
+    if task.allow_shared_dir is not None:
+        return task.allow_shared_dir
+    return not task.starting_ref
+
+
 def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -> int:
     """Run the task (called within lock context).
 
@@ -492,6 +517,15 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
                         self.roles = task_role if task_role else None
                         self.model = None
                         self.json = json_mode
+                        # #854: the shared-working-dir guard defends against an
+                        # ACCIDENTAL second agent in one tree. A dispatch is the
+                        # opposite — the task config names this project, on a
+                        # schedule, on purpose (same reasoning as services.py's
+                        # `--allow-shared-dir`). Left armed, any live session
+                        # whose pane cwd is the project dir silently kills every
+                        # nightly. Opted out only when the dispatch does no
+                        # branch work of its own — see _dispatch_shares_dir.
+                        self.allow_shared_dir = _dispatch_shares_dir(task)
                         # Force the pre-#715 unconditional-inherit behavior:
                         # ensure is the scheduler's dispatch primitive — the
                         # scheduler daemon fans out across many projects from
