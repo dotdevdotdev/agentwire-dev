@@ -5,6 +5,7 @@ from .mcp_core import (
     mcp,
     run_agentwire_cmd,
 )
+from .worktree import teardown_session_note
 
 
 @mcp.tool()
@@ -293,15 +294,17 @@ def worktree_remove(
         args += ["--close-pr-branch"]
     data = run_agentwire_cmd(args)
     session = data.get("session", name)
-    killed = " (killed live session)" if data.get("killed") else ""
+    # Same honest session clause the CLI prints — an agent must never read
+    # "removed" for a teardown that matched no live session (#868).
+    session_bit = teardown_session_note(data)
     if not data.get("success"):
-        return f"FAILED to remove worktree session '{session}'{killed}: {data.get('error', 'Unknown error')}"
+        return f"FAILED to remove worktree '{name}'{session_bit}: {data.get('error', 'Unknown error')}"
     branch_bit = ""
     if data.get("branch"):
         branch_bit = (f" Branch '{data['branch']}' deleted." if data.get("branch_deleted")
                       else f" Branch '{data['branch']}' kept ({data.get('branch_note', 'not deleted')}).")
     tabs_bit = _orphaned_tabs_warning(data.get("orphaned_tabs"))
-    return f"Removed worktree session '{session}'{killed}; worktree deleted.{branch_bit}{tabs_bit}"
+    return f"Teardown '{name}' (session '{session}'){session_bit}; worktree deleted.{branch_bit}{tabs_bit}"
 
 
 def _orphaned_tabs_warning(orphaned: list | None) -> str:

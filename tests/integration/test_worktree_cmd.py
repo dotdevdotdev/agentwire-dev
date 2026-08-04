@@ -1118,3 +1118,199 @@ def test_cmd_new_worktree_session_is_registered(tmp_path, monkeypatch):
     assert entries[0]["topology"] == "worktree"
     # Recorded at the path git reports, not a string-built one.
     assert Path(entries[0]["worktree_path"]) == find_git_worktree(clone, branch="sched-task")["path"]
+
+
+# --- #868: a dot in the PROJECT directory name ---------------------------
+#
+# tmux forbids '.' in session names, so cmd_new maps it to '_'. cmd_worktree
+# derived the name from the project dir RAW, so for `~/.claude` it recorded
+# and later resolved `.claude-<name>` while the session that actually existed
+# was `_claude-<name>`. Teardown matched nothing and reported success anyway —
+# #855's failure on the session-name axis.
+
+
+#: Bound at import, before ``wt_env`` monkeypatches ``m.cmd_new`` to a stub —
+#: the end-to-end test below needs the real creation path.
+_REAL_CMD_NEW = m.cmd_new
+
+
+def _dot_clone(tmp_path, dirname=".claude"):
+    """A clone whose directory name starts with a dot — the #868 repro."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    dotted = tmp_path / dirname
+    clone.rename(dotted)
+    return dotted
+
+
+def test_dot_project_derived_session_matches_what_creation_produces(
+    tmp_path, monkeypatch, wt_env,
+):
+    """The core regression: derivation == the tmux session cmd_new creates.
+
+    Runs BOTH halves for real — cmd_worktree's derivation, then the actual
+    ``tmux new-session`` name the real ``cmd_new`` would use for it.
+    """
+    clone = _dot_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+
+    assert _run(monkeypatch, cfg, name="testbr", project=str(clone)) == 0
+    derived = wt_env["args"].session
+    assert derived == "_claude-testbr"
+
+    # Now feed that name to the REAL cmd_new and capture the tmux name it launches.
+    launched = {}
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    monkeypatch.setattr(m, "load_config", lambda *a, **k: {
+        "projects": {"dir": str(projects_dir), "worktrees": {"suffix": "-worktrees"}},
+    })
+    monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
+    monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
+    monkeypatch.setattr(m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
+    monkeypatch.setattr(m, "build_agent_command",
+                        lambda *a, **k: Namespace(command="true", env={}, temp_file=None))
+    monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+    monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda *a, **k: None)
+
+    def spy_launch(session_name, *a, **k):
+        launched["session"] = session_name
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(m, "_launch_tmux_session", spy_launch)
+
+    assert _REAL_CMD_NEW(Namespace(
+        session=derived, path=str(tmp_path / "worktrees" / ".claude" / "testbr"),
+        force=False, json=True, base=None, pull_first=None, roles=None, no_soul=True,
+        bare=False, prompted=False, kind="worker", posture=None, model=None, env=None,
+        instructions=None, persist=False, first_message=None, created_by=None,
+        caller_session=None, no_cohort=True, worktree_topology=True,
+    )) == 0
+    assert launched["session"] == derived  # ← the bug: was '.claude-testbr' vs '_claude-testbr'
+
+
+def test_dot_project_registry_records_the_real_session_name(tmp_path, monkeypatch, wt_env):
+    """What gets written is what teardown will look for."""
+    clone = _dot_clone(tmp_path)
+    cfg = _config(tmp_path / "worktrees")
+    assert _run(monkeypatch, cfg, name="testbr", project=str(clone)) == 0
+    assert [e["session"] for e in reg.entries(clone.resolve())] == ["_claude-testbr"]
+
+
+def test_dot_project_teardown_kills_the_session_that_exists(tmp_path, monkeypatch, wt_env):
+    """The leak: `--remove` targeted `.claude-testbr`; `_claude-testbr` survived."""
+    clone = _dot_clone(tmp_path)
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="testbr", project=str(clone)) == 0
+
+    monkeypatch.setattr(m, "_sessions_by_path", dict)  # no pane-cwd shortcut
+    monkeypatch.setattr(m, "tmux_session_exists", lambda s: s == "_claude-testbr")
+
+    killed = []
+    real_run = subprocess.run
+
+    def spy(cmd, *a, **k):
+        if list(cmd[:2]) == ["tmux", "kill-session"]:
+            killed.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(m.subprocess, "run", spy)
+
+    assert _run(monkeypatch, cfg, name="testbr", project=str(clone), remove=True) == 0
+    assert killed == ["_claude-testbr"]
+    assert not (wt_dir / ".claude" / "testbr").exists()
+
+
+def test_dot_project_stale_registry_entry_heals_on_read(tmp_path, monkeypatch, wt_env):
+    """A pre-#868 entry recorded `.claude-testbr`; resolution must not trust it.
+
+    No data migration ships — resolution re-sanitizes, so an entry written by
+    the old code still resolves to a name tmux can actually have.
+    """
+    clone = _dot_clone(tmp_path)
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="testbr", project=str(clone)) == 0
+
+    # Rewrite the entry the way the buggy code would have.
+    entry = reg.entries(clone.resolve())[0]
+    reg.unregister(clone.resolve(), session=entry["session"])
+    reg.register(clone.resolve(), session=".claude-testbr", branch=entry["branch"],
+                 base=entry.get("base"), worktree_path=Path(entry["worktree_path"]))
+
+    monkeypatch.setattr(m, "_sessions_by_path", dict)
+    monkeypatch.setattr(m, "tmux_session_exists", lambda s: False)
+    ref = m._resolve_worktree_entry("testbr", clone.resolve(), wt_dir)
+    assert ref.session == "_claude-testbr"
+
+
+def test_dot_project_live_session_wins_over_a_stale_recorded_name(tmp_path, monkeypatch, wt_env):
+    """Reality outranks the registry: the pane cwd names the real session."""
+    clone = _dot_clone(tmp_path)
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="testbr", project=str(clone)) == 0
+
+    wt_path = (wt_dir / ".claude" / "testbr").resolve()
+    monkeypatch.setattr(m, "_sessions_by_path", lambda: {str(wt_path): "hand-renamed"})
+    ref = m._resolve_worktree_entry("testbr", clone.resolve(), wt_dir)
+    assert ref.session == "hand-renamed"
+
+
+# --- #868: teardown must not claim a session it never matched -------------
+
+def test_remove_says_so_when_no_live_session_matched(tmp_path, monkeypatch, wt_env, capsys):
+    """The reporting half. A silent no-kill is what hid the leak."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone)) == 0
+
+    monkeypatch.setattr(m, "_sessions_by_path", dict)
+    monkeypatch.setattr(m, "tmux_session_exists", lambda s: False)
+    capsys.readouterr()
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone),
+                remove=True, json=False) == 0
+    out = capsys.readouterr().out
+    assert "NO live tmux session named 'clone-repo-fix-bug'" in out
+    assert "nothing killed" in out
+    assert "Removed worktree session" not in out
+
+
+def test_remove_json_carries_session_existed(tmp_path, monkeypatch, wt_env, capsys):
+    """Machine-readable half of the same honesty (#868)."""
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone)) == 0
+
+    monkeypatch.setattr(m, "_sessions_by_path", dict)
+    monkeypatch.setattr(m, "tmux_session_exists", lambda s: False)
+    capsys.readouterr()
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone), remove=True) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["session_existed"] is False
+    assert data["killed"] is False
+    assert data["worktree_removed"] is True
+
+
+def test_remove_reports_the_kill_when_it_happens(tmp_path, monkeypatch, wt_env, capsys):
+    _, clone = _origin_and_clone(tmp_path, default_branch="develop")
+    wt_dir = tmp_path / "worktrees"
+    cfg = _config(wt_dir)
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone)) == 0
+
+    monkeypatch.setattr(m, "_sessions_by_path", dict)
+    monkeypatch.setattr(m, "tmux_session_exists", lambda s: s == "clone-repo-fix-bug")
+    real_run = subprocess.run
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, *a, **k: (
+        subprocess.CompletedProcess(cmd, 0, "", "")
+        if list(cmd[:2]) == ["tmux", "kill-session"] else real_run(cmd, *a, **k)))
+    capsys.readouterr()
+    assert _run(monkeypatch, cfg, name="fix-bug", project=str(clone),
+                remove=True, json=False) == 0
+    out = capsys.readouterr().out
+    assert "(killed live session)" in out

@@ -70,6 +70,9 @@ from .worktree import (
     register_worktree,
     remove_worktree,
     safe_worktree_name,
+    teardown_session_note,
+    tmux_safe_name,
+    worktree_session_name,
     worktree_status,
 )
 
@@ -206,11 +209,8 @@ def cmd_new(args) -> int:
     if first_message and machine_id:
         return _output_result(False, json_mode, "--first-message is local-only (readiness capture doesn't span SSH)")
 
-    # Build the tmux session name (convert dots to underscores, preserve slashes)
-    if branch:
-        session_name = f"{project}/{branch}".replace(".", "_")
-    else:
-        session_name = project.replace(".", "_")
+    # Build the tmux session name (dots → underscores, slashes preserved)
+    session_name = tmux_safe_name(f"{project}/{branch}" if branch else project)
 
     # Load config
     config = load_config()
@@ -755,11 +755,8 @@ def cmd_recreate(args) -> int:
     worktrees_config = config.get("projects", {}).get("worktrees", {})
     worktree_suffix = worktrees_config.get("suffix", "-worktrees")
 
-    # Build session name for tmux (preserve slashes, convert dots to underscores)
-    if branch:
-        session_name = f"{project}/{branch}".replace(".", "_")
-    else:
-        session_name = project.replace(".", "_")
+    # Build session name for tmux (slashes preserved, dots → underscores)
+    session_name = tmux_safe_name(f"{project}/{branch}" if branch else project)
 
     if machine_id:
         # Remote recreate
@@ -1044,7 +1041,10 @@ def cmd_worktree(args) -> int:
     # nests per project — ~/worktrees/<project>/<name>/ — mirroring
     # ~/projects/<project>/; the tmux session name stays flat {project}-{name}.
     safe_name = safe_worktree_name(name)
-    session_name = f"{project_name}-{safe_name}"
+    session_name = worktree_session_name(project_path, name)
+    # The DIRECTORY keeps the project's real name — only the tmux session name
+    # needs the dot mapping (#868), and inventing a directory name git doesn't
+    # use is the #855 failure all over again.
     worktree_path = worktree_dir / project_name / safe_name
 
     # --base wins; else project override; else global config default; else the
@@ -1413,12 +1413,23 @@ def _sessions_by_path() -> dict[str, str]:
     return out
 
 
-def _session_for_worktree(worktree_path: Path, project_name: str, name: str) -> str:
+def _session_for_worktree(
+    worktree_path: Path, project_name: str, name: str, recorded: str | None = None,
+) -> str:
     """Best available session name for a worktree, most authoritative first.
 
     1. A live tmux session whose pane cwd IS the worktree (convention-blind).
-    2. A live session among the known naming conventions.
-    3. The flat ``{project}-{name}`` default — nothing live to act on anyway.
+    2. The ``recorded`` name (registry), if a session by that name is live.
+    3. A live session among the known naming conventions.
+    4. ``recorded`` made tmux-legal, else the flat ``{project}-{name}``
+       default — nothing live to act on anyway.
+
+    Reality (1) outranks the registry (2) so an entry written *before* the
+    #868 fix — carrying the unsanitized ``.project-name`` a tmux session can
+    never have — heals on read instead of needing a data migration. Step 4
+    re-sanitizes for the same reason: ``recorded`` still says what convention
+    was used (flat vs ``project/branch``), which we'd lose by re-deriving,
+    but its dots were never legal.
     """
     try:
         resolved = str(worktree_path.resolve())
@@ -1428,11 +1439,13 @@ def _session_for_worktree(worktree_path: Path, project_name: str, name: str) -> 
     if by_path:
         return by_path
 
-    flat = f"{project_name}-{name}"
-    for candidate in (flat, f"{project_name}/{name}", name):
-        if tmux_session_exists(candidate):
+    flat = tmux_safe_name(f"{project_name}-{name}")
+    candidates = (tmux_safe_name(recorded) if recorded else None, recorded, flat,
+                  f"{project_name}-{name}", tmux_safe_name(f"{project_name}/{name}"), name)
+    for candidate in candidates:
+        if candidate and tmux_session_exists(candidate):
             return candidate
-    return flat
+    return tmux_safe_name(recorded) if recorded else flat
 
 
 def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -> WorktreeRef:
@@ -1446,7 +1459,11 @@ def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -
     is agentwire's bookkeeping, git is the ground truth (#855).
     """
     project_name = project_path.name
-    candidates = {name, f"{project_name}-{name}", f"{project_name}/{name}"}
+    # Both the raw and the tmux-legal spelling: a caller can hand us either the
+    # name they typed or the session name they read out of `tmux ls` (#868).
+    candidates = {name, f"{project_name}-{name}", f"{project_name}/{name}",
+                  tmux_safe_name(name), tmux_safe_name(f"{project_name}-{name}"),
+                  tmux_safe_name(f"{project_name}/{name}")}
 
     entry = None
     for e in worktree_registry.entries(project_path):
@@ -1462,7 +1479,8 @@ def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -
         )
         path = found["path"] if found else recorded
         return WorktreeRef(
-            session=entry.get("session") or _session_for_worktree(path, project_name, name),
+            session=_session_for_worktree(
+                path, project_name, name, recorded=entry.get("session")),
             path=path,
             branch=entry.get("branch") or (found or {}).get("branch"),
             base=entry.get("base"),
@@ -1473,9 +1491,18 @@ def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -
 
     # No registry entry — ask git directly. Covers hand-created worktrees,
     # pre-registry ones, and any layout that isn't the documented default.
-    safe_name = safe_worktree_name(name)
-    if safe_name.startswith(f"{project_name}-"):
-        safe_name = safe_name[len(project_name) + 1:]
+    #
+    # Strip a leading project prefix BEFORE sanitizing, so a caller who passes
+    # the full session name gets the same stem either way: post-sanitize the
+    # prefix of a dot-bearing project no longer matches itself (`.claude` →
+    # `-claude`), which left `.claude-fix` un-stripped and unresolvable (#868).
+    stem = name
+    for prefix in (f"{project_name}-", f"{project_name}/",
+                   tmux_safe_name(f"{project_name}-"), tmux_safe_name(f"{project_name}/")):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    safe_name = safe_worktree_name(stem)
 
     found = find_git_worktree(project_path, branch=name, name=name)
     if found is None and safe_name != name:
@@ -1487,7 +1514,7 @@ def _resolve_worktree_entry(name: str, project_path: Path, worktree_dir: Path) -
         )
 
     return WorktreeRef(
-        session=f"{project_name}-{safe_name}",
+        session=worktree_session_name(project_path, safe_name),
         path=worktree_dir / project_name / safe_name,
         source="convention",
     )
@@ -1845,7 +1872,11 @@ def _teardown_entry(
 
     ``worktree_existed`` in the result distinguishes "removed it" from
     "there was nothing at that path", so no caller can print a removal that
-    didn't happen (#855).
+    didn't happen (#855). ``session_existed`` is the same guarantee on the
+    session axis: a name that matched no live tmux session must be REPORTED
+    as unmatched, not folded into a generic "Removed worktree session 'X'" —
+    that silence is what turned #868's name mismatch into a leaked session
+    nobody noticed until it was running in a deleted directory.
     """
     was_registered = is_registered_worktree(project_path, worktree_path)
     worktree_existed = worktree_path.exists()
@@ -1859,14 +1890,18 @@ def _teardown_entry(
         shutil.rmtree(worktree_path, ignore_errors=True)
         hard_deleted_orphan = not worktree_path.exists()
 
+    session_existed = tmux_session_exists(session_name)
+
     if worktree_path.exists():
         reason = remove_error or "worktree directory still present after `git worktree remove --force`"
         return {"success": False, "session": session_name, "path": str(worktree_path),
                 "killed": False, "worktree_removed": False,
-                "worktree_existed": worktree_existed, "error": reason}
+                "worktree_existed": worktree_existed,
+                "session_existed": session_existed,
+                "session_kill_skipped": not kill_session, "error": reason}
 
     killed = False
-    if kill_session and tmux_session_exists(session_name):
+    if kill_session and session_existed:
         subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
         killed = True
 
@@ -1892,6 +1927,8 @@ def _teardown_entry(
     return {"success": True, "session": session_name, "path": str(worktree_path),
             "killed": killed, "worktree_removed": worktree_existed,
             "worktree_existed": worktree_existed,
+            "session_existed": session_existed,
+            "session_kill_skipped": not kill_session,
             "branch": branch, "branch_deleted": branch_deleted, "branch_note": branch_note,
             "orphaned_tabs": orphaned_tabs, "hard_deleted_orphan": hard_deleted_orphan}
 
@@ -1966,8 +2003,10 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
     else:
         removal = (f"; worktree {result['path']} removed" if result.get("worktree_existed")
                    else f"; no worktree at {result['path']} (already gone)")
-        msg = (f"Removed worktree session '{result['session']}'"
-               + (" (killed live session)" if result["killed"] else "")
+        # Leads with the TARGET, not with "removed session X" — the session's
+        # fate is stated separately and always, including "found none" (#868).
+        msg = (f"Teardown '{name}'"
+               + teardown_session_note(result)
                + removal
                + (" (git had no registration for it — hard-deleted the leftover directory)"
                   if result.get("hard_deleted_orphan") else ""))
@@ -2023,17 +2062,12 @@ def cmd_fork(args) -> int:
     worktrees_config = config.get("projects", {}).get("worktrees", {})
     worktree_suffix = worktrees_config.get("suffix", "-worktrees")
 
-    # Build session names (preserve slashes, convert dots to underscores)
-    if source_branch:
-        source_session = f"{source_project}/{source_branch}".replace(".", "_")
-    else:
-        source_session = source_project.replace(".", "_")
-
-    if target_branch:
-        target_session = f"{target_project}/{target_branch}".replace(".", "_")
-    else:
-        # Non-worktree fork: use target project name directly
-        target_session = target_project.replace(".", "_")
+    # Build session names (slashes preserved, dots → underscores)
+    source_session = tmux_safe_name(
+        f"{source_project}/{source_branch}" if source_branch else source_project)
+    # Non-worktree fork: use target project name directly
+    target_session = tmux_safe_name(
+        f"{target_project}/{target_branch}" if target_branch else target_project)
 
     if machine_id:
         # Remote fork
@@ -2255,7 +2289,7 @@ def cmd_fork(args) -> int:
 
     # Create new worktree from source
     fork_commit = getattr(args, "commit", None) or None
-    target_session = f"{target_project}/{target_branch}".replace(".", "_")
+    target_session = tmux_safe_name(f"{target_project}/{target_branch}")
     fork_kind = derive_session_kind(True, None)
     ok, err = create_and_register_worktree(
         source_path,  # Use source as base for the worktree
