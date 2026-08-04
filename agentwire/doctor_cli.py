@@ -592,6 +592,37 @@ def _render_scheduler_staleness_section() -> int:
     return 1
 
 
+def _render_mcp_import_section() -> int:
+    """Doctor section: does the MCP server entrypoint actually import? (#874)
+
+    ``agentwire mcp`` is launched by Claude Code, not by agentwire, so an
+    import-time failure never surfaces as an agentwire error — the client
+    reports a connection close and the agent in the session just finds its
+    ``mcp__agentwire__*`` tools missing. #874 was exactly this: an unbounded
+    ``mcp>=1.2.0`` let a rebuild resolve SDK 2.x, which dropped the
+    ``mcp.server.fastmcp`` module ``mcp_core`` imports, and ``rebuild`` still
+    printed success. Import the real entrypoint chain in a subprocess so a
+    broken server is reported by the tool that is supposed to notice.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", "import agentwire.mcp_server"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if proc.returncode == 0:
+        print("  [ok] MCP server entrypoint imports cleanly")
+        return 0
+
+    err = (proc.stderr or "").strip().splitlines()
+    print("  [!!] MCP server entrypoint fails to import — every mcp__agentwire__* "
+          "tool is missing from every session")
+    if err:
+        print(f"       {err[-1]}")
+    print("       Verify with: claude mcp list   (expect 'agentwire: ✘ Failed to connect')")
+    print("       Usually a dependency resolution: check the bounds in pyproject.toml, "
+          "then `agentwire rebuild`.")
+    return 1
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -777,6 +808,11 @@ def cmd_doctor(args) -> int:
     # currently-running PROCESS that predates the last install.
     print("\nChecking scheduler daemon freshness...")
     issues_found += _render_scheduler_staleness_section()
+
+    # 4e. MCP server entrypoint — a dependency resolution can break it on a
+    # rebuild and the failure only ever shows up client-side (#874).
+    print("\nChecking MCP server entrypoint (#874)...")
+    issues_found += _render_mcp_import_section()
 
     # Check custom services (registry-driven: built-in notifications bridge
     # + user-defined services from services.custom)

@@ -30,7 +30,11 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.2.2",  # >=1.2.2 clears CVE-2026-28684
     "requests>=2.33.0",  # >=2.33.0 clears CVE-2026-25645
-    "mcp>=1.2.0",
+    # <2 is load-bearing: MCP SDK 2.x removed `mcp.server.fastmcp`, which
+    # agentwire/mcp_core.py imports. Unbounded, any `agentwire rebuild` after
+    # the 2.x release resolves it and every mcp__agentwire__* tool silently
+    # disappears from every session (#874). Lift only with a 2.x port.
+    "mcp>=1.2.0,<2",
     "resend>=2.0.0",
     "markdown>=3.5",
     # In-process WebM/Opus decoding for /transcribe (avoids ffmpeg subprocess startup).
