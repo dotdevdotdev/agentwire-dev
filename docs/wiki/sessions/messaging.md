@@ -141,7 +141,7 @@ lands in a durable inbox and is injected only at a safe boundary.
 
 4. **Defer or drop.** If either gate fails, the messages stay put, their
    `attempts` counter bumps, and the defer `reason` (`box_not_empty`,
-   `target_parked`, …) is stamped on each message. After `MAX_ATTEMPTS`
+   `target_not_agent`, …) is stamped on each message. After `MAX_ATTEMPTS`
    (40 ≈ 40 min of a permanently busy session) a message moves to
    `~/.agentwire/inbox/<session>/dead/` carrying that reason + a `dead_ts`, and a
    `dead_letter` event is logged — no infinite retry. `msg dead` surfaces these
@@ -149,14 +149,24 @@ lands in a durable inbox and is injected only at a safe boundary.
 
    Three refinements keep the penalty honest:
 
-   - **No-penalty busy reasons.** `target_busy` (the box can't be parsed — the
-     agent is running a long command) and `queued_placeholder` (the box shows
-     Claude Code's *"Press up to edit queued messages"* — the agent is generating
-     with human-queued input) are *busy*, not refusals. They defer **without**
-     bumping `attempts`, so a legitimately-busy session never burns a report-back
-     toward dead-letter; the message waits and delivers once the box frees up.
-     The placeholder is matched loosely, and only the *penalty* changes — a
-     non-empty box is still never pasted into (see the collision detector below).
+   - **No-penalty "can't take it right now" reasons.** `target_busy` (the box
+     can't be parsed — the agent is running a long command) and
+     `queued_placeholder` (the box shows Claude Code's *"Press up to edit queued
+     messages"* — the agent is generating with human-queued input) are *busy*,
+     not refusals. They defer **without** bumping `attempts`, so a legitimately-busy
+     session never burns a report-back toward dead-letter; the message waits and
+     delivers once the box frees up. The placeholder is matched loosely, and only
+     the *penalty* changes — a non-empty box is still never pasted into (see the
+     collision detector below). `box_static` and `stuck_in_box` join them for the
+     same reason.
+
+     **`target_parked` too (#872).** A usage-limit parked recipient exists and
+     will come back — recovery parses the reset time and nudges the session
+     afterward — it just can't be pasted into without corrupting the resume. It
+     was penalized, which capped tolerance at `MAX_ATTEMPTS` ticks ≈ 40 minutes
+     against a park that routinely runs hours; every `done` a parked parent's
+     workers filed died before the reset landed. It is the most clearly temporary
+     member of the set, and now defers without penalty like the rest.
    - **Gone recipients burn out fast (#694).** Before any box parsing, the
      drain checks the target against the live tmux session list. A recipient
      that *positively doesn't exist* defers as `target_gone` — a penalized

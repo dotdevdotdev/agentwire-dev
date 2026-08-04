@@ -324,10 +324,13 @@ class TestFlush:
         assert len(msgs) == 1 and msgs[0].attempts == 1
 
     def test_defers_when_safe_deliver_refuses(self, isolate, monkeypatch):
+        # A penalized refusal (the pane runs a shell — pasted text could
+        # EXECUTE, and nothing about that is self-clearing). The other refusal,
+        # target_parked, defers WITHOUT penalty — see TestParkedDefer (#872).
         inbox.enqueue("s", "hi", sender="x")
-        _patch_delivery(monkeypatch, empty=True, deliver=(False, "target_parked"))
+        _patch_delivery(monkeypatch, empty=True, deliver=(False, "target_not_agent"))
         res = inbox.flush_session("s")
-        assert res["deferred"] and res["reason"] == "target_parked"
+        assert res["deferred"] and res["reason"] == "target_not_agent"
         assert inbox.list_messages("s")[0].attempts == 1
 
     def test_batch_coalesces(self, isolate, monkeypatch):
@@ -380,12 +383,14 @@ class TestDead:
         assert dead[0].attempts == inbox.MAX_ATTEMPTS
 
     def test_dead_letter_carries_safe_deliver_reason(self, isolate, monkeypatch):
+        # target_not_agent, not target_parked: parked is penalty-free (#872) and
+        # so can never reach the cap.
         inbox.enqueue("s", "stuck", sender="x")
-        _patch_delivery(monkeypatch, empty=True, deliver=(False, "target_parked"))
+        _patch_delivery(monkeypatch, empty=True, deliver=(False, "target_not_agent"))
         for _ in range(inbox.MAX_ATTEMPTS):
             inbox.flush_session("s")
         dead = inbox.list_dead("s")
-        assert len(dead) == 1 and dead[0].reason == "target_parked"
+        assert len(dead) == 1 and dead[0].reason == "target_not_agent"
 
     def test_list_dead_empty(self, isolate):
         assert inbox.list_dead("nobody") == []
@@ -578,6 +583,98 @@ class TestQueuedPlaceholderDefer:
         )
         inbox.flush_session("s")
         assert sent == []  # box non-empty → never delivered into
+
+
+class TestParkedDefer:
+    """#872: a usage-limit parked recipient defers WITHOUT penalty.
+
+    ``safe_deliver`` refuses a parked target (pasting would corrupt the resume),
+    but ``target_parked`` was penalized, so every ~60s watchdog tick burned an
+    attempt and a worker's ``done`` dead-lettered at MAX_ATTEMPTS ≈ 40 min. A
+    real park lasts until the usage-limit reset — routinely hours — so any park
+    worth the name guaranteed the report-back died. Parked is the *exists but
+    can't take it* case (like ``target_busy``), not the ``target_gone`` case.
+
+    Driven through the REAL ``safe_deliver`` and the REAL ``usage_limit``
+    park-state file rather than a stubbed refusal, so the park→no-penalty chain
+    is exercised end to end and un-parking actually releases the message.
+    """
+
+    @pytest.fixture
+    def park(self, tmp_path, monkeypatch):
+        """Park/un-park a session for real, on a throwaway state dir."""
+        from agentwire import session_ready, usage_limit
+
+        state_dir = tmp_path / "usage-limit"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(usage_limit, "STATE_DIR", state_dir)
+
+        # Everything safe_deliver checks BESIDES the park: session exists, pane
+        # runs an agent, no live menu, empty box, nothing already on scrollback.
+        # The park state is the only variable.
+        monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        monkeypatch.setattr(prompt_router, "screen_shows_live_menu", lambda v: False)
+        monkeypatch.setattr(prompt_router, "_capture", lambda t, **kw: "")
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "")
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0, **kw: "")
+
+        sent: list[str] = []
+        monkeypatch.setattr(
+            session_ready, "send_verified",
+            lambda s, text, pane_index=0, **kw: (sent.append(text) or True),
+        )
+
+        assert not usage_limit.is_parked("s")  # fixture really is isolated
+        return SimpleNamespace(
+            sent=sent,
+            on=lambda session: usage_limit.write_park_state({"session": session}),
+            off=lambda session: usage_limit.state_path(session).unlink(),
+        )
+
+    def test_parked_defers_without_penalty(self, isolate, park):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        park.on("s")
+        res = inbox.flush_session("s")
+        assert res["deferred"] and res["reason"] == "target_parked"
+        assert park.sent == []  # never pasted into a parked session
+        assert inbox.list_messages("s")[0].attempts == 0
+
+    def test_parked_never_dead_letters_then_delivers_on_unpark(self, isolate, park):
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        park.on("s")
+        for _ in range(inbox.MAX_ATTEMPTS + 5):
+            inbox.flush_session("s")
+
+        pending = inbox.list_messages("s")
+        assert len(pending) == 1
+        assert pending[0].attempts == 0
+        assert pending[0].reason == "target_parked"
+        assert inbox.list_dead("s") == []  # survived a park longer than the cap
+
+        # The reset nudge un-parks the session — the held report lands.
+        park.off("s")
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and not res["deferred"]
+        assert len(park.sent) == 1 and "PR done" in park.sent[0]
+        assert inbox.list_messages("s") == []
+
+    def test_gone_still_dies_fast_while_parked_waits(self, isolate, park, monkeypatch):
+        """The distinction the fix preserves: parked defers forever, gone doesn't.
+
+        ``target_gone`` is checked before the park gate and keeps its own fast
+        GONE_MAX_ATTEMPTS cap (#694) — making parked penalty-free must not make
+        a positively-absent recipient immortal too.
+        """
+        inbox.enqueue("s", "PR done", kind="done", sender="worker")
+        park.on("s")
+        monkeypatch.setattr(inbox, "live_sessions", lambda: set())  # s is gone
+        for _ in range(inbox.GONE_MAX_ATTEMPTS):
+            inbox.flush_session("s")
+        assert inbox.list_messages("s") == []
+        dead = inbox.list_dead("s")
+        assert len(dead) == 1 and dead[0].reason == "target_gone"
 
 
 class TestBoxStatic:

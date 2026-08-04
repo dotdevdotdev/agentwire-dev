@@ -32,6 +32,7 @@ from .roles import (
     load_roles,
     resolve_roles,
 )
+from .worktree import tmux_safe_name
 
 
 def cmd_history_list(args) -> int:
@@ -190,7 +191,13 @@ def cmd_history_resume(args) -> int:
 
     # Generate session name if not provided
     if not name:
-        base_name = project_path.name.replace(".", "_")
+        # tmux reads `.` as its session.window separator and rewrites it to `_`,
+        # so a project dir carrying one (`~/.claude`) yields the session
+        # `_claude-fork-1`, never `.claude-fork-1`. One implementation of that
+        # mapping, shared with every creation path (#868/#870) — the uniqueness
+        # probe below must run on the sanitized name or it checks for a session
+        # tmux could not have made.
+        base_name = tmux_safe_name(project_path.name)
         # Find unique name with -fork-N suffix
         name = f"{base_name}-fork-1"
         counter = 1
@@ -204,6 +211,11 @@ def cmd_history_resume(args) -> int:
                 break  # Session doesn't exist, use this name
             counter += 1
             name = f"{base_name}-fork-{counter}"
+    else:
+        # Same mapping on an operator-supplied --name: left raw, the
+        # has-session probe and every later `-t <name>` address a *window* that
+        # doesn't exist, while we report a session name tmux never created.
+        name = tmux_safe_name(name)
 
     # Route through resolve_roles with the derived kind so a resumed session
     # carries its kind's intrinsic etiquette. A history-resume has no branch, so
