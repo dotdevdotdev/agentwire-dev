@@ -87,6 +87,12 @@ class TestSessionName:
         inlined_safe = re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
         assert worktree_session_name(project, name) == f"{project.name}-{inlined_safe}"
 
+    def test_dot_in_the_project_dir_is_made_tmux_legal(self, tmp_path):
+        """A helper in ``~/.claude`` must get the name tmux can actually
+        create — cmd_new maps '.' to '_', and a derivation that doesn't
+        agree is #868's leaked session."""
+        assert worktree_session_name(tmp_path / ".claude", "digest") == "_claude-digest"
+
 
 # --- What cmd_helper hands cmd_new -----------------------------------------
 

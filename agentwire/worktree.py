@@ -171,6 +171,27 @@ def safe_worktree_name(name: str) -> str:
     return re.sub(r"[\s/:.]+", "-", name).strip("-") or "wt"
 
 
+def tmux_safe_name(name: str) -> str:
+    """Make ``name`` legal as a tmux session name.
+
+    ``.`` is tmux's ``session.window`` address separator, so **tmux itself**
+    rewrites it to ``_``: ``tmux new-session -d -s .foo`` succeeds and gives
+    you a session named ``_foo``. This mirrors tmux's own mapping rather than
+    inventing one — which is what makes it safe to apply at *resolution*
+    time, since the name derived here is the name tmux will have chosen.
+
+    Creation applied it inline (five copies in ``session_cli``); resolution
+    didn't. So for a project directory containing a dot (``~/.claude``),
+    teardown looked for ``.claude-fix`` while the session was
+    ``_claude-fix`` — matched nothing, killed nothing, reported success, and
+    left the session running in the directory it had just deleted (#868).
+
+    Slashes are preserved — ``project/branch`` is a legal tmux name and is
+    the convention ``cmd_new`` builds for worktree sessions.
+    """
+    return name.replace(".", "_")
+
+
 def worktree_session_name(project_path: Path, name: str) -> str:
     """tmux session name for a child session on ``project_path``.
 
@@ -178,8 +199,32 @@ def worktree_session_name(project_path: Path, name: str) -> str:
     shares — deliberately NOT ``project/name``, which
     :func:`parse_session_name` would read as a branch (and which ``cmd_new``
     would then try to build a worktree for).
+
+    Run through :func:`tmux_safe_name` because the *project* half is a raw
+    directory name that :func:`safe_worktree_name` never touches — a project
+    dir with a ``.`` in it (``~/.claude``, ``foo.bar``) would otherwise yield
+    an unusable name here while ``cmd_new`` created the sanitized one (#868).
     """
-    return f"{Path(project_path).name}-{safe_worktree_name(name)}"
+    return tmux_safe_name(f"{Path(project_path).name}-{safe_worktree_name(name)}")
+
+
+def teardown_session_note(result: dict) -> str:
+    """Human clause for what teardown did to the tmux session.
+
+    Always explicit about all three outcomes — killed it / deliberately left
+    it alone (a ``pane``-topology entry's session belongs to its owning
+    orchestrator) / **found nothing by that name**. The third used to render
+    as no clause at all, so a removal that matched no session read exactly
+    like one that killed it. That silence is what let #868's name mismatch
+    leave a session running in a directory that no longer existed, under a
+    line that said it had been removed.
+    """
+    session = result.get("session") or "?"
+    if result.get("killed"):
+        return " (killed live session)"
+    if result.get("session_kill_skipped"):
+        return f" (session '{session}' left running — it owns other panes)"
+    return f" (NO live tmux session named '{session}' — nothing killed)"
 
 
 def ensure_worktree(
