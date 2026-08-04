@@ -529,18 +529,17 @@ def _scheduler_daemon_started_at() -> float | None:
     Reads the daemon's own self-reported ``started_at`` from the live-state
     file it already writes every loop tick (``scheduler/loop.py`` ->
     ``_write_live_state`` -> ``read_live_state()``) rather than reimplementing
-    process-start-time discovery via ``ps``/``pgrep`` PID matching, which is
-    both platform-fragile (``ps`` elapsed-time output format varies) and
-    ambiguous if a stray/duplicate daemon process happens to be running.
-    ``tmux_session_exists`` confirms the daemon is actually alive, so a
-    leftover live-state file from a since-stopped daemon doesn't produce a
-    false "stale" reading.
+    process-start-time discovery via ``ps`` elapsed-time parsing, which is
+    platform-fragile. ``live_daemon_state`` verifies the recorded PID is a live
+    scheduler process, so a leftover file from a since-stopped daemon doesn't
+    produce a false "stale" reading — and unlike the ``tmux_session_exists``
+    gate it replaced (#873), it also sees a daemon supervised outside tmux,
+    where skipping this check silently disabled the most useful diagnostic
+    exactly when it was needed.
     """
-    from .scheduler import SCHEDULER_SESSION, read_live_state
+    from .scheduler import live_daemon_state
 
-    if not tmux_session_exists(SCHEDULER_SESSION):
-        return None
-    state = read_live_state()
+    state = live_daemon_state()
     if not state:
         return None
     started_at = state.get("started_at")
@@ -551,6 +550,23 @@ def _scheduler_daemon_started_at() -> float | None:
         return datetime.fromisoformat(started_at).timestamp()
     except (ValueError, TypeError):
         return None
+
+
+def _scheduler_daemon_predates_pid_stamp() -> bool:
+    """True when a tmux-hosted daemon is up but its live state records no PID.
+
+    The one transitional state #873 leaves behind: a daemon started before the
+    PID stamp existed is alive but unverifiable. tmux is evidence enough to say
+    "something is running" here — it just isn't evidence anyone should keep
+    inferring liveness from, which is why it lives in this diagnostic rather
+    than back in ``live_daemon_state``.
+    """
+    from .scheduler import SCHEDULER_SESSION, read_live_state
+
+    state = read_live_state()
+    if not state or isinstance(state.get("pid"), int):
+        return False
+    return tmux_session_exists(SCHEDULER_SESSION)
 
 
 def _newest_installed_source_mtime(pkg_dir: Path | None = None) -> float:
@@ -573,9 +589,20 @@ def _render_scheduler_staleness_section() -> int:
     up since before the last rebuild is silently executing stale dispatch
     logic: any bug fixed since then stays live in production until the
     daemon is restarted.
+
+    Also flags the one state where liveness genuinely cannot be determined: a
+    daemon started before #873 writes no ``pid``, so nothing can verify it.
+    That is itself a stale daemon, and saying so beats reporting it as stopped.
     """
     started_at = _scheduler_daemon_started_at()
     if started_at is None:
+        if _scheduler_daemon_predates_pid_stamp():
+            print("  [!!] Scheduler daemon records no PID — it predates the "
+                  "PID-based liveness check (#873)")
+            print("       Liveness and the staleness check below can't be verified "
+                  "until it restarts.")
+            print("       Fix: agentwire scheduler stop && agentwire scheduler start")
+            return 1
         print("  [..] Scheduler daemon not running — skipping staleness check")
         return 0
 

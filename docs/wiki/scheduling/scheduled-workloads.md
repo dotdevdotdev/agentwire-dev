@@ -434,3 +434,47 @@ tasks:
 ```
 
 Each night: tests task and lint task each fork their own branch, do their work, and open a draft PR. Morning report runs after both, generates an HTML dashboard showing statuses and PR links.
+
+---
+
+## Daemon Liveness and the Single-Dispatcher Rule (#873)
+
+**One board, one dispatcher.** Two `agentwire scheduler serve` processes against
+the same `scheduler.yaml` double-dispatch tasks: the same task fires twice, the
+first attempt usually times out, a later one completes, and the board shows both.
+
+Liveness is determined from the daemon's own live-state file
+(`~/.agentwire/scheduler-live.json`), which records the writing process's `pid`
+on every loop tick. `live_daemon_state()` (`agentwire/scheduler/report.py`) is
+the single source of truth: it returns the state only when that PID is alive
+*and* its command line still looks like a scheduler, so a leftover file from a
+stopped daemon reads as not-running, and a recycled PID can't masquerade as one.
+
+This replaced `tmux_session_exists("agentwire-scheduler")`, which only ever knew
+about daemons tmux itself hosts. A daemon under an external supervisor (launchd
+`RunAtLoad` + `KeepAlive`) has no tmux session, so it:
+
+- reported as `stopped` while it was actively dispatching, and
+- caused `agentwire doctor` to **skip** the daemon-staleness check — the
+  diagnostic that catches a wedged daemon — exactly where it was most needed.
+
+Everything that asks "is the scheduler running" now routes through the same
+check:
+
+| Surface | Behavior |
+|---|---|
+| `agentwire scheduler status` | Reports `running (pid N, tmux \| external supervisor)` |
+| `agentwire scheduler serve` | **Refuses to start** if a daemon is already live (`--force` overrides) |
+| `agentwire scheduler start` | Refuses when a daemon is live outside tmux |
+| `agentwire scheduler stop` | Says "running outside tmux — stop it through its supervisor" instead of the false "not running" |
+| `agentwire doctor` | Runs the staleness check for tmux and non-tmux daemons alike |
+| Portal autostart (`scheduler.autostart`) | Skips with a logged notice when any daemon is live, not just a tmux one |
+
+`scheduler.autostart` still defaults to `true`. With the guard in place that is
+safe alongside an external supervisor: the portal checks first and logs why it
+declined, rather than silently adding a second dispatcher on every launch.
+
+**One transitional state:** a daemon started before this change writes no `pid`,
+so nothing can verify it. `doctor` flags that explicitly (`records no PID —
+predates the PID-based liveness check`) rather than reporting it as stopped.
+Restarting the daemon clears it — which a rebuild already requires anyway.

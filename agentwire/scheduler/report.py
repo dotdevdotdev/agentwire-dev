@@ -1,6 +1,8 @@
 """Event logging, live state, portal notifications, and board display."""
 
 import json
+import os
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -30,9 +32,19 @@ def _log_event(event: str, **fields) -> None:
 
 
 def _write_live_state(**fields) -> None:
-    """Atomically write the live state JSON file."""
+    """Atomically write the live state JSON file.
+
+    The writer's own PID is stamped on every write (#873). Liveness used to be
+    inferred from ``tmux_session_exists(SCHEDULER_SESSION)``, which is false for
+    a daemon supervised outside tmux (launchd), so a running daemon read as
+    ``stopped`` and doctor skipped its staleness check exactly when it mattered.
+    The PID is what the tmux gate was standing in for: something that says "the
+    process that wrote this file is still alive", so a leftover file from a
+    since-stopped daemon can't read as live. See :func:`live_daemon_state`.
+    """
     from agentwire import scheduler as _sched
 
+    fields["pid"] = os.getpid()
     try:
         live_path = _sched._sched_config().live_state_file
         live_path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,3 +271,62 @@ def read_live_state() -> dict | None:
         return json.loads(live_path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _pid_is_scheduler(pid: int) -> bool:
+    """Is *pid* a live process, and does it look like a scheduler daemon?
+
+    Two checks, in order of cost:
+
+    1. ``os.kill(pid, 0)`` — a pure syscall. ``ProcessLookupError`` means dead;
+       ``PermissionError`` means alive but owned by someone else.
+    2. The process's command line, via ``ps``, must mention ``scheduler``. PIDs
+       are recycled, and treating an unrelated process that inherited a dead
+       daemon's PID as "the scheduler is running" would suppress the autostart
+       guard and leave the board with no dispatcher at all. If ``ps`` is
+       unavailable or unreadable we keep the step-1 answer rather than
+       reporting a live daemon as dead.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "args="],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if out.returncode != 0 or not out.stdout.strip():
+        return True
+    return "scheduler" in out.stdout
+
+
+def live_daemon_state() -> dict | None:
+    """Live state of a VERIFIED-ALIVE scheduler daemon, else ``None`` (#873).
+
+    The single source of truth for "is the scheduler daemon running". Every
+    status surface (``scheduler status``, ``doctor``, the portal's autostart
+    guard) routes through here instead of asking tmux, because tmux only knows
+    about daemons it hosts — a launchd-supervised ``agentwire scheduler serve``
+    is invisible to it, which both misreported liveness and let the portal
+    autostart a SECOND dispatcher onto the same board.
+
+    A state file with no ``pid`` was written by a daemon predating this change
+    and cannot be verified, so it reads as not-running; restarting the daemon
+    (which a rebuild already requires) heals it.
+    """
+    state = read_live_state()
+    if not state:
+        return None
+    pid = state.get("pid")
+    if not isinstance(pid, int):
+        return None
+    return state if _pid_is_scheduler(pid) else None

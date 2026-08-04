@@ -19,18 +19,12 @@ class SchedulerRoutesMixin:
     async def api_scheduler_live(self, request: web.Request) -> web.Response:
         """GET /api/scheduler/live - Live scheduler state.
 
-        Checks if the scheduler tmux session is actually running.
-        Returns 404 with running=false if the daemon isn't active,
-        even if a stale state file exists.
+        Verifies the daemon is actually alive (recorded PID, not a tmux session
+        name) so a stale state file never reads as running, and a daemon
+        supervised outside tmux is never reported as stopped (#873).
         """
         try:
-            # Check if scheduler tmux session is alive
-            is_running = await self._is_scheduler_running()
-            if not is_running:
-                return web.json_response({"running": False}, status=404)
-
-            from ..scheduler import read_live_state
-            state = read_live_state()
+            state = await self._live_scheduler_state()
             if state is None:
                 return web.json_response({"running": False}, status=404)
             state["running"] = True
@@ -38,15 +32,24 @@ class SchedulerRoutesMixin:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _live_scheduler_state(self) -> dict | None:
+        """Live state of a verified-alive daemon, or ``None``.
+
+        Off-thread: the liveness check shells out to ``ps``, which must not sit
+        on the event loop.
+        """
+        from ..scheduler import live_daemon_state
+        return await asyncio.to_thread(live_daemon_state)
+
     async def _is_scheduler_running(self) -> bool:
-        """Check if the agentwire-scheduler tmux session exists."""
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "has-session", "-t", "=agentwire-scheduler",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        return proc.returncode == 0
+        """Is a scheduler daemon dispatching against this board?
+
+        Was ``tmux has-session``, which only ever saw daemons tmux itself
+        hosts — so the portal's autostart happily launched a second dispatcher
+        alongside a launchd-supervised one, and the board double-dispatched
+        (#873).
+        """
+        return await self._live_scheduler_state() is not None
 
     async def api_scheduler_events(self, request: web.Request) -> web.Response:
         """GET /api/scheduler/events - Recent scheduler events."""
@@ -106,9 +109,20 @@ class SchedulerRoutesMixin:
     async def _start_scheduler_daemon(self) -> bool:
         """Launch the scheduler daemon in a detached tmux session.
 
-        No-op if it's already running. Returns True if it was started.
+        No-op if a daemon is already dispatching — including one this portal
+        did not start and tmux cannot see (#873). Skipping is logged rather
+        than silent, so "the portal didn't start it" is visible in the log
+        instead of being inferred from a board that dispatches twice.
+
+        Returns True if it was started.
         """
-        if await self._is_scheduler_running():
+        live = await self._live_scheduler_state()
+        if live is not None:
+            logger.info(
+                "Scheduler daemon already running (pid %s, up since %s) — "
+                "skipping autostart to avoid a second dispatcher",
+                live.get("pid"), live.get("started_at"),
+            )
             return False
         # Create tmux session and launch scheduler serve (same as CLI but detached)
         proc = await asyncio.create_subprocess_exec(
