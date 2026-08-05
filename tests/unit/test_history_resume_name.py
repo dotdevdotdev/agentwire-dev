@@ -30,17 +30,17 @@ def resume(tmp_path, monkeypatch):
     monkeypatch.setattr(history_cli, "load_config", lambda: {})
     monkeypatch.setattr(history_cli, "inject_soul", lambda names, cfg: names)
     monkeypatch.setattr(history_cli, "resolve_roles", lambda kind, project_roles=None: [])
+    # Return a REAL AgentCommand, not a look-alike. A launch also writes the
+    # session's metadata record (#871), so the stub has to carry every
+    # attribute `record_session_launch` reads — a hand-rolled SimpleNamespace
+    # broke this suite once when the dataclass grew a field (#891) and would
+    # break it again on the next one.
+    from agentwire.core import AgentCommand
+
     monkeypatch.setattr(
         history_cli, "build_agent_command",
-        # The fake must carry every attribute record_session_launch reads off an
-        # AgentCommand (#871), not just the ones cmd_history_resume itself uses —
-        # a launch now also WRITES the session's metadata record.
-        lambda posture, roles, resume_session_id=None: SimpleNamespace(
-            command="claude",
-            conversation_id=None,
-            posture=posture,
-            roles=roles or [],
-            role_prompt_path=None,
+        lambda posture, roles, resume_session_id=None: AgentCommand(
+            command="claude", posture=posture, roles=roles or [],
         ),
     )
     monkeypatch.setattr(history_cli, "_notify_portal_sessions_changed", lambda: None)

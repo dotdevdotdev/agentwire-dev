@@ -525,6 +525,145 @@ def _render_orphaned_worktrees_section() -> int:
     return len(orphans)
 
 
+def scan_orphaned_history(sessions: list[str] | None = None) -> list[dict]:
+    """Recorded sessions whose conversation is intact but unreachable (#871).
+
+    Claude keys conversation history by cwd (``~/.claude/projects/<encoded-cwd>/``),
+    so a session whose directory MOVED has a transcript that still exists and
+    can no longer be found: ``--resume`` from the new location reports
+    ``No conversation found with session ID``. That is a distinct state from
+    "history gone", and only this one is recoverable — by migrating the
+    history dir alongside the worktree.
+
+    Two ways in, one rule. The key we compare against is where the session
+    RUNS: its live pane cwd when it's up (that's what a moved directory
+    changes, and tmux is the authority on it — the same ask-don't-assume rule
+    #837 put on worktree paths), else the recorded ``cwd_at_launch``.
+
+    **This SURVEYS the whole chain; ``restart`` stops at the first hit.** They
+    share ``history.locate_conversation`` — one predicate — but they are asking
+    different questions, and collapsing them was a real bug: restart wants
+    "the newest resumable id" (first match wins, correct for it), and the
+    moment a restart created a fresh conversation with a transcript, an older
+    orphaned link became unreachable to a first-match scan. Doctor went quiet
+    one turn after the restart, with both orphaned transcripts still on disk —
+    silence for exactly the user who did the natural thing. So every link in
+    ``conversation_ids`` is probed here, and any orphan among them is reported
+    whether or not a later link resumes.
+
+    Returns both non-resumable states, tagged by ``status``, because only one
+    of them is a fault:
+
+    - ``orphaned`` — the fault. Reported and counted. ``current`` says whether
+      the session's newest conversation is the affected one (nothing resumes)
+      or whether it is an earlier link (the session works; stranded history is
+      sitting next to it).
+    - ``gone`` — no history anywhere, and this cannot say WHY: a session that
+      was never prompted has no transcript because none was ever written
+      (lazy creation), and Claude also evicts from its own cache
+      (``~/.claude/projects/`` was observed dropping 563 -> 544 in ~25min with
+      ``cleanupPeriodDays`` unset, cause undetermined). Reported for LIVE
+      sessions only, as information, never as an issue — a live session is one
+      you might actually restart, whereas counting every dead record would
+      flag hundreds of them, most of which nobody will ever relaunch.
+    """
+    from .core import load_session_metadata, recorded_sessions, tmux_session_cwd
+    from .history import locate_conversation
+
+    findings: list[dict] = []
+    for name in sessions if sessions is not None else recorded_sessions():
+        metadata = load_session_metadata(name)
+        ids = list(metadata.get("conversation_ids") or [])
+        recorded_cwd = metadata.get("cwd_at_launch")
+        if not ids or not recorded_cwd:
+            continue  # nothing recorded to check (pre-#871 session record)
+
+        live = tmux_session_exists(name)
+        running_in = (tmux_session_cwd(name) if live else None) or recorded_cwd
+
+        # Newest first, mirroring the order restart walks — so "the current
+        # conversation" is the first link, and the orphans read in the order
+        # anyone would care about them.
+        located = [locate_conversation(cid, running_in) for cid in reversed(ids)]
+        orphans = [loc for loc in located if loc.status == "orphaned"]
+        resumable = next((loc for loc in located if loc.resumable), None)
+
+        common = {
+            "session": name,
+            "running_in": running_in,
+            "recorded_cwd": recorded_cwd,
+            "moved": str(Path(running_in)) != str(Path(recorded_cwd)),
+            "live": live,
+        }
+
+        if orphans:
+            findings.append({
+                **common,
+                "status": "orphaned",
+                "conversation_id": orphans[0].conversation_id,
+                "expected_dir": str(orphans[0].expected_dir),
+                "found_at": str(orphans[0].elsewhere[0]),
+                "orphaned_ids": [loc.conversation_id for loc in orphans],
+                # Does the session's CURRENT conversation resume? An earlier
+                # orphaned link is stranded history next to a working session;
+                # an orphaned newest link is a session that can't come back.
+                "current": resumable is None,
+            })
+        elif resumable is None and live:
+            findings.append({
+                **common,
+                "status": "gone",
+                "conversation_id": located[0].conversation_id,
+                "expected_dir": str(located[0].expected_dir),
+                "found_at": None,
+                "orphaned_ids": [],
+                "current": True,
+            })
+    return findings
+
+
+def _render_orphaned_history_section() -> int:
+    """Doctor section: conversations a restart could not bring back (#871).
+
+    Counts the orphans only; the ``gone`` lines are stated, not scored (see
+    :func:`scan_orphaned_history`).
+    """
+    findings = scan_orphaned_history()
+    orphaned = [f for f in findings if f["status"] == "orphaned"]
+    gone = [f for f in findings if f["status"] == "gone"]
+
+    if not orphaned:
+        print("  [ok] No sessions with orphaned conversation history")
+    else:
+        print(f"  [!!] {len(orphaned)} session(s) whose conversation history is orphaned:")
+        for f in orphaned:
+            state = "live" if f["live"] else "not running"
+            scope = "current conversation" if f["current"] else "earlier in the chain"
+            extra = len(f["orphaned_ids"]) - 1
+            print(f"       - {f['session']} ({state}) conversation "
+                  f"{f['conversation_id'][:8]} — {scope}"
+                  + (f", +{extra} more orphaned" if extra > 0 else ""))
+            print(f"         runs in:  {f['running_in']}"
+                  + ("   [moved since launch]" if f["moved"] else ""))
+            print(f"         history:  {f['found_at']}")
+            print(f"         expected: {f['expected_dir']}/")
+        print("       Recover with `agentwire history migrate` — the transcripts are "
+              "intact, just keyed to the old path. Until then `agentwire restart` on a "
+              "'current conversation' one starts FRESH (role intact) rather than "
+              "failing, and never silences this line.")
+
+    if gone:
+        print(f"  [..] {len(gone)} live session(s) with no conversation history on disk "
+              "(never prompted, or evicted by Claude — not determinable here):")
+        for f in gone:
+            print(f"       - {f['session']} conversation {f['conversation_id'][:8]} "
+                  f"(expected {f['expected_dir']}/)")
+        print("       Not a fault. Restarting these keeps the role and starts a fresh "
+              "conversation.")
+
+    return len(orphaned)
+
+
 def _render_pending_messages_section() -> int:
     """Doctor section: load-bearing messages queued too long (#879).
 
@@ -1384,6 +1523,16 @@ def cmd_doctor(args) -> int:
         issues_found += _render_orphaned_worktrees_section()
     except Exception as e:
         print(f"  [..] Could not check for orphaned worktrees: {e}")
+
+    # 11c. Sessions whose Claude conversation is intact but keyed to a cwd they
+    # no longer run in (#871) — a moved directory strands the transcript where
+    # `--resume` will never look. Distinct from "history gone" (a cache Claude
+    # owns and evicts), which this deliberately stays quiet about.
+    print("\nChecking for orphaned conversation history (#871)...")
+    try:
+        issues_found += _render_orphaned_history_section()
+    except Exception as e:
+        print(f"  [..] Could not check for orphaned conversation history: {e}")
 
     # 12. Projects whose inline .agentwire.yml tasks were never migrated to the
     # promoted .agentwire.tasks.yml (#736). The #720/#721 task-split moved where

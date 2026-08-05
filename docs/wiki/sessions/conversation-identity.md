@@ -219,10 +219,91 @@ recorded to *regenerate* the prompt rather than merely reference it), and say
 so, rather than passing `--resume <id>` and surfacing Claude's raw
 `No conversation found with session ID`.
 
-Concretely, for the follow-up work: `agentwire restart` must handle it as a
-normal branch, and the `doctor` check must distinguish *orphaned* (history
-exists under a different cwd key — recoverable by migration) from *gone*
-(no history anywhere — not recoverable, relaunch fresh).
+Concretely: `agentwire restart` handles it as a normal branch, and the `doctor`
+check distinguishes *orphaned* (history exists under a different cwd key —
+recoverable by migration) from *gone* (no history anywhere — not recoverable,
+relaunch fresh).
+
+### One predicate
+
+Both live and dead states reduce to a single question, `history.
+locate_conversation` is the one place that asks it, and `restart` and `doctor`
+both call it so they can never disagree:
+
+```
+resumable(id, cwd) == exists(<encoded_cwd>/<id>.jsonl)
+```
+
+That one file governs both directions of the flag pair. `--resume` finds the
+conversation iff the file is there; `--session-id` rejects an id as "already in
+use" iff the file is there. Re-passing the id of a session that never took a
+turn is *accepted*, because nothing was ever written — the transcript is
+created lazily, on the first turn.
+
+The cwd key comes from `history.encode_project_path`, which collapses **every**
+non-alphanumeric character to `-`, not just the separators: `/Users/dotdev/.claude`
+is stored as `-Users-dotdev--claude`, and `enc b.c_d` as `enc-b-c-d`. Measured
+against the installed Claude Code, the same way #878 established tmux's
+mapping. Encoding only `/` (#892) produced a key no directory ever had for any
+path with a dot, underscore or space.
+
+## Restarting in place
+
+`agentwire restart -s <session>` is the verb the record exists for: `/exit`,
+regenerate the launch flags, relaunch at the same cwd with `--resume`. The
+alternatives all cost something — `recreate` `rm -rf`s the worktree and cuts a
+new branch, `history resume` forks into a *new* tmux session, `kill` + `new`
+drops the conversation entirely. It also works on a session that isn't
+currently running, which is the post-reboot case the epic opens with.
+
+**Regenerate, never re-evaluate.** The flags are rebuilt from the recorded
+`roles` / `posture` / `model` through `build_agent_command`. The previous
+launch line is still sitting in the tmux session env as `AGENTWIRE_LAUNCH_CMD`,
+and re-`eval`ing it is the one thing that must not happen: it carries a
+single-use `--session-id`, so the relaunch dies with "already in use" and drops
+the pane to exactly the bare shell `_guarded_launch_command` exists to prevent.
+The recorded id is only ever passed to `--resume`.
+
+**The chain is walked newest-first**, not read from the tail. A session that
+was relaunched and then never spoken to has no transcript for its newest id at
+all, while the id it forked *from* still holds the whole conversation — taking
+only the tail would throw that away and start blank.
+
+**Degradation is a normal branch, and it is stated.** When nothing in the chain
+resolves, restart launches fresh with the role intact and prints why —
+`orphaned` names the key the history actually sits under, `gone` says it was
+either never prompted or evicted. It never passes `--resume` at a conversation
+it hasn't found, so Claude's raw `No conversation found with session ID` is
+never what the operator sees.
+
+Refusals, all up front: a remote session (the probe is local), a recorded cwd
+that no longer exists, no launch record at all, and **restarting itself** —
+`/exit` + `kill-session` would take down the tmux session the command is
+running in, leaving nothing to relaunch. A missing *role* file warns instead of
+refusing: a partial role beats stranding the session with no way back, but the
+relaunched agent's etiquette differs from what it was launched with, so it is
+said loudly.
+
+Restart appends to the record rather than rewriting it: `created_by`,
+`created_via` and `role` survive untouched, because a restart is not a
+creation.
+
+## Detecting orphaned history
+
+`agentwire doctor` reports sessions whose conversation is intact but keyed to a
+directory they no longer run in. The key it compares against is where the
+session **runs** — its live pane cwd (`core.tmux_session_cwd`) when it's up,
+else `cwd_at_launch` — which is what catches the case where the record and the
+transcript still agree with each other and are both stale because the directory
+moved underneath them.
+
+It scores orphans only. A conversation with no history *anywhere* is stated for
+live sessions and never counted, because this check cannot say why it's missing
+— never-prompted and Claude-evicted look identical from here — and because
+scoring it would flag hundreds of dead records. Calibration, measured on a real
+store while building it: 466 session records, 7 carrying `conversation_ids`, 28
+recorded ids with no transcript, **0** genuinely orphaned — and all 28 belonged
+to a single record the test suite had polluted (#893).
 
 ## Who writes it
 

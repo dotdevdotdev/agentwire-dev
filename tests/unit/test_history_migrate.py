@@ -11,6 +11,11 @@ import os
 import pytest
 
 from agentwire import history_migrate as hm
+from agentwire.history import encode_project_path
+
+#: The minimum that makes a transcript a CONVERSATION rather than a metadata
+#: stub — a stub is a DEAD id, resumable by nothing (see history.holds_a_conversation).
+TURN = '{"type":"user","message":{"role":"user"}}\n'
 
 
 @pytest.fixture
@@ -32,7 +37,7 @@ def session_store(tmp_path, monkeypatch):
 
 
 def seed(projects, cwd, files=(("conv.jsonl", '{"type":"user"}\n'),)):
-    d = projects / hm.encode_project_path(str(cwd))
+    d = projects / encode_project_path(str(cwd))
     d.mkdir(parents=True)
     for name, content in files:
         (d / name).write_text(content)
@@ -50,7 +55,7 @@ class TestHistoryKeyCandidates:
         link.symlink_to(real)
         candidates = hm.history_key_candidates(link)
         assert len(candidates) == 2
-        assert hm.encode_project_path(str(real)) in candidates
+        assert encode_project_path(str(real)) in candidates
 
 
 class TestPlan:
@@ -174,7 +179,7 @@ class TestApply:
         can fix — the two projects genuinely share a history directory. The
         honest answer is that there is nothing to move.
         """
-        assert hm.encode_project_path("/p/a_b") == hm.encode_project_path("/p/a.b")
+        assert encode_project_path("/p/a_b") == encode_project_path("/p/a.b")
         seed(projects, "/p/a_b")
         assert hm.plan("/p/a_b", "/p/a.b")["status"] == hm.ALIGNED
 
@@ -270,7 +275,7 @@ class TestMixedProvenance:
         (d / name).write_text(json.dumps({"type": "user", "cwd": cwd}) + "\n")
 
     def test_uniform_source_is_not_flagged(self, projects):
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         self._jsonl(d, "a.jsonl", "/p/one")
         self._jsonl(d, "b.jsonl", "/p/one")
@@ -280,7 +285,7 @@ class TestMixedProvenance:
 
     def test_foreign_transcripts_are_reported(self, projects):
         """One such directory really exists on the machine this was built on."""
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         self._jsonl(d, "a.jsonl", "/p/one")
         self._jsonl(d, "b.jsonl", "/p/elsewhere")
@@ -298,7 +303,7 @@ class TestMixedProvenance:
         Relocating all 13 would orphan the 6 — the exact property this module
         leads with. Only the matching ones move; the rest stay put.
         """
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         for i in range(7):
             self._jsonl(d, f"own{i}.jsonl", "/p/one")
@@ -308,14 +313,14 @@ class TestMixedProvenance:
         result = hm.apply("/p/one", "/p/moved")
         assert result["status"] == hm.MIGRATED
 
-        moved = {p.name for p in (projects / hm.encode_project_path("/p/moved")).glob("*.jsonl")}
+        moved = {p.name for p in (projects / encode_project_path("/p/moved")).glob("*.jsonl")}
         assert moved == {f"own{i}.jsonl" for i in range(7)}
         # Every original is still where it was — nothing was orphaned.
         assert len(list(d.glob("*.jsonl"))) == 13
 
     def test_prune_source_refuses_when_transcripts_were_left_behind(self, projects):
         """Otherwise --prune-source destroys exactly what we declined to move."""
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         self._jsonl(d, "own.jsonl", "/p/one")
         self._jsonl(d, "other.jsonl", "/p/elsewhere")
@@ -327,7 +332,7 @@ class TestMixedProvenance:
         assert (d / "other.jsonl").exists()
 
     def test_prune_source_still_works_for_a_clean_source(self, projects):
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         self._jsonl(d, "own.jsonl", "/p/one")
         result = hm.apply("/p/one", "/p/moved", prune_source=True)
@@ -336,7 +341,7 @@ class TestMixedProvenance:
 
     def test_files_without_a_readable_cwd_travel_with_the_migration(self, projects):
         """No evidence of foreignness, and the source is retained regardless."""
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         self._jsonl(d, "own.jsonl", "/p/one")
         (d / "nocwd.jsonl").write_text('{"type":"user"}\n')
@@ -344,12 +349,12 @@ class TestMixedProvenance:
         (d / "memory" / "MEMORY.md").write_text("# notes")
 
         hm.apply("/p/one", "/p/moved")
-        dest = projects / hm.encode_project_path("/p/moved")
+        dest = projects / encode_project_path("/p/moved")
         assert (dest / "nocwd.jsonl").exists()
         assert (dest / "memory" / "MEMORY.md").exists()
 
     def test_unreadable_transcripts_do_not_block(self, projects):
-        d = projects / hm.encode_project_path("/p/one")
+        d = projects / encode_project_path("/p/one")
         d.mkdir(parents=True)
         (d / "broken.jsonl").write_text("not json at all\n")
         (d / "nocwd.jsonl").write_text('{"type":"user"}\n')
@@ -359,9 +364,10 @@ class TestMixedProvenance:
 class TestResumable:
     """``resumable(id, cwd) == exists(<encoded-cwd>/<id>.jsonl)`` — one predicate."""
 
+
     def test_true_when_the_transcript_is_there(self, projects):
         d = seed(projects, "/place")
-        (d / "abc-123.jsonl").write_text("{}")
+        (d / "abc-123.jsonl").write_text(TURN)
         assert hm.resumable("abc-123", "/place") is True
 
     def test_false_for_a_launched_but_never_prompted_session(self, projects):
@@ -374,7 +380,7 @@ class TestResumable:
 
     def test_follows_the_history_after_a_migration(self, projects):
         d = seed(projects, "/old/place")
-        (d / "abc-123.jsonl").write_text("{}")
+        (d / "abc-123.jsonl").write_text(TURN)
         assert hm.resumable("abc-123", "/new/place") is False
         hm.apply("/old/place", "/new/place")
         assert hm.resumable("abc-123", "/new/place") is True

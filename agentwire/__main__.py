@@ -190,7 +190,7 @@ Command Categories:
     from . import doctor_cli, history_cli, machine_cli, safety_cli
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
     from . import notify_cli, palette_cli, push_cli, repo_cli, system_cli, wiki_cli
-    from . import tabs_cli, wait_cli, worktree_cli
+    from . import restart_cli, tabs_cli, wait_cli, worktree_cli
     from .council import cli as council_cli
 
     _REGISTRARS = [  # noqa: N806  # registry constant; Phase 1 of #495 appends here
@@ -201,6 +201,7 @@ Command Categories:
         pane_cli.register_pane_parser,
         send_cli.register_send_parser,
         session_cli.register_session_parser,
+        restart_cli.register_restart_parser,
         portal_cli.register_portal_parser,
         tts_cli.register_tts_parser,
         channels_cli.register_channels_parser,

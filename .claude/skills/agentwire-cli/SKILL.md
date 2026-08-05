@@ -28,6 +28,17 @@ agentwire info -s name          # session metadata (cwd, panes) as JSON
 agentwire kill -s name          # not: tmux kill-session
 agentwire list                  # not: tmux list-sessions
 agentwire recreate -s name      # destroy and recreate with fresh worktree
+                                #   DESTRUCTIVE: rm -rf's the worktree dir + new branch
+agentwire restart -s name       # relaunch IN PLACE, same conversation (#871) — /exit,
+                                #   regenerate flags from the recorded roles/posture/model,
+                                #   relaunch at the same cwd with --resume. Nothing on disk
+                                #   is touched (unlike recreate) and no new tmux session is
+                                #   made (unlike `history resume`). Works on a session that
+                                #   ISN'T running — that's the post-reboot/post-rebuild case.
+                                #   If the conversation's history is orphaned or gone it
+                                #   starts FRESH with the role intact and says so.
+                                #   Waits for the agent to come back (exit 1 if it doesn't);
+                                #   --no-wait skips. Local only; can't restart itself.
 agentwire wait --children       # BLOCK on the child sessions you spawned (#852) — collects
                                 #   each report, tears the child down, names the ones that
                                 #   never reported. Waiting idly instead gets YOU reaped

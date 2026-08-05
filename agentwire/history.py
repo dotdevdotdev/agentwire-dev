@@ -10,6 +10,7 @@ Supports both local and remote machines via SSH for distributed setups.
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .ssh import ssh_base_opts
@@ -122,6 +123,172 @@ def encode_project_path(path: str) -> str:
 HISTORY_DIR_SHELL = (
     "\"$HOME/.claude/projects/$(pwd -P | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')\""
 )
+
+
+def history_key_sources(cwd: str | Path) -> list[str]:
+    """The cwd spellings a transcript might be keyed under, best first.
+
+    Normally there is exactly one. There are two when the recorded path and
+    its symlink-resolved form differ — the ``/tmp`` vs ``/private/tmp`` split
+    on macOS being the case that actually bites, since ``cwd_at_launch`` is
+    recorded verbatim from the caller while Claude Code keys off the physical
+    path its process reports. Checking both is the difference between finding
+    the transcript and reporting a false "absent".
+    """
+    raw = str(cwd)
+    out = [raw]
+    try:
+        resolved = str(Path(raw).expanduser().resolve())
+    except OSError:
+        resolved = raw
+    if resolved != raw:
+        out.append(resolved)
+    return out
+
+
+def history_key_candidates(cwd: str | Path) -> list[str]:
+    """:func:`history_key_sources`, encoded — the directory names to check."""
+    return [encode_project_path(p) for p in history_key_sources(cwd)]
+
+
+#: Record types that make a transcript a CONVERSATION rather than a stub.
+#: See :func:`holds_a_conversation`.
+_TURN_TYPES = {"user", "assistant"}
+
+
+def holds_a_conversation(transcript: Path) -> bool:
+    """Whether a ``.jsonl`` holds actual turns, not just session metadata.
+
+    The file EXISTING is not enough, which is measured rather than assumed.
+    Restarting a session whose history had been moved away left a 5-line file
+    at the new key — ``last-prompt``, ``ai-title``, ``mode``,
+    ``permission-mode``, ``file-history-snapshot`` — written by Claude as a
+    side effect, with the real conversation still stranded under the old key.
+    ``claude --resume`` on that id answered ``No conversation found with
+    session ID``, so the file that looked like a hit was one claude refuses.
+
+    That mattered concretely: ``restart`` would have passed the id to
+    ``--resume``, claude would have refused to start, and the pane would have
+    dropped to a bare shell — while ``doctor`` reported the orphan as healed.
+    A conversation always carries at least one ``user``/``assistant`` record;
+    the stub carries none, which is the whole difference.
+
+    Streams and stops at the first turn, so the cost is a few lines rather
+    than the file. Unreadable reads as "no conversation": the safe direction
+    is to start fresh with the role intact, never to hand claude an id it will
+    reject.
+    """
+    try:
+        with transcript.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict) and record.get("type") in _TURN_TYPES:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+@dataclass(frozen=True)
+class ConversationLocation:
+    """Where a recorded conversation's history actually is — or isn't (#871).
+
+    A RECORDED conversation id does not guarantee a RESUMABLE conversation.
+    ``conversation_ids`` records what agentwire *launched*; whether Claude
+    still *has* it is a separate question, and it reduces to one predicate:
+
+        ``resumable(id, cwd) == exists(<encoded_cwd>/<id>.jsonl)``
+
+    — with one measured refinement: the file must hold actual turns, not
+    just session metadata (:func:`holds_a_conversation`).
+
+    That one file governs both directions of the flag pair, which is why this
+    is the only probe either caller needs: ``--resume`` finds the conversation
+    iff the file is there, and ``--session-id`` rejects an id as "already in
+    use" iff the file is there (re-passing an id whose session never took a
+    turn is *accepted*, because nothing was ever written).
+
+    Three answers, and anything resuming from the record handles all three:
+
+    - ``resumable`` — the ``.jsonl`` is under the key *cwd* implies, which is
+      the only place ``claude --resume`` looks from that directory.
+    - ``orphaned`` — it exists, but under a DIFFERENT cwd key. A moved
+      worktree does this: the conversation is intact and unreachable at once.
+      Recoverable by migrating the history dir.
+    - ``gone`` — no history anywhere. Two ordinary ways to get here: a session
+      launched but never prompted (the ``.jsonl`` is created lazily on the
+      first turn, so it simply never existed), and Claude evicting it —
+      ``~/.claude/projects/`` entries were observed dropping 563 -> 544 in
+      ~25min with ``cleanupPeriodDays`` unset, cause not attributable. Treat
+      history as a cache Claude owns.
+    """
+
+    conversation_id: str
+    cwd: str
+    expected_dir: Path
+    found_at: Path | None
+    elsewhere: tuple[Path, ...]
+
+    @property
+    def status(self) -> str:
+        if self.found_at is not None:
+            return "resumable"
+        if self.elsewhere:
+            return "orphaned"
+        return "gone"
+
+    @property
+    def resumable(self) -> bool:
+        return self.found_at is not None
+
+
+def locate_conversation(
+    conversation_id: str, cwd, projects_dir: Path | None = None
+) -> ConversationLocation:
+    """Locate *conversation_id*'s history relative to the cwd it launched in.
+
+    The one probe ``agentwire restart``, ``agentwire doctor`` and
+    ``history_migrate.resumable`` all use, so "is this resumable?" has a
+    single answer rather than three nearly-identical ones that can disagree.
+    Local only: it reads this machine's ``~/.claude/projects``.
+
+    Every spelling in :func:`history_key_candidates` counts as "the expected
+    place" — a symlinked cwd is one directory under two names, not an orphan.
+    The scan for a stray copy runs ONLY when none of them has the file, so the
+    common case costs one ``stat`` instead of one per project directory.
+    """
+    base = projects_dir or PROJECTS_DIR
+    keys = history_key_candidates(cwd)
+    expected_dirs = [base / key for key in keys]
+    for expected_dir in expected_dirs:
+        expected = expected_dir / f"{conversation_id}.jsonl"
+        if expected.exists() and holds_a_conversation(expected):
+            return ConversationLocation(
+                conversation_id=conversation_id, cwd=str(cwd),
+                expected_dir=expected_dirs[0], found_at=expected, elsewhere=(),
+            )
+
+    elsewhere: list[Path] = []
+    try:
+        for d in sorted(base.iterdir()):
+            if not d.is_dir() or d in expected_dirs:
+                continue
+            candidate = d / f"{conversation_id}.jsonl"
+            if candidate.exists() and holds_a_conversation(candidate):
+                elsewhere.append(candidate)
+    except OSError:
+        pass
+
+    return ConversationLocation(
+        conversation_id=conversation_id, cwd=str(cwd),
+        expected_dir=expected_dirs[0], found_at=None, elsewhere=tuple(elsewhere),
+    )
 
 
 def _get_machine_config(machine_id: str) -> dict | None:
