@@ -914,6 +914,37 @@ def flush_session(session: str, force: bool = False) -> dict:
                 return {"session": session, "delivered": 0, "deferred": True,
                         "reason": "cohort_held"}
 
+        # Non-tmux delivery (EXPERIMENTAL, voice-layer spike). A recipient that
+        # registered a delivery adapter has no pane to paste into, so every gate
+        # below it is inapplicable — and the gone gate would actively kill its
+        # mail, since tmux is reachable and the recipient legitimately isn't in
+        # the session list. Sits AFTER the cohort hold on purpose: a held report
+        # belongs to `wait --children`, which reads it off disk, and spooling it
+        # here would consume it out from under that collection. Inert for every
+        # session without a `delivery` key in metadata.json — i.e. all of them.
+        from .voice_layer import delivery as _delivery
+
+        if _delivery.adapter_for(session) is not None:
+            ok, reason = _delivery.deliver(session, messages)
+            if ok:
+                for msg in messages:
+                    if msg.path is not None:
+                        msg.path.unlink(missing_ok=True)
+                _log_event(
+                    "delivered", to=session, count=len(messages),
+                    kinds=[m.kind for m in messages], adapter=reason,
+                )
+                return {
+                    "session": session, "delivered": len(messages),
+                    "deferred": False, "reason": "delivered",
+                }
+            dead = _bump_attempts(messages, reason)
+            _log_event("deferred", to=session, count=len(messages), reason=reason)
+            return {
+                "session": session, "delivered": 0, "deferred": True,
+                "reason": reason, "dead": dead,
+            }
+
         # Gone gate FIRST (#694): a recipient that positively doesn't exist can
         # never clear a box, and the ordinary gates misread it — capturing a
         # gone session parses as "no box" → target_busy, a NO-penalty defer, so
