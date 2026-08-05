@@ -20,13 +20,6 @@ import pytest
 REAL_HOME = Path.home() / ".agentwire"
 
 
-def _snapshot() -> set:
-    if not REAL_HOME.exists():
-        return set()
-    return {(str(p), p.stat().st_mtime_ns if p.exists() else None)
-            for p in REAL_HOME.rglob("*")}
-
-
 class TestRealHomeIsUntouched:
     def test_home_env_points_away_from_the_real_home(self):
         """The single lever that redirects every call-time ``Path.home()``.
@@ -61,15 +54,24 @@ class TestRealHomeIsUntouched:
         added another fabricated id.
         """
         from agentwire import core
+        from tests import home_guard
 
-        before = _snapshot()
+        before = len(home_guard.WRITES)
         agent = core.AgentCommand(
             command="claude", posture="bypass", roles=["orchestrator"],
             conversation_id="00000000-0000-4000-8000-000000000000",
             role_prompt_path=None,
         )
         core.record_session_launch("resumed", agent, Path.cwd(), role="orchestrator")
-        assert _snapshot() == before
+
+        # Asserted against the audit hook, NOT a before/after snapshot of the
+        # real home. This module used to snapshot, and it flaked for precisely
+        # the reason this PR argues the guard must be in-process: ~/.agentwire
+        # is written continuously by the live fleet, so a snapshot cannot tell
+        # this process from the rest of the machine. Sampling it three seconds
+        # apart on an idle box still showed entries changing. The argument and
+        # the implementation now agree.
+        assert home_guard.WRITES[before:] == []
 
         # ...and it did write, to the redirected location.
         assert (core.CONFIG_DIR / "sessions" / "resumed" / "metadata.json").is_file()
@@ -155,7 +157,8 @@ class TestTheAuditHookCanActuallyFail:
     in the mode check silently disabled detection for all of them.
 
     The earlier "can it fail" test exercised a ``_snapshot()`` helper local to
-    this module — not the hook — so the actual backstop was untested. These
+    this module — not the hook — so the actual backstop was untested (that
+    helper is gone; it had the flakiness this guard exists to avoid). These
     write for real, under the real home, and clean up after themselves; each
     asserts the hook recorded it.
     """
