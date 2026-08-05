@@ -240,6 +240,12 @@ def cmd_limits_tick(args) -> int:
     if deferred:
         print("prompts deferred: " + ", ".join(
             f"{e['session']}.{e['pane']}" for e in deferred))
+    # A pane the detector crashed on is louder than a routed one: the sweep
+    # contains the failure per-pane so the rest of the fleet keeps routing,
+    # but "contained" must never read as "fine" (#905).
+    for entry in prompts.get("failed") or []:
+        print(f"prompt detector FAILED on {entry['session']}.{entry['pane']}: "
+              f"{entry['error']}")
     flushed = messages.get("flushed") or []
     msg_deferred = messages.get("deferred") or []
     if flushed:

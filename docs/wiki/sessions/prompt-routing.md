@@ -53,7 +53,7 @@ the session that owned the P0 — and "13 sessions recovered" was reported on
 process-liveness alone. Not an incident-only path either: it fires on *any*
 sufficiently large resume, and `agentwire restart` (#871) resumes in place.
 
-Two details that are load-bearing rather than incidental:
+Three details that are load-bearing rather than incidental:
 
 - The detector anchors on the body sentence, taken from the **string literals
   in the shipped binary**, not from a screenshot. The title above it
@@ -61,6 +61,45 @@ Two details that are load-bearing rather than incidental:
 - Age and token count go in `summary`, never in `question` — so they stay out
   of the content hash. A dialog that redrew with a ticking age would otherwise
   read as a NEW prompt on every sweep and re-paste into the parent every 60s.
+- **The anchor is a regex with `\s+` between every word**, like every other
+  pattern in this module, and it is located on the *un-normalized* capture.
+  That sentence is 122 columns; panes here run at 64, 80 and 131, so it wraps
+  in normal operation. Testing the anchor against normalized text (wrap-
+  insensitive, so it passes) and then locating it with `str.index` on the raw
+  capture (wrap-sensitive, so it raises) crashed at 54 of the 101 widths from
+  40 to 140. Normalizing the *slice* is not the fix — `parse_ask_options`
+  reads line structure and genuinely needs raw text; the anchor must be
+  **located** wrap-tolerantly.
+
+## One pane must never cost the fleet its routing
+
+The sweep's pane loop is guarded per pane (`_sweep_pane`). Before that, a raise
+in any detector abandoned every *remaining* pane **and** the marker GC after
+the loop, and `limits_cli`'s stage isolation
+(`except Exception: # isolate stages, never starve the rest`) then swallowed
+the traceback and substituted an empty result. One unluckily-sized pane
+silently disabled permission, plan-approval **and** AskUserQuestion routing
+fleet-wide, every tick, for as long as the dialog stayed up.
+
+The guard is **containment, not silence** — a bare `except: continue` would
+turn "the detector crashed" into "this pane has no prompt", which is
+indistinguishable from healthy and permanent. That is
+[#885](conversation-identity.md)'s failure shape with different spelling. So a
+failure is:
+
+1. **logged** per pane — `detect_failed` in
+   `~/.agentwire/prompt-router-events.jsonl`, with session, pane and exception
+   type, so the condition is one grep away after the fact;
+2. **returned** under `sweep()`'s `failed` key, which `agentwire limits tick`
+   prints and the JSON consumers read;
+3. **reported** by `blocked_panes()` as `status=detector_error`, so `doctor`
+   flags it as an issue.
+
+And note what the guard does *not* do: it does not make a dialog detectable. If
+containment shipped without the anchor fix, the resume dialog would go
+undetected across a whole band of widths with the crash that revealed it
+swallowed — #905 again, now invisible. Which is why the width tests assert
+**detection**, not merely that nothing raised.
 
 ## When there is no parent
 
@@ -93,6 +132,7 @@ never route, never write a marker, never answer. `agentwire doctor` renders it:
 | `no_parent` | Root session; owner emailed. |
 | `waiting` | Parent notified, not yet answered. |
 | `deferred` | Parent pane wasn't safe to paste into; retrying. |
+| `detector_error` | The detector **raised** on this pane — its state is unknown and the sweep cannot route it. Always an issue. |
 
 `stuck` (what doctor counts as an issue) is `unrouted`, or waiting longer than
 `STUCK_PROMPT_AFTER` (25 min — long enough for one `RENOTIFY_TTL` cycle to have
@@ -204,7 +244,8 @@ box, a stray `Escape` aborts the child's in-flight turn.
 
 Events log: `~/.agentwire/prompt-router-events.jsonl` (`prompt_routed`,
 `route_deferred`, `no_parent`, `no_parent_escalated`,
-`no_parent_escalate_failed`, `prompt_answered`, `route_failed`).
+`no_parent_escalate_failed`, `prompt_answered`, `route_failed`,
+`detect_failed`).
 
 ## CLI
 

@@ -754,6 +754,17 @@ def _render_blocked_prompt_section() -> int:
             print(f"  [ok] {where}: {b['kind']} prompt routed to "
                   f"{b['parent']} ({b['status']}, {waited})")
             continue
+        if b["status"] == "detector_error":
+            # A crashing detector must never read as a healthy pane — that is
+            # the blind spot this whole section exists to close, so the check
+            # reports its own.
+            print(f"  [!!] {where}: the prompt detector RAISED on this pane — "
+                  "its state is unknown, and the sweep cannot route it")
+            print(f"       {b['error']}")
+            print("       Grep the sweep's record: "
+                  "grep detect_failed ~/.agentwire/prompt-router-events.jsonl")
+            print(f"       agentwire output -s '{b['session']}'   # read it yourself")
+            continue
         print(f"  [!!] {where}: blocked on a {b['kind']} prompt for {waited} "
               f"— {b['status']}")
         print(f"       {b['question']}" + (f"  ({b['summary']})" if b["summary"] else ""))

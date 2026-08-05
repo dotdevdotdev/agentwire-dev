@@ -737,7 +737,9 @@ class TestSweep:
 
     def test_disabled_config(self, monkeypatch):
         monkeypatch.setattr(prompt_router, "_router_config", lambda: (False, set()))
-        assert prompt_router.sweep() == {"routed": [], "deferred": [], "active": []}
+        # Every bucket empty, rather than an exact dict: #905 added "failed"
+        # (panes the detector raised on) to the same result shape.
+        assert all(v == [] for v in prompt_router.sweep().values())
 
     def test_parked_session_skipped(self, monkeypatch):
         monkeypatch.setattr(prompt_router, "_is_parked", lambda s: s == "child")

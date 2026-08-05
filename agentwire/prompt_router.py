@@ -108,7 +108,20 @@ _PERMISSION_QUESTION_RE = re.compile(r"Do you want\b[\s\S]{0,160}?\?")
 # (`strings claude | grep "Resuming the full session"`), not from a screenshot:
 # the title line above it interpolates age and token count, and the option
 # labels could be reworded, but this sentence is one string literal.
-_RESUME_ANCHOR = "We recommend resuming from a summary."
+#
+# \s+ between every word, like every other pattern in this module. That
+# sentence renders on a 122-column line, so on the 80- and 64-column panes
+# this fleet actually runs it MUST wrap, and a line break lands inside the
+# anchor. Locating it with a plain `str.index` on the un-normalized capture
+# raised ValueError at 54 of 101 widths between 40 and 140 — and the sweep's
+# pane loop had no per-pane guard, so that single raise abandoned every
+# remaining pane and the marker GC, which limits_cli's stage isolation then
+# swallowed. One unluckily-sized pane silently disabled ALL prompt routing
+# fleet-wide, every tick, for as long as the dialog stayed up.
+_RESUME_ANCHOR_RE = re.compile(r"We\s+recommend\s+resuming\s+from\s+a\s+summary\.")
+# Used to end the options region, so the hint footer isn't swallowed as the
+# last option's description. Same wrap tolerance, for the same reason.
+_RESUME_FOOTER_RE = re.compile(r"Enter\s+to\s+confirm\s+·\s+Esc\s+to\s+cancel")
 # Title: "This session is 2h 47m old and 233.6k tokens." — both values are
 # formatted at render time, which is exactly why they stay OUT of the hash.
 _RESUME_TITLE_RE = re.compile(
@@ -210,9 +223,20 @@ def _detect_resume(clean: str, norm: str) -> "PromptInfo | None":
     otherwise look like a NEW prompt on every sweep and re-notify the parent
     every 60 seconds.
     """
-    if _RESUME_ANCHOR not in norm or not _is_live(norm, "resume"):
+    if not _is_live(norm, "resume"):
         return None
-    options = parse_ask_options(clean[clean.index(_RESUME_ANCHOR) + len(_RESUME_ANCHOR):])
+    # Located on `clean`, not tested on `norm` and then sliced from `clean`:
+    # a wrap-insensitive membership test followed by a wrap-sensitive slice is
+    # how this crashed at half of all plausible pane widths. The SLICE must
+    # stay un-normalized — parse_ask_options reads line structure — so the
+    # wrap tolerance belongs in the pattern.
+    anchor = _RESUME_ANCHOR_RE.search(clean)
+    if not anchor:
+        return None
+    # Stop at the hint footer, or it is parsed as the last option's
+    # description ("3. Don't ask me again" / "Enter to confirm · Esc to...").
+    footer = _RESUME_FOOTER_RE.search(clean, anchor.end())
+    options = parse_ask_options(clean[anchor.end():footer.start() if footer else None])
     if not options:
         return None
     title = _RESUME_TITLE_RE.search(norm)
@@ -1056,7 +1080,22 @@ def blocked_panes() -> "list[dict] | None":
             continue
         if _is_parked(pane.session):
             continue
-        info = detect_prompt(_capture(f"{pane.session}.{pane.pane}"))
+        try:
+            info = detect_prompt(_capture(f"{pane.session}.{pane.pane}"))
+        except Exception as exc:
+            # Contained like the sweep, and REPORTED for the same reason: a
+            # crashing detector cannot be allowed to look like a healthy pane.
+            # That is the blind spot this whole check exists to close, so the
+            # check must be able to see its own.
+            blocked.append({
+                "session": pane.session, "pane": pane.pane,
+                "kind": "unknown", "question": "", "summary": "",
+                "status": "detector_error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "parent": None, "excluded": pane.session in excluded,
+                "waiting_minutes": None, "stuck": True,
+            })
+            continue
         if info is None:
             continue
         marker = read_marker(pane.session, pane.pane)
@@ -1073,6 +1112,7 @@ def blocked_panes() -> "list[dict] | None":
             "session": pane.session,
             "pane": pane.pane,
             "kind": info.kind,
+            "error": None,
             "question": info.question,
             "summary": info.summary,
             "status": status,
@@ -1084,6 +1124,49 @@ def blocked_panes() -> "list[dict] | None":
             ),
         })
     return blocked
+
+
+def _sweep_pane(pane: PaneRef) -> "tuple[str, dict] | None":
+    """One pane's share of the sweep: detect, dedupe by marker, route.
+
+    Returns ``(bucket, entry)`` for the caller's result dict, or None when the
+    pane contributes nothing. Split out of :func:`sweep` so a failure here can
+    be contained to this pane — see the guard at the call site.
+    """
+    session, pane_index = pane.session, pane.pane
+    visible = _capture(f"{session}.{pane_index}")
+    info = detect_prompt(visible)
+    marker = read_marker(session, pane_index)
+
+    if info is None:
+        if marker:
+            clear_marker(session, pane_index)
+        if _flush_stuck_box(session, pane_index, visible):
+            return ("routed", {"session": session, "pane": pane_index, "kind": "stuck_box"})
+        return None
+
+    # A fresh hook-routed marker keeps the sweep off this pane entirely.
+    # NOT hash- or kind-gated: the hook's hash derives from the tool
+    # payload (never equals the screen hash), and ExitPlanMode arrives
+    # via the hook but renders as a plan dialog. Only one dialog can be
+    # live on a pane — a fresh hook marker means the portal owns it.
+    if (
+        marker
+        and marker.get("source") == "hook"
+        and (_marker_age(marker) or timedelta(0)) < HOOK_MARKER_TTL
+    ):
+        return ("active", {"session": session, "pane": pane_index, "kind": info.kind})
+
+    if marker and marker.get("hash") == info.content_hash():
+        if marker.get("notified_at"):
+            age = _marker_age(marker, "notified_at")
+            if age is not None and age < RENOTIFY_TTL:
+                return ("active", {"session": session, "pane": pane_index, "kind": info.kind})
+        # deferred (or TTL-expired) -> try again
+
+    parent = route_prompt(session, pane_index, info, project_path=pane.path)
+    entry = {"session": session, "pane": pane_index, "kind": info.kind, "parent": parent}
+    return ("routed" if parent else "deferred", entry)
 
 
 def sweep() -> dict:
@@ -1100,60 +1183,54 @@ def sweep() -> dict:
     """
     enabled, excluded = _router_config()
     if not enabled:
-        return {"routed": [], "deferred": [], "active": []}
+        return {"routed": [], "deferred": [], "active": [], "failed": []}
     panes = list_panes()
     if panes is None:
-        return {"routed": [], "deferred": [], "active": []}
+        return {"routed": [], "deferred": [], "active": [], "failed": []}
 
-    routed, deferred, active = [], [], []
+    buckets = {"routed": [], "deferred": [], "active": [], "failed": []}
     seen_panes = {(p.session, p.pane) for p in panes}
     for pane in panes:
-        session, pane_index, pane_path = pane.session, pane.pane, pane.path
-
         # Only Claude Code panes produce these dialogs; a vim/less pane
         # *displaying* dialog text must never match.
         if not pane.is_agent:
             continue
-        if session in excluded or _is_parked(session):
+        if pane.session in excluded or _is_parked(pane.session):
             continue
-
-        visible = _capture(f"{session}.{pane_index}")
-        info = detect_prompt(visible)
-        marker = read_marker(session, pane_index)
-
-        if info is None:
-            if marker:
-                clear_marker(session, pane_index)
-            if _flush_stuck_box(session, pane_index, visible):
-                routed.append(
-                    {"session": session, "pane": pane_index, "kind": "stuck_box"}
-                )
+        try:
+            result = _sweep_pane(pane)
+        except Exception as exc:
+            # CONTAINMENT, and deliberately not silence. One pane must never
+            # cost the fleet its prompt routing: before this, a raise here
+            # abandoned every REMAINING pane and the marker GC below, and
+            # limits_cli's stage isolation then swallowed the traceback and
+            # substituted an empty result — so the watchdog looked healthy
+            # while permission, plan and question routing were all dead
+            # fleet-wide. #905's own detector crashed exactly that way on a
+            # narrow pane.
+            #
+            # A bare `continue` would be the cure that is worse: it turns "the
+            # detector crashed" into "this pane has no prompt", which is
+            # indistinguishable from healthy and permanent — #885's failure
+            # shape with different spelling. So it is logged per pane AND
+            # returned under "failed", which is what `agentwire limits tick`
+            # prints and what the JSON consumers read.
+            _log_event(
+                "detect_failed",
+                session=pane.session, pane=pane.pane,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            buckets["failed"].append({
+                "session": pane.session, "pane": pane.pane,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
             continue
+        if result:
+            bucket, entry = result
+            buckets[bucket].append(entry)
 
-        # A fresh hook-routed marker keeps the sweep off this pane entirely.
-        # NOT hash- or kind-gated: the hook's hash derives from the tool
-        # payload (never equals the screen hash), and ExitPlanMode arrives
-        # via the hook but renders as a plan dialog. Only one dialog can be
-        # live on a pane — a fresh hook marker means the portal owns it.
-        if (
-            marker
-            and marker.get("source") == "hook"
-            and (_marker_age(marker) or timedelta(0)) < HOOK_MARKER_TTL
-        ):
-            active.append({"session": session, "pane": pane_index, "kind": info.kind})
-            continue
-
-        if marker and marker.get("hash") == info.content_hash():
-            if marker.get("notified_at"):
-                age = _marker_age(marker, "notified_at")
-                if age is not None and age < RENOTIFY_TTL:
-                    active.append({"session": session, "pane": pane_index, "kind": info.kind})
-                    continue
-            # deferred (or TTL-expired) -> try again
-
-        parent = route_prompt(session, pane_index, info, project_path=pane_path)
-        entry = {"session": session, "pane": pane_index, "kind": info.kind, "parent": parent}
-        (routed if parent else deferred).append(entry)
+    routed, deferred, active = (
+        buckets["routed"], buckets["deferred"], buckets["active"])
 
     # GC markers whose pane no longer exists.
     for marker in list_markers():
@@ -1164,7 +1241,8 @@ def sweep() -> dict:
         if age is None or age > MARKER_GC_TTL:
             clear_marker(*key)
 
-    return {"routed": routed, "deferred": deferred, "active": active}
+    return {"routed": routed, "deferred": deferred, "active": active,
+            "failed": buckets["failed"]}
 
 
 def tick() -> dict:
