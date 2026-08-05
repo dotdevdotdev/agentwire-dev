@@ -6,6 +6,7 @@ import pytest
 
 from agentwire import history_cli
 from agentwire import history_migrate as hm
+from agentwire.history import encode_project_path
 
 
 class Args:
@@ -28,7 +29,7 @@ def projects(tmp_path, monkeypatch):
 
 
 def seed(projects, cwd):
-    d = projects / hm.encode_project_path(str(cwd))
+    d = projects / encode_project_path(str(cwd))
     d.mkdir(parents=True)
     (d / "conv.jsonl").write_text('{"type":"user"}\n')
     return d

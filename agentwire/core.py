@@ -109,6 +109,7 @@ class AgentCommand:
     resumed_from: str | None = None  # Conversation this one was forked off, if any
     posture: str = BARE
     roles: list[str] = field(default_factory=list)  # Role NAMES, in merge order
+    model: str | None = None  # --model override, if the launch chose one
 
 
 _UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
@@ -543,6 +544,7 @@ def build_agent_command(
         resumed_from=resume_session_id,
         posture=posture,
         roles=role_names,
+        model=model,
     )
 
 
@@ -665,6 +667,48 @@ def tmux_session_exists(name: str) -> bool:
         capture_output=True,
     )
     return result.returncode == 0
+
+
+def tmux_session_cwd(name: str) -> str | None:
+    """Where a live session's agent pane is ACTUALLY running, per tmux.
+
+    The counterpart to the recorded ``cwd_at_launch``: asked of the running
+    process rather than read back from our own record, so the two can be
+    compared. They diverge exactly when someone relocates a session's
+    directory — which is what strands its Claude history under the old key
+    (#871 item 5). Returns None when the session isn't live.
+
+    **The agent pane is the FIRST pane, resolved by asking, never by index.**
+    Three measured facts force that (all on real tmux, and the first is what
+    this function originally got wrong):
+
+    - ``display-message -t "=<session>"`` returns an EMPTY string. A session
+      target does not resolve a pane-level format, so the helper answered None
+      for every session alive and the check built on it was inert.
+    - ``display-message`` does not fail on an unresolvable target either — it
+      silently returns the ACTIVE pane. ``-t "=<session>:9.9"`` came back rc=0
+      with a plausible path. So a hardcoded index that is wrong doesn't error,
+      it lies. ``list-panes`` exits 1 with "can't find window" instead.
+    - Indices are not knowable in advance. ``base-index`` and
+      ``pane-base-index`` are independent options a ``.tmux.conf`` can set
+      either way, and existing windows keep their old index when it changes —
+      this machine currently has live sessions at window 1 *and* window 0.
+
+    ``-s`` is load-bearing: without it ``list-panes`` scopes to the session's
+    ACTIVE WINDOW, so a session with a second window open (a worker split, an
+    artifact window, an operator poking around) answers with the wrong pane.
+    With it, panes come back in index order, so line one is the lowest
+    window/pane under any base — which is also why an active worker pane can't
+    make its orchestrator look moved.
+    """
+    result = subprocess.run(
+        ["tmux", "list-panes", "-s", "-t", f"={name}", "-F", "#{pane_current_path}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    first = result.stdout.splitlines()[:1]
+    return first[0].strip() if first and first[0].strip() else None
 
 
 def wait_for_shell_prompt(target: str, timeout: float = 2.0) -> None:
@@ -985,6 +1029,32 @@ def session_metadata_path(session_name: str) -> Path:
     return CONFIG_DIR / "sessions" / session_name.split("@")[0] / "metadata.json"
 
 
+def recorded_sessions() -> list[str]:
+    """Every session name with a launch record on disk, sorted.
+
+    The enumeration counterpart to :func:`load_session_metadata` — one place
+    knows the store's layout, so a sweep (``doctor``) can't drift from the
+    reader. Names only; a caller loads what it needs. These are RECORDS, not
+    live sessions: a name here may long since have been killed.
+
+    The glob is ``**/metadata.json`` for the reason #884 had to fix in
+    :func:`role_prompts.reachable_conversation_ids`: session names contain
+    slashes by design (``project/branch`` is what every ``agentwire worktree``
+    and every scheduler dispatch is called), so :func:`session_metadata_path`
+    nests those records one level deeper. A flat scan found 469 of 1106
+    records on this machine — a sweep built on it would silently skip 58% of
+    the fleet while reporting itself clean.
+    """
+    sessions_dir = CONFIG_DIR / "sessions"
+    try:
+        return sorted(
+            str(f.parent.relative_to(sessions_dir))
+            for f in sessions_dir.glob("**/metadata.json")
+        )
+    except OSError:
+        return []
+
+
 def store_session_metadata(session_name: str, metadata: dict) -> None:
     """Store session metadata to disk — RAISING if it doesn't land (#885).
 
@@ -1138,6 +1208,11 @@ def record_session_launch(
         "cwd_at_launch": str(cwd),
         "posture": agent.posture,
         "roles": list(agent.roles),
+        # The model override belongs with roles/posture for the same reason:
+        # these three are what REGENERATE the launch flags. Recording two of
+        # them means `agentwire restart` silently drops the third and hands the
+        # conversation back on a different model than it was running on.
+        "model": agent.model,
         "role_prompt_path": agent.role_prompt_path,
         "launched_at": now,
         **({"repo": None, "branch": None, "worktree_path": None}

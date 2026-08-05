@@ -42,7 +42,12 @@ import uuid
 from pathlib import Path
 
 from .core import CONFIG_DIR, load_session_metadata
-from .history import PROJECTS_DIR, encode_project_path
+from .history import (
+    PROJECTS_DIR,
+    history_key_candidates,
+    history_key_sources,
+    locate_conversation,
+)
 
 # Outcomes. Every one of these is a legitimate thing to report; only ERROR and
 # TARGET_EXISTS are failures, and neither of them touches anything on disk.
@@ -57,32 +62,6 @@ ERROR = "error"
 FAILURE_STATUSES = {TARGET_EXISTS, ERROR}
 
 
-def history_key_candidates(cwd: str | Path) -> list[str]:
-    """The directory names Claude Code might have used for *cwd*, best first.
-
-    Normally there is exactly one. There are two when the recorded path and
-    its symlink-resolved form differ — the ``/tmp`` vs ``/private/tmp`` split
-    on macOS being the case that actually bites, since ``cwd_at_launch`` is
-    recorded verbatim from the caller while Claude Code keys off the physical
-    path its process reports. Checking both is the difference between finding
-    the transcript and reporting a false "absent".
-    """
-    return [encode_project_path(p) for p in history_key_sources(cwd)]
-
-
-def history_key_sources(cwd: str | Path) -> list[str]:
-    """The cwd spellings behind :func:`history_key_candidates`, unencoded."""
-    raw = str(cwd)
-    out = [raw]
-    try:
-        resolved = str(Path(raw).expanduser().resolve())
-    except OSError:
-        resolved = raw
-    if resolved != raw:
-        out.append(resolved)
-    return out
-
-
 def resumable(conversation_id: str, cwd: str | Path) -> bool:
     """Whether ``claude --resume <conversation_id>`` would work from *cwd*.
 
@@ -93,11 +72,13 @@ def resumable(conversation_id: str, cwd: str | Path) -> bool:
     lazily on the first turn), which is why a recorded conversation id can be
     perfectly valid and still not resumable, and why ``--session-id`` reports a
     collision on that file EXISTING rather than on the id having been used.
+
+    Delegates to :func:`history.locate_conversation`, which answers the same
+    question with more detail (resumable / orphaned / gone) for ``restart``
+    and ``doctor``. Passing ``PROJECTS_DIR`` explicitly keeps this module's
+    own patchable store as the seam callers already isolate against.
     """
-    return any(
-        (PROJECTS_DIR / key / f"{conversation_id}.jsonl").is_file()
-        for key in history_key_candidates(cwd)
-    )
+    return locate_conversation(conversation_id, cwd, projects_dir=PROJECTS_DIR).resumable
 
 
 def _existing_source(cwd: str | Path) -> Path | None:

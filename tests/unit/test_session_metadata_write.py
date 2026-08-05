@@ -111,3 +111,47 @@ class TestRecordSessionLaunchReportsFailure:
         err = capsys.readouterr().err
         assert "TypeError" in err
         assert "proj-fix" in err
+
+
+class TestRecordedSessions:
+    """The enumeration side of the store — it must find EVERY record.
+
+    Pinned because the flat glob is the "obvious simplification" and nothing
+    else would catch it: session names contain slashes by design
+    (``project/branch`` is what every ``agentwire worktree`` and every
+    scheduler dispatch is called), so :func:`core.session_metadata_path` nests
+    those records one level deeper than ``sessions/*/metadata.json`` looks.
+
+    Measured on the machine this was written on: the flat glob found 469 of
+    1111 records. A ``doctor`` sweep built on it skips 58% of the fleet while
+    reporting itself clean — the same trap #884 hit in ``role_prompts``, whose
+    34 green tests all used flat names.
+    """
+
+    def _record(self, name):
+        core.store_session_metadata(name, {"posture": "bypass"})
+
+    def test_finds_a_slashed_worktree_record(self):
+        """`proj/branch` nests, and comes back spelled the way it went in."""
+        self._record("proj/branch")
+
+        assert core.recorded_sessions() == ["proj/branch"]
+
+    def test_finds_flat_and_nested_records_together(self):
+        for name in ("orchestrator", "proj/branch", "documentscribe/fix-1000"):
+            self._record(name)
+
+        assert core.recorded_sessions() == [
+            "documentscribe/fix-1000", "orchestrator", "proj/branch",
+        ]
+
+    def test_a_name_a_reader_can_hand_straight_back(self):
+        """The names have to round-trip, or a sweep finds records it then
+        cannot load."""
+        self._record("proj/branch")
+
+        [name] = core.recorded_sessions()
+        assert core.load_session_metadata(name) == {"posture": "bypass"}
+
+    def test_an_absent_store_is_empty_not_an_error(self):
+        assert core.recorded_sessions() == []
