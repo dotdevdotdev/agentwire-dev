@@ -69,15 +69,27 @@ MAX_ATTEMPTS = 40
 # (``Message.gone_attempts``) so prior busy penalties don't erode the grace.
 GONE_MAX_ATTEMPTS = 5
 
-# Defer reasons that DON'T penalize: the target is legitimately busy — running a
-# long command (unparseable box → "target_busy") or generating with human-queued
-# input (the "queued messages" placeholder → "queued_placeholder"), or the box
-# holds unrecognized-but-static content ("box_static": identical across
-# consecutive sweeps ≈ an unknown placeholder, not an actively-typed draft).
+# Defer reasons that DON'T penalize: the recipient EXISTS but can't take the
+# message right now — it is not refusing. Either it's legitimately busy (running
+# a long command → unparseable box → "target_busy"; generating with human-queued
+# input → the "queued messages" placeholder → "queued_placeholder"; a box holding
+# unrecognized-but-static content → "box_static", identical across consecutive
+# sweeps ≈ an unknown placeholder, not an actively-typed draft; our own prior
+# paste wedged in the box → "stuck_in_box") — or it's usage-limit PARKED
+# ("target_parked"), where pasting would corrupt the resume.
+#
+# Parked is the *most* clearly temporary of these (#872): a park is bounded and
+# self-clearing — usage-limit recovery parses the reset time and nudges the
+# session afterward — whereas "busy" has no such guarantee. Penalizing it meant a
+# park longer than MAX_ATTEMPTS ticks (~40 min, routinely exceeded by a real
+# reset window) killed every report-back its workers had filed.
+#
 # Such messages stay pending forever instead of burning toward dead-letter;
 # doctor / worktree --watch surface them, and they deliver once the box frees up.
+# The opposite case — a recipient that positively does NOT exist — is NOT in this
+# set: "target_gone" is penalized on its own fast GONE_MAX_ATTEMPTS cap (#694).
 _NO_PENALTY_REASONS = frozenset(
-    {"target_busy", "queued_placeholder", "box_static", "stuck_in_box"}
+    {"target_busy", "queued_placeholder", "box_static", "stuck_in_box", "target_parked"}
 )
 
 # Consecutive sweeps the box must show byte-identical content before the defer
@@ -709,9 +721,10 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
         if msg.path is None:
             continue
         if reason in _NO_PENALTY_REASONS:
-            # Target is busy (long command, or generating with human-queued input),
-            # not refusing — never penalize. Surfaced via `doctor` / `worktree
-            # --watch`; delivers once the prompt is empty/idle.
+            # The recipient exists but can't take it right now — busy (long
+            # command / human-queued input / wedged paste) or usage-limit parked
+            # — not refusing. Never penalize. Surfaced via `doctor` / `worktree
+            # --watch`; delivers once the prompt frees up or the park clears.
             msg.reason = reason
             try:
                 _write_message(msg.path, msg)
