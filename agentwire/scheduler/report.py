@@ -280,12 +280,20 @@ def _pid_is_scheduler(pid: int) -> bool:
 
     1. ``os.kill(pid, 0)`` — a pure syscall. ``ProcessLookupError`` means dead;
        ``PermissionError`` means alive but owned by someone else.
-    2. The process's command line, via ``ps``, must mention ``scheduler``. PIDs
-       are recycled, and treating an unrelated process that inherited a dead
-       daemon's PID as "the scheduler is running" would suppress the autostart
-       guard and leave the board with no dispatcher at all. If ``ps`` is
-       unavailable or unreadable we keep the step-1 answer rather than
-       reporting a live daemon as dead.
+    2. The process's ``ps`` command line, TOKENISED, must contain both
+       ``scheduler`` and ``serve`` as whole argv words.
+
+    Step 2 exists because PIDs are recycled: an unrelated process inheriting a
+    dead daemon's PID and reading as "the scheduler is running" would suppress
+    the autostart guard and leave the board with NO dispatcher — worse than the
+    bug this check fixes. A substring test is not enough for that, because the
+    recycled process can easily be another agentwire command: ``agentwire
+    scheduler live --watch`` contains ``scheduler`` but dispatches nothing, and
+    would make ``status`` misreport AND ``serve`` / ``start`` / autostart all
+    refuse. Only ``scheduler serve`` is a dispatcher, so require both words.
+
+    ``ps`` unavailable or unreadable keeps the step-1 answer rather than
+    reporting a live daemon dead.
     """
     if pid <= 0:
         return False
@@ -306,7 +314,10 @@ def _pid_is_scheduler(pid: int) -> bool:
         return True
     if out.returncode != 0 or not out.stdout.strip():
         return True
-    return "scheduler" in out.stdout
+    # Whole-word match on argv: a path component or a flag value that merely
+    # contains "serve" must not qualify.
+    argv = out.stdout.split()
+    return "scheduler" in argv and "serve" in argv
 
 
 def live_daemon_state() -> dict | None:

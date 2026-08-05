@@ -56,6 +56,40 @@ class TestPidIsScheduler:
                 returncode=0, stdout="/usr/bin/python agentwire scheduler serve")
             assert _pid_is_scheduler(os.getpid()) is True
 
+    def test_serve_with_flags_still_qualifies(self):
+        with patch("agentwire.scheduler.report.os.kill", return_value=None), \
+             patch("agentwire.scheduler.report.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout="/opt/venv/bin/python3 /usr/local/bin/agentwire scheduler serve --force\n")
+            assert _pid_is_scheduler(12345) is True
+
+    def test_module_invocation_qualifies(self):
+        with patch("agentwire.scheduler.report.os.kill", return_value=None), \
+             patch("agentwire.scheduler.report.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0, stdout="python -m agentwire scheduler serve")
+            assert _pid_is_scheduler(12345) is True
+
+    @pytest.mark.parametrize("cmdline", [
+        # The reproduction from review: a recycled PID running a READ-ONLY
+        # scheduler command. Substring-matching "scheduler" accepted this,
+        # which re-created the false-stale reading AND made serve/start/
+        # autostart all refuse — a board with no dispatcher.
+        "/usr/local/bin/agentwire scheduler live --watch",
+        "/usr/local/bin/agentwire scheduler status",
+        "/usr/local/bin/agentwire scheduler board",
+        "/usr/local/bin/agentwire scheduler run memory-manager",
+        # A path that merely contains the words.
+        "/Users/x/scheduler/serve-helper.sh",
+        "vim /etc/scheduler-serve.conf",
+    ])
+    def test_non_dispatcher_processes_are_rejected(self, cmdline):
+        with patch("agentwire.scheduler.report.os.kill", return_value=None), \
+             patch("agentwire.scheduler.report.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout=cmdline)
+            assert _pid_is_scheduler(12345) is False
+
     def test_dead_pid_is_false(self):
         # PID 0 / negative are never valid targets for a liveness probe.
         assert _pid_is_scheduler(0) is False
@@ -111,6 +145,81 @@ class TestLiveDaemonState:
         with patch("agentwire.scheduler.report._pid_is_scheduler", return_value=True), \
              patch("agentwire.core.tmux_session_exists", return_value=False):
             assert live_daemon_state() is not None
+
+
+class TestStatusReportsLivenessNotTmux:
+    """The headline symptom of #873, pinned.
+
+    `scheduler status` printed `Scheduler: stopped` while the daemon was
+    actively dispatching, because it asked tmux. These tests fail if
+    `cmd_scheduler_status` goes back to `tmux_session_exists` in either
+    direction — a launchd daemon must read running, and a leftover state file
+    must not.
+    """
+
+    def _run_status(self, tmp_path, live, in_tmux, json_mode=False):
+        from agentwire.scheduler_cli import cmd_scheduler_status
+
+        board_path = tmp_path / "scheduler.yaml"
+        board_path.write_text("tasks: {}\n")
+        cfg = MagicMock()
+        cfg.scheduler.board_file = board_path
+        board = MagicMock()
+        board.tasks = {}
+
+        args = MagicMock()
+        args.json = json_mode
+
+        with patch("agentwire.config.get_config", return_value=cfg), \
+             patch("agentwire.scheduler.live_daemon_state", return_value=live), \
+             patch("agentwire.scheduler.load_board", return_value=board), \
+             patch("agentwire.scheduler.pick_next_task", return_value=(None, 60.0)), \
+             patch("agentwire.scheduler.read_events", return_value=[]), \
+             patch("agentwire.scheduler_cli.tmux_session_exists", return_value=in_tmux):
+            rc = cmd_scheduler_status(args)
+        return rc
+
+    def test_launchd_daemon_reports_running_with_no_tmux_session(self, tmp_path, capsys):
+        self._run_status(
+            tmp_path,
+            live={"pid": 4242, "started_at": "2026-08-04T13:03:47Z"},
+            in_tmux=False,
+        )
+        out = capsys.readouterr().out
+        assert "Scheduler: running" in out
+        assert "stopped" not in out
+        assert "4242" in out
+        assert "external supervisor" in out
+
+    def test_launchd_daemon_reports_running_in_json(self, tmp_path, capsys):
+        self._run_status(
+            tmp_path, live={"pid": 4242}, in_tmux=False, json_mode=True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["running"] is True
+        assert data["pid"] == 4242
+        assert data["in_tmux"] is False
+
+    def test_tmux_hosted_daemon_is_labelled_as_such(self, tmp_path, capsys):
+        self._run_status(tmp_path, live={"pid": 77}, in_tmux=True)
+        out = capsys.readouterr().out
+        assert "Scheduler: running" in out
+        assert "tmux" in out
+        assert "external supervisor" not in out
+
+    def test_leftover_state_with_a_live_tmux_session_still_reads_stopped(
+            self, tmp_path, capsys):
+        """The other direction: deleting the gate outright must not pass either.
+
+        tmux says the session exists; the PID behind the state file does not
+        resolve to a dispatcher, so the daemon is not running.
+        """
+        self._run_status(tmp_path, live=None, in_tmux=True)
+        out = capsys.readouterr().out
+        assert "Scheduler: stopped" in out
+
+    def test_nothing_running_reports_stopped(self, tmp_path, capsys):
+        self._run_status(tmp_path, live=None, in_tmux=False)
+        assert "Scheduler: stopped" in capsys.readouterr().out
 
 
 class TestServeRefusesASecondDispatcher:

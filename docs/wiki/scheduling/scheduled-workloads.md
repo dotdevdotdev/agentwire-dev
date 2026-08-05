@@ -447,8 +447,16 @@ Liveness is determined from the daemon's own live-state file
 (`~/.agentwire/scheduler-live.json`), which records the writing process's `pid`
 on every loop tick. `live_daemon_state()` (`agentwire/scheduler/report.py`) is
 the single source of truth: it returns the state only when that PID is alive
-*and* its command line still looks like a scheduler, so a leftover file from a
-stopped daemon reads as not-running, and a recycled PID can't masquerade as one.
+*and* its `ps` argv contains both `scheduler` and `serve` as whole words. A
+leftover file from a stopped daemon therefore reads as not-running, and a
+recycled PID can't masquerade as one.
+
+The whole-word test on **both** words is load-bearing, not fussiness. A
+recycled PID is quite likely to be another agentwire command: `agentwire
+scheduler live --watch` is not a dispatcher, but a substring test for
+`scheduler` accepts it — which would misreport liveness *and* make `serve`,
+`start`, and portal autostart all refuse, leaving the board with **no**
+dispatcher. Only `scheduler serve` dispatches.
 
 This replaced `tmux_session_exists("agentwire-scheduler")`, which only ever knew
 about daemons tmux itself hosts. A daemon under an external supervisor (launchd
