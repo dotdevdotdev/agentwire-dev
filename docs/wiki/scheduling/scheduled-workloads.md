@@ -486,6 +486,7 @@ declined, rather than silently adding a second dispatcher on every launch.
 so nothing can verify it. `doctor` flags that explicitly (`records no PID —
 predates the PID-based liveness check`) rather than reporting it as stopped.
 Restarting the daemon clears it — which a rebuild already requires anyway.
+
 ---
 
 ## Bounding a Task: `max_duration` (#867)
@@ -528,3 +529,52 @@ Warning: task 'memory-manager' sets keys agentwire ignores: max_durationn
 
 Reported, never fatal: a typo must not break a 04:00 dispatch. `description` is
 allowed as a deliberate no-op annotation.
+
+---
+
+## Prompt Delivery Is Verified, and Its Result Acted On (#889)
+
+A scheduled dispatch's prompt is pasted with `session_ready.send_verified` — the
+same call `agentwire send`, `prompt_router`, `council`, `session_cli` and the
+`msg` drain all make — and **`ensure` fails the attempt when it can't be
+confirmed.**
+
+Until #889 this one path still used the blind paste (`pane_manager.send_to_target`):
+paste, sleep a fixed **1.0s**, press Enter, sleep a fixed **0.5s**, press Enter.
+Two problems, and the second is the one that hurt:
+
+1. **The delays are constants; the paste is not.** A task interpolating a large
+   `pre` output pastes tens of KB. `send_verified` polls for the text to appear
+   with `LAND_TIMEOUT = 8.0s` precisely because — in its own comment — "a large
+   paste renders slowly". The blind path allowed 1.0s. `send_to_target`'s
+   docstring already recorded the failure class: *"Skipping the second [Enter]
+   leaves the prompt stuck in the input — the failure that hung the scheduler at
+   8am."*
+2. **`send_to_pane` returns `None`.** So `ensure` could not distinguish
+   "delivered" from "sitting unsubmitted in the input box". It went straight into
+   `wait_for_completion_signal` and waited for a signal that could never arrive —
+   which is how a task with nobody watching burns hours in silence rather than
+   reporting an error.
+
+Fixing only the first half would have been the trap: routing through
+`send_verified` while ignoring what it returns reproduces the same silence with
+more machinery. **A dispatch that reports "prompt never landed" is strictly
+better than one that waits for a signal that cannot arrive.**
+
+| Send | On unconfirmed delivery |
+|---|---|
+| Task prompt | Attempt **fails** with a named reason; retried if `retries` is set; never falls through to the completion wait |
+| `on_task_end` | **Warns** on stderr only — the task already reported its status, and an unsent epilogue must not rewrite a completed run as failed |
+
+**False negatives are handled, not ignored.** A `False` from `send_verified` can
+also mean the paste fully submitted and only the *confirm* read was ambiguous (a
+laggy host blowing the submit budget). The per-attempt marker (#839) rides inside
+the pasted text, so scrollback settles it as a fact — a marker can only be there
+if *this* paste submitted. Only when it's absent is the send called failed.
+
+> This was filed as a lead on #867, where `memory-manager`'s agent executed zero
+> tool calls for two hours while its ~21 KB prompt (a 1,280-byte template plus a
+> 19,820-byte audit payload) got 1.0s to render. **The asymmetry is worth fixing
+> regardless of whether it turns out to be that hang's cause** — an unattended
+> send path that can silently not-send is a latent version of this for every
+> scheduled task.
