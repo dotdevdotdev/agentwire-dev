@@ -46,6 +46,7 @@ Headless and scheduled execution.
 
 - **[Scheduled workloads](scheduling/scheduled-workloads.md)** — `agentwire ensure`, `.agentwire.tasks.yml` task schema
 - **[Usage-limit recovery](usage-limit-recovery.md)** — deterministic detect → park → email → auto-resume for the Claude Code usage-limit dialog; launchd watchdog, zero LLM involvement
+- **[Expired-login detection](auth-expired.md)** — a refused turn (`authentication_failed`) read from the transcript, not the pane; machine-wide outage state gates dispatch and emails the owner once
 
 ## Security
 

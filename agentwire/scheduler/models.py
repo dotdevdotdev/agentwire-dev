@@ -24,6 +24,7 @@ _EXIT_PRE_FAILURE = 4
 _EXIT_TIMEOUT = 5
 _EXIT_SESSION_ERROR = 6
 _EXIT_USAGE_LIMIT = 7
+_EXIT_AUTH_EXPIRED = 8
 
 _EXIT_TO_STATUS = {
     _EXIT_COMPLETE: "complete",
@@ -34,6 +35,7 @@ _EXIT_TO_STATUS = {
     _EXIT_TIMEOUT: "timeout",
     _EXIT_SESSION_ERROR: "failed",
     _EXIT_USAGE_LIMIT: "usage_limit",
+    _EXIT_AUTH_EXPIRED: "auth_expired",
 }
 
 # In-flight grace period: tasks dispatched less than 2h ago are considered running
@@ -84,7 +86,7 @@ class SchedulerTask:
 @dataclass
 class TaskState:
     last_run: datetime | None = None
-    last_status: str = "never"    # complete, failed, incomplete, timeout, lock_conflict, usage_limit, never
+    last_status: str = "never"    # complete, failed, incomplete, timeout, lock_conflict, usage_limit, auth_expired, never
     last_duration: int = 0
     run_count: int = 0
     last_summary: str = ""
