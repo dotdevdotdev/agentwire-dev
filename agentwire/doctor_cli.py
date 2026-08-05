@@ -714,6 +714,67 @@ def _render_role_prompt_store_section(
     return 1, 1
 
 
+def _render_blocked_prompt_section() -> int:
+    """Doctor section: agent alive, but the pane sits on an unanswered menu (#905).
+
+    This state is invisible to every other surface we have, and that is the
+    whole point of the check. The agent process is running, so
+    ``pane_current_command`` reports the agent and every liveness probe —
+    ``worktree --list``, the idle handler, the fleet roll-up — calls the
+    session healthy. It is doing nothing, and ``safe_deliver`` correctly
+    refuses to paste into a live menu, so every message queues behind it.
+    Four sessions sat like that for hours (one about four) and the owner
+    reported "13 sessions recovered" on exactly that basis.
+
+    A blocked pane is NOT automatically a problem: a prompt routed to a parent
+    a minute ago is the system working. Only the ones nobody can act on count
+    as issues — never routed at all (so the sweep isn't running), or waiting
+    past :data:`prompt_router.STUCK_PROMPT_AFTER`.
+
+    Read-only: detects and reports, never answers a dialog or writes a marker.
+    """
+    from . import prompt_router
+
+    blocked = prompt_router.blocked_panes()
+    if blocked is None:
+        print("  [..] tmux not reachable — cannot inspect panes")
+        return 0
+    if not blocked:
+        print("  [ok] No session is sitting on an unanswered prompt")
+        return 0
+
+    stuck = [b for b in blocked if b["stuck"]]
+    for b in blocked:
+        where = f"{b['session']} pane {b['pane']}"
+        waited = (
+            f"{b['waiting_minutes']}m"
+            if b["waiting_minutes"] is not None else "unknown"
+        )
+        if not b["stuck"]:
+            print(f"  [ok] {where}: {b['kind']} prompt routed to "
+                  f"{b['parent']} ({b['status']}, {waited})")
+            continue
+        print(f"  [!!] {where}: blocked on a {b['kind']} prompt for {waited} "
+              f"— {b['status']}")
+        print(f"       {b['question']}" + (f"  ({b['summary']})" if b["summary"] else ""))
+        if b["status"] == "unrouted":
+            print("       Nobody has been notified. Fix: agentwire limits install "
+                  "(the watchdog runs the prompt sweep)"
+                  + ("  [session is in prompt_router.exclude_sessions]"
+                     if b["excluded"] else ""))
+        elif b["status"] == "no_parent":
+            print("       Root session — no parent to route to; the owner was "
+                  "emailed. Answer it yourself:")
+        else:
+            print(f"       Routed to {b['parent']}, still unanswered. Answer it "
+                  "yourself:")
+        print(f"       agentwire output -s '{b['session']}'   # inspect first")
+        print(f"       agentwire prompts answer -s '{b['session']}' "
+              f"--pane {b['pane']} --expect <hash> <key>")
+
+    return len(stuck)
+
+
 def _render_mcp_import_section() -> int:
     """Doctor section: does the MCP server entrypoint actually import? (#874)
 
@@ -1407,6 +1468,15 @@ def cmd_doctor(args) -> int:
         issues_fixed += _rp_fixed
     except Exception as e:
         print(f"  [..] Could not check the role-prompt store: {e}")
+
+    # 12c. Sessions blocked on an unanswered dialog (#905). The one state every
+    # other check calls healthy: the agent process is running, so liveness
+    # passes, while the pane sits on a menu and does nothing.
+    print("\nChecking for sessions blocked on a prompt (#905)...")
+    try:
+        issues_found += _render_blocked_prompt_section()
+    except Exception as e:
+        print(f"  [..] Could not check for blocked sessions: {e}")
 
     # 13. Managed voice shims (Kokoro :8102, Moonshine STT :8101) whose tmux
     # session is alive but whose /health is dead (#734). The old

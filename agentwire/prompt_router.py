@@ -55,6 +55,16 @@ HOOK_MARKER_TTL = timedelta(minutes=6)
 # Markers whose pane vanished are garbage-collected after this long.
 MARKER_GC_TTL = timedelta(minutes=30)
 
+# A root session's prompt has nowhere to route, so the owner is the only
+# recipient left. Longer than RENOTIFY_TTL on purpose: this is an out-of-band
+# email, not a paste into a session that is already watching.
+NO_PARENT_ESCALATE_TTL = timedelta(hours=1)
+
+# How long a pane may sit on a detected prompt before `doctor` calls it stuck.
+# Comfortably longer than RENOTIFY_TTL: one re-notification going unanswered
+# is a busy parent, a second is a parent that isn't coming.
+STUCK_PROMPT_AFTER = timedelta(minutes=25)
+
 # Every routed message starts with this; the detector treats its presence on
 # a screen as poison so a delivered notification can never be re-detected.
 MESSAGE_PREFIX = "[PROMPT from "
@@ -88,10 +98,30 @@ ASK_PATTERN_SIMPLE = re.compile(
 _PLAN_ANCHOR = "ready to execute. Would you like to proceed?"
 _PLAN_QUESTION_RE = re.compile(r"Would you like to\s+proceed\?")
 _PERMISSION_QUESTION_RE = re.compile(r"Do you want\b[\s\S]{0,160}?\?")
+
+# The resume dialog (#905). Claude Code shows this on `--resume` of a
+# conversation past its age + token thresholds, which is every recovery from a
+# stranded session and — once `agentwire restart` (#871 item 4) resumes in
+# place — a routine path rather than an incident-only one.
+#
+# The anchor is the dialog's body sentence, verbatim from the shipped binary
+# (`strings claude | grep "Resuming the full session"`), not from a screenshot:
+# the title line above it interpolates age and token count, and the option
+# labels could be reworded, but this sentence is one string literal.
+_RESUME_ANCHOR = "We recommend resuming from a summary."
+# Title: "This session is 2h 47m old and 233.6k tokens." — both values are
+# formatted at render time, which is exactly why they stay OUT of the hash.
+_RESUME_TITLE_RE = re.compile(
+    r"This session is\s+(?P<age>.+?)\s+old and\s+(?P<tokens>\S+)\s+tokens\."
+)
+# Stable across every rendering of this dialog, so the content hash is too.
+_RESUME_QUESTION = "Resume from summary, or resume the full session?"
+
 _LIVE_TAIL = {
     "permission": re.compile(r"(Tab to\s+amend|ctrl\+e to\s+explain)\s*$"),
     "plan": re.compile(r"ctrl\+g to edit in\s+VS Code\s+·\s+\S+\.md\s*$"),
     "question": re.compile(r"Esc to cancel\s*$"),
+    "resume": re.compile(r"Enter to confirm\s+·\s+Esc to cancel\s*$"),
 }
 
 
@@ -163,6 +193,35 @@ def _detect_permission(clean: str, norm: str) -> "PromptInfo | None":
         question=_normalize(q.group(0)),
         options=options,
         summary=_normalize(clean[max(0, q.start() - 250):q.start()])[-200:],
+    )
+
+
+def _detect_resume(clean: str, norm: str) -> "PromptInfo | None":
+    """Claude Code's "resume from summary?" dialog (#905).
+
+    The state this exists for is the nastiest one the fleet has hit: the agent
+    process is running, so ``pane_current_command`` reports the agent and every
+    liveness check passes, while the session does nothing and every message
+    queues behind ``safe_deliver``'s live-menu refusal. Four sessions sat here
+    for hours — one about four — and no surface reported it.
+
+    The age and token count live in ``summary``, never in ``question``, so the
+    content hash is stable: a dialog that redrew with a ticking age would
+    otherwise look like a NEW prompt on every sweep and re-notify the parent
+    every 60 seconds.
+    """
+    if _RESUME_ANCHOR not in norm or not _is_live(norm, "resume"):
+        return None
+    options = parse_ask_options(clean[clean.index(_RESUME_ANCHOR) + len(_RESUME_ANCHOR):])
+    if not options:
+        return None
+    title = _RESUME_TITLE_RE.search(norm)
+    summary = (
+        f"session is {title.group('age')} old, {title.group('tokens')} tokens"
+        if title else ""
+    )
+    return PromptInfo(
+        kind="resume", question=_RESUME_QUESTION, options=options, summary=summary
     )
 
 
@@ -467,7 +526,11 @@ def detect_prompt(visible: str) -> "PromptInfo | None":
         return None
     if PARK_OPTION in norm or _usage_limit_dialog(visible):
         return None
-    for detector in (_detect_plan, _detect_permission, _detect_question):
+    # _detect_resume runs FIRST: it is the most specific (an exact product
+    # string), and this screen also satisfies _detect_question's liveness
+    # footer, so leaving it last would let a coincidental "…?" line in the
+    # scrollback above claim the dialog as a generic question.
+    for detector in (_detect_resume, _detect_plan, _detect_permission, _detect_question):
         info = detector(clean, norm)
         if info:
             return info
@@ -567,6 +630,76 @@ def build_message(session: str, pane_index: int, info: PromptInfo) -> str:
     )
 
 
+def _escalate_no_parent(
+    session: str, pane_index: int, info: PromptInfo, prior: "dict | None"
+) -> "str | None":
+    """Email the owner about a ROOT session blocked with nowhere to route (#905).
+
+    A root session has no parent by design, so ``status=no_parent`` was a
+    terminal state: the marker sat there forever and no surface said anything.
+    That is fine for a prompt a human is sitting in front of and wrong for an
+    unattended one — a root orchestrator blocked on a product question is
+    stalled until somebody happens to look at the pane.
+
+    Follows the dead-letter escalation precedent rather than inventing a
+    channel: shared Resend wiring, best-effort, never raises. Rate-limited by
+    ``escalated_at`` on the marker — the first sighting emails, then at most
+    once per :data:`NO_PARENT_ESCALATE_TTL` while the SAME prompt stays up
+    (the sweep re-routes a no-parent prompt every 60s, so an unthrottled
+    escalation would be 60 emails an hour). Returns the timestamp to record.
+    """
+    previous = (prior or {}).get("escalated_at")
+    if previous:
+        try:
+            if _now() - datetime.fromisoformat(previous) < NO_PARENT_ESCALATE_TTL:
+                return previous
+        except (TypeError, ValueError):
+            pass
+
+    waiting = _marker_age(prior, "detected_at") if prior else None
+    try:
+        import socket
+
+        from .channels.email import send_email
+
+        options = ", ".join(
+            f"{o['number']}={o['label']}" for o in info.options if o.get("label")
+        )
+        summary = f"\n**Context:** {info.summary}" if info.summary else ""
+        waited = (
+            f" It has been waiting {int(waiting.total_seconds() // 60)} minutes."
+            if waiting else ""
+        )
+        body = (
+            f"`{session}` (pane {pane_index}) on `{socket.gethostname()}` is blocked "
+            f"on a **{info.kind}** prompt and has no parent session to route it to, "
+            f"so nothing can answer it automatically.{waited}\n"
+            f"\n**Question:** {info.question}{summary}\n"
+            f"\n**Options:** {options}\n"
+            f"\nInspect:\n```\nagentwire output -s '{session}'\n```\n"
+            f"\nAnswer (never raw send-keys — it verifies the same prompt is still "
+            f"live first):\n```\nagentwire prompts answer -s '{session}' "
+            f"--pane {pane_index} --expect {info.content_hash()} <key>\n```\n"
+        )
+        result = send_email(
+            subject=f"[agentwire] {session} is blocked on a {info.kind} prompt "
+                    f"with no parent",
+            body=body,
+        )
+        ok = bool(getattr(result, "success", False))
+    except Exception as exc:  # escalation is best-effort; never break the sweep
+        _log_event(
+            "no_parent_escalate_failed",
+            session=session, pane=pane_index, error=str(exc),
+        )
+        return previous
+    _log_event(
+        "no_parent_escalated",
+        session=session, pane=pane_index, kind=info.kind, ok=ok,
+    )
+    return _now().isoformat()
+
+
 def route_prompt(
     session: str,
     pane_index: int,
@@ -585,12 +718,23 @@ def route_prompt(
         content_hash = info.content_hash()
         parent = resolve_parent(session, pane_index, project_path)
         if parent is None:
+            # Same prompt as last sweep -> keep the ORIGINAL detected_at. A
+            # no-parent marker is rewritten every tick (nothing sets
+            # notified_at, so the sweep never short-circuits), and refreshing
+            # the timestamp each pass would make a pane blocked for four hours
+            # read as four seconds old to anything measuring the wait.
+            prior = read_marker(session, pane_index)
+            if not prior or prior.get("hash") != content_hash:
+                prior = None
+            escalated_at = _escalate_no_parent(session, pane_index, info, prior)
             write_marker(
                 session, pane_index,
                 kind=info.kind, question=info.question,
                 hash=content_hash, source=source,
                 parent=None, status="no_parent",
-                detected_at=_now().isoformat(), notified_at=None,
+                detected_at=(prior or {}).get("detected_at") or _now().isoformat(),
+                notified_at=None,
+                escalated_at=escalated_at,
             )
             _log_event("no_parent", session=session, pane=pane_index, kind=info.kind)
             return None
@@ -829,6 +973,119 @@ def _flush_stuck_box(session: str, pane_index: int, visible: str) -> bool:
         return False
 
 
+@dataclass
+class PaneRef:
+    """One tmux pane, as the sweep and the doctor check both see it."""
+    session: str
+    pane: int
+    command: str
+    path: str
+
+    @property
+    def is_agent(self) -> bool:
+        return bool(_AGENT_COMMAND_RE.match(self.command.strip()))
+
+
+def list_panes() -> "list[PaneRef] | None":
+    """Every pane on the tmux server, or None if tmux couldn't be asked.
+
+    ``list-panes -a`` deliberately, NOT ``-t <session>``: ``-a`` is server-wide
+    and needs no per-session target, so it sidesteps the trap that bit the
+    fleet's ad-hoc health checks — a bare ``list-panes -t <session>`` scopes to
+    the ACTIVE WINDOW, making the first row the wrong pane whenever the agent
+    isn't in it (``-s`` is what makes a targeted call session-wide). Pane
+    indices are read from tmux, never assumed: base-index ships as 0 since
+    #903, but windows created before that kept 1, so both are live at once.
+
+    None (not ``[]``) when tmux is unreachable — "couldn't look" and "looked,
+    found nothing" must not collapse, or a dead tmux server would read as a
+    healthy fleet.
+    """
+    try:
+        result = _tmux(
+            ["list-panes", "-a", "-F",
+             "#{session_name}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}"]
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    panes = []
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        try:
+            pane_index = int(parts[1])
+        except ValueError:
+            continue
+        panes.append(PaneRef(parts[0], pane_index, parts[2], parts[3]))
+    return panes
+
+
+def blocked_panes() -> "list[dict] | None":
+    """Agent panes sitting on an unanswered dialog, read-only (#905).
+
+    The state nothing reported: the agent process is alive, so
+    ``pane_current_command`` is the agent and every liveness check passes,
+    while the pane shows a menu and the session does nothing. Only reading the
+    pane content reveals it — which is what this does.
+
+    Never routes, never delivers, never writes a marker; it reads the markers
+    the sweep already wrote to say how long each has been waiting and whether
+    anyone was told. ``status``:
+
+    - ``unrouted`` — a live dialog with NO marker at all. The sweep hasn't run
+      (watchdog down) or is excluding this session, so nobody has been told.
+    - ``no_parent`` — routed nowhere; a root session, owner emailed.
+    - ``waiting`` — a parent was notified and hasn't answered yet.
+    - ``deferred`` — the parent pane wasn't safe to paste into.
+
+    ``stuck`` marks the ones worth acting on: waiting longer than
+    :data:`STUCK_PROMPT_AFTER`, or never routed at all.
+    """
+    panes = list_panes()
+    if panes is None:
+        return None
+    _, excluded = _router_config()
+
+    blocked = []
+    for pane in panes:
+        if not pane.is_agent:
+            continue
+        if _is_parked(pane.session):
+            continue
+        info = detect_prompt(_capture(f"{pane.session}.{pane.pane}"))
+        if info is None:
+            continue
+        marker = read_marker(pane.session, pane.pane)
+        age = _marker_age(marker) if marker else None
+        if marker is None:
+            status = "unrouted"
+        elif marker.get("status") == "no_parent":
+            status = "no_parent"
+        elif marker.get("notified_at"):
+            status = "waiting"
+        else:
+            status = "deferred"
+        blocked.append({
+            "session": pane.session,
+            "pane": pane.pane,
+            "kind": info.kind,
+            "question": info.question,
+            "summary": info.summary,
+            "status": status,
+            "parent": (marker or {}).get("parent"),
+            "excluded": pane.session in excluded,
+            "waiting_minutes": int(age.total_seconds() // 60) if age else None,
+            "stuck": status == "unrouted" or (
+                age is not None and age > STUCK_PROMPT_AFTER
+            ),
+        })
+    return blocked
+
+
 def sweep() -> dict:
     """Scan all agent panes for live interactive prompts and route them.
 
@@ -844,32 +1101,18 @@ def sweep() -> dict:
     enabled, excluded = _router_config()
     if not enabled:
         return {"routed": [], "deferred": [], "active": []}
-    try:
-        result = _tmux(
-            ["list-panes", "-a", "-F",
-             "#{session_name}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}"]
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return {"routed": [], "deferred": [], "active": []}
-    if result.returncode != 0:
+    panes = list_panes()
+    if panes is None:
         return {"routed": [], "deferred": [], "active": []}
 
     routed, deferred, active = [], [], []
-    seen_panes = set()
-    for line in result.stdout.strip().splitlines():
-        parts = line.split("\t")
-        if len(parts) != 4:
-            continue
-        session, pane_s, command, pane_path = parts
-        try:
-            pane_index = int(pane_s)
-        except ValueError:
-            continue
-        seen_panes.add((session, pane_index))
+    seen_panes = {(p.session, p.pane) for p in panes}
+    for pane in panes:
+        session, pane_index, pane_path = pane.session, pane.pane, pane.path
 
         # Only Claude Code panes produce these dialogs; a vim/less pane
         # *displaying* dialog text must never match.
-        if not _AGENT_COMMAND_RE.match(command.strip()):
+        if not pane.is_agent:
             continue
         if session in excluded or _is_parked(session):
             continue

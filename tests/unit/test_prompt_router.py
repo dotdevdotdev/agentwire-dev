@@ -562,7 +562,9 @@ class TestRoutePrompt:
         assert prompt_router.route_prompt("solo", 0, info) is None
         assert self.delivered == []
         assert prompt_router.read_marker("solo", 0)["status"] == "no_parent"
-        assert _events(self.home)[0]["event"] == "no_parent"
+        # Membership, not position: #905 added an owner escalation that logs
+        # before this one (a root session's prompt has nobody else to tell).
+        assert "no_parent" in {e["event"] for e in _events(self.home)}
 
     def test_deferred_delivery_marks_unnotified(self, monkeypatch):
         monkeypatch.setattr(
