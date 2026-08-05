@@ -64,8 +64,12 @@ class TestBuildAgentCommand:
         assert "--allowedTools" in cmd.command
 
     def test_resume_inserts_flags_after_claude(self):
+        """The conversation flags now come from a shell array the prelude
+        fills in at launch (#901), so they still land first — just resolved
+        at run time rather than baked in. See test_launch_line_reentry.py."""
         cmd = self._build("bypass", resume_session_id="abc-123")
-        assert cmd.command.startswith("claude --resume abc-123 --fork-session")
+        assert '--resume "abc-123" --fork-session' in cmd.command
+        assert 'claude "${aw_flags[@]}"' in cmd.command
         # posture flags still present alongside resume
         assert "--dangerously-skip-permissions" in cmd.command
 
@@ -118,9 +122,17 @@ class TestConversationIdentity:
 
     def test_session_id_flag_carries_a_valid_uuid(self):
         cmd = self._build()
-        assert f"--session-id {cmd.conversation_id}" in cmd.command
+        assert f'--session-id "{cmd.conversation_id}"' in cmd.command
         # `claude --session-id` rejects anything that isn't a real UUID.
         assert uuid.UUID(cmd.conversation_id)
+
+    def test_the_id_is_not_passed_unconditionally(self):
+        """`--session-id` is single-use, and the line it rides in is stored to
+        be RE-RUN — so the flag is chosen by the shell against the transcript,
+        never fixed at build time (#901)."""
+        cmd = self._build()
+        assert f"claude --session-id {cmd.conversation_id}" not in cmd.command
+        assert f'--resume "{cmd.conversation_id}"' in cmd.command
 
     def test_every_build_mints_a_fresh_id(self):
         """`--session-id` HARD-ERRORS on a collision within the launch cwd
@@ -133,10 +145,10 @@ class TestConversationIdentity:
         """`--resume <old> --fork-session --session-id <new>` composes, so the
         forked conversation is recorded rather than guessed."""
         cmd = self._build(resume_session_id="old-conversation")
-        assert cmd.command.startswith(
-            f"claude --resume old-conversation --fork-session "
-            f"--session-id {cmd.conversation_id}"
-        )
+        assert (
+            f'--resume "old-conversation" --fork-session '
+            f'--session-id "{cmd.conversation_id}"'
+        ) in cmd.command
         assert cmd.resumed_from == "old-conversation"
         assert cmd.conversation_id != "old-conversation"
 

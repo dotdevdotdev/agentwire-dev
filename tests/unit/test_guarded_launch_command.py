@@ -10,7 +10,9 @@ class TestGuardedLaunchCommand:
     def test_cd_success_runs_agent(self):
         cmd = _guarded_launch_command("/tmp/wt", "claude --flag")
         assert cmd.startswith("cd /tmp/wt || {")
-        assert cmd.endswith("&& claude --flag")
+        # Braced: the agent command is several statements since #901, and an
+        # unbraced `;` would let `claude` run after a failed cd.
+        assert cmd.endswith("&& { claude --flag; }")
 
     def test_cd_failure_exits_without_running_agent(self):
         cmd = _guarded_launch_command("/tmp/wt", "claude --flag")
@@ -70,4 +72,12 @@ class TestParentEscalation:
 
     def test_agent_still_gated_behind_successful_cd(self):
         cmd = _guarded_launch_command("/tmp/wt", "claude --flag")
-        assert cmd.endswith("; exit 1; } && claude --flag")
+        assert cmd.endswith("; exit 1; } && { claude --flag; }")
+
+    def test_a_multi_statement_agent_command_stays_inside_the_guard(self):
+        """#901's prelude made the agent command multi-statement. Every one of
+        its statements has to sit behind the `&&`, or a failed cd runs the
+        agent from the wrong directory — the zombie this guard exists for.
+        Verified against a real shell in test_launch_line_reentry.py."""
+        cmd = _guarded_launch_command("/tmp/wt", "setup=1; claude --flag")
+        assert cmd.endswith("&& { setup=1; claude --flag; }")

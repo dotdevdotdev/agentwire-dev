@@ -27,6 +27,50 @@ Two verified properties of the flag shape everything else:
   `conversation_ids` a chain rather than a scalar that goes stale the first
   time anyone resumes.
 
+## The flag is single-use; the launch line is not (#901)
+
+The line agentwire builds is stored in the tmux session env as
+`AGENTWIRE_LAUNCH_CMD` and **exists to be re-run** — that is the entire point
+of [#856/#866](../internals/shell-escaping.md). Putting a single-use
+`--session-id` in it made those two facts contradict each other:
+
+```
+1. session launches with --session-id <uuid>
+2. the agent takes a turn        →  <uuid>.jsonl is created
+3. the agent exits               →  /exit, an idle reap, a crash
+4. something re-runs the line    →  "Session ID <uuid> is already in use."
+5. the pane sits at a bare shell, permanently
+```
+
+That stranded 13 live sessions on one machine. The reasoning that let it ship
+was "nothing inside agentwire re-evaluates that variable" — true, and beside
+the point: the variable is a **public re-entry point**, so "nothing in our code
+calls it" is not "it is not called."
+
+The fix is that the flag is chosen **at shell runtime**, against the same
+predicate everything else uses (`resumable(id, cwd) == exists(<encoded_cwd>/<id>.jsonl)`):
+
+| on disk | flags |
+|---|---|
+| no transcript | `--session-id <new>` — first launch stays authoritative |
+| `<new>` exists | `--resume <new>` — re-entry continues the conversation |
+| explicit resume, `<old>` exists, `<new>` doesn't | `--resume <old> --fork-session --session-id <new>` |
+| explicit resume, `<old>` gone too | `--session-id <new>` — fresh, role intact, never a bare shell |
+
+`core._conversation_flags_shell` writes that prelude; the cwd encoding is
+mirrored from `history.HISTORY_DIR_SHELL`, which is the shell twin of
+`encode_project_path` — **change one, change the other**. Two details there are
+measured rather than assumed: `pwd -P`, because Claude keys history by the
+*physical* cwd (a symlinked launch dir writes under the resolved path, and on
+macOS every `/tmp/...` is a symlink), and an array for the flags, because zsh —
+the default login shell here — does not word-split unquoted expansions, so
+`claude $flags` would pass one mangled argument.
+
+Testing this needs a **second launch**. A test that evaluates the line once
+cannot see the bug, which is exactly how it shipped past a green suite; see
+`tests/unit/test_launch_line_reentry.py`, which evaluates the real generated
+line twice under both zsh and bash.
+
 ## The record
 
 ```jsonc
