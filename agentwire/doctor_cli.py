@@ -658,6 +658,62 @@ def _render_scheduler_staleness_section() -> int:
     return 1
 
 
+def _render_role_prompt_store_section(
+    *, auto_confirm: bool = False, dry_run: bool = False,
+) -> tuple[int, int]:
+    """Doctor section: the role-prompt store's size and its aged-out tail (#884).
+
+    ``~/.agentwire/role-prompts/`` grows one file per agent launch, forever —
+    and ``spawn`` (the highest-frequency launch path) writes files nothing will
+    ever reference again, since a pane has no session-scoped record to name its
+    conversation in. See :mod:`agentwire.role_prompts` for why the rule is
+    "reachable is forever, unreachable ages out" and not "delete on exit".
+
+    Only the aged-out tail counts as an ISSUE. Unreachable-but-young files are
+    the normal steady state (every live pane has one). A tail that has survived
+    the TTL means the once-a-day watchdog sweep isn't running, which is the
+    thing actually worth reporting — the disk usage is a symptom.
+
+    Returns ``(issues_found, issues_fixed)``.
+    """
+    from . import core, role_prompts
+
+    store = core.role_prompts_dir()
+    sessions_dir = core.CONFIG_DIR / "sessions"
+    s = role_prompts.status(store, sessions_dir)
+
+    if not s["exists"]:
+        print("  [ok] Role-prompt store not created yet (no agent launched here)")
+        return 0, 0
+
+    print(f"  [ok] Role-prompt store: {s['total']} file(s), {s['bytes'] / 1024:.0f} KB "
+          f"({s['reachable']} reachable, {s['unreachable']} unreferenced)")
+    if s["unrecognized"]:
+        print(f"  [..] {len(s['unrecognized'])} unrecognized entr(ies) in the store — "
+              "never swept, never deleted: " + ", ".join(s["unrecognized"][:5]))
+
+    if not s["expired"]:
+        return 0, 0
+
+    print(f"  [!!] {s['expired']} role prompt(s) unreferenced and older than "
+          f"{s['max_age_days']:g}d ({s['expired_bytes'] / 1024:.0f} KB) — the daily "
+          "sweep does not appear to be running")
+    print("       Fix: agentwire limits install   (the watchdog owns this sweep)")
+    if dry_run:
+        print("       -> Would sweep them now (dry-run)")
+        return 1, 0
+    if not (auto_confirm or _confirm("     Sweep them now?")):
+        return 1, 0
+    result = role_prompts.sweep(store, sessions_dir)
+    print(f"       -> swept {len(result['deleted'])} file(s), "
+          f"{result['bytes_freed'] / 1024:.0f} KB freed")
+    if result["failed"]:
+        print(f"       -> {len(result['failed'])} could not be removed: "
+              + "; ".join(result["failed"][:3]))
+        return 1, 0
+    return 1, 1
+
+
 def _render_mcp_import_section() -> int:
     """Doctor section: does the MCP server entrypoint actually import? (#874)
 
@@ -1339,6 +1395,18 @@ def cmd_doctor(args) -> int:
         issues_found += _render_task_migration_section()
     except Exception as e:
         print(f"  [..] Could not check project task migration: {e}")
+
+    # 12b. Role-prompt store retention (#884) — one file per agent launch,
+    # forever, with panes writing guaranteed orphans. Reports size and flags
+    # only the aged-out tail (which means the watchdog sweep isn't running).
+    print("\nChecking role-prompt store retention (#884)...")
+    try:
+        _rp_found, _rp_fixed = _render_role_prompt_store_section(
+            auto_confirm=auto_confirm, dry_run=dry_run)
+        issues_found += _rp_found
+        issues_fixed += _rp_fixed
+    except Exception as e:
+        print(f"  [..] Could not check the role-prompt store: {e}")
 
     # 13. Managed voice shims (Kokoro :8102, Moonshine STT :8101) whose tmux
     # session is alive but whose /health is dead (#734). The old

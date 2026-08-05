@@ -33,18 +33,28 @@ from .worktree import git_common_dir, git_root, main_worktree, parse_session_nam
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
 
-# Durable home for the per-conversation `--append-system-prompt` file (#871).
-#
-# This used to be a `tempfile.NamedTemporaryFile` under /var/folders, which
-# macOS garbage-collects. The launch line references the file by path
-# (`--append-system-prompt "$(<path>)"`), so once the GC ran, relaunching a
-# session older than the GC window substituted an EMPTY string: the
-# conversation came back, the role silently did not. Nothing failed loudly —
-# the agent just quietly stopped being a worker/orchestrator/reviewer.
-#
-# Keyed by conversation id so the prompt a conversation launched with stays
-# recoverable even after its session's roles change.
-ROLE_PROMPTS_DIR = CONFIG_DIR / "role-prompts"
+
+def role_prompts_dir() -> Path:
+    """Durable home for the per-conversation ``--append-system-prompt`` file (#871).
+
+    This used to be a ``tempfile.NamedTemporaryFile`` under /var/folders, which
+    macOS garbage-collects. The launch line references the file by path
+    (``--append-system-prompt "$(<path>)"``), so once the GC ran, relaunching a
+    session older than the GC window substituted an EMPTY string: the
+    conversation came back, the role silently did not. Nothing failed loudly —
+    the agent just quietly stopped being a worker/orchestrator/reviewer.
+
+    Keyed by conversation id so the prompt a conversation launched with stays
+    recoverable even after its session's roles change.
+
+    A FUNCTION, not the module constant it used to be (#884). A constant
+    computed at import time does not follow this repo's established test seam,
+    ``monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)`` — a test
+    that believes it has isolated the config dir would still resolve to the
+    operator's REAL store. Harmless while the only operation was "write a
+    file"; a live landmine the moment something SWEEPS this directory.
+    """
+    return CONFIG_DIR / "role-prompts"
 
 
 def _check_tmux_installed() -> bool:
@@ -92,7 +102,7 @@ class AgentCommand:
     can pair a conversation id with the wrong prompt or posture.
     """
     command: str  # The shell command to execute
-    role_prompt_path: str | None = None  # Durable --append-system-prompt file (see ROLE_PROMPTS_DIR)
+    role_prompt_path: str | None = None  # Durable --append-system-prompt file (see role_prompts_dir())
     env: dict[str, str] = field(default_factory=dict)  # Secrets to inject via tmux set-environment (keeps keys out of `ps`)
     conversation_id: str | None = None  # UUID passed as `claude --session-id` (None for bare)
     resumed_from: str | None = None  # Conversation this one was forked off, if any
@@ -292,11 +302,12 @@ def write_owner_only(path: Path, text: str) -> None:
 def write_role_prompt(conversation_id: str, instructions: str) -> Path:
     """Write *instructions* to this conversation's durable role-prompt file.
 
-    The one place a role prompt is written to disk (see :data:`ROLE_PROMPTS_DIR`
+    The one place a role prompt is written to disk (see :func:`role_prompts_dir`
     for why "durable" is load-bearing). Returns the path the launch line
     should read; the file deliberately OUTLIVES the launch so a later
     relaunch can reuse it, and the recorded ``roles``/``posture`` can
-    regenerate it if it's ever gone.
+    regenerate it if it's ever gone. Retention is
+    :mod:`agentwire.role_prompts`' job, not this function's (#884).
 
     A role prompt is complete system-prompt text — role content, project
     context, whatever else the prompt carries — so it is written owner-only
@@ -305,10 +316,11 @@ def write_role_prompt(conversation_id: str, instructions: str) -> Path:
     touches an existing path: a store created before #881 must heal rather
     than stay world-readable forever.
     """
-    ROLE_PROMPTS_DIR.mkdir(parents=True, exist_ok=True, mode=_SECRET_DIR_MODE)
-    os.chmod(ROLE_PROMPTS_DIR, _SECRET_DIR_MODE)
+    store = role_prompts_dir()
+    store.mkdir(parents=True, exist_ok=True, mode=_SECRET_DIR_MODE)
+    os.chmod(store, _SECRET_DIR_MODE)
 
-    path = ROLE_PROMPTS_DIR / f"{conversation_id}.txt"
+    path = store / f"{conversation_id}.txt"
     write_owner_only(path, instructions)
     return path
 

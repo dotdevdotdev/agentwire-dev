@@ -49,6 +49,27 @@ def _no_live_portal_stt_query(monkeypatch):
     monkeypatch.setattr(vs, "_portal_effective_stt_backend", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_role_prompt_sweep(monkeypatch):
+    """No test may sweep the REAL role-prompt store — ever.
+
+    ``role_prompts.tick`` is a watchdog stage, so anything that exercises
+    ``agentwire limits tick`` end to end reaches it, and it is the one function
+    that resolves ``~/.agentwire/role-prompts/`` for a DELETION pass. Those
+    files are live agents' system prompts: deleting one strips the role from a
+    running session, which is exactly the failure #881 fixed.
+
+    Tests for the retention rule itself call ``role_prompts.sweep`` /
+    ``status`` with their own fixture directories (both are required
+    parameters, precisely so they can't default to the real one).
+    """
+    from agentwire import role_prompts
+
+    monkeypatch.setattr(
+        role_prompts, "tick",
+        lambda: {"skipped": "disabled-in-tests", "deleted": []})
+
+
 @pytest.fixture
 def tmp_config_dir(tmp_path):
     """Temporary ~/.agentwire/ equivalent."""
