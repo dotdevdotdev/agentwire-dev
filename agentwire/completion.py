@@ -187,25 +187,38 @@ def wait_for_completion_signal(
     session: str,
     poll_interval: float = 10.0,
     summary_path: Path | None = None,
+    max_duration: int = 0,
 ) -> dict:
     """Wait for task completion by polling the summary file directly.
 
     Exits when:
     1. Summary file appears (task completed normally)
     2. Session dies (agent crashed, tmux killed)
+    3. ``max_duration`` elapses, when the task sets one
 
-    There is no wall-clock timeout. Tasks run until one of these conditions.
+    Completion is otherwise agent-driven: the idle hook fires, the agent writes
+    a summary, and this returns. An agent that never goes idle never produces
+    either exit — wedged on an unrecognized dialog, or blocked inside a tool
+    call — and before ``max_duration`` existed the wait was unbounded, so that
+    read as a silent multi-hour hang whose only visible end was the scheduler's
+    4h process-group watchdog (#867).
+
+    ``max_duration`` is a per-attempt wall clock, not an idle timer: it can't
+    tell a wedged agent from a slow one, so a task that legitimately runs long
+    should set it high or leave it at 0 rather than get killed mid-work.
 
     Args:
         session: tmux session name
         poll_interval: Seconds between checks
         summary_path: Path to the summary .md file the agent will write
+        max_duration: Seconds before giving up (0 = unbounded)
 
     Returns:
         Dict with 'status', 'summary', 'summary_file' keys
 
     Raises:
-        CompletionTimeout: If session dies before task completed
+        CompletionTimeout: If the session dies, or max_duration elapses, before
+            the task completed. The message names which.
     """
     # Build glob pattern for fuzzy summary detection (agents sometimes
     # invent their own timestamp instead of using the provided filename).
@@ -216,6 +229,8 @@ def wait_for_completion_signal(
         # Strip the timestamp suffix (last 19 chars: YYYY-MM-DDTHH-MM-SS)
         prefix = stem[:-19] if len(stem) > 19 else stem
         summary_glob = f"{prefix}*.md"
+
+    started = time.time()
 
     while True:
         # Primary: check if the agent has written the summary file AND
@@ -273,6 +288,14 @@ def wait_for_completion_signal(
             raise CompletionTimeout(
                 f"Session '{session}' died or agent exited before task completed"
             )
+
+        if max_duration > 0:
+            elapsed = time.time() - started
+            if elapsed >= max_duration:
+                raise CompletionTimeout(
+                    f"Task exceeded max_duration ({max_duration}s) after "
+                    f"{int(elapsed)}s — the agent never signalled completion"
+                )
 
         time.sleep(poll_interval)
 
