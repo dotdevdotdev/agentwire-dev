@@ -186,10 +186,17 @@ def ensure_machines_file(machines_path: Path) -> bool:
     """Create an empty machines.json only if one doesn't exist.
 
     Never resets an existing registry. Returns True if the file was created.
+
+    Written owner-only (#887): the registry names remote hosts, users and
+    paths, and this is where it is MINTED — the bare ``write_text`` it
+    replaces inherited the umask, which is how a 0644 registry ended up on a
+    live machine.
     """
+    from .core import write_owner_only
+
     if machines_path.exists():
         return False
-    machines_path.write_text('{"machines": []}\n')
+    write_owner_only(machines_path, '{"machines": []}\n')
     return True
 
 

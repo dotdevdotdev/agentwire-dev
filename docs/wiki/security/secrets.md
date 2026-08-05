@@ -18,6 +18,10 @@ OPENAI_API_KEY=sk-...
 chmod 600 ~/.agentwire/.env
 ```
 
+**This is checked, not just documented (#887).** It used to be convention
+only — and convention lost: the file was found at 0644, world-readable,
+holding every key. See [File permissions](#file-permissions) below.
+
 ## What loads it
 
 `agentwire/__main__.py` calls `load_dotenv(~/.agentwire/.env)` on **every**
@@ -72,6 +76,38 @@ What this buys, in either form:
 - `config.yaml` stays shareable/committable without a redaction pass.
 - The portal's config editor never round-trips a secret to the browser.
 - One file to `chmod 600`, back up, or rotate.
+
+## File permissions
+
+Four paths under `~/.agentwire/` must never be readable beyond their owner:
+
+| Path | Mode | What leaks if it isn't |
+|---|---|---|
+| `~/.agentwire/` | `0700` | the filenames of everything below it |
+| `~/.agentwire/.env` | `0600` | every API key |
+| `~/.agentwire/portal.token` | `0600` | the portal auth token — full access to every session |
+| `~/.agentwire/machines.json` | `0600` | remote hosts, users and paths |
+
+Two mechanisms keep them there:
+
+- **Enforced on write.** Every owner-only file agentwire writes goes through
+  `core.write_owner_only`: the mode is set on the file descriptor *before any
+  bytes land*, and the file is renamed into place, so there is no window where
+  the content is world-readable — not even on first creation under a
+  permissive umask. A rewrite therefore also *heals* a file that had already
+  drifted wide. This covers `portal.token`, the `role-prompts/` store and
+  `machines.json`; before #887 the registry was minted with a bare
+  `write_text` and inherited the umask, which is how a 0644 registry ended up
+  on a live machine.
+- **Checked by `agentwire doctor`.** `.env` is the exception to the above —
+  nothing in agentwire writes it (it's hand-authored, only ever read via
+  `load_dotenv`), so the check is the only thing standing between it and a
+  slow drift to 0644. Doctor reports every path that is group- or
+  world-readable, naming the exact `chmod` to run; `agentwire doctor --yes`
+  tightens them. Healing is opt-in rather than automatic — tightening a file
+  is safe in a way loosening never is, but these are your files on your
+  machine. A path that is *tighter* than required (`0400`, say) is never
+  reported and never "fixed" back open.
 
 ## Security posture
 

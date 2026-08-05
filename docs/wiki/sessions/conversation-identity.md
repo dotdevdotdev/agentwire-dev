@@ -149,3 +149,52 @@ session-scoped to put it.
 - `created_by` of `''` means *explicitly rootless* and is written; `None` means
   the caller has no opinion and must not clobber a recorded parent (#848).
 - `created_at` is set once and survives relaunch; `launched_at` moves.
+
+## A failed write is loud (#885)
+
+`store_session_metadata` used to end in `except (IOError, TypeError): pass`,
+so a failed write was indistinguishable from a successful one. That was
+survivable while the record only held `created_by`/`role` — losing it degraded
+prompt routing, visibly. It is not survivable now: the record holds the
+conversation id, the one piece of session identity that is *not* otherwise
+recoverable, which is the exact problem this page exists to solve.
+
+- `store_session_metadata` **raises**. A `TypeError` (unserializable record =
+  a code bug) is raised *before* anything is opened, so the bug can never
+  truncate a good record on its way out; an `OSError` means the store is not
+  writable.
+- It writes through `core._atomic_write`, so a crash mid-write leaves the
+  previous record intact rather than a truncated file that
+  `load_session_metadata` would read back as `{}` via its `JSONDecodeError`
+  catch — the same silent loss by a second route.
+- `record_session_launch` **catches and warns loudly on stderr** rather than
+  propagating. By the time it runs the session is already live in tmux, so a
+  traceback would report a failed command for a creation that succeeded. The
+  warning names the session, the now-unrecoverable conversation id, and what
+  breaks: `history resume`, prompt routing, and the topology view.
+
+## Rooting on remote launches (#886)
+
+Remote records carry `role` and honor an explicit `--created-by`, the same as
+local ones — `cmd_new`'s remote branch dropped both until #886, which made the
+worktree ↔ conversation ↔ branch mapping local-only. (`recreate` / `fork` /
+`history resume` already passed `role` on both sides and have no
+`--created-by` flag on either, so there was no asymmetry there to fix.)
+
+What a remote launch deliberately does **not** do is guess a default parent.
+The local default runs `resolve_default_created_by`, which inherits the caller
+only when the new session's project is the one the caller is already in — and
+that comparison reads the caller's *live tmux cwd* against the target path. A
+remote target path is on another machine; a same-named local directory would
+answer for some other checkout entirely. So the remote default is `None` (no
+opinion) rather than `''` (explicitly rootless): the record is keyed by session
+*name*, with no machine in it, so writing an explicit rootless marker would
+clobber a parent recorded by an earlier launch of the same name. The joint
+default with role still applies — an explicitly requested `--kind orchestrator`
+roots itself, remote or not.
+
+This is a property of today's transport, not of the relationship: prompt
+routing and `notify-parent` are local-only mechanisms (a file inbox drained by
+the local watchdog), so a parent link across machines would be a link nothing
+traverses. When cross-machine routing exists, the default becomes a real
+question again.

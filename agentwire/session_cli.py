@@ -295,9 +295,30 @@ def cmd_new(args) -> int:
         if result.returncode != 0:
             return _output_result(False, json_mode, f"Failed to create remote session: {result.stderr}")
 
+        # Rooting + role on the REMOTE record (#886). This was the one place
+        # where a remote launch recorded less than its local twin: `--created-by`
+        # was silently dropped and the session's ROLE never written, so the
+        # worktree ↔ conversation ↔ branch mapping #871 builds was local-only.
+        # (`recreate` / `fork` / `history resume` already pass `role` on both
+        # sides and have no `--created-by` flag on either — no asymmetry there.)
+        #
+        # The DEFAULT deliberately stays "no opinion" rather than borrowing the
+        # local path's `resolve_default_created_by`: that resolver compares the
+        # caller's LIVE tmux cwd against the target path, and the target path
+        # is on another machine — a same-named local directory would answer for
+        # some other checkout entirely. `None` (not `''`) because the record is
+        # keyed by session NAME with no machine in it, so writing an explicit
+        # "rootless" here would clobber a parent recorded by an earlier launch.
+        # The joint default with role (#716) still applies: an explicitly
+        # requested orchestrator roots itself, remote or not.
+        remote_created_by = getattr(args, 'created_by', None)
+        if remote_created_by is None and getattr(args, 'kind', None) == 'orchestrator':
+            remote_created_by = ''
+
         record_session_launch(
             session_name, agent, remote_path,
-            created_via="new", remote=True,
+            created_by=remote_created_by, created_via="new", role=kind,
+            remote=True,
         )
 
         if json_mode:

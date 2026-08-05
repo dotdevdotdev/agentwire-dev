@@ -17,9 +17,11 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .core import (
@@ -687,6 +689,98 @@ def _render_mcp_import_section() -> int:
     return 1
 
 
+@dataclass
+class _SecretPath:
+    """An agentwire path that must never be readable by anyone but its owner."""
+    path: Path
+    mode: int          # what it is right now (permission bits only)
+    want: int          # what it should be
+    why: str           # what leaks if it stays wide
+
+
+def _owner_only_paths() -> list[tuple[Path, int, str]]:
+    """(path, required mode, what it holds) for every owner-only path.
+
+    Resolved at CALL time from ``core.CONFIG_DIR`` / ``security.TOKEN_FILE``
+    rather than captured at import, so the single source of truth for each
+    location stays the module that owns it.
+    """
+    from .core import CONFIG_DIR
+    from .security import TOKEN_FILE
+
+    return [
+        (CONFIG_DIR, 0o700,
+         "every file below it — a readable dir leaks the filenames"),
+        (CONFIG_DIR / ".env", 0o600,
+         "every API key (docs/wiki/security/secrets.md)"),
+        (TOKEN_FILE, 0o600,
+         "the portal auth token — full access to every session"),
+        (CONFIG_DIR / "machines.json", 0o600,
+         "remote hosts, users and paths"),
+    ]
+
+
+def _overly_permissive_secret_paths() -> list[_SecretPath]:
+    """The owner-only paths that are currently readable by group or world.
+
+    Only GROUP/OTHER bits are judged. A path that is TIGHTER than required
+    (0400, say) is deliberately not reported: this check exists to close a
+    file, never to open one.
+    """
+    found = []
+    for path, want, why in _owner_only_paths():
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            continue  # absent (or unreadable) — nothing to judge
+        if mode & 0o077:
+            found.append(_SecretPath(path=path, mode=mode, want=want, why=why))
+    return found
+
+
+def _render_secrets_permissions_section(
+    *, auto_confirm: bool = False, dry_run: bool = False,
+) -> tuple[int, int]:
+    """Doctor section: is the secrets file actually 0600? (#887)
+
+    ``chmod 600 ~/.agentwire/.env`` was documented in two places and enforced
+    in none — a manual step a human was expected to remember. The machine this
+    check was written on had it at 0644, world-readable, holding every API key,
+    and no diagnostic anywhere said so. Doctor already flags stale hooks,
+    drifted rules and a disabled kill switch; a world-readable key file belongs
+    in the same list.
+
+    Healing is opt-in (``--yes`` / the interactive prompt) rather than
+    automatic, unlike the forced ``chmod`` on agentwire's OWN writes: tightening
+    a file is safe in a way loosening never is, but these are the operator's
+    files on the operator's machine. Returns ``(issues_found, issues_fixed)``.
+    """
+    issues = _overly_permissive_secret_paths()
+    if not issues:
+        print("  [ok] Secrets and registry files are owner-only (0600/0700)")
+        return 0, 0
+
+    fixed = 0
+    for item in issues:
+        kind = "dir" if item.path.is_dir() else "file"
+        print(f"  [!!] {item.path} is {item.mode:04o} — readable beyond its "
+              f"owner ({kind} holds {item.why})")
+        print(f"       Fix: chmod {item.want:03o} {item.path}")
+        if dry_run:
+            print(f"       -> Would chmod {item.want:03o} (dry-run)")
+            continue
+        if not (auto_confirm or _confirm(f"     Tighten to {item.want:03o}?")):
+            continue
+        try:
+            os.chmod(item.path, item.want)
+        except OSError as e:
+            print(f"       -> chmod failed: {e}")
+            continue
+        print(f"       -> tightened to {item.want:03o}")
+        fixed += 1
+    return len(issues), fixed
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -1086,6 +1180,16 @@ def cmd_doctor(args) -> int:
                 print(f"  [!!] {feature}: {' / '.join(candidates)} not set")
                 print(f"       Fix: add {candidates[0]}=... to ~/.agentwire/.env")
                 issues_found += 1
+
+    # 8d. Secrets-file PERMISSIONS (#887) — the keys being present says nothing
+    # about who else can read them. Unconditional (unlike the key-presence
+    # block above, which only runs for configured features): the config dir and
+    # its registry exist on every install.
+    print("\nChecking secrets file permissions...")
+    _perm_found, _perm_fixed = _render_secrets_permissions_section(
+        auto_confirm=auto_confirm, dry_run=dry_run)
+    issues_found += _perm_found
+    issues_fixed += _perm_fixed
 
     # 9. Validate remote machines
     print("\nChecking remote machines...")
