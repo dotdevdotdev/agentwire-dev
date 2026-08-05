@@ -11,7 +11,7 @@ import json
 import subprocess
 import sys
 
-from .core import CONFIG_DIR, _output_json
+from .core import CONFIG_DIR, _output_json, write_owner_only
 
 
 def cmd_machine_add(args) -> int:
@@ -47,10 +47,10 @@ def cmd_machine_add(args) -> int:
 
     machines.append(new_machine)
 
-    # Save
-    with open(machines_file, "w") as f:
-        json.dump({"machines": machines}, f, indent=2)
-        f.write("\n")
+    # Save owner-only (#887): the registry names remote hosts, users and paths,
+    # and a bare `open(..., "w")` inherits the umask — which is how the 0644
+    # registry found in the wild got there.
+    write_owner_only(machines_file, json.dumps({"machines": machines}, indent=2) + "\n")
 
     print(f"Added machine '{machine_id}'")
     print(f"  Host: {host}")
@@ -106,9 +106,9 @@ def cmd_machine_remove(args) -> int:
     # Step 3: Remove from machines.json
     print("Updating machines.json...")
     machines_data["machines"] = [m for m in machines if m.get("id") != machine_id]
-    with open(machines_file, "w") as f:
-        json.dump(machines_data, f, indent=2)
-        f.write("\n")
+    # Rewriting through write_owner_only also HEALS a registry that was minted
+    # 0644 before #887 — os.replace swaps in an already-0600 inode.
+    write_owner_only(machines_file, json.dumps(machines_data, indent=2) + "\n")
     print(f"  ✓ Removed '{machine_id}' from machines.json")
 
     # Step 4: Print manual steps

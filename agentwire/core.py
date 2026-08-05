@@ -239,22 +239,54 @@ def parse_env_args(env_args: list[str] | None) -> dict[str, str]:
     return result
 
 
-# Owner-only, matching the posture of `~/.agentwire/.env` (chmod 600). A role
-# prompt is complete system-prompt text — role content, project context,
-# whatever else the prompt carries — and unlike the tempfile it replaced (0600
-# and transient) this store is PERMANENT. Both modes are forced rather than
-# requested, because `mkdir(mode=)` and `open(mode=)` are masked by umask and
-# neither touches an already-existing path: a directory created before this
-# rule, or under a permissive umask, must heal on the next write rather than
-# stay world-readable forever.
-#
-# Same posture and same fchmod-before-any-bytes-land technique as
-# ``security.write_token_file``; not shared with it because that one is bound
-# to TOKEN_FILE and adds atomic-replace semantics this store doesn't need (the
-# prompt is written before the launch line that reads it, and never rotated
-# under a live reader). If a third owner-only writer appears, extract one.
-_PROMPT_FILE_MODE = 0o600
-_PROMPT_DIR_MODE = 0o700
+# Owner-only, matching the posture `~/.agentwire/.env` is DOCUMENTED to have —
+# and, since #887, the posture agentwire actually enforces on every file it
+# writes there. Both modes are forced rather than requested, because
+# `mkdir(mode=)` and `open(mode=)` are masked by umask and neither touches an
+# already-existing path: a file or directory created before this rule, or under
+# a permissive umask, must heal on the next write rather than stay
+# world-readable forever.
+_SECRET_FILE_MODE = 0o600
+_SECRET_DIR_MODE = 0o700
+
+
+def write_owner_only(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically and never wider than 0600 (#887).
+
+    The ONE implementation of the fchmod-before-any-bytes-land technique — it
+    started life in ``security.write_token_file``, was copied into
+    ``write_role_prompt`` by #881, and #887 found the same rule missing from
+    the ``machines.json`` writers (a bare ``write_text``, hence the 0644
+    registry found in the wild). Three copies is where a technique becomes a
+    utility.
+
+    Two properties, both load-bearing:
+
+    - The mode is set on the descriptor BEFORE any bytes land, so the content
+      is never briefly group/world readable on disk — not even on first
+      creation under a permissive umask.
+    - ``os.replace`` swaps the inode, so a rewrite HEALS a file that had
+      already drifted wide (the new one is 0600 before it becomes visible),
+      and a crash mid-write leaves the previous content intact rather than a
+      truncated file.
+
+    A parent directory created here is 0700. An EXISTING parent is left alone:
+    tightening the whole of ``~/.agentwire`` is a decision for the operator,
+    which is what ``agentwire doctor`` (reporting) and ``doctor --yes``
+    (healing) are for.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True, mode=_SECRET_DIR_MODE)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        os.fchmod(fd, _SECRET_FILE_MODE)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def write_role_prompt(conversation_id: str, instructions: str) -> Path:
@@ -266,20 +298,18 @@ def write_role_prompt(conversation_id: str, instructions: str) -> Path:
     relaunch can reuse it, and the recorded ``roles``/``posture`` can
     regenerate it if it's ever gone.
 
-    Written owner-only, and never through a window where it isn't: the mode
-    is set at ``os.open`` time rather than chmod'ed after a plain write, so
-    the content is never briefly world-readable on disk.
+    A role prompt is complete system-prompt text — role content, project
+    context, whatever else the prompt carries — so it is written owner-only
+    via :func:`write_owner_only`, and never through a window where it isn't.
+    The directory mode is re-asserted on every write because ``mkdir`` never
+    touches an existing path: a store created before #881 must heal rather
+    than stay world-readable forever.
     """
-    ROLE_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(ROLE_PROMPTS_DIR, _PROMPT_DIR_MODE)
+    ROLE_PROMPTS_DIR.mkdir(parents=True, exist_ok=True, mode=_SECRET_DIR_MODE)
+    os.chmod(ROLE_PROMPTS_DIR, _SECRET_DIR_MODE)
 
     path = ROLE_PROMPTS_DIR / f"{conversation_id}.txt"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PROMPT_FILE_MODE)
-    with os.fdopen(fd, "w") as f:
-        # umask can only CLEAR bits at create time, and an existing file keeps
-        # its old mode — so state it exactly, on the descriptor we hold.
-        os.fchmod(fd, _PROMPT_FILE_MODE)
-        f.write(instructions)
+    write_owner_only(path, instructions)
     return path
 
 
@@ -854,26 +884,42 @@ def load_session_metadata(session_name: str) -> dict:
         return {}
 
 
+def session_metadata_path(session_name: str) -> Path:
+    """Where a session's record lives. One implementation, both directions."""
+    return CONFIG_DIR / "sessions" / session_name.split("@")[0] / "metadata.json"
+
+
 def store_session_metadata(session_name: str, metadata: dict) -> None:
-    """Store session metadata to disk.
+    """Store session metadata to disk — RAISING if it doesn't land (#885).
+
+    This used to end in ``except (IOError, TypeError): pass``, which made a
+    failed write indistinguishable from a successful one. That was survivable
+    while the record only held ``created_by``/``role`` (losing it degraded
+    prompt routing, visibly). Since #871 it holds the conversation id — the
+    one piece of session identity that is NOT otherwise recoverable — so a
+    dropped write means a session that can never be resumed, reported at the
+    time as success. The whole epic assumes this file is on disk; the write is
+    the wrong place to be forgiving.
+
+    Two failure modes, deliberately distinguished:
+
+    - ``TypeError`` — the metadata isn't JSON-serializable, i.e. a code bug.
+      Serialized BEFORE anything is opened, so the bug surfaces as a crash and
+      cannot truncate a good record on its way out.
+    - ``OSError`` — the store isn't writable. Callers that can survive it (see
+      :func:`record_session_launch`, whose session is already running) catch
+      it and warn; nothing swallows it silently.
+
+    Written via :func:`_atomic_write`, so a crash mid-write leaves the previous
+    record intact rather than a truncated file that
+    :func:`load_session_metadata` would then read back as ``{}``.
 
     Args:
         session_name: The session name (without @machine suffix if present)
         metadata: Dictionary of metadata to store
     """
-    # Parse session name to extract just the name part (remove @machine)
-    clean_name = session_name.split("@")[0]
-
-    metadata_dir = CONFIG_DIR / "sessions" / clean_name
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-
-    metadata_file = metadata_dir / "metadata.json"
-
-    try:
-        with open(metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
-    except (IOError, TypeError):
-        pass
+    text = json.dumps(metadata, indent=2)
+    _atomic_write(session_metadata_path(session_name), text)
 
 
 def git_identity(cwd) -> dict:
@@ -959,6 +1005,12 @@ def record_session_launch(
 
     Merge-preserving, and ``conversation_ids`` APPENDS: ``--fork-session``
     mints a new id on every resume, so identity is a chain, not a scalar.
+
+    A write that fails is WARNED about, never raised (#885): by the time this
+    runs the session is already live in tmux, so a traceback here would turn a
+    successful creation into a failed command while leaving the session
+    running. Silence was the actual bug — the warning names the session, the
+    conversation id that is now unrecoverable, and what breaks because of it.
     """
     clean_name = session_name.split("@")[0]
     metadata = load_session_metadata(session_name)
@@ -997,7 +1049,23 @@ def record_session_launch(
     })
     metadata.setdefault("created_at", now)
 
-    store_session_metadata(session_name, metadata)
+    try:
+        store_session_metadata(session_name, metadata)
+    except (OSError, TypeError) as e:
+        # TypeError is a CODE bug (unserializable record) and OSError an
+        # environment one; both are reported the same way here because the
+        # response is the same — the session is up, its identity is not on
+        # disk, and the operator has to know now rather than at the next
+        # `history resume`.
+        print(
+            f"Warning: session '{clean_name}' launched but its identity was "
+            f"NOT recorded: {type(e).__name__}: {e}\n"
+            f"         {session_metadata_path(session_name)}\n"
+            f"         Conversation {agent.conversation_id or '(none)'} is not "
+            "recoverable from disk — `agentwire history resume`, prompt "
+            "routing and the topology view will not find this session.",
+            file=sys.stderr,
+        )
     return metadata
 
 

@@ -28,10 +28,8 @@ import hashlib
 import hmac
 import ipaddress
 import logging
-import os
 import re
 import secrets
-import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -86,27 +84,15 @@ def read_token_file() -> Optional[str]:
 def write_token_file(token: str) -> None:
     """Write the token file with owner-only permissions.
 
-    Atomic and never wider than 0600: the token is written to a same-directory
-    temp file created at 0600 (fchmod before any bytes land), then renamed over
-    the destination — there is no window where the god-token is group/world
-    readable, even on first creation under a permissive umask. The config dir
-    itself is created 0700 when missing. Rotation over an existing 0600 file
-    keeps 0600 (os.replace swaps the inode; the new one is already 0600).
+    Atomic and never wider than 0600 — the guarantee this function has always
+    made, now made by :func:`core.write_owner_only`, which is where that
+    technique lives for every owner-only file agentwire writes (#887). The
+    import is function-local: ``core`` is imported by hooks and the CLI, and
+    must never be made to pull in this module's aiohttp dependency.
     """
-    parent = TOKEN_FILE.parent
-    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".portal.token.")
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(token + "\n")
-        os.replace(tmp_path, TOKEN_FILE)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    from .core import write_owner_only
+
+    write_owner_only(TOKEN_FILE, token + "\n")
 
 
 def resolve_auth_token(config) -> Optional[str]:
