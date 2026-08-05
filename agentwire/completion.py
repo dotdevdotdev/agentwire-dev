@@ -188,6 +188,7 @@ def wait_for_completion_signal(
     poll_interval: float = 10.0,
     summary_path: Path | None = None,
     max_duration: int = 0,
+    transcript_since: float | None = None,
 ) -> dict:
     """Wait for task completion by polling the summary file directly.
 
@@ -195,6 +196,10 @@ def wait_for_completion_signal(
     1. Summary file appears (task completed normally)
     2. Session dies (agent crashed, tmux killed)
     3. ``max_duration`` elapses, when the task sets one
+    4. The session is parked on a usage limit (``status=usage_limit``)
+    5. Claude refuses the turn for an expired login (``status=auth_expired``,
+       #906) — the one exit that is provably terminal rather than slow, since
+       no completion signal can arrive until a human runs ``/login``
 
     Completion is otherwise agent-driven: the idle hook fires, the agent writes
     a summary, and this returns. An agent that never goes idle never produces
@@ -212,6 +217,14 @@ def wait_for_completion_signal(
         poll_interval: Seconds between checks
         summary_path: Path to the summary .md file the agent will write
         max_duration: Seconds before giving up (0 = unbounded)
+        transcript_since: Epoch floor for "was this transcript written by the
+            current attempt?" (#906). Callers pass the moment the ATTEMPT
+            began — before the session launch and the prompt send — because
+            the refusal is recorded ~15ms after the prompt submits, which is
+            still seconds before this wait is entered. Defaults to the wait's
+            own start, which is correct only for callers that had no earlier
+            anchor and is deliberately the conservative direction: too-late a
+            floor misses a detection, it never invents one.
 
     Returns:
         Dict with 'status', 'summary', 'summary_file' keys
@@ -264,6 +277,16 @@ def wait_for_completion_signal(
             time.sleep(0.5)
             try:
                 result = parse_summary_file(found_summary)
+                # A written summary is proof a turn actually ran, which is
+                # proof the login works — so clear any recorded outage here
+                # rather than making the fleet wait out OUTAGE_TTL (#906).
+                # This is the hook that makes "reopens on the first successful
+                # turn" true; without it that promise was operator-facing text
+                # describing behavior the code did not have, which is the very
+                # defect #906 exists to fix, one scale down.
+                from .auth_expired import clear_state
+
+                clear_state()
                 return {
                     "status": result.status,
                     "summary": result.summary,
@@ -282,6 +305,25 @@ def wait_for_completion_signal(
                 "status": "usage_limit",
                 "summary": "Session parked on usage limit; auto-resumes after reset",
             }
+
+        # Expired Claude login: the turn was REFUSED, so no completion signal
+        # can ever arrive (#906). This is the state that made #867 cost two
+        # hours — the pane is alive, the agent process is running, and the
+        # usage-limit check above sees no dialog, so every liveness test below
+        # passes forever. Detected from the transcript, which records the
+        # refusal as a structured `error: authentication_failed`. Checked
+        # BEFORE `_session_has_agent` so the run reports the cause rather than
+        # the eventual symptom.
+        from .auth_expired import check_and_flag, summary_line
+
+        detail = check_and_flag(
+            session,
+            project_path=summary_path.parent if summary_path else None,
+            since=started if transcript_since is None else transcript_since,
+            source="ensure",
+        )
+        if detail is not None:
+            return {"status": "auth_expired", "summary": summary_line(detail)}
 
         # Session gone or agent crashed (fell back to bare shell)
         if not _session_has_agent(session):
@@ -424,10 +466,12 @@ def status_to_exit_code(status: str) -> int:
     """Convert status string to exit code.
 
     Args:
-        status: Task status (complete, incomplete, failed, usage_limit)
+        status: Task status (complete, incomplete, failed, usage_limit,
+            auth_expired)
 
     Returns:
-        Exit code (0=complete, 1=failed, 2=incomplete, 7=usage_limit)
+        Exit code (0=complete, 1=failed, 2=incomplete, 7=usage_limit,
+        8=auth_expired)
     """
     if status == "complete":
         return 0
@@ -435,5 +479,9 @@ def status_to_exit_code(status: str) -> int:
         return 1
     elif status == "usage_limit":
         return 7
+    elif status == "auth_expired":
+        # Distinct from incomplete so the scheduler can gate the rest of the
+        # fleet instead of letting each task discover the outage itself (#906).
+        return 8
     else:
         return 2

@@ -40,6 +40,11 @@ ENSURE_EXIT_PRE_FAILURE = 4
 ENSURE_EXIT_TIMEOUT = 5
 ENSURE_EXIT_SESSION_ERROR = 6
 ENSURE_EXIT_USAGE_LIMIT = 7
+# Claude refused the turn for an expired login (#906). Distinct from TIMEOUT
+# on purpose: a timeout says "we waited and nothing came", which sends the
+# operator looking at the task; this says the turn was rejected before any
+# model ran, and no amount of waiting or retrying can change that.
+ENSURE_EXIT_AUTH_EXPIRED = 8
 
 
 def _ensure_remote(args, session: str, machine_id: str, json_mode: bool) -> int:
@@ -202,6 +207,24 @@ def cmd_ensure(args) -> int:
             False, json_mode,
             f"Session '{session}' is parked on a usage limit (auto-resumes after reset)",
             exit_code=ENSURE_EXIT_USAGE_LIMIT,
+        )
+
+    # A machine-wide expired login refuses every turn, so there is nothing to
+    # gain from launching a session and pasting a prompt into it (#906). This
+    # is the cheap pre-flight: one local file read, no network. It only arms
+    # after the first detection, and it self-expires (OUTAGE_TTL) so the next
+    # dispatch after that probes for recovery — failing in seconds now that
+    # detection exists, instead of burning a ceiling.
+    from .auth_expired import outage_active
+
+    outage = outage_active()
+    if outage:
+        return _output_result(
+            False, json_mode,
+            f"Claude login expired on this machine (first seen "
+            f"{outage.get('detected_at')}) — skipping dispatch until `/login` "
+            f"is run; the gate re-probes automatically",
+            exit_code=ENSURE_EXIT_AUTH_EXPIRED,
         )
 
     # Find project path from --project flag, or session's working directory
@@ -573,6 +596,14 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
 
     for attempt in range(1, max_attempts + 1):
         ctx.attempt = attempt
+        # When this attempt began — the floor for "was this transcript written
+        # by THIS run?" (#906). It must predate the session launch and the
+        # prompt send, not start with the completion wait: the refusal lands
+        # ~15ms after the prompt submits, while the wait loop only begins after
+        # `send_verified` has confirmed submission seconds later. Anchoring the
+        # window at the wait would put the evidence *before* the window and
+        # miss the exact failure this detects.
+        attempt_started = time.time()
 
         if not json_mode and max_attempts > 1:
             print(f"Attempt {attempt}/{max_attempts}")
@@ -755,6 +786,7 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
             signal = wait_for_completion_signal(
                 session, summary_path=summary_path,
                 max_duration=task.max_duration,
+                transcript_since=attempt_started,
             )
             last_status = signal.get("status", "incomplete")
             last_summary = signal.get("summary", "")
@@ -785,6 +817,15 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
 
         # Don't clear task context here — hook owns context file lifecycle.
         # ensure waits for hook to delete it (signals cleanup complete).
+
+        if last_status == "auth_expired":
+            # Terminal, and retrying is pointless — every attempt refuses
+            # identically until a human runs `/login`. Break out before the
+            # retry loop rather than spending `retries` more session launches
+            # and prompts on a turn that cannot run (#906).
+            if not json_mode:
+                print(f"Login expired: {last_summary}")
+            break
 
         if last_status == "usage_limit":
             # Session parked mid-task — skip on_task_end/post/PR; the watchdog

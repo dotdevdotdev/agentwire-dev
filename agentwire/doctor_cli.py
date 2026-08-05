@@ -701,6 +701,31 @@ def _render_pending_messages_section() -> int:
     return 1
 
 
+def _render_auth_expired_section() -> int:
+    """Doctor section: an active expired-login outage (#906).
+
+    Reports only a FRESH outage (``outage_active`` applies ``OUTAGE_TTL``), so
+    a record left behind by an outage that has since been fixed doesn't nag —
+    the same freshness rule the dispatch gate uses, deliberately, because a
+    doctor that disagrees with the gate about whether the fleet is blocked is
+    worse than no doctor line at all.
+    """
+    from .auth_expired import outage_active
+
+    outage = outage_active()
+    if not outage:
+        print("  [ok] No expired-login outage recorded")
+        return 0
+    sessions = ", ".join(outage.get("sessions") or []) or "(none recorded)"
+    print("  [!!] Claude login is EXPIRED on this machine — scheduled dispatch is gated:")
+    print(f"       First seen: {outage.get('detected_at')}   Last seen: {outage.get('last_seen')}")
+    print(f"       Sessions affected: {sessions}")
+    print(f"       Evidence: {outage.get('transcript')}")
+    print("       Fix: run `/login` in any Claude Code session. The gate re-probes "
+          "on its own and reopens on the first successful turn.")
+    return 1
+
+
 def _scheduler_daemon_started_at() -> float | None:
     """Epoch seconds the scheduler daemon process started, or ``None`` if not running.
 
@@ -1565,6 +1590,15 @@ def cmd_doctor(args) -> int:
     # 10b. Long-pending report-backs (#879) — see _render_pending_messages_section.
     print("\nChecking for long-pending report-backs...")
     issues_found += _render_pending_messages_section()
+
+    # 10c. Expired Claude login (#906) — the state that made #867 cost two
+    # hours. Nothing else on this list would surface it: the pane is alive and
+    # the agent process is running, so every liveness check passes.
+    print("\nChecking for an expired Claude login...")
+    try:
+        issues_found += _render_auth_expired_section()
+    except Exception as e:
+        print(f"  [..] Could not check for an expired login: {e}")
 
     # 11. Check for dangling worktree sessions (live, open PR, no live parent
     # to review/merge it — #716's concrete failure mode: a rootless-but-

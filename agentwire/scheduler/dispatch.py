@@ -507,6 +507,36 @@ def dispatch_task(board: Board, task_name: str) -> TaskState:
 
 def _dispatch_ensure_task(board: Board, task: SchedulerTask, existing_state: TaskState) -> TaskState:
     """Dispatch via `agentwire ensure` subprocess (tmux session path)."""
+    from agentwire import scheduler as _sched
+
+    # An expired Claude login is MACHINE-wide, not per-task: every dispatch
+    # after the first hits the same refusal (#906). On 2026-08-04 two tasks
+    # discovered it independently and burned 7217s and 14400s doing so. Gated
+    # here, above the worktree/in-place fork, because both paths cost a session
+    # launch and a prompt before they would find out — the worktree one is
+    # `ai-morning-briefing`, which is the run that spent four hours.
+    #
+    # `last_run` is deliberately NOT consumed: the outage is not the task's
+    # fault and it must stay eligible the moment `/login` is run. The gate is
+    # freshness-bounded (OUTAGE_TTL), so it can never wedge the board on a
+    # stale file — after it, one dispatch probes and now fails in seconds.
+    from ..auth_expired import outage_active
+
+    outage = outage_active()
+    if outage:
+        _sched._log_event("task_skipped", task=task.name, session=task.session,
+                          reason="auth_expired", detected_at=outage.get("detected_at"))
+        return TaskState(
+            last_run=existing_state.last_run,
+            last_status="auth_expired",
+            last_duration=0,
+            run_count=existing_state.run_count,
+            last_summary=(
+                f"Claude login expired on this machine (first seen "
+                f"{outage.get('detected_at')}) — dispatch skipped until `/login` is run"
+            ),
+        )
+
     if _is_worktree_task(task):
         return _dispatch_worktree_task(board, task, existing_state)
     return _dispatch_inplace_task(board, task, existing_state)
@@ -850,6 +880,24 @@ def _dispatch_worktree_task(board: Board, task: SchedulerTask, existing_state: T
                       status=status, duration=duration, summary=summary,
                       files_modified=files_modified, blockers=blockers_list)
     _sched._notify_portal(task_name, status, duration, summary)
+
+    if status == "auth_expired":
+        # The turn was refused before any model ran, so the worktree is
+        # untouched — there is nothing to finalize and a PR would be empty
+        # (#906). `last_run` IS consumed here, unlike the pre-dispatch gate:
+        # this attempt really did spend a session launch, and the machine-wide
+        # state recorded by the detection now short-circuits the rest of the
+        # fleet. Left alive for the same reason usage_limit is — the operator
+        # runs `/login` and the session picks up where it stopped.
+        print(f"[{_ts()}] {task_name}: Claude login expired — worktree + session left in place")
+        return TaskState(
+            last_run=datetime.now(timezone.utc),
+            last_status="auth_expired",
+            last_duration=duration,
+            run_count=existing_state.run_count + 1,
+            last_summary=summary,
+            last_gate_commit=_sched._capture_head(task.project),
+        )
 
     if status == "usage_limit":
         # Session parked mid-task — committing/pushing half-done work would be

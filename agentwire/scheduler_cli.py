@@ -229,7 +229,8 @@ def _recent_activity(events: list[dict], limit: int = 5) -> list[dict]:
 
 
 # Statuses whose last_summary is worth surfacing as a "why" line on the board.
-_BAD_STATUSES = {"failed", "incomplete", "timeout", "lock_conflict", "usage_limit"}
+_BAD_STATUSES = {"failed", "incomplete", "timeout", "lock_conflict", "usage_limit",
+                 "auth_expired"}
 
 
 def cmd_scheduler_board(args) -> int:
