@@ -19,34 +19,40 @@ from agentwire.doctor_cli import (
 
 class TestSchedulerDaemonStartedAt:
     def test_not_running_returns_none(self):
-        with patch("agentwire.doctor_cli.tmux_session_exists", return_value=False):
-            assert _scheduler_daemon_started_at() is None
-
-    def test_running_but_no_live_state_returns_none(self):
-        with patch("agentwire.doctor_cli.tmux_session_exists", return_value=True), \
-             patch("agentwire.scheduler.read_live_state", return_value=None):
+        with patch("agentwire.scheduler.live_daemon_state", return_value=None):
             assert _scheduler_daemon_started_at() is None
 
     def test_running_but_no_started_at_field_returns_none(self):
-        with patch("agentwire.doctor_cli.tmux_session_exists", return_value=True), \
-             patch("agentwire.scheduler.read_live_state", return_value={"status": "running"}):
+        with patch("agentwire.scheduler.live_daemon_state",
+                   return_value={"status": "running", "pid": 1}):
             assert _scheduler_daemon_started_at() is None
 
     def test_running_reads_started_at_from_live_state(self):
         from datetime import datetime, timedelta, timezone
         started = datetime.now(timezone.utc) - timedelta(hours=1)
-        with patch("agentwire.doctor_cli.tmux_session_exists", return_value=True), \
-             patch("agentwire.scheduler.read_live_state",
-                   return_value={"started_at": started.isoformat()}):
+        with patch("agentwire.scheduler.live_daemon_state",
+                   return_value={"started_at": started.isoformat(), "pid": 1}):
             result = _scheduler_daemon_started_at()
         assert result is not None
         assert abs(result - started.timestamp()) < 1
 
     def test_unparseable_started_at_returns_none(self):
-        with patch("agentwire.doctor_cli.tmux_session_exists", return_value=True), \
-             patch("agentwire.scheduler.read_live_state",
-                   return_value={"started_at": "not-a-date"}):
+        with patch("agentwire.scheduler.live_daemon_state",
+                   return_value={"started_at": "not-a-date", "pid": 1}):
             assert _scheduler_daemon_started_at() is None
+
+    def test_daemon_outside_tmux_is_still_checked(self):
+        """The staleness check must not be skipped for a launchd daemon (#873).
+
+        The tmux gate this replaced early-returned before ever reading the live
+        state, silently disabling the check exactly where it mattered most.
+        """
+        from datetime import datetime, timedelta, timezone
+        started = datetime.now(timezone.utc) - timedelta(days=11)
+        with patch("agentwire.scheduler.live_daemon_state",
+                   return_value={"started_at": started.isoformat(), "pid": 4242}), \
+             patch("agentwire.doctor_cli.tmux_session_exists", return_value=False):
+            assert _scheduler_daemon_started_at() is not None
 
 
 class TestNewestInstalledSourceMtime:
@@ -73,12 +79,49 @@ class TestNewestInstalledSourceMtime:
         assert _newest_installed_source_mtime(tmp_path / "nope") == 0.0
 
 
+class TestSchedulerDaemonPredatesPidStamp:
+    def test_no_state_file(self):
+        from agentwire.doctor_cli import _scheduler_daemon_predates_pid_stamp
+        with patch("agentwire.scheduler.read_live_state", return_value=None):
+            assert _scheduler_daemon_predates_pid_stamp() is False
+
+    def test_state_with_pid_is_not_transitional(self):
+        from agentwire.doctor_cli import _scheduler_daemon_predates_pid_stamp
+        with patch("agentwire.scheduler.read_live_state", return_value={"pid": 42}):
+            assert _scheduler_daemon_predates_pid_stamp() is False
+
+    def test_pidless_state_without_tmux_is_just_leftover(self):
+        from agentwire.doctor_cli import _scheduler_daemon_predates_pid_stamp
+        with patch("agentwire.scheduler.read_live_state", return_value={"status": "running"}), \
+             patch("agentwire.doctor_cli.tmux_session_exists", return_value=False):
+            assert _scheduler_daemon_predates_pid_stamp() is False
+
+    def test_pidless_state_with_live_tmux_session(self):
+        from agentwire.doctor_cli import _scheduler_daemon_predates_pid_stamp
+        with patch("agentwire.scheduler.read_live_state", return_value={"status": "running"}), \
+             patch("agentwire.doctor_cli.tmux_session_exists", return_value=True):
+            assert _scheduler_daemon_predates_pid_stamp() is True
+
+
 class TestRenderSchedulerStalenessSection:
     def test_daemon_not_running(self, capsys):
-        with patch("agentwire.doctor_cli._scheduler_daemon_started_at", return_value=None):
+        with patch("agentwire.doctor_cli._scheduler_daemon_started_at", return_value=None), \
+             patch("agentwire.doctor_cli._scheduler_daemon_predates_pid_stamp",
+                   return_value=False):
             count = _render_scheduler_staleness_section()
         assert count == 0
         assert "not running" in capsys.readouterr().out
+
+    def test_pidless_running_daemon_is_flagged_not_reported_stopped(self, capsys):
+        with patch("agentwire.doctor_cli._scheduler_daemon_started_at", return_value=None), \
+             patch("agentwire.doctor_cli._scheduler_daemon_predates_pid_stamp",
+                   return_value=True):
+            count = _render_scheduler_staleness_section()
+        out = capsys.readouterr().out
+        assert count == 1
+        assert "[!!]" in out
+        assert "records no PID" in out
+        assert "not running" not in out
 
     def test_daemon_current(self, capsys):
         now = time.time()

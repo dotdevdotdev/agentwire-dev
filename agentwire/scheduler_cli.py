@@ -22,18 +22,34 @@ from .core import (
     _output_result,
     tmux_session_exists,
 )
+from .scheduler.models import SCHEDULER_SESSION
 
 # =============================================================================
 # Scheduler Commands
 # =============================================================================
 
 
-SCHEDULER_SESSION = "agentwire-scheduler"
+def _describe_live_daemon(state: dict) -> str:
+    """One-line identification of an already-running daemon, for refusals."""
+    pid = state.get("pid")
+    started = state.get("started_at") or "unknown start time"
+    return f"pid {pid}, up since {started}"
 
 
 def cmd_scheduler_start(args) -> int:
     """Start the scheduler daemon in a tmux session."""
+    from .scheduler import live_daemon_state
+
     if not _check_tmux_installed():
+        return 1
+
+    # A daemon supervised outside tmux (launchd) has no session to find, so the
+    # tmux check below would happily start a SECOND dispatcher onto the same
+    # board (#873). Ask the live-state file first — it knows either way.
+    live = live_daemon_state()
+    if live and not tmux_session_exists(SCHEDULER_SESSION):
+        print(f"Scheduler already running outside tmux ({_describe_live_daemon(live)}).")
+        print("Refusing to start a second dispatcher on the same board.")
         return 1
 
     if tmux_session_exists(SCHEDULER_SESSION):
@@ -57,8 +73,23 @@ def cmd_scheduler_start(args) -> int:
 
 
 def cmd_scheduler_serve(args) -> int:
-    """Run the scheduler loop in the foreground (for tmux)."""
-    from .scheduler import run_scheduler_loop
+    """Run the scheduler loop in the foreground (for tmux or an external supervisor).
+
+    Refuses to become a second dispatcher (#873). Two daemons on one board
+    double-dispatch tasks, and the only thing that used to stop it was the tmux
+    session-name collision in ``scheduler start`` — an accident of naming that
+    doesn't fire at all when the other daemon is supervised elsewhere.
+    """
+    from .scheduler import live_daemon_state, run_scheduler_loop
+
+    live = live_daemon_state()
+    if live and not getattr(args, "force", False):
+        print(f"A scheduler daemon is already running ({_describe_live_daemon(live)}).",
+              file=sys.stderr)
+        print("Refusing to start a second dispatcher on the same board — "
+              "stop the running one first, or pass --force if it is a stale record.",
+              file=sys.stderr)
+        return 1
 
     run_scheduler_loop()
     return 0
@@ -66,7 +97,16 @@ def cmd_scheduler_serve(args) -> int:
 
 def cmd_scheduler_stop(args) -> int:
     """Stop the scheduler daemon."""
+    from .scheduler import live_daemon_state
+
     if not tmux_session_exists(SCHEDULER_SESSION):
+        live = live_daemon_state()
+        if live:
+            # Running, just not in tmux — say so rather than the flatly false
+            # "not running" the tmux-only check used to print (#873).
+            print(f"Scheduler is running outside tmux ({_describe_live_daemon(live)}) "
+                  "— stop it through its supervisor (e.g. launchctl).")
+            return 1
         print("Scheduler is not running.")
         return 1
 
@@ -80,13 +120,18 @@ def cmd_scheduler_status(args) -> int:
     from .config import get_config
     from .scheduler import (
         format_interval,
+        live_daemon_state,
         load_board,
         pick_next_task,
         read_events,
     )
 
     json_mode = getattr(args, 'json', False)
-    running = tmux_session_exists(SCHEDULER_SESSION)
+    # Liveness comes from the daemon's own live-state record, not from tmux
+    # (#873): a launchd-supervised daemon has no tmux session and used to print
+    # "stopped" while it was dispatching.
+    live = live_daemon_state()
+    running = live is not None
     board_path = get_config().scheduler.board_file
 
     if not board_path.exists():
@@ -108,6 +153,8 @@ def cmd_scheduler_status(args) -> int:
 
     result = {
         "running": running,
+        "pid": live.get("pid") if live else None,
+        "in_tmux": tmux_session_exists(SCHEDULER_SESSION),
         "board_path": str(board_path),
         "task_count": task_count,
         "enabled_count": enabled_count,
@@ -120,7 +167,11 @@ def cmd_scheduler_status(args) -> int:
         _output_json({"success": True, **result})
         return 0
 
-    status_str = "running" if running else "stopped"
+    if running:
+        where = "tmux" if result["in_tmux"] else "external supervisor"
+        status_str = f"running (pid {live.get('pid')}, {where})"
+    else:
+        status_str = "stopped"
     print(f"Scheduler: {status_str}")
     print(f"Board: {board_path}")
     print(f"Tasks: {enabled_count}/{task_count} enabled")
@@ -938,6 +989,10 @@ def register_scheduler_parser(subparsers) -> None:
 
     # scheduler serve (foreground, for tmux)
     sched_serve = scheduler_subparsers.add_parser("serve", help="Run scheduler in foreground")
+    sched_serve.add_argument(
+        "--force", action="store_true",
+        help="Start even when another daemon is recorded as live (#873)",
+    )
     sched_serve.set_defaults(func=cmd_scheduler_serve)
 
     # scheduler stop
