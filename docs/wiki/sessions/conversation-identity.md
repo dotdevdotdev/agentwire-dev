@@ -198,3 +198,104 @@ routing and `notify-parent` are local-only mechanisms (a file inbox drained by
 the local watchdog), so a parent link across machines would be a link nothing
 traverses. When cross-machine routing exists, the default becomes a real
 question again.
+
+## The cwd → history-directory encoding
+
+Claude Code keys a transcript by the directory it ran in:
+`~/.claude/projects/<encoded-cwd>/<conversation-id>.jsonl`. The encoding is
+**per character: everything outside `[A-Za-z0-9]` becomes `-`.** Nothing is
+dropped, run-collapsed, or case-folded.
+
+This was derived empirically (#871/#892), the same way #878 had to measure
+tmux's name mangling rather than assume it — twice, independently, by two
+sessions that agreed:
+
+- Every `*.jsonl` records the `cwd` it was written from, giving ground-truth
+  pairs straight off disk. 528 and 533 pairs were checked; the rule fits with
+  no mismatches.
+- The remaining characters were swept through real `claude` runs. A directory
+  segment `a_b.c+d~e@f,g=h!i#j%k^l&m n o'p` yields
+  `a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p`, and `café-日本-Ωx` yields `caf------x` —
+  so the class is ASCII `[A-Za-z0-9]`, **not** `str.isalnum()`, which would
+  have preserved `é`/`日`/`Ω`.
+
+`history.encode_project_path` is the one implementation. It previously replaced
+only `/`, which silently produced a non-existent directory for any path holding
+a dot, underscore or space — including `~/.claude` and
+`~/.agentwire/council/<n>/workspace`. The lookup then found nothing and
+reported nothing, the same dot-shaped bug class as #865 → #868 → #870 → #878.
+
+**There is no inverse, and `decode_project_path` was deleted rather than
+fixed.** The mapping is many-to-one — `/`, `.`, `_` and `-` all encode to `-` —
+so a directory name cannot be decoded back to a cwd. It can only be compared
+against the encoding of a cwd you already know, which is what `cwd_at_launch`
+is for. The old round-trip test passed only by choosing paths that dodged the
+ambiguity, pinning the bug as intended behaviour.
+
+A consequence worth naming: `/p/a_b` and `/p/a.b` are distinct directories that
+**share one history directory**. That is a property of Claude Code, not
+something agentwire can repair, and it is why a migration destination may
+already hold an unrelated project's transcripts.
+
+### Is a conversation resumable?
+
+One predicate, used everywhere rather than re-invented per caller:
+
+```
+resumable(id, cwd) == exists(<encoded-cwd>/<id>.jsonl)
+```
+
+The same file governs both directions. A launched-but-never-prompted session
+has **no transcript at all** — the `.jsonl` is written lazily on the first turn
+— so a recorded conversation id can be entirely valid and still not resumable.
+`--session-id` likewise reports a collision on that file *existing*, not on the
+id having been used before. A recorded id is therefore never a promise that
+`--resume` will work.
+
+## Repairing history orphaned by a moved directory
+
+Move a worktree and its transcripts stay behind under the old key, so
+`--resume` fails with *"No conversation found with session ID"* while the file
+sits intact on disk. `agentwire history migrate` re-keys it.
+
+```bash
+agentwire history migrate --all                 # dry run: what's orphaned
+agentwire history migrate -s <session>          # reconcile one session
+agentwire history migrate --from OLD --to NEW   # a move agentwire never saw
+agentwire history migrate ... --apply           # perform it
+```
+
+**Why a `history migrate` verb and not `worktree --move`.** #871 originally
+asked for the latter, describing a flag that does not exist. A move verb would
+only repair moves made *through agentwire*, and that is the minority of them —
+`git worktree move`, a plain `mv`, and a reorganised `~/worktrees` orphan
+history identically and would all still be broken. The damage is not caused by
+moving; it is caused by the recorded cwd and the real cwd disagreeing, which
+`cwd_at_launch` makes detectable. Keying the repair on that disagreement makes
+it work no matter who moved the directory, and keeps it composable: the same
+`history_migrate.scan()` that powers the dry run is what a doctor orphan check
+consumes.
+
+**Two guarantees.**
+
+1. *History is never destroyed.* Every migration copies into a staging
+   directory, fingerprints the copy against the source (size + sha256 per
+   entry, symlinks by target), and only then publishes it with a single
+   rename. The source is retained unless `--prune-source` is passed, and even
+   then only after verification passed. An interrupted run leaves the source
+   untouched and the target absent.
+2. *A populated destination is refused, never merged.* Because the encoding is
+   non-injective, the target may hold an **unrelated** project's transcripts,
+   so merging would silently interleave two projects' history. The check runs
+   at plan time and again immediately before the rename, closing the window
+   where a concurrent `claude` run creates the target mid-copy. Note that
+   `shutil.move` onto an existing directory does *not* fail — POSIX nests the
+   source inside it as `dst/<basename>`, burying transcripts one level below
+   where Claude Code looks while the command reports success. That is the #868
+   failure shape, and it is why publishing goes through `os.rename` behind an
+   explicit existence check.
+
+Missing source history is a **normal outcome** (`source_absent`), not an error:
+transcripts have been observed disappearing on their own, and a never-prompted
+session never had one. A sweep reports sessions it cannot judge as a counted
+summary rather than a wall of lines — counted, never silently dropped.

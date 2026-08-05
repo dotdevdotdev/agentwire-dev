@@ -27,6 +27,7 @@ from .core import (
     mirror_role_prompt_remote,
     record_session_launch,
 )
+from . import history_migrate
 from .project_config import ProjectConfig, load_project_config
 from .roles import (
     derive_session_kind,
@@ -351,6 +352,96 @@ def cmd_history_resume(args) -> int:
     return 0
 
 
+_MIGRATE_LABEL = {
+    history_migrate.ALIGNED: "ok",
+    history_migrate.READY: "MIGRATABLE",
+    history_migrate.MIGRATED: "MIGRATED",
+    history_migrate.SOURCE_ABSENT: "no history",
+    history_migrate.TARGET_EXISTS: "REFUSED",
+    history_migrate.UNDETERMINED: "unknown",
+    history_migrate.ERROR: "ERROR",
+}
+
+
+def cmd_history_migrate(args) -> int:
+    """Re-key conversation history onto a directory's current path (#871).
+
+    Dry run by default: moving history is the kind of thing you want to read
+    before you do. ``--apply`` performs it.
+    """
+    explicit = bool(args.from_path or args.to_path)
+    if explicit and not (args.from_path and args.to_path):
+        return _output_result(False, "--from and --to must be given together", json_output=args.json)
+    if sum([explicit, bool(args.session), bool(args.all)]) != 1:
+        return _output_result(
+            False, "choose exactly one of: --session, --from/--to, --all", json_output=args.json
+        )
+
+    if explicit:
+        results = [{"session": None, **history_migrate.plan(args.from_path, args.to_path)}]
+    elif args.session:
+        results = [history_migrate.resolve_session(args.session)]
+    else:
+        results = history_migrate.scan()
+
+    if args.apply:
+        applied = []
+        for r in results:
+            if r["status"] == history_migrate.READY:
+                done = history_migrate.apply(
+                    r["old_cwd"], r["new_cwd"], prune_source=args.prune_source
+                )
+                applied.append({**r, **done})
+            else:
+                applied.append(r)
+        results = applied
+
+    # JSON always carries every result; only the human view is condensed.
+    if args.json:
+        return _output_json({"applied": args.apply, "results": results})
+
+    # A sweep is mostly sessions that are fine or unjudgeable — locally that is
+    # every one of several hundred, since anything launched before #881 has no
+    # cwd_at_launch to compare. Enumerating them buries the one line that
+    # matters, so they are counted by reason instead of listed. Counted, not
+    # dropped: a silent filter reads as "nothing to see here".
+    quiet = {history_migrate.ALIGNED, history_migrate.UNDETERMINED}
+    notable = [r for r in results if r["status"] not in quiet]
+    skipped = [r for r in results if r["status"] in quiet]
+
+    for r in notable:
+        label = _MIGRATE_LABEL.get(r["status"], r["status"])
+        who = r.get("session") or "(explicit)"
+        print(f"[{label}] {who}")
+        if r.get("old_cwd"):
+            print(f"    was: {r['old_cwd']}")
+        if r.get("new_cwd") and r.get("new_cwd") != r.get("old_cwd"):
+            print(f"    now: {r['new_cwd']}")
+        if r.get("source"):
+            print(f"    history: {r['source']}")
+        if r["status"] in (history_migrate.READY, history_migrate.MIGRATED):
+            print(f"    -> {r['target']}")
+        print(f"    {r['detail']}")
+
+    if not notable:
+        print("No orphaned history found.")
+
+    if skipped:
+        by_reason: dict[str, int] = {}
+        for r in skipped:
+            by_reason[r["detail"]] = by_reason.get(r["detail"], 0) + 1
+        print(f"\n{len(skipped)} session(s) not shown:")
+        for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
+            print(f"    {count:>4}  {reason}")
+
+    migratable = sum(1 for r in notable if r["status"] == history_migrate.READY)
+    if migratable and not args.apply:
+        print(f"\n{migratable} migratable. Re-run with --apply to perform it.")
+
+    failed = [r for r in results if r["status"] in history_migrate.FAILURE_STATUSES]
+    return 1 if failed else 0
+
+
 def register_history_parser(subparsers) -> None:
     history_parser = subparsers.add_parser("history", help="Claude Code session history")
     history_subparsers = history_parser.add_subparsers(dest="history_command")
@@ -378,3 +469,31 @@ def register_history_parser(subparsers) -> None:
     history_resume.add_argument("--project", "-p", required=True, help="Project path")
     history_resume.add_argument("--json", action="store_true", help="JSON output")
     history_resume.set_defaults(func=cmd_history_resume)
+
+    # history migrate
+    history_mig = history_subparsers.add_parser(
+        "migrate",
+        help="Re-key conversation history onto a directory's current path",
+        description=(
+            "Claude Code keys a conversation by the directory it ran in "
+            "(~/.claude/projects/<encoded-cwd>/). Moving that directory orphans the "
+            "transcript, so --resume reports 'No conversation found with session ID' "
+            "even though the file is intact. This re-keys it onto the current path. "
+            "Works regardless of who moved the directory — agentwire, `git worktree "
+            "move`, or a plain `mv`. Dry run unless --apply is given; never merges "
+            "into an existing target and never deletes the source before verifying "
+            "the copy."
+        ),
+    )
+    history_mig.add_argument("--session", "-s", help="Session whose recorded cwd to reconcile")
+    history_mig.add_argument("--from", dest="from_path",
+                             help="Old directory path (with --to; for moves agentwire never saw)")
+    history_mig.add_argument("--to", dest="to_path", help="New directory path (with --from)")
+    history_mig.add_argument("--all", action="store_true",
+                             help="Scan every recorded session and report those needing migration")
+    history_mig.add_argument("--apply", action="store_true",
+                             help="Perform the migration (default is a dry run)")
+    history_mig.add_argument("--prune-source", action="store_true",
+                             help="Delete the old history dir, but only after the copy verifies")
+    history_mig.add_argument("--json", action="store_true", help="JSON output")
+    history_mig.set_defaults(func=cmd_history_migrate)
