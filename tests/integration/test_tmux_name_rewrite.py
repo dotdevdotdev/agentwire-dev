@@ -27,9 +27,17 @@ import pytest
 
 from agentwire.worktree import tmux_safe_name
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("tmux") is None, reason="tmux not available"
-)
+# Two guards, and both are needed. ``skipif`` covers a machine with no tmux at
+# all; ``requires_tmux`` is what the hermetic CI job deselects on
+# (``-m "not requires_tmux"``). The binary being on PATH is NOT sufficient —
+# these tests measure what a real tmux SERVER does to a session name, and a CI
+# runner's tmux answers differently enough that the sweep reads back its own
+# probe string unchanged and every assertion fails. Marker only, so local runs
+# with a working tmux still exercise the real thing.
+pytestmark = [
+    pytest.mark.requires_tmux,
+    pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not available"),
+]
 
 # Printable ASCII — the realistic input space for a session name. Control
 # characters are excluded: tmux vis-escapes rather than substitutes them, which
