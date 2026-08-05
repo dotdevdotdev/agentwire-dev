@@ -24,6 +24,8 @@ from .core import (
     build_agent_command,
     format_relative_time,
     load_config,
+    mirror_role_prompt_remote,
+    record_session_launch,
 )
 from .project_config import ProjectConfig, load_project_config
 from .roles import (
@@ -244,6 +246,10 @@ def cmd_history_resume(args) -> int:
         if result.returncode == 0:
             return _output_result(False, json_mode, f"Session '{name}' already exists on {machine_id}")
 
+        # The launch line names the role prompt BY PATH; mirror it to the
+        # remote before sending, or the resumed session starts role-less.
+        agent_cmd = mirror_role_prompt_remote(agent, machine_id, agent_cmd)
+
         # Create remote tmux session and send claude command
         create_cmd = (
             f"tmux new-session -d -s {shlex.quote(name)} -c {shlex.quote(remote_path)} && "
@@ -255,6 +261,11 @@ def cmd_history_resume(args) -> int:
         result = _run_remote(machine_id, create_cmd)
         if result.returncode != 0:
             return _output_result(False, json_mode, f"Failed to create remote session: {result.stderr}")
+
+        record_session_launch(
+            name, agent, remote_path,
+            created_via="history-resume", role=kind, remote=True,
+        )
 
         if json_mode:
             _output_json({
@@ -302,6 +313,11 @@ def cmd_history_resume(args) -> int:
     subprocess.run(
         ["tmux", "send-keys", "-t", name, agent_cmd, "Enter"],
         check=True
+    )
+
+    record_session_launch(
+        name, agent, project_path,
+        created_via="history-resume", role=kind,
     )
 
     if json_mode:

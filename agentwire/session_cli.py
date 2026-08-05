@@ -28,16 +28,16 @@ from .core import (
     _notify_portal_sessions_changed,
     _output_json,
     _output_result,
-    _record_session_creator,
-    _record_session_role,
     _resolve_posture_from_args,
     _resolve_posture_or_config,
     _run_remote,
     _set_session_name_env,
     build_agent_command,
     load_config,
+    mirror_role_prompt_remote,
     notify_portal_session_created,
     parse_env_args,
+    record_session_launch,
     resolve_default_created_by,
     tmux_session_exists,
 )
@@ -286,26 +286,19 @@ def cmd_new(args) -> int:
 
         agent_cmd = agent.command
 
-        # If agent command uses a local temp file, write content to remote
-        if agent.temp_file and agent_cmd:
-            try:
-                with open(agent.temp_file, 'r') as f:
-                    content = f.read()
-                # Create remote temp file with same content
-                remote_temp = f"/tmp/agentwire-prompt-{session_name.replace('/', '-')}.txt"
-                write_cmd = f"cat > {shlex.quote(remote_temp)} << 'AGENTWIRE_EOF'\n{content}\nAGENTWIRE_EOF"
-                result = _run_remote(machine_id, write_cmd)
-                if result.returncode == 0:
-                    # Replace local path with remote path in command
-                    agent_cmd = agent_cmd.replace(agent.temp_file, remote_temp)
-            except Exception as e:
-                print(f"Warning: Failed to write system prompt to remote: {e}", file=sys.stderr)
+        # Mirror the role prompt to the remote's own durable location.
+        agent_cmd = mirror_role_prompt_remote(agent, machine_id, agent_cmd)
 
         # Create session - Agent starts immediately if not bare (env is
         # injected at creation time; see _launch_tmux_session).
         result = _launch_tmux_session(session_name, remote_path, agent.env, agent_cmd, machine_id)
         if result.returncode != 0:
             return _output_result(False, json_mode, f"Failed to create remote session: {result.stderr}")
+
+        record_session_launch(
+            session_name, agent, remote_path,
+            created_via="new", remote=True,
+        )
 
         if json_mode:
             _output_json({
@@ -538,8 +531,10 @@ def cmd_new(args) -> int:
     # as early as possible — before the potentially slow first-message wait
     # below — so the portal broadcast carries real parent/role instead of
     # racing the metadata write against the async global tmux hook.
-    _record_session_creator(session_name, created_by, via="new")
-    _record_session_role(session_name, kind)
+    record_session_launch(
+        session_name, agent, session_path,
+        created_by=created_by, created_via="new", role=kind,
+    )
     notify_portal_session_created(session_name, created_by, kind)
 
     # Enroll in the caller's fan-out cohort (#852) so the caller can be told
@@ -817,11 +812,16 @@ def cmd_recreate(args) -> int:
         # Build agent command using the standard function
         agent = build_agent_command(posture, roles)
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
-        agent_cmd = agent.command
+        agent_cmd = mirror_role_prompt_remote(agent, machine_id, agent.command)
 
         result = _launch_tmux_session(session_name, session_path, agent.env, agent_cmd, machine_id)
         if result.returncode != 0:
             return _output_result(False, json_mode, f"Failed to create session: {result.stderr}")
+
+        record_session_launch(
+            session_name, agent, session_path,
+            created_via="recreate", role=derive_session_kind(bool(branch)), remote=True,
+        )
 
         if json_mode:
             _output_json({
@@ -920,6 +920,11 @@ def cmd_recreate(args) -> int:
     # Step 5: Create new session (env injected at creation time, cd, agent
     # start — see _launch_tmux_session).
     _launch_tmux_session(session_name, session_path, agent.env, agent_cmd)
+
+    record_session_launch(
+        session_name, agent, session_path,
+        created_via="recreate", role=derive_session_kind(bool(branch)),
+    )
 
     if json_mode:
         _output_json({
@@ -2118,11 +2123,16 @@ def cmd_fork(args) -> int:
         agent = build_agent_command(posture, roles)
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
-        agent_cmd = agent.command
+        agent_cmd = mirror_role_prompt_remote(agent, machine_id, agent.command)
 
         result = _launch_tmux_session(target_session, target_path, agent.env, agent_cmd, machine_id)
         if result.returncode != 0:
             return _output_result(False, json_mode, f"Failed to create session: {result.stderr}")
+
+        record_session_launch(
+            target_session, agent, target_path,
+            created_via="fork", role=derive_session_kind(bool(target_branch)), remote=True,
+        )
 
         if json_mode:
             _output_json({
@@ -2254,6 +2264,11 @@ def cmd_fork(args) -> int:
         # start — see _launch_tmux_session).
         _launch_tmux_session(target_session, fork_path, agent.env, agent_cmd)
 
+        record_session_launch(
+            target_session, agent, fork_path,
+            created_via="fork", role=derive_session_kind(False),
+        )
+
         if json_mode:
             _output_json({
                 "success": True,
@@ -2344,6 +2359,11 @@ def cmd_fork(args) -> int:
     # Create new session (env injected at creation time, cd, agent start —
     # see _launch_tmux_session).
     _launch_tmux_session(target_session, target_path, agent.env, agent_cmd)
+
+    record_session_launch(
+        target_session, agent, target_path,
+        created_via="fork", role=fork_kind,
+    )
 
     if json_mode:
         _output_json({

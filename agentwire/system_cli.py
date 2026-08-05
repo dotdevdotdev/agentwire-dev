@@ -28,6 +28,7 @@ from .core import (
     generate_certs,
     get_source_dir,
     load_config,
+    record_session_launch,
     tmux_session_exists,
     wait_for_shell_prompt,
 )
@@ -120,6 +121,8 @@ def cmd_dev(args) -> int:
         subprocess.run([
             "tmux", "send-keys", "-t", session_name, agent_cmd, "Enter",
         ])
+
+    record_session_launch(session_name, agent, project_dir, created_via="dev")
 
     print("Attaching... (Ctrl+B D to detach)")
     subprocess.run(["tmux", "attach-session", "-t", session_name])

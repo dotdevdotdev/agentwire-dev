@@ -108,7 +108,7 @@ def _notify(session: str, branch: str, command: str, pane_tail: str = "") -> Non
     Always posts a portal toast, so the reap is visible in-band rather than
     only in an email the human has to notice and forward. When the session
     has a recorded parent (``created_by`` in its metadata — set at
-    ``agentwire new`` time, see ``_record_session_creator``), the crash is
+    ``agentwire new`` time, see ``record_session_launch``), the crash is
     ALSO escalated there via the msg inbox (drained by the same watchdog that
     runs this reap) — a worktree worker's crash reaches its orchestrator, not
     just the owner's inbox. Owner email — the reused Resend wiring, mirrors

@@ -1,6 +1,7 @@
 """Tests for build_agent_command — the ONE flag-builder, keyed on posture (#729)."""
 
-import os
+import uuid
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,12 @@ from agentwire.roles import RoleConfig
 
 
 class TestBuildAgentCommand:
+    @pytest.fixture(autouse=True)
+    def _prompts_dir(self, tmp_path, monkeypatch):
+        """Keep role prompts out of the real ~/.agentwire/role-prompts."""
+        monkeypatch.setattr("agentwire.core.ROLE_PROMPTS_DIR", tmp_path / "role-prompts")
+        self.prompts_dir = tmp_path / "role-prompts"
+
     def _build(self, posture, roles=None, model=None, resume_session_id=None):
         from agentwire.__main__ import build_agent_command
         return build_agent_command(posture, roles=roles, model=model,
@@ -16,7 +23,10 @@ class TestBuildAgentCommand:
     def test_bare_empty_command(self):
         cmd = self._build("bare")
         assert cmd.command == ""
-        assert cmd.temp_file is None
+        assert cmd.role_prompt_path is None
+        # No claude process means no conversation to identify (#871).
+        assert cmd.conversation_id is None
+        assert cmd.posture == "bare"
 
     def test_bypass(self):
         cmd = self._build("bypass")
@@ -74,9 +84,8 @@ class TestBuildAgentCommand:
         roles = [RoleConfig(name="test", instructions="Be helpful")]
         cmd = self._build("bypass", roles=roles)
         assert "--append-system-prompt" in cmd.command
-        assert cmd.temp_file is not None
-        if cmd.temp_file:
-            os.unlink(cmd.temp_file)
+        assert cmd.role_prompt_path is not None
+        assert Path(cmd.role_prompt_path).read_text() == "Be helpful"
 
     def test_roles_apply_on_every_posture(self):
         """Role tools/instructions apply unconditionally now — no tool-locking posture."""
@@ -85,8 +94,79 @@ class TestBuildAgentCommand:
             cmd = self._build(posture, roles=roles)
             assert "--append-system-prompt" in cmd.command
             assert "--tools" in cmd.command
-            if cmd.temp_file:
-                os.unlink(cmd.temp_file)
+
+
+class TestConversationIdentity:
+    """agentwire mints the conversation UUID rather than discovering it (#871)."""
+
+    @pytest.fixture(autouse=True)
+    def _prompts_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agentwire.core.ROLE_PROMPTS_DIR", tmp_path / "role-prompts")
+        self.prompts_dir = tmp_path / "role-prompts"
+
+    def _build(self, posture="bypass", roles=None, resume_session_id=None):
+        from agentwire.__main__ import build_agent_command
+        return build_agent_command(posture, roles=roles,
+                                   resume_session_id=resume_session_id)
+
+    def test_session_id_flag_carries_a_valid_uuid(self):
+        cmd = self._build()
+        assert f"--session-id {cmd.conversation_id}" in cmd.command
+        # `claude --session-id` rejects anything that isn't a real UUID.
+        assert uuid.UUID(cmd.conversation_id)
+
+    def test_every_build_mints_a_fresh_id(self):
+        """`--session-id` HARD-ERRORS on a collision within the launch cwd
+        ("Session ID <id> is already in use."), so reuse would refuse to boot.
+        """
+        ids = {self._build().conversation_id for _ in range(20)}
+        assert len(ids) == 20
+
+    def test_resume_forks_into_an_id_we_chose(self):
+        """`--resume <old> --fork-session --session-id <new>` composes, so the
+        forked conversation is recorded rather than guessed."""
+        cmd = self._build(resume_session_id="old-conversation")
+        assert cmd.command.startswith(
+            f"claude --resume old-conversation --fork-session "
+            f"--session-id {cmd.conversation_id}"
+        )
+        assert cmd.resumed_from == "old-conversation"
+        assert cmd.conversation_id != "old-conversation"
+
+    def test_posture_and_role_names_ride_along(self):
+        """Recorded to REGENERATE the system prompt, not merely reference it."""
+        roles = [RoleConfig(name="worker", instructions="A"),
+                 RoleConfig(name="soul", instructions="B")]
+        cmd = self._build("auto", roles=roles)
+        assert cmd.posture == "auto"
+        assert cmd.roles == ["worker", "soul"]
+
+    def test_role_prompt_is_durable_and_keyed_by_conversation(self):
+        """NOT /var/folders: macOS GCs that, and the launch line reads the file
+        BY PATH, so a GC'd prompt relaunches the session with an empty one."""
+        roles = [RoleConfig(name="test", instructions="Be a worker")]
+        cmd = self._build(roles=roles)
+        path = Path(cmd.role_prompt_path)
+        assert path.parent == self.prompts_dir
+        assert path.name == f"{cmd.conversation_id}.txt"
+        assert path.read_text() == "Be a worker"
+
+
+    def test_append_system_prompt_stays_last(self):
+        """Multiline content can break any flag that follows it."""
+        roles = [RoleConfig(name="test", tools=["Read"], instructions="line1\nline2")]
+        cmd = self._build(roles=roles)
+        assert cmd.command.index("--session-id") < cmd.command.index("--append-system-prompt")
+        assert cmd.command.endswith(f'--append-system-prompt "$(<{cmd.role_prompt_path})"')
+
+
+def test_default_prompt_dir_is_under_agentwire_config():
+    """The whole point of #871's prompt move. Deliberately module-level: the
+    classes above redirect ROLE_PROMPTS_DIR to a tmp dir that pytest itself
+    happens to put under /var/folders, which would make this vacuous."""
+    from agentwire.core import CONFIG_DIR, ROLE_PROMPTS_DIR
+    assert ROLE_PROMPTS_DIR.parent == CONFIG_DIR
+    assert "/var/folders" not in str(ROLE_PROMPTS_DIR)
 
 
 class TestSessionEnvInjection:

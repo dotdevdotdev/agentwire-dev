@@ -592,8 +592,7 @@ class TestCmdNewSeedFallback:
             m, "build_agent_command",
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
         monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
-        monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
-        monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+        monkeypatch.setattr(m, "record_session_launch", lambda *a, **k: {})
         monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
         monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
 
@@ -851,17 +850,17 @@ class TestCmdNewDefaultCreatedByRooting:
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
         monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
         monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
-        monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
         monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
         monkeypatch.setattr(m.pane_manager, "get_current_session", lambda: None)
         monkeypatch.setattr(core, "_live_session_cwd", lambda s: caller_project_path)
 
         recorded = {}
 
-        def fake_record(session_name, created_by, via):
-            recorded["created_by"] = created_by
+        def fake_record(session_name, agent, cwd, **kw):
+            recorded["created_by"] = kw.get("created_by")
+            return {}
 
-        monkeypatch.setattr(m, "_record_session_creator", fake_record)
+        monkeypatch.setattr(m, "record_session_launch", fake_record)
 
         args = argparse.Namespace(
             session=session, path=str(tmp_path), force=False, json=True,
@@ -967,7 +966,6 @@ class TestCmdNewCohortEnrollment:
             lambda *a, **k: SimpleNamespace(command="claude", env={}))
         monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
         monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
-        monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
         monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
         monkeypatch.setattr(m.pane_manager, "get_current_session", lambda: None)
         monkeypatch.setattr(
@@ -976,8 +974,8 @@ class TestCmdNewCohortEnrollment:
 
         self.rooted_as = {}
         monkeypatch.setattr(
-            m, "_record_session_creator",
-            lambda name, created_by, via: self.rooted_as.update(v=created_by))
+            m, "record_session_launch",
+            lambda name, agent, cwd, **kw: self.rooted_as.update(v=kw.get("created_by")))
 
         enrolled = []
         monkeypatch.setattr(
