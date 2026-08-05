@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from agentwire import history_cli, history_migrate as hm
+from agentwire import history_cli
+from agentwire import history_migrate as hm
 
 
 class Args:
@@ -34,15 +35,30 @@ def seed(projects, cwd):
 
 
 class TestSelectorValidation:
-    @pytest.mark.parametrize("kw", [
-        {},                                              # nothing chosen
-        {"from_path": "/a"},                             # --from without --to
-        {"to_path": "/b"},                               # --to without --from
-        {"all": True, "session": "s"},                   # two selectors
-        {"all": True, "from_path": "/a", "to_path": "/b"},
+    @pytest.mark.parametrize("kw,expected", [
+        ({}, "exactly one of"),                                 # nothing chosen
+        ({"from_path": "/a"}, "must be given together"),         # --from without --to
+        ({"to_path": "/b"}, "must be given together"),           # --to without --from
+        ({"all": True, "session": "s"}, "exactly one of"),       # two selectors
+        ({"all": True, "from_path": "/a", "to_path": "/b"}, "exactly one of"),
     ])
-    def test_rejected(self, kw, projects):
+    def test_rejected_with_a_usable_message(self, kw, expected, projects, capsys):
+        """Assert on the OUTPUT, not just the exit code.
+
+        Checking only ``== 1`` is what let a wrong ``_output_result`` signature
+        through: the message was silently swallowed into the JSON branch and
+        never displayed, and every one of these still exited 1.
+        """
         assert history_cli.cmd_history_migrate(Args(**kw)) == 1
+        captured = capsys.readouterr()
+        assert expected in (captured.out + captured.err)
+
+    def test_rejection_in_json_mode_carries_the_error(self, projects, capsys):
+        assert history_cli.cmd_history_migrate(Args(json=True)) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is False
+        assert "exactly one of" in payload["error"]
+        assert "json_output" not in payload  # a kwarg leaking into the payload
 
 
 class TestExitCodes:

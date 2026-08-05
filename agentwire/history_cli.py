@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import history_migrate
 from .core import (
     _get_machine_config,
     _notify_portal_sessions_changed,
@@ -27,7 +28,6 @@ from .core import (
     mirror_role_prompt_remote,
     record_session_launch,
 )
-from . import history_migrate
 from .project_config import ProjectConfig, load_project_config
 from .roles import (
     derive_session_kind,
@@ -371,10 +371,10 @@ def cmd_history_migrate(args) -> int:
     """
     explicit = bool(args.from_path or args.to_path)
     if explicit and not (args.from_path and args.to_path):
-        return _output_result(False, "--from and --to must be given together", json_output=args.json)
+        return _output_result(False, args.json, "--from and --to must be given together")
     if sum([explicit, bool(args.session), bool(args.all)]) != 1:
         return _output_result(
-            False, "choose exactly one of: --session, --from/--to, --all", json_output=args.json
+            False, args.json, "choose exactly one of: --session, --from/--to, --all"
         )
 
     if explicit:
@@ -421,6 +421,12 @@ def cmd_history_migrate(args) -> int:
             print(f"    history: {r['source']}")
         if r["status"] in (history_migrate.READY, history_migrate.MIGRATED):
             print(f"    -> {r['target']}")
+        if r.get("mixed_provenance"):
+            print("    MIXED PROVENANCE — transcripts in this directory came from:")
+            for cwd, count in sorted(r["mixed_provenance"].items(), key=lambda kv: -kv[1]):
+                print(f"        {count:>4}  {cwd}")
+        for conv in r.get("conversations", []):
+            print(f"    {'resumable    ' if conv['resumable'] else 'NOT resumable'}  {conv['id']}")
         print(f"    {r['detail']}")
 
     if not notable:

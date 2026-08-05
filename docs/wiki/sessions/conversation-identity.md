@@ -295,7 +295,30 @@ consumes.
    failure shape, and it is why publishing goes through `os.rename` behind an
    explicit existence check.
 
+**3. A mixed-provenance source migrates selectively.** One history directory
+can hold transcripts from *two* projects — a directory renamed under a live
+session leaves the old key holding both. One such directory exists on the
+machine this was written on: 7 transcripts from one project and 6 from
+another. Relocating all 13 would orphan the 6, breaking guarantee 1 while
+reporting success.
+
+Rather than refuse (safe, but leaves no way forward except moving files by
+hand), the migration moves only the transcripts whose own recorded `cwd`
+matches — the split is exactly computable from the same ground truth the
+encoder came from. Foreign transcripts are left where they are, which leaves
+them no worse off than before, whereas moving them would strand them
+somewhere new. Files with no readable `cwd`, and non-transcript entries like
+`memory/`, travel with the migration: they carry no evidence of belonging
+elsewhere. `--prune-source` **refuses to prune** a source that still holds
+foreign transcripts — otherwise it would delete precisely what was
+deliberately left behind, turning the safe choice into the destructive one.
+
 Missing source history is a **normal outcome** (`source_absent`), not an error:
 transcripts have been observed disappearing on their own, and a never-prompted
 session never had one. A sweep reports sessions it cannot judge as a counted
 summary rather than a wall of lines — counted, never silently dropped.
+
+An interrupted run can leave a `.agentwire-migrate-<hex>` staging directory
+behind; `apply` sweeps them before starting. A staging directory only ever
+holds a *copy* — the source is untouched until after publication — so clearing
+one cannot lose history.

@@ -5,6 +5,9 @@ and that missing history is a normal outcome rather than a crash, so both get
 tested directly rather than inferred from the happy path.
 """
 
+import json
+import os
+
 import pytest
 
 from agentwire import history_migrate as hm
@@ -17,6 +20,15 @@ def projects(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setattr(hm, "PROJECTS_DIR", root)
     return root
+
+
+@pytest.fixture
+def session_store(tmp_path, monkeypatch):
+    """A throwaway ~/.agentwire with a recorded session named "s"."""
+    monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+    (tmp_path / "sessions" / "s").mkdir(parents=True)
+    (tmp_path / "sessions" / "s" / "metadata.json").write_text("{}")
+    return tmp_path
 
 
 def seed(projects, cwd, files=(("conv.jsonl", '{"type":"user"}\n'),)):
@@ -167,6 +179,183 @@ class TestApply:
         assert hm.plan("/p/a_b", "/p/a.b")["status"] == hm.ALIGNED
 
 
+class TestPublishMechanics:
+    """Pins for the properties a passing suite must not be able to lose.
+
+    Each of these was verified to go red under the corresponding sabotage:
+    swapping the publish to ``shutil.move``, deleting the pre-publish
+    existence re-check, emptying ``_fingerprint``, and following symlinks.
+    Without them the code was correct but unheld.
+    """
+
+    def test_publish_uses_rename_not_move(self, projects, monkeypatch):
+        """``shutil.move`` onto an existing dir nests instead of failing.
+
+        Pinned at the call level because the refusal check normally prevents
+        us reaching a populated target — so a move/rename swap is invisible to
+        every behavioural test.
+        """
+        seed(projects, "/old/place")
+        monkeypatch.setattr(
+            hm.shutil, "move",
+            lambda *a, **k: pytest.fail("publish must not use shutil.move — it nests on collision"),
+        )
+        assert hm.apply("/old/place", "/new/place")["status"] == hm.MIGRATED
+
+    def test_target_is_rechecked_between_plan_and_publish(self, projects, monkeypatch):
+        """A concurrent claude run can create the target while we copy."""
+        seed(projects, "/old/place")
+        real_copytree = hm.shutil.copytree
+
+        def racing(src, dst, **kw):
+            out = real_copytree(src, dst, **kw)
+            # The target appears after plan() approved, before publication.
+            victim = projects / "-new-place"
+            victim.mkdir()
+            (victim / "other.jsonl").write_text("ARRIVED FIRST")
+            return out
+
+        monkeypatch.setattr(hm.shutil, "copytree", racing)
+        result = hm.apply("/old/place", "/new/place")
+        assert result["status"] == hm.TARGET_EXISTS
+        assert (projects / "-new-place" / "other.jsonl").read_text() == "ARRIVED FIRST"
+        assert not [p for p in projects.iterdir() if p.name.startswith(hm.STAGING_PREFIX)]
+
+    def test_fingerprint_actually_reads_content(self, projects):
+        """An empty fingerprint would make verification vacuously pass."""
+        d = seed(projects, "/place")
+        (d / "extra.jsonl").write_text("payload")
+        fp = hm._fingerprint(d)
+        assert len(fp) == 2
+        assert any(size == len("payload") for size, _ in fp.values())
+        # Content, not just size: same length, different bytes must differ.
+        (d / "extra.jsonl").write_text("PAYLOAD")
+        assert hm._fingerprint(d) != fp
+
+    def test_symlinks_are_preserved_not_followed(self, projects, tmp_path):
+        """Following them would silently inline an outside file as real data."""
+        outside = tmp_path / "outside.jsonl"
+        outside.write_text("not part of this history")
+        d = seed(projects, "/old/place")
+        (d / "link.jsonl").symlink_to(outside)
+        assert hm.apply("/old/place", "/new/place")["status"] == hm.MIGRATED
+        copied = projects / "-new-place" / "link.jsonl"
+        assert copied.is_symlink()
+        assert os.readlink(copied) == str(outside)
+
+
+class TestStagingSweep:
+    def test_sweeps_abandoned_staging_dirs(self, projects):
+        orphan = projects / f"{hm.STAGING_PREFIX}deadbeef"
+        orphan.mkdir()
+        (orphan / "copy.jsonl").write_text("{}")
+        assert hm.sweep_staging() == [orphan.name]
+        assert not orphan.exists()
+
+    def test_sweep_leaves_real_history_alone(self, projects):
+        seed(projects, "/place")
+        hm.sweep_staging()
+        assert (projects / "-place" / "conv.jsonl").exists()
+
+    def test_apply_sweeps_before_migrating(self, projects):
+        orphan = projects / f"{hm.STAGING_PREFIX}stale"
+        orphan.mkdir()
+        seed(projects, "/old/place")
+        hm.apply("/old/place", "/new/place")
+        assert not orphan.exists()
+
+
+class TestMixedProvenance:
+    def _jsonl(self, d, name, cwd):
+        (d / name).write_text(json.dumps({"type": "user", "cwd": cwd}) + "\n")
+
+    def test_uniform_source_is_not_flagged(self, projects):
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        self._jsonl(d, "a.jsonl", "/p/one")
+        self._jsonl(d, "b.jsonl", "/p/one")
+        result = hm.plan("/p/one", "/p/moved")
+        assert result["status"] == hm.READY
+        assert "mixed_provenance" not in result
+
+    def test_foreign_transcripts_are_reported(self, projects):
+        """One such directory really exists on the machine this was built on."""
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        self._jsonl(d, "a.jsonl", "/p/one")
+        self._jsonl(d, "b.jsonl", "/p/elsewhere")
+        self._jsonl(d, "c.jsonl", "/p/elsewhere")
+        result = hm.plan("/p/one", "/p/moved")
+        assert result["status"] == hm.READY
+        assert result["mixed_provenance"] == {"/p/one": 1, "/p/elsewhere": 2}
+        assert sorted(result["foreign_files"]) == ["b.jsonl", "c.jsonl"]
+        assert "/p/elsewhere (2)" in result["detail"]
+        assert "LEFT IN PLACE" in result["detail"]
+
+    def test_migration_moves_only_the_matching_transcripts(self, projects):
+        """The real shape: 7 of one project + 6 of another under one key.
+
+        Relocating all 13 would orphan the 6 — the exact property this module
+        leads with. Only the matching ones move; the rest stay put.
+        """
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        for i in range(7):
+            self._jsonl(d, f"own{i}.jsonl", "/p/one")
+        for i in range(6):
+            self._jsonl(d, f"other{i}.jsonl", "/p/elsewhere")
+
+        result = hm.apply("/p/one", "/p/moved")
+        assert result["status"] == hm.MIGRATED
+
+        moved = {p.name for p in (projects / hm.encode_project_path("/p/moved")).glob("*.jsonl")}
+        assert moved == {f"own{i}.jsonl" for i in range(7)}
+        # Every original is still where it was — nothing was orphaned.
+        assert len(list(d.glob("*.jsonl"))) == 13
+
+    def test_prune_source_refuses_when_transcripts_were_left_behind(self, projects):
+        """Otherwise --prune-source destroys exactly what we declined to move."""
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        self._jsonl(d, "own.jsonl", "/p/one")
+        self._jsonl(d, "other.jsonl", "/p/elsewhere")
+
+        result = hm.apply("/p/one", "/p/moved", prune_source=True)
+        assert result["status"] == hm.MIGRATED
+        assert result["source_retained"] is True
+        assert "NOT pruned" in result["detail"]
+        assert (d / "other.jsonl").exists()
+
+    def test_prune_source_still_works_for_a_clean_source(self, projects):
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        self._jsonl(d, "own.jsonl", "/p/one")
+        result = hm.apply("/p/one", "/p/moved", prune_source=True)
+        assert result["source_retained"] is False
+        assert not d.exists()
+
+    def test_files_without_a_readable_cwd_travel_with_the_migration(self, projects):
+        """No evidence of foreignness, and the source is retained regardless."""
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        self._jsonl(d, "own.jsonl", "/p/one")
+        (d / "nocwd.jsonl").write_text('{"type":"user"}\n')
+        (d / "memory").mkdir()
+        (d / "memory" / "MEMORY.md").write_text("# notes")
+
+        hm.apply("/p/one", "/p/moved")
+        dest = projects / hm.encode_project_path("/p/moved")
+        assert (dest / "nocwd.jsonl").exists()
+        assert (dest / "memory" / "MEMORY.md").exists()
+
+    def test_unreadable_transcripts_do_not_block(self, projects):
+        d = projects / hm.encode_project_path("/p/one")
+        d.mkdir(parents=True)
+        (d / "broken.jsonl").write_text("not json at all\n")
+        (d / "nocwd.jsonl").write_text('{"type":"user"}\n')
+        assert hm.plan("/p/one", "/p/moved")["status"] == hm.READY
+
+
 class TestResumable:
     """``resumable(id, cwd) == exists(<encoded-cwd>/<id>.jsonl)`` — one predicate."""
 
@@ -192,13 +381,23 @@ class TestResumable:
 
 
 class TestResolveSession:
-    def test_undetermined_without_recorded_cwd(self, projects, monkeypatch):
+    def test_unknown_session_says_so(self, projects, tmp_path, monkeypatch):
+        """Not "predates #881" — that misreads a typo as a legacy session."""
+        monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+        result = hm.resolve_session("never-existed")
+        assert result["status"] == hm.UNDETERMINED
+        assert result["detail"] == "no such session recorded"
+
+    def test_undetermined_without_recorded_cwd(self, projects, tmp_path, monkeypatch):
+        monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+        (tmp_path / "sessions" / "legacy").mkdir(parents=True)
+        (tmp_path / "sessions" / "legacy" / "metadata.json").write_text("{}")
         monkeypatch.setattr(hm, "load_session_metadata", lambda name: {})
-        result = hm.resolve_session("nope")
+        result = hm.resolve_session("legacy")
         assert result["status"] == hm.UNDETERMINED
         assert "#881" in result["detail"]
 
-    def test_undetermined_when_repo_is_gone(self, projects, monkeypatch):
+    def test_undetermined_when_repo_is_gone(self, projects, session_store, monkeypatch):
         monkeypatch.setattr(
             hm, "load_session_metadata",
             lambda name: {"cwd_at_launch": "/old/place", "repo": "/vanished/repo"},
@@ -207,7 +406,7 @@ class TestResolveSession:
         assert result["status"] == hm.UNDETERMINED
         assert "cannot ask git" in result["detail"]
 
-    def test_main_checkout_session_compares_against_the_repo_path(self, projects, tmp_path, monkeypatch):
+    def test_main_checkout_session_compares_against_the_repo_path(self, projects, session_store, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
         seed(projects, "/old/place")
@@ -220,7 +419,7 @@ class TestResolveSession:
         assert result["new_cwd"] == str(repo)
         assert result["session"] == "s"
 
-    def test_worktree_session_asks_git_for_the_current_path(self, projects, tmp_path, monkeypatch):
+    def test_worktree_session_asks_git_for_the_current_path(self, projects, session_store, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
         moved = tmp_path / "moved-worktree"
@@ -240,7 +439,7 @@ class TestResolveSession:
         assert result["status"] == hm.READY
         assert result["new_cwd"] == str(moved)
 
-    def test_undetermined_when_git_lost_the_worktree(self, projects, tmp_path, monkeypatch):
+    def test_undetermined_when_git_lost_the_worktree(self, projects, session_store, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
         monkeypatch.setattr(
