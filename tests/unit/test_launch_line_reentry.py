@@ -12,9 +12,11 @@ point: a single-launch test cannot see this bug, which is exactly why a green
 suite shipped it. ``claude`` is stubbed — by a stub that reproduces the two
 flag behaviours as MEASURED, not as assumed:
 
-- ``--session-id <id>`` refuses when ``<id>.jsonl`` already exists under the
+- ``--session-id <id>`` refuses when ``<id>.jsonl`` already EXISTS under the
   cwd's history key ("Session ID <id> is already in use.")
-- ``--resume <id>`` refuses when it does not.
+- ``--resume <id>`` refuses unless that file holds an actual TURN ("No
+  conversation found with session ID"). The two flags disagree on a
+  metadata-only stub, which is what makes such an id dead to both.
 - the transcript is written on the first turn, keyed by the PHYSICAL cwd.
 """
 
@@ -41,6 +43,13 @@ from agentwire.roles import RoleConfig
 # flags travel in an array); bash covers the Linux side and CI.
 SHELLS = [s for s in ("zsh", "bash") if shutil.which(s)]
 
+#: What makes a transcript a conversation rather than a metadata stub.
+TURN = '{"type":"user","message":{"role":"user"}}\n'
+#: The 5-line file a restart of a MOVED session leaves at the new key. Neither
+#: flag will take an id in this state — see TestDeadIds.
+STUB = ('{"type":"last-prompt"}\n{"type":"ai-title"}\n'
+        '{"type":"mode","mode":"normal"}\n')
+
 STUB_CLAUDE = '''#!/usr/bin/env python3
 """Stand-in for `claude`, reproducing the measured behaviour of the two
 conversation flags. Logs every invocation so the test can assert on which
@@ -65,13 +74,29 @@ sid, resume = flag("--session-id"), flag("--resume")
 with open(os.path.join(os.environ["HOME"], "invocations.jsonl"), "a") as fh:
     fh.write(json.dumps({"argv": args, "cwd": os.getcwd()}) + "\\n")
 
-if sid and os.path.exists(os.path.join(hist, sid + ".jsonl")):
+
+def transcript(cid):
+    return os.path.join(hist, cid + ".jsonl")
+
+
+def has_turns(cid):
+    """--resume needs an actual turn; --session-id only needs the file. The
+    two flags disagreeing is what makes a metadata stub a DEAD id."""
+    try:
+        with open(transcript(cid)) as fh:
+            return any('"type":"user"' in line for line in fh)
+    except IOError:
+        return False
+
+
+if sid and os.path.exists(transcript(sid)):
     sys.exit("Error: Session ID %s is already in use." % sid)
-if resume and not os.path.exists(os.path.join(hist, resume + ".jsonl")):
+if resume and not has_turns(resume):
     sys.exit("No conversation found with session ID %s" % resume)
 
 os.makedirs(hist, exist_ok=True)                  # the first turn writes it
-open(os.path.join(hist, (sid or resume) + ".jsonl"), "a").close()
+with open(transcript(sid or resume or "self-minted"), "a") as fh:
+    fh.write('{"type":"user","message":{"role":"user"}}\\n')
 '''
 
 
@@ -197,7 +222,7 @@ class TestReEntry:
         cid = agent.conversation_id
         hist = sandbox.home / ".claude" / "projects"
         (hist / _key(sandbox.work)).mkdir(parents=True, exist_ok=True)
-        (hist / _key(sandbox.work) / "old-conversation.jsonl").touch()
+        (hist / _key(sandbox.work) / "old-conversation.jsonl").write_text(TURN)
 
         launch(sandbox, shell, agent)
         launch(sandbox, shell, agent)
@@ -274,3 +299,57 @@ class TestGeneratedLine:
         from agentwire.history import HISTORY_DIR_SHELL
 
         assert HISTORY_DIR_SHELL in build_agent_command("bypass").command
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+class TestDeadIds:
+    """A transcript that exists but holds no turn is dead to BOTH flags.
+
+    Measured on real Claude Code 2.1.222, in the state a restart of a moved
+    session leaves behind — a metadata stub at the new key while the
+    conversation stays under the old one:
+
+        claude --resume <id>      -> "No conversation found with session ID"
+        claude --session-id <id>  -> "Session ID <id> is already in use."
+
+    So an `[ -f ]` check is not enough: whichever flag the line picked, claude
+    would refuse to start and the pane would sit at a bare shell — #901 again,
+    reached by a different route.
+    """
+
+    def test_a_stub_launches_with_no_conversation_flag(self, sandbox, shell):
+        agent = build_agent_command("bypass")
+        d = sandbox.home / ".claude" / "projects" / _key(sandbox.work)
+        d.mkdir(parents=True)
+        (d / f"{agent.conversation_id}.jsonl").write_text(STUB)
+
+        result = launch(sandbox, shell, agent)
+
+        assert result.returncode == 0, result.stderr
+        assert conversation_flags(invocations(sandbox)[0]) == []
+
+    def test_the_role_still_survives_a_dead_id(self, sandbox, shell):
+        """The degradation is the RECORD going stale, never the role."""
+        role = RoleConfig(name="worker", instructions="ROLE-MARKER")
+        agent = build_agent_command("bypass", [role])
+        d = sandbox.home / ".claude" / "projects" / _key(sandbox.work)
+        d.mkdir(parents=True)
+        (d / f"{agent.conversation_id}.jsonl").write_text(STUB)
+
+        launch(sandbox, shell, agent)
+
+        assert "ROLE-MARKER" in invocations(sandbox)[0]["argv"]
+
+    def test_a_stub_for_the_resume_target_does_not_break_the_launch(self, sandbox, shell):
+        """`restart` degrades to fresh rather than resuming a dead id."""
+        agent = build_agent_command("bypass", resume_session_id="stubbed-old")
+        d = sandbox.home / ".claude" / "projects" / _key(sandbox.work)
+        d.mkdir(parents=True)
+        (d / "stubbed-old.jsonl").write_text(STUB)
+
+        result = launch(sandbox, shell, agent)
+
+        assert result.returncode == 0, result.stderr
+        assert conversation_flags(invocations(sandbox)[0]) == [
+            "--session-id", agent.conversation_id,
+        ]

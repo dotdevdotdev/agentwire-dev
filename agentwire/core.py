@@ -400,7 +400,7 @@ def _conversation_flags_shell(conversation_id: str, resume_session_id: str | Non
     ``resumable(id, cwd) == exists(<encoded_cwd>/<id>.jsonl)`` — with the
     encoding mirrored from :data:`history.HISTORY_DIR_SHELL`.
 
-    Three cases, written as precedence (last assignment wins):
+    Four cases, written as precedence (last assignment wins):
 
     1. Nothing on disk → ``--session-id <new>``. First launch stays
        authoritative about the id, which is #871's whole point.
@@ -412,21 +412,47 @@ def _conversation_flags_shell(conversation_id: str, resume_session_id: str | Non
        *old* is gone by then, this falls back to case 1 rather than dying on
        "No conversation found" — degrade to a fresh conversation with the
        role intact, never to a bare shell.
+    4. A DEAD id → no conversation flag at all.
+
+    Case 4 is why the check is not a bare ``[ -f ]``. A transcript existing is
+    not enough, measured on real Claude Code 2.1.222: moving a running
+    session's history dir away leaves a 5-line metadata stub at the new key
+    (``last-prompt``/``ai-title``/``mode``/…) while the conversation stays
+    under the old one. On that file ``--resume`` answers "No conversation
+    found" AND ``--session-id`` still answers "already in use" — neither flag
+    will take it. Passing either would be a bare shell, so the line launches
+    with no conversation flag: claude mints its own id, the agent comes up
+    WITH ITS ROLE, and the record is merely stale (``doctor`` reports it as a
+    live session whose recorded conversation has no history). A stale record
+    beats a stranded session. ``history.holds_a_conversation`` is the Python
+    twin of this ``grep``.
     """
     hist = f"{_SID_VAR}_dir"
+    have = f"{_SID_VAR}_have"
     lines = [
         f"{hist}={HISTORY_DIR_SHELL}",
+        # A transcript EXISTING is not enough — see the note above.
+        f"""{have}() {{ [ -f "${hist}/$1.jsonl" ] && grep -q '"type":"user"' "${hist}/$1.jsonl"; }}""",
         f'{_SID_VAR}=(--session-id "{conversation_id}")',
     ]
     if resume_session_id:
         lines.append(
-            f'[ -f "${hist}/{resume_session_id}.jsonl" ] && '
+            f'{have} {resume_session_id} && '
             f'{_SID_VAR}=(--resume "{resume_session_id}" --fork-session '
             f'--session-id "{conversation_id}")'
         )
     lines.append(
-        f'[ -f "${hist}/{conversation_id}.jsonl" ] && '
+        f'{have} {conversation_id} && '
         f'{_SID_VAR}=(--resume "{conversation_id}")'
+    )
+    # Dead id: the file is there but holds no turn, so NEITHER flag will take
+    # it. Launch with no conversation flag at all rather than with one claude
+    # refuses — the agent comes up with its role and mints its own id, which
+    # `doctor` then reports as a session whose recorded conversation has no
+    # history. A stale record beats a bare shell.
+    lines.append(
+        f'[ -f "${hist}/{conversation_id}.jsonl" ] && ! {have} {conversation_id} && '
+        f'{_SID_VAR}=()'
     )
     return "; ".join(lines)
 
