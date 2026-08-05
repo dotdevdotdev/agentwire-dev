@@ -239,6 +239,24 @@ def parse_env_args(env_args: list[str] | None) -> dict[str, str]:
     return result
 
 
+# Owner-only, matching the posture of `~/.agentwire/.env` (chmod 600). A role
+# prompt is complete system-prompt text — role content, project context,
+# whatever else the prompt carries — and unlike the tempfile it replaced (0600
+# and transient) this store is PERMANENT. Both modes are forced rather than
+# requested, because `mkdir(mode=)` and `open(mode=)` are masked by umask and
+# neither touches an already-existing path: a directory created before this
+# rule, or under a permissive umask, must heal on the next write rather than
+# stay world-readable forever.
+#
+# Same posture and same fchmod-before-any-bytes-land technique as
+# ``security.write_token_file``; not shared with it because that one is bound
+# to TOKEN_FILE and adds atomic-replace semantics this store doesn't need (the
+# prompt is written before the launch line that reads it, and never rotated
+# under a live reader). If a third owner-only writer appears, extract one.
+_PROMPT_FILE_MODE = 0o600
+_PROMPT_DIR_MODE = 0o700
+
+
 def write_role_prompt(conversation_id: str, instructions: str) -> Path:
     """Write *instructions* to this conversation's durable role-prompt file.
 
@@ -247,10 +265,21 @@ def write_role_prompt(conversation_id: str, instructions: str) -> Path:
     should read; the file deliberately OUTLIVES the launch so a later
     relaunch can reuse it, and the recorded ``roles``/``posture`` can
     regenerate it if it's ever gone.
+
+    Written owner-only, and never through a window where it isn't: the mode
+    is set at ``os.open`` time rather than chmod'ed after a plain write, so
+    the content is never briefly world-readable on disk.
     """
     ROLE_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(ROLE_PROMPTS_DIR, _PROMPT_DIR_MODE)
+
     path = ROLE_PROMPTS_DIR / f"{conversation_id}.txt"
-    path.write_text(instructions)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PROMPT_FILE_MODE)
+    with os.fdopen(fd, "w") as f:
+        # umask can only CLEAR bits at create time, and an existing file keeps
+        # its old mode — so state it exactly, on the descriptor we hold.
+        os.fchmod(fd, _PROMPT_FILE_MODE)
+        f.write(instructions)
     return path
 
 
@@ -281,10 +310,16 @@ def mirror_role_prompt_remote(agent: "AgentCommand", machine_id: str, agent_cmd:
     # `$HOME`, not `~`: this path is substituted into the launch line mid-word
     # (`"$(<...)"`) where tilde expansion is not guaranteed, and it is
     # recorded verbatim — the remote's home isn't knowable from here.
-    remote_prompt = f"$HOME/.agentwire/role-prompts/{agent.conversation_id}.txt"
+    remote_dir = "$HOME/.agentwire/role-prompts"
+    remote_prompt = f"{remote_dir}/{agent.conversation_id}.txt"
+    # Same owner-only posture as the local store, stated the same way: `umask
+    # 077` covers the create, and the explicit chmods cover a pre-existing
+    # path (which umask never touches) on a remote whose defaults we don't
+    # control. The heredoc body starts on the line after the full command.
     write_cmd = (
-        'mkdir -p "$HOME/.agentwire/role-prompts" && '
-        f'cat > "{remote_prompt}" << \'AGENTWIRE_EOF\'\n{content}\nAGENTWIRE_EOF'
+        f'umask 077 && mkdir -p "{remote_dir}" && chmod 700 "{remote_dir}" && '
+        f'cat > "{remote_prompt}" << \'AGENTWIRE_EOF\'\n{content}\nAGENTWIRE_EOF\n'
+        f'chmod 600 "{remote_prompt}"'
     )
     result = _run_remote(machine_id, write_cmd)
     if result.returncode != 0:

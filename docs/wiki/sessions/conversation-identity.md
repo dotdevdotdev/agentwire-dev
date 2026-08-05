@@ -49,6 +49,12 @@ Two verified properties of the flag shape everything else:
 }
 ```
 
+The prompt file is written **0600 in a 0700 directory**, matching the posture of
+`~/.agentwire/.env`. Both modes are forced rather than requested — `mkdir(mode=)`
+and `open(mode=)` are masked by umask and neither touches an already-existing
+path, so a directory created before this rule heals on the next write. The
+remote mirror sets the same modes on the far side.
+
 Missing keys read as **absent**, never as a default. `repo`/`branch`/
 `worktree_path` come from `core.git_identity`, which *asks git* — the same rule
 [#837 had to retrofit onto worktree paths](../internals/parallel-refactor.md)
@@ -80,6 +86,35 @@ history by cwd (`~/.claude/projects/<encoded-cwd>/`), so relocating a worktree
 strands its history and `--resume <id>` fails with `No conversation found with
 session ID`. `cwd_at_launch` is what a later check compares against the history
 key to **detect** this. Migrating the history is separate follow-up work.
+
+## A recorded id does NOT guarantee a resumable conversation
+
+This is the most important thing to know before building on the record, and it
+is easy to assume the opposite.
+
+`conversation_ids` records what agentwire **launched**. It says nothing about
+whether Claude still **has** that conversation. The two can diverge:
+
+- A moved worktree orphans the history (above) — the file still exists, under a
+  key nothing looks up.
+- `~/.claude/projects/` entries disappear on their own. During review of the
+  original change, directory count there dropped from 563 to 544 in roughly 25
+  minutes with `cleanupPeriodDays` unset. The cause was **not** attributable —
+  do not assume it was retention expiry, and do not assume a setting controls
+  it. Treat history as a cache that Claude owns and may evict.
+
+The design consequence stands regardless of cause: **"id recorded, history
+gone" is a handled state, not an impossible one.** Anything that resumes from
+the record must probe for the history file and degrade deliberately — relaunch
+fresh with the recorded `roles`/`posture` (which is exactly why those are
+recorded to *regenerate* the prompt rather than merely reference it), and say
+so, rather than passing `--resume <id>` and surfacing Claude's raw
+`No conversation found with session ID`.
+
+Concretely, for the follow-up work: `agentwire restart` must handle it as a
+normal branch, and the `doctor` check must distinguish *orphaned* (history
+exists under a different cwd key — recoverable by migration) from *gone*
+(no history anywhere — not recoverable, relaunch fresh).
 
 ## Who writes it
 

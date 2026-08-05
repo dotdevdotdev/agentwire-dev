@@ -1206,7 +1206,7 @@ def test_cmd_new_worktree_session_is_registered(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
     monkeypatch.setattr(m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
     monkeypatch.setattr(m, "build_agent_command",
-                        lambda *a, **k: Namespace(command="true", env={}, temp_file=None))
+                        lambda *a, **k: Namespace(command="true", env={}, role_prompt_path=None))
     monkeypatch.setattr(m, "_launch_tmux_session",
                         lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
     monkeypatch.setattr(m, "record_session_launch", lambda *a, **k: {})
@@ -1279,7 +1279,7 @@ def test_dot_project_derived_session_matches_what_creation_produces(
     monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
     monkeypatch.setattr(m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
     monkeypatch.setattr(m, "build_agent_command",
-                        lambda *a, **k: Namespace(command="true", env={}, temp_file=None))
+                        lambda *a, **k: Namespace(command="true", env={}, role_prompt_path=None))
     monkeypatch.setattr(m, "record_session_launch", lambda *a, **k: {})
     monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
     monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda *a, **k: None)
