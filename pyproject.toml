@@ -235,6 +235,10 @@ markers = [
     # Deselected in the hermetic CI gate via `-m 'not requires_tmux'` (#323);
     # still runs locally where tmux is on PATH.
     "requires_tmux: spawns a real tmux process; deselected in hermetic CI (#323)",
+    # Opts a test out of the ~/.agentwire redirect so it can assert on the REAL
+    # deployment paths (#893). READ-ONLY by intent — the session-scoped backstop
+    # still fails the run if an opted-out test writes anything.
+    "real_agentwire_home: sees the real ~/.agentwire paths instead of the tmp redirect (#893)",
 ]
 asyncio_mode = "auto"
 

@@ -1000,6 +1000,34 @@ def _output_result(success: bool, json_mode: bool, message: str = "", exit_code:
     return 0 if success else 1
 
 
+def sessions_dir() -> Path:
+    """The session-record store. The ROOT half of the path SSOT (#899).
+
+    Consolidating only the leaf left this built by hand wherever something
+    *enumerates* records rather than addressing one — which is how a "single
+    source of truth" ends up with two spellings of where it lives.
+    """
+    return CONFIG_DIR / "sessions"
+
+
+def session_metadata_path(session_name: str) -> Path:
+    """Where a session's record lives. One implementation, every direction.
+
+    Read, written, enumerated and unlinked through here — reads by
+    :func:`load_session_metadata`, writes by :func:`store_session_metadata`,
+    and the unlink by ``agentwire kill``. The docstring used to claim "both
+    directions" while the reader and the unlink each rebuilt the path inline
+    (#899), which is the same shape as ``tmux_safe_name`` (#865 → #868 → #870
+    → #878) and ``encode_project_path`` (#892): the helper existed, and callers
+    simply did not route through it. In every prior round the divergence stayed
+    invisible until production behaved wrongly.
+
+    The ``@machine`` suffix is stripped HERE and nowhere else — the store is
+    keyed by bare session name, so ``web@remote`` and ``web`` are one record.
+    """
+    return sessions_dir() / session_name.split("@")[0] / "metadata.json"
+
+
 def load_session_metadata(session_name: str) -> dict:
     """Load session metadata from storage.
 
@@ -1009,10 +1037,7 @@ def load_session_metadata(session_name: str) -> dict:
     Returns:
         Dictionary of metadata (empty dict if not found)
     """
-    # Parse session name to extract just the name part (remove @machine)
-    clean_name = session_name.split("@")[0]
-
-    metadata_file = CONFIG_DIR / "sessions" / clean_name / "metadata.json"
+    metadata_file = session_metadata_path(session_name)
 
     if not metadata_file.exists():
         return {}
@@ -1022,11 +1047,6 @@ def load_session_metadata(session_name: str) -> dict:
             return json.load(f) or {}
     except (json.JSONDecodeError, IOError):
         return {}
-
-
-def session_metadata_path(session_name: str) -> Path:
-    """Where a session's record lives. One implementation, both directions."""
-    return CONFIG_DIR / "sessions" / session_name.split("@")[0] / "metadata.json"
 
 
 def recorded_sessions() -> list[str]:
@@ -1045,11 +1065,11 @@ def recorded_sessions() -> list[str]:
     records on this machine — a sweep built on it would silently skip 58% of
     the fleet while reporting itself clean.
     """
-    sessions_dir = CONFIG_DIR / "sessions"
+    root = sessions_dir()
     try:
         return sorted(
-            str(f.parent.relative_to(sessions_dir))
-            for f in sessions_dir.glob("**/metadata.json")
+            str(f.parent.relative_to(root))
+            for f in root.glob("**/metadata.json")
         )
     except OSError:
         return []

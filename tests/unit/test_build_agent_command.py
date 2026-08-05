@@ -292,10 +292,15 @@ class TestMirrorRolePromptRemote:
         assert agent.role_prompt_path.startswith(str(core.role_prompts_dir()))
 
 
+@pytest.mark.real_agentwire_home
 def test_default_prompt_dir_is_under_agentwire_config():
     """The whole point of #871's prompt move. Deliberately module-level: the
     classes above redirect CONFIG_DIR to a tmp dir that pytest itself happens
-    to put under /var/folders, which would make this vacuous."""
+    to put under /var/folders, which would make this vacuous.
+
+    Same reason it opts out of the #893 home redirect, which relocates the
+    config dir into precisely such a directory: this test asserts on the REAL
+    deployment path, and reads only."""
     from agentwire.core import CONFIG_DIR, role_prompts_dir
     assert role_prompts_dir().parent == CONFIG_DIR
     assert "/var/folders" not in str(role_prompts_dir())

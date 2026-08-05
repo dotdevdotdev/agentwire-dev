@@ -21,7 +21,6 @@ from pathlib import Path
 
 from . import pane_manager
 from .core import (
-    CONFIG_DIR,
     _add_posture_flag,
     _check_tmux_installed,
     _display_parent,
@@ -39,6 +38,7 @@ from .core import (
     load_config,
     load_session_metadata,
     parse_env_args,
+    session_metadata_path,
     tmux_session_exists,
 )
 from .project_config import load_project_config
@@ -579,6 +579,28 @@ def _wants_graceful_exit(posture: str | None, pane_command: str | None) -> bool:
     return True
 
 
+def _drop_session_metadata(session: str) -> None:
+    """Remove a killed session's record, addressed through the path SSOT (#899).
+
+    Dropping it is deliberate: the record carries ``created_by``, so leaving it
+    behind would let an unrelated future session that reuses the name inherit a
+    stale parent. Consistent with the store's lifetime — when the session is
+    gone, so is the tmux environment holding its launch line, and nothing can
+    re-read it.
+
+    Routed through :func:`session_metadata_path` rather than reassembling the
+    store layout inline, so an unlink can never address a different file than
+    the write did.
+    """
+    path = session_metadata_path(session)
+    if not path.exists():
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def cmd_kill(args) -> int:
     """Kill a tmux session or pane (graceful /exit first, then kill).
 
@@ -757,14 +779,7 @@ def kill_local_session(session: str, force: bool = False, timeout: int = 10,
     if verbose:
         print(f"Killed session '{session}'")
 
-    # Drop session metadata (creator record) so a future unrelated session
-    # reusing this name doesn't inherit a stale parent.
-    metadata_file = CONFIG_DIR / "sessions" / session.split("@")[0] / "metadata.json"
-    if metadata_file.exists():
-        try:
-            metadata_file.unlink()
-        except OSError:
-            pass
+    _drop_session_metadata(session)
 
     # GC this sender's still-pending outbound across every recipient inbox (#621)
     # so report-backs it left undelivered don't accumulate. Load-bearing kinds

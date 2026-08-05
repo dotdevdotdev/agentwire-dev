@@ -41,7 +41,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from .core import CONFIG_DIR, load_session_metadata
+from .core import load_session_metadata, recorded_sessions, session_metadata_path
 from .history import (
     PROJECTS_DIR,
     history_key_candidates,
@@ -374,7 +374,7 @@ def resolve_session(session_name: str) -> dict:
     # load_session_metadata returns {} both for "no such session" and for "a
     # session with an empty record", so distinguish them here rather than
     # telling someone who mistyped a name that their session predates #881.
-    if not (CONFIG_DIR / "sessions" / session_name.split("@")[0] / "metadata.json").is_file():
+    if not session_metadata_path(session_name).is_file():
         return {**base, "status": UNDETERMINED, "detail": "no such session recorded"}
 
     old = metadata.get("cwd_at_launch")
@@ -437,11 +437,18 @@ def _find_worktree_cached(finder, repo: str, branch: str | None, name: str) -> d
 
 
 def known_sessions() -> list[str]:
-    """Session names that have a metadata record, in stable order."""
-    root = CONFIG_DIR / "sessions"
-    if not root.is_dir():
-        return []
-    return sorted(d.name for d in root.iterdir() if (d / "metadata.json").is_file())
+    """Session names that have a metadata record, in stable order.
+
+    Delegates to :func:`core.recorded_sessions` rather than scanning here.
+    This used to do a FLAT scan of the store, which is wrong for the reason
+    #898 measured: session names contain slashes by design (``project/branch``
+    is what every ``agentwire worktree`` and every scheduler dispatch is
+    called), so those records nest one level deeper. A flat scan found 469 of
+    1106 records on that machine — this sweep would have silently skipped 58%
+    of the fleet while reporting itself clean, which is the exact failure mode
+    :func:`scan` exists to catch in someone else's data.
+    """
+    return recorded_sessions()
 
 
 def scan() -> list[dict]:
