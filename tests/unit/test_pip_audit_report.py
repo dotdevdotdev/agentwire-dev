@@ -153,6 +153,97 @@ class TestFindingsSurface:
         assert "count=0" in output.read_text()
 
 
+class TestAuditedNothingIsNotClean:
+    """Zero advisories over zero packages is not a clean bill of health.
+
+    The same conflation this script exists to prevent, one level in: #900 was
+    "a red audit renders as green", and a report keyed only on FINDINGS lets
+    "audited nothing" render as green too. The realistic route is an empty
+    ``requirements.txt`` — a silently-failed export — after which pip-audit
+    exits 0 and writes ``{"dependencies": []}``.
+    """
+
+    NOTHING_AUDITED = {"dependencies": []}
+    NO_KEY_AT_ALL = {}
+    TWO_CLEAN_PACKAGES = {"dependencies": [
+        {"name": "aiohttp", "version": "3.14.3", "vulns": []},
+        {"name": "click", "version": "8.4.2", "vulns": []},
+    ]}
+
+    def test_the_audited_count_distinguishes_them(self):
+        assert report.audited_count(self.TWO_CLEAN_PACKAGES) == 2
+        assert report.audited_count(self.NOTHING_AUDITED) == 0
+        assert report.audited_count(self.NO_KEY_AT_ALL) == 0
+        assert report.audited_count(EIGHT_FINDINGS) == 5
+
+    @pytest.mark.parametrize("payload_name", ["NOTHING_AUDITED", "NO_KEY_AT_ALL"])
+    def test_an_empty_audit_reports_unknown_not_clean(
+            self, payload_name, tmp_path, capsys, gh_env):
+        summary, _ = gh_env
+        _, out = _run(tmp_path, getattr(self, payload_name), capsys)
+        assert "::warning" in out, "an empty audit produced no warning"
+        assert "UNKNOWN" in out
+        assert "ZERO packages" in out
+        body = summary.read_text()
+        assert "coverage UNKNOWN" in body
+        assert "clean" not in body.split("\n")[0]
+
+    def test_a_genuinely_clean_audit_still_reads_clean(
+            self, tmp_path, capsys, gh_env):
+        """The distinction has to cut both ways, or it's just noise."""
+        summary, _ = gh_env
+        _, out = _run(tmp_path, self.TWO_CLEAN_PACKAGES, capsys)
+        assert "::notice" in out and "UNKNOWN" not in out
+        assert ": clean" in summary.read_text()
+
+    def test_a_suspiciously_small_audit_is_unknown_too(
+            self, tmp_path, capsys, gh_env):
+        """The runtime export is ~124 packages; two means something broke
+        upstream of the audit even though it technically ran."""
+        summary, _ = gh_env
+        _, out = _run(tmp_path, self.TWO_CLEAN_PACKAGES, capsys, min_packages=50)
+        assert "UNKNOWN" in out
+        assert "only 2 packages" in summary.read_text()
+
+    def test_the_floor_does_not_fire_on_a_full_audit(self, tmp_path, capsys, gh_env):
+        full = {"dependencies": [{"name": f"p{i}", "version": "1", "vulns": []}
+                                 for i in range(124)]}
+        summary, _ = gh_env
+        _, out = _run(tmp_path, full, capsys, min_packages=50)
+        assert "UNKNOWN" not in out
+        assert "124 packages" in summary.read_text()
+
+    def test_the_count_is_visible_even_when_clean(self, tmp_path, capsys, gh_env):
+        """Carrying the number is what makes zero visibly zero."""
+        _, output = gh_env
+        _run(tmp_path, self.TWO_CLEAN_PACKAGES, capsys)
+        assert "audited=2" in output.read_text()
+
+    def test_an_empty_audit_never_looks_clean_to_the_workflows_grep(
+            self, tmp_path, capsys, gh_env):
+        """The cron closes the tracking issue on ': clean'. An empty audit
+        must not close it."""
+        body = tmp_path / "issue.md"
+        _run(tmp_path, self.NOTHING_AUDITED, capsys, issue_body=body)
+        assert ": clean" not in body.read_text()
+
+    def test_findings_are_reported_even_when_coverage_is_doubted(
+            self, tmp_path, capsys, gh_env):
+        """An incomplete audit that ALSO hides what it found is the worst of
+        both. The first version of this test only asserted "::warning" was
+        present — which the coverage warning satisfied while every advisory
+        was being suppressed."""
+        summary, _ = gh_env
+        _, out = _run(tmp_path, EIGHT_FINDINGS, capsys, min_packages=50)
+        assert "UNKNOWN" in out                       # coverage doubt is raised
+        for vid in ("PYSEC-2026-3545", "PYSEC-2026-3481", "PYSEC-2026-3552",
+                    "PYSEC-2026-2132"):
+            assert vid in out, f"{vid} suppressed behind the coverage warning"
+        body = summary.read_text()
+        assert "8 advisories" in body                  # the table still renders
+        assert "Coverage is also suspect" in body      # and says so
+
+
 class TestItNeverBecomesAGate:
     """continue-on-error is a deliberate, documented decision. Reporting must
     not quietly undo it."""
@@ -207,6 +298,52 @@ class TestTrackingIssue:
         body = tmp_path / "issue.md"
         _run(tmp_path, EIGHT_FINDINGS, capsys, issue_body=body)
         assert ": clean" not in body.read_text()
+
+    # -- the promise and the mechanism have to agree -----------------------
+    #
+    # The body tells an operator the issue "is reopened automatically if the
+    # findings come back". That sentence is only true if the workflow can SEE
+    # a closed issue and actually reopens it. Operator-facing text describing
+    # a mechanism the code does not implement is its own defect class — it is
+    # worse than silence, because the next reader trusts it.
+
+    @pytest.fixture
+    def cron_step(self):
+        """The issue-managing step's RUN LINES, comments stripped.
+
+        Comments are excluded deliberately: this file's own rationale comment
+        names `--state open` as the thing not to do, and a check that reads
+        prose as code would fail on the explanation of the fix.
+        """
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["pip-audit"]
+        for step in job["steps"]:
+            run = step.get("run", "")
+            if "gh issue" in run:
+                return "\n".join(ln for ln in run.split("\n")
+                                 if not ln.strip().startswith("#"))
+        pytest.fail("no step manages the tracking issue")
+
+    def test_the_search_can_see_a_closed_issue(self, cron_step):
+        """`--state open` cannot find the issue this workflow closed last
+        week, so a recurrence files a SECOND issue and 'one issue, reused'
+        quietly becomes 'one per close/recur cycle'."""
+        assert "gh issue list --state all" in cron_step
+        assert "gh issue list --state open" not in cron_step
+
+    def test_it_actually_reopens_rather_than_recreating(self, cron_step):
+        assert "gh issue reopen" in cron_step
+
+    def test_the_body_only_promises_what_the_workflow_does(
+            self, tmp_path, capsys, gh_env, cron_step):
+        body = tmp_path / "issue.md"
+        _run(tmp_path, EIGHT_FINDINGS, capsys, issue_body=body)
+        text = body.read_text()
+        if "reopen" in text:
+            assert "gh issue reopen" in cron_step, (
+                "the issue body promises it reopens itself, but the workflow "
+                "never calls `gh issue reopen`")
+        if "closes it" in text:
+            assert "gh issue close" in cron_step
 
 
 class TestTheLockIsActuallyFixed:
@@ -293,6 +430,49 @@ class TestTheLockIsActuallyFixed:
             assert self._parse(version) < (1, 28, 1), (
                 f"mcp {version} pulls the torch/CUDA cascade — if that is "
                 "intended, drop --ignore-vuln PYSEC-2026-3483 too")
+
+
+class TestTheIgnoreRationaleIsStillTrue:
+    """`PYSEC-2026-3483` is ignored because we never use the affected path.
+
+    An ignore justified by "we don't use that" is only as strong as the path
+    staying unused — and a rationale that has quietly become false is WORSE
+    than none, because the next reader trusts it and stops checking. So the
+    premise is pinned here: if agentwire ever serves MCP over WebSocket, these
+    fail and name the ignore that must be revisited.
+    """
+
+    AGENTWIRE = REPO / "agentwire"
+    IGNORE = "PYSEC-2026-3483"
+
+    def test_the_mcp_server_runs_on_stdio(self):
+        source = (self.AGENTWIRE / "mcp_server.py").read_text()
+        assert 'transport="stdio"' in source, (
+            f"the MCP server no longer runs on stdio — the reachability "
+            f"argument for --ignore-vuln {self.IGNORE} no longer holds")
+
+    def test_nothing_imports_the_websocket_server_transport(self):
+        """The module the advisory is actually about."""
+        offenders = [
+            path.relative_to(REPO)
+            for path in self.AGENTWIRE.rglob("*.py")
+            if "mcp.server.websocket" in path.read_text()
+            or "websocket_server" in path.read_text()
+        ]
+        assert offenders == [], (
+            f"{offenders} import the transport {self.IGNORE} is about — "
+            "drop the --ignore-vuln and take mcp>=1.28.1 (and its 32-package "
+            "torch/CUDA cascade), or stop using it")
+
+    def test_the_ignore_and_its_rationale_travel_together(self):
+        """If the ignore is dropped, this stops guarding — which is correct.
+        If it is kept, the rationale must be findable from the ignore."""
+        workflow = WORKFLOW.read_text()
+        if f"--ignore-vuln {self.IGNORE}" not in workflow:
+            pytest.skip("advisory no longer ignored; premise no longer load-bearing")
+        assert "stdio" in workflow, "the ignore has lost its inline rationale"
+        doc = (REPO / "docs/wiki/security/pip-audit.md").read_text()
+        assert self.IGNORE in doc and "stdio" in doc
 
 
 class TestWorkflowWiring:

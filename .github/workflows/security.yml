@@ -122,9 +122,15 @@ jobs:
       # log, and writes a table to the step summary. `if: always()` so a
       # crashed audit reports "UNKNOWN, which is not clean" rather than nothing
       # — the exact shape of #900, where a red audit rendered as green.
+      # --min-packages is a coverage floor, not a version assertion: zero
+      # advisories over zero packages is not a clean bill of health. The
+      # runtime export is ~124 packages, so anything under 50 means the export
+      # produced nothing to audit and the run is reported UNKNOWN, not clean.
       - name: Report advisories (never blocks)
         if: always()
-        run: uv run --no-project python scripts/pip_audit_report.py audit-runtime.json --scope runtime
+        run: >
+          uv run --no-project python scripts/pip_audit_report.py
+          audit-runtime.json --scope runtime --min-packages 50
       # Full audit including optional extras (tts/stt: torch, onnxruntime,
       # gradio, ...). Weekly only and never ignore-filtered — surfaces the full
       # backlog for review without blocking or spamming every PR.
@@ -144,20 +150,27 @@ jobs:
           AUDIT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           uv run --no-project python scripts/pip_audit_report.py audit-all.json \
-            --scope "all extras" --issue-body issue-body.md
+            --scope "all extras" --min-packages 100 --issue-body issue-body.md
           # ONE issue, reused. Annotations and summaries belong to a run nobody
           # revisits; an issue is what actually stops advisories accumulating
           # unseen — which is how #900 reached eight.
           title='pip-audit: unresolved advisories in the dependency lock'
-          existing=$(gh issue list --state open --search "$title in:title" \
-                       --json number --jq '.[0].number' || true)
+          # --state all, NOT --state open: an open-only search cannot see the
+          # issue this workflow closed last week, so a recurrence would file a
+          # SECOND issue and the "one issue, reused" promise would quietly
+          # become "one per close/recur cycle".
+          existing=$(gh issue list --state all --search "$title in:title" \
+                       --json number,state --jq '.[0] | "\(.number) \(.state)"' || true)
+          number=${existing%% *}
+          state=${existing##* }
           if grep -q ': clean' issue-body.md; then
-            if [ -n "$existing" ]; then
-              gh issue comment "$existing" --body-file issue-body.md
-              gh issue close "$existing" --comment "pip-audit is clean; closing. It reopens itself if findings return."
+            if [ -n "$number" ] && [ "$state" = "OPEN" ]; then
+              gh issue comment "$number" --body-file issue-body.md
+              gh issue close "$number" --comment "pip-audit is clean; closing. This issue is reopened automatically if findings return."
             fi
-          elif [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file issue-body.md
-          else
+          elif [ -z "$number" ]; then
             gh issue create --title "$title" --label "area:security" --body-file issue-body.md
+          else
+            [ "$state" = "CLOSED" ] && gh issue reopen "$number"
+            gh issue comment "$number" --body-file issue-body.md
           fi

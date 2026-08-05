@@ -74,12 +74,37 @@ they appear on (#900's eight were live on `main` and surfaced on a PR that
 changed zero dependency inputs), so commenting on unrelated PRs trains people to
 scroll past the signal.
 
-Two properties the tests pin, because both are easy to break silently:
+Properties the tests pin, because each is easy to break silently:
 
 - **The reporter runs `if: always()`.** A crashed audit reports "UNKNOWN, which
   is not the same as clean" rather than nothing — conflating those two IS #900.
 - **It always exits 0** unless `--exit-code` is passed, so adding visibility can
   never quietly convert the advisory job into a merge gate.
+- **Packages *audited* are counted, not just findings.** Zero advisories over
+  zero packages is not a clean bill of health: an empty `requirements.txt` (a
+  silently-failed export) makes pip-audit exit 0 with `{"dependencies": []}`,
+  and a report keyed only on findings calls that clean — the same conflation
+  one level in. `--min-packages` sets a plausible floor (50 runtime, 100 with
+  extras; the runtime export is ~124 today), below which coverage is reported
+  UNKNOWN. Findings are still shown when coverage is doubted — an incomplete
+  audit that also hides what it *did* find is the worst of both.
+- **The tracking issue is searched with `--state all` and reopened**, not
+  recreated. `--state open` cannot see the issue the workflow closed last week,
+  so a recurrence would file a second one and "one issue, reused" would quietly
+  become "one per close/recur cycle".
+- **The issue body only promises what the workflow does.** A test ties the two:
+  if the body says it reopens itself, the step must call `gh issue reopen`.
+  Operator-facing text describing a mechanism the code doesn't implement is its
+  own defect class — worse than silence, because the next reader trusts it.
+
+### The reachability rationale is pinned by tests
+
+`PYSEC-2026-3483` is ignored because agentwire never serves MCP over WebSocket.
+An ignore justified by "we don't use that path" is only as strong as the path
+staying unused, so `tests/unit/test_pip_audit_report.py` asserts the premise:
+`mcp_server.py` runs `transport="stdio"`, and nothing under `agentwire/` imports
+`mcp.server.websocket`. If either changes, the tests fail and name the ignore.
+A rationale that has quietly become false is worse than none.
 
 ## Residual CVEs (ignored in the PR audit)
 

@@ -73,11 +73,8 @@ def parse(payload: dict) -> list[Finding]:
     pip-audit has shipped both, and a report tool that raises on the shape it
     was handed is worse than useless on the day it is needed.
     """
-    deps = payload.get("dependencies") if isinstance(payload, dict) else payload
     findings: list[Finding] = []
-    for dep in deps or []:
-        if not isinstance(dep, dict):
-            continue
+    for dep in _dependencies(payload):
         for vuln in dep.get("vulns") or []:
             if not isinstance(vuln, dict):
                 continue
@@ -91,15 +88,61 @@ def parse(payload: dict) -> list[Finding]:
     return sorted(findings, key=lambda f: (f.package, f.id))
 
 
-def annotations(findings: list[Finding], *, scope: str) -> list[str]:
+def _dependencies(payload) -> list[dict]:
+    deps = payload.get("dependencies") if isinstance(payload, dict) else payload
+    return [d for d in (deps or []) if isinstance(d, dict)]
+
+
+def audited_count(payload) -> int:
+    """How many packages the audit actually LOOKED AT.
+
+    Zero findings is only good news if something was examined. Without this,
+    "124 packages, none vulnerable" and "nothing was audited at all" produce
+    byte-identical output — an empty ``requirements.txt`` (a silently-failed
+    export, a bad ``--no-dev`` interaction) makes pip-audit exit 0 with
+    ``{"dependencies": []}``, and a report keyed only on findings calls that
+    clean.
+
+    Which is the same conflation this whole script exists to prevent, one level
+    in: #900 was "a red audit renders as green", and counting only findings
+    would let "audited nothing" render as green too.
+    """
+    return len(_dependencies(payload))
+
+
+def implausible(audited: int, minimum: int) -> str:
+    """Why this audit's *coverage* is untrustworthy, or '' if it looks sane."""
+    if audited == 0:
+        return "the audit examined ZERO packages"
+    if minimum and audited < minimum:
+        return f"the audit examined only {audited} packages (expected >= {minimum})"
+    return ""
+
+
+def annotations(findings: list[Finding], *, scope: str, audited: int = 0,
+                minimum: int = 0) -> list[str]:
     """GitHub workflow-command lines. Rendered on the run and PR checks views."""
+    doubt = implausible(audited, minimum)
+    lines = []
+    if doubt:
+        lines.append(
+            f"::warning title=pip-audit ({scope}): coverage UNKNOWN::{doubt} — "
+            "so 'no advisories' here means nothing was looked at, not that "
+            "nothing is wrong. Check the export step."
+        )
     if not findings:
-        return [f"::notice::pip-audit ({scope}): no known advisories"]
-    lines = [
+        if not doubt:
+            lines.append(f"::notice::pip-audit ({scope}): "
+                         f"no known advisories across {audited} packages")
+        return lines
+    # Findings are reported even when coverage is doubted. Suppressing them
+    # behind the coverage warning would be the worst of both: an incomplete
+    # audit that ALSO hides what it did manage to find.
+    lines.append(
         f"::warning title=pip-audit ({scope}): "
         f"{len(findings)} advisor{'y' if len(findings) == 1 else 'ies'}::"
-        f"{summary_line(findings)}"
-    ]
+        f"{summary_line(findings, audited=audited)}"
+    )
     for f in findings:
         lines.append(
             f"::warning title={f.package} {f.version} — {f.id}::"
@@ -108,21 +151,38 @@ def annotations(findings: list[Finding], *, scope: str) -> list[str]:
     return lines
 
 
-def summary_line(findings: list[Finding]) -> str:
+def summary_line(findings: list[Finding], *, audited: int = 0) -> str:
     if not findings:
-        return "no known advisories"
+        return f"no known advisories across {audited} packages"
     fixable = [f for f in findings if f.fixable]
     packages = sorted({f.package for f in findings})
-    part = f"{len(findings)} advisor{'y' if len(findings) == 1 else 'ies'} in {len(packages)} package(s): {', '.join(packages)}"
+    part = (f"{len(findings)} advisor{'y' if len(findings) == 1 else 'ies'} in "
+            f"{len(packages)} of {audited} package(s): {', '.join(packages)}")
     if fixable:
         part += f" — {len(fixable)} have published fixes (lock refresh)"
     return part
 
 
-def markdown(findings: list[Finding], *, scope: str) -> str:
-    """The step-summary body. The count is in the heading, on purpose."""
+def markdown(findings: list[Finding], *, scope: str, audited: int = 0,
+             minimum: int = 0) -> str:
+    """The step-summary body. Counts are in the heading, on purpose."""
+    doubt = implausible(audited, minimum)
+    if doubt and not findings:
+        return (
+            f"## pip-audit ({scope}): coverage UNKNOWN\n\n"
+            f"**{doubt}.**\n\n"
+            "Zero advisories over zero packages is not a clean bill of health — "
+            "it means the dependency export produced nothing to audit. Check the "
+            "`uv export` step before trusting this run.\n"
+        )
+    doubt_note = (
+        f"\n> **Coverage is also suspect:** {doubt}. The findings below are real, "
+        "but the set they were found in is incomplete — there may be more.\n"
+        if doubt else ""
+    )
     if not findings:
-        return f"## pip-audit ({scope}): clean\n\nNo known advisories in the audited set.\n"
+        return (f"## pip-audit ({scope}): clean\n\n"
+                f"No known advisories across **{audited} packages**.\n")
     rows = "\n".join(
         f"| `{f.package}` | {f.version} | {f.id} | {f.fix} |" for f in findings
     )
@@ -135,22 +195,24 @@ def markdown(findings: list[Finding], *, scope: str) -> str:
     )
     return (
         f"## pip-audit ({scope}): {len(findings)} advisor"
-        f"{'y' if len(findings) == 1 else 'ies'}\n\n"
+        f"{'y' if len(findings) == 1 else 'ies'} across {audited} packages\n\n"
         "Advisory only — this does not block the merge. It is reported here so a red "
-        "audit cannot render as a green workflow (#900).\n\n"
+        "audit cannot render as a green workflow (#900).\n"
+        f"{doubt_note}\n"
         "| Package | Version | Advisory | Fix versions |\n"
         "|---|---|---|---|\n"
         f"{rows}\n{note}"
     )
 
 
-def issue_body(findings: list[Finding], *, scope: str, run_url: str = "") -> str:
+def issue_body(findings: list[Finding], *, scope: str, run_url: str = "",
+               audited: int = 0, minimum: int = 0) -> str:
     link = f"\n\n[Latest audit run]({run_url})" if run_url else ""
     return (
-        markdown(findings, scope=scope)
-        + "\n_Filed and updated automatically by the weekly `security` workflow. "
-        "Close it once the lock is refreshed; it reopens itself if the findings "
-        "come back._" + link + "\n"
+        markdown(findings, scope=scope, audited=audited, minimum=minimum)
+        + "\n_Filed and updated automatically by the weekly `security` workflow, "
+        "which reopens this issue if the findings come back and closes it when "
+        "they are gone._" + link + "\n"
     )
 
 
@@ -170,6 +232,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--issue-body", type=Path,
                     help="also write a tracking-issue body here")
     ap.add_argument("--run-url", default=os.environ.get("AUDIT_RUN_URL", ""))
+    ap.add_argument("--min-packages", type=int, default=0,
+                    help="a plausible floor on packages audited; below it, "
+                         "coverage is reported as UNKNOWN rather than clean")
     ap.add_argument("--exit-code", action="store_true",
                     help="exit 1 when findings exist (NOT used by the advisory job)")
     args = ap.parse_args(argv)
@@ -187,15 +252,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if args.exit_code else 0
 
     findings = parse(payload)
-    for line in annotations(findings, scope=args.scope):
+    audited = audited_count(payload)
+    kw = {"scope": args.scope, "audited": audited, "minimum": args.min_packages}
+
+    for line in annotations(findings, **kw):
         print(line)
-    _write("GITHUB_STEP_SUMMARY", markdown(findings, scope=args.scope))
+    _write("GITHUB_STEP_SUMMARY", markdown(findings, **kw))
     _write("GITHUB_OUTPUT", f"count={len(findings)}")
-    _write("GITHUB_OUTPUT", f"summary={summary_line(findings)}")
+    _write("GITHUB_OUTPUT", f"audited={audited}")
+    _write("GITHUB_OUTPUT", f"summary={summary_line(findings, audited=audited)}")
 
     if args.issue_body:
-        args.issue_body.write_text(
-            issue_body(findings, scope=args.scope, run_url=args.run_url))
+        args.issue_body.write_text(issue_body(run_url=args.run_url, findings=findings, **kw))
 
     return 1 if (args.exit_code and findings) else 0
 
