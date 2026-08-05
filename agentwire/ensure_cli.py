@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -178,6 +179,12 @@ def cmd_ensure(args) -> int:
     if issues:
         return _output_result(False, json_mode, f"Task validation failed: {', '.join(issues)}", exit_code=ENSURE_EXIT_SESSION_ERROR)
 
+    # Warn, never fail: an ignored key means the task isn't behaving the way
+    # its author configured it, but a typo must not break a 04:00 dispatch.
+    if task.unknown_keys:
+        print(f"Warning: task '{task.name}' sets keys agentwire ignores: "
+              f"{', '.join(task.unknown_keys)}", file=sys.stderr)
+
     # Determine shell
     shell = task.shell or "/bin/sh"
 
@@ -195,6 +202,8 @@ def cmd_ensure(args) -> int:
         print(f"Task: {task_name}")
         print(f"Shell: {shell}")
         print(f"Idle timeout: {task.idle_timeout}s")
+        print("Max duration: "
+              + (f"{task.max_duration}s" if task.max_duration else "unbounded"))
         print(f"Retries: {task.retries}")
         print()
 
@@ -500,12 +509,14 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
     """
     from .completion import (
         CompletionTimeout,
+        _session_has_agent,
         clear_task_context,
         generate_summary_filename,
         status_to_exit_code,
         wait_for_completion_signal,
         write_task_context,
     )
+    from .core import _graceful_kill
     from .tasks import PreCommandError, run_post_command, run_pre_command
     from .templating import TemplateError, expand_all
 
@@ -679,18 +690,29 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
 
         try:
             signal = wait_for_completion_signal(
-                session, summary_path=summary_path
+                session, summary_path=summary_path,
+                max_duration=task.max_duration,
             )
             last_status = signal.get("status", "incomplete")
             last_summary = signal.get("summary", "")
             ctx.status = last_status
             ctx.summary = last_summary
-        except CompletionTimeout:
+        except CompletionTimeout as e:
             # Don't clear task context here — the hook may still need it.
             # Hook cleans up after itself (exit_on_complete kills session).
             # Task context files are cleared at the START of next run.
             last_status = "incomplete"
-            last_summary = "Timeout waiting for task completion"
+            # Carry the real reason (max_duration vs session died) into the
+            # summary — the board used to show one indistinguishable line for
+            # both, which is what made #867 take a log archaeology dig.
+            last_summary = str(e) or "Timeout waiting for task completion"
+            if not json_mode:
+                print(f"Timeout: {last_summary}")
+            # A max_duration expiry leaves the agent still running. Nothing
+            # else reaps it before the scheduler's 4h process-group watchdog,
+            # so tear it down here rather than leak a wedged session for hours.
+            if task.max_duration > 0 and _session_has_agent(session):
+                _graceful_kill(session)
             if attempt < max_attempts:
                 if not json_mode:
                     print(f"Timeout, retrying in {task.retry_delay}s...")
@@ -872,6 +894,7 @@ def cmd_task_show(args) -> int:
             "retries": task.retries,
             "retry_delay": task.retry_delay,
             "idle_timeout": task.idle_timeout,
+            "max_duration": task.max_duration,
             "mode": task.mode,
             "max_iterations": task.max_iterations,
             "loop_review": task.loop_review,
@@ -881,6 +904,7 @@ def cmd_task_show(args) -> int:
             "post": task.post,
             "output": {"capture": task.output.capture, "save": task.output.save},
             "validation_issues": issues,
+            "unknown_keys": task.unknown_keys,
         })
         return 0
 
@@ -894,6 +918,10 @@ def cmd_task_show(args) -> int:
             print(f"Loop delay: {task.loop_delay}s")
     print(f"Retries: {task.retries} (delay: {task.retry_delay}s)")
     print(f"Idle timeout: {task.idle_timeout}s")
+    print(f"Max duration: {task.max_duration}s" if task.max_duration
+          else "Max duration: unbounded")
+    if task.unknown_keys:
+        print(f"Ignored keys: {', '.join(task.unknown_keys)}")
     print()
 
     if task.pre:
@@ -954,15 +982,24 @@ def cmd_task_validate(args) -> int:
         return _output_result(False, json_mode, str(e))
 
     issues = validate_task(task)
+    # Ignored keys are reported, not counted as invalid — the task still runs,
+    # it just doesn't do what its author configured (#867).
+    warnings = (
+        [f"ignored key(s) {', '.join(task.unknown_keys)} — agentwire does not read these"]
+        if task.unknown_keys else []
+    )
 
     if json_mode:
         _output_json({
             "valid": len(issues) == 0,
             "issues": issues,
+            "warnings": warnings,
             "task": task_name,
         })
         return 0 if not issues else 1
 
+    for warning in warnings:
+        print(f"Warning: {warning}")
     if issues:
         print(f"Task '{task_name}' has issues:")
         for issue in issues:

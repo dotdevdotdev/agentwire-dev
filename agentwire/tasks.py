@@ -89,6 +89,13 @@ class TaskConfig:
     idle_timeout: int = 30  # Seconds of idle before completion
     exit_on_complete: bool = True  # Exit session after task completion
 
+    # Hard wall-clock ceiling for a single attempt, in seconds (0 = unbounded).
+    # Completion is otherwise driven entirely by the agent going idle, so an
+    # agent that never goes idle — wedged on a dialog, or blocked in a tool
+    # call — is waited on forever (#867). This is the bound that turns that
+    # into a reported failure instead of a silent multi-hour hang.
+    max_duration: int = 0
+
     # Loop configuration
     mode: str = "standard"  # "standard" or "loop"
     max_iterations: int = 3  # Safety limit for loop mode (1-20)
@@ -125,6 +132,30 @@ class TaskConfig:
     # default allowlist (safety.unattended_allow / DEFAULT_UNATTENDED_ALLOW).
     # Anything ask-tier and off the merged list is blocked + owner-notified.
     unattended_allow: list[str] = field(default_factory=list)
+
+    # Keys present in the YAML that this dataclass doesn't know about. A task
+    # author who sets a field agentwire silently ignores gets the behavior they
+    # configured against, not the behavior they asked for — `max_duration` was
+    # exactly that for the whole life of `.agentwire.tasks.yml` (#867). Surfaced
+    # as a warning, never a hard failure: a typo must not break a 04:00 dispatch.
+    unknown_keys: list[str] = field(default_factory=list)
+
+
+# Every key `parse_task` reads out of a task's YAML block. Derived from the
+# reads below rather than from `TaskConfig`'s fields, because the two differ:
+# `name` comes from the mapping key, `unknown_keys` is computed. Anything in a
+# task block and not in here is silently ignored — which is the whole point of
+# reporting it (#867).
+KNOWN_TASK_KEYS = frozenset({
+    "prompt", "shell", "retries", "retry_delay", "idle_timeout", "max_duration",
+    "exit_on_complete", "mode", "max_iterations", "loop_review", "loop_delay",
+    "pre", "on_task_end", "post", "output", "starting_ref", "work_branch",
+    "pr_target", "pr_draft", "starting_session", "role", "allow_shared_dir",
+    "unattended_allow",
+    # Author's note to the next reader. Deliberately consumed by nothing —
+    # listed so an annotation doesn't read as a field agentwire dropped.
+    "description",
+})
 
 
 def parse_pre_command(name: str, config: str | dict) -> PreCommand:
@@ -208,6 +239,7 @@ def parse_task_config(name: str, config: dict, default_shell: str | None = None)
         retries=config.get("retries", 0),
         retry_delay=config.get("retry_delay", 30),
         idle_timeout=config.get("idle_timeout", 30),
+        max_duration=config.get("max_duration", 0),
         exit_on_complete=config.get("exit_on_complete", True),
         mode=config.get("mode", "standard"),
         max_iterations=config.get("max_iterations", 3),
@@ -232,6 +264,7 @@ def parse_task_config(name: str, config: dict, default_shell: str | None = None)
             if isinstance(config.get("unattended_allow"), list)
             else []
         ),
+        unknown_keys=sorted(set(config) - KNOWN_TASK_KEYS),
     )
 
 
@@ -341,6 +374,9 @@ def validate_task(task: TaskConfig) -> list[str]:
 
     if task.idle_timeout <= 0:
         issues.append("Invalid idle_timeout (must be > 0)")
+
+    if task.max_duration < 0:
+        issues.append("Negative max_duration (use 0 for no limit)")
 
     if task.mode not in ("standard", "loop"):
         issues.append(f"Invalid mode '{task.mode}' (must be 'standard' or 'loop')")

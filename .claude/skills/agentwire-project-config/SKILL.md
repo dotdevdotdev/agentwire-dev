@@ -142,10 +142,10 @@ shell: /bin/sh  # Project-level default shell
 tasks:
   morning-briefing:
     shell: /bin/bash           # Task-level override
-    priority: 10               # Pipeline ordering (lower = higher priority, default: 99)
     retries: 2                 # Retry on failure (default: 0)
     retry_delay: 30            # Seconds between retries (default: 30)
     idle_timeout: 30           # Seconds of idle before completion (default: 30)
+    max_duration: 1800         # Hard wall-clock ceiling per attempt (default: 0 = unbounded)
     exit_on_complete: true     # Exit session after completion (default: true)
     role: task-runner          # Role override for this task (optional)
     pre:                       # Data gathering (NO {{ }} - these PRODUCE variables)

@@ -60,6 +60,11 @@ def task_show(session: str, task: str) -> str:
     lines.append(f"  Shell: {data.get('shell') or '/bin/sh'}")
     lines.append(f"  Retries: {data.get('retries', 0)}")
     lines.append(f"  Idle timeout: {data.get('idle_timeout', 30)}s")
+    max_duration = data.get("max_duration", 0)
+    lines.append(f"  Max duration: {max_duration}s" if max_duration
+                 else "  Max duration: unbounded")
+    if unknown := data.get("unknown_keys"):
+        lines.append(f"  Ignored keys: {', '.join(unknown)}")
 
     if pre := data.get("pre"):
         lines.append(f"  Pre-commands: {len(pre)}")

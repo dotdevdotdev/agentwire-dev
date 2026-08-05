@@ -110,6 +110,13 @@ def _validate_draft(data: dict) -> list[str]:
         try:
             task = parse_task_config(name, cfg, default_shell=default_shell)
             issues.extend(f"{name}: {i}" for i in validate_task(task))
+            if task.unknown_keys:
+                # Not a hard failure — but a key agentwire ignores is a task
+                # that won't behave the way it reads, so the reviewer sees it
+                # before promoting (#867).
+                issues.append(
+                    f"{name}: ignored key(s) {', '.join(task.unknown_keys)} "
+                    "— agentwire does not read these")
         except Exception as e:  # noqa: BLE001 — surfaced to the reviewer, not raised
             issues.append(f"{name}: {e}")
     return issues

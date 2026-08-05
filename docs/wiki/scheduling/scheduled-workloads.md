@@ -40,10 +40,10 @@ tasks:
   write-tests:
     # Execution control
     shell: /bin/bash         # Override shell for this task
-    priority: 10             # Pipeline ordering (lower = higher priority, default: 99)
     retries: 2               # Retry on failure (default: 0)
     retry_delay: 30          # Seconds between retries (default: 30)
     idle_timeout: 60         # Seconds of idle before completion (default: 30)
+    max_duration: 1800       # Hard wall-clock ceiling per attempt (default: 0 = unbounded)
     exit_on_complete: true   # Exit session after completion (default: true)
     role: piinpoint-test-writer  # Role override for this task (optional)
 
@@ -486,3 +486,45 @@ declined, rather than silently adding a second dispatcher on every launch.
 so nothing can verify it. `doctor` flags that explicitly (`records no PID —
 predates the PID-based liveness check`) rather than reporting it as stopped.
 Restarting the daemon clears it — which a rebuild already requires anyway.
+---
+
+## Bounding a Task: `max_duration` (#867)
+
+Completion is **agent-driven**. `ensure` sends the prompt and then waits for the
+agent to go idle, the idle hook to prompt for a summary, and the summary file to
+appear. Nothing in that chain has a clock. An agent that never goes idle — wedged
+on an unrecognized dialog, or blocked inside a long tool call — produces no
+completion signal and no error, so the wait simply never ends.
+
+`max_duration` is the wall clock that bounds a single attempt:
+
+```yaml
+tasks:
+  memory-manager:
+    max_duration: 1800   # give up after 30 min (default: 0 = unbounded)
+```
+
+On expiry the attempt reports `incomplete`, the summary names the reason
+(`Task exceeded max_duration (1800s) after 1802s — the agent never signalled
+completion`), and the session is torn down — otherwise the wedged agent keeps
+running until the scheduler's 4h `dispatch_max_runtime` process-group kill.
+
+**It is a wall clock, not an idle timer.** It cannot distinguish a wedged agent
+from a slow one, so a task that legitimately runs long should set it generously
+or leave it at `0`. `idle_timeout` is *not* an equivalent bound: agentwire does
+not control the harness's idle threshold, so that field configures the summary
+handoff, not a ceiling on the run.
+
+### Keys agentwire doesn't read are now reported
+
+`max_duration` existed in `.agentwire.tasks.yml` files across the fleet long
+before anything read it — a task that looked bounded at 30 minutes was in fact
+unbounded. Unknown keys in a task block are now surfaced by `agentwire task
+show` / `task validate` / `tasks review`, and warned about at dispatch:
+
+```
+Warning: task 'memory-manager' sets keys agentwire ignores: max_durationn
+```
+
+Reported, never fatal: a typo must not break a 04:00 dispatch. `description` is
+allowed as a deliberate no-op annotation.
