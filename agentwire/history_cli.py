@@ -193,12 +193,13 @@ def cmd_history_resume(args) -> int:
 
     # Generate session name if not provided
     if not name:
-        # tmux reads `.` as its session.window separator and rewrites it to `_`,
-        # so a project dir carrying one (`~/.claude`) yields the session
-        # `_claude-fork-1`, never `.claude-fork-1`. One implementation of that
-        # mapping, shared with every creation path (#868/#870) — the uniqueness
-        # probe below must run on the sanitized name or it checks for a session
-        # tmux could not have made.
+        # tmux reads `.` and `:` as its address separators (`session.window`,
+        # `session:window`) and rewrites BOTH to `_`, so a project dir carrying
+        # one (`~/.claude`) yields the session `_claude-fork-1`, never
+        # `.claude-fork-1`. One implementation of that mapping, shared with
+        # every creation path (#868/#870/#878) — the uniqueness probe below must
+        # run on the sanitized name or it checks for a session tmux could not
+        # have made.
         base_name = tmux_safe_name(project_path.name)
         # Find unique name with -fork-N suffix
         name = f"{base_name}-fork-1"
