@@ -102,6 +102,28 @@ def encode_project_path(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
+# The same rule, written in shell — expands to the history directory for the
+# shell's OWN cwd (#901).
+#
+# The launch line stored in ``AGENTWIRE_LAUNCH_CMD`` exists to be re-run
+# (#856/#866), so it has to decide ``--session-id`` vs ``--resume`` at SHELL
+# runtime, which means this one encoding has to exist in shell as well as in
+# Python. They are a pair: change :func:`encode_project_path` and change this.
+#
+# Two details are measured, not assumed:
+#
+# - ``pwd -P``, not ``$PWD``: Claude keys history by the PHYSICAL cwd.
+#   Launching from ``/private/tmp/awsym/link -> …/real`` wrote the transcript
+#   under ``-private-tmp-awsym-real``, so ``$PWD`` (which keeps the symlink as
+#   typed) would look in a directory that never exists. On macOS every
+#   ``/tmp/...`` path is exactly that symlink.
+# - ``LC_ALL=C``, so ``A-Za-z0-9`` means ASCII whatever the operator's locale
+#   collates it to.
+HISTORY_DIR_SHELL = (
+    "\"$HOME/.claude/projects/$(pwd -P | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')\""
+)
+
+
 def _get_machine_config(machine_id: str) -> dict | None:
     """Load machine config from machines.json.
 

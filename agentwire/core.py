@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .history import HISTORY_DIR_SHELL
 from .project_config import (
     BARE,
     DEFAULT_POSTURE,
@@ -374,6 +375,62 @@ def mirror_role_prompt_remote(agent: "AgentCommand", machine_id: str, agent_cmd:
     return rewritten
 
 
+#: Shell variable holding the conversation flags. An array, because the two
+#: branches have different arity — and unquoted word-splitting, the usual way
+#: to avoid one, does NOT happen in zsh (the default login shell here), so
+#: `claude $flags` would pass one mangled argument instead of two.
+_SID_VAR = "aw_flags"
+
+
+def _conversation_flags_shell(conversation_id: str, resume_session_id: str | None) -> str:
+    """Shell prelude choosing ``--session-id`` vs ``--resume`` AT RUNTIME (#901).
+
+    ``--session-id`` is single-use: it hard-errors ("Session ID <id> is
+    already in use.") once the conversation's transcript exists. But the
+    launch line it sits in is stored as ``AGENTWIRE_LAUNCH_CMD`` precisely so
+    it can be re-run (#856/#866) — by the pane, by recovery tooling, by an
+    operator. So a session that took even one turn and then exited could
+    never be relaunched from its own launch line: claude refused to start and
+    the pane sat at a bare shell, permanently. That stranded 13 live sessions.
+
+    A launch line that exists to be re-entered cannot carry a single-use flag,
+    and it cannot be decided at BUILD time either, since whether the
+    transcript exists depends on when the line is run. So the decision is made
+    in shell, against the one predicate the Python side uses —
+    ``resumable(id, cwd) == exists(<encoded_cwd>/<id>.jsonl)`` — with the
+    encoding mirrored from :data:`history.HISTORY_DIR_SHELL`.
+
+    Three cases, written as precedence (last assignment wins):
+
+    1. Nothing on disk → ``--session-id <new>``. First launch stays
+       authoritative about the id, which is #871's whole point.
+    2. Re-entry, the conversation exists → ``--resume <new>``. Same
+       conversation continues; no new id is minted, so the recorded chain
+       stays true.
+    3. An explicit resume (``restart``) whose fork hasn't happened yet →
+       ``--resume <old> --fork-session --session-id <new>``, unchanged. If
+       *old* is gone by then, this falls back to case 1 rather than dying on
+       "No conversation found" — degrade to a fresh conversation with the
+       role intact, never to a bare shell.
+    """
+    hist = f"{_SID_VAR}_dir"
+    lines = [
+        f"{hist}={HISTORY_DIR_SHELL}",
+        f'{_SID_VAR}=(--session-id "{conversation_id}")',
+    ]
+    if resume_session_id:
+        lines.append(
+            f'[ -f "${hist}/{resume_session_id}.jsonl" ] && '
+            f'{_SID_VAR}=(--resume "{resume_session_id}" --fork-session '
+            f'--session-id "{conversation_id}")'
+        )
+    lines.append(
+        f'[ -f "${hist}/{conversation_id}.jsonl" ] && '
+        f'{_SID_VAR}=(--resume "{conversation_id}")'
+    )
+    return "; ".join(lines)
+
+
 def build_agent_command(
     posture: str,
     roles: list[RoleConfig] | None = None,
@@ -414,10 +471,11 @@ def build_agent_command(
     role_names = [r.name for r in roles] if roles else []
     conversation_id = str(uuid.uuid4())
 
-    parts = ["claude"]
-    if resume_session_id:
-        parts.extend(["--resume", resume_session_id, "--fork-session"])
-    parts.extend(["--session-id", conversation_id])
+    # The conversation flags are resolved by the shell at launch, not baked in
+    # here — see _conversation_flags_shell for why a stored launch line cannot
+    # carry a single-use --session-id (#901).
+    prelude = _conversation_flags_shell(conversation_id, resume_session_id)
+    parts = ["claude", f'"${{{_SID_VAR}[@]}}"']
 
     # Permission-mode flags (one per posture; prompted adds none — hooks gate it)
     if posture == "bypass":
@@ -453,7 +511,7 @@ def build_agent_command(
             parts.append(f'--append-system-prompt "$(<{role_prompt_path})"')
 
     return AgentCommand(
-        command=" ".join(parts),
+        command=f"{prelude}; " + " ".join(parts),
         role_prompt_path=role_prompt_path,
         conversation_id=conversation_id,
         resumed_from=resume_session_id,
@@ -1274,7 +1332,12 @@ def _guarded_launch_command(path_str: str, agent_cmd: str | None) -> str:
         f"{notify_parent}; {notify_owner}"
     )
     guard = f"cd {quoted_path} || {{ {alert}; exit 1; }}"
-    return f"{guard} && {agent_cmd}" if agent_cmd else guard
+    # Braces, not a bare `&& {agent_cmd}`: the agent command is now several
+    # statements (the #901 conversation-flag prelude, then `claude`), and an
+    # unbraced `;` would break the guard's chain — `claude` would run even
+    # after a failed `cd`, from the wrong directory, which is the exact
+    # zombie this function exists to prevent.
+    return f"{guard} && {{ {agent_cmd}; }}" if agent_cmd else guard
 
 
 # The pane's launch command travels as an ENV VAR, not as keystrokes (#856).
