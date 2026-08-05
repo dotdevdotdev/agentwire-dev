@@ -74,7 +74,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "kokoro-onnx", marker = "python_full_version < '3.14'", specifier = ">=0.4.9" },
     { name = "markdown", specifier = ">=3.5" },
-    { name = "mcp", specifier = ">=1.2.0" },
+    { name = "mcp", specifier = ">=1.2.0,<2" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic", marker = "extra == 'tts'", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
