@@ -53,9 +53,28 @@ predicate everything else uses (`resumable(id, cwd) == exists(<encoded_cwd>/<id>
 | on disk | flags |
 |---|---|
 | no transcript | `--session-id <new>` — first launch stays authoritative |
-| `<new>` exists | `--resume <new>` — re-entry continues the conversation |
-| explicit resume, `<old>` exists, `<new>` doesn't | `--resume <old> --fork-session --session-id <new>` |
+| `<new>` holds a conversation | `--resume <new>` — re-entry continues it |
+| explicit resume, `<old>` holds one, `<new>` doesn't | `--resume <old> --fork-session --session-id <new>` |
 | explicit resume, `<old>` gone too | `--session-id <new>` — fresh, role intact, never a bare shell |
+| a DEAD id (see below) | no conversation flag at all |
+
+**"The file exists" is not the predicate; "the file holds a turn" is.** Moving
+a running session's history directory away leaves a 5-line metadata stub at the
+new key — `last-prompt`, `ai-title`, `mode`, `permission-mode`,
+`file-history-snapshot` — while the conversation stays under the old one. The
+two flags disagree about that file, measured on Claude Code 2.1.222:
+
+```
+claude --resume <id>      ->  No conversation found with session ID: <id>
+claude --session-id <id>  ->  Error: Session ID <id> is already in use.
+```
+
+Neither will take it, so an `[ -f ]` check would have picked one refusal or the
+other and left a bare shell either way. The line launches with **no**
+conversation flag instead: claude mints its own id and the agent comes up *with
+its role*, leaving only the record stale — which `doctor` then reports as a live
+session whose recorded conversation has no history. `history.holds_a_conversation`
+is the Python twin of that `grep`.
 
 `core._conversation_flags_shell` writes that prelude; the cwd encoding is
 mirrored from `history.HISTORY_DIR_SHELL`, which is the shell twin of
