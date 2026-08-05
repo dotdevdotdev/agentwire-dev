@@ -14,6 +14,7 @@ writing to the old location and fails here.
 """
 
 import json
+import os
 
 import pytest
 
@@ -94,6 +95,47 @@ class TestEveryCallerRoutesThroughTheHelper:
         core.store_session_metadata("alpha@remote", {"role": "worker"})
         assert core.load_session_metadata("alpha") == {"role": "worker"}
         assert core.load_session_metadata("alpha@other") == {"role": "worker"}
+
+
+class TestContainment:
+    """A session name is operator input, and ``kill`` UNLINKS what this returns.
+
+    Pre-existing — the inlined copy in ``pane_cli`` had identical properties —
+    but consolidating is the moment the check can be written once rather than
+    at four call sites, so it lands with the consolidation.
+    """
+
+    @pytest.mark.parametrize("evil", [
+        "../../../evil", "..", "a/../../b", "../..", "foo/../../../bar",
+    ])
+    def test_traversal_is_refused(self, evil, tmp_path, monkeypatch):
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
+        with pytest.raises(ValueError, match="escapes the session store"):
+            core.session_metadata_path(evil)
+
+    def test_traversal_is_refused_with_a_machine_suffix(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
+        with pytest.raises(ValueError, match="escapes the session store"):
+            core.session_metadata_path("../../../evil@remote")
+
+    def test_kill_cannot_unlink_outside_the_store(self, tmp_path, monkeypatch):
+        """The concrete consequence: an unlink aimed outside the store."""
+        from agentwire import pane_cli
+
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "cfg")
+        victim = tmp_path / "precious.json"
+        victim.write_text("do not delete me")
+
+        # A name whose ../ segments climb out of sessions/ and land on victim.
+        escaping = os.path.relpath(victim.parent, tmp_path / "cfg" / "sessions")
+        with pytest.raises(ValueError):
+            pane_cli._drop_session_metadata(escaping)
+        assert victim.exists(), "kill unlinked a file outside the session store"
+
+    def test_ordinary_names_still_work(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
+        for ok in ("alpha", "proj-branch", "a.b", "_claude-x", "web@remote"):
+            assert core.session_metadata_path(ok).parent.parent == core.sessions_dir()
 
 
 class TestSessionsDirIsAlsoShared:

@@ -138,16 +138,144 @@ class TestLazyImportsCannotFreezeAFakeHome:
         assert not stray, "constants frozen to another test's home:\n  " + "\n  ".join(stray)
 
 
-class TestGuardItself:
-    def test_snapshot_detects_a_change(self, tmp_path, monkeypatch):
-        """The guard must be capable of failing, not merely of passing."""
-        monkeypatch.setattr(f"{__name__}.REAL_HOME", tmp_path, raising=False)
-        import tests.unit.test_home_isolation as mod
+@pytest.mark.real_agentwire_home
+class TestTheAuditHookCanActuallyFail:
+    """The backstop must be provably capable of catching each write primitive.
 
-        monkeypatch.setattr(mod, "REAL_HOME", tmp_path)
-        before = mod._snapshot()
-        (tmp_path / "intruder.json").write_text("{}")
-        assert mod._snapshot() != before
+    This exists because the hook shipped with a hole that no test could see.
+    The ``open`` audit event is ``(path, mode, flags)``: ``mode`` is the string
+    only for ``builtins.open``/``io.open``, while the low-level ``os.open``
+    passes ``mode=None`` and carries the intent in ``flags``. The first version
+    checked only ``mode``, so it returned before recording — blind to
+    ``os.open`` entirely.
+
+    That is not a corner case. ``os.open`` is how seven production sites create
+    files under the config dir, including ``core.write_role_prompt``, which
+    uses it precisely so the prompt is never briefly world-readable. One miss
+    in the mode check silently disabled detection for all of them.
+
+    The earlier "can it fail" test exercised a ``_snapshot()`` helper local to
+    this module — not the hook — so the actual backstop was untested. These
+    write for real, under the real home, and clean up after themselves; each
+    asserts the hook recorded it.
+    """
+
+    def _probe(self, name):
+        from tests import home_guard
+
+        return home_guard.REAL_AGENTWIRE_HOME / name
+
+    def _recorded_since(self, mark):
+        from tests import home_guard
+
+        return home_guard.SANCTIONED_WRITES[mark:]
+
+    def _mark(self):
+        from tests import home_guard
+
+        return len(home_guard.SANCTIONED_WRITES)
+
+    @pytest.fixture(autouse=True)
+    def _sanctioned(self):
+        """These probes write for real; the sanction keeps the backstop from
+        failing the run over writes it is being asked to detect. They are still
+        recorded — into SANCTIONED_WRITES — so the assertions are real."""
+        from tests import home_guard
+
+        with home_guard.sanctioned_real_home_write():
+            yield
+
+    def test_catches_builtin_open_for_write(self):
+        target, mark = self._probe("zz-probe-open.json"), self._mark()
+        try:
+            with open(target, "w") as fh:
+                fh.write("{}")
+        finally:
+            target.unlink(missing_ok=True)
+        assert any(str(target) == p for _t, _e, p in self._recorded_since(mark))
+
+    def test_catches_os_open_which_reports_no_mode(self):
+        """The exact hole: mode is None, intent lives in flags."""
+        import os
+
+        target, mark = self._probe("zz-probe-osopen.json"), self._mark()
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.close(fd)
+        finally:
+            target.unlink(missing_ok=True)
+        assert any(str(target) == p for _t, _e, p in self._recorded_since(mark)), (
+            "os.open escaped the guard — this is the hole that shipped"
+        )
+
+    def test_catches_write_role_prompt_shaped_writes(self):
+        """What core.write_role_prompt actually does, end to end."""
+        import os
+
+        d, mark = self._probe("zz-probe-prompts"), self._mark()
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / "conv.txt"
+            fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write("role prompt")
+        finally:
+            (d / "conv.txt").unlink(missing_ok=True)
+            if d.exists():
+                d.rmdir()
+        assert any(str(d) in p for _t, _e, p in self._recorded_since(mark))
+
+    def test_catches_path_write_text(self):
+        target, mark = self._probe("zz-probe-writetext.json"), self._mark()
+        try:
+            target.write_text("{}")
+        finally:
+            target.unlink(missing_ok=True)
+        assert any(str(target) == p for _t, _e, p in self._recorded_since(mark))
+
+    def test_catches_mkdir(self):
+        target, mark = self._probe("zz-probe-dir"), self._mark()
+        try:
+            target.mkdir()
+        finally:
+            if target.exists():
+                target.rmdir()
+        assert any(str(target) == p for _t, _e, p in self._recorded_since(mark))
+
+    def test_catches_unlink(self):
+        target, mark = self._probe("zz-probe-unlink.json"), self._mark()
+        target.write_text("{}")
+        mark = self._mark()
+        target.unlink()
+        assert any(str(target) == p for _t, _e, p in self._recorded_since(mark))
+
+    def test_catches_atomic_write_via_os_replace(self):
+        """``_atomic_write`` publishes with a rename; the temp file is os.open'd."""
+        from agentwire import core
+
+        target, mark = self._probe("zz-probe-atomic.json"), self._mark()
+        try:
+            core._atomic_write(target, "{}")
+        finally:
+            target.unlink(missing_ok=True)
+        assert any(str(target) in p for _t, _e, p in self._recorded_since(mark))
+
+    def test_ignores_reads(self):
+        """A guard that flags reads would flood and get switched off."""
+        from tests import home_guard
+
+        target = self._probe("zz-probe-read.json")
+        target.write_text("{}")
+        mark = self._mark()
+        target.read_text()
+        assert not self._recorded_since(mark), "a plain read was recorded as a write"
+        target.unlink()
+        assert home_guard.REAL_AGENTWIRE_HOME.exists()
+
+    def test_ignores_writes_outside_the_real_home(self, tmp_path):
+        mark = self._mark()
+        (tmp_path / "elsewhere.json").write_text("{}")
+        assert not self._recorded_since(mark)
 
 
 @pytest.mark.parametrize("subsystem,relative", [
@@ -165,8 +293,69 @@ def test_subsystem_stores_are_redirected(subsystem, relative):
     import agentwire.usage_limit as usage_limit
 
     for mod, attr in (
-        (inbox, "INBOX_ROOT"), (cohort, "COHORT_ROOT"),
-        (usage_limit, "STATE_DIR"), (core, "ROLE_PROMPTS_DIR"),
+        (inbox, "INBOX_ROOT"), (cohort, "COHORT_ROOT"), (usage_limit, "STATE_DIR"),
     ):
         value = getattr(mod, attr)
         assert REAL_HOME not in Path(value).parents, f"{attr} escapes to the real home"
+
+    # The role-prompt store is resolved LAZILY (#902 made it a function rather
+    # than an import-time constant, to dodge the same frozen-binding trap).
+    # A function is invisible to a walk over Path attributes, so this is the
+    # check that the redirect still reaches it — via CONFIG_DIR, at call time.
+    assert REAL_HOME not in core.role_prompts_dir().parents
+    assert REAL_HOME != core.role_prompts_dir()
+
+
+class TestComposesWithTheRolePromptSweepStub:
+    """Both conftest guards must hold at once (#893 + #884/#902).
+
+    They cover different halves and neither subsumes the other: #902's stub
+    PREVENTS one specific destructive operation (the role-prompt sweep's
+    deletion pass) from ever addressing the real store, while this PR's guard
+    DETECTS any test that writes there at all. Keeping only one would silently
+    drop a protection — and the sweep's is the kind nobody notices is gone
+    until something has already been deleted.
+
+    They also reinforce each other. The eager package import means
+    ``role_prompts`` is loaded before any redirect, so its paths resolve
+    through a patched ``CONFIG_DIR``; and the stub holds even where a redirect
+    might not reach.
+    """
+
+    def test_tick_is_stubbed_and_deletes_nothing(self):
+        from agentwire import role_prompts
+
+        result = role_prompts.tick()
+        assert result["deleted"] == []
+        assert result.get("skipped") == "disabled-in-tests"
+
+    def test_the_sweep_stub_does_not_trip_the_write_guard(self):
+        """A no-op stub must not look like a write to the real store."""
+        from agentwire import role_prompts
+        from tests import home_guard
+
+        before = len(home_guard.WRITES)
+        role_prompts.tick()
+        assert len(home_guard.WRITES) == before
+
+    def test_no_sweep_stamp_is_written_to_the_real_store(self):
+        """#902's reviewer's check: the stub held.
+
+        ``tick`` writes ``role-prompt-sweep.json`` next to the store when it
+        actually runs, so the stamp's absence from the REAL config dir is the
+        observable proof that no test swept it.
+        """
+        from agentwire import role_prompts
+        from tests import home_guard
+
+        role_prompts.tick()
+        stamp = home_guard.REAL_AGENTWIRE_HOME / "role-prompt-sweep.json"
+        assert not any(
+            str(stamp) == path for _t, _e, path in home_guard.WRITES
+        ), "a test wrote the sweep stamp into the real store"
+
+    def test_role_prompt_paths_resolve_inside_the_redirect(self, _isolate_agentwire_home):
+        """Where the sweep WOULD look is inside this test's tmp home."""
+        from agentwire import core
+
+        assert core.role_prompts_dir() == _isolate_agentwire_home / "role-prompts"

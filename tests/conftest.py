@@ -7,10 +7,15 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests import home_guard
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 #: The owner's real config directory. Nothing in the suite may write here.
-REAL_AGENTWIRE_HOME = Path.home() / ".agentwire"
+#: Re-exported from the single owner so both halves agree on what "real" is.
+REAL_AGENTWIRE_HOME = home_guard.REAL_AGENTWIRE_HOME
+
+home_guard.install()
 
 
 def _agentwire_modules():
@@ -47,11 +52,18 @@ def _import_every_agentwire_module():
 
     import agentwire
 
-    for info in pkgutil.walk_packages(agentwire.__path__, prefix="agentwire."):
-        try:
-            importlib.import_module(info.name)
-        except Exception:
-            continue
+    # Importing the package touches the real config dir: `agentwire_dir()`
+    # both resolves AND mkdirs, and some modules call it at import. That is the
+    # package's own import-time behaviour, not a test polluting the store, and
+    # attributing it to whichever test happened to be first would be a lie. It
+    # is sanctioned rather than silenced, so it still shows up in
+    # SANCTIONED_WRITES if anyone wants to look.
+    with home_guard.sanctioned_real_home_write():
+        for info in pkgutil.walk_packages(agentwire.__path__, prefix="agentwire."):
+            try:
+                importlib.import_module(info.name)
+            except Exception:
+                continue
 
 
 _import_every_agentwire_module()
@@ -127,94 +139,18 @@ def _isolate_agentwire_home(request, tmp_path_factory, monkeypatch):
     return fake_config
 
 
-#: Populated by the audit hook below: (test id, path) for every write that
-#: escaped the redirect. Module-level so the hook, which cannot be removed
-#: once installed, stays a pure recorder.
-_REAL_HOME_WRITES: list = []
-_CURRENT_TEST: list = [None]
-
-#: Audit events that create, modify or delete a path. ``open`` is checked for
-#: a writing mode; the rest are unconditional.
-_WRITE_EVENTS = {
-    "os.mkdir", "os.rename", "os.remove", "os.rmdir", "os.link",
-    "os.symlink", "os.truncate", "os.chmod", "shutil.copyfile", "shutil.move",
-}
-
-
-def _install_real_home_audit_hook():
-    """Record any in-process write under the real ~/.agentwire.
-
-    Deliberately an audit hook rather than a before/after filesystem
-    snapshot. A snapshot cannot tell *this process* from the rest of the
-    machine, and on the owner's box ~/.agentwire is written continuously by
-    the live system — the watchdog, the message inbox, damage-control logs. A
-    snapshot-based guard flagged `logs/damage-control/<today>.jsonl` on its
-    first run, which was an agent's shell command in another process, not the
-    suite. A guard that cries wolf gets switched off, and then it is not a
-    guard.
-
-    An audit hook sees only this interpreter, so concurrent activity is
-    invisible to it, and it fires on the syscall — which means it names the
-    test that did it instead of reporting that *something*, *somewhere* in the
-    session escaped.
-    """
-    import sys
-
-    real = str(REAL_AGENTWIRE_HOME)
-
-    def hook(event, args):
-        if event == "open":
-            if len(args) < 2 or not args[1] or not any(c in str(args[1]) for c in "wax+"):
-                return
-            target = args[0]
-        elif event in _WRITE_EVENTS:
-            target = args[0] if args else None
-        else:
-            return
-        try:
-            path = str(target)
-        except Exception:
-            return
-        if path.startswith(real):
-            _REAL_HOME_WRITES.append((_CURRENT_TEST[0], event, path))
-
-    sys.addaudithook(hook)
-
-
-_install_real_home_audit_hook()
-
-
-@pytest.fixture(autouse=True)
-def _track_current_test(request):
-    """Name the test currently running, so a violation can be attributed."""
-    _CURRENT_TEST[0] = request.node.nodeid
-    yield
-    _CURRENT_TEST[0] = None
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _real_agentwire_home_untouched():
     """Backstop: fail the run loudly if anything escaped the redirect (#893).
 
-    The redirect above is prevention; this is detection, and it exists because
-    the failure it guards against went unnoticed long enough to accumulate 80
-    fabricated conversation ids.
+    The redirect above is prevention; this is detection. Implementation lives
+    in :mod:`tests.home_guard` so there is exactly one recorder — see the note
+    there about pytest loading this file under two module names.
     """
     yield
-    if not _REAL_HOME_WRITES:
-        return
-    seen, lines = set(), []
-    for test_id, event, path in _REAL_HOME_WRITES:
-        key = (test_id, path)
-        if key in seen:
-            continue
-        seen.add(key)
-        lines.append(f"  {test_id or '<session>'}\n      {event}  {path}")
-    pytest.fail(
-        f"the test suite wrote into the REAL ~/.agentwire ({len(seen)} write(s), #893)\n"
-        + "\n".join(lines[:25]),
-        pytrace=False,
-    )
+    failure = home_guard.report()
+    if failure:
+        pytest.fail(failure, pytrace=False)
 
 
 @pytest.fixture(autouse=True)

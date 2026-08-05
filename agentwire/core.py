@@ -1024,8 +1024,25 @@ def session_metadata_path(session_name: str) -> Path:
 
     The ``@machine`` suffix is stripped HERE and nowhere else — the store is
     keyed by bare session name, so ``web@remote`` and ``web`` are one record.
+
+    The result is CONTAINED to the store. A session name is operator-supplied
+    and reaches this from the CLI, and the path it returns is unlinked by
+    ``agentwire kill`` — so ``../../../evil`` would have addressed, and
+    deleted, a file outside the store entirely. That was equally true of the
+    inlined copy this replaced, but consolidating is the moment the check
+    becomes possible to write once instead of four times.
     """
-    return sessions_dir() / session_name.split("@")[0] / "metadata.json"
+    clean = session_name.split("@")[0]
+    root = sessions_dir()
+    candidate = root / clean / "metadata.json"
+    try:
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(root.resolve(strict=False))
+    except (ValueError, OSError):
+        raise ValueError(
+            f"session name escapes the session store: {session_name!r}"
+        ) from None
+    return candidate
 
 
 def load_session_metadata(session_name: str) -> dict:
