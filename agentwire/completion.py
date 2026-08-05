@@ -277,6 +277,16 @@ def wait_for_completion_signal(
             time.sleep(0.5)
             try:
                 result = parse_summary_file(found_summary)
+                # A written summary is proof a turn actually ran, which is
+                # proof the login works — so clear any recorded outage here
+                # rather than making the fleet wait out OUTAGE_TTL (#906).
+                # This is the hook that makes "reopens on the first successful
+                # turn" true; without it that promise was operator-facing text
+                # describing behavior the code did not have, which is the very
+                # defect #906 exists to fix, one scale down.
+                from .auth_expired import clear_state
+
+                clear_state()
                 return {
                     "status": result.status,
                     "summary": result.summary,

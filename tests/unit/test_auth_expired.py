@@ -18,6 +18,14 @@ could see. The specific traps this file is built to fall into on purpose:
 * ``ASSISTANT_TALKING_ABOUT_IT`` is an ordinary assistant turn whose TEXT
   contains the rendered phrase. Any pane-text or substring detector matches
   it. It must not match here, because a false positive gates the whole fleet.
+* ``NOT_LOGGED_IN_ROW`` is the SECOND real outage (2026-07-07), verbatim: the
+  same ``error`` value rendered as different user-facing text on a different
+  Claude Code version. #867's own fixtures could never have produced it, and
+  it is the direct evidence for keying on the structured field.
+* ``RATE_LIMIT_ROW`` is a real rate-limit refusal, verbatim. It shares every
+  structural property with an auth refusal, so it reaches the predicate —
+  only the error-value check stops it. There are 16 of these on disk against
+  6 auth rows, so this is the likelier of the two to be met in the wild.
 """
 
 import json
@@ -107,6 +115,57 @@ ASSISTANT_TALKING_ABOUT_IT = {
     },
 }
 
+# The SECOND real outage, 2026-07-07 — same `error`, DIFFERENT user-facing
+# text ("Not logged in", not "Login expired"). Verbatim off disk, Claude Code
+# 2.1.201 vs 2.1.221 for the 08-04 rows. This is the fixture the 08-04
+# incident could never have produced, and it is the whole argument for keying
+# on the structured `error` field instead of the rendered string: a detector
+# matching "Login expired" would silently stop working on a rewording, which
+# has already happened once in this codebase's own history.
+NOT_LOGGED_IN_ROW = {
+    "type": "assistant",
+    "uuid": "d102699e-c812-415c-9609-307fef8ef94f",
+    "timestamp": "2026-07-07T21:34:28.006Z",
+    "message": {
+        "model": "<synthetic>",
+        "role": "assistant",
+        "stop_reason": "stop_sequence",
+        "type": "message",
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "content": [{"type": "text", "text": "Not logged in · Please run /login"}],
+    },
+    "error": "authentication_failed",
+    "isApiErrorMessage": True,
+    "cwd": "/Users/dotdev/projects/documentscribe",
+    "sessionId": "02315590-969e-4621-832f-c63b6aa8211e",
+    "version": "2.1.201",
+}
+
+# A REAL rate-limit refusal, verbatim. Structurally identical to the auth rows
+# — ``type: assistant``, ``model: <synthetic>``, zero tokens,
+# ``isApiErrorMessage: true`` — so it reaches the predicate and only the
+# error-value check stops it. There are 16 of these on disk against 6 auth
+# rows; treating them alike would gate the entire machine on a transient blip
+# that the usage-limit subsystem already handles correctly.
+RATE_LIMIT_ROW = {
+    "type": "assistant",
+    "uuid": "28754c4f-e6eb-45b4-ad96-2a2f1a89693b",
+    "timestamp": "2026-07-18T18:00:40.382Z",
+    "message": {
+        "model": "<synthetic>",
+        "role": "assistant",
+        "stop_reason": "stop_sequence",
+        "type": "message",
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "content": [{
+            "type": "text",
+            "text": "You've hit your session limit · resets 4:40pm (America/Toronto)",
+        }],
+    },
+    "error": "rate_limit",
+    "isApiErrorMessage": True,
+}
+
 # A transient upstream error. Retryable — must NOT be treated as an expired
 # login, or a blip would gate the whole fleet for OUTAGE_TTL.
 OVERLOADED_ROW = {
@@ -176,6 +235,30 @@ class TestDetectsTheRealFailingState:
     def test_an_agent_describing_the_error_is_not_the_error(self, tmp_path):
         """The false positive a pane/substring detector cannot avoid."""
         p = write_transcript(tmp_path / "talking.jsonl", [ASSISTANT_TALKING_ABOUT_IT])
+        assert auth_expired.transcript_auth_failure(p) is False
+
+    def test_the_2026_07_07_outage_with_different_wording_also_fires(self, tmp_path):
+        """Field-proven against a SECOND outage, not just #867's.
+
+        Same `error: authentication_failed`, different rendered text ("Not
+        logged in" vs "Login expired") and a different Claude Code version.
+        The 08-04 fixtures alone could not have shown this — it is the direct
+        evidence that keying on the structured field survives a rewording,
+        which has already happened once in this history.
+        """
+        p = write_transcript(tmp_path / "0707.jsonl", [NOT_LOGGED_IN_ROW])
+        assert auth_expired.transcript_auth_failure(p) is True
+
+    def test_a_real_rate_limit_refusal_does_not_gate_the_machine(self, tmp_path):
+        """The near-miss: structurally identical, and 16 of them on disk.
+
+        `type: assistant`, `model: <synthetic>`, zero tokens,
+        `isApiErrorMessage: true` — every property except the error value is
+        shared with an auth refusal, so this row DOES reach the predicate.
+        Only the error check stops a transient rate limit (which usage-limit
+        recovery already handles) from gating every scheduled task.
+        """
+        p = write_transcript(tmp_path / "ratelimit.jsonl", [RATE_LIMIT_ROW])
         assert auth_expired.transcript_auth_failure(p) is False
 
     def test_other_api_errors_are_not_widened_into_this_one(self, tmp_path):

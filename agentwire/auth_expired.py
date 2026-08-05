@@ -181,6 +181,17 @@ def row_is_auth_failure(row: dict | None) -> bool:
     Keyed on the structured ``error`` field, not on the rendered text, so a
     reworded message keeps working and an assistant turn that merely *says*
     the phrase (an agent reporting on this very incident) never matches.
+
+    Rewording is proven, not assumed: the two real outages on disk render
+    DIFFERENTLY — "Login expired · Please run /login" (2026-08-04, Claude Code
+    2.1.221) and "Not logged in · Please run /login" (2026-07-07, 2.1.201) —
+    and share this one field. Both are fixtured.
+
+    The residual risk is RESTRUCTURING, not rewording: if a future version
+    nests the error (say under ``message.error`` or an ``error.type``), this
+    returns False and the detector goes quiet rather than loud. Nothing here
+    can catch that on its own — the check to run when a Claude Code upgrade
+    lands is that ``error`` is still a top-level string on an api-error row.
     """
     if not isinstance(row, dict):
         return False
@@ -290,7 +301,15 @@ def write_state(state: dict) -> None:
 
 
 def clear_state() -> bool:
-    """Drop the outage record. True iff one was there."""
+    """Drop the outage record. True iff one was there.
+
+    Called from ``completion.wait_for_completion_signal``'s success path: a
+    written task summary is proof a turn ran, which is proof the login works.
+    That is what makes the operator-facing "reopens on the first successful
+    turn" a fact rather than a description of behavior nothing implements —
+    the mismatch #906 itself is about, at a smaller scale. ``OUTAGE_TTL``
+    remains the backstop for a fleet that isn't completing anything.
+    """
     try:
         state_path().unlink()
         log_event("outage_cleared")
@@ -356,6 +375,14 @@ def _escalate(state: dict, prior: dict) -> str | None:
     never turn "we detected the outage and failed the task fast" into an
     exception that fails it slowly instead. The outage state is written either
     way, so the gate works with or without the email.
+
+    Consequence worth naming: only a SUCCESSFUL send stamps ``escalated_at``,
+    so a persistently broken sender is retried once per detection rather than
+    once per :data:`ESCALATE_TTL`. That is the intended trade — a send that
+    silently counted as delivered would lose the escalation entirely, and
+    losing it is strictly worse than retrying it. The retry is cheap (the
+    email path is already best-effort and off the critical path) and it stops
+    the moment one send lands.
     """
     previous = prior.get("escalated_at")
     if previous:

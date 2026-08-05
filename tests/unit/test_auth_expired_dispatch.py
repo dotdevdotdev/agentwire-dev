@@ -135,6 +135,45 @@ class TestCompletionWaitReturnsInsteadOfHanging:
             transcript_since=time.time() - 60, max_duration=2)
         assert result["status"] == "auth_expired"
 
+    def test_a_successful_turn_reopens_the_gate(self, env, monkeypatch):
+        """The hook behind "reopens on the first successful turn".
+
+        `doctor` and the escalation email both make that promise to an
+        operator. Before this hook existed the gate stayed shut until
+        `last_seen + OUTAGE_TTL` no matter what, so the text described
+        behavior nothing implemented — which is #906's own defect one scale
+        down, and would misdirect the next reader exactly the way
+        "incomplete — Timeout waiting for task completion" misdirected a day
+        of investigation.
+        """
+        auth_expired.record_outage({"session": "memory-manager", "transcript": "/t"})
+        assert auth_expired.outage_active() is not None
+
+        project = env / "proj"
+        project.mkdir()
+        summary = project / "task-summary-a-b-2026-08-05T04-00-00.md"
+        summary.write_text("---\nstatus: complete\nsummary: did the thing\n---\n")
+        monkeypatch.setattr("agentwire.completion._session_has_agent", lambda s: True)
+        monkeypatch.setattr("agentwire.usage_limit.check_and_park", lambda *a, **k: False)
+
+        result = wait_for_completion_signal("s", poll_interval=0.01, summary_path=summary)
+        assert result["status"] == "complete"
+        assert auth_expired.outage_active() is None, "the promise must be true"
+        assert auth_expired.read_state() is None, "the record itself is gone"
+
+    def test_clearing_a_gate_that_was_never_set_is_harmless(self, env, monkeypatch):
+        """The hook runs on EVERY successful completion, outage or not."""
+        project = env / "proj"
+        project.mkdir()
+        summary = project / "task-summary-a-b-2026-08-05T04-00-00.md"
+        summary.write_text("---\nstatus: complete\nsummary: fine\n---\n")
+        monkeypatch.setattr("agentwire.completion._session_has_agent", lambda s: True)
+        monkeypatch.setattr("agentwire.usage_limit.check_and_park", lambda *a, **k: False)
+
+        assert auth_expired.read_state() is None
+        assert wait_for_completion_signal(
+            "s", poll_interval=0.01, summary_path=summary)["status"] == "complete"
+
     def test_a_healthy_session_is_untouched(self, env, monkeypatch):
         """No transcript failure → the loop behaves exactly as before.
 

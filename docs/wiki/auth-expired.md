@@ -57,8 +57,42 @@ after a live menu); an inline message cannot.
 
 The transcript's `error` field is a structured fact about a turn that actually
 happened. That is what is keyed on — never the rendered text, and never
-"any API error" (an `overloaded` blip is transient and retryable; this one
-provably cannot succeed until a human runs `/login`).
+"any API error".
+
+**Field-proven against two outages, with different wording.** Sweeping every
+`isApiErrorMessage` row on disk and classifying by error value gives
+`rate_limit` 16, `authentication_failed` 6, `server_error` 5 — all
+`type: assistant`. Those 6 auth rows are **two separate incidents that render
+differently**:
+
+| Date | Claude Code | Rendered text |
+|---|---|---|
+| 2026-08-04 (4 rows) | 2.1.221 | `Login expired · Please run /login` |
+| 2026-07-07 (2 rows) | 2.1.201 | `Not logged in · Please run /login` |
+
+Both are fixtured, and both fire. A detector matching the rendered string
+would have silently stopped working across that rewording — which has already
+happened once in this codebase's own history.
+
+It also sizes the risk from the other side: **all 16 `rate_limit` rows are
+structurally identical** to an auth refusal (`type: assistant`,
+`model: <synthetic>`, zero tokens, `isApiErrorMessage: true`), so they DO
+reach the predicate. Only the error-value check stops a transient rate limit —
+already handled correctly by [usage-limit recovery](usage-limit-recovery.md) —
+from gating every scheduled task on the machine.
+
+### What would break it
+
+Rewording is survivable and proven. **Restructuring is not.** If a future
+Claude Code version nests the field (under `message.error`, or as an
+`error.type` object), `row_is_auth_failure` returns False and the detector
+goes **quiet rather than loud** — a silent regression, the worst direction.
+No test can catch that on its own, because the fixture is a snapshot of
+today's shape.
+
+The check to run when a Claude Code upgrade lands: confirm `error` is still a
+top-level string on an api-error row. The `cc-dialog-drift` scheduled task is
+the natural home for it.
 
 ## Recovery is a property of the signal
 
@@ -110,12 +144,23 @@ it. So one detection records a single outage at
   #905's no-parent escalation use, not a third channel. Best-effort: a missing
   key or a provider failure never turns a fast, correct failure into a slow
   one.
+  Only a **successful** send stamps `escalated_at`, so a persistently broken
+  sender retries once per detection instead of once per TTL. Deliberate: a
+  failed send that counted as delivered would lose the escalation outright,
+  and losing it is worse than retrying it. The retry stops the moment one
+  send lands.
 - **`detected_at` is carried forward** across refreshes, so a four-hour outage
   doesn't read as seconds old. (Refreshing it was a real defect in the prompt
   sweep, fixed in #905.)
 - **`OUTAGE_TTL` (30 min) bounds the gate.** A flag that gated forever would
   take the whole board down on a stale file. Past the TTL one dispatch is let
   through as a probe — which now fails in seconds instead of hours.
+- **A successful task completion clears the record outright.** A written
+  summary is proof a turn ran, which is proof the login works, so
+  `wait_for_completion_signal`'s success path calls `clear_state()` rather
+  than making the fleet wait out the TTL. This is what makes "reopens on the
+  first successful turn" — printed by `doctor` and by the escalation email —
+  a fact instead of a description of behavior nothing implemented.
 
 ## Surfaces
 
@@ -154,7 +199,8 @@ cat ~/.agentwire/auth-expired-events.jsonl         # detections + escalations
 ```
 
 Fix: run `/login` in any Claude Code session. Nothing else is needed — the
-gate self-expires and reopens on the first successful turn.
+first successful task completion clears the record, and the gate self-expires
+within `OUTAGE_TTL` even if nothing completes.
 
 ## Related
 
