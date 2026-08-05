@@ -86,7 +86,10 @@ def sandbox(tmp_path, monkeypatch):
     stub.chmod(0o755)
     work = tmp_path / "work"
     work.mkdir()
-    monkeypatch.setattr(core, "ROLE_PROMPTS_DIR", tmp_path / "role-prompts")
+    # #902 replaced the ROLE_PROMPTS_DIR constant with role_prompts_dir(), which
+    # resolves through CONFIG_DIR at CALL time — so redirect the store by patching
+    # CONFIG_DIR, not by rebinding a constant that no longer exists.
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
     return types.SimpleNamespace(
         root=tmp_path, home=home, bin=bin_dir, work=work,
         log=home / "invocations.jsonl",
