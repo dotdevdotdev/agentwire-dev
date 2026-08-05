@@ -66,6 +66,16 @@ jobs:
     # deps are bumped explicitly in pyproject; transitive fixes land via lock
     # bumps. See docs/wiki/security/pip-audit.md for the residual-CVE rationale.
     continue-on-error: true
+    # The weekly cron opens/updates the tracking issue, which the DEFAULT token
+    # does not necessarily allow — a repo set to read-only default permissions
+    # would fail the `gh issue` call. Declared explicitly so the durable half of
+    # the visibility fix can't silently no-op. (No `pull-requests: write`: this
+    # deliberately does not comment on PRs — a fork PR gets a read-only token,
+    # so that flow would silently fail for exactly the external contributors it
+    # would exist to serve.)
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -85,14 +95,42 @@ jobs:
       # HTTP request-handling CVEs are not on a reachable path. Documented +
       # ignored here so the advisory signal stays meaningful; revisit when mcp /
       # chatterbox-tts relax the ceiling. See docs/wiki/security/pip-audit.md.
+      # PYSEC-2026-3483 is the deprecated WebSocket SERVER transport
+      # (mcp.server.websocket) missing Host/Origin validation. agentwire runs
+      # its MCP server on stdio (mcp_server.py: mcp.run(transport="stdio")) and
+      # never imports that module, so it is not on a reachable path. Its fix
+      # needs mcp>=1.28.1, which pulls pydantic 2.13 and cascades the tts
+      # extra's whole chain (torch 2.6 -> 2.13 plus the CUDA stack, 32 packages)
+      # — a bad trade against an unreachable advisory. 1.27.2 clears the other
+      # two mcp advisories at a one-package diff. Revisit when the torch bump is
+      # wanted on its own merits. See docs/wiki/security/pip-audit.md.
       - name: Audit runtime dependencies
+        id: audit
+        continue-on-error: true
         run: >
           uvx pip-audit==2.10.1 -r requirements.txt
+          --format json --output audit-runtime.json
           --ignore-vuln PYSEC-2026-161
           --ignore-vuln CVE-2026-48818
           --ignore-vuln CVE-2026-48817
           --ignore-vuln CVE-2026-54283
           --ignore-vuln CVE-2026-54282
+          --ignore-vuln PYSEC-2026-3483
+      # The job stays advisory (continue-on-error above), but its RESULT is no
+      # longer invisible: this prints ::warning:: annotations, which GitHub
+      # renders on the run and PR checks views without anyone opening the job
+      # log, and writes a table to the step summary. `if: always()` so a
+      # crashed audit reports "UNKNOWN, which is not clean" rather than nothing
+      # — the exact shape of #900, where a red audit rendered as green.
+      # --min-packages is a coverage floor, not a version assertion: zero
+      # advisories over zero packages is not a clean bill of health. The
+      # runtime export is ~124 packages, so anything under 50 means the export
+      # produced nothing to audit and the run is reported UNKNOWN, not clean.
+      - name: Report advisories (never blocks)
+        if: always()
+        run: >
+          uv run --no-project python scripts/pip_audit_report.py
+          audit-runtime.json --scope runtime --min-packages 50
       # Full audit including optional extras (tts/stt: torch, onnxruntime,
       # gradio, ...). Weekly only and never ignore-filtered — surfaces the full
       # backlog for review without blocking or spamming every PR.
@@ -101,4 +139,38 @@ jobs:
         run: uv export --no-emit-project --all-extras --format requirements-txt -o requirements-all.txt
       - name: Full audit (weekly cron, optional extras)
         if: github.event_name == 'schedule'
-        run: uvx pip-audit==2.10.1 -r requirements-all.txt
+        continue-on-error: true
+        run: >
+          uvx pip-audit==2.10.1 -r requirements-all.txt
+          --format json --output audit-all.json
+      - name: Report full audit + open/update the tracking issue
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUDIT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          uv run --no-project python scripts/pip_audit_report.py audit-all.json \
+            --scope "all extras" --min-packages 100 --issue-body issue-body.md
+          # ONE issue, reused. Annotations and summaries belong to a run nobody
+          # revisits; an issue is what actually stops advisories accumulating
+          # unseen — which is how #900 reached eight.
+          title='pip-audit: unresolved advisories in the dependency lock'
+          # --state all, NOT --state open: an open-only search cannot see the
+          # issue this workflow closed last week, so a recurrence would file a
+          # SECOND issue and the "one issue, reused" promise would quietly
+          # become "one per close/recur cycle".
+          existing=$(gh issue list --state all --search "$title in:title" \
+                       --json number,state --jq '.[0] | "\(.number) \(.state)"' || true)
+          number=${existing%% *}
+          state=${existing##* }
+          if grep -q ': clean' issue-body.md; then
+            if [ -n "$number" ] && [ "$state" = "OPEN" ]; then
+              gh issue comment "$number" --body-file issue-body.md
+              gh issue close "$number" --comment "pip-audit is clean; closing. This issue is reopened automatically if findings return."
+            fi
+          elif [ -z "$number" ]; then
+            gh issue create --title "$title" --label "area:security" --body-file issue-body.md
+          else
+            [ "$state" = "CLOSED" ] && gh issue reopen "$number"
+            gh issue comment "$number" --body-file issue-body.md
+          fi
