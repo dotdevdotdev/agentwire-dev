@@ -16,6 +16,7 @@ import sys
 import sysconfig
 import tempfile
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,10 +28,23 @@ from .project_config import (
     resolve_posture,
 )
 from .roles import RoleConfig, merge_roles
-from .worktree import git_common_dir, parse_session_name
+from .worktree import git_common_dir, git_root, main_worktree, parse_session_name
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
+
+# Durable home for the per-conversation `--append-system-prompt` file (#871).
+#
+# This used to be a `tempfile.NamedTemporaryFile` under /var/folders, which
+# macOS garbage-collects. The launch line references the file by path
+# (`--append-system-prompt "$(<path>)"`), so once the GC ran, relaunching a
+# session older than the GC window substituted an EMPTY string: the
+# conversation came back, the role silently did not. Nothing failed loudly —
+# the agent just quietly stopped being a worker/orchestrator/reviewer.
+#
+# Keyed by conversation id so the prompt a conversation launched with stays
+# recoverable even after its session's roles change.
+ROLE_PROMPTS_DIR = CONFIG_DIR / "role-prompts"
 
 
 def _check_tmux_installed() -> bool:
@@ -68,10 +82,22 @@ def _tmux_global_option(name: str) -> str | None:
 
 @dataclass
 class AgentCommand:
-    """Result of building an agent command."""
+    """Result of building an agent command.
+
+    Carries not just the shell command but the full launch identity (#871):
+    the conversation UUID we minted, the durable role-prompt file, and the
+    posture/role names needed to REGENERATE that prompt later. The flag
+    builder is the only place that knows all four, so it stamps them here and
+    :func:`record_session_launch` copies them onto disk verbatim — no caller
+    can pair a conversation id with the wrong prompt or posture.
+    """
     command: str  # The shell command to execute
-    temp_file: str | None = None  # Temp file to clean up after agent starts
+    role_prompt_path: str | None = None  # Durable --append-system-prompt file (see ROLE_PROMPTS_DIR)
     env: dict[str, str] = field(default_factory=dict)  # Secrets to inject via tmux set-environment (keeps keys out of `ps`)
+    conversation_id: str | None = None  # UUID passed as `claude --session-id` (None for bare)
+    resumed_from: str | None = None  # Conversation this one was forked off, if any
+    posture: str = BARE
+    roles: list[str] = field(default_factory=list)  # Role NAMES, in merge order
 
 
 _UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
@@ -213,6 +239,99 @@ def parse_env_args(env_args: list[str] | None) -> dict[str, str]:
     return result
 
 
+# Owner-only, matching the posture of `~/.agentwire/.env` (chmod 600). A role
+# prompt is complete system-prompt text — role content, project context,
+# whatever else the prompt carries — and unlike the tempfile it replaced (0600
+# and transient) this store is PERMANENT. Both modes are forced rather than
+# requested, because `mkdir(mode=)` and `open(mode=)` are masked by umask and
+# neither touches an already-existing path: a directory created before this
+# rule, or under a permissive umask, must heal on the next write rather than
+# stay world-readable forever.
+#
+# Same posture and same fchmod-before-any-bytes-land technique as
+# ``security.write_token_file``; not shared with it because that one is bound
+# to TOKEN_FILE and adds atomic-replace semantics this store doesn't need (the
+# prompt is written before the launch line that reads it, and never rotated
+# under a live reader). If a third owner-only writer appears, extract one.
+_PROMPT_FILE_MODE = 0o600
+_PROMPT_DIR_MODE = 0o700
+
+
+def write_role_prompt(conversation_id: str, instructions: str) -> Path:
+    """Write *instructions* to this conversation's durable role-prompt file.
+
+    The one place a role prompt is written to disk (see :data:`ROLE_PROMPTS_DIR`
+    for why "durable" is load-bearing). Returns the path the launch line
+    should read; the file deliberately OUTLIVES the launch so a later
+    relaunch can reuse it, and the recorded ``roles``/``posture`` can
+    regenerate it if it's ever gone.
+
+    Written owner-only, and never through a window where it isn't: the mode
+    is set at ``os.open`` time rather than chmod'ed after a plain write, so
+    the content is never briefly world-readable on disk.
+    """
+    ROLE_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(ROLE_PROMPTS_DIR, _PROMPT_DIR_MODE)
+
+    path = ROLE_PROMPTS_DIR / f"{conversation_id}.txt"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PROMPT_FILE_MODE)
+    with os.fdopen(fd, "w") as f:
+        # umask can only CLEAR bits at create time, and an existing file keeps
+        # its old mode — so state it exactly, on the descriptor we hold.
+        os.fchmod(fd, _PROMPT_FILE_MODE)
+        f.write(instructions)
+    return path
+
+
+def mirror_role_prompt_remote(agent: "AgentCommand", machine_id: str, agent_cmd: str) -> str:
+    """Copy a role prompt to *machine_id* and repoint the launch line at it.
+
+    The launch line references the prompt BY PATH
+    (``--append-system-prompt "$(<path>)"``), so a remote session handed a
+    local path reads a file that isn't there and starts with an EMPTY system
+    prompt — the same silent role-loss the /var/folders GC caused, just
+    reached by a different route. The one implementation of the mirror, used
+    by every remote launch (``new`` / ``recreate`` / ``fork``); only ``new``
+    had it before, and only into ``/tmp``.
+
+    Mutates ``agent.role_prompt_path`` to the remote path so the recorded
+    identity names where the prompt actually lives for that session. Returns
+    the rewritten command (unchanged on failure — best-effort, matching the
+    rest of the remote path's tolerance).
+    """
+    if not agent.role_prompt_path or not agent_cmd:
+        return agent_cmd
+    try:
+        content = Path(agent.role_prompt_path).read_text()
+    except OSError as e:
+        print(f"Warning: Failed to read system prompt: {e}", file=sys.stderr)
+        return agent_cmd
+
+    # `$HOME`, not `~`: this path is substituted into the launch line mid-word
+    # (`"$(<...)"`) where tilde expansion is not guaranteed, and it is
+    # recorded verbatim — the remote's home isn't knowable from here.
+    remote_dir = "$HOME/.agentwire/role-prompts"
+    remote_prompt = f"{remote_dir}/{agent.conversation_id}.txt"
+    # Same owner-only posture as the local store, stated the same way: `umask
+    # 077` covers the create, and the explicit chmods cover a pre-existing
+    # path (which umask never touches) on a remote whose defaults we don't
+    # control. The heredoc body starts on the line after the full command.
+    write_cmd = (
+        f'umask 077 && mkdir -p "{remote_dir}" && chmod 700 "{remote_dir}" && '
+        f'cat > "{remote_prompt}" << \'AGENTWIRE_EOF\'\n{content}\nAGENTWIRE_EOF\n'
+        f'chmod 600 "{remote_prompt}"'
+    )
+    result = _run_remote(machine_id, write_cmd)
+    if result.returncode != 0:
+        print(f"Warning: Failed to write system prompt to {machine_id}: {result.stderr}",
+              file=sys.stderr)
+        return agent_cmd
+
+    rewritten = agent_cmd.replace(agent.role_prompt_path, remote_prompt)
+    agent.role_prompt_path = remote_prompt
+    return rewritten
+
+
 def build_agent_command(
     posture: str,
     roles: list[RoleConfig] | None = None,
@@ -227,15 +346,36 @@ def build_agent_command(
     is the no-agent sentinel (empty command); ``resume_session_id`` prepends the
     ``--resume/--fork-session`` pair right after ``claude`` so the resumed
     process still gets its posture's grants (incl. auto's tool-allows).
+
+    Conversation identity (#871): agentwire MINTS the conversation UUID here
+    and passes it as ``claude --session-id``, rather than discovering it after
+    the fact by watching ``~/.claude/projects/<encoded-cwd>/`` for the newest
+    ``.jsonl``. The record on disk is therefore authoritative, not a guess.
+
+    Two verified properties of the flag drive the design:
+
+    - ``--session-id`` REFUSES to start on collision ("Session ID <id> is
+      already in use.") — but the check is scoped to the launch cwd, since
+      that's what keys the history dir. A fresh uuid4 per call is the only
+      safe input; never re-pass a previously recorded id here (that's what
+      ``resume_session_id`` is for).
+    - ``--resume <old> --fork-session --session-id <new>`` composes: the fork
+      lands at the id WE chose, so a resumed session's new conversation is
+      just as recorded as a fresh one's. That's what makes
+      ``conversation_ids`` a chain rather than a scalar that goes stale on
+      the first resume.
     """
     if posture == BARE:
-        return AgentCommand(command="")
+        return AgentCommand(command="", posture=BARE)
 
     merged = merge_roles(roles) if roles else None
+    role_names = [r.name for r in roles] if roles else []
+    conversation_id = str(uuid.uuid4())
 
     parts = ["claude"]
     if resume_session_id:
         parts.extend(["--resume", resume_session_id, "--fork-session"])
+    parts.extend(["--session-id", conversation_id])
 
     # Permission-mode flags (one per posture; prompted adds none — hooks gate it)
     if posture == "bypass":
@@ -255,7 +395,7 @@ def build_agent_command(
         parts.append(f"--model {model}")
 
     # Role-based flags (merged roles always apply — no tool-locking posture left)
-    temp_file = None
+    role_prompt_path = None
     if merged:
         if merged.tools:
             parts.append(f"--tools {','.join(merged.tools)}")
@@ -264,18 +404,19 @@ def build_agent_command(
             parts.append(f"--disallowedTools {','.join(merged.disallowed_tools)}")
 
         if merged.instructions:
-            # Write to temp file to avoid shell escaping issues
-            # See docs/wiki/internals/shell-escaping.md for details
-            # MUST be last flag — multiline content can break subsequent args
-            f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-            f.write(merged.instructions)
-            f.close()
-            temp_file = f.name
-            parts.append(f'--append-system-prompt "$(<{temp_file})"')
+            # Written to a file rather than inlined to avoid shell escaping
+            # issues (see docs/wiki/internals/shell-escaping.md), and MUST be
+            # the last flag — multiline content can break subsequent args.
+            role_prompt_path = str(write_role_prompt(conversation_id, merged.instructions))
+            parts.append(f'--append-system-prompt "$(<{role_prompt_path})"')
 
     return AgentCommand(
         command=" ".join(parts),
-        temp_file=temp_file,
+        role_prompt_path=role_prompt_path,
+        conversation_id=conversation_id,
+        resumed_from=resume_session_id,
+        posture=posture,
+        roles=role_names,
     )
 
 
@@ -735,41 +876,129 @@ def store_session_metadata(session_name: str, metadata: dict) -> None:
         pass
 
 
-def _record_session_creator(session_name: str, created_by: str | None, via: str) -> None:
-    """Record which session created this one (merge-preserving).
+def git_identity(cwd) -> dict:
+    """The ``repo`` / ``branch`` / ``worktree_path`` triple for a launch cwd.
 
-    The creator becomes the session's parent for prompt routing
-    (prompt_router.resolve_parent), winning over .agentwire.yml `parent:`.
+    Asked of GIT, never string-built from a naming convention — the same rule
+    that #837 had to retrofit onto worktree paths and #868 onto session names.
+    ``worktree_path`` is None when *cwd* is the repo's MAIN checkout, so its
+    presence alone answers "is this session running in a linked worktree".
 
-    ``created_by`` of ``''`` means "explicitly rootless" and must still be
-    written — otherwise a re-`new`/`recreate` that forces standalone (e.g.
-    `--created-by ''`) leaves a stale parent from a prior creation in place,
-    since `not created_by` is also true for `''`.
+    Every value is None off-repo (and for a remote session's path, which
+    doesn't exist locally); a caller must read a missing key as "unknown",
+    never as "the conventional value".
     """
-    if created_by is None or created_by == session_name.split("@")[0]:
-        return
+    blank = {"repo": None, "branch": None, "worktree_path": None}
+    path = Path(cwd)
+    if not path.exists():
+        return blank
+
+    top = git_root(path)
+    if top is None:
+        return blank
+
+    main = main_worktree(top)
+    branch = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    )
+    branch_name = branch.stdout.strip() if branch.returncode == 0 else ""
+    # Detached HEAD reports the literal "HEAD" — not a branch, so record none.
+    if branch_name == "HEAD":
+        branch_name = ""
+
+    return {
+        "repo": str(main),
+        "branch": branch_name or None,
+        "worktree_path": str(top) if top.resolve() != Path(main).resolve() else None,
+    }
+
+
+def record_session_launch(
+    session_name: str,
+    agent: "AgentCommand",
+    cwd,
+    *,
+    created_by: str | None = None,
+    created_via: str | None = None,
+    role: str | None = None,
+    remote: bool = False,
+) -> dict:
+    """Record a session's launch identity — the ONE writer of metadata.json (#871).
+
+    Every path that starts an agent in a tmux SESSION calls this exactly once,
+    right after the launch: ``new`` (and therefore ``worktree`` /
+    ``orchestrator`` / scheduler+ensure dispatch, which all delegate to it),
+    ``recreate``, ``fork``, ``history resume``, and ``dev``. Routing them all
+    through one function is the point: a creation path that hand-rolls its own
+    record is exactly how the worktree-path (#837) and session-name (#868)
+    conventions each drifted into a bug that reported success while doing
+    nothing.
+
+    Deliberately NOT called by ``spawn`` — a worker pane is not a session, and
+    this store is keyed by session name, so a pane recording here would
+    overwrite its OWNING session's record. Panes still get a minted
+    conversation id and a durable role prompt from ``build_agent_command``;
+    they just have nowhere session-scoped to write it.
+
+    What comes from where:
+
+    - ``agent`` supplies conversation id, role-prompt path, posture and role
+      names — the flag builder is the only thing that knows them, and taking
+      the whole object means a caller can't pair them wrong.
+    - ``cwd`` supplies ``cwd_at_launch`` verbatim plus the git-derived
+      repo/branch/worktree triple. ``cwd_at_launch`` is what a later check
+      compares against Claude's own history key
+      (``~/.claude/projects/<encoded-cwd>/``) to detect history orphaned by a
+      moved worktree. ``remote=True`` records the path but skips the git
+      derivation — the path lives on another machine, and a same-named local
+      directory would otherwise answer with some other repo's branch.
+    - ``roles`` + ``posture`` are recorded to REGENERATE the system prompt,
+      not merely to reference it — a role-prompt file that has gone missing
+      is recoverable from them.
+
+    Merge-preserving, and ``conversation_ids`` APPENDS: ``--fork-session``
+    mints a new id on every resume, so identity is a chain, not a scalar.
+    """
+    clean_name = session_name.split("@")[0]
     metadata = load_session_metadata(session_name)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # ``created_by`` of ``''`` means "explicitly rootless" and must still be
+    # written — otherwise a re-`new`/`recreate` that forces standalone (e.g.
+    # `--created-by ''`) leaves a stale parent from a prior creation in place,
+    # since `not created_by` is also true for `''`. ``None`` means the caller
+    # has no opinion, and must not clobber what's already recorded.
+    if created_by is not None and created_by != clean_name:
+        metadata["created_by"] = created_by
+        if created_via:
+            metadata["created_via"] = created_via
+
+    # The ROLE axis (orchestrator/worker/reviewer) — distinct from the
+    # etiquette/persona ``roles`` list below. Read back by
+    # list_local_sessions() and the session_created notify lookup.
+    if role:
+        metadata["role"] = role
+
+    if agent.conversation_id:
+        chain = list(metadata.get("conversation_ids") or [])
+        if agent.conversation_id not in chain:
+            chain.append(agent.conversation_id)
+        metadata["conversation_ids"] = chain
+
     metadata.update({
-        "created_by": created_by,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "created_via": via,
+        "cwd_at_launch": str(cwd),
+        "posture": agent.posture,
+        "roles": list(agent.roles),
+        "role_prompt_path": agent.role_prompt_path,
+        "launched_at": now,
+        **({"repo": None, "branch": None, "worktree_path": None}
+           if remote else git_identity(cwd)),
     })
+    metadata.setdefault("created_at", now)
+
     store_session_metadata(session_name, metadata)
-
-
-def _record_session_role(session_name: str, role: str | None) -> None:
-    """Record the session's ROLE axis (orchestrator/worker/reviewer) to disk (merge-preserving).
-
-    Distinct from the etiquette/persona ``roles:`` list in ``.agentwire.yml`` —
-    this is the fundamental authority axis derived at creation time (``kind``
-    in cmd_new, ``effective_kind`` in cmd_worktree, "worker" for cmd_spawn).
-    Read back by list_local_sessions() and the session_created notify lookup.
-    """
-    if not role:
-        return
-    metadata = load_session_metadata(session_name)
-    metadata["role"] = role
-    store_session_metadata(session_name, metadata)
+    return metadata
 
 
 def notify_portal_session_created(session_name: str, parent: str | None, role: str | None) -> None:

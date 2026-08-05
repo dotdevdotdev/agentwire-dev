@@ -770,12 +770,19 @@ class TestContentHash:
 
 
 class TestRecordSessionCreator:
+    """The `created_by` half of record_session_launch — the ONE writer (#871)."""
+
+    def _agent(self):
+        from agentwire.core import AgentCommand
+        return AgentCommand(command="claude", posture="bypass")
+
     def test_records_and_merges(self, tmp_path, monkeypatch):
         import agentwire.__main__ as cli
 
         monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         cli.store_session_metadata("child", {"existing": "kept"})
-        cli._record_session_creator("child", "orch", via="new")
+        cli.record_session_launch("child", self._agent(), tmp_path,
+                                  created_by="orch", created_via="new")
         meta = cli.load_session_metadata("child")
         assert meta["created_by"] == "orch"
         assert meta["created_via"] == "new"
@@ -785,9 +792,12 @@ class TestRecordSessionCreator:
         import agentwire.__main__ as cli
 
         monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
-        cli._record_session_creator("child", "child", via="new")
-        cli._record_session_creator("child", None, via="new")
-        assert cli.load_session_metadata("child") == {}
+        cli.record_session_launch("child", self._agent(), tmp_path,
+                                  created_by="child", created_via="new")
+        cli.record_session_launch("child", self._agent(), tmp_path,
+                                  created_by=None, created_via="new")
+        # The launch itself is still recorded; only the parent link is skipped.
+        assert "created_by" not in cli.load_session_metadata("child")
 
     def test_empty_creator_recorded_as_explicitly_rootless(self, tmp_path, monkeypatch):
         """`--created-by ''` means "no parent" and must be written (#848).
@@ -800,8 +810,17 @@ class TestRecordSessionCreator:
 
         monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         cli.store_session_metadata("child", {"created_by": "stale-orch"})
-        cli._record_session_creator("child", "", via="new")
+        cli.record_session_launch("child", self._agent(), tmp_path, created_by="")
         assert cli.load_session_metadata("child")["created_by"] == ""
+
+    def test_none_creator_never_clobbers_a_recorded_parent(self, tmp_path, monkeypatch):
+        """A relaunch with no opinion about parentage must leave the link alone."""
+        import agentwire.__main__ as cli
+
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
+        cli.record_session_launch("child", self._agent(), tmp_path, created_by="orch")
+        cli.record_session_launch("child", self._agent(), tmp_path, created_by=None)
+        assert cli.load_session_metadata("child")["created_by"] == "orch"
 
 
 class TestNotifyPermissionRequest:

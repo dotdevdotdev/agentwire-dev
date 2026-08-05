@@ -253,7 +253,14 @@ def test_orchestrator_sugar_verb_forces_kind(tmp_path, monkeypatch, wt_env):
     assert wt_env["args"].created_by is None
 
 
-def test_record_session_creator_persists_creator(tmp_path, monkeypatch):
+def _fake_agent(**kw):
+    from agentwire.core import AgentCommand
+    kw.setdefault("command", "claude")
+    kw.setdefault("posture", "bypass")
+    return AgentCommand(**kw)
+
+
+def test_record_session_launch_persists_creator(tmp_path, monkeypatch):
     """The creator-registry mechanism cmd_new uses records the spawner so
     _display_parent (and resolve_parent) returns it for a worktree session."""
     from agentwire import core
@@ -261,28 +268,133 @@ def test_record_session_creator_persists_creator(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
     monkeypatch.setattr(core, "get_parent_from_config", lambda *_a, **_k: None)
 
-    core._record_session_creator("clone-repo-fix-bug", "orchestrator", via="worktree")
+    core.record_session_launch("clone-repo-fix-bug", _fake_agent(), tmp_path,
+                               created_by="orchestrator", created_via="worktree")
     assert core.load_session_metadata("clone-repo-fix-bug")["created_by"] == "orchestrator"
     assert core._display_parent("clone-repo-fix-bug") == "orchestrator"
 
 
-def test_record_session_role_persists_and_merges_with_creator(tmp_path, monkeypatch):
+def test_record_session_launch_role_persists_and_merges_with_creator(tmp_path, monkeypatch):
     """#747 — role (orchestrator/worker) is a separate merge-preserving field
     alongside created_by, so the session_created broadcast can carry both."""
     from agentwire import core
 
     monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
 
-    core._record_session_creator("clone-repo-fix-bug", "orchestrator", via="worktree")
-    core._record_session_role("clone-repo-fix-bug", "worker")
+    core.record_session_launch("clone-repo-fix-bug", _fake_agent(), tmp_path,
+                               created_by="orchestrator", created_via="worktree",
+                               role="worker")
 
     metadata = core.load_session_metadata("clone-repo-fix-bug")
     assert metadata["created_by"] == "orchestrator"
     assert metadata["role"] == "worker"
 
     # A falsy role is a no-op — never clobbers an already-recorded role.
-    core._record_session_role("clone-repo-fix-bug", None)
+    core.record_session_launch("clone-repo-fix-bug", _fake_agent(), tmp_path, role=None)
     assert core.load_session_metadata("clone-repo-fix-bug")["role"] == "worker"
+
+
+def test_record_session_launch_records_conversation_identity(tmp_path, monkeypatch):
+    """#871 — the launch identity, sufficient to REGENERATE the system prompt
+    and to detect history orphaned by a moved worktree."""
+    from agentwire import core
+
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
+    cwd = tmp_path / "wt"
+    cwd.mkdir()
+
+    agent = _fake_agent(conversation_id="conv-1", posture="auto",
+                        roles=["worker-worktree", "soul"],
+                        role_prompt_path=str(tmp_path / "role-prompts" / "conv-1.txt"))
+    meta = core.record_session_launch("proj-branch", agent, cwd, created_via="worktree")
+
+    assert meta["conversation_ids"] == ["conv-1"]
+    assert meta["cwd_at_launch"] == str(cwd)
+    assert meta["posture"] == "auto"
+    assert meta["roles"] == ["worker-worktree", "soul"]
+    assert meta["role_prompt_path"].endswith("conv-1.txt")
+    # Off-repo tmp dir: git fields are absent, never guessed.
+    assert meta["repo"] is None and meta["branch"] is None
+
+
+def test_conversation_ids_are_a_chain_not_a_scalar(tmp_path, monkeypatch):
+    """`--fork-session` mints a new id on each resume, so relaunching a session
+    must APPEND — a scalar would silently lose everything before the last one."""
+    from agentwire import core
+
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
+
+    core.record_session_launch("s", _fake_agent(conversation_id="a"), tmp_path)
+    core.record_session_launch("s", _fake_agent(conversation_id="b"), tmp_path)
+    core.record_session_launch("s", _fake_agent(conversation_id="b"), tmp_path)  # idempotent
+    assert core.load_session_metadata("s")["conversation_ids"] == ["a", "b"]
+
+
+def test_created_at_survives_relaunch_while_launched_at_moves(tmp_path, monkeypatch):
+    """created_at is when the session was born; launched_at is this launch."""
+    from agentwire import core
+
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
+
+    first = core.record_session_launch("s", _fake_agent(conversation_id="a"), tmp_path,
+                                       created_by="orch")
+    second = core.record_session_launch("s", _fake_agent(conversation_id="b"), tmp_path)
+    assert second["created_at"] == first["created_at"]
+    assert second["launched_at"] >= first["launched_at"]
+
+
+def test_remote_launch_records_path_but_never_guesses_git(tmp_path, monkeypatch):
+    """A remote path may coincidentally exist locally; answering with THIS
+    machine's repo/branch for it would be a confident lie."""
+    from agentwire import core
+
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "agentwire")
+    monkeypatch.setattr(core, "git_identity",
+                        lambda _p: {"repo": "WRONG", "branch": "WRONG",
+                                    "worktree_path": "WRONG"})
+
+    meta = core.record_session_launch("s", _fake_agent(conversation_id="a"),
+                                      "/home/other/projects/x", remote=True)
+    assert meta["cwd_at_launch"] == "/home/other/projects/x"
+    assert meta["repo"] is None
+    assert meta["branch"] is None
+    assert meta["worktree_path"] is None
+
+
+def test_git_identity_asks_git_and_distinguishes_linked_worktree(tmp_path):
+    """repo is the MAIN checkout; worktree_path is set only for a linked one —
+    so its presence alone answers "is this session in a worktree"."""
+    import subprocess
+
+    from agentwire import core
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def run(*a):
+        return subprocess.run(a, cwd=repo, capture_output=True, check=True)
+
+    run("git", "init", "-b", "main")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "T")
+    (repo / "f.txt").write_text("x")
+    run("git", "add", "f.txt")
+    run("git", "commit", "-m", "init")
+
+    main_id = core.git_identity(repo)
+    assert Path(main_id["repo"]).resolve() == repo.resolve()
+    assert main_id["branch"] == "main"
+    assert main_id["worktree_path"] is None
+
+    wt = tmp_path / "wt"
+    run("git", "worktree", "add", "-b", "feature", str(wt))
+    wt_id = core.git_identity(wt)
+    assert Path(wt_id["repo"]).resolve() == repo.resolve()
+    assert wt_id["branch"] == "feature"
+    assert Path(wt_id["worktree_path"]).resolve() == wt.resolve()
+
+    # Off-repo is all-None — a caller must read it as "unknown", not a default.
+    assert core.git_identity(tmp_path / "nope") == {
+        "repo": None, "branch": None, "worktree_path": None}
 
 
 def test_notify_portal_session_created_posts_enriched_payload(monkeypatch):
@@ -1094,11 +1206,10 @@ def test_cmd_new_worktree_session_is_registered(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
     monkeypatch.setattr(m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
     monkeypatch.setattr(m, "build_agent_command",
-                        lambda *a, **k: Namespace(command="true", env={}, temp_file=None))
+                        lambda *a, **k: Namespace(command="true", env={}, role_prompt_path=None))
     monkeypatch.setattr(m, "_launch_tmux_session",
                         lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
-    monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+    monkeypatch.setattr(m, "record_session_launch", lambda *a, **k: {})
     monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
     monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda *a, **k: None)
 
@@ -1168,9 +1279,8 @@ def test_dot_project_derived_session_matches_what_creation_produces(
     monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
     monkeypatch.setattr(m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
     monkeypatch.setattr(m, "build_agent_command",
-                        lambda *a, **k: Namespace(command="true", env={}, temp_file=None))
-    monkeypatch.setattr(m, "_record_session_creator", lambda *a, **k: None)
-    monkeypatch.setattr(m, "_record_session_role", lambda *a, **k: None)
+                        lambda *a, **k: Namespace(command="true", env={}, role_prompt_path=None))
+    monkeypatch.setattr(m, "record_session_launch", lambda *a, **k: {})
     monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
     monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda *a, **k: None)
 
