@@ -9,6 +9,7 @@ Supports both local and remote machines via SSH for distributed setups.
 """
 
 import json
+import re
 from pathlib import Path
 
 from .ssh import ssh_base_opts
@@ -66,21 +67,39 @@ def resolve_session_id(prefix: str, machine: str = "local") -> str | None:
 
 
 def encode_project_path(path: str) -> str:
-    """Encode project path to Claude's directory format.
+    """Encode a cwd to the ``~/.claude/projects/<dir>`` name Claude Code uses.
 
-    Example: /home/user/projects/myapp -> -home-user-projects-myapp
+    The rule is **every character outside ``[A-Za-z0-9]`` becomes ``-``**, one
+    for one — nothing is dropped, collapsed, or case-folded.
+
+    Derived EMPIRICALLY, not from documentation (#871), the same way #878 had
+    to measure tmux's name mangling instead of guessing it:
+
+    - 528 ground-truth pairs were read out of the local history — every
+      ``*.jsonl`` records the ``cwd`` it was written from — and 527 matched
+      this rule exactly. (The one holdout is a project directory renamed on
+      disk after the fact, i.e. the very orphaning this module exists to
+      repair, not a counter-example to the encoding.)
+    - The remaining characters were swept through a real ``claude`` run:
+      a directory segment ``a_b.c+d~e@f,g=h!i#j%k^l&m n o'p`` produced
+      ``a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p``.
+    - Non-ASCII was swept the same way: ``café-日本-Ωx`` produced
+      ``caf------x``, so the class is ASCII ``[A-Za-z0-9]`` and **not**
+      :meth:`str.isalnum`, which would have preserved ``é``/``日``/``Ω``.
+
+    The previous implementation replaced only ``/``, which silently produced
+    the wrong directory for any path containing a dot, an underscore, or a
+    space — including ``~/.claude`` and ``~/.agentwire/council/<n>/workspace``,
+    both of which really exist here. That is the same dot-shaped bug class as
+    #865 → #868 → #870 → #878.
+
+    There is deliberately no inverse. The mapping is many-to-one (``/``, ``.``
+    and ``-`` all encode to ``-``), so a directory name cannot be decoded back
+    to a cwd — it can only be compared against the encoding of a cwd you
+    already know. Callers get that known cwd from ``cwd_at_launch`` in the
+    session metadata (#881).
     """
-    # Replace all slashes with dashes (leading slash becomes leading dash)
-    return path.replace("/", "-")
-
-
-def decode_project_path(encoded: str) -> str:
-    """Decode Claude's directory format back to path.
-
-    Example: -home-user-projects-myapp -> /home/user/projects/myapp
-    """
-    # Replace dashes with slashes (leading dash becomes leading slash)
-    return encoded.replace("-", "/")
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
 def _get_machine_config(machine_id: str) -> dict | None:
