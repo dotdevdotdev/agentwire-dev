@@ -106,6 +106,53 @@ def _ensure_remote(args, session: str, machine_id: str, json_mode: bool) -> int:
         return _output_result(False, json_mode, f"SSH to {machine_id} failed: {e}", exit_code=ENSURE_EXIT_SESSION_ERROR)
 
 
+def send_task_prompt(session: str, prompt: str) -> bool:
+    """Paste a task prompt and CONFIRM it was submitted. True iff it landed (#889).
+
+    The scheduler's dispatch was the one unattended send still using the blind
+    path (``pane_manager.send_to_target``): paste, sleep a fixed 1.0s, press
+    Enter, sleep a fixed 0.5s, press Enter again — no confirmation, and a
+    ``None`` return, so ``ensure`` structurally could not tell "delivered" from
+    "sitting unsubmitted in the input box". It then waited for a completion
+    signal that could never arrive.
+
+    Those delays are constants; the thing they are waiting for is not. A task
+    that interpolates a large ``pre`` output pastes tens of KB, and
+    ``session_ready``'s own comments explain why the verified path polls
+    instead: "a large paste renders slowly", so its landing gate allows
+    ``LAND_TIMEOUT`` (8s) where the blind path allows 1.0s. ``send_to_target``'s
+    docstring already records the failure class — "Skipping the second [Enter]
+    leaves the prompt stuck in the input — the failure that hung the scheduler
+    at 8am". The size-adaptive replacement was written and adopted everywhere
+    else (``agentwire send``, ``prompt_router``, ``council``, ``session_cli``,
+    the ``msg`` drain); this path just never moved over.
+
+    A False here is a real, actionable failure, so it must be acted on rather
+    than logged — routing through ``send_verified`` and ignoring the result
+    would reproduce the same silence with more machinery.
+
+    One subtlety kept from ``send_cli``: a False can also mean the paste fully
+    submitted and only the *confirm* read was ambiguous (a laggy host blowing
+    the submit budget, an unparseable box frame). The per-attempt marker rides
+    inside the pasted text, so scrollback can settle that as a fact rather than
+    a text-similarity guess — a marker can only be there if THIS paste
+    submitted. Only when it is absent do we call the send failed.
+    """
+    from .session_ready import (
+        message_on_scrollback,
+        new_delivery_marker,
+        scrollback,
+        send_verified,
+        tag_message,
+    )
+
+    marker = new_delivery_marker()
+    if send_verified(session, tag_message(prompt, marker), marker=marker):
+        return True
+    # False negative check: confirm-read ambiguity vs a paste that never landed.
+    return message_on_scrollback(scrollback(session), marker)
+
+
 def cmd_ensure(args) -> int:
     """Run a named task with reliable session management.
 
@@ -681,8 +728,24 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
         if not json_mode:
             print("Sending task prompt...")
 
-        # Send task prompt using pane_manager for proper multi-line handling
-        pane_manager.send_to_pane(session, 0, prompt, enter=True)
+        # Verified submit (#889). Waiting on a completion signal for a prompt
+        # that never left the input box is how a 30-minute task burns hours in
+        # silence — so a send we can't confirm ends the attempt, loudly, here.
+        if not send_task_prompt(session, prompt):
+            last_status = "failed"
+            last_summary = (
+                f"Task prompt never landed in session '{session}' — paste was "
+                "not confirmed submitted (agent may be wedged on a dialog, or "
+                "the payload outran the input box)"
+            )
+            if not json_mode:
+                print(f"Send failed: {last_summary}")
+            if attempt < max_attempts:
+                if not json_mode:
+                    print(f"Retrying in {task.retry_delay}s...")
+                time.sleep(task.retry_delay)
+                continue
+            break
 
         # Wait for completion signal from hook
         if not json_mode:
@@ -737,12 +800,20 @@ def _run_ensure_task(args, session, task, ctx, shell, project_path, json_mode) -
 
         # on_task_end: send additional prompt after summary is written
         # Note: we don't wait for this to complete - it's fire-and-forget
+        #
+        # Verified like the task prompt (#889), but a failure here only warns:
+        # the task itself already reported its status, so failing the run over
+        # an unsent epilogue would rewrite a completed task as failed. Loud, not
+        # fatal — the asymmetry worth fixing is silence, not the exit code.
         if task.on_task_end:
             try:
                 end_prompt = expand_all(task.on_task_end, ctx)
-                pane_manager.send_to_pane(session, 0, end_prompt, enter=True)
-                if not json_mode:
-                    print("Sent on_task_end prompt (not waiting for completion)")
+                if send_task_prompt(session, end_prompt):
+                    if not json_mode:
+                        print("Sent on_task_end prompt (not waiting for completion)")
+                else:
+                    print(f"Warning: on_task_end prompt was not confirmed submitted "
+                          f"to session '{session}'", file=sys.stderr)
             except TemplateError as e:
                 if not json_mode:
                     print(f"Warning: template error in on_task_end: {e}")
