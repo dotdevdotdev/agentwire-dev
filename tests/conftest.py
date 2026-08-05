@@ -1,12 +1,156 @@
 """Shared test fixtures for the AgentWire test suite."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
+from tests import home_guard
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+#: The owner's real config directory. Nothing in the suite may write here.
+#: Re-exported from the single owner so both halves agree on what "real" is.
+REAL_AGENTWIRE_HOME = home_guard.REAL_AGENTWIRE_HOME
+
+home_guard.install()
+
+
+def _agentwire_modules():
+    """Loaded agentwire modules, snapshotted (import can mutate sys.modules)."""
+    return [m for name, m in list(sys.modules.items())
+            if name == "agentwire" or name.startswith("agentwire.")
+            if m is not None]
+
+
+def _import_every_agentwire_module():
+    """Import the whole package once, BEFORE any test redirects ``$HOME``.
+
+    Load-bearing, and subtle. The redirect below works by rebinding
+    module-level constants that were computed at import time — but it can only
+    rebind modules that are *already imported*. Much of this codebase imports
+    lazily inside functions (``from agentwire.__main__ import
+    build_agent_command`` inside a test helper), so without this the first
+    test to trigger such an import does it while ``$HOME`` already points at
+    that test's tmp directory. The module then computes
+    ``CONFIG_DIR = Path.home() / ".agentwire"`` against the *fake* home and
+    freezes it there — permanently, for the rest of the session, because
+    monkeypatch never patched it and so has nothing to restore.
+
+    The symptom is a constant stuck at some early test's tmp path, which is
+    exactly the kind of cross-test bleed this fixture exists to prevent. Doing
+    the imports up front means every constant is computed against the real
+    home, so the per-test walk both rebinds and restores it.
+
+    Best-effort: a submodule that cannot import (optional dependency, platform
+    guard) is skipped rather than failing collection.
+    """
+    import importlib
+    import pkgutil
+
+    import agentwire
+
+    # Importing the package touches the real config dir: `agentwire_dir()`
+    # both resolves AND mkdirs, and some modules call it at import. That is the
+    # package's own import-time behaviour, not a test polluting the store, and
+    # attributing it to whichever test happened to be first would be a lie. It
+    # is sanctioned rather than silenced, so it still shows up in
+    # SANCTIONED_WRITES if anyone wants to look.
+    with home_guard.sanctioned_real_home_write():
+        for info in pkgutil.walk_packages(agentwire.__path__, prefix="agentwire."):
+            try:
+                importlib.import_module(info.name)
+            except Exception:
+                continue
+
+
+_import_every_agentwire_module()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agentwire_home(request, tmp_path_factory, monkeypatch):
+    """No test may read or write the real ``~/.agentwire`` — ever (#893).
+
+    Found the hard way: ``~/.agentwire/sessions/resumed/metadata.json`` was a
+    live record in the owner's config directory, written by this suite and
+    grown to 80 fabricated conversation ids — one appended per full-suite run,
+    because ``conversation_ids`` is a chain by design (#871). Beyond tests
+    mutating real user state being a defect on its own, it corrupted a
+    measurement: sizing #871's orphaned-history doctor check against the real
+    store surfaced 28 recorded ids with no transcript, *all* from that one
+    record, with zero genuine orphans behind them.
+
+    Two levers, because there are two ways a path gets computed:
+
+    1. **``$HOME``** — ``Path.home()`` resolves through ``expanduser``, which
+       reads the variable, so redirecting it catches everything computed at
+       *call* time, including modules imported later by a lazy import.
+    2. **A walk over loaded modules** — roughly forty constants across ~25
+       modules are computed at *import* time
+       (``COHORT_ROOT = Path.home() / ".agentwire" / "cohorts"`` and friends)
+       and are already frozen before any fixture runs. Rebinding them by
+       walking beats enumerating them: a hand-written list would rot the first
+       time someone adds a constant, which is exactly how this class of bug
+       recurs. ``test_home_isolation.py`` asserts the walk missed nothing.
+
+    Per-test rather than per-session, so no test can observe another's writes.
+    Tests that need their own location re-patch the same attributes via
+    ``monkeypatch``, which overrides this.
+    """
+    # Escape hatch for the rare test that must see the REAL deployment paths
+    # to assert on them — e.g. "role prompts are not in a directory macOS
+    # garbage-collects", which this fixture would otherwise make vacuous by
+    # relocating them into exactly such a directory. Read-only by intent, and
+    # not a hole: the session-scoped backstop below still fails the run if an
+    # opted-out test writes anything.
+    if request.node.get_closest_marker("real_agentwire_home"):
+        return REAL_AGENTWIRE_HOME
+
+    fake_home = tmp_path_factory.mktemp("home")
+    fake_config = fake_home / ".agentwire"
+    fake_config.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("AGENTWIRE_HOME", str(fake_config))
+
+    for module in _agentwire_modules():
+        for attr, value in list(vars(module).items()):
+            if not isinstance(value, Path):
+                continue
+            if value == REAL_AGENTWIRE_HOME:
+                monkeypatch.setattr(module, attr, fake_config, raising=False)
+            elif REAL_AGENTWIRE_HOME in value.parents:
+                relocated = fake_config / value.relative_to(REAL_AGENTWIRE_HOME)
+                monkeypatch.setattr(module, attr, relocated, raising=False)
+
+    # ``agentwire_dir()`` both resolves AND mkdirs, and callers bound it with
+    # ``from .utils.paths import agentwire_dir`` — a per-module copy that
+    # patching the definition site would not reach.
+    def _fake_agentwire_dir() -> Path:
+        fake_config.mkdir(parents=True, exist_ok=True)
+        return fake_config
+
+    for module in _agentwire_modules():
+        if callable(vars(module).get("agentwire_dir")):
+            monkeypatch.setattr(module, "agentwire_dir", _fake_agentwire_dir, raising=False)
+
+    return fake_config
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_agentwire_home_untouched():
+    """Backstop: fail the run loudly if anything escaped the redirect (#893).
+
+    The redirect above is prevention; this is detection. Implementation lives
+    in :mod:`tests.home_guard` so there is exactly one recorder — see the note
+    there about pytest loading this file under two module names.
+    """
+    yield
+    failure = home_guard.report()
+    if failure:
+        pytest.fail(failure, pytrace=False)
 
 
 @pytest.fixture(autouse=True)

@@ -10,6 +10,7 @@ import os
 
 import pytest
 
+from agentwire import core
 from agentwire import history_migrate as hm
 from agentwire.history import encode_project_path
 
@@ -30,7 +31,7 @@ def projects(tmp_path, monkeypatch):
 @pytest.fixture
 def session_store(tmp_path, monkeypatch):
     """A throwaway ~/.agentwire with a recorded session named "s"."""
-    monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
     (tmp_path / "sessions" / "s").mkdir(parents=True)
     (tmp_path / "sessions" / "s" / "metadata.json").write_text("{}")
     return tmp_path
@@ -389,13 +390,13 @@ class TestResumable:
 class TestResolveSession:
     def test_unknown_session_says_so(self, projects, tmp_path, monkeypatch):
         """Not "predates #881" — that misreads a typo as a legacy session."""
-        monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
         result = hm.resolve_session("never-existed")
         assert result["status"] == hm.UNDETERMINED
         assert result["detail"] == "no such session recorded"
 
     def test_undetermined_without_recorded_cwd(self, projects, tmp_path, monkeypatch):
-        monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
         (tmp_path / "sessions" / "legacy").mkdir(parents=True)
         (tmp_path / "sessions" / "legacy" / "metadata.json").write_text("{}")
         monkeypatch.setattr(hm, "load_session_metadata", lambda name: {})
@@ -466,10 +467,10 @@ class TestScan:
             (sessions / name).mkdir(parents=True)
             (sessions / name / "metadata.json").write_text("{}")
         (sessions / "no-metadata").mkdir()
-        monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
         assert hm.known_sessions() == ["alpha", "beta"]
         assert [r["session"] for r in hm.scan()] == ["alpha", "beta"]
 
     def test_no_sessions_dir_is_not_an_error(self, projects, tmp_path, monkeypatch):
-        monkeypatch.setattr(hm, "CONFIG_DIR", tmp_path / "absent")
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "absent")
         assert hm.scan() == []

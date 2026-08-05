@@ -19,6 +19,16 @@ import pytest
 
 from agentwire.safety._core import check_command, load_config
 
+# This corpus asserts on ``~``-form secret paths (``cat ~/.ssh/id_rsa``), so it
+# needs ``$HOME`` to look like a real home. The #893 redirect points HOME at a
+# pytest tmp dir, and on Linux that is under ``/tmp`` — which ``core.yaml``
+# allowlists ``allow: all``. An allowlist entry outranks ``zeroAccessPaths``, so
+# the tilde vectors resolved to ``allow`` and the corpus went green-to-red for a
+# reason that had nothing to do with the matcher. (macOS temp is
+# ``/private/var/folders``, which is not allowlisted — hence it only showed up
+# on CI.) Reads only; the audit backstop still catches any write.
+pytestmark = pytest.mark.real_agentwire_home
+
 REPO = Path(__file__).resolve().parent.parent.parent
 RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
 

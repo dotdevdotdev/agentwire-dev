@@ -20,6 +20,14 @@ from agentwire.safety._core import (
 )
 from agentwire.safety_commands import load_patterns
 
+# This module is *about* the real control plane: it asserts that the owner's
+# actual `~/.agentwire` and `~/.claude` files are unwritable by the policed
+# agent, and its parameters are real absolute paths resolved at import. The
+# #893 home redirect would point the protection logic at a tmp directory while
+# these paths stayed real, making every case fail for the wrong reason. Reads
+# only — the audit-hook backstop still fails the run on any write.
+pytestmark = pytest.mark.real_agentwire_home
+
 CONTROL_PLANE_FILES = [
     os.path.expanduser("~/.agentwire/damagecontrol.yml"),
     "/some/repo/.damagecontrol.yml",

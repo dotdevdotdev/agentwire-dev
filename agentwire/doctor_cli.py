@@ -843,7 +843,7 @@ def _render_role_prompt_store_section(
     from . import core, role_prompts
 
     store = core.role_prompts_dir()
-    sessions_dir = core.CONFIG_DIR / "sessions"
+    sessions_dir = core.sessions_dir()
     s = role_prompts.status(store, sessions_dir)
 
     if not s["exists"]:

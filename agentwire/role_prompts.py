@@ -274,7 +274,7 @@ def tick() -> dict:
     from . import core
 
     store = core.role_prompts_dir()
-    sessions_dir = core.CONFIG_DIR / "sessions"
+    sessions_dir = core.sessions_dir()
     stamp = core.CONFIG_DIR / "role-prompt-sweep.json"
     now = time.time()
 
