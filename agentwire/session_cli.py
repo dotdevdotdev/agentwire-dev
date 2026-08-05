@@ -209,7 +209,7 @@ def cmd_new(args) -> int:
     if first_message and machine_id:
         return _output_result(False, json_mode, "--first-message is local-only (readiness capture doesn't span SSH)")
 
-    # Build the tmux session name (dots → underscores, slashes preserved)
+    # Build the tmux session name (dots AND colons → underscores, slashes preserved)
     session_name = tmux_safe_name(f"{project}/{branch}" if branch else project)
 
     # Load config
@@ -755,7 +755,7 @@ def cmd_recreate(args) -> int:
     worktrees_config = config.get("projects", {}).get("worktrees", {})
     worktree_suffix = worktrees_config.get("suffix", "-worktrees")
 
-    # Build session name for tmux (slashes preserved, dots → underscores)
+    # Build session name for tmux (slashes preserved, dots AND colons → underscores)
     session_name = tmux_safe_name(f"{project}/{branch}" if branch else project)
 
     if machine_id:
@@ -2062,7 +2062,7 @@ def cmd_fork(args) -> int:
     worktrees_config = config.get("projects", {}).get("worktrees", {})
     worktree_suffix = worktrees_config.get("suffix", "-worktrees")
 
-    # Build session names (slashes preserved, dots → underscores)
+    # Build session names (slashes preserved, dots AND colons → underscores)
     source_session = tmux_safe_name(
         f"{source_project}/{source_branch}" if source_branch else source_project)
     # Non-worktree fork: use target project name directly
