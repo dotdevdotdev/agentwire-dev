@@ -74,12 +74,76 @@ system prompt: the conversation came back, the role did not, and nothing
 failed loudly — the agent just quietly stopped being a worker.
 
 Fixed by moving the prompt to `~/.agentwire/role-prompts/<conversation-id>.txt`
-(`core.ROLE_PROMPTS_DIR`), keyed by conversation so the prompt a conversation
+(`core.role_prompts_dir()`), keyed by conversation so the prompt a conversation
 launched with stays recoverable even after its session's roles change. The
 remote launch paths mirror the file to the *same* durable location on the
 remote (`core.mirror_role_prompt_remote`) — previously only `new` did that, and
 only into `/tmp`; `recreate` and `fork` handed the remote a local path, which
 is the same empty-prompt bug reached by a different route.
+
+### Retention for that store (#884)
+
+The store grows one file per agent launch, forever, and `spawn` — the
+highest-frequency launch path — writes files nothing will *ever* reference
+again: a pane gets a minted conversation id and a durable role prompt, but a
+pane is not a session and has nowhere session-scoped to record that id.
+
+**"Delete on session exit" would be wrong**, and getting this right is the
+whole point of the store. The prompt is durable precisely so it outlives the
+process that made it — a session's tmux process dying is not the end of its
+conversation; `--resume` brings the conversation back and needs its system
+prompt. Exit-deletion reintroduces the `/var/folders` bug above with a tidier
+implementation. The lifetime that matters is the **conversation**, not the
+session: one conversation chain outlives many kill/recreate cycles.
+
+The rule (`agentwire/role_prompts.py`):
+
+1. **Reachable is forever.** A prompt whose conversation id appears in any
+   session's `conversation_ids` chain — or in its recorded `role_prompt_path`
+   — is never deleted at any age. An orchestrator conversation running for
+   months stays resumable.
+2. **Unreachable ages out** after 30 days, by mtime. Weeks, not hours: nothing
+   references these, but they must not vanish mid-flight either.
+   **This threshold is disk-space policy, not a safety mechanism.** Rule 1 is
+   the guardrail and does all the safety work — reachability is checked before
+   age is consulted, so a live session cannot be swept at any age, and tuning
+   the threshold down must never be able to delete a running agent's prompt.
+3. **Panes are the age-out population, deliberately.** The alternative —
+   giving panes somewhere to record a conversation id — invents a fourth
+   identity axis for the one entity whose entire design is "short-lived,
+   reaped by the idle hook, not a session". A pane's prompt is dead the moment
+   the pane exits (minutes to hours), so 30 days is two orders of magnitude of
+   headroom.
+
+Where it runs: the sweep rides the limits watchdog (which already owns the
+periodic housekeeping), self-throttled to once a day via
+`~/.agentwire/role-prompt-sweep.json`. `agentwire doctor` reports the store's
+size and reachability split, and flags only the **aged-out tail** — because
+unreachable-but-young files are the normal steady state, a surviving tail means
+the watchdog sweep isn't running. `doctor --yes` sweeps.
+
+Safety, because this is a deletion pass aimed at a directory full of live
+agents' system prompts:
+
+- Reachability globs `sessions/**/metadata.json`, **recursively**. Session
+  names contain slashes by design — `tmux_safe_name` rewrites only `.` and `:`,
+  and `project/branch` is what every `agentwire worktree` and every scheduler
+  dispatch is called — so those records nest one level deeper than a flat glob
+  looks. A flat `sessions/*/metadata.json` found 469 of 1106 records in the
+  wild: 58% of live conversations reading as unreachable, with age the only
+  thing left protecting them. This is why rule 1, not rule 2, is the guardrail.
+- `sweep()` takes its store and its reachability source as **required
+  parameters**. Only `tick()` resolves the real ones.
+- `core.role_prompts_dir()` is a **function**, not the import-time constant it
+  used to be. A constant does not follow this repo's isolation seam
+  (`monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)`), so a test
+  that believed it had isolated the config dir would still have pointed a
+  deletion pass at the operator's real store.
+- Only regular files named `<uuid4>.txt` directly inside the store are ever
+  unlinked — directories, symlinks and any other filename are reported and
+  left alone, so even a misaimed sweep can't delete a stranger's data.
+- Nothing copies a prompt and nothing widens a mode. The files stay 0600 in a
+  0700 dir; a GC that leaked a world-readable copy would undo that fix.
 
 **2. History is orphaned by a moved worktree.** Claude keys conversation
 history by cwd (`~/.claude/projects/<encoded-cwd>/`), so relocating a worktree

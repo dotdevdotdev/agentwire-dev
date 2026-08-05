@@ -13,8 +13,13 @@ from agentwire.roles import RoleConfig
 class TestBuildAgentCommand:
     @pytest.fixture(autouse=True)
     def _prompts_dir(self, tmp_path, monkeypatch):
-        """Keep role prompts out of the real ~/.agentwire/role-prompts."""
-        monkeypatch.setattr("agentwire.core.ROLE_PROMPTS_DIR", tmp_path / "role-prompts")
+        """Keep role prompts out of the real ~/.agentwire/role-prompts.
+
+        Patching CONFIG_DIR (not a role-prompts path directly) is the whole
+        point of #884's `role_prompts_dir()`: the store now FOLLOWS this
+        repo's one isolation seam instead of being computed at import.
+        """
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         self.prompts_dir = tmp_path / "role-prompts"
 
     def _build(self, posture, roles=None, model=None, resume_session_id=None):
@@ -103,7 +108,7 @@ class TestConversationIdentity:
 
     @pytest.fixture(autouse=True)
     def _prompts_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agentwire.core.ROLE_PROMPTS_DIR", tmp_path / "role-prompts")
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path)
         self.prompts_dir = tmp_path / "role-prompts"
 
     def _build(self, posture="bypass", roles=None, resume_session_id=None):
@@ -209,7 +214,7 @@ class TestMirrorRolePromptRemote:
     def _wire(self, tmp_path, monkeypatch):
         from agentwire import core
 
-        monkeypatch.setattr(core, "ROLE_PROMPTS_DIR", tmp_path / "role-prompts")
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path)
         self.sent = []
 
         def fake_run_remote(machine_id, command):
@@ -272,16 +277,16 @@ class TestMirrorRolePromptRemote:
         agent = self._agent()
         original = agent.command
         assert core.mirror_role_prompt_remote(agent, "box", original) == original
-        assert agent.role_prompt_path.startswith(str(core.ROLE_PROMPTS_DIR))
+        assert agent.role_prompt_path.startswith(str(core.role_prompts_dir()))
 
 
 def test_default_prompt_dir_is_under_agentwire_config():
     """The whole point of #871's prompt move. Deliberately module-level: the
-    classes above redirect ROLE_PROMPTS_DIR to a tmp dir that pytest itself
-    happens to put under /var/folders, which would make this vacuous."""
-    from agentwire.core import CONFIG_DIR, ROLE_PROMPTS_DIR
-    assert ROLE_PROMPTS_DIR.parent == CONFIG_DIR
-    assert "/var/folders" not in str(ROLE_PROMPTS_DIR)
+    classes above redirect CONFIG_DIR to a tmp dir that pytest itself happens
+    to put under /var/folders, which would make this vacuous."""
+    from agentwire.core import CONFIG_DIR, role_prompts_dir
+    assert role_prompts_dir().parent == CONFIG_DIR
+    assert "/var/folders" not in str(role_prompts_dir())
 
 
 class TestSessionEnvInjection:

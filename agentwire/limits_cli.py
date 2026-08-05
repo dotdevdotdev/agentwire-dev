@@ -189,10 +189,14 @@ def cmd_limits_tick(args) -> int:
     already gone when its cohort is evaluated — its orphaned children are
     reaped in the same tick rather than the next.
 
+    The role-prompt GC (#884) runs dead LAST and is self-throttled to once a
+    day: it is pure housekeeping with no bearing on any session's liveness, so
+    nothing above it should ever wait on it.
+
     Each stage runs inside :func:`_run_stage` so an exception in one subsystem
     is logged and skipped rather than aborting the whole cycle (#490).
     """
-    from agentwire import cohort, inbox, prompt_router, session_context
+    from agentwire import cohort, inbox, prompt_router, role_prompts, session_context
     from agentwire.scheduler import zombie as scheduler_zombie
 
     result = _run_stage(
@@ -208,10 +212,13 @@ def cmd_limits_tick(args) -> int:
         "scheduler_zombie", scheduler_zombie.tick, {"killed": []})
     cohorts = _run_stage(
         "cohort", cohort.tick, {"reaped": [], "swept": []})
+    prompt_gc = _run_stage(
+        "role_prompts", role_prompts.tick, {"deleted": [], "skipped": "error"})
     if getattr(args, "json", False):
         print(json.dumps({
             **result, "prompts": prompts, "messages": messages,
             "context": context, "zombies": zombies, "cohorts": cohorts,
+            "role_prompts": prompt_gc,
         }))
         return 0
     if result.get("skipped"):
@@ -256,6 +263,10 @@ def cmd_limits_tick(args) -> int:
     if orphans:
         print("orphaned cohort children reaped: " + ", ".join(
             f"{e['child']}(of {e['parent']})" for e in orphans))
+    swept_prompts = prompt_gc.get("deleted") or []
+    if swept_prompts:
+        print(f"role prompts aged out: {len(swept_prompts)} "
+              f"({prompt_gc.get('bytes_freed', 0)} bytes)")
     return 0
 
 
