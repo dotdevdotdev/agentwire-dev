@@ -174,22 +174,38 @@ def safe_worktree_name(name: str) -> str:
 def tmux_safe_name(name: str) -> str:
     """Make ``name`` legal as a tmux session name.
 
-    ``.`` is tmux's ``session.window`` address separator, so **tmux itself**
-    rewrites it to ``_``: ``tmux new-session -d -s .foo`` succeeds and gives
-    you a session named ``_foo``. This mirrors tmux's own mapping rather than
-    inventing one — which is what makes it safe to apply at *resolution*
-    time, since the name derived here is the name tmux will have chosen.
+    ``.`` and ``:`` are tmux's address separators — ``session.window`` and
+    ``session:window`` — so **tmux itself** rewrites both to ``_``:
+    ``tmux new-session -d -s .foo`` succeeds and gives you a session named
+    ``_foo``, and ``-s a:b`` gives you ``a_b``. This mirrors tmux's own
+    mapping rather than inventing one — which is what makes it safe to apply
+    at *resolution* time, since the name derived here is the name tmux will
+    have chosen.
 
     Creation applied it inline (five copies in ``session_cli``); resolution
     didn't. So for a project directory containing a dot (``~/.claude``),
     teardown looked for ``.claude-fix`` while the session was
     ``_claude-fix`` — matched nothing, killed nothing, reported success, and
     left the session running in the directory it had just deleted (#868).
+    ``:`` was the same hole, reachable through an operator-supplied name
+    rather than a derived one (#878).
 
     Slashes are preserved — ``project/branch`` is a legal tmux name and is
     the convention ``cmd_new`` builds for worktree sessions.
+
+    **The substitution set is exactly these two** — established by sweeping
+    every printable ASCII character through ``tmux new-session`` on an
+    isolated socket (tmux 3.5a), not by reading tmux's source and hoping.
+    UTF-8 passes through untouched. tmux does *also* transform ``\\``, tab,
+    newline and other control characters, but by **vis-escaping** them (``\\t``,
+    ``\\001``) — an expansion to a longer string, not a 1:1 substitution — so it
+    can't be mirrored by a ``replace`` and isn't attempted here. Such a name
+    would break this function's fixed-point invariant, but it is not reachable
+    from what actually feeds these names: project directory names and
+    operator/agent-supplied session names. See ``TestTmuxRewriteSet``, which
+    pins both the mirrored set and that boundary.
     """
-    return name.replace(".", "_")
+    return name.replace(".", "_").replace(":", "_")
 
 
 def worktree_session_name(project_path: Path, name: str) -> str:

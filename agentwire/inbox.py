@@ -84,10 +84,17 @@ GONE_MAX_ATTEMPTS = 5
 # park longer than MAX_ATTEMPTS ticks (~40 min, routinely exceeded by a real
 # reset window) killed every report-back its workers had filed.
 #
-# Such messages stay pending forever instead of burning toward dead-letter;
-# doctor / worktree --watch surface them, and they deliver once the box frees up.
-# The opposite case — a recipient that positively does NOT exist — is NOT in this
-# set: "target_gone" is penalized on its own fast GONE_MAX_ATTEMPTS cap (#694).
+# Such messages stay pending indefinitely instead of burning toward dead-letter,
+# and deliver once the box frees up or the park clears. The opposite case — a
+# recipient that positively does NOT exist — is NOT in this set: "target_gone"
+# is penalized on its own fast GONE_MAX_ATTEMPTS cap (#694).
+#
+# Never dead-lettering also means never triggering the dead-letter owner email,
+# so a load-bearing report can now wait hours with nothing announcing it (#879 —
+# a gap that #872 widened by admitting the one reason that legitimately lasts
+# hours). `agentwire msg inbox` shows a queue on request; `agentwire doctor`
+# reports load-bearing messages pending past STALE_PENDING_MS (see
+# stale_pending), which is the unprompted surface.
 _NO_PENALTY_REASONS = frozenset(
     {"target_busy", "queued_placeholder", "box_static", "stuck_in_box", "target_parked"}
 )
@@ -102,6 +109,15 @@ _BOX_STATIC_THRESHOLD = 3
 # is escalated out-of-band (owner email). note is fire-and-forget and ingest
 # never auto-delivers, so neither is worth an owner email.
 ESCALATE_KINDS = ("done", "request", "escalation")
+
+# How long a load-bearing message may sit pending before `doctor` reports it
+# (#879). Comfortably longer than any box-state defer — those clear in minutes —
+# so the section stays quiet in normal operation and only speaks up for the case
+# it exists to catch: a recipient parked or wedged long enough that its workers'
+# reports are effectively stranded. Deliberately NOT an owner email: a multi-hour
+# park is the EXPECTED shape now, and emailing on it would be the noise that
+# gets the whole channel muted (option 3 in #879, declined).
+STALE_PENDING_MS = 2 * 60 * 60 * 1000  # 2 hours
 
 _RESERVED_DIRS = {"dead", "sent", ".lock", "ingest"}
 
@@ -339,6 +355,44 @@ def list_dead(session: str) -> list[Message]:
     if not ddir.is_dir():
         return []
     return [m for m in (_read_message(f) for f in sorted(ddir.glob("*.json"))) if m]
+
+
+def stale_pending(older_than_ms: int = STALE_PENDING_MS) -> list[tuple[str, Message]]:
+    """Load-bearing messages queued longer than *older_than_ms*, oldest first.
+
+    The unprompted surface for the penalty-free defer path (#879). A message
+    deferring for a no-penalty reason never dead-letters, so it never triggers
+    the dead-letter owner email either — before #872 that was self-limiting
+    (every such reason was a short-lived box state), but ``target_parked`` can
+    legitimately wait hours. Without this, the only way to notice a `done`
+    sitting in a parked parent's queue was to run ``msg inbox`` against that
+    exact recipient, already suspecting it.
+
+    Scoped to ESCALATE_KINDS for the same reason the dead-letter email is: a
+    lost ``note`` is fire-and-forget and ``ingest`` is pull-only by design, so
+    reporting either would be noise that trains people to ignore the section.
+
+    Returns ``(recipient_session, message)`` pairs. Never raises — an
+    unreadable inbox yields nothing rather than failing ``doctor``.
+    """
+    now = _now_ms()
+    stale: list[tuple[str, Message]] = []
+    try:
+        sessions = _iter_pending_sessions()
+    except OSError:
+        return []
+    for session in sessions:
+        try:
+            messages = list_messages(session)
+        except OSError:
+            continue
+        for msg in messages:
+            if msg.kind not in ESCALATE_KINDS:
+                continue
+            if msg.ts and now - msg.ts >= older_than_ms:
+                stale.append((session, msg))
+    stale.sort(key=lambda pair: pair[1].ts)
+    return stale
 
 
 def dead_sessions() -> list[str]:
@@ -723,8 +777,10 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
         if reason in _NO_PENALTY_REASONS:
             # The recipient exists but can't take it right now — busy (long
             # command / human-queued input / wedged paste) or usage-limit parked
-            # — not refusing. Never penalize. Surfaced via `doctor` / `worktree
-            # --watch`; delivers once the prompt frees up or the park clears.
+            # — not refusing. Never penalize; delivers once the prompt frees up
+            # or the park clears. Surfaced by `agentwire msg inbox` on request,
+            # and by `agentwire doctor` once it's been waiting past
+            # STALE_PENDING_MS (#879).
             msg.reason = reason
             try:
                 _write_message(msg.path, msg)

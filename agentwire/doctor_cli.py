@@ -523,6 +523,43 @@ def _render_orphaned_worktrees_section() -> int:
     return len(orphans)
 
 
+def _render_pending_messages_section() -> int:
+    """Doctor section: load-bearing messages queued too long (#879).
+
+    The dead-letter section only sees messages that BURNED OUT. A penalty-free
+    defer (``target_parked``, ``target_busy``, …) never dead-letters, so it
+    reaches neither that section nor the owner email it triggers. #872 made that
+    gap load-bearing by admitting ``target_parked`` — the one defer reason that
+    legitimately lasts hours — so a worker's ``done`` can now sit in a parked
+    parent's queue indefinitely with nothing announcing it. This is that surface.
+
+    Returns 1 if anything is stale (one issue, not one per message — a parked
+    parent strands its whole cohort at once, and that's a single situation).
+    """
+    from . import inbox
+
+    stale = inbox.stale_pending()
+    if not stale:
+        print("  [ok] No report-backs pending past the staleness threshold")
+        return 0
+
+    hours = inbox.STALE_PENDING_MS / 3_600_000
+    now_ms = time.time() * 1000
+    print(f"  [!!] {len(stale)} load-bearing message(s) pending over {hours:g}h:")
+    for session, m in stale:
+        waited = (now_ms - m.ts) / 3_600_000
+        print(f"       - To: {session}, Kind: {m.kind}, Sender: {m.sender}, "
+              f"Waiting: {waited:.1f}h, Reason: {m.reason or 'not yet attempted'}")
+    parked = sorted({s for s, m in stale if m.reason == "target_parked"})
+    if parked:
+        print(f"       Parked recipient(s): {', '.join(parked)} — these deliver on "
+              "their own once the usage limit resets (`agentwire limits status`), "
+              "so this is FYI, not a failure.")
+    print("       Inspect: `agentwire msg inbox -s <session>`   "
+          "Force: `agentwire msg flush -s <session> --force`")
+    return 1
+
+
 def _scheduler_daemon_started_at() -> float | None:
     """Epoch seconds the scheduler daemon process started, or ``None`` if not running.
 
@@ -1126,6 +1163,10 @@ def cmd_doctor(args) -> int:
                 print("  [ok] No dead-lettered done/escalation messages found (any dead-letters are informational)")
     except Exception as e:
         print(f"  [..] Could not check dead-lettered messages: {e}")
+
+    # 10b. Long-pending report-backs (#879) — see _render_pending_messages_section.
+    print("\nChecking for long-pending report-backs...")
+    issues_found += _render_pending_messages_section()
 
     # 11. Check for dangling worktree sessions (live, open PR, no live parent
     # to review/merge it — #716's concrete failure mode: a rootless-but-

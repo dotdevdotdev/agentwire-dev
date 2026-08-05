@@ -167,6 +167,19 @@ lands in a durable inbox and is injected only at a safe boundary.
      against a park that routinely runs hours; every `done` a parked parent's
      workers filed died before the reset landed. It is the most clearly temporary
      member of the set, and now defers without penalty like the rest.
+
+     **Penalty-free means invisible unless something looks (#879).** Never
+     dead-lettering also means never firing the dead-letter owner email, which is
+     the only *unprompted* signal in the whole path. That was harmless while every
+     no-penalty reason was a short-lived box state; admitting `target_parked`
+     changed it, since a park can legitimately last hours. So `agentwire doctor`
+     reports load-bearing (`done` / `request` / `escalation`) messages still
+     pending past `inbox.STALE_PENDING_MS` (2h), naming the recipient, the wait,
+     and the defer reason — and flagging parked recipients as self-resolving so
+     the section reads as FYI rather than failure. `agentwire msg inbox -s
+     <session>` remains the on-request view. Deliberately *not* an owner email: a
+     multi-hour park is the expected shape now, so emailing on it is the noise
+     that gets the channel muted.
    - **Gone recipients burn out fast (#694).** Before any box parsing, the
      drain checks the target against the live tmux session list. A recipient
      that *positively doesn't exist* defers as `target_gone` — a penalized
