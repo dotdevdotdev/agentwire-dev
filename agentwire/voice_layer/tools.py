@@ -1,4 +1,4 @@
-"""The buddy's tool surface — READ-ONLY fleet awareness (spike).
+"""The buddy's tool surface — the allowlist and the one dispatcher (spike).
 
 This module is the security boundary of the whole voice layer, so it is built
 as a hard allowlist rather than a passthrough.
@@ -12,13 +12,15 @@ parameters — the model chooses *which* tool, never *what runs*. A garbled
 session name fails the pattern check and returns an error the buddy can read
 back, which is the correct outcome: ask again.
 
-**Why read-only in this slice.** Anything routed through a Claude session
-inherits damage-control hooks, worktree isolation, posture and prompt routing.
-Anything the voice layer does directly inherits none of that. Reads are safe to
-do directly; writes are not, and the write story is delegation — spawning and
-directing sessions — which is the NEXT slice, not this one. There is
-deliberately no escape hatch here for a write: adding one means adding a tool,
-in a diff someone reviews.
+**Reads are direct; the one write is a handoff.** Anything routed through a
+Claude session inherits damage-control hooks, worktree isolation, posture and
+prompt routing. Anything the voice layer does directly inherits none of that,
+so reads happen here and the single write
+(:mod:`~agentwire.voice_layer.write_tools`) is a message to a session that
+already has those guards — never an action the buddy takes itself. Its write is
+additionally gated below the model by
+:mod:`~agentwire.voice_layer.confirm`. There is still deliberately no escape
+hatch: adding a capability means adding a tool, in a diff someone reviews.
 
 Everything dispatches through the ``agentwire`` CLI, which is the documented
 single source of truth for session logic. The one exception is ``gh``, which
@@ -60,7 +62,14 @@ _MAX_PR_LIMIT = 50
 
 
 class ToolError(Exception):
-    """A tool call was refused — bad arguments, or a tool that doesn't exist."""
+    """A tool call was refused — bad arguments, or a tool that doesn't exist.
+
+    The message IS the spoken refusal (spec §3.2), so write it as speech and
+    make it actionable. :func:`dispatch` surfaces it as ``say`` with
+    ``must_speak``; a refusal the owner never hears is the one unacceptable
+    failure mode, because they are not looking at a screen and will simply
+    repeat themselves into a system that already said no.
+    """
 
 
 def _session_arg(args: dict, key: str = "session") -> str:
@@ -321,30 +330,119 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
 TOOLS_BY_NAME = {t.name: t for t in READ_ONLY_TOOLS}
 
 
+# ---------------------------------------------------------------------------
+# Write tools — same allowlist shape, one extra requirement
+# ---------------------------------------------------------------------------
+#
+# ``write_tools`` imports from here (for ``ToolError`` and ``_session_arg``), so
+# the import back the other way is deferred to call time. One direction at
+# module level keeps the cycle from existing at all.
+
+
+@dataclass(frozen=True)
+class WriteTool:
+    """A tool that can write, and therefore needs the confirm spine.
+
+    Structurally distinct from :class:`ReadOnlyTool` rather than a flag on it:
+    ``run`` here takes the spine as a second argument, so a write tool
+    physically cannot be invoked by a caller that has no gate to hand it. A
+    boolean would have let one through by omission.
+    """
+
+    name: str
+    description: str
+    run: Callable[[dict, object], dict]
+    parameters: dict
+
+    def to_realtime_tool(self) -> dict:
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        }
+
+
+def write_tools() -> "tuple[WriteTool, ...]":
+    from . import write_tools as _write_tools
+
+    return tuple(
+        WriteTool(name=name, description=description, parameters=parameters, run=run)
+        for name, description, parameters, run in _write_tools.WRITE_TOOL_SPECS
+    )
+
+
+def all_tools() -> "tuple[object, ...]":
+    """Every tool the model may call: the read allowlist plus the one write."""
+    return (*READ_ONLY_TOOLS, *write_tools())
+
+
 def realtime_tool_defs() -> list[dict]:
     """The full ``session.tools[]`` array for a Realtime session."""
-    return [t.to_realtime_tool() for t in READ_ONLY_TOOLS]
+    return [t.to_realtime_tool() for t in all_tools()]
 
 
-def dispatch(name: str, args: dict, buddy: str) -> dict:
+def dispatch(name: str, args: dict, buddy: str, spine=None) -> dict:
     """Run one tool call by name. Never raises — errors come back as data.
 
     Returning an error rather than raising is what lets the buddy *say* what
     went wrong ("I don't have a session by that name — which one did you
     mean?") instead of the conversation stalling on an unresolved function
     call.
+
+    *spine* is the :class:`~agentwire.voice_layer.confirm.ConfirmSpine`. Without
+    one, write tools are refused outright rather than silently degraded to an
+    ungated write — a caller that forgot to wire the gate must fail loudly.
+
+    **Every refusal here speaks** (spec §3.2). Each error path returns ``say``
+    plus ``must_speak``, so there is no route by which a refusal reaches the
+    model as something it can quietly swallow and retry around. The owner is not
+    watching a screen; an unspoken refusal is indistinguishable from the buddy
+    having simply not heard them.
     """
-    tool = TOOLS_BY_NAME.get(name)
-    if tool is None:
-        return {
-            "success": False,
-            "error": f"No such tool: {name}. Available: {', '.join(sorted(TOOLS_BY_NAME))}",
-        }
     payload = dict(args or {})
     payload["_buddy"] = buddy
-    try:
-        return tool.run(payload)
-    except ToolError as exc:
-        return {"success": False, "error": str(exc)}
-    except Exception as exc:  # a tool failure must never kill the conversation
-        return {"success": False, "error": f"{name} failed: {exc}"}
+
+    def spoken_error(message: str, reason: str) -> dict:
+        return {
+            "success": False,
+            "reason": reason,
+            "error": message,
+            "say": message,
+            "must_speak": True,
+        }
+
+    def guarded(run):
+        try:
+            return run()
+        except ToolError as exc:
+            return spoken_error(str(exc), "refused")
+        except Exception as exc:  # a tool failure must never kill the conversation
+            # Deliberately not re-raised and deliberately not silent: an
+            # unexpected failure the owner never hears about is the same
+            # experience as the buddy ignoring them.
+            return spoken_error(
+                f"Something went wrong running {name}, so nothing happened: {exc}",
+                "tool_failed",
+            )
+
+    tool = TOOLS_BY_NAME.get(name)
+    if tool is not None:
+        return guarded(lambda: tool.run(payload))
+
+    writes = {t.name: t for t in write_tools()}
+    write_tool = writes.get(name)
+    if write_tool is None:
+        available = ", ".join(sorted({*TOOLS_BY_NAME, *writes}))
+        return spoken_error(
+            f"I don't have a tool called {name}, so I did nothing. "
+            f"Available: {available}",
+            "no_such_tool",
+        )
+    if spine is None:
+        return spoken_error(
+            f"{name} needs the confirm gate and this dispatcher has none. "
+            "Nothing was sent.",
+            "no_confirm_gate",
+        )
+    return guarded(lambda: write_tool.run(payload, spine))

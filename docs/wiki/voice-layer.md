@@ -79,11 +79,11 @@ out. A voice I/O layer is not a harness, and the distinction is load-bearing:
 | Owns a worktree and a branch | Owns no checkout, no branch |
 | Appears in the topology (orchestrator / worker / reviewer) | Does not appear in the topology at all; its role is `buddy` |
 | Opens PRs, merges | Neither |
-| Inherits damage-control hooks, posture, prompt routing | Has **no** such guards — which is exactly why it is read-only |
+| Inherits damage-control hooks, posture, prompt routing | Has **no** such guards |
 
 The moment it edits a file, it is a second harness, and it is an *unguarded*
 one. If the buddy should change something, the answer is always **a Claude
-session should do that** — and the buddy's job is to start one, not to act.
+session should do that** — and the buddy's job is to ask one, never to act.
 
 ### Powerful by delegation, not by direct authority
 
@@ -95,8 +95,83 @@ had:
 > **Mis-transcription.** "Kill the worker" and "kill the worktree" differ by one
 > phoneme. So do most session names in a real fleet.
 
-Hence: **read broad, write narrow.** Its power comes from spawning and directing
-sessions, not from acting itself.
+Hence: **read broad, write narrow.** Its power comes from asking sessions to do
+things, not from acting itself.
+
+### The write path exists now, and it is not guarded by anything but itself
+
+Slice 1 gives the buddy exactly one write: `agentwire msg send` to a session
+that is already running. Until it landed, "has no such guards" was a
+theoretical statement about a read-only tool surface. It is now a live property
+of a write path, so it is worth stating exactly, and **every shorter version of
+this rounds up**:
+
+> **The sending is unguarded. The acting-on-it inherits the recipient's ordinary
+> guards — which are guards on the OPERATION, not on WHO ASKED.**
+
+"The recipient is guarded, so the buddy is safe" is the rounding-up to avoid,
+and it is wrong twice over:
+
+- **Coverage.** The recipient's `PreToolUse` hooks cover `Bash`, `Edit`,
+  `Write`, `Read`, `Grep`, `Glob` and `mcp__agentwire__(email_send|quo_send)`.
+  A recipient acting through any other `mcp__agentwire__*` tool —
+  `session_send`, `pane_spawn`, `msg_send`, `worktree_*` — is not guarded at
+  all.
+- **Kind, which matters more.** Damage control guards *operations*. It cannot
+  distinguish "the human asked for this" from "the buddy asked" from "a
+  mis-transcription asked". So it is not a guard on the buddy's **authority** in
+  any sense: the recipient is exactly as guarded as it was before, and the buddy
+  has added a new way to ask it things.
+
+What actually constrains the buddy is the frozen argv and the confirm gate
+(§4a). Measured, not argued — see [the empirical result](#the-empirical-result).
+
+#### The empirical result
+
+Reproducible with `tools/voice_dc_probe.py`. Measured 2026-08-06 against the
+**live** rules at `~/.agentwire/damage-control` (15 files, sha `af286f2c`) and
+tooldefs at `~/.agentwire/tooldefs` (10 files, sha `3da4c920`) — both named
+because per #916 they drift independently, and a safety claim that does not say
+what it was measured against is not a claim.
+
+| Probe | Result |
+|---|---|
+| **A** hook fed a `PreToolUse` payload for a `msg send` whose BODY discusses a guarded operation | **BLOCK** — `rm with recursive or force flags` |
+| **B** the identical argv via `subprocess.run` from plain Python (what the bridge does) | **exit 0, queued** |
+| **C** control: innocuous `msg send` through the hook | ALLOW |
+| **D** control: a genuinely destructive command through the hook | BLOCK |
+
+C and D are not decoration. Without C, A does not distinguish "the rule fired"
+from "the hook refused for some other reason"; without D it does not distinguish
+"the rules work" from "everything is blocked".
+
+So both halves hold: the Bash-tool path is hooked and **over-blocks on prose**
+(#915 reproduces), and the bridge's path **is not hooked at all**. Not "guarded
+and occasionally over-blocked" — *not guarded*.
+
+`anchored` appears **0 times in both the live and the bundled `core.yaml`**, so
+#915 reproduces against the **shipping** rule set. The #916 drift does not
+weaken this result.
+
+Two adjacent consequences worth carrying forward:
+
+- **`mcp__agentwire__msg_send` is not in the matcher list either.** So the "fix"
+  a future reader reaches for is the MCP tool, and that path is *also*
+  unguarded. The choice is not "unguarded vs guarded-but-over-blocking" — it is
+  **unguarded, unguarded, or over-blocking**. `msg send` has no damage-control
+  coverage on any programmatic path.
+- **Routing the buddy's writes through a Claude Bash tool to "fix" this
+  inherits #915**, and produces a buddy whose write is refused for *describing*
+  an operation. Out of scope here; noted so the next person sees the trade.
+
+Two traps if you re-run the probe. Launching it through Claude Code's Bash tool
+means your own hook matches the prose in the command line (#915) and the probe
+never runs — hence the pattern is assembled from fragments inside the file.
+And running the hook under bare `python3` returns exit 2 with `pyyaml
+unavailable`, which is the **fail-closed path, not a rule**, and exit 2 is the
+same code a real block returns; the probe invokes the hook through its own
+`uv run --script` shebang and reports a pyyaml reason as INVALID rather than as
+a block.
 
 ---
 
@@ -230,20 +305,276 @@ session by that name — which one did you mean?").
 - Buddy identity + inbox + the delivery adapter.
 - Read-only fleet awareness: what is running, what is blocked, what needs you.
 - Reads its own mail from other sessions.
+- **One write: a message to a session that is already running** (§4a below).
 - Speaks only when spoken to.
 
 **Does not — and this is where the risk lives:**
-- ❌ No write authority of any kind.
-- ❌ No spawning or directing sessions.
+- ❌ No spawning, no session creation, no worktrees. Ever. See §4b.
+- ❌ No acting directly on the fleet — every write is a request to a session.
 - ❌ No proactive interruption.
 
-There is deliberately **no escape hatch** for a write. Adding one means adding a
+There is deliberately **no escape hatch**. Adding a capability means adding a
 tool, in a diff someone reviews.
+
+## 4a. The confirm spine
+
+The buddy's one write is gated below the model, in two halves that do different
+jobs.
+
+### The guarantee, in full
+
+> This defends against **mis-transcription and against an approval the
+> conversational model invented**, which is the stated threat. It does **not**
+> cover every mis-transcription — a transcriber hallucination or an
+> approval-shaped utterance meant for someone else is a real residual risk that
+> the nonce narrows but does not eliminate. **A passed gate means the message
+> was queued, not delivered, and not acted on.** It is **not** a security
+> boundary against an adversary.
+
+**Widen this if you learn more; never narrow it.** Do not paraphrase it as "the
+confirm gate protects writes". The "queued, not delivered" clause is here rather
+than only next to the spoken wording because this paragraph is what a future
+reader quotes when they ask what the gate guarantees — and without it they
+conclude "gate passed, so the write happened". It did not.
+
+### (a) Proposal binding
+
+The write tool refuses any call lacking a token minted on a prior turn, and the
+**argv is frozen at propose time**. `confirm` takes exactly one argument — the
+token — so there is structurally nothing to mutate between propose and confirm.
+TTL-bounded, and **single-use means consumed on SUCCESS, not on attempt**: if a
+refused attempt burned the token, the "give me a second" refusal below would be
+telling the owner to wait when waiting cannot work. Refused attempts are
+rate-limited instead.
+
+### (b) The approval judgment: a spoken nonce
+
+DocumentScribe leaves this entirely in the model (§5). We do not.
+
+The buddy speaks a nonce in the proposal — *"say **confirm tango** to approve"* —
+and the approval grammar is `confirm <nonce>`, evaluated **in code** against the
+transcription model's output. The conversational model's claim to have heard a
+yes never enters into it.
+
+An earlier design used an approval grammar plus a filler denylist, and claimed
+that meant "two models must fail the same way". **That was false and the
+mechanism was weaker than it looked**, because the two models consume the same
+audio. Three breaks, none needing the conversational model to fail at all:
+
+- **Transcriber hallucination.** `gpt-4o-mini-transcribe` is Whisper-lineage,
+  and confident short affirmatives on near-silence — "Okay.", "Yeah.", "Thank
+  you.", "Yes." — are that family's best-documented failure. Three of those four
+  were *in the denylist*, which is the tell: **the denylist was enumerating a
+  hallucination prior.** An unbounded denylist is not a mechanism; it is a list
+  of the failures you have thought of so far.
+- **An approval-shaped utterance meant for someone else** — "yeah, that's
+  right, anyway" to a person in the room. `semantic_vad` commits it.
+- **One approval, two proposals.** The condition was existential ("there is an
+  utterance after the proposal"), so one "yes" satisfied both. That is the
+  "acting twice" failure §4b names.
+
+The nonce **narrows** the first two and **closes** the third (nonces are unique
+among live proposals; running out is an error, never a reuse). It is not
+"kills" — a transcriber can still hallucinate and a word can still occur in
+speech meant for someone else, which is why the honest limit above says what it
+says.
+
+**The nonce alphabet is words, not digits, and that is a livelock fix.** "four
+seven" comes back as `47`, `four seven`, `4-7` or `forty-seven` — the least
+stable token type paired with the strictest matcher, so a **correct** approval
+fails deterministically, and the taxonomy reports it as "say it again", so the
+owner repeats and fails identically. Pricing the false-accept half without the
+false-reject half produces a gate nobody can pass. Hence one-spelling words,
+normalization on both sides, and **containment rather than whole-utterance
+matching** — strictness was inherited from a grammar ("yes") that carried no
+entropy, and the nonce carries its own.
+
+### Ordering: conversation-item time, on speech-START
+
+"The approval postdates the proposal" is only well-defined if both sides are the
+same quantity. Two wrong answers, both of which silently invert the predicate:
+
+- **Transcript arrival time.** That is when transcription *finished*, and the
+  gap from when the audio was *spoken* is exactly the latency the hazard is
+  about. An utterance spoken before the proposal but transcribed after it stamps
+  as postdating it.
+- **The audio COMMIT event.** Commit fires at the *end* of an utterance, and the
+  barge-in case is the owner starting to speak *during* the proposal and
+  finishing after it — speech-start predates the proposal's `response.done`, the
+  commit postdates it. **Ordering on the commit approves the barge-in**: the
+  exact hole the clock change exists to close.
+
+So both sides move to a logical clock — a sequence the client assigns in
+data-channel event order:
+
+- an utterance is stamped at **`input_audio_buffer.speech_started`** (the intent
+  time; the commit is recorded for binding and inspection, and never gates);
+- a proposal is anchored at the **`response.done` of the turn in which the buddy
+  spoke it**, which is when the owner heard what they would be approving.
+
+The transcript forward is awaited before any function call dispatches — they are
+independent `fetch` calls otherwise — and the ring holds a lock, because the
+bridge is a `ThreadingHTTPServer` and a confirm blocks on the ring's condition
+waiting for the transcript it needs.
+
+### Bounded await, and outcomes that differ
+
+Fail-closed *immediately* is wrong: the conversational model starts generating as
+soon as VAD commits while transcription is a separate pass, so a confirm often
+beats its own transcript. Refusing instantly would tax every confirm two
+utterances — and leave the first approval stale in the ring, so a retry after
+"no, wait" would **write after the owner said no**. So the gate waits ~2.5s on a
+condition variable, a matched utterance is *spent*, and any denial committed
+after an approval refuses.
+
+Outcomes are keyed on **what the owner should do next**, and are never
+collapsed:
+
+| Outcome | Owner's correct next move |
+|---|---|
+| `no_proposal` | restate the request |
+| `expired` | ask again |
+| `not_announced` | wait — the buddy hasn't finished saying it |
+| `replayed` | nothing, it already went |
+| `refused` | say the phrase |
+| `wrong_nonce` | ask what the word was |
+| `denied` | nothing — you said no |
+| `pending_transcript` | **wait** |
+
+`refused` and `pending_transcript` demand *opposite* behaviour. Collapsing them
+trains the owner to repeat into a system that needed them to hold still.
+
+### Every refusal speaks — and returning a reason does not achieve that
+
+Silence is the one unacceptable failure mode. The gate *will* refuse correct
+approvals; the owner is not looking at a screen, so a refusal they cannot hear
+is indistinguishable from not having been heard, and they simply repeat
+themselves.
+
+Returning a reason string does not make the model say it: a
+`function_call_output` is context. Refusing to leave the *judgment* in the model
+and then leaving the *announcement* in it is the same defect one level up. And
+there is a genuinely silent branch: `maybeCreateResponse` declines while a
+response is in flight, so the output lands and **no response is created** — the
+*likely* path for a timing refusal, because a timing refusal fires exactly when
+VAD is producing its own responses.
+
+So refusals go through an announcer in `client.py`: cancel the in-flight
+response (an error from cancelling an already-finished one is ignored), issue a
+scripted `response.create`, and verify against the following `response.done`.
+
+**The `speechSynthesis` fallback is armed by a timer, not triggered by a
+detected failure**, and that is the part that decides whether this property is
+real. `responseActive` is a client-side mirror and stale by construction: if the
+client skips the cancel while the server has just started a VAD response, the
+server rejects the overlapping create and the announcement is dropped
+*server-side*, with every client-visible signal reporting success. `send()` is
+fire-and-forget; nothing correlates a later `error` with a specific create.
+Every failure mode here is unobservable from the client, so any design routing
+the fallback through *detecting* failure leaks exactly the cases that matter.
+
+> **Start the timer at refusal time. Disarm it only on positive confirmation
+> that the reason was spoken. Default-on, disarmed by success.**
+
+That is the general shape for anything that must not be silent: make speech the
+default and require evidence to suppress it. **A refusal that always speaks in a
+robot voice beats one that usually speaks in a nice one.**
+
+**Trade, so it is not a surprise:** cancelling cuts the buddy off mid-sentence,
+sometimes mid-proposal. That is the right trade here.
+
+### Success must not over-claim either
+
+`agentwire msg send` **queues** — delivery happens at the recipient's next safe
+boundary and can defer behind the box gates. From the owner's ear, "I told the
+orchestrator" followed by nothing is indistinguishable from a silent refusal and
+**worse**, because success was affirmatively claimed. So the buddy says
+**"queued — it'll land when that session is free"**, never "sent" and never
+"done".
+
+### Attribution
+
+`--from buddy` alone is not enough: a recipient must tell a buddy-originated
+request from a human-typed one **without reading carefully**, because the whole
+point is that the human was not typing. The failure to prevent is not a *wrong*
+message — it is an orchestrator acting on instructions the human never gave, or
+acting twice.
+
+Slice 1 ships the body half:
+
+```
+[MSG from buddy · request] <voice> restart the portal ┃ said: "confirm tango" ┃ #a1b2c3
+```
+
+The `<voice>` marker goes **first in the body** and that placement is the whole
+of Slice 1's attribution. With `--kind request` the kind slot distinguishes
+nothing, so the only prefix-level distinguisher left would be exactly the sender
+string §4 rejects; putting the marker at the front of the body puts it in the
+position the kind slot would have occupied, and touches no shared code. **Slice 1
+does not claim kind-slot attribution** — that arrives with the `voice` kind in
+Slice 1b.
+
+The verbatim authorizing utterance rides along free, because the gate already had
+to capture it. A recipient can always answer "did a human really say this, and in
+what words", and can see it when the buddy mis-paraphrased.
+
+**One line, capped. Newlines are unsafe**, and the reason is not the one you
+expect. The paste is fine (bracketed paste, `enter=False`) and the #621 dedup is
+fine (it whitespace-normalizes both sides). **The #689 heal is what breaks:** a
+multi-line paste renders as the `[Pasted text #N +M lines]` chip and nothing
+else, so `flush_session`'s `stuck` substring test finds nothing, `finish_submit`
+never runs, `_box_static` classifies it no-penalty after three sweeps, and the
+message is **permanently wedged — never healed, never dead-lettered, therefore
+never emailed**, surfacing only via `doctor` after two hours. For a channel whose
+entire justification is "the owner is not watching a screen", that is the worst
+available failure. The same `stuck` test has no #851 window path, so an
+over-long single line fails identically — hence the cap.
+
+### Why `--kind request` and not a `voice` kind
+
+A `voice` kind is deferred to Slice 1b deliberately. It is the only part of this
+work that would change behaviour for sessions with nothing to do with voice, it
+touches a shared subsystem's escalation and dead-letter paths, and its blast
+radius is non-obvious: `doctor_cli.py:1182` and `session_cli.py:1280`/`:1321`
+filter a hand-written `("done", "escalation")` tuple, so a dead-lettered message
+of a new kind would be invisible to `doctor`'s `[!!]` line and to `session
+info` — silently defeating the argument the kind was being made for.
+
+`request` is already in `ESCALATE_KINDS`, so the dead-letter-emails-the-owner
+property is achieved today. When 1b lands it should fix those three call sites
+by **deriving from `inbox.ESCALATE_KINDS`** rather than adding a fourth
+hand-written tuple.
+
+**Two things the substitution drags in**, both named rather than discovered
+later:
+
+- **That `doctor` / `session info` gap already bites `request` today**, entirely
+  independent of voice — a dead-lettered `request` is invisible to both right
+  now. Worth fixing on its own merits; filed separately, not folded in here.
+- **`request` IS in `cohort.REPORT_KINDS`**, and `cohort._harvest` filters on
+  kind — so if the buddy were ever enrolled as a pending cohort child of the
+  recipient, `wait --children` would harvest the buddy's write as a child report
+  and consume it. What makes that unreachable today is that nothing enrols the
+  buddy; both halves are asserted in
+  `tests/unit/test_voice_body_delivery.py::TestTheCohortInteraction`, so if
+  enrolment ever changes the test fails rather than the report vanishing.
+
+## 4b. Cold fleet: the buddy never starts an orchestrator
+
+If no live session is listening, the buddy **says so out loud and stops**.
+"Nothing is listening" is a correct and useful spoken answer.
+
+The pull toward a bootstrap escape hatch — *let it start one orchestrator, just
+this once, when nothing is live* — is real, and it is the design working. That
+would be session-creation semantics through the back door, and "just this once"
+is how the boundary in §2 dies. It is not built, and
+`test_the_buddy_has_no_tool_that_starts_a_session` asserts its absence, because
+that boundary dies quietly (a plausible tool gets added) rather than loudly.
 
 **Clarification, because the "does not" list reads worse than the truth:** the
 voice conversation itself is complete and works end to end — mic in, voice out,
-barge-in, tool calls, spoken answers. What is missing is *write authority*, not
-voice. Asking "what's the fleet doing" and getting a spoken answer works today.
+barge-in, tool calls, spoken answers. Asking "what's the fleet doing" and getting
+a spoken answer works today, and so does asking it to pass a message on.
 
 **Two loose ends, distinct from the deferred slices above:**
 
@@ -306,12 +637,25 @@ changing underneath the conversation.**
 
 ### Deliberately different
 
-- **Read-only.** Doc mutates, gated by confirm tiers and an ActionCard. This
-  buddy has no write path at all in this slice. Their confirm/`hard_confirm`
-  tiering plus the `confirm_pending_action` meta-tool is the obvious model for
-  the *next* slice — and their guardrail language against filler agreement
-  ("yeah", "mmhmm" must not count as approval) is the part to copy most
-  carefully.
+- **The confirm gate is in CODE, not in the prompt — and this is the one place
+  the spike's own advice was wrong.** The spike page used to say their
+  anti-filler guardrail was "the part to copy most carefully". Read the source
+  before copying it: `voice/instructions.ts` lines 42-46 is a *paragraph asking
+  the model to be strict*, with a concrete false-positive list; `tools.ts` says
+  so explicitly — *"Guardrail language against loose 'yeah'/filler agreement
+  lives in instructions.ts, not here; these are just the callable surface"* —
+  and their own file comment is blunter still: *"there's no code-level pattern
+  match on 'yes' — the model itself must judge deliberateness"*. There is no
+  mechanism. And the stated fallback for when the model gets it wrong is *"a
+  missed verbal approval just means they tap the card"* — a click surface a
+  voice-only user cannot reach (#748).
+
+  **So the part we were told to copy most carefully is the part that never
+  worked hands-free.** Their meta-tool shape (`confirm_pending_action` bound to
+  a `call_id` from the proposing turn) is genuinely worth taking, and §4a's
+  proposal binding is that shape. The judgment is not: here it is a nonce
+  evaluated in code against the transcription model's output, and the approval
+  surface is speech, so there is no card to tap.
 - **A freshness rule, which has no counterpart there.** The fleet changes while
   you're talking. A fact from ninety seconds ago may already be false, so the
   persona is told to re-read rather than recall, and to date-stamp anything it
@@ -388,23 +732,25 @@ point of the ordering is that each one can be rejected on its own.
 These came out of reviewing the spike with the owner and are genuinely
 undecided. A next session that picks an answer silently is the failure mode.
 
-- [ ] **Q1 — Where does the confirm tier live: in the voice model, or below
-      it?** *In the model* means the buddy asks "shall I spawn a worker on #884
-      on branch fix-884?" and treats the reply as approval. *Below it* means the
-      tool layer refuses any write that lacks a confirmation token minted by a
-      previous turn, so a hallucinated or mis-transcribed approval cannot
-      manufacture one. The second is more work and is the only one that holds if
-      the model is wrong about what it heard. **Recommendation: below it.**
-      DocumentScribe put it in the model and papered over the gaps with prompt
-      language; see §5 for why that is not a control mechanism.
-- [ ] **Q2 — Is "spawn a worker" a tool, or a handoff to a real session?** A
-      *tool* means the voice layer builds the `worktree_create` argv itself —
-      fast, but the voice layer now owns session-creation semantics, which is
-      the thing §2 says it must never do. A *handoff* means the buddy composes
-      the request and hands it to an actual orchestrator session, which already
-      has damage-control hooks, posture and prompt routing. **Recommendation:
-      handoff.** It keeps the "not a harness" boundary intact by construction
-      rather than by discipline.
+- [x] **Q1 — Where does the confirm tier live: in the voice model, or below
+      it? SETTLED: below it, and the settlement splits in two.**
+      **(a) Proposal binding** — a write tool refuses any call lacking a token
+      minted on a prior turn, with the argv frozen at propose time, TTL-bounded,
+      consumed on success. **(b) The approval judgment** — also below the model:
+      a spoken nonce evaluated in code against the transcription model's output,
+      never against the conversational model's claim to have heard a yes. (b) is
+      the part DocumentScribe does not have; see §4a and the corrected §5.
+      Shipped in Slice 1.
+- [x] **Q2 — Is "spawn a worker" a tool, or a handoff to a real session?
+      SETTLED: handoff.** The buddy composes a request and hands it to a session
+      that already has damage-control hooks, posture and prompt routing. It
+      never builds a `worktree_create` argv and never creates a session. This
+      keeps the §2 boundary intact by construction rather than by discipline —
+      and it means T1 adds no new authority when it lands, because under handoff
+      "spawn a worker" is the same write with different words in the body.
+      **The cold-fleet corollary is ruled and not open:** if nothing is
+      listening, the buddy says so and stops. It never bootstraps an
+      orchestrator (§4b).
 - [ ] **Q3 — What earns the right to interrupt?** Needed before any proactive
       speech. Candidate triggers, roughly in descending defensibility: a
       dead-lettered `done`/`escalation` (something is already lost), a dangling
@@ -414,23 +760,32 @@ undecided. A next session that picks an answer silently is the failure mode.
 
 ### The slices
 
-- [ ] **T1 — Spawning.** Delegate session creation. Where the buddy becomes
-      genuinely useful and where mis-transcription first has teeth. Blocked on
-      Q1 and Q2. Must carry DocumentScribe's anti-filler guardrail: "yeah",
-      "mmhmm", "sure" must not count as approval (§5).
-- [ ] **T2 — Directing.** `msg send` to a session. Lower stakes than spawning
-      (polite and non-clobbering by construction) but still a write. Blocked on
-      Q1.
+- [ ] **T1 — Spawning.** Blocked on nothing now: under Q2's handoff ruling this
+      is the SAME write as T2 with different words in the body, so it adds no
+      new authority. Do NOT let it become a tool that creates a session.
+- [x] **T2 — Directing.** `msg send` to a session, gated by the confirm spine.
+      Shipped in Slice 1 (§4a).
 - [ ] **T3 — Proactive interruption.** Technically easy — the spool is already
       there — and socially the hardest to get right. An assistant that
       interrupts badly gets turned off. Blocked on Q3.
 - [ ] **T4 — Lifecycle host.** Wire §6's `services.custom` entry, if and when
       the owner wants the buddy on the startup path. Independent of Q1–Q3; safe
       to do first.
-- [ ] **T5 — Confirm the confirm.** Whatever Q1 decides, the confirmation path
-      must be reachable **hands-free**. DocumentScribe shipped a click-gated
-      confirm modal that a voice-only user could never reach (#748). If the only
-      way to approve is to touch the screen, the feature does not exist.
+- [x] **T5 — Confirm the confirm.** Satisfied by construction, not by a separate
+      step: the approval surface IS speech (a spoken nonce), so there is no card
+      to tap and nothing to reach for. DocumentScribe shipped a click-gated
+      confirm modal a voice-only user could never reach (#748); this was never
+      separable work from T2, and splitting it would have yielded an
+      intermediate state strictly worse than not shipping — a write path with a
+      confirm gate nobody can reach.
+- [ ] **Slice 1b — the `voice` kind.** Add `voice` to `inbox.KINDS` and
+      `ESCALATE_KINDS`, moving attribution from the body front to the kind slot.
+      Deliberately split out of Slice 1: it is the only part that changes
+      behaviour for sessions with nothing to do with voice. Must ALSO fix
+      `doctor_cli.py:1182` and `session_cli.py:1280`/`:1321` by deriving from
+      `inbox.ESCALATE_KINDS` rather than adding a fourth hand-written tuple, and
+      must test the `_cohort_held` interaction (it filters by **sender**, not
+      kind). See §4a.
 
 ### Standing constraints for whoever picks this up
 

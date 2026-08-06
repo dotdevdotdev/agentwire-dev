@@ -246,10 +246,17 @@ class TestToolAllowlist:
             assert not (set(tool.name.split("_")) & forbidden)
 
     def test_unknown_tool_is_data_not_an_exception(self):
-        """A stalled function call kills the conversation; an error can be spoken."""
+        """A stalled function call kills the conversation; an error can be spoken.
+
+        Slice 1 tightened this: the error is now phrased AS speech and carries
+        ``must_speak``, because a refusal the owner never hears is
+        indistinguishable from not having been heard at all.
+        """
         result = tools.dispatch("rm_rf_everything", {}, "buddy")
         assert result["success"] is False
-        assert "No such tool" in result["error"]
+        assert "don't have a tool called rm_rf_everything" in result["error"]
+        assert result["must_speak"] is True
+        assert result["say"].strip()
 
     @pytest.mark.parametrize(
         "bad", ["worker one", "worker;rm -rf /", "--help", "../etc/passwd", "", None, 7]
@@ -319,7 +326,9 @@ class TestRealtime:
         assert session["audio"]["input"]["turn_detection"]["type"] == "semantic_vad"
         assert session["audio"]["output"]["voice"] == realtime.DEFAULT_VOICE
         assert session["tool_choice"] == "auto"
-        assert len(session["tools"]) == len(tools.READ_ONLY_TOOLS)
+        # Reads plus the one gated write (Slice 1) — every allowlisted tool.
+        assert len(session["tools"]) == len(tools.all_tools())
+        assert len(session["tools"]) > len(tools.READ_ONLY_TOOLS)
 
     def test_client_secret_is_top_level_not_nested(self):
         """The field placement that a prose-docs reading gets wrong."""
@@ -350,11 +359,26 @@ class TestInstructions:
         assert "not one of those agents" in text
         assert "do not write code" in text
 
-    def test_states_the_read_only_limit_and_the_freshness_rule(self):
+    def test_states_its_limits_truthfully_and_the_freshness_rule(self):
+        """Slice 1 gave the buddy one write, so "you can only look" became a
+        lie. The persona must state the NEW boundary, not the old one."""
         text = instructions.build_instructions()
-        assert "LIMITS." in text and "only look" in text
+        assert "LIMITS." in text
+        assert "only look" not in text, "stale claim: the buddy can write now"
+        assert "cannot start a session" in text
         assert "FRESHNESS." in text
         assert "IDENTITY." in text
+
+    def test_says_queued_never_sent(self):
+        """``msg send`` queues; claiming delivery is worse than silence."""
+        text = instructions.build_instructions()
+        assert 'SAY "QUEUED", NEVER "SENT".' in text
+
+    def test_tells_the_persona_to_speak_every_refusal(self):
+        text = instructions.build_instructions()
+        assert "NEVER GO SILENT." in text
+        assert "must_speak" in text
+        assert "owner_should_wait" in text
 
     def test_does_not_speak_unprompted(self):
         """No proactive interruption in this slice — the persona must say so."""

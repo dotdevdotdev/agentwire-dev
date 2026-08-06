@@ -1,0 +1,273 @@
+"""The transcript ring, ordered by CONVERSATION-ITEM time (spike).
+
+This is the foundation the confirm gate stands on, and getting its clock right
+is the whole of finding Rv2.
+
+Why not wall-clock, and why that is not a tolerance problem
+-----------------------------------------------------------
+
+The obvious design stamps each utterance when the bridge *receives* the
+forwarded ``conversation.item.input_audio_transcription.completed``. That is
+when transcription **finished**, not when the audio was **spoken**, and the gap
+between them is exactly the transcription latency the whole timing hazard is
+about. An utterance spoken BEFORE a proposal but transcribed AFTER it stamps as
+postdating it — **the predicate silently inverts**.
+
+Widening a tolerance does not fix that, because the two sides are not the same
+quantity: a receipt time compared against an intent time. The fix is to compare
+two quantities that ARE the same, and the realtime session already provides one
+— the order of items on the data channel.
+
+So the ring is ordered by a **logical clock**: a monotonically increasing
+sequence the client assigns in data-channel event order (see
+``client.py``'s ``nextSeq``). Both sides of the comparison come from that one
+ordered stream:
+
+- an utterance is stamped at its ``input_audio_buffer.speech_started``;
+- a proposal is anchored at the ``response.done`` of the turn in which the buddy
+  SPOKE it (see ``confirm.Proposal.anchor_seq``).
+
+"The approval postdates the proposal" then means
+``speech_started_seq > anchor_seq``: one integer comparison, on one clock, in
+conversation order. No skew, no latency, nothing to tune.
+
+**Why speech-START and not the audio commit.** This is subtle and the obvious
+choice is wrong in a way that reopens the exact hole the clock change exists to
+close. ``input_audio_buffer.committed`` fires at the **end** of an utterance.
+The barge-in case is the owner beginning to speak DURING the buddy's proposal
+and finishing after it — so speech-start predates the proposal's
+``response.done`` while the commit postdates it. Ordering on commit therefore
+**approves the barge-in**: an approval for a proposal the owner never heard
+stated. Speech-start is the intent time; the commit is not.
+
+The commit event is still needed, for a different job: it is what binds the
+``item_id`` used by the transcript event, and it is recorded (``commit_seq``) so
+the ordering choice can be inspected rather than assumed. Both times live on the
+entry; only ``speech_started_seq`` gates.
+
+Ordering of the two forwards
+----------------------------
+
+The commit event and the transcript for the same ``item_id`` arrive as two
+separate ``POST /utterance`` calls, and the confirm arrives as a third
+(``POST /tool``). The client awaits the transcript forward before dispatching
+any function call (Rv2c), but the bridge must not *depend* on that: a commit
+that has not arrived yet leaves the entry absent rather than mis-stamped, and a
+transcript arriving with no prior commit is recorded ``estimated`` and is never
+usable as an approval. Failing closed there is deliberate — if the commit
+events stopped arriving, confirms stop working loudly rather than silently
+losing their ordering guarantee.
+
+Thread safety
+-------------
+
+The bridge is a ``ThreadingHTTPServer`` and the ring is shared mutable state
+across request threads (Rv2c). Every read and write holds the lock. The lock is
+also the mechanism for :meth:`TranscriptRing.await_utterance_after`: a ``/tool``
+thread evaluating a confirm blocks on the condition until an ``/utterance``
+thread notifies it. That is not a workaround for threading — it is how the
+bounded await in §3.3 is implemented at all.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass
+
+#: How many utterances to keep. Minutes of conversation, and small enough that
+#: the ring never becomes a transcript store. It is not a log — nothing here is
+#: persisted, deliberately.
+DEFAULT_CAPACITY = 32
+
+
+@dataclass
+class Utterance:
+    """One thing the owner said, as the TRANSCRIPTION model rendered it.
+
+    Two logical times, and only one of them gates:
+
+    - ``speech_started_seq`` — when the owner BEGAN speaking. This is the intent
+      time and the only thing the ordering predicate reads. See the module
+      docstring for why the commit is the wrong choice here.
+    - ``commit_seq`` — when the audio buffer closed. Recorded for inspection and
+      for binding the transcript, never compared against a proposal.
+
+    ``spent`` marks an entry already used to approve something, so one approval
+    cannot satisfy a second proposal — the "acting twice" failure §4 names.
+    """
+
+    item_id: str
+    speech_started_seq: int = 0
+    commit_seq: int = 0
+    text: str = ""
+    estimated: bool = False
+    spent: bool = False
+    received_at: float = 0.0
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.text.strip())
+
+    @property
+    def ordered(self) -> bool:
+        """Can this entry be placed in conversation order at all?
+
+        False when no ``speech_started`` was seen. Such an entry is refused as
+        an approval: guessing its position is what the whole clock change
+        exists to stop.
+        """
+        return self.speech_started_seq > 0 and not self.estimated
+
+
+class TranscriptRing:
+    """A short, locked, in-memory ring of the owner's recent utterances."""
+
+    def __init__(self, capacity: int = DEFAULT_CAPACITY, clock=time.monotonic):
+        self._capacity = capacity
+        self._clock = clock
+        self._condition = threading.Condition()
+        self._items: list[Utterance] = []
+        #: Highest sequence the bridge has seen from ANY client event. Used to
+        #: anchor a proposal when the client's own anchor has not arrived yet,
+        #: never to order an utterance.
+        self._high_seq = 0
+
+    # -- writing ------------------------------------------------------------
+
+    def speech_started(self, item_id: str, seq: int) -> Utterance:
+        """Record that the owner BEGAN speaking item *item_id* at logical *seq*.
+
+        This is the timestamp the gate orders on. Idempotent, and a repeated
+        event keeps the FIRST sequence — the first one is closest to the actual
+        onset of speech, which is the quantity being measured.
+        """
+        with self._condition:
+            self._high_seq = max(self._high_seq, seq)
+            entry = self._find(item_id)
+            if entry is None:
+                entry = Utterance(item_id=item_id, received_at=self._clock())
+                self._append(entry)
+            if not entry.speech_started_seq:
+                entry.speech_started_seq = seq
+            return entry
+
+    def commit(self, item_id: str, seq: int) -> Utterance:
+        """Record the audio-commit boundary for *item_id* at logical time *seq*.
+
+        Recorded, never compared: the commit is the END of the utterance, and
+        ordering on it approves the barge-in case (see the module docstring).
+        Its job is binding the item and making the ordering choice inspectable.
+        """
+        with self._condition:
+            self._high_seq = max(self._high_seq, seq)
+            entry = self._find(item_id)
+            if entry is None:
+                entry = Utterance(item_id=item_id, received_at=self._clock())
+                self._append(entry)
+            if not entry.commit_seq:
+                entry.commit_seq = seq
+            return entry
+
+    def transcribe(self, item_id: str, text: str, seq: int = 0) -> Utterance:
+        """Attach the transcription model's text to *item_id*.
+
+        An id with no prior :meth:`speech_started` is admitted but flagged
+        ``estimated``: its position in the conversation is unknown, so the gate
+        refuses it. It is still recorded, because a refusal that can point at
+        what it heard is better than one that cannot.
+        """
+        with self._condition:
+            if seq:
+                self._high_seq = max(self._high_seq, seq)
+            entry = self._find(item_id)
+            if entry is None:
+                entry = Utterance(
+                    item_id=item_id, estimated=True, received_at=self._clock()
+                )
+                self._append(entry)
+            if not entry.speech_started_seq:
+                entry.estimated = True
+            entry.text = text
+            self._condition.notify_all()
+            return entry
+
+    def note_seq(self, seq: int) -> int:
+        """Record a sequence observed on the channel; return the running high."""
+        with self._condition:
+            self._high_seq = max(self._high_seq, seq)
+            return self._high_seq
+
+    @property
+    def high_seq(self) -> int:
+        with self._condition:
+            return self._high_seq
+
+    def spend(self, item_id: str) -> None:
+        """Mark an entry consumed so it can never approve a second proposal."""
+        with self._condition:
+            entry = self._find(item_id)
+            if entry is not None:
+                entry.spent = True
+
+    # -- reading ------------------------------------------------------------
+
+    def after(self, seq: int, *, include_spent: bool = False) -> list[Utterance]:
+        """Completed, unspent utterances whose SPEECH BEGAN strictly after *seq*.
+
+        Strictly after: an utterance sharing a sequence with the proposal's
+        anchor cannot be proven to follow it, and the gate's job is to refuse
+        what it cannot prove.
+        """
+        with self._condition:
+            return self._after_locked(seq, include_spent)
+
+    def await_utterance_after(
+        self, seq: int, timeout: float
+    ) -> "list[Utterance]":
+        """Block up to *timeout* seconds for an utterance beginning after *seq*.
+
+        Returns immediately if one is already present, and returns whatever
+        exists at the deadline — possibly empty. An empty result is a DIFFERENT
+        refusal from "a transcript arrived and did not match" (see the outcome
+        taxonomy in :mod:`~agentwire.voice_layer.confirm`), and the caller must
+        keep them apart because the owner's correct next move is opposite.
+        """
+        deadline = self._clock() + timeout
+        with self._condition:
+            while True:
+                found = self._after_locked(seq, False)
+                if found:
+                    return found
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    return []
+                self._condition.wait(remaining)
+
+    def snapshot(self) -> list[Utterance]:
+        with self._condition:
+            return list(self._items)
+
+    # -- internals ----------------------------------------------------------
+
+    def _find(self, item_id: str) -> "Utterance | None":
+        for entry in self._items:
+            if entry.item_id == item_id:
+                return entry
+        return None
+
+    def _append(self, entry: Utterance) -> None:
+        self._items.append(entry)
+        if len(self._items) > self._capacity:
+            del self._items[: len(self._items) - self._capacity]
+
+    def _after_locked(self, seq: int, include_spent: bool) -> list[Utterance]:
+        # speech_started_seq, NOT commit_seq. Ordering on the commit approves
+        # the barge-in case — see the module docstring.
+        return [
+            u
+            for u in self._items
+            if u.complete
+            and u.speech_started_seq > seq
+            and (include_spent or not u.spent)
+        ]
