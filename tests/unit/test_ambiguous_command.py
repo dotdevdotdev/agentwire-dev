@@ -272,6 +272,38 @@ class TestArithmeticIsNotCommandSubstitution:
         """The interior is not skipped, only reclassified."""
         assert decide(cfg, f"[ $(( $({RM} -rf /) - 5 )) -gt 90 ]")[0] == "block"
 
+    def test_the_extraction_itself_is_pinned_not_just_the_outcome(self):
+        """Pins the mechanism, because the outcome has a backstop under it.
+
+        The test above passes even if the arithmetic branch extracted nothing:
+        `core.rm-with-recursive-or-force-flags` is unanchored on main, so it
+        matches the RAW haystack and blocks the command regardless. That is a
+        backstop, not coverage — and #920 anchors 9 of the 10 `core.rm*` rules,
+        which routes them to the masked haystack instead.
+
+        (The merge-queue holder measured that composition: the backstop
+        survives #920 anyway, because `masked_subcommands` blanks a token only
+        when it is FULLY QUOTED, and `$`/`(` are ordinary characters to the
+        masker — so an unquoted substitution survives masking intact. So this
+        is not insurance against a live hazard; it is a test of the mechanism
+        rather than of a coincidence, so that the day the outcome starts
+        depending on the extraction, something fails.)
+        """
+        inner = C.split_substitutions(f"[ $(( $({RM} -rf /) - 5 )) -gt 90 ]")[1]
+        assert inner == [f"{RM} -rf /"], (
+            f"the arithmetic branch did not extract its nested substitution: "
+            f"{inner!r}")
+        # And it reaches BOTH haystacks, not just one.
+        subs, reason = C.normalize_subcommands(f"[ $(( $({RM} -rf /) - 5 )) -gt 90 ]")
+        assert reason is None and f"{RM} -rf /" in subs
+        assert f"{RM} -rf /" in C.masked_subcommands(
+            f"[ $(( $({RM} -rf /) - 5 )) -gt 90 ]")
+
+    def test_arithmetic_extraction_keeps_a_benign_interior_benign(self):
+        """The control: extraction happens, and the result is still allowed."""
+        assert C.split_substitutions("[ $(( $(date +%s) - 5 )) -gt 90 ]")[1] == [
+            "date +%s"]
+
 
 # ---------------------------------------------------------------------------
 # The safety property the narrowing rests on
