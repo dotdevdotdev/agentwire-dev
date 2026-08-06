@@ -545,11 +545,24 @@ before asking me again" is verify-then-decide, not re-propose. That instruction
 is only reachable by admitting what is unknown; stating the uncertainty made the
 advice better, not vaguer.
 
-**And a rewording for honesty can silently drop a taxonomy property.** That is
-the specific way this class of fix regresses: rewriting `replayed` to stop
-saying "sent" removed its stand-down cue, and the only reason it did not ship
-that way is that a test asserts every outcome names the owner's next move. If
-you reword a spoken line for accuracy, re-check the property it was carrying.
+**And it cuts both ways — spoken lines and behaviour can each falsify the
+other.**
+
+- **A rewording for honesty can silently drop a taxonomy property.** Rewriting
+  `replayed` to stop saying "sent" removed its stand-down cue; the only reason
+  it did not ship that way is a test asserting every outcome names the owner's
+  next move. If you reword a spoken line for accuracy, re-check the property it
+  was carrying.
+- **A change in behaviour can silently falsify a sentence elsewhere.** Making
+  `wait` deny unconditionally turned *"You said no, so I haven't sent it"* into
+  a false statement — the owner said *"wait for the tests"*, not "no". Nothing
+  about that line changed; the policy underneath it did. Same shape as
+  `replayed` claiming "sent" against a success path that says "queued".
+
+So the check runs in both directions: **after changing a spoken line, re-check
+its properties; after changing behaviour, re-read every line that describes
+it.** Neither edit looks like it touches the other, which is exactly why both
+need saying.
 
 ### Denial words and denial EXCEPTIONS have opposite bars
 
@@ -586,13 +599,23 @@ carries:
 > word approves a retraction. An incomplete list of structures-meaning-CONDITION
 > fails closed — an unrecognized phrase denies an approval, costing a re-propose
 > and nothing else.
+>
+> **And a set may be enumerated safely at all only if it is a CLOSED PHRASE
+> rather than an open class** — a closed phrase has no next word to have missed,
+> so its incompleteness cannot fail open. That is the test any new exception has
+> to pass.
+
+Those two sentences are one rule, and the second is the half you need when you
+want to ADD something: the first explains why `_BARE_DEICTICS` had to go, and
+only the second explains why `("dont", "forget")` gets to stay. "Don't forget X"
+has no reading in which a person means "cancel" — the phrase is closed, so there
+is no unlisted variant waiting to approve a retraction. A list of *hold words* is
+an open class and can never earn that.
 
 The problem was never enumeration as such. It was that this enumeration sat on
 the side where being wrong **writes**. So the conditional exception is gone:
 `wait` denies unconditionally, *"confirm tango, wait for the tests to finish"*
-denies, and the owner re-proposes. The two surviving exceptions are **closed
-phrases** rather than open classes — "don't forget X" has no reading meaning
-"cancel", so there is no next word to have missed.
+denies, and the owner re-proposes.
 
 **Corollary for anything guarding a set like this: assert the property, not the
 cardinality.** Counting the exceptions would not have caught this — the old
