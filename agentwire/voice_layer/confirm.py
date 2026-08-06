@@ -281,36 +281,50 @@ _DENIAL_BIGRAMS = frozenset(
 #: person means "cancel" — the phrase is closed and the exception is exact.
 _DENIAL_EXCEPTIONS = frozenset({("dont", "forget")})
 
-#: Conditional exceptions: suppressed ONLY when what follows is a real object.
-#:
-#: "wait for the tests to finish" is an approval with a condition attached, but
-#: **"wait for it" is an idiom meaning exactly "hold on"** — an unconditional
-#: ``("wait", "for")`` exception swallows a retraction and approves it, which is
-#: precisely the failure the paragraph above describes. Measured: before this
-#: rule, "wait for it, confirm tango" APPROVED.
-#:
-#: The instrument is a determiner/noun test rather than an idiom denylist,
-#: because a denylist here would be the same unbounded shape the filler list
-#: was: a bare deictic after "wait for" is holding, a determiner or noun is a
-#: condition. A missing third token also keeps the denial — "wait for" alone is
-#: not a condition.
-_CONDITIONAL_DENIAL_EXCEPTIONS = frozenset(
-    {("wait", "for"), ("wait", "until"), ("wait", "till")}
-)
-
-#: Bare deictics. After a conditional exception these mean the owner is holding,
-#: not naming a thing to wait on.
-_BARE_DEICTICS = frozenset(
-    {"it", "that", "this", "them", "him", "her", "us", "me", "now", "there",
-     "one", "a", "sec", "second", "moment", "minute", "bit"}
-)
-
 #: Trigrams that suppress a BIGRAM denial. "do not forget the other branch" is
 #: the uncontracted twin of the ``("dont", "forget")`` exception above, and it
 #: has to be listed separately because normalization does not merge the two
-#: forms — which is the same reachability trap that made this grammar dead in
-#: the first place.
+#: forms — the same reachability trap that made this grammar dead once already.
+#:
+#: This one is safe to enumerate for the reason the block below explains: it is
+#: a CLOSED phrase, not an open class. "don't forget X" has no reading in which
+#: a person means "cancel", so there is no next word to have missed.
 _DENIAL_BIGRAM_EXCEPTIONS = frozenset({("do", "not", "forget")})
+
+#: **There is deliberately NO conditional exception, and the reason is the
+#: general rule this file has now learned twice.**
+#:
+#: A ``("wait", "for")`` exception was tried, guarded by "suppress only when a
+#: real object follows". Two things killed it:
+#:
+#: 1. **The comment described a grammatical rule and the code was a denylist.**
+#:    It tested membership in a closed list of hold-words, which is the exact
+#:    shape the comment claimed to avoid. Measured, it failed BOTH ways: "wait
+#:    for those / these / mine / both / everything" APPROVED (holds, so the
+#:    write went out), while "wait for that build" DENIED (a real condition).
+#: 2. **Inverting it does not work either**, and this is the part that settles
+#:    it. The obvious repair is "default deny; suppress only on determiner +
+#:    noun". But *"wait for a second"* (a hold) and *"wait for a build"* (a
+#:    condition) are **structurally identical** — determiner + noun in both. No
+#:    structural test separates them. Preventing the hold would need a list of
+#:    time-unit nouns, and that list's incompleteness FAILS OPEN.
+#:
+#: The rule, which sharpens the filler-denylist lesson this file already carries:
+#:
+#:     **When a set must be enumerated, enumerate the side whose incompleteness
+#:     is safe.** An incomplete list of words-meaning-HOLD fails open — an
+#:     unlisted hold word approves a retraction. An incomplete list of
+#:     structures-meaning-CONDITION fails closed — an unrecognized phrase denies
+#:     an approval, costing a re-propose and nothing else.
+#:
+#: The problem was never enumeration as such. It was that this enumeration sat
+#: on the side where being wrong WRITES.
+#:
+#: So ``wait`` denies unconditionally. The cost is real and accepted: "confirm
+#: tango, wait for the tests to finish" now denies, and the owner re-proposes.
+#: That is the recoverable direction. Do not reintroduce a conditional exception
+#: without a test that separates "wait for a second" from "wait for a build" —
+#: and if you find one, it is a genuine discovery, not a list.
 
 
 def _denial_tokens(tokens: "list[str]") -> bool:
@@ -329,11 +343,6 @@ def _denial_tokens(tokens: "list[str]") -> bool:
         following = tokens[index + 1] if index + 1 < len(tokens) else ""
         if (token, following) in _DENIAL_EXCEPTIONS:
             continue
-        if (token, following) in _CONDITIONAL_DENIAL_EXCEPTIONS:
-            third = tokens[index + 2] if index + 2 < len(tokens) else ""
-            # A real object suppresses; a bare deictic (or nothing) does not.
-            if third and third not in _BARE_DEICTICS:
-                continue
         return True
     return False
 
@@ -724,7 +733,12 @@ SPOKEN = {
         "That was a different code word, so I haven't sent anything. "
         "Ask me what the word was and I'll say it again."
     ),
-    "denied": "You said no, so I haven't sent it.",
+    # Covers "no" AND "wait"/"hold on", so it must not assert the owner said
+    # the word "no" — a reason that misinforms is the defect §3.4 is about.
+    "denied": (
+        "I heard you hold off, so I haven't sent it. "
+        "Say the phrase again when you're ready."
+    ),
     "pending_transcript": (
         "Give me a second — I'm still catching up on what you said. Don't repeat it yet."
     ),

@@ -309,7 +309,7 @@ session by that name — which one did you mean?").
 - Speaks only when spoken to.
 
 **Does not — and this is where the risk lives:**
-- ❌ No spawning, no session creation, no worktrees. Ever. See §4b.
+- ❌ No spawning, no session creation, no worktrees. Ever. See [Cold fleet](#cold-fleet-the-buddy-never-starts-an-orchestrator).
 - ❌ No acting directly on the fleet — every write is a request to a session.
 - ❌ No proactive interruption.
 
@@ -563,12 +563,41 @@ Both are one grammar and the instinct that serves one betrays the other.
   means **the owner said no and the write went** — which they cannot undo by
   declining to speak, because they already spoke and it did not count.
 
-`("wait", "for")` is the worked example. *"Wait for the tests to finish"* is an
-approval with a condition; ***"wait for it"* is an idiom meaning exactly "hold
-on"***, and an unconditional exception swallowed it. The fix is a
-determiner/noun test rather than an idiom denylist — a denylist here would be
-the same unbounded shape the filler list was, and this file already learned that
-lesson once.
+`("wait", "for")` is the worked example, and it was tried **twice** before being
+removed. First unconditionally, which swallowed *"wait for it"* — an idiom
+meaning exactly "hold on". Then conditionally, guarded by "suppress only when a
+real object follows", which failed in **both** directions: *"wait for those /
+these / mine / both / everything"* approved (holds, so the write went out) while
+*"wait for that build"* denied (a real condition). The comment described a
+determiner/noun rule; the code was a 17-entry hold-word denylist, three lines
+below a comment saying denylists were the thing being avoided.
+
+**And inverting it does not rescue it.** The obvious repair — default deny,
+suppress only on determiner + noun — cannot work, because *"wait for a second"*
+(a hold) and *"wait for a build"* (a condition) are **structurally identical**.
+No structural test separates them, so the only remaining instrument is a list of
+time-unit nouns, and *that* list's incompleteness fails open.
+
+Which gives the rule that sharpens the filler-denylist lesson this file already
+carries:
+
+> **When a set must be enumerated, enumerate the side whose incompleteness is
+> safe.** An incomplete list of words-meaning-HOLD fails open — an unlisted hold
+> word approves a retraction. An incomplete list of structures-meaning-CONDITION
+> fails closed — an unrecognized phrase denies an approval, costing a re-propose
+> and nothing else.
+
+The problem was never enumeration as such. It was that this enumeration sat on
+the side where being wrong **writes**. So the conditional exception is gone:
+`wait` denies unconditionally, *"confirm tango, wait for the tests to finish"*
+denies, and the owner re-proposes. The two surviving exceptions are **closed
+phrases** rather than open classes — "don't forget X" has no reading meaning
+"cancel", so there is no next word to have missed.
+
+**Corollary for anything guarding a set like this: assert the property, not the
+cardinality.** Counting the exceptions would not have caught this — the old
+design had three, and the danger lived in a seventeen-entry list the count never
+covered.
 
 ### Maintenance note: SPOKEN strings need tests, and they are the ones that don't have them
 
@@ -645,130 +674,13 @@ nonce = choice(free)
 second, subtly-different way to do this sitting next to the right one is how
 the wrong one gets called later.
 
-### The #689 heal has a line-count cliff — a MESSAGING-subsystem fact (#930)
+### The delivery cliff this cap defends against
 
-**This is not a voice-layer fact and it should not be filed as one.** It is a
-property of `flush_session`'s `stuck` test and the #689 heal, and every long or
-coalesced message in the system is subject to it. Written up here because this
-is where it was measured; the fix belongs to #930.
-
-Reproduce with `tools/voice_heal_probe.py`, which creates its own throwaway
-80x24 tmux session running Claude Code, pastes real rendered messages, leaves
-the Enter unsent, and runs the actual heal. **A number without the method is a
-number the next person will distrust and re-derive**, so the method ships.
-
-#### The wrong model, and who held it
-
-The intuitive model is *chip versus text*: a paste either renders as
-`[Pasted text #N +M lines]` (heal fails) or as text (heal works). **That model
-is wrong, and it survived two independent sessions whose job was to be
-skeptical** — it is what the spec author and the adversarial reviewer both
-worked from, and the reviewer asserted it in a written finding. Its own summary
-afterwards: *"listing a failure mode without ranking or measuring it is not much
-better than missing it; I gave you a boundary claim dressed as measured when
-only the direction was."*
-
-There are **two failure regimes**, and the box windows long before it chips.
-
-#### Regime 1 — a single long line WINDOWS (measured, 80x24)
-
-| Rendered line | Box holds | `stuck` test |
-|---|---|---|
-| 430 | 440 | hit ✓ |
-| 520 | 532 | hit ✓ — last passing |
-| 540 | 480 | **miss** — the box renders only a window |
-| 880 | 16 | **miss** — now a chip |
-
-So `stuck` fails from ~530 chars, a full ~350 chars *before* the chip appears.
-"It isn't a chip" is not evidence the heal will fire.
-
-#### Regime 2 — FOUR OR MORE LINES chip, at any size (measured)
-
-Line count, not character count, is the trigger:
-
-| Lines | Chars | Box holds | Chip |
-|---|---|---|---|
-| 2 | 43 | 45 | no |
-| 3 | 65 | 69 | no |
-| **4** | **87** | **25** | **yes** |
-| 6 | 131 | 25 | yes |
-
-The same 87 characters on **one** line renders as text (box 89, no chip). Four
-lines chips at 87 characters.
-
-#### Why that matters: the drain coalesces
-
-`flush_session` joins the whole queue into ONE paste with a **newline**
-(`inbox.py:1059`, `"\n".join(m.render() for m in messages)`) and then tests
-**each** message's render against that single box content. Measured with real
-messages:
-
-| Queued | Chars | Box | `stuck` hits |
-|---|---|---|---|
-| 1 | 128 | 130 | 1/1 |
-| 2 | 257 | 263 | 2/2 |
-| 3 | 386 | 396 | 3/3 |
-| **4** | **515** | **25 (chip)** | **0/4** |
-
-**A drain coalescing four or more messages wedges every one of them** — no
-matter how short each is, and with every per-message cap fully respected.
-
-**Two regimes, two DIFFERENT governing variables — and this is the part a fix
-can get wrong.** It is tempting to summarise all of the above as "line count,
-not characters". That is right about the *chip* and it understates the picture:
-
-| Regime | Governed by | Chip? | `stuck` |
-|---|---|---|---|
-| Windowing | **characters** (~530+ on one line) | **no** | miss |
-| Chip | **lines** (4+, at any size) | yes | miss |
-
-The decisive pair, from the measurements above: **530 characters on ONE line
-does not chip** (box 467 — it windows), while **515 characters on FOUR lines
-does** (box 25). Fewer characters, more lines, chip appears. Both wedge
-identically.
-
-**Consequence for #930: a fix that addresses only the 4-line chip cliff leaves
-the character-governed windowing wedge open.** Any probe carried by that work
-needs rows for both.
-
-*Prediction, explicitly NOT a measurement:* from these numbers, a 3-line blob
-over roughly 470 characters should window without ever chipping. Worth a row in
-#930's probe; label it a prediction until someone measures it.
-
-Two further consequences worth stating plainly:
-
-- **The variable that governs is the COALESCED length and line count, not the
-  message length.** No cap expressed per-message can bound either regime. A message that
-  merely happens to be queued behind three others crosses the cliff through no
-  fault of its own.
-- **The coalesced blob is multi-line by construction**, because the join is a
-  newline. So every multi-message drain already has the property single messages
-  are careful to avoid, and has since coalescing landed. Combined with a
-  swallowed Enter — the condition the #689 heal exists for — the result is a
-  **permanent wedge: never healed, never dead-lettered, therefore never
-  emailed**, surfacing only via `doctor` after two hours.
-
-  **Do not read that as rare.** The first version of this note called it rare
-  because it needs "two intermittent conditions at once" — that was wrong, and
-  wrong in the same way an over-claim is wrong, just pointed the other way.
-  Four-plus coalesced messages is **routine on a busy fleet**, not intermittent:
-  it is the ordinary state of a recipient that has been busy for a minute. So
-  only one condition is actually intermittent, and **the rate is governed by the
-  swallowed-Enter path alone**. What makes it unreported is that it is silent,
-  not that it is uncommon.
-
-#### Caveats on the numbers
-
-Measured at **80x24**. The box shows a bounded number of ROWS, so **a shorter
-pane windows sooner**. Treat these as an upper bound for that geometry, not as
-constants.
-
-#### Why a live probe rather than a fixture
-
-The probe **failed on its first run** for a reason a fixture structurally cannot
-produce: it read the box too early and measured a partially-rendered paste — 38
-chars for a 159-char body. A fixture is fully rendered by construction, so it
-can never show you that. That is the argument for the probe existing.
+Measured, and it turned out to be a fact about the **messaging subsystem**
+rather than about voice — so it lives in its own section at the end of this
+page: [Appendix — the #689 heal line-count cliff](#appendix--the-689-heal-line-count-cliff-930).
+Read it before changing anything about message length or the drain; it is
+written for whoever implements #930, not for this feature.
 
 ### What the voice layer's cap does and does not buy
 
@@ -865,7 +777,7 @@ later:
   `tests/unit/test_voice_body_delivery.py::TestTheCohortInteraction`, so if
   enrolment ever changes the test fails rather than the report vanishing.
 
-## 4b. Cold fleet: the buddy never starts an orchestrator
+## Cold fleet: the buddy never starts an orchestrator
 
 If no live session is listening, the buddy **says so out loud and stops**.
 "Nothing is listening" is a correct and useful spoken answer.
@@ -1056,7 +968,7 @@ undecided. A next session that picks an answer silently is the failure mode.
       "spawn a worker" is the same write with different words in the body.
       **The cold-fleet corollary is ruled and not open:** if nothing is
       listening, the buddy says so and stops. It never bootstraps an
-      orchestrator (§4b).
+      orchestrator (see Cold fleet).
 - [ ] **Q3 — What earns the right to interrupt?** Needed before any proactive
       speech. Candidate triggers, roughly in descending defensibility: a
       dead-lettered `done`/`escalation` (something is already lost), a dangling
@@ -1102,3 +1014,136 @@ undecided. A next session that picks an answer silently is the failure mode.
   fix that typo itself" reintroduces what #730 removed.
 - **Verify model ids with `GET /v1/models/<id>`**, never by minting a client
   secret — see §1.
+
+---
+
+## Appendix — the #689 heal line-count cliff (#930)
+
+*Filed here, not under the confirm spine, because it is a property of
+`flush_session` and the #689 heal that every long or coalesced message in the
+system is subject to. It was measured while building the voice layer; it is
+not about the voice layer.*
+
+**This is not a voice-layer fact and it should not be filed as one.** It is a
+property of `flush_session`'s `stuck` test and the #689 heal, and every long or
+coalesced message in the system is subject to it. Written up here because this
+is where it was measured; the fix belongs to #930.
+
+Reproduce with `tools/voice_heal_probe.py`, which creates its own throwaway
+80x24 tmux session running Claude Code, pastes real rendered messages, leaves
+the Enter unsent, and runs the actual heal. **A number without the method is a
+number the next person will distrust and re-derive**, so the method ships.
+
+### The wrong model, and who held it
+
+The intuitive model is *chip versus text*: a paste either renders as
+`[Pasted text #N +M lines]` (heal fails) or as text (heal works). **That model
+is wrong, and it survived two independent sessions whose job was to be
+skeptical** — it is what the spec author and the adversarial reviewer both
+worked from, and the reviewer asserted it in a written finding. Its own summary
+afterwards: *"listing a failure mode without ranking or measuring it is not much
+better than missing it; I gave you a boundary claim dressed as measured when
+only the direction was."*
+
+There are **two failure regimes**, and the box windows long before it chips.
+
+### Regime 1 — a single long line WINDOWS (measured, 80x24)
+
+| Rendered line | Box holds | `stuck` test |
+|---|---|---|
+| 430 | 440 | hit ✓ |
+| 520 | 532 | hit ✓ — last passing |
+| 540 | 480 | **miss** — the box renders only a window |
+| 880 | 16 | **miss** — now a chip |
+
+So `stuck` fails from ~530 chars, a full ~350 chars *before* the chip appears.
+"It isn't a chip" is not evidence the heal will fire.
+
+### Regime 2 — FOUR OR MORE LINES chip, at any size (measured)
+
+Line count, not character count, is the trigger:
+
+| Lines | Chars | Box holds | Chip |
+|---|---|---|---|
+| 2 | 43 | 45 | no |
+| 3 | 65 | 69 | no |
+| **4** | **87** | **25** | **yes** |
+| 6 | 131 | 25 | yes |
+
+The same 87 characters on **one** line renders as text (box 89, no chip). Four
+lines chips at 87 characters.
+
+### Why that matters: the drain coalesces
+
+`flush_session` joins the whole queue into ONE paste with a **newline**
+(`inbox.py:1059`, `"\n".join(m.render() for m in messages)`) and then tests
+**each** message's render against that single box content. Measured with real
+messages:
+
+| Queued | Chars | Box | `stuck` hits |
+|---|---|---|---|
+| 1 | 128 | 130 | 1/1 |
+| 2 | 257 | 263 | 2/2 |
+| 3 | 386 | 396 | 3/3 |
+| **4** | **515** | **25 (chip)** | **0/4** |
+
+**A drain coalescing four or more messages wedges every one of them** — no
+matter how short each is, and with every per-message cap fully respected.
+
+**Two regimes, two DIFFERENT governing variables — and this is the part a fix
+can get wrong.** It is tempting to summarise all of the above as "line count,
+not characters". That is right about the *chip* and it understates the picture:
+
+| Regime | Governed by | Chip? | `stuck` |
+|---|---|---|---|
+| Windowing | **characters** (~530+ on one line) | **no** | miss |
+| Chip | **lines** (4+, at any size) | yes | miss |
+
+The decisive pair, from the measurements above: **530 characters on ONE line
+does not chip** (box 467 — it windows), while **515 characters on FOUR lines
+does** (box 25). Fewer characters, more lines, chip appears. Both wedge
+identically.
+
+**Consequence for #930: a fix that addresses only the 4-line chip cliff leaves
+the character-governed windowing wedge open.** Any probe carried by that work
+needs rows for both.
+
+*Prediction, explicitly NOT a measurement:* from these numbers, a 3-line blob
+over roughly 470 characters should window without ever chipping. Worth a row in
+#930's probe; label it a prediction until someone measures it.
+
+Two further consequences worth stating plainly:
+
+- **The variable that governs is the COALESCED length and line count, not the
+  message length.** No cap expressed per-message can bound either regime. A message that
+  merely happens to be queued behind three others crosses the cliff through no
+  fault of its own.
+- **The coalesced blob is multi-line by construction**, because the join is a
+  newline. So every multi-message drain already has the property single messages
+  are careful to avoid, and has since coalescing landed. Combined with a
+  swallowed Enter — the condition the #689 heal exists for — the result is a
+  **permanent wedge: never healed, never dead-lettered, therefore never
+  emailed**, surfacing only via `doctor` after two hours.
+
+  **Do not read that as rare.** The first version of this note called it rare
+  because it needs "two intermittent conditions at once" — that was wrong, and
+  wrong in the same way an over-claim is wrong, just pointed the other way.
+  Four-plus coalesced messages is **routine on a busy fleet**, not intermittent:
+  it is the ordinary state of a recipient that has been busy for a minute. So
+  only one condition is actually intermittent, and **the rate is governed by the
+  swallowed-Enter path alone**. What makes it unreported is that it is silent,
+  not that it is uncommon.
+
+### Caveats on the numbers
+
+Measured at **80x24**. The box shows a bounded number of ROWS, so **a shorter
+pane windows sooner**. Treat these as an upper bound for that geometry, not as
+constants.
+
+### Why a live probe rather than a fixture
+
+The probe **failed on its first run** for a reason a fixture structurally cannot
+produce: it read the box too early and measured a partially-rendered paste — 38
+chars for a 159-char body. A fixture is fully rendered by construction, so it
+can never show you that. That is the argument for the probe existing.
+
