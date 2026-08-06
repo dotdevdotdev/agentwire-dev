@@ -656,6 +656,46 @@ cardinality.** Counting the exceptions would not have caught this — the old
 design had three, and the danger lived in a seventeen-entry list the count never
 covered.
 
+### Method note: a signal being produced is not a signal
+
+Not a voice-layer lesson. It bit in **three different tools on one afternoon**,
+and all three are the same mistake.
+
+| Where | What happened | What it looked like |
+|---|---|---|
+| A test-count watcher | `until grep -q "N passed" <file>` ran against a file **pytest was still writing** — it matched a partially-flushed buffer, or a previous run's content in a reused path | a confident count belonging to a *different run* |
+| A CI watcher | The loop waited while any check was `PENDING`/`IN_PROGRESS`. `QUEUED` was not in that list, so it fired on a run **that had not started** | "CI is settled" |
+| A CI result | A job failed with *"Set up job: Failed to resolve action download info, Service Unavailable"* — it **never ran** | a red X that reads as a test failure |
+
+**Treating a signal as settled while it is still being produced.** The third is
+the sharpest, because that red carries **no test signal in either direction** —
+it is not evidence of failure *or* of pass, and reading it as either is wrong.
+
+Two practices fall out of it, both cheap:
+
+- **Wait for a completion signal, then read once.** Never poll a file that is
+  still being written. If the tool gives you a "task finished" event, that is
+  the read barrier; use it.
+- **Enumerate the DONE states, not the not-done ones.** "Wait while
+  `PENDING`/`IN_PROGRESS`" is an open-ended list — the state you forgot means
+  you stop early. "Wait until everything is `SUCCESS`/`FAILURE`/`SKIPPED`/…" is
+  closed. *(This is the same fail-open/fail-closed asymmetry as the denial
+  grammar above, in a different tool. It generalises.)*
+
+And the thing that makes it hard to catch: **reconciling two readings that came
+from the same broken mechanism is not reconciliation — it is a coin flip with
+extra steps.** Two disagreeing numbers from one racy watcher feel like evidence
+about the *subject*; they are evidence about the *watcher*. When two readings
+disagree, suspect the instrument before the measurement.
+
+#### Why "local green is not CI green" is a better rule than its own rationale
+
+That bar is usually justified as "the environments might differ" — and they
+might. But the deeper reason showed up here: **a local count can come from an
+unreliable measurement method**, and the bar forces a second independent source
+regardless of whether the environments differ at all. The value was never the
+comparison. It was refusing to trust a single source.
+
 ### Maintenance note: SPOKEN strings need tests, and they are the ones that don't have them
 
 A pattern worth knowing before you add a sentence the buddy says out loud.
