@@ -349,8 +349,25 @@ tmux session via `tmux new-session -e K=V` (`core.py::_with_unattended_env`), so
 it lands before the agent launches and the hook can read it. Interactive
 sessions never pass through that chokepoint, so the marker can't leak into a
 human's session — even though interactive sessions use the same
-`--dangerously-skip-permissions` posture. A child session an unattended agent
-spawns inherits the marker (defense in depth).
+`--dangerously-skip-permissions` posture.
+
+**A child session inherits BOTH vars — and the two inherit differently (#914).**
+`_UNATTENDED_ENV_KEYS` carries the marker and the allowlist as one unit, so a
+session an unattended agent spawns gets both, transitively to any depth and
+across projects (`created_by` is dropped for a cross-project spawn, #715; this
+env is not rooted). For `AGENTWIRE_UNATTENDED` that is defense in depth — it
+*tightens*, so inheriting it can only ever block more. **The allowlist rides the
+same path and *loosens*,** which is a materially different thing and went
+undocumented until #914.
+
+It is kept, deliberately. The motivating fan-out task (`memory-manager`) does
+not act itself: it spawns four children that do the committing, so a grant that
+stopped at the parent could not fix a delegating task **at all** — and that gap
+applies to every task that delegates. What makes the inheritance safe is that
+the grant carries its **path scope** with it, so what a child inherits is
+"commit under `<store>`", not "commit". A child cannot widen it: the hook reads
+the var from the Claude Code process environment, not from the shell the agent
+runs commands in, and the files that define grants are protected control plane.
 
 **What's unaffected.** Hard `block` rules (`rm -rf`, `git push --force`, DB
 drops) fire regardless — they never depended on a human. Interactive `bypass`
@@ -358,19 +375,131 @@ sessions resolve `ask` exactly as before. The kill switch still wins: with
 `enabled: false` in `~/.agentwire/damagecontrol.yml`, nothing is checked, so the
 unattended gate is inert too (enable safety for scheduled projects to engage it).
 
-**The allowlist** (union of three sources):
+**The allowlist** — three layers, **most specific wins outright**:
 
-| Source | Where | Scope |
-|--------|-------|-------|
-| `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
-| `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project extension (list of rule ids) |
-| `unattended_allow` | per-task in `.agentwire.tasks.yml` | Per-task extension — the pressure-relief valve: widen for one task instead of loosening the global default |
+| Layer | Where | Notes |
+|-------|-------|-------|
+| 1. per-task `unattended_allow` | `.agentwire.tasks.yml` | The pressure-relief valve: widen (or narrow) for one task instead of loosening the global default |
+| 2. `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project |
+| 3. `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
+
+**Precedence, not union (#914).** The most specific layer that *names* a rule id
+defines that rule's grant outright. A union would make a scoped entry
+unexpressible: `git.commit` is already granted **unscoped** by layer 3, so a
+task writing `{id: git.commit, paths: [<store>]}` under a union would read as a
+constraint and mean nothing. Naming a rule at a more specific layer therefore
+**replaces** the looser grant for that dispatch. Within one layer, several
+entries for the same id union their scopes.
+
+Naming a rule **binds** it even when the entry is malformed. A refused entry
+does not fall through to a looser layer — otherwise a typo in a scope path
+(`paths: [relative/dir]`) would silently hand the task the unscoped default,
+i.e. a typo granting commits in *every* repo.
 
 Allowlisting is **by rule ID**, not command text — so `git.push` (plain push)
 is allowed while `git push --force` (hard block) and `git push --delete`
 (distinct `ask` rule `git.deletes-remote-branch`) are not. Tooldef commands the
 allowlist references carry an explicit `id:` so the ID is stable across
 description edits.
+
+> **A grant naming a rule id that does not exist is inert, and reads exactly
+> like one that works.** That is how the whole built-in set went silently dead
+> on one machine: `~/.agentwire/tooldefs/git.yaml` was missing the four `id:`
+> lines the bundled copy has, the user copy wins, and five of six
+> `DEFAULT_UNATTENDED_ALLOW` ids resolved to nothing — so scheduled tasks were
+> blocked on `git commit` and it surfaced as a `max_duration` timeout.
+> `agentwire doctor` now reports inert built-in grants, and `agentwire tasks
+> review` reports a task grant naming an unknown id.
+
+### Path scopes (#914)
+
+An entry is either a bare rule id (**unscoped** — permitted wherever the rule
+fires) or a mapping carrying `paths`:
+
+```yaml
+unattended_allow:
+  - outbound.agentwire-email                  # bare — unchanged, still works
+  - id: git.commit
+    paths:
+      - ~/.claude/projects/*/memory/          # scoped — only under here
+```
+
+A scoped grant applies only when **every** directory the matching command would
+act on resolves inside one of `paths`. `*` matches within a path segment, `**`
+crosses segments; scope paths must be absolute or `~`-rooted (a relative scope
+would shift with the dispatch cwd, which is the one thing a scope exists to
+pin down). Matching is case-sensitive even on a case-insensitive filesystem —
+the wrong direction to be permissive in.
+
+Scope evaluation can only ever **refuse** a command the bare grant would have
+allowed. It never permits one, and hard `block` rules never reach it.
+
+**What it reads, and what it refuses rather than guesses.** An enumerated list,
+deliberately — not a closure claim over shell semantics:
+
+| Read | Refused (grant does not apply) |
+|------|-------------------------------|
+| the working directory | a `cd` **not** joined by `&&` (with `;` the next command runs even if the `cd` failed) |
+| `cd <literal> &&` | an indirect runner — `sh -c`, `xargs`, `sudo`, `ssh`, `env`, `find` … |
+| git `-C` / `--git-dir` / `--work-tree` | a subshell or group |
+| git `GIT_DIR`-family env assignments | command substitution, `eval`, a base64 pipeline |
+| the enclosing git **repo root** | any **unmodelled** environment assignment (`FOO=1 git commit`) |
+| | a rule whose pattern matches no single segment |
+
+Three selectors pick a git repo independently — cwd, `-C`, and
+`--git-dir`/`--work-tree` — so all three are read and **all** must be in scope.
+`GIT_DIR=<other> git commit` is the same redirection spelled as an environment
+assignment, and is read the same way; an assignment naming a variable we do not
+model refuses, which is what the `env(1)` spelling already got.
+
+**They do not relate to the cwd the same way**, and reading them as if they did
+is a bypass rather than an inaccuracy (verified against git 2.50.1):
+
+- **`-C` is cumulative.** `git -C a -C b` chdirs to `a`, then to `b` *relative
+  to `a`* (`git -C outer -C inner rev-parse --show-prefix` → `inner/`); an
+  absolute value resets the chain. Resolving each `-C` against the cwd instead
+  collapses `git -C <in-scope> -C ../..` onto the in-scope directory, so the
+  check sees one in-scope target and grants while git walks out of it — into
+  the enclosing repo, which is exactly where `~/.claude/projects/*/memory/`
+  sits relative to `~/.claude`.
+- **`--git-dir` / `--work-tree` are last-one-wins**, and a relative value
+  resolves against the directory the `-C` chain produced, not the cwd.
+
+So the chain is folded first and everything else — including the `GIT_DIR`-family
+assignments — is measured from its result.
+
+The **repo root walk-up** matters because git resolves its repo by walking *up*
+from the working directory, so the directory a command runs in is not
+necessarily the repo it writes to. A scope naming `<repo>/subdir` would
+otherwise grant over all of `<repo>`. This is checked at decision time rather
+than by refusing non-root scopes at lint time: a lint sees only the scope as
+written, and `~/.claude/projects/*/memory/` is perfectly safe right up until
+someone runs `git init ~/.claude`.
+
+**Symlinks.** Both sides are resolved before comparing: the candidate directory
+must be in scope in **both** its lexical and its `realpath` form, and the
+scope's literal prefix is resolved too (so a scope rooted behind a symlink still
+admits its own contents). This is load-bearing rather than theoretical — `ln
+-s`, `mkdir`, `git init` and `git worktree add` are all allowed unattended, so
+the grantee can write inside the scope. **Treat "the grantee can write inside
+the scope" as the threat model, not a cooperative caller.**
+
+**Two limits that are NOT closed**, stated rather than implied:
+
+- **`git config core.worktree` is a reachable two-step escape, not a theoretical
+  blind spot.** It redirects a repo from inside its own config, which no reading
+  of the command can see — *and the redirect is itself unrestricted* (`git
+  config core.worktree <elsewhere>` matches no rule at all, with or without
+  `-C`). So a session holding a scoped commit grant can point the in-scope
+  store's work tree elsewhere and then commit entirely within scope. Closing it
+  needs a rule making that `ask`-tier; tracked in #927.
+- Resolution is a **TOCTOU window**: the hook validates a path the command has
+  not used yet.
+
+**MCP tools.** The MCP hook's command is *synthesized* from the tool call
+(`agentwire email --to …`) and names no directory, so a **scoped** grant there
+refuses rather than measuring the scope against the session cwd — which would
+allow on a coincidence. Unscoped grants are unaffected.
 
 When a command is blocked, the owner email and `agentwire safety logs` name the
 exact rule id, so widening is copy-paste: add that id to the task's
@@ -386,7 +515,7 @@ accepted the exfil tradeoff in favor of the simpler blanket allow. `agentwire
 quo` (SMS) is unaffected and still fails closed unattended; widen it per-task
 via `unattended_allow` (`outbound.agentwire-quo`) same as any other verb. This
 applies identically to the Bash shell-out and the `email_send` MCP tool (both
-resolve through the same `resolve_unattended_allow`).
+resolve through the same `resolve_unattended_grants`).
 
 ```yaml
 # project .agentwire.tasks.yml — let ONE scheduled task run terraform apply unattended

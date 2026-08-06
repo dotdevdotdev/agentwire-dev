@@ -41,6 +41,7 @@ fail loudly if drift happens.
 """
 
 import fnmatch
+import json
 import os
 import re
 import shlex
@@ -607,26 +608,100 @@ def load_config(
 #
 # When a session is marked unattended (``AGENTWIRE_UNATTENDED=1``, stamped at
 # dispatch by the scheduler), the hook resolves ``ask`` by FAILING CLOSED:
-# block + notify the owner, UNLESS the matched rule's stable ID is on the
-# allowlist. The allowlist is the union of:
-#   1. ``DEFAULT_UNATTENDED_ALLOW`` below (work + open a PR + notify the owner
-#      by email — nothing else irreversible or outward-facing),
-#   2. ``safety.unattended_allow`` from global / project config,
-#   3. ``AGENTWIRE_UNATTENDED_ALLOW`` (comma-separated) — the per-task
-#      extension the scheduler stamps from a task's ``unattended_allow``.
+# block + notify the owner, UNLESS the matched rule's stable ID carries a GRANT.
+# Grants come from three sources, most specific first:
+#   1. ``AGENTWIRE_UNATTENDED_ALLOW`` — the per-task extension the scheduler
+#      stamps from a task's ``unattended_allow``,
+#   2. ``safety.unattended_allow`` from the host-owned damage-control files,
+#   3. ``DEFAULT_UNATTENDED_ALLOW`` below (work + open a PR + notify the owner
+#      by email — nothing else irreversible or outward-facing).
+#
+# PRECEDENCE, NOT UNION (#914): the most specific source that NAMES a rule id
+# defines that rule's grant outright. A union would make the whole point of a
+# scoped entry unexpressible — ``git.commit`` is already granted unscoped by the
+# default set, so a task writing ``{id: git.commit, paths: [<store>]}`` under a
+# union would read as a constraint and be silently meaningless. That class of
+# config-that-lies is exactly what this issue is about, so naming a rule at a
+# more specific level REPLACES the looser grant for that dispatch. Within one
+# source, several entries for the same id union their scopes.
+#
+# SCOPES (#914). A grant entry is either a bare rule id (unscoped — the rule is
+# permitted wherever it fires) or a mapping carrying ``paths``:
+#
+#     unattended_allow:
+#       - outbound.agentwire-email                  # bare: unchanged, still works
+#       - id: tooldef.git-create-a-commit
+#         paths:
+#           - ~/.claude/projects/*/memory/          # scoped: only under here
+#
+# A scoped grant applies only when EVERY directory the matching command would
+# act on resolves inside one of ``paths``. Scope evaluation can only ever
+# REFUSE a command the bare grant would have allowed; it can never permit one.
+#
+# WHAT IT REFUSES RATHER THAN GUESSES — an enumerated list, not a guarantee.
+# ``command_scope_dirs`` refuses on: a ``cd`` not joined by ``&&``; an indirect
+# runner (``sh -c``, ``xargs``, ``sudo``, ``ssh`` …); a subshell/group; command
+# substitution / ``eval`` / a base64 pipeline; an unrecognized environment
+# assignment; and a rule whose pattern matches no single segment. It READS,
+# rather than refuses: the cwd, ``cd <literal> &&``, git's ``-C`` /
+# ``--git-dir`` / ``--work-tree``, git's ``GIT_DIR``-family environment
+# assignments, and the enclosing git repo root.
+#
+# That list is the honest form of the claim. An earlier draft of this comment
+# said "anything that makes the target directory unknowable does not apply the
+# grant", which was not true of the code beneath it: ``GIT_DIR=<other> git
+# commit`` was stripped as an environment assignment and silently measured
+# against the cwd — the PR reproducing the very defect class it exists to fix
+# (#913 is "the rule matched a phrasing, not an operation"; this matched the
+# ``-C`` phrasing and missed the assignment spelling of the same redirection,
+# while the ``env(1)`` spelling was already refused). Enumerate what is handled;
+# do not assert a closure property over shell semantics.
+#
+# NOT closed, and stated so rather than implied:
+#   * ``git config core.worktree`` is a reachable TWO-STEP ESCAPE, not merely a
+#     parser blind spot. It redirects a repo from inside its own config, which
+#     no reading of the command can see — AND the redirect is itself unruled
+#     (``git config core.worktree <elsewhere>`` matches no rule, with or without
+#     ``-C``). A session holding a scoped commit grant can therefore point the
+#     in-scope store's work tree elsewhere and then commit entirely within
+#     scope. Closing it needs a rule making that ``ask``-tier, which is
+#     rule-file territory; tracked in #927.
+#   * Resolution is a TOCTOU window — the hook validates a path the command has
+#     not used yet.
 #
 # Hard ``block`` rules (rm -rf, git push --force, …) are unaffected — they fire
 # regardless. Interactive bypass sessions (no ``AGENTWIRE_UNATTENDED``) are
 # unaffected too — their ``ask`` still resolves the old way.
 
-DEFAULT_UNATTENDED_ALLOW = {
+# The built-in grants. Written in the SAME shape as a task's
+# ``unattended_allow`` (bare id = unscoped, or ``{id, paths}`` = scoped) and
+# parsed by the same parser, so a scope is expressible HERE too — not only in a
+# per-task entry (#914 review §2). That matters because these ids are the
+# widest grants in the system: ``git.commit`` / ``git.push`` unscoped means any
+# repo on the machine, in every scheduled task, forever.
+#
+# They are deliberately left UNSCOPED here — narrowing them is a host policy
+# decision, not something this file should make on every install's behalf, and
+# a task that needs a narrower grant can already express it: naming a rule at a
+# more specific level REPLACES this one (see the precedence note above), so a
+# task's ``{id: git.commit, paths: [<store>]}`` genuinely binds rather than
+# being swallowed by this unscoped default. A host that wants the narrow form
+# machine-wide writes the scoped entry in ``~/.agentwire/damagecontrol.yml``.
+#
+# NOTE (#916 / review §2): these ids only exist if the LOADED tooldefs carry
+# them. ``~/.agentwire/tooldefs/`` wins over the bundled copy and never
+# self-heals, so on a drifted install five of the six name no rule at all and
+# every one of these actions is blocked unattended. ``agentwire doctor`` now
+# reports that (``_check_unattended_defaults``) instead of leaving it to be
+# rediscovered as a nightly timeout.
+DEFAULT_UNATTENDED_ALLOW = [
     "git.add",       # stage files
     "git.add-u",     # stage tracked changes
     "git.commit",    # commit
     "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
     "gh.pr-create",  # open a PR — the human-reviewed gate
     "outbound.agentwire-email",  # blanket allow, any recipient (#804)
-}
+]
 
 
 def is_unattended() -> bool:
@@ -634,19 +709,679 @@ def is_unattended() -> bool:
     return os.environ.get("AGENTWIRE_UNATTENDED") == "1"
 
 
-def resolve_unattended_allow(config: Dict[str, Any]) -> set:
-    """Effective unattended allowlist: defaults ∪ config ∪ per-task env extension."""
-    allow = set(DEFAULT_UNATTENDED_ALLOW)
+# ---------------------------------------------------------------------------
+# Grant parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_unattended_allow(raw: Any) -> Tuple[Dict[str, List[List[str]]], List[str]]:
+    """Parse one ``unattended_allow`` list into ``({id: [scope, ...]}, errors)``.
+
+    A ``scope`` is a list of absolute path patterns; the EMPTY list means
+    unscoped. So ``{"git.commit": [[]]}`` grants commits anywhere, while
+    ``{"git.commit": [["~/x/"]]}`` grants them only under ``~/x/``.
+
+    ``errors`` describes entries that were REFUSED — malformed shapes, missing
+    ids, relative path patterns. A refused entry that NAMED a rule id maps that
+    id to the EMPTY scope list ``[]``, which is distinct from absent:
+
+        absent (``None``)  -> this layer says nothing; a looser layer may grant
+        ``[]``             -> this layer named the rule and granted nothing
+        ``[[]]``           -> unscoped grant
+        ``[[p, …]]``       -> scoped grant
+
+    That distinction is load-bearing, and getting it wrong is a WIDENING. If a
+    refused entry simply vanished, ``{id: git.commit, paths: [typo/relative]}``
+    would fall through to the unscoped ``git.commit`` in
+    ``DEFAULT_UNATTENDED_ALLOW`` — so a typo in a scope path would grant commits
+    EVERYWHERE, which is worse than the grant the host was trying to write.
+    Naming a rule always binds it, valid or not.
+    """
+    grants: Dict[str, List[List[str]]] = {}
+    errors: List[str] = []
+    if raw is None:
+        return grants, errors
+    if not isinstance(raw, (list, tuple)):
+        return grants, [f"unattended_allow must be a list, got {type(raw).__name__}"]
+
+    for entry in raw:
+        if isinstance(entry, str):
+            rid = entry.strip()
+            if rid:
+                grants.setdefault(rid, []).append([])
+            continue
+        if not isinstance(entry, dict):
+            errors.append(f"entry must be a rule id or a mapping, got {entry!r}")
+            continue
+        rid = str(entry.get("id", "")).strip()
+        if not rid:
+            errors.append(f"entry {entry!r} has no `id`")
+            continue
+        # Naming a rule BINDS it at this layer, whatever happens to the rest of
+        # the entry. `setdefault` alone (below) would leave a refused entry
+        # absent, and absent falls through to the looser layer — so a typo in a
+        # scope path would silently grant the rule everywhere.
+        grants.setdefault(rid, [])
+        unknown = sorted(set(entry) - {"id", "paths"})
+        if unknown:
+            # Same reasoning as TaskConfig.unknown_keys (#867): a key we ignore
+            # is a constraint the author believes they set.
+            errors.append(f"{rid}: ignored key(s) {', '.join(unknown)}")
+        raw_paths = entry.get("paths")
+        if raw_paths is None:
+            grants.setdefault(rid, []).append([])
+            continue
+        if not isinstance(raw_paths, (list, tuple)):
+            errors.append(f"{rid}: `paths` must be a list")
+            continue
+        scope: List[str] = []
+        bad = False
+        for p in raw_paths:
+            p = str(p).strip()
+            if not p:
+                continue
+            if not (p.startswith("/") or p.startswith("~")):
+                # A relative scope has no fixed meaning — it would silently
+                # change with the dispatch cwd, which is the one thing a scope
+                # exists to pin down. Refuse the whole entry.
+                errors.append(f"{rid}: scope path must be absolute or ~-rooted, got {p!r}")
+                bad = True
+                continue
+            scope.append(p)
+        if bad:
+            continue
+        if not scope:
+            errors.append(f"{rid}: `paths` is empty — write a bare rule id for an unscoped grant")
+            continue
+        grants.setdefault(rid, []).append(scope)
+    return grants, errors
+
+
+def _env_unattended_allow() -> Any:
+    """Decode ``AGENTWIRE_UNATTENDED_ALLOW`` into an ``unattended_allow`` list.
+
+    Two wire forms, discriminated unambiguously (a rule id can never start with
+    ``[``): a JSON array when any entry is scoped, else the plain
+    comma-separated id list — which stays readable in ``tmux show-environment``
+    for the common case. ``scheduler/dispatch.py::_unattended_env`` is the only
+    writer; see ``encode_unattended_allow``.
+    """
+    raw = os.environ.get("AGENTWIRE_UNATTENDED_ALLOW", "")
+    if not raw.strip():
+        return []
+    if raw.lstrip().startswith("["):
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            # Undecodable ⇒ grant NOTHING rather than fall back to a comma
+            # split that would read `{"id": "x"` as a rule id.
+            return []
+        return decoded if isinstance(decoded, list) else []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def encode_unattended_allow(entries: Any) -> str:
+    """Encode an ``unattended_allow`` list for ``AGENTWIRE_UNATTENDED_ALLOW``."""
+    items = list(entries or [])
+    if any(not isinstance(e, str) for e in items):
+        return json.dumps(items, separators=(",", ":"))
+    return ",".join(e.strip() for e in items if e and e.strip())
+
+
+def resolve_unattended_grants(config: Dict[str, Any]) -> Dict[str, List[List[str]]]:
+    """Effective unattended grants: ``{rule id: [scope, ...]}``.
+
+    Precedence, most specific wins outright (see the section header): per-task
+    env > host config > ``DEFAULT_UNATTENDED_ALLOW``.
+    """
     safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
-    for rid in safety_cfg.get("unattended_allow", []) or []:
-        if rid:
-            allow.add(str(rid))
-    env_allow = os.environ.get("AGENTWIRE_UNATTENDED_ALLOW", "")
-    for rid in env_allow.split(","):
-        rid = rid.strip()
-        if rid:
-            allow.add(rid)
-    return allow
+    layers = [
+        parse_unattended_allow(_env_unattended_allow())[0],
+        parse_unattended_allow(safety_cfg.get("unattended_allow"))[0],
+        parse_unattended_allow(DEFAULT_UNATTENDED_ALLOW)[0],
+    ]
+    merged: Dict[str, List[List[str]]] = {}
+    for layer in layers:
+        for rid, scopes in layer.items():
+            if rid not in merged:
+                merged[rid] = scopes
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Scope evaluation — which directories would this command act on?
+# ---------------------------------------------------------------------------
+
+# Builtins that move the working directory. Their effect on a LATER subcommand
+# is not statically knowable, so their presence makes the whole command
+# unscopeable.
+_CWD_CHANGING = {"cd", "pushd", "popd", "chdir"}
+
+# Programs whose job is to run ANOTHER program. The rule matched text inside
+# them, so the directory the real work happens in is whatever the inner command
+# decides — not something this parser can claim to know.
+_INDIRECT_RUNNERS = {
+    "sh", "bash", "zsh", "dash", "ksh", "fish",
+    "env", "xargs", "sudo", "doas", "su", "ssh", "nohup", "setsid",
+    "timeout", "nice", "ionice", "stdbuf", "script", "watch", "parallel",
+    "command", "exec", "time", "find", "make", "nix-shell", "docker", "podman",
+}
+
+# git's directory-redirecting global options. `-C` and `--git-dir` /
+# `--work-tree` all accept BOTH `--opt=<path>` and `--opt <path>` against the
+# real binary (verified on git 2.50.1 in #913's review), so both are parsed.
+#
+# COORDINATION WITH #913: that issue normalizes git's global options out of the
+# command BEFORE rule matching, so every git rule stops being defeated by
+# `git -C <dir> …`. This function is the shared parser for that grammar —
+# #913's normalizer should consume `git_global_dirs` rather than write a second
+# copy, and the two have opposite needs on the same data: the normalizer wants
+# the options GONE, scope evaluation wants the directory they name. Splitting
+# it here gives both from one implementation.
+_GIT_DIR_OPTS_VALUE = {"-C", "--git-dir", "--work-tree"}
+
+# Global options that take a separate value but name no DIRECTORY. Their value
+# must still be consumed, or it gets mistaken for the subcommand.
+# ``--exec-path`` is deliberately absent: bare ``--exec-path`` makes git print
+# the exec path and exit, so ``git --exec-path status`` never runs ``status`` —
+# consuming a token there would swallow a subcommand a rule needs to see. Only
+# its ``=`` form carries a value, which the generic ``-`` branch handles.
+_GIT_OPTS_VALUE_NOT_DIR = {
+    "-c", "--config-env", "--namespace", "--attr-source", "--super-prefix",
+}
+
+# Environment assignments git honours to pick a DIFFERENT repo than the cwd.
+# `GIT_DIR=<other> git commit` beats the working directory outright (verified
+# against git 2.50.1), so an assignment prefix is a repo selector exactly like
+# `-C` — and one that `_strip_assignments` used to discard before anything
+# looked at it.
+_GIT_DIR_ENV_VARS = {
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE",
+}
+
+
+def git_global_dirs(argv: List[str]) -> Tuple[Dict[str, Any], List[str]]:
+    """Split a ``git`` argv into ``(directory selectors, remaining argv)``.
+
+    Selectors are returned STRUCTURED, not as one flat list, because the three
+    options do not relate to each other or to the cwd the same way — and a flat
+    list cannot express either relationship. Verified against real git 2.50.1:
+
+    * ``-C`` is **CUMULATIVE**, folded left to right, each value resolved
+      against the previous result (an absolute value resets the chain)::
+
+          $ git -C outer -C inner rev-parse --show-prefix
+          inner/                       # not `outer/`, and not `inner` from cwd
+
+      Resolving each ``-C`` against the cwd instead collapses
+      ``git -C <in-scope> -C ../..`` onto the in-scope directory, so a scope
+      check sees one in-scope target and grants while git chdirs out of it.
+
+    * ``--git-dir`` / ``--work-tree`` are **LAST-ONE-WINS**, and a relative
+      value resolves against the directory the ``-C`` chain produced::
+
+          $ cd <base>; git -C other --git-dir=.git rev-parse --absolute-git-dir
+          <base>/other/.git            # relative to the -C result, not to cwd
+
+    ``remaining argv`` is the command with git's global options removed —
+    ``["git", "commit", "-m", "x"]`` for ``git -C /r commit -m x`` — which is
+    the form a rule pattern like ``\\bgit\\s+commit\\b`` was written against.
+    """
+    chdir: List[str] = []
+    git_dir: Optional[str] = None
+    work_tree: Optional[str] = None
+    rest: List[str] = argv[:1]
+
+    def _record(opt: str, value: str) -> None:
+        nonlocal git_dir, work_tree
+        if opt == "-C":
+            chdir.append(value)
+        elif opt == "--git-dir":
+            git_dir = value
+        else:
+            work_tree = value
+
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in _GIT_DIR_OPTS_VALUE:
+            if i + 1 < len(argv):
+                _record(tok, argv[i + 1])
+            i += 2
+            continue
+        if tok in _GIT_OPTS_VALUE_NOT_DIR:
+            i += 2
+            continue
+        matched = False
+        for opt in _GIT_DIR_OPTS_VALUE:
+            if tok.startswith(opt + "="):
+                _record(opt, tok[len(opt) + 1:])
+                matched = True
+                break
+        if matched:
+            i += 1
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        rest.extend(argv[i:])
+        break
+    return {"chdir": chdir, "git_dir": git_dir, "work_tree": work_tree}, rest
+
+
+def _git_repo_root(path: str) -> Optional[str]:
+    """Nearest enclosing directory containing ``.git``, walking up from ``path``.
+
+    git resolves the repo by walking UP, so the directory a command runs in is
+    not the repo it commits to. A scope naming ``<repo>/subdir`` would otherwise
+    grant over the whole of ``<repo>`` — silently, because the cwd it measured
+    really is inside the scope. Pure filesystem probing, no subprocess: the hook
+    is on the tool's hot path.
+
+    ``.git`` may be a file (worktrees, submodules) as well as a directory; both
+    count. Returns None when nothing is found — which happens for a path that
+    does not exist yet, so callers must not read None as "no constraint
+    needed" for a security decision, only as "no repo root discoverable".
+    """
+    current = os.path.abspath(path)
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def _split_assignments(argv: List[str]) -> Tuple[List[str], List[str]]:
+    """Split leading ``VAR=value`` prefixes off an argv.
+
+    Returns ``(assignments, rest)`` — NOT just ``rest``. Discarding them is how
+    ``GIT_DIR=<other-repo> git commit`` slipped past scope evaluation entirely:
+    the redirect vanished before anything looked at it and the check fell back
+    to the cwd, which was in scope. An assignment prefix is a repo selector
+    exactly like ``-C``.
+    """
+    i = 0
+    while i < len(argv) and _ASSIGN_TOKEN_RE.match(argv[i]):
+        i += 1
+    return argv[:i], argv[i:]
+
+
+# Shell operators, and the grouping tokens that make a segment's execution
+# context something this parser will not reason about.
+_SCOPE_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
+_SCOPE_GROUPING = {"(", ")", "{", "}"}
+
+
+def _scope_segments(command: str) -> Tuple[List[Tuple[List[str], str]], Optional[str]]:
+    """Split ``command`` into ``[(argv, operator_that_follows)]``.
+
+    This is a SECOND, deliberately separate splitter from
+    ``normalize_subcommands`` — that one discards the operators, and scope
+    evaluation needs them: ``cd X && git commit`` and ``cd X ; git commit``
+    describe different directories for the same ``git commit``.
+
+    OWNERSHIP NOTE (#913/#914/#915 orchestrator ruling): ``normalize_subcommands``
+    / ``masked_subcommands`` / the haystack selection belong to #913, and this
+    file must not fork them. So scope evaluation gets its own local splitter
+    rather than an edit there. Once #913 has landed its haystack work, these two
+    are a consolidation candidate — flagged, not done here.
+    """
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return [], "unbalanced quotes"
+
+    segments: List[Tuple[List[str], str]] = []
+    cur: List[str] = []
+    for tok in tokens:
+        if tok in _SCOPE_GROUPING:
+            return [], "command uses a subshell/group — execution context is not statically knowable"
+        if tok in _SCOPE_OPERATORS:
+            segments.append((cur, tok))
+            cur = []
+            continue
+        cur.append(tok)
+    segments.append((cur, ""))
+    return [(argv, op) for argv, op in segments if argv or op], None
+
+
+def _cd_target(argv: List[str]) -> Optional[str]:
+    """Directory a ``cd`` segment moves to, or None when it is not resolvable.
+
+    Only the literal forms are resolved. ``cd -`` (previous dir), ``cd $VAR``
+    and anything with extra operands are deliberately unresolved — a scope that
+    guessed here would be measuring the wrong directory.
+    """
+    if len(argv) == 1:
+        return os.path.expanduser("~")
+    if len(argv) != 2:
+        return None
+    target = argv[1]
+    if target == "-" or target.startswith("$") or "$" in target:
+        return None
+    return target
+
+
+def _abs_path(raw: str, base: str) -> str:
+    """``raw`` as a normalized absolute path, interpreted relative to ``base``.
+
+    Single-valued, unlike :func:`_resolve_dir` — used where a path must be
+    threaded into a further resolution (folding a ``-C`` chain), where two
+    candidate forms would have nothing to fold onto.
+    """
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(base, expanded)
+    return os.path.normpath(expanded)
+
+
+def _resolve_dir(raw: str, cwd: str) -> List[str]:
+    """Absolute forms of ``raw`` interpreted relative to ``cwd``.
+
+    Returns BOTH the lexically-normalized path and its ``realpath``. Both must
+    land in scope for a grant to apply: normalizing alone lets
+    ``<store>/../../..`` escape, and realpath alone lets a scope pattern be
+    dodged by a symlink planted inside the scope — which the grantee can do,
+    since ``ln -s`` / ``mkdir`` / ``git init`` are all allowed unattended
+    (review §5). The grantee-can-write-inside-the-scope case is the threat
+    model, not a cooperative caller.
+    """
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(cwd, expanded)
+    normalized = os.path.normpath(expanded)
+    out = [normalized]
+    try:
+        real = os.path.realpath(normalized)
+    except OSError:
+        return out
+    if real != normalized:
+        out.append(real)
+    return out
+
+
+def command_scope_dirs(
+    command: str,
+    cwd: str,
+    pattern: Optional[str] = None,
+) -> Tuple[List[str], Optional[str]]:
+    """Directories the rule-matching parts of ``command`` would act on.
+
+    Returns ``(dirs, unscopeable)``. ``unscopeable`` is a reason string when the
+    answer cannot be established — the caller must then NOT apply a scoped
+    grant. ``dirs`` holds absolute paths (normalized and, where different,
+    realpath'd); EVERY one of them must be in scope for the grant to apply
+    (all-paths semantics, matching ``is_command_path_allowed``).
+
+    Three independent selectors decide which repo a git command touches — the
+    working directory, ``-C``, and ``--git-dir``/``--work-tree`` — so all three
+    are read, and a command that names both an in-scope and an out-of-scope one
+    is refused on the out-of-scope one.
+
+    Only the segments the rule's own ``pattern`` matches are considered, so an
+    innocuous tail (``git -C <store> commit -m x && echo done``) does not drag
+    the session cwd into the scope test.
+
+    Reads the RAW command, never a normalized haystack — so it is independent
+    of #913's land order (the orchestrator ruling keeps the raw command
+    reachable precisely so this stays true).
+    """
+    if pattern and pattern.startswith("ambiguous:"):
+        return [], pattern.split(":", 1)[1] or "unverifiable command"
+
+    obf = detect_obfuscation(command)
+    if obf:
+        return [], obf
+
+    segments, split_err = _scope_segments(command)
+    if split_err:
+        return [], split_err
+    if not segments:
+        return [], "no command to evaluate"
+
+    dirs: List[str] = []
+    considered = 0
+    current_dir = cwd
+
+    for argv, following_op in segments:
+        assigns, argv = _split_assignments(argv)
+        if not argv:
+            continue
+        head = os.path.basename(argv[0])
+
+        if head in _CWD_CHANGING:
+            # A `cd` only pins the directory for what follows when the shell
+            # guarantees it ran AND succeeded — i.e. when `&&` joins them. With
+            # `;` the next segment runs even if the `cd` failed, so it could
+            # execute in either directory and we will not pick one.
+            if head != "cd":
+                return [], f"command uses {head} — directory stack is not statically knowable"
+            if following_op != "&&":
+                return [], (
+                    f"`cd` is joined by '{following_op or 'nothing'}' rather than '&&', so the "
+                    "directory the next command runs in is not statically knowable"
+                )
+            target = _cd_target(argv)
+            if target is None:
+                return [], "`cd` target is not a literal path"
+            resolved = _resolve_dir(target, current_dir)
+            # `cd` through a symlink leaves the shell's logical cwd at the
+            # symlink path, so track the lexical form; the realpath form is
+            # still checked below via _resolve_dir on the acting segment.
+            current_dir = resolved[0]
+            continue
+
+        is_git = head == "git"
+        gopts, stripped = (
+            git_global_dirs(argv) if is_git
+            else ({"chdir": [], "git_dir": None, "work_tree": None}, argv)
+        )
+
+        if pattern:
+            # Match the rule against BOTH the segment as written and its
+            # git-global-stripped form. The first is what matches today; the
+            # second is what will match once #913 normalizes those options away
+            # before rule matching. Handling both keeps scope evaluation
+            # correct on either side of that change.
+            haystacks = [" ".join(assigns + argv), " ".join(assigns + stripped)]
+            try:
+                if not any(re.search(pattern, h, re.IGNORECASE) for h in haystacks):
+                    continue
+            except re.error:
+                return [], "rule pattern is not a usable regex"
+        considered += 1
+
+        if head in _INDIRECT_RUNNERS:
+            return [], f"command runs through {head} — target directory is not statically knowable"
+
+        # Fold the `-C` chain FIRST — it establishes the directory everything
+        # else on this segment is measured from. Left to right, each value
+        # against the running result, an absolute value resetting the chain
+        # (real git semantics; see git_global_dirs). Resolving each `-C`
+        # against the cwd instead lets `git -C <in-scope> -C ../..` collapse
+        # onto the in-scope directory and be granted while git walks out of it.
+        acting_dir = current_dir
+        for hop in gopts["chdir"]:
+            acting_dir = _abs_path(hop, acting_dir)
+        dirs.extend(_resolve_dir(acting_dir, current_dir))
+
+        # `--git-dir` / `--work-tree` are last-one-wins and resolve against the
+        # `-C` result, not the cwd.
+        for selector in (gopts["git_dir"], gopts["work_tree"]):
+            if selector:
+                dirs.extend(_resolve_dir(selector, acting_dir))
+
+        # Environment assignments. Recognized git repo selectors are read as
+        # target directories; ANY other assignment refuses, because we cannot
+        # know whether an env var we do not model redirects the tool. This is
+        # the same answer `env VAR=… git commit` already got by being an
+        # indirect runner — the two spellings of one redirection now agree.
+        # Resolved against the acting directory for the same reason as above.
+        for assign in assigns:
+            name, _, value = assign.partition("=")
+            if name in _GIT_DIR_ENV_VARS:
+                if value:
+                    dirs.extend(_resolve_dir(value, acting_dir))
+                continue
+            return [], (
+                f"command sets {name} — an environment override may redirect "
+                f"{head} to a different target, which is not statically knowable"
+            )
+
+        if head == "git":
+            # git resolves its repo by walking UP from the working directory, so
+            # the directory the command runs in is NOT necessarily the repo it
+            # writes to. Require the enclosing repo ROOT to be in scope as well.
+            #
+            # CHOSEN over the alternative of refusing a non-root scope at lint
+            # time: a lint sees only the scope as written, and a scope like
+            # `~/.claude/projects/*/memory/` is legitimate right up until
+            # someone runs `git init ~/.claude`, after which every memory store
+            # is a subdirectory of one big repo. Checking at decision time
+            # follows the filesystem instead of a snapshot of it.
+            for candidate in list(dirs):
+                root = _git_repo_root(candidate)
+                if root:
+                    dirs.extend(_resolve_dir(root, current_dir))
+
+    if pattern and considered == 0:
+        # The rule matched the command as a whole but no individual segment —
+        # e.g. it matched inside an `sh -c` payload that `masked_subcommands`
+        # re-scanned. We cannot say which directory that would touch.
+        return [], "no subcommand matched the rule — target directory is not statically knowable"
+    if not dirs:
+        return [], "no target directory could be determined"
+    # Stable order, no duplicates.
+    return sorted(set(dirs)), None
+
+
+_GLOB_CHARS = set("*?[")
+
+
+def _scope_variants(scope_pattern: str) -> List[str]:
+    """The scope pattern, plus a form with its literal prefix realpath'd.
+
+    Resolve BOTH sides before comparing (review §5). The candidate path is
+    offered in normalized and realpath'd form; the scope needs the same
+    treatment or a scope rooted under a symlinked directory (``~/.claude`` ->
+    elsewhere) would reject its own legitimate contents. Only the literal
+    prefix up to the first glob character can be resolved — the rest is a
+    pattern, not a path.
+    """
+    expanded = os.path.normpath(os.path.expanduser(scope_pattern).rstrip("/"))
+    variants = [expanded]
+    idx = next((i for i, ch in enumerate(expanded) if ch in _GLOB_CHARS), None)
+    literal = expanded if idx is None else expanded[:idx].rsplit("/", 1)[0]
+    if not literal or not os.path.isabs(literal):
+        return variants
+    try:
+        real = os.path.realpath(literal)
+    except OSError:
+        return variants
+    if real != literal:
+        variants.append(real + expanded[len(literal):])
+    return variants
+
+
+def path_in_scope(path: str, scope_pattern: str) -> bool:
+    """True when ``path`` is the directory ``scope_pattern`` names, or under it.
+
+    ``*`` matches within one path segment, ``**`` crosses segments — the same
+    reading as the rest of the rule files. Matching is exact (no case folding):
+    a scope is a security boundary, and on a case-insensitive filesystem a
+    permissive fold is the wrong direction to be wrong in.
+    """
+    normalized = os.path.normpath(path)
+    for variant in _scope_variants(scope_pattern):
+        if not variant:
+            continue
+        regex = ""
+        i = 0
+        while i < len(variant):
+            ch = variant[i]
+            if ch == "*":
+                if variant[i:i + 2] == "**":
+                    regex += ".*"
+                    i += 2
+                    continue
+                regex += "[^/]*"
+            elif ch == "?":
+                regex += "[^/]"
+            else:
+                regex += re.escape(ch)
+            i += 1
+        try:
+            if re.fullmatch(regex + r"(?:/.*)?", normalized):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def unattended_grant_allows(
+    rule_id: Optional[str],
+    command: str,
+    grants: Dict[str, List[List[str]]],
+    cwd: str,
+    pattern: Optional[str] = None,
+    scopeable: bool = True,
+) -> Tuple[bool, str]:
+    """Does an unattended grant permit this ``ask``-tier command? ``(allowed, why)``.
+
+    ``why`` is written to be read by a human in the block message — a refused
+    scoped grant must say what it granted and what the command targeted, or the
+    host is back to debugging a nightly timeout.
+
+    ``scopeable=False`` declares that ``command`` has no filesystem target to
+    measure a scope against — the MCP hook's synthesized ``agentwire email
+    --to …`` is a tool invocation, not a command that touches a directory.
+    A scoped grant then REFUSES rather than silently measuring the scope
+    against the session cwd, which would have nothing to do with what the tool
+    actually does.
+    """
+    if not rule_id:
+        return False, "the matched rule has no id, so no grant can name it"
+    scopes = grants.get(rule_id)
+    if scopes is None:
+        return False, f"rule '{rule_id}' is not on the unattended allowlist"
+    if not scopes:
+        # Named by an entry that did not parse. Deliberately NOT a fall-through
+        # to a looser layer — see parse_unattended_allow.
+        return False, (
+            f"rule '{rule_id}' is named in unattended_allow but its entry is malformed, "
+            f"so it grants nothing (check `agentwire tasks review` for the reason)"
+        )
+    if any(not s for s in scopes):
+        return True, f"rule '{rule_id}' is granted unattended (unscoped)"
+
+    flat = [p for s in scopes for p in s]
+    if not scopeable:
+        return False, (
+            f"rule '{rule_id}' is granted only under {', '.join(flat)}, and this "
+            f"action has no filesystem target to measure that scope against"
+        )
+    dirs, unscopeable = command_scope_dirs(command, cwd, pattern=pattern)
+    if unscopeable:
+        return False, (
+            f"rule '{rule_id}' is granted only under {', '.join(flat)}, and this "
+            f"command's target directory cannot be established ({unscopeable})"
+        )
+    outside = [d for d in dirs if not any(path_in_scope(d, p) for p in flat)]
+    if outside:
+        return False, (
+            f"rule '{rule_id}' is granted only under {', '.join(flat)}, but this "
+            f"command targets {', '.join(outside)}"
+        )
+    return True, (
+        f"rule '{rule_id}' is granted under {', '.join(flat)}; "
+        f"this command targets {', '.join(dirs)}"
+    )
 
 
 def load_safety_config(

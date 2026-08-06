@@ -147,8 +147,26 @@ def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
     captured here at import (see ``_capture_unattended_env``).
     Every session-creation path funnels its env through here on the way to
     ``tmux new-session -e K=V``, so the marker lands in the new session BEFORE
-    the agent launches and the damage-control hook can read it. A child session
-    an unattended agent spawns inherits the marker too (defense in depth).
+    the agent launches and the damage-control hook can read it.
+
+    THE TWO VARS INHERIT DIFFERENTLY AND THAT IS DELIBERATE (#914). A child
+    session an unattended agent spawns inherits BOTH — transitively, to any
+    depth, and across projects (``created_by`` is dropped for a cross-project
+    spawn, #715; this env is not rooted). For ``AGENTWIRE_UNATTENDED`` that is
+    defense in depth: it TIGHTENS, so inheriting it can only ever block more.
+    ``AGENTWIRE_UNATTENDED_ALLOW`` inherits on the same path and LOOSENS, which
+    is a materially different thing and went undocumented until #914.
+
+    It is kept, deliberately: the motivating fan-out task (``memory-manager``)
+    does not act itself — it spawns four children that do, so a grant that
+    stopped at the parent could not fix a delegating task at all, and that gap
+    applies to every task that delegates. What makes the inheritance safe is
+    that the grant now carries its PATH SCOPE with it (``encode_unattended_allow``
+    keeps the scope in the wire format), so what a child inherits is
+    "commit under ``<store>``", not "commit". A child cannot widen it: the
+    damage-control hook reads this var from the Claude Code process env, not
+    from the shell the agent runs commands in, and the files that define grants
+    are protected control plane.
 
     No leak into interactive sessions: a human's ``agentwire new`` has no such
     var in its environment, so nothing is propagated.

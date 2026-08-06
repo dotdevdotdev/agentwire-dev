@@ -127,11 +127,21 @@ class TaskConfig:
     # keep the guard) — see ensure_cli._dispatch_shares_dir.
     allow_shared_dir: bool | None = None
 
-    # Unattended (no-human) safety: damage-control rule ids this scheduled task
-    # is permitted to run when the dispatch is unattended, EXTENDING the global
-    # default allowlist (safety.unattended_allow / DEFAULT_UNATTENDED_ALLOW).
-    # Anything ask-tier and off the merged list is blocked + owner-notified.
-    unattended_allow: list[str] = field(default_factory=list)
+    # Unattended (no-human) safety: damage-control rules this scheduled task is
+    # permitted to run when the dispatch is unattended. Anything ask-tier and
+    # not granted here is blocked + owner-notified.
+    #
+    # Two entry forms (#914) — a bare rule id, or a mapping carrying a path
+    # scope:
+    #     unattended_allow:
+    #       - outbound.agentwire-email
+    #       - id: git.commit
+    #         paths: [~/.claude/projects/*/memory/]
+    # Naming a rule here REPLACES any looser grant for it from
+    # safety.unattended_allow / DEFAULT_UNATTENDED_ALLOW, so a scoped entry
+    # genuinely narrows rather than being swallowed by an unscoped default.
+    # Parsed and validated by safety._core.parse_unattended_allow.
+    unattended_allow: list[str | dict] = field(default_factory=list)
 
     # Keys present in the YAML that this dataclass doesn't know about. A task
     # author who sets a field agentwire silently ignores gets the behavior they
@@ -386,6 +396,13 @@ def validate_task(task: TaskConfig) -> list[str]:
 
     if task.loop_delay < 0:
         issues.append("Negative loop_delay")
+
+    # A malformed unattended_allow entry grants NOTHING (parse_unattended_allow
+    # drops it). Silently dropping a grant the author believes they wrote is how
+    # this surfaces as a 04:00 timeout instead of a review comment (#914).
+    from .safety._core import parse_unattended_allow
+    _, allow_errors = parse_unattended_allow(task.unattended_allow)
+    issues.extend(f"unattended_allow: {e}" for e in allow_errors)
 
     return issues
 

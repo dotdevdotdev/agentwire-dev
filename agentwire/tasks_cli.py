@@ -122,6 +122,44 @@ def _validate_draft(data: dict) -> list[str]:
     return issues
 
 
+def _posture_lint_lines(data: dict) -> list[str]:
+    """Cross-check every task in a draft against what its unattended posture refuses.
+
+    The authoring-time half of #914: a task whose prompt says "commit and push
+    directly to main" is specified to do something the unattended posture
+    forbids, and nothing said so until it failed at 04:00 as a `max_duration`
+    timeout. `tasks review` is the moment a human is looking at the task and
+    can decide, so the warning belongs here.
+    """
+    try:
+        from .safety.lint import lint_task_posture, load_effective_config, render_report
+        from .tasks import parse_task_config
+    except Exception as e:  # noqa: BLE001 — a lint must never break review
+        return [f"(posture lint unavailable: {e})"]
+
+    try:
+        config, label = load_effective_config()
+    except Exception as e:  # noqa: BLE001
+        return [f"(posture lint unavailable: {e})"]
+
+    default_shell = data.get("shell")
+    lines: list[str] = []
+    for name, cfg in (data.get("tasks", {}) or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        try:
+            task = parse_task_config(name, cfg, default_shell=default_shell)
+            report = lint_task_posture(task, config, cwd=str(Path.cwd()))
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"{name}: posture lint failed: {e}")
+            continue
+        rendered = render_report(report, label)
+        if rendered:
+            lines.append(f"{name}:")
+            lines.extend(f"  {line}" for line in rendered)
+    return lines
+
+
 def _shell_bearing_fields(tasks: dict) -> list[str]:
     """Flatten every shell-executed string across all tasks — the review's purpose."""
     lines: list[str] = []
@@ -167,6 +205,7 @@ def cmd_tasks_review(args) -> int:
 
     issues = _validate_draft(data)
     shell_lines = _shell_bearing_fields(data.get("tasks", {}))
+    posture_lines = _posture_lint_lines(data)
 
     active_text = active_path.read_text() if active_path.exists() else ""
     proposed_text = proposed_path.read_text()
@@ -184,6 +223,7 @@ def cmd_tasks_review(args) -> int:
             "diff": diff,
             "shell_commands": shell_lines,
             "validation_issues": issues,
+            "posture_warnings": posture_lines,
         })
         return 1 if issues else 0
 
@@ -196,6 +236,14 @@ def cmd_tasks_review(args) -> int:
             print(line)
     else:
         print("No shell commands found in this draft.")
+
+    if posture_lines:
+        # A warning, never a hard failure: the posture check is advisory (the
+        # prompt half is a heuristic), and blocking a promote on a guess would
+        # be worse than the timeout it replaces.
+        print("\nUnattended posture warnings:")
+        for line in posture_lines:
+            print(f"  {line}")
 
     if issues:
         print(f"\nValidation issues ({len(issues)}):")

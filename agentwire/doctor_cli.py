@@ -334,6 +334,30 @@ def _render_damage_control_section() -> int:
     else:
         print("  [ok] PreToolUse damage-control matchers registered")
 
+    # Built-in unattended grants that name no live rule (#914 / #916). These
+    # read as working policy and are inert — the whole `DEFAULT_UNATTENDED_ALLOW`
+    # set went silently dead on this machine because the installed tooldefs are
+    # missing four `id:` lines the bundled copy has, and the user copy wins.
+    # It surfaces as scheduled tasks blocked on `git commit`, reported as a
+    # timeout. Rules drift is already reported above; tooldefs were not.
+    try:
+        from .safety.lint import load_effective_config, unattended_defaults_missing
+        cfg, label = load_effective_config()
+        inert = unattended_defaults_missing(cfg)
+    except Exception as e:
+        print(f"  [..] Could not evaluate unattended default grants: {e}")
+        inert = []
+    else:
+        if inert:
+            print(f"  [!!] Built-in unattended grants naming NO live rule: {', '.join(inert)}")
+            print(f"       Loaded: {label}")
+            print("       These grants are inert — unattended tasks are blocked on actions")
+            print("       the defaults are specified to permit (typically a drifted")
+            print("       ~/.agentwire/tooldefs/ missing the stable `id:` fields).")
+            issues += 1
+        else:
+            print("  [ok] Built-in unattended grants all resolve to live rules")
+
     return issues
 
 

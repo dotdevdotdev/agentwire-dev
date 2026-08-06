@@ -548,20 +548,29 @@ def _unattended_env(task: SchedulerTask) -> dict[str, str]:
     THE single chokepoint where the scheduler declares a run unattended. Every
     dispatch gets ``AGENTWIRE_UNATTENDED=1``; if the project task defines
     ``unattended_allow`` (its per-task extension to the global allowlist), those
-    rule ids are passed via ``AGENTWIRE_UNATTENDED_ALLOW``. This overlay is the
+    grants are passed via ``AGENTWIRE_UNATTENDED_ALLOW``. This overlay is the
     subprocess ``env=`` for the ensure/new dispatch calls; ``agentwire``'s
     ``_build_tmux_env_flags`` funnels both vars into the new tmux session before
     the agent launches, where the damage-control hook reads them. Interactive
     sessions never go through here, so the marker can't leak into them.
+
+    Entries are encoded VERBATIM, scope included (#914) — ``encode_unattended_allow``
+    emits JSON when any entry is scoped, else the plain comma-separated id list.
+    Flattening a scoped entry back to a bare rule id here would hand every
+    session in the fan-out the unscoped grant, which is the whole feature
+    inverted.
     """
     env = dict(os.environ)
     env["AGENTWIRE_UNATTENDED"] = "1"
     try:
+        from ..safety._core import encode_unattended_allow
         from ..tasks import load_task
         tc = load_task(Path(task.project), task.task)
         extra = getattr(tc, "unattended_allow", None)
         if extra:
-            env["AGENTWIRE_UNATTENDED_ALLOW"] = ",".join(str(x) for x in extra if x)
+            encoded = encode_unattended_allow(extra)
+            if encoded:
+                env["AGENTWIRE_UNATTENDED_ALLOW"] = encoded
     except Exception:
         pass
     return env

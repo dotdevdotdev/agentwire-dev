@@ -339,16 +339,23 @@ class TestUnattendedAllowlist:
         monkeypatch.setenv("AGENTWIRE_UNATTENDED", "0")
         assert bash_hook.is_unattended() is False
 
+    # `resolve_unattended_allow` (a flat set) became `resolve_unattended_grants`
+    # (rule id -> scopes) in #914. Key membership still answers "is this rule
+    # granted at all"; the scope-bearing behaviour lives in
+    # tests/unit/test_unattended_scoped_allow.py.
+
     def test_default_allowlist_covers_work_and_pr(self, bash_hook, monkeypatch):
         monkeypatch.delenv("AGENTWIRE_UNATTENDED_ALLOW", raising=False)
-        allow = bash_hook.resolve_unattended_allow({"safety": {}})
+        allow = bash_hook.resolve_unattended_grants({"safety": {}})
         # work + open a PR, nothing irreversible/outward
-        assert {"git.add", "git.commit", "git.push", "gh.pr-create"} <= allow
+        assert {"git.add", "git.commit", "git.push", "gh.pr-create"} <= set(allow)
         assert "gh.pr-merge" not in allow
+        # Unscoped by default — a scope here would be a host policy decision.
+        assert allow["git.commit"] == [[]]
 
     def test_config_extends_default(self, bash_hook, monkeypatch):
         monkeypatch.delenv("AGENTWIRE_UNATTENDED_ALLOW", raising=False)
-        allow = bash_hook.resolve_unattended_allow(
+        allow = bash_hook.resolve_unattended_grants(
             {"safety": {"unattended_allow": ["custom.rule"]}}
         )
         assert "custom.rule" in allow
@@ -356,15 +363,15 @@ class TestUnattendedAllowlist:
 
     def test_env_extension_merges(self, bash_hook, monkeypatch):
         monkeypatch.setenv("AGENTWIRE_UNATTENDED_ALLOW", "task.rule-a, task.rule-b")
-        allow = bash_hook.resolve_unattended_allow({"safety": {}})
-        assert {"task.rule-a", "task.rule-b"} <= allow
+        allow = bash_hook.resolve_unattended_grants({"safety": {}})
+        assert {"task.rule-a", "task.rule-b"} <= set(allow)
 
     def test_default_allowlist_covers_agentwire_email(self, bash_hook, monkeypatch):
         # `agentwire email` is a blanket unattended-allow (#804) — the primary
         # way an unattended agent reports back, so fail-closed blocking it
         # defeats the use case. `agentwire quo` (SMS) is deliberately NOT here.
         monkeypatch.delenv("AGENTWIRE_UNATTENDED_ALLOW", raising=False)
-        allow = bash_hook.resolve_unattended_allow({"safety": {}})
+        allow = bash_hook.resolve_unattended_grants({"safety": {}})
         assert "outbound.agentwire-email" in allow
         assert "outbound.agentwire-quo" not in allow
 
