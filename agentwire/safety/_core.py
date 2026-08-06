@@ -1822,11 +1822,48 @@ def _grammar(
     }
 
 
+# THIS TABLE LIVES IN CODE, NOT IN A ``rules/*.yaml``, AND THAT IS A
+# DEPLOYMENT REQUIREMENT RATHER THAN A STYLE CHOICE. ``heal_damage_control``
+# treats the two classes differently: hook scripts self-heal when STALE
+# (drift check, then copy), while rules and tooldefs are install-missing-only
+# (``if not target.exists()``), so an EXISTING rule file is never brought
+# forward by any command. A table shipped as YAML would merge green, pass
+# review — and be INERT on day one on every installation that already has the
+# file, with no supported way to update it. #918 deploys because it touched
+# only ``_core.py`` and the generated hooks; #675's anchoring does not, because
+# it lives in ``rules/git.yaml``. Same repo, same merge, opposite outcomes,
+# decided purely by which file the fix landed in. Do not move this to YAML.
+#
 # Measured, not read off a usage line. git's own usage advertises only the
 # ``=`` form while the binary accepts both, and ``--exec-path`` looks
 # value-taking and is not — so each row below was established by running the
 # binary: ``TOOL <opt> <harmless-subcommand>`` and asking whether the
 # subcommand still ran (option is bare) or was swallowed (option took it).
+#
+# WHICH BINARY, because a ``measured`` row is only as good as the thing
+# measured, and "measured against a static build I downloaded" is a different
+# claim from "measured against what the operator runs". Measured 2026-08-06:
+#
+#   already on the machine  git 2.50.1 (/usr/bin/git, Apple), tmux 3.5a
+#                           (homebrew), gcloud 560.0.0, npm 10.8.2, supabase
+#                           2.105.0 — these ARE what the operator runs
+#   downloaded static build kubectl v1.36.3 (dl.k8s.io), helm 3.16.4
+#                           (get.helm.sh), terraform 1.10.5
+#                           (releases.hashicorp.com), pulumi 3.145.0
+#                           (get.pulumi.com), docker 27.4.1
+#                           (download.docker.com/mac/static)
+#   pkg payload, expanded   aws-cli 2.36.17 (awscli.amazonaws.com/AWSCLIV2.pkg,
+#                           expanded with pkgutil, never installed)
+#   homebrew bottle, unpacked  redis-cli 8.10.0, mysqladmin 9.7.1 (brew fetch,
+#                           tar-extracted; never brew install)
+#   rustup, scratchpad-only cargo 1.97.1 via the rustup shim, with CARGO_HOME
+#                           and RUSTUP_HOME pointed at a temp dir
+#   NOT MEASURED            pnpm — the corepack shim on this machine dies with
+#                           ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING
+#
+# Nothing was installed on the host and nothing was placed on the host PATH.
+# Re-measuring a row on a tool upgrade means re-running the same differential
+# probe; the version in each row says what it was measured against.
 _GLOBAL_OPTION_TABLE: Dict[str, Dict[str, Any]] = {
     # git 2.50.1 (Apple Git-155). ``-C``/``-c`` need a SEPARATE argument —
     # ``-C/tmp`` is rejected by git itself, so no short-cluster handling.
@@ -1852,6 +1889,168 @@ _GLOBAL_OPTION_TABLE: Dict[str, Dict[str, Any]] = {
         flag=("-2", "-C", "-l", "-N", "-u", "-U", "-v", "-V"),
         short_cluster=True,
     ),
+    # kubectl v1.36.3 (pflag). The bypassing option here is the
+    # production-TARGETING one: the guard held for the default context and
+    # dropped for the named remote cluster.
+    "kubectl": _grammar(
+        _MEASURED, "v1.36.3",
+        value=("--context", "-n", "--namespace", "--kubeconfig", "--cluster",
+               "--user", "--token", "--server", "-s", "--as", "--as-group",
+               "--as-uid", "--request-timeout", "--certificate-authority",
+               "--client-key", "--client-certificate", "--cache-dir",
+               "--tls-server-name", "--username", "--password", "-v", "--v",
+               "--profile", "--profile-output", "--log-flush-frequency",
+               "--kuberc"),
+        flag=("--insecure-skip-tls-verify", "--warnings-as-errors",
+              "--disable-compression", "--match-server-version"),
+        short_cluster=True,
+    ),
+    # docker 27.4.1 (pflag). `--context prod` / `-H tcp://prod:2375` are how a
+    # local command reaches a production daemon.
+    "docker": _grammar(
+        _MEASURED, "27.4.1",
+        value=("--context", "-c", "--host", "-H", "--config", "--log-level",
+               "-l", "--tlscacert", "--tlscert", "--tlskey"),
+        flag=("--tls", "--tlsverify", "--debug", "-D"),
+        short_cluster=True,
+    ),
+    # aws-cli 2.36.17 (argparse). No short global options, so no clustering.
+    # `--output` and `--color` LOOK bare to a naive probe — an invalid value
+    # produces the same "invalid choice" text as an unknown subcommand — and
+    # are value-taking; the parser's own "expected one argument" settles it.
+    "aws": _grammar(
+        _MEASURED, "2.36.17",
+        value=("--profile", "--region", "--endpoint-url", "--output", "--query",
+               "--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout",
+               "--color"),
+        flag=("--debug", "--no-verify-ssl", "--no-paginate", "--no-sign-request",
+              "--no-cli-pager", "--no-cli-auto-prompt"),
+    ),
+    # Google Cloud SDK 560.0.0. `--verbosity` is value-taking for the same
+    # reason as aws's `--output`.
+    "gcloud": _grammar(
+        _MEASURED, "560.0.0",
+        value=("--project", "--account", "--configuration", "--billing-project",
+               "--impersonate-service-account", "--access-token-file",
+               "--verbosity", "--format", "--trace-token"),
+        flag=("--quiet", "-q", "--log-http", "--no-user-output-enabled"),
+    ),
+    # helm 3.16.4 (pflag).
+    "helm": _grammar(
+        _MEASURED, "3.16.4",
+        value=("--kube-context", "--kubeconfig", "--namespace", "-n",
+               "--kube-apiserver", "--kube-token", "--registry-config",
+               "--repository-cache", "--repository-config", "--burst-limit",
+               "--kube-as-user", "--kube-as-group", "--kube-ca-file",
+               "--kube-tls-server-name", "--qps"),
+        flag=("--debug", "--kube-insecure-skip-tls-verify"),
+        short_cluster=True,
+    ),
+    # terraform 1.10.5. `-chdir=DIR` is the ONLY value-taking global option and
+    # it exists in the `=` form only — a bare `-chdir /infra` is not accepted,
+    # so it must not eat the next token.
+    #
+    # `-help` and `-version` are deliberately ABSENT though they are real
+    # global flags: both short-circuit execution, so `terraform -help destroy`
+    # prints help and destroys nothing. Stripping them would normalize a help
+    # invocation into `terraform destroy` and BLOCK it — a false positive on a
+    # command people actually type. Omitting them only costs a variant.
+    "terraform": _grammar(
+        _MEASURED, "1.10.5",
+        value_eq_only=("-chdir",),
+    ),
+    # pulumi 3.145.0 (pflag) — `-C /infra` is the cwd override.
+    "pulumi": _grammar(
+        _MEASURED, "3.145.0",
+        value=("-C", "--cwd", "--color", "--profiling", "--tracing",
+               "--memprofilerate", "-v", "--verbose"),
+        flag=("--logtostderr", "--non-interactive", "-e", "--emoji", "-Q",
+              "--fully-qualify-stack-names", "--logflow",
+              "--disable-integrity-checking"),
+        short_cluster=True,
+    ),
+    # npm 10.8.2. npm treats ANY unrecognized `--long` as a config key, so this
+    # row is the measured subset rather than a closed grammar; an unlisted
+    # config key bails the scan and simply yields no variant.
+    "npm": _grammar(
+        _MEASURED, "10.8.2",
+        value=("--prefix", "-C", "--userconfig", "--globalconfig", "--cache",
+               "--registry", "--loglevel", "--workspace", "-w"),
+        flag=("-g", "--global", "--no-workspaces", "--silent", "-s", "--json"),
+        short_cluster=True,
+    ),
+    # pnpm — DOCUMENTED, not measured. The binary on this machine is broken
+    # (corepack shim dies with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING), and the
+    # ruling on #919 is not to install tools on the owner's machine to measure
+    # them. `short_cluster` is left FALSE rather than guessed from the
+    # getopt-shaped tools: an unverified True would strip clusters pnpm may
+    # reject. Falsified by the `pnpm -C /srv publish` corpus row.
+    "pnpm": _grammar(
+        _DOCUMENTED, "pnpm 9.x/10.x docs",
+        value=("-C", "--dir", "--filter", "--loglevel", "--reporter"),
+        flag=("-w", "--workspace-root", "--stream", "--silent"),
+    ),
+    # cargo 1.97.1, invoked through the rustup shim (which is how `cargo` is
+    # reached on any machine with rustup installed). `+nightly` is a TOOLCHAIN
+    # SELECTOR, not an option — hence `plus_selector` rather than a flag entry.
+    # `-Z` is omitted: it is nightly-only, so its arity is not measurable on a
+    # stable toolchain and a guess here could swallow a subcommand.
+    "cargo": _grammar(
+        _MEASURED, "1.97.1",
+        value=("--config", "--color"),
+        flag=("--frozen", "--locked", "--offline", "-q", "--quiet", "-v",
+              "--verbose"),
+        plus_selector=True,
+    ),
+    # supabase 2.105.0 (cobra).
+    "supabase": _grammar(
+        _MEASURED, "2.105.0",
+        value=("--workdir", "--dns-resolver", "--network-id", "--output", "-o"),
+        flag=("--debug", "--experimental", "--create-ticket"),
+        short_cluster=True,
+    ),
+    # redis-cli 8.10.0. Hand-rolled argv comparison, NOT getopt: `-hprod.redis`
+    # is rejected ("Unrecognized option or bad number of args for: '-hzzhost'")
+    # and `--user=x` is not accepted either. So short_cluster is FALSE here
+    # even though every other short-option tool in this table sets it True —
+    # which is the argument for measuring the property per tool.
+    "redis-cli": _grammar(
+        _MEASURED, "8.10.0",
+        value=("-h", "-p", "-s", "-a", "-u", "-n", "-t", "-r", "-i", "--user",
+               "--pass"),
+        flag=("-x", "--tls", "--no-raw", "--scan"),
+    ),
+    # mysqladmin 9.7.1 (getopt): `-uroot` and `-furoot` both parse. Arity from
+    # the parser's own "option '-u' requires an argument", since mysqladmin
+    # connects before it validates the command and so has no usable
+    # subcommand-survived marker.
+    #
+    # `-p` is deliberately ABSENT: its value is OPTIONAL and attached-only
+    # (`-psecret`, but bare `-p` prompts). Neither category models that, and
+    # the wrong one would eat the command. `mysqladmin -psecret drop db` bails
+    # the cluster scan and yields no variant — an under-strip, recorded here.
+    #
+    # KNOWN LIMIT: mysql's long options accept unique-prefix abbreviation
+    # (`--us=root`), which no exact-match table can enumerate. Those forms keep
+    # the bypass.
+    "mysqladmin": _grammar(
+        _MEASURED, "9.7.1",
+        value=("-u", "-h", "-P", "-S", "--user", "--host", "--port", "--socket",
+               "--protocol"),
+        flag=("-f", "--force", "-s", "--silent", "-C", "--compress", "-w",
+              "--wait", "--no-defaults"),
+        short_cluster=True,
+    ),
+    # NOT IN THIS TABLE, and deliberately:
+    #
+    #   gh — `gh -R owner/name repo delete` is NOT a bypass. Measured: `gh -R
+    #   cli/cli repo view` -> "unknown shorthand flag: 'R' in -R", and `gh
+    #   --repo …` -> "unknown flag: --repo". Both are per-COMMAND flags, so the
+    #   command never runs and there is nothing to normalize. It was listed as
+    #   a bypass in #913's review notes and in #919's issue body (which is why
+    #   that issue says 15 tools and this table has 14 plus git); the reviewer
+    #   disproved it. Pinned by `test_gh_is_not_a_bypass_and_has_no_row` so a
+    #   future rebuild-from-notes cannot quietly re-add it.
 }
 
 # Tokens allowed to precede the tool while still counting as an invocation

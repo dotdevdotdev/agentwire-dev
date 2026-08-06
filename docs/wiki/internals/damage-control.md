@@ -239,6 +239,55 @@ bashToolPatterns:
 - Docker destructive operations (`system prune`, `rm -v /`)
 - Package manager risks (`apt-get autoremove`, `npm uninstall -g`)
 
+#### 1a. Global options before the subcommand (#913, #919)
+
+Every pattern above names a tool and then its subcommand — `\bgit\s+push\b`,
+`\btmux\s+kill-server\b` — and `\s+` cannot span a global option. So for a long
+time `git -C /repo push --force`, `tmux -L agentwire kill-server` and
+`kubectl --context prod delete namespace prod` were all **allowed**, while their
+plain forms blocked. In `aws`/`kubectl`/`docker`/`redis-cli` the bypassing option
+is the *production-targeting* one, which inverts the guard: it held for the
+default target and dropped for the named remote one.
+
+The fix is one normalizer at the shared matching seam, driven by a per-tool data
+table (`_GLOBAL_OPTION_TABLE` in `agentwire/safety/_core.py`). Rules do not need
+to know about it: `global_option_normalized_haystacks()` emits an **extra**
+haystack per subcommand with the tool's global options removed, and present and
+future rules inherit the fix.
+
+Four properties are load-bearing:
+
+- **Additive.** A third haystack *added* to whichever list a rule already reads.
+  Neither the raw nor the masked list is rewritten — some stripped values are
+  command payloads (`git -c core.sshCommand=<cmd>`, `tmux -c <shell-command>`),
+  and deleting them in place would turn a block into an allow.
+- **Fed to both routings**, anchored and unanchored. Which rules are anchored is
+  not stable, and the intersection *must-stay-unanchored ∩ bypassable* is
+  reachable only if unanchored rules see it too.
+- **Derived from the masked tokens**, so quoted argument text can never become
+  matchable (#675): `echo 'tmux -L x kill-server'` stays allowed.
+- **Per-tool grammar, measured against the binary.** git's usage line advertises
+  only the `=` form while the binary accepts both, and `--exec-path` looks
+  value-taking and is not. The `short_cluster` property matters most: tmux is
+  getopt-based and accepts `-Lname` and `-2Lname`, while git *rejects* `-C/tmp` —
+  so the fleet-kill bypass has three spellings and git's answer is the wrong
+  default for the class.
+
+**Adding a tool is a table row, not a patch.** Each row records `provenance`
+(`measured` against a named binary version, or `documented` where the binary was
+not available) because *both directions* of a wrong arity guess fail open — mark
+an option value-taking when it is bare and the subcommand is eaten; mark it bare
+when it takes a value and the value stays inline. Neither shows up as a spurious
+block, so a wrong row is silent. That is why every row must also carry at least
+one acceptance-corpus command in `tests/unit/test_damage_control_hooks.py`
+(enforced by `test_every_row_has_corpus_coverage`): a row nothing exercises
+asserts a grammar nothing can contradict.
+
+Known limits, recorded rather than hidden: argument-consuming wrappers
+(`timeout 5 git …`), mysql-style unique-prefix long-option abbreviation
+(`mysqladmin --us=root`), and any option a tool adds after the measured version.
+All fail by producing *no* variant — an under-strip, never an over-strip.
+
 #### 2. zeroAccessPaths (Complete blocks)
 
 Paths that cannot be accessed at all (read, write, edit, delete):
@@ -657,6 +706,13 @@ Protects:
 - `tmux kill-server` - would kill all sessions
 - `tmux kill-session -t agentwire-*` - would kill AgentWire workers
 - Allows: `tmux list-sessions`, `tmux attach`, killing non-AgentWire sessions
+
+**Socket options no longer bypass this (#919).** Every session on this machine
+runs on a *named* socket, so `tmux -L agentwire kill-server` was the spelling
+that mattered — and it was allowed, along with the attached (`-Lagentwire`) and
+bundled (`-2Lagentwire`) forms that tmux's getopt parsing also accepts. All
+three now normalize to `tmux kill-server` before matching. See
+[Global options before the subcommand](#1a-global-options-before-the-subcommand-913-919).
 
 ### Session File Protection
 
