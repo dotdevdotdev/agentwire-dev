@@ -377,15 +377,36 @@ class TestNonceGrammar:
             "confirm tango, wait for that build",
         ],
     )
-    def test_a_real_condition_also_denies_and_that_cost_is_accepted(self, text):
-        """The price of the above, asserted so nobody "fixes" it by accident.
+    def test_a_wait_clause_denies_because_it_cannot_be_honoured(self, text):
+        """This is CORRECT behaviour, not a tolerated false reject.
 
-        These are genuine approvals-with-a-condition and they now deny. The
-        owner re-proposes; nothing is lost but a turn. That is the recoverable
-        direction, and it is the whole reason the exception was dropped rather
-        than widened.
+        The first framing here was "an accepted cost". That was wrong, and the
+        reason is semantic rather than budgetary: **the write is ``msg send``
+        and it fires immediately — the buddy has no defer mechanism at all.**
+        So approving "confirm tango, wait until you hear back from the reviewer"
+        would SEND NOW while the owner believes it is being held: a silent
+        divergence between what they said and what happened, which is strictly
+        worse than a re-propose.
+
+        The correct home for such a clause is the INSTRUCTION, frozen at
+        propose — "tell the reviewer to wait until X" — where it is content for
+        the recipient rather than a condition on the send.
+
+        The cost is also smaller than it looks: matching is on the exact token,
+        so "waiting"/"waited"/"awaiting" do not fire (asserted below). Only the
+        bare imperative does.
+
+        This holds **only while recovery is cheap**, which is what
+        :meth:`test_a_clean_approval_recovers_after_any_denial` guarantees.
         """
         assert confirm.classify(text, "tango") == confirm.DENIED, text
+
+    def test_only_the_bare_imperative_wait_fires(self):
+        """Bounds the cost of the rule above: inflected forms are ordinary
+        speech about waiting, not instructions to hold."""
+        for inflected in ("waiting", "waited", "awaiting", "waits"):
+            assert confirm.carries_denial(inflected) is False, inflected
+        assert confirm.carries_denial("wait") is True
 
     def test_the_post_approval_scan_uses_the_same_rule(self):
         """``carries_denial`` is a second entry point into the grammar, so the
@@ -395,6 +416,47 @@ class TestNonceGrammar:
             assert confirm.carries_denial(hold) is True, hold
         for fine in ("don't forget the branch", "not urgent", "on hold"):
             assert confirm.carries_denial(fine) is False, fine
+
+    def test_an_unknown_word_after_a_denial_trigger_still_denies(self):
+        """The property, GENERATIVELY — not a list of cases.
+
+        Cardinality never bounded the risk. What does is: for an arbitrary token
+        the grammar has never seen, a denial trigger followed by it must still
+        DENY. If any unknown token could suppress, there is positive-evidence
+        logic on the fail-open side again.
+        """
+        import random
+        import string
+
+        rng = random.Random(20260806)
+        for _ in range(300):
+            unknown = "".join(rng.choice(string.ascii_lowercase) for _ in range(7))
+            assert unknown not in confirm._DENIAL_WORDS
+            for trigger in ("no", "stop", "wait", "cancel", "dont"):
+                text = f"{trigger} {unknown}, confirm tango"
+                assert confirm.classify(text, "tango") == confirm.DENIED, text
+
+    def test_every_denial_entry_is_a_closed_phrase(self):
+        """Item 5's audit, run over the live sets rather than trusted.
+
+        A bigram/trigram exception suppresses a denial, so each must be a closed
+        phrase with no next word to have missed. The check that catches the
+        three entries removed this round: an entry whose FIRST token is an
+        ordinary open-class word, matched with an ordinary open-class second
+        token, is a fragment of speech rather than a phrase.
+        """
+        # Every bigram must be anchored: its first token is either a denial word
+        # or a verb that only introduces a retraction in this position.
+        anchors = confirm._DENIAL_WORDS | {
+            "do", "never", "hold", "hang", "forget", "scrap", "belay"
+        }
+        for first, _second in confirm._DENIAL_BIGRAMS:
+            assert first in anchors, f"{first!r} is an open-class anchor"
+        # The removed ones stay removed — each denied a real approval.
+        for gone in (("not", "that"), ("back", "off")):
+            assert gone not in confirm._DENIAL_BIGRAMS, gone
+        for gone_word in ("cancelled", "canceled", "not", "never", "hold", "forget"):
+            assert gone_word not in confirm._DENIAL_WORDS, gone_word
 
     def test_no_enumeration_sits_on_the_side_where_being_wrong_writes(self):
         """The property, asserted instead of the cardinality.
@@ -409,6 +471,13 @@ class TestNonceGrammar:
         The rule: when a set must be enumerated, enumerate the side whose
         incompleteness is safe.
         """
+        # Fillers ARE enumerated, and that is safe in the opposite direction:
+        # skipping one can only make a denial EASIER to match, so an unlisted
+        # filler fails CLOSED.
+        assert confirm._FILLERS
+        for filler in confirm._FILLERS:
+            assert filler not in confirm._DENIAL_WORDS, filler
+
         # The fail-open enumeration is gone entirely, not shortened.
         assert not hasattr(confirm, "_BARE_DEICTICS")
         assert not hasattr(confirm, "_CONDITIONAL_DENIAL_EXCEPTIONS")
@@ -570,6 +639,40 @@ class TestGateRefusals:
         verdict = convo.spine.confirm(proposal.token)
         assert verdict.approved is True, verdict.reason
         assert len(runner.calls) == 1
+
+    def test_a_clean_approval_recovers_after_any_denial(self, convo, runner):
+        """Recovery is a PRECONDITION for every deliberate denial in this
+        grammar, and for the sentence ``denied`` speaks.
+
+        Binding the OLDEST approval made a retraction permanent: the
+        post-approval scan started at that old match, so the intervening denial
+        sat inside the window forever and no later approval could ever become
+        the match. Composed with the wait-clause rule it was worse than a
+        re-propose — the owner's natural first recovery, saying the phrase
+        cleanly, failed and kept failing until the 120s TTL, with nothing
+        telling them why.
+
+        And it FALSIFIED the spoken line: ``denied`` says "say the phrase again
+        when you're ready", which against the composed behaviour instructed the
+        owner to do the one thing that could not work — the ``too_many_attempts``
+        shape recreated inside the fix for it. So the line and the recovery are
+        asserted TOGETHER, deliberately: neither is correct without the other.
+        """
+        for retraction in ("no wait", "hold on", "scrap that",
+                           "wait for the tests to finish"):
+            proposal = convo.announced_proposal()
+            convo.says(f"confirm {proposal.nonce}, {retraction}")
+            assert convo.spine.confirm(proposal.token).reason == "denied", retraction
+
+            before = len(runner.calls)
+            convo.says(f"confirm {proposal.nonce}")
+            verdict = convo.spine.confirm(proposal.token)
+            assert verdict.approved is True, f"no recovery after {retraction!r}"
+            assert len(runner.calls) == before + 1
+
+        # The sentence that promises exactly this must still say so.
+        spoken = confirm.SPOKEN["denied"].lower()
+        assert "say the phrase again" in spoken
 
     def test_a_denial_whose_transcript_has_not_landed_still_blocks(
         self, convo, runner
@@ -1616,6 +1719,8 @@ class TestHonestLimit:
         "against an approval the conversational model invented",
         "does **not** cover every mis-transcription",
         "narrows but does not eliminate",
+        "A spoken retraction is caught only when it uses a word or phrase the "
+        "grammar knows",
         "**not** a security boundary against an adversary",
     )
 
