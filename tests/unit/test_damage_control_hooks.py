@@ -953,15 +953,25 @@ class TestCrossIssueBackstops:
     #
     # So tmux's payload survives on the RAW haystack only. Anchoring the
     # deletion rules moves them to the masked haystack, where it is already
-    # gone — measured against #920's branch, where this exact command reads
-    # `allow` outright, interactive AND unattended. Not `ask`: with no `$(` the
-    # ambiguity detector never fires, so `core.ambiguous-command` is not there
-    # to fail closed either, which is what makes it sharper than the quoted
-    # substitution case that prompted the review.
+    # gone — measured against #920's branch, where this exact command read
+    # `allow` OUTRIGHT with no rule matching, interactive AND unattended. Not
+    # `ask`: with no `$(` the ambiguity detector never fires, so
+    # `core.ambiguous-command` is not there to fail closed either. That is what
+    # makes it sharper than the quoted-substitution case that prompted the
+    # review — that one at least needed a grant to reach `allow`; this needs
+    # nothing. (`sh -c '<payload>'` survives only because `_SHELL_NAMES`
+    # rescans it. `tmux` is not in that set, and neither are the other
+    # `-c`/`-e`/`--eval` clients — the class is #924's.)
     #
-    # A failure here means the payload stopped being reachable. That is not
-    # necessarily a bug in the change that caused it — it means this surface
-    # needs coverage that does not depend on the raw haystack.
+    # NOT AN EXPECTED-RED CANARY. It was written as one, before the ruling that
+    # #920 must not ship a BLOCK -> ALLOW-outright regression with no backstop.
+    # So this is a live guarantee, not a tripwire for an accepted change: a
+    # failure here means an exec-surface payload became unreachable by every
+    # content rule, in a posture where nothing else fails closed.
+    #
+    # Fixing it is NOT this seat's — `is_content` belongs to #920, and the
+    # general exec-surface class to #924. What this test owes them is a named,
+    # reproducible failure rather than silence.
     @pytest.mark.parametrize("cmd", [
         f"tmux -c '{_RM_RF} /tmp/x' new-session",
         f"git -c core.pager='{_RM_RF} /tmp/x' fetch origin",
