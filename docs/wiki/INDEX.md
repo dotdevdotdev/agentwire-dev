@@ -31,6 +31,7 @@ How AgentWire runs AI agents — postures, REPLs, and permission models.
 - **[Fan-out cohorts](sessions/fan-out-cohorts.md)** — `agentwire wait --children` / `wait_children`: a parent blocks on the children it spawned instead of going idle and being reaped mid-fan-out; auto-enrolled ledger (independent of #715 rooting), collect-then-kill teardown, idle-handler guard + watchdog sweeper so nothing leaks
 - **[Prompt routing](sessions/prompt-routing.md)** — permission/plan/AskUserQuestion prompts in a child session route to its parent (hook path + watchdog sweep); guarded `agentwire prompts answer`, no auto-answering
 - **[Polite messaging](sessions/messaging.md)** — `agentwire msg` drops typed messages into a per-session file inbox and injects them only when the input box is empty (`prompt_is_empty`) and the pane is safe; never clobbers a human draft, the way `agentwire send` does. `@all` broadcast, MCP `msg_send`/`msg_inbox`. Plus the **passive `ingest`** kind (never auto-delivered; pulled with `msg pull`) + typed `ref` pointer — the awareness primitive behind Briefing Mode
+- **[The #689 heal cliff](sessions/heal-line-count-cliff.md)** — measured: the drain's `stuck` test misses in TWO regimes with different governing variables (one long line WINDOWS at ~530 chars with no chip at all; four-plus lines CHIP at any size), so a coalesced drain of 4+ messages wedges every one of them — never healed, never dead-lettered, never emailed ([#930](https://github.com/dotdevdotdev/agentwire-dev/issues/930))
 
 ## Communication
 
