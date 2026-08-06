@@ -182,20 +182,39 @@ tasks:
     starting_session: ctx-loaded  # Fork Claude context from this session before running
 
     # Unattended safety (scheduler, no human present)
-    unattended_allow:             # damage-control rule ids this task may run unattended,
-      - tooldef.terraform-apply-planned-changes-to-infrastructure  # extends the global default
+    unattended_allow:             # damage-control rules this task may run unattended
+      - tooldef.terraform-apply-planned-changes-to-infrastructure   # bare id: unscoped
+      - id: git.commit                                              # or path-scoped
+        paths:
+          - ~/.claude/projects/*/memory/
 ```
 
 **`unattended_allow`** (per-task): when the scheduler dispatches a task headless
 (`AGENTWIRE_UNATTENDED=1`), the damage-control hook resolves `ask`-tier commands
-by **failing closed** — block + email the owner — unless the matched rule id is
-on the allowlist. The default allowlist lets a task work, open a PR, and email
-the owner (`git.add`/`git.commit`/`git.push`/`gh.pr-create`/`outbound.agentwire-email`
-— the last is a blanket allow, any recipient, #804); list extra rule ids here to
+by **failing closed** — block + email the owner — unless the matched rule carries
+a grant. The built-in grants let a task work, open a PR, and email the owner
+(`git.add`/`git.commit`/`git.push`/`gh.pr-create`/`outbound.agentwire-email` —
+the last is a blanket allow, any recipient, #804); list extra rules here to
 permit a normally-gated action (deploy, DB write, outbound SMS) for **this task
 only**. Blocked actions name the exact rule id (in the email and `agentwire safety
 logs`) so widening is copy-paste. Hard blocks (`rm -rf`, `git push --force`) and
-interactive sessions are unaffected. See `docs/wiki/internals/damage-control.md`.
+interactive sessions are unaffected.
+
+An entry is either a **bare rule id** (unscoped) or a mapping with **`paths`**
+(#914) — "commit under `~/.claude/projects/*/memory/`" rather than "commit". Two
+things to know:
+
+- **Naming a rule here REPLACES the looser grant** from the global config or the
+  built-in defaults, so a scoped entry genuinely narrows. It also binds when the
+  entry is malformed (a relative path, an empty `paths`) — otherwise a typo
+  would silently inherit the unscoped default.
+- **A child session inherits this grant**, scope included, to any depth. That is
+  deliberate: a fan-out task's children are what do the committing, so a grant
+  that stopped at the parent could not fix a delegating task at all.
+
+`agentwire tasks review` warns before you promote when a task is specified to
+run commands its posture will refuse, or names a rule id that does not exist.
+See `docs/wiki/internals/damage-control.md`.
 
 **Built-in variables:**
 - `{{ date }}`, `{{ time }}`, `{{ datetime }}` - Current date/time
