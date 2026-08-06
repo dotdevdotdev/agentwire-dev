@@ -540,53 +540,44 @@ class TestAgainstBundledRules:
         other than the scoped one" — and enumerates spellings beneath it. A new
         spelling someone invents fails here instead of shipping.
 
-        Asserts the rule id, not just the tier: once #913 lands, these commands
-        start matching different rules, and a tier-only assertion sails through
-        that transition without noticing which rule produced the verdict.
+        Asserts the rule id, not just the tier: #913 changed which rule these
+        commands match, and a tier-only assertion sails through that kind of
+        transition without noticing which rule produced the verdict.
+
+        REBASED ONTO #913 (#918). Every spelling now reaches the rule — the six
+        that read `False` while `git -C` was bypassed are enforced end to end
+        from here on. They were asserted BOTH ways precisely so this flip would
+        be forced by a red test rather than remembered.
         """
         from agentwire.safety._core import check_command
         s, other, scope = store
         grants = {"git.commit": [[scope]]}
 
-        # (command, reaches_the_rule_on_this_base). `reaches` is stated per
-        # case, never inferred: a spelling #913 currently bypasses would
-        # otherwise be skipped by a `continue` and the test would pass just as
-        # green with the scope check entirely broken. Flip a False to True
-        # after #913 lands and the case starts being enforced end to end.
-        spellings = [
-            (f"GIT_DIR={other}/.git git commit -m x", True),
-            (f"GIT_WORK_TREE={other} git commit -m x", True),
-            (f"GIT_DIR={other}/.git GIT_WORK_TREE={other} git commit -m x", True),
-            (f"GIT_INDEX_FILE={other}/idx git commit -m x", True),
-            (f"env GIT_DIR={other}/.git git commit -m x", True),
-            (f"cd {other} && git commit -m x", True),
-            # These two reach the rule only by ACCIDENT (#913): the path ends
-            # in `.git`, so `\bgit\s+commit\b` finds ".git commit". Real
-            # coverage of --git-dir parsing all the same — and the accident
-            # disappears for a repo dir not named `.git`, which is the row
-            # below it.
-            (f"git --git-dir={other}/.git commit -m x", True),
-            (f"git --git-dir {other}/.git commit -m x", True),
-            # Bypassed by #913 today — the rule never fires, so the hook never
-            # reaches the grant at all. NOT a scope defect; recorded as #913's.
-            (f"git --git-dir={other}/x commit -m x", False),
-            (f"git -C {other} commit -m x", False),
-            (f"git --work-tree={other} commit -m x", False),
-            (f"git --git-dir={s}/.git --work-tree={other} commit -m x", False),
-            (f"cd {s} && git -C {other} commit -m x", False),
-            (f"git -C {s}/../../.. commit -m x", False),
-        ]
-        for command, reaches in spellings:
+        for command in [
+            f"GIT_DIR={other}/.git git commit -m x",
+            f"GIT_WORK_TREE={other} git commit -m x",
+            f"GIT_DIR={other}/.git GIT_WORK_TREE={other} git commit -m x",
+            f"GIT_INDEX_FILE={other}/idx git commit -m x",
+            f"env GIT_DIR={other}/.git git commit -m x",
+            f"cd {other} && git commit -m x",
+            f"git --git-dir={other}/.git commit -m x",
+            f"git --git-dir {other}/.git commit -m x",
+            # Before #918 this one was the control for the `.git`-suffix
+            # accident: a repo dir NOT named `.git`, which the old
+            # `\bgit\s+commit\b` could not find. It matches now because the
+            # normalizer strips the option rather than relying on the path.
+            f"git --git-dir={other}/x commit -m x",
+            f"git -C {other} commit -m x",
+            f"git --work-tree={other} commit -m x",
+            f"git --git-dir={s}/.git --work-tree={other} commit -m x",
+            f"cd {s} && git -C {other} commit -m x",
+            f"git -C {s}/../../.. commit -m x",
+        ]:
             result = check_command(command, bundled_config)
-            assert (result["decision"] == "ask") is reaches, (
-                f"{command!r}: expected reaches_rule={reaches}, got "
+            assert result["decision"] == "ask", (
+                f"{command!r}: expected to reach the ask tier, got "
                 f"decision={result['decision']} id={result.get('id')}"
             )
-            if not reaches:
-                # Pin it as #913's bypass, so the day it starts firing this
-                # test tells us to flip the flag rather than silently passing.
-                assert result.get("id") != "git.commit", command
-                continue
             assert result["id"] == "git.commit", command
             ok, why = unattended_grant_allows(
                 result["id"], command, grants, str(s), result["pattern"]
@@ -594,8 +585,31 @@ class TestAgainstBundledRules:
             assert not ok, f"{command!r} was GRANTED — it acts outside the scope"
             assert scope in why, f"{command!r}: refusal must name the scope it violated"
 
-        # And the whole corpus must not be vacuous.
-        assert sum(1 for _, reaches in spellings if reaches) >= 6
+    def test_scoped_grant_does_not_weaken_the_force_push_block_behind_dash_c(
+        self, bundled_config, store
+    ):
+        """Cross-PR case (#913 + #914): `git -C <dir> push --force` must BLOCK.
+
+        Neither PR could assert this alone — before #918 the `-C` form matched
+        nothing, and #914 cannot make it match. Asserts the RULE ID, because a
+        bare BLOCK would document the guard going away just as happily as it
+        catches it: any hard-block rule, or none at all plus a different
+        failure, could produce that verdict.
+        """
+        from agentwire.safety._core import check_command
+        result = check_command("git -C /repo push --force origin main", bundled_config)
+        assert result["decision"] == "block"
+        assert result["id"] == "git.git-push-force-use-force-with-lease"
+
+        # A grant cannot downgrade this by construction: grants are not an
+        # input to check_command at all, and the hook consults them only in the
+        # `ask` branch, which a `block` never reaches. Pinned so a future
+        # refactor that threads grants in earlier has to confront this test.
+        assert "block" == check_command(
+            "git -C /repo push --force origin main",
+            {**bundled_config, "safety": {**bundled_config["safety"],
+                                          "unattended_allow": [result["id"]]}},
+        )["decision"]
 
     def test_scoped_grant_over_a_repo_subdirectory_does_not_leak_to_the_repo(self, tmp_path):
         """git resolves its repo by walking UP, so the directory a command runs
