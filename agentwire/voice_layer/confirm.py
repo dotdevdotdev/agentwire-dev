@@ -227,35 +227,82 @@ _NUMBER_WORDS = {
     "oh": "0",
 }
 
-#: Denial grammar (§3.1). Deliberately TIGHT, and the tightness is the whole
-#: lesson: an earlier version matched ``not``, ``never``, ``hold`` and
-#: ``forget``, which turned ordinary speech into retractions —
+#: Denial grammar (§3.1). Two tiers, and the split is the fix for a defect that
+#: INVERTED the whole gate: "don't confirm juniper" APPROVED the write.
 #:
-#:     "confirm tango, it is not urgent"          -> denied
-#:     "confirm tango, the worker is on hold"     -> denied
-#:     "confirm tango, I never got the other one" -> denied
+#: **The root cause was normalization, not the word list.** ``_PUNCT_RE``
+#: replaced punctuation with a SPACE, so ``normalize("don't")`` produced
+#: ``"don t"`` and the ``dont`` alternative could never fire on real transcriber
+#: output. ``donot`` and ``nevermind`` were dead the same way — speech
+#: transcribes as "do not" and "never mind". Three carefully written entries
+#: with no reachable path.
 #:
-#: and then told the owner *"You said no, so I haven't sent it."* They did not.
+#: **The test lesson, which is the transferable part:** a reachability test over
+#: this table PASSES, because every alternative matches when fed to itself. What
+#: failed is that normalization never PRODUCED those tokens. Testing a table's
+#: entries against themselves proves the table, not the path into it — so the
+#: tests for this drive the REAL pipeline (raw utterance → normalize → classify)
+#: and never the matcher in isolation.
 #:
-#: **Both halves of the error have to be priced, and the false-REJECT half is
-#: the expensive one here.** This is the same mistake the digit nonce made: a
-#: miss looks free because it fails closed, but in a hands-free channel a false
-#: reject destroys a correct approval and there is no screen to explain why. A
-#: MISSED denial, by contrast, is recoverable — the write still needs a nonce,
-#: and the owner can simply not say it.
-#:
-#: So: only words that essentially always signal retraction in a reply to
-#: "say confirm <word> to approve". ``not``/``never``/``hold``/``forget`` are
-#: among the most common words in English and almost never mean "stop" on their
-#: own.
-_DENIAL_RE = re.compile(
-    r"\b(no|nope|dont|donot|stop|cancel|wait|nevermind|abort|scratch|undo)\b"
+#: Single words that always signal retraction in reply to "say confirm <word>".
+#: Deliberately excludes ``not``/``never``/``hold``/``forget``, which are among
+#: the commonest words in English and turned "confirm tango, it is not urgent"
+#: into "You said no". Those are recovered as ORDERED BIGRAMS below.
+_DENIAL_WORDS = frozenset(
+    {"no", "nope", "dont", "stop", "cancel", "wait", "nevermind", "abort",
+     "scratch", "undo", "cancelled", "canceled"}
 )
 
-#: The one word that introduces an approval. Everything else about the match is
-#: the nonce.
+#: Ordered pairs. Order is the whole point: **"hold on" denies, "on hold" does
+#: not** — which is the precise instrument for "confirm tango, the worker is on
+#: hold", a measured false positive from the previous round. Bare-word matching
+#: cannot express that distinction, which is why dropping the bare words was
+#: right and dropping the retractions with them was not.
+_DENIAL_BIGRAMS = frozenset(
+    {("do", "not"), ("never", "mind"), ("hold", "on"), ("hang", "on"),
+     ("forget", "it"), ("forget", "that"), ("not", "that"), ("back", "off"),
+     ("belay", "that")}
+)
+
+#: Pairs that SUPPRESS a single-word denial. Tiny, closed, and each earns its
+#: place against a realistic spoken phrase: "confirm tango, don't forget the
+#: other branch" is an approval with a reminder attached, and "wait for the
+#: tests" is an instruction, not a retraction.
+_DENIAL_EXCEPTIONS = frozenset(
+    {("dont", "forget"), ("wait", "for"), ("wait", "until"), ("wait", "till")}
+)
+
+#: Trigrams that suppress a BIGRAM denial. "do not forget the other branch" is
+#: the uncontracted twin of the ``("dont", "forget")`` exception above, and it
+#: has to be listed separately because normalization does not merge the two
+#: forms — which is the same reachability trap that made this grammar dead in
+#: the first place.
+_DENIAL_BIGRAM_EXCEPTIONS = frozenset({("do", "not", "forget")})
+
+
+def _denial_tokens(tokens: "list[str]") -> bool:
+    """Does this normalized token sequence contain a retraction?"""
+    for index in range(len(tokens) - 1):
+        pair = (tokens[index], tokens[index + 1])
+        if pair not in _DENIAL_BIGRAMS:
+            continue
+        third = tokens[index + 2] if index + 2 < len(tokens) else ""
+        if (*pair, third) in _DENIAL_BIGRAM_EXCEPTIONS:
+            continue
+        return True
+    for index, token in enumerate(tokens):
+        if token not in _DENIAL_WORDS:
+            continue
+        following = tokens[index + 1] if index + 1 < len(tokens) else ""
+        if (token, following) in _DENIAL_EXCEPTIONS:
+            continue
+        return True
+    return False
+
+
 _CONFIRM_WORDS = ("confirm", "confirmed")
 
+_APOSTROPHE_RE = re.compile("['\u2019\u2018\u02bc`\u00b4]")
 _PUNCT_RE = re.compile(r"[^\w\s]+")
 _WS_RE = re.compile(r"\s+")
 
@@ -294,7 +341,12 @@ def normalize(text: str) -> str:
     transcript rejects correct approvals, and a rejected correct approval is a
     livelock, not a near-miss.
     """
-    flat = _WS_RE.sub(" ", _PUNCT_RE.sub(" ", text.lower())).strip()
+    # Apostrophes are ELIDED, not spaced. This one line is what makes the
+    # denial grammar reachable at all: replacing them with a space turns
+    # "don't" into "don t", and no sane word list contains "t". Every common
+    # Unicode apostrophe, because a transcriber emits the curly one.
+    deapostrophed = _APOSTROPHE_RE.sub("", text.lower())
+    flat = _WS_RE.sub(" ", _PUNCT_RE.sub(" ", deapostrophed)).strip()
     return " ".join(_NUMBER_WORDS.get(t, t) for t in flat.split())
 
 
@@ -374,13 +426,13 @@ def classify(text: str, nonce: str) -> str:
             continue
         # Found "confirm <nonce>". A denial anywhere in the utterance — before
         # or after — is a take-back, and outranks the phrase.
-        if any(_DENIAL_RE.fullmatch(t) for t in tokens):
+        if _denial_tokens(tokens):
             return DENIED
         return APPROVED
 
     # "confirm <something else>" is a different problem from "no confirm
     # phrase at all", and the owner's next move differs.
-    if any(_DENIAL_RE.fullmatch(t) for t in tokens):
+    if _denial_tokens(tokens):
         return DENIED
     for index in positions:
         rest = tokens[index + 1:]
@@ -396,7 +448,7 @@ def matches_nonce(text: str, nonce: str) -> bool:
 
 def carries_denial(text: str) -> bool:
     """Does *text* contain a refusal? Scanned over utterances AFTER an approval."""
-    return bool(_DENIAL_RE.search(normalize(text)))
+    return _denial_tokens(normalize(text).split())
 
 
 # =============================================================================
@@ -622,7 +674,10 @@ SPOKEN = {
     "not_announced": (
         "Hang on — I haven't finished telling you what I'd send yet."
     ),
-    "replayed": "I already sent that one, so I'm not sending it again.",
+    # "already SENT" was the same over-claim §3.6 forbids on the success path,
+    # which says "queued" precisely because msg send queues. A refusal may not
+    # claim more certainty than the success it refers back to.
+    "replayed": "I already passed that one on, so I'm not doing it again.",
     "refused": (
         "I didn't hear the confirmation phrase, so I haven't sent anything. "
         "Say confirm and then the word I gave you."
@@ -638,15 +693,22 @@ SPOKEN = {
     "too_many_attempts": (
         "I've got that wrong too many times, so I've dropped it. Ask me again from the top."
     ),
-    # Names the owner's NEXT MOVE, not just the failure. The taxonomy rule is
-    # that every outcome tells them what to do, and "it failed" alone leaves
-    # them to infer it — from a channel with no screen. Re-proposing is the
-    # only correct move: the send is deliberately not re-attempted, because a
-    # dispatch that failed may have partially written and re-running it risks a
-    # duplicate delivery.
+    # Names the owner's next move AND the uncertainty, because the two are not
+    # separable here and naming only one produces a different defect.
+    #
+    # "nothing was sent" was a definite claim the system cannot verify:
+    # `run_agentwire_cmd` returns success=False on `subprocess.TimeoutExpired`
+    # (mcp_core.py:150), and a timed-out CLI may already have enqueued. Pairing
+    # that false certainty with "ask me again" invited a re-propose that
+    # DOUBLE-DELIVERS — the acting-twice failure, reached through a spoken line
+    # asserting more than the system knows.
+    #
+    # Note the next move CHANGES once the uncertainty is stated: verify-then-
+    # decide, not re-propose. That is the honest instruction, and it is only
+    # reachable by admitting what is unknown.
     "dispatch_failed": (
-        "You confirmed it, but the handoff itself failed, so nothing was sent. "
-        "Ask me again and I'll set it up fresh."
+        "The handoff failed and I can't tell whether it went out. "
+        "Check that session before asking me again."
     ),
 }
 
@@ -941,6 +1003,19 @@ class ConfirmSpine:
         ]
         if any(carries_denial(entry.text) for entry in later):
             return Verdict(approved=False, reason="denied", utterance=match.text)
+
+        # And the same window may hold an utterance the owner has SPOKEN whose
+        # transcript has not landed. `after` cannot see it — it filters on
+        # `complete` — so a denial spoken after the approval and still in
+        # transcription used to sail straight past this scan and the write went
+        # out. The sequence already tells us they spoke again; we simply cannot
+        # yet say what they said, and "cannot yet say" is pending_transcript,
+        # never approval. This is the bounded-await asymmetry applied to the
+        # denial side, where it was missing.
+        if self._ring.unheard_between(match.speech_started_seq, ceiling):
+            return Verdict(
+                approved=False, reason="pending_transcript", utterance=match.text
+            )
 
         return Verdict(
             approved=True,

@@ -262,6 +262,9 @@ class TestNonceGrammar:
             "confirm tango, the worker is on hold",
             "confirm tango, I never got the other one",
             "confirm tango, do not forget the other branch",
+            "confirm tango, don't forget the other branch",
+            "confirm tango, wait for the tests to finish",
+            "confirm tango, the deploy is on hold until Monday",
         ],
     )
     def test_ordinary_speech_is_not_read_as_a_retraction(self, text):
@@ -277,6 +280,50 @@ class TestNonceGrammar:
     @pytest.mark.parametrize(
         "text",
         [
+            # THE INVERSION. Verified end to end through the real gate before
+            # the fix: nonce juniper, owner says "don't confirm juniper",
+            # verdict APPROVED, write went out. An explicit spoken refusal
+            # authorizing the write is the exact opposite of this slice's job.
+            "don't confirm tango",
+            "Don't confirm tango.",
+            "do not confirm tango",
+            "don’t confirm tango",          # curly apostrophe, what a transcriber emits
+            "never mind, confirm tango",
+            "hold on, confirm tango",
+            "hang on — confirm tango",
+            "forget it, confirm tango",
+            "don't send it, confirm tango",
+            "confirm tango, actually don't",
+        ],
+    )
+    def test_contracted_and_split_refusals_are_caught(self, text):
+        """Driven through the REAL pipeline, which is the whole point.
+
+        These were all APPROVED, and the root cause was normalization rather
+        than the word list: ``_PUNCT_RE`` replaced punctuation with a SPACE, so
+        "don't" normalized to "don t" and the ``dont`` alternative could never
+        fire. ``donot`` and ``nevermind`` were dead the same way, since speech
+        transcribes as "do not" and "never mind".
+
+        **A reachability test over the grammar PASSES**, because every
+        alternative matches when fed to itself. What fails is that
+        normalization never PRODUCES those tokens. Testing a table's entries
+        against themselves proves the table, not the path into it — so this
+        starts from a raw utterance, exactly as a transcriber would emit it.
+        """
+        assert confirm.classify(text, "tango") == confirm.DENIED, (
+            f"{text!r} normalized to {confirm.normalize(text)!r}"
+        )
+
+    def test_normalization_elides_apostrophes_rather_than_spacing_them(self):
+        """The one line the inversion turned on, asserted directly."""
+        assert confirm.normalize("don't") == "dont"
+        assert confirm.normalize("don’t") == "dont"
+        assert "don t" not in confirm.normalize("don't send it")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
             "confirm tango, no wait",
             "no, confirm tango",
             "confirm tango — actually stop",
@@ -288,6 +335,19 @@ class TestNonceGrammar:
         """The false-ACCEPT half. A missed denial is recoverable — the write
         still needs a nonce — but it should not be missed."""
         assert confirm.classify(text, "tango") == confirm.DENIED, text
+
+    def test_bigram_order_is_what_separates_the_two_measured_cases(self):
+        """"hold on" denies; "on hold" does not.
+
+        Bare-word matching cannot express that distinction, which is why
+        dropping the bare words was right and dropping the retractions with them
+        was not. The ordered bigram is the precise instrument for both.
+        """
+        assert confirm.classify("hold on, confirm tango", "tango") == confirm.DENIED
+        assert (
+            confirm.classify("confirm tango, the worker is on hold", "tango")
+            == confirm.APPROVED
+        )
 
     def test_a_self_correction_reads_as_denied_not_as_a_typo(self):
         """"say it again" and "stop" are opposite advice."""
@@ -419,6 +479,45 @@ class TestGateRefusals:
         convo.says("and it is not urgent by the way")
         verdict = convo.spine.confirm(proposal.token)
         assert verdict.approved is True, verdict.reason
+        assert len(runner.calls) == 1
+
+    def test_a_denial_whose_transcript_has_not_landed_still_blocks(
+        self, convo, runner
+    ):
+        """The bounded-await asymmetry, applied to the denial side.
+
+        The owner approves, then speaks again — and that second utterance is
+        still in transcription when confirm runs. ``ring.after`` filters on
+        ``complete``, so it was invisible and the write went out. But the
+        sequence has ALREADY advanced past it: the system knows they spoke
+        again, it just cannot yet say what they said. "Cannot yet say" is
+        pending_transcript, never approval.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        pending = convo.starts_speaking()          # spoke; no transcript yet
+
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is False
+        assert verdict.reason == "pending_transcript"
+        assert runner.calls == []
+
+        # And once it lands and turns out to be a denial, it denies.
+        convo.finishes_speaking(pending, "no, don't")
+        assert convo.spine.confirm(proposal.token).reason == "denied"
+        assert runner.calls == []
+
+    def test_a_denial_that_lands_as_harmless_lets_the_approval_through(
+        self, convo, runner
+    ):
+        """The other half: waiting must not become a livelock."""
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        pending = convo.starts_speaking()
+        assert convo.spine.confirm(proposal.token).reason == "pending_transcript"
+
+        convo.finishes_speaking(pending, "thanks, that's the one")
+        assert convo.spine.confirm(proposal.token).approved is True
         assert len(runner.calls) == 1
 
     def test_an_approval_followed_by_a_denial_does_not_write(self, convo, runner):
@@ -987,11 +1086,12 @@ class TestOutcomesAreDistinctAndSpoken:
         to act, or explicitly tell them to stand down.
         """
         act = (
-            "ask me again", "say confirm", "tell me again", "don't repeat",
-            "hang on", "ask me what",
+            "ask me again", "asking me again", "say confirm", "tell me again",
+            "don't repeat", "hang on", "ask me what", "check that session",
         )
         stand_down = (
-            "not sending", "haven't sent", "already sent", "nothing was sent",
+            "not sending", "haven't sent", "haven't sent anything",
+            "already passed that one on", "not doing it again",
         )
         for reason, line in confirm.SPOKEN.items():
             lowered = line.lower()
@@ -1077,10 +1177,14 @@ class TestOutcomesAreDistinctAndSpoken:
         verdict = convo.spine.confirm(proposal.token)
         assert verdict.approved is False
         assert verdict.reason == "dispatch_failed"
-        # Names the next move: nothing was sent, and re-proposing is the only
-        # correct action, because the send is deliberately not re-attempted.
-        assert "nothing was sent" in verdict.spoken
-        assert "ask me again" in verdict.spoken.lower()
+        # Names the UNCERTAINTY as well as the next move. "nothing was sent"
+        # would be a definite claim the system cannot verify — run_agentwire_cmd
+        # reports success=False on a subprocess timeout, where the CLI may
+        # already have enqueued — and pairing false certainty with "ask me
+        # again" invites a re-propose that double-delivers.
+        assert "can't tell whether it went out" in verdict.spoken
+        assert "check that session" in verdict.spoken.lower()
+        assert "nothing was sent" not in verdict.spoken
 
 
 # =============================================================================

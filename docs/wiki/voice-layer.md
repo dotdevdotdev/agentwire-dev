@@ -661,10 +661,32 @@ messages:
 **A drain coalescing four or more messages wedges every one of them** — no
 matter how short each is, and with every per-message cap fully respected.
 
-Two consequences worth stating plainly:
+**Two regimes, two DIFFERENT governing variables — and this is the part a fix
+can get wrong.** It is tempting to summarise all of the above as "line count,
+not characters". That is right about the *chip* and it understates the picture:
+
+| Regime | Governed by | Chip? | `stuck` |
+|---|---|---|---|
+| Windowing | **characters** (~530+ on one line) | **no** | miss |
+| Chip | **lines** (4+, at any size) | yes | miss |
+
+The decisive pair, from the measurements above: **530 characters on ONE line
+does not chip** (box 467 — it windows), while **515 characters on FOUR lines
+does** (box 25). Fewer characters, more lines, chip appears. Both wedge
+identically.
+
+**Consequence for #930: a fix that addresses only the 4-line chip cliff leaves
+the character-governed windowing wedge open.** Any probe carried by that work
+needs rows for both.
+
+*Prediction, explicitly NOT a measurement:* from these numbers, a 3-line blob
+over roughly 470 characters should window without ever chipping. Worth a row in
+#930's probe; label it a prediction until someone measures it.
+
+Two further consequences worth stating plainly:
 
 - **The variable that governs is the COALESCED length and line count, not the
-  message length.** No cap expressed per-message can bound it. A message that
+  message length.** No cap expressed per-message can bound either regime. A message that
   merely happens to be queued behind three others crosses the cliff through no
   fault of its own.
 - **The coalesced blob is multi-line by construction**, because the join is a
