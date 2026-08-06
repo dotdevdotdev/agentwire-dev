@@ -35,7 +35,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety import _core as C
+from agentwire.safety import _core as C  # noqa: N812
 
 REPO = Path(__file__).resolve().parent.parent.parent
 BUNDLED_RULES = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
@@ -139,7 +139,7 @@ class TestTheOperandCutWouldHaveBeenBackwards:
         assert decide_without_ambiguity_check(cfg, cmd, monkeypatch) == (
             "block", "core.rm-with-recursive-or-force-flags")
 
-    def test_the_concealed_form_is_caught_by_NOTHING_else(self, cfg, monkeypatch):
+    def test_the_concealed_form_is_caught_by_nothing_else(self, cfg, monkeypatch):
         cmd = f"$(echo {RM}) -rf /tmp/victim"
         assert decide(cfg, cmd) == ("ask", AMBIGUOUS)
         # This is the whole argument: without the check it is simply ALLOWED.
@@ -294,7 +294,7 @@ class TestSubstitutionBodiesAreScannedAsCommands:
         assert reason is None
         assert f"{RM} -rf /" in subs
 
-    def test_the_body_gets_VARIABLE_RESOLUTION_too(self, cfg):
+    def test_the_body_gets_variable_resolution_too(self, cfg):
         """What the normalize-side recursion uniquely provides.
 
         ``masked_subcommands`` strips quotes, and the raw command covers the

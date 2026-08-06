@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety import _core as C
+from agentwire.safety import _core as C  # noqa: N812
 
 REPO = Path(__file__).resolve().parent.parent.parent
 BUNDLED_RULES = REPO / "agentwire" / "hooks" / "damage-control" / "rules"

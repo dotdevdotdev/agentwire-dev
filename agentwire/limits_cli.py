@@ -200,7 +200,12 @@ def cmd_limits_tick(args) -> int:
     is logged and skipped rather than aborting the whole cycle (#490).
     """
     from agentwire import (
-        cohort, inbox, prompt_router, role_prompts, safety_notify, session_context,
+        cohort,
+        inbox,
+        prompt_router,
+        role_prompts,
+        safety_notify,
+        session_context,
     )
     from agentwire.scheduler import zombie as scheduler_zombie
 
