@@ -1045,6 +1045,169 @@ _SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
 _ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
+#
+# GIT GLOBAL OPTIONS (#913)
+#
+# Every git rule — both the hand-written ``bashToolPatterns`` in the rule YAMLs
+# (``\bgit\s+push\s+--force\b``) and the tooldef-generated ones from
+# ``_cmd_to_regex`` (``\bgit\s+commit\b``) — assumes the subcommand sits
+# adjacent to ``git``. It doesn't have to: ``git -C <dir> <cmd>`` is the
+# idiomatic way to operate on a repo without ``cd``, and ``\s+`` cannot span
+# ``-C /repo``. That single assumption defeated EVERY git rule, force-push and
+# hard-reset included.
+#
+# Rather than teach ~15 patterns about ``-C`` (and miss the next one written),
+# we emit an extra haystack per subcommand with git's global options removed,
+# so present and future git rules inherit the fix for free.
+#
+# This is strictly ADDITIVE — the un-stripped forms stay in the haystack list.
+# A rule that legitimately cares WHICH repo is being touched (a path rule, an
+# allowlist check) still sees ``-C /repo`` in the raw command; stripping can
+# only ever remove tokens, so the extra variant can introduce no path a rule
+# didn't already see.
+#
+# Membership below is measured against real git (2.50.1), not assumed:
+# ``-C``/``-c`` require a SEPARATE argument (``-C/tmp`` is rejected by git, so
+# the attached form is not a bypass); ``--git-dir``/``--work-tree``/
+# ``--namespace``/``--config-env``/``--attr-source`` accept both the ``=`` and
+# the space form; ``--exec-path`` without ``=`` prints and exits, so it
+# consumes nothing.
+
+_GIT_GLOBAL_VALUE_OPTS = {
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+    "--config-env", "--attr-source",
+}
+
+_GIT_GLOBAL_FLAGS = {
+    "-p", "-P", "--paginate", "--no-pager", "--bare", "--exec-path",
+    "--no-optional-locks", "--no-replace-objects", "--no-lazy-fetch",
+    "--no-advice", "--literal-pathspecs", "--glob-pathspecs",
+    "--noglob-pathspecs", "--icase-pathspecs", "--html-path", "--man-path",
+    "--info-path",
+}
+
+# Tokens allowed to precede ``git`` while still counting as a git invocation
+# (``sudo git -C /repo push --force`` must normalize too — the un-stripped
+# ``sudo git push --force`` already matches, so leaving this out would keep the
+# very inconsistency the rule is meant to remove). ``_MASK`` covers a leading
+# ``VAR=value`` assignment, which ``masked_subcommands`` has already masked.
+#
+# The exclusion is about ARITY AS WRITTEN, not about which wrapper it is. Every
+# name below is covered when it appears BARE; the same name carrying its own
+# arguments is not — ``xargs git …`` normalizes, ``xargs -n1 git …`` does not,
+# and likewise ``nice`` vs ``nice -n 5``. The wrapper's argument is an
+# unrecognized token, the scan bails, and no variant is produced, so that form
+# keeps the bypass.
+#
+# Naming wrappers rather than arity is precisely the error this comment used to
+# make: it listed ``xargs -n1`` as an excluded WRAPPER, which read as excluding
+# ``xargs``, and bare ``xargs git -C /repo push --force`` stayed a live bypass
+# under a comment implying otherwise.
+#
+# Argument-carrying forms are out of scope rather than half-handled, because
+# consuming them means modelling each wrapper's own grammar — this bug's
+# mistake at one remove. Failure there is a MISSING haystack, never an
+# over-strip: we add nothing rather than stripping too much.
+_GIT_INVOCATION_PREFIXES = {
+    "sudo", "doas", "env", "command", "time", "nice", "nohup", "xargs", _MASK,
+}
+
+
+def _strip_git_global_options(words: List[str]) -> Optional[List[str]]:
+    """Return ``words`` with git's global options removed, or ``None``.
+
+    ``None`` means "no normalized variant to add": not a git invocation, no
+    global options present, or nothing left after the options.
+    """
+    git_idx = None
+    for i, w in enumerate(words):
+        if w.rsplit("/", 1)[-1] == "git":
+            git_idx = i
+            break
+        if w not in _GIT_INVOCATION_PREFIXES and not _ASSIGN_TOKEN_RE.match(w):
+            return None
+    if git_idx is None:
+        return None
+
+    i = git_idx + 1
+    stripped = False
+    while i < len(words):
+        word = words[i]
+        if word in _GIT_GLOBAL_VALUE_OPTS:
+            # Consumes the following argument along with the flag — dropping
+            # only the flag would leave the value sitting where the subcommand
+            # should be, and the rule would still miss.
+            i += 2
+            stripped = True
+            continue
+        if word in _GIT_GLOBAL_FLAGS:
+            i += 1
+            stripped = True
+            continue
+        base = word.split("=", 1)[0]
+        if "=" in word and (base in _GIT_GLOBAL_VALUE_OPTS or base in _GIT_GLOBAL_FLAGS):
+            i += 1
+            stripped = True
+            continue
+        # MAINTENANCE EDGE: an option git adds after 2.50.1 is an unrecognized
+        # token here, so the scan stops and the partial strip leaves the
+        # subcommand still out of reach — ``git --future-opt -C /r push --force``
+        # reads as allow. Not exploitable today (git rejects the unknown option
+        # itself), and nothing in the suite fails when git grows one, so
+        # re-measure both sets on a git upgrade. Stopping is deliberate: the
+        # alternative — treating anything option-shaped as strippable — would
+        # let an unknown value-taking option swallow the subcommand.
+        break
+
+    if not stripped or i >= len(words):
+        return None
+    return words[: git_idx + 1] + words[i:]
+
+
+def git_normalized_haystacks(command: str) -> List[str]:
+    """Return the git-global-options-stripped forms of ``command``, if any.
+
+    This is an ADDITIVE haystack, kept alongside the raw and masked lists
+    rather than rewriting either, and fed to ALL rules — anchored and
+    unanchored alike. Both halves of that sentence are load-bearing.
+
+    ADDITIVE, because stripping is DELETION. ``-c <k>=<v>`` values are executed
+    by git (``core.sshCommand``, ``core.pager``, ``alias.*``,
+    ``core.fsmonitor``), so the value is a command payload sitting in the
+    haystack. Where a content rule DOES match that payload — the deletion rules
+    catch an ``rm``-shaped one — rewriting a haystack in place would delete it
+    from the only place it appears and turn a block into an allow: the fix
+    creating a worse bug than the one it closes. Coverage of these payloads is
+    partial, not a guarantee this function provides: a ``curl … | sh`` value is
+    allowed with or without normalization. Additivity preserves whatever
+    coverage exists; it does not create any.
+    (Note it is deletion, not masking, that would lose them: ``masked_subcommands``
+    blanks a token only when it is FULLY quoted, and ``core.pager='…'`` carries
+    an unquoted ``core.pager=`` prefix, so the payload survives masking and is
+    visible in both existing haystacks.) A rule that legitimately cares WHICH
+    repo is being touched — a path rule, an unattended path scope (#914) — reads
+    those same un-stripped forms: the ``-C`` argument is set aside, not discarded.
+
+    FED TO ALL RULES, because the intersection "must stay unanchored AND
+    global-option-bypassable" is unreachable by a two-way split. Rules that are
+    deliberately unanchored to catch an ssh-wrapped form would never see
+    normalization and would stay permanently bypassed.
+
+    Masking is applied to the new path exactly as it is to the old one — the
+    variant is built from the MASKED token lists, so the anchored path receives
+    the normalized command masked, rather than being handed an unmasked
+    haystack that would reopen #675 on every anchored git rule.
+    """
+    out: List[str] = []
+    for words in _masked_subcommand_words(command):
+        normalized = _strip_git_global_options(words)
+        if normalized is not None:
+            joined = " ".join(normalized)
+            if joined not in out:
+                out.append(joined)
+    return out
+
+
 def _strip_heredoc_bodies(command: str) -> str:
     """Remove heredoc body lines (``<<EOF … EOF``) — they are content."""
     m = _HEREDOC_RE.search(command)
@@ -1143,6 +1306,16 @@ def masked_subcommands(command: str) -> List[str]:
     command rule, while quoting obfuscation of the command itself still
     normalizes to the literal form.
     """
+    return [" ".join(words) for words in _masked_subcommand_words(command)]
+
+
+def _masked_subcommand_words(command: str) -> List[List[str]]:
+    """Token-list form of :func:`masked_subcommands`, before joining.
+
+    Split out so the ``sh -c "…"`` recursion and the git normalization both
+    operate on tokens — re-splitting a joined string would lose the token
+    boundaries a ``-C "/my dir"`` argument depends on.
+    """
     command = _strip_heredoc_bodies(command)
 
     assigns: Dict[str, str] = {}
@@ -1154,7 +1327,7 @@ def masked_subcommands(command: str) -> List[str]:
             tok = tok.replace("${%s}" % name, val).replace("$" + name, val)
         return tok
 
-    results: List[str] = []
+    results: List[List[str]] = []
     for toks in _scan_masked_tokens(command):
         words: List[str] = []
         prev = ""
@@ -1175,14 +1348,14 @@ def masked_subcommands(command: str) -> List[str]:
                     and "c" in prev
                     and words[0].rsplit("/", 1)[-1] in _SHELL_NAMES
                 ):
-                    results.extend(masked_subcommands(resolved))
+                    results.extend(_masked_subcommand_words(resolved))
                 words.append(_MASK)
                 prev = _MASK
             else:
                 words.append(resolved)
                 prev = resolved
         if words and any(w != _MASK for w in words):
-            results.append(" ".join(words))
+            results.append(words)
     return results
 
 
@@ -1289,6 +1462,16 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     # Anchored (command-prefix) rules match only masked subcommands, so quoted
     # argument text — commit messages, echo strings — can't false-match (#675).
     masked_haystacks = masked_subcommands(command)
+    # Third variant (#913): git with its global options stripped, so a rule
+    # written as ``\bgit\s+push\b`` still sees the subcommand behind
+    # ``git -C <dir>``. ADDED to whichever list a rule already reads — neither
+    # is rewritten — so the raw command stays reachable for the rules that need
+    # it, and derived from the masked tokens so it can never make quoted content
+    # matchable. Both halves are load-bearing: bundled git rules are anchored
+    # (masked path), while the rules installed on this machine carry zero
+    # ``anchored: true`` and read the raw path, so covering one alone would fix
+    # the bypass in only one of the two rule sets in play.
+    git_haystacks = git_normalized_haystacks(command)
 
     def _search(pat: str, hays: List[str]) -> bool:
         for hay in hays:
@@ -1313,7 +1496,8 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
         bypassable = pattern_obj.get("bypassable", False)
         anchored = pattern_obj.get("anchored", False)
         try:
-            if _search(pattern, masked_haystacks if anchored else haystacks):
+            base = masked_haystacks if anchored else haystacks
+            if _search(pattern, base + git_haystacks):
                 if should_ask:
                     return {
                         "decision": "ask",

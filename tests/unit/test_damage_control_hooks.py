@@ -10,6 +10,7 @@ We test the pure decision functions directly (fast, deterministic) and a
 representative subprocess flow per hook (covers the stdin/exit-code surface).
 """
 
+import copy
 import importlib.util
 import json
 import subprocess
@@ -523,6 +524,452 @@ class TestUnattendedVerbCoverage:
     @pytest.mark.parametrize("cmd", STAYS_ALLOW)
     def test_benign_variant_stays_allow(self, bash_hook, bundled_config, cmd):
         assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# git global options (#913)
+# ---------------------------------------------------------------------------
+#
+# `git -C <dir> <cmd>` used to defeat EVERY git rule: both the hand-written
+# `bashToolPatterns` (`\bgit\s+push\s+--force\b`) and the tooldef-generated
+# ones (`\bgit\s+commit\b`) assume the subcommand is adjacent to `git`, and
+# `\s+` cannot span `-C /repo`. Verified against the shipped hook before the
+# fix: force-push, hard reset and `clean -fdx` all went from block to allow,
+# and `git add` from ask to allow.
+#
+# These assertions run the REAL rule set (bundled YAMLs + tooldefs) through the
+# REAL decision ladder in the generated hook — not a reconstruction of either.
+# The `--force-with-lease` case in STILL_ALLOWED is the over-stripping canary:
+# normalization must not turn a permitted form into a blocked one.
+
+# Assembled at runtime so this file's own text can't trip a bash rule if it is
+# ever scanned as a command.
+_FORCE = "--" + "force"
+_HARD = "--" + "hard"
+
+# (subcommand-and-args, expected decision) — the decision must be identical for
+# the plain form and every global-option-prefixed form.
+_GIT_GATED = [
+    (f"push {_FORCE} origin main", "block"),
+    (f"reset {_HARD} origin/main", "block"),
+    ("clean -fdx", "block"),
+    ("stash clear", "block"),
+    ("filter-branch", "block"),
+    ("add -A", "ask"),
+    ("branch -D feature", "ask"),
+]
+
+# Global-option prefixes that must all normalize away. Each is real git syntax
+# (measured against git 2.50.1): `-C`/`-c` take a SEPARATE argument;
+# `--git-dir`/`--work-tree`/`--namespace` accept the `=` and the space form;
+# `--no-optional-locks`/`-P` stand alone.
+_GIT_PREFIXES = [
+    "-C /repo",
+    "-C /repo -c user.email=x",
+    "-c core.pager=cat",
+    "--git-dir=/repo/x",
+    "--git-dir /repo/x",
+    "--work-tree /w --git-dir /g",
+    "--namespace ns -C /repo",
+    "--no-optional-locks -C /repo",
+    "-P -C /repo",
+]
+
+# Must stay `allow` — the normalizer may not invent matches.
+_GIT_STILL_ALLOWED = [
+    "git status",
+    "git -C /repo status",
+    "git -C /repo log --oneline",
+    # `-C` AFTER the subcommand is a subcommand option (detect copies), not a
+    # global one. Stripping it would be the over-correction.
+    "git log -C --oneline",
+    "git diff -C -C",
+    # Quoted content that merely MENTIONS a gated command (#675 masking). The
+    # normalized variant is derived from the MASKED tokens for exactly this
+    # reason: normalize the raw string instead and quoted content becomes
+    # matchable again, regressing #675 on the very path this fix touches.
+    f"echo 'git -C /repo push {_FORCE}'",
+    "echo 'do not run git clean -fdx here'",
+    f"echo 'do not run git -C /repo push {_FORCE} here'",
+    "git clean -n",
+    "git -C /repo clean -n",
+]
+
+
+@pytest.fixture(scope="module")
+def unanchored_config(bash_hook):
+    """Bundled rules with `anchored` dropped from EVERY pattern.
+
+    Which rules are anchored decides which haystack a rule reads, and that
+    split is not stable: 14 of the 101 anchored patterns are the hand-written
+    git rules and 87 are tooldef-generated, #915 may move the line, and the
+    rules installed on this machine carry zero `anchored: true` today. Encoding
+    today's split would make this fix correct now and silently wrong later, so
+    the bypass cases are asserted under BOTH routings.
+    """
+    cfg = copy.deepcopy(bash_hook.load_config(_DC_RULES, _DC_TOOLDEFS))
+    for pattern in cfg["bashToolPatterns"]:
+        pattern.pop("anchored", None)
+    cfg["safety"] = {"enabled": True, "disabled_rules": [], "unattended_allow": []}
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def reversed_config(bash_hook):
+    """Bundled rules with the pattern list REVERSED.
+
+    Which decision wins is order-dependent: an `ask` match returns immediately,
+    a `bypassable` block is deferred until after the loop. So `ask` beats a
+    bypassable block in either order, and beats a plain block too when it sorts
+    earlier — meaning rule-file load/merge order decides the verdict. Making
+    `ask` rules newly visible can therefore reorder outcomes without touching a
+    single pattern, and a single-ordering assertion cannot see it.
+    """
+    cfg = copy.deepcopy(bash_hook.load_config(_DC_RULES, _DC_TOOLDEFS))
+    cfg["bashToolPatterns"] = list(reversed(cfg["bashToolPatterns"]))
+    cfg["safety"] = {"enabled": True, "disabled_rules": [], "unattended_allow": []}
+    return cfg
+
+
+class TestGitGlobalOptionBypass:
+    """#913 — git's global options must not hide the subcommand from a rule."""
+
+    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
+    @pytest.mark.parametrize("prefix", _GIT_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
+    def test_global_options_do_not_bypass(
+        self, bash_hook, bundled_config, unanchored_config, routing, prefix, rest,
+        expected,
+    ):
+        cfg = bundled_config if routing == "anchored" else unanchored_config
+        cmd = f"git {prefix} {rest}"
+        decision = bash_hook.check_command(cmd, cfg)["decision"]
+        assert decision == expected, (
+            f"{cmd!r} resolved to {decision} under {routing} routing, want {expected}"
+        )
+
+    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
+    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config, rest, expected):
+        """Anchors the pairs above: the plain form already decided this way."""
+        decision = bash_hook.check_command(f"git {rest}", bundled_config)["decision"]
+        assert decision == expected
+
+    @pytest.mark.parametrize("cmd", _GIT_STILL_ALLOWED)
+    def test_no_over_blocking(self, bash_hook, bundled_config, cmd):
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
+
+    @pytest.mark.parametrize("prefix", ["", "-C /repo ", "-c user.name=x ", "--no-pager "])
+    def test_force_with_lease_is_ask_on_both_sides(
+        self, bash_hook, bundled_config, prefix
+    ):
+        """Two-sided, and both sides matter.
+
+        `push --force-with-lease` is `ask` (tooldef `git push`, write tier).
+        Behind a global option it currently reads `allow` — the SAFE form is a
+        victim of #913, not an exception to it. But it also contains the token
+        `--force`, so a normalizer that rewrote the command before
+        `\\bgit\\s+push\\s+.*--force(?!-with-lease)` saw it would flip it to
+        `block` — which trains everyone to reach for plain `--force`.
+        `allow` means the bug survived; `block` means we caused a worse one.
+        """
+        cmd = f"git {prefix}push {_FORCE}-with-lease origin main"
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "ask"
+
+    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
+    def test_cross_pr_case(
+        self, bash_hook, bundled_config, unanchored_config, routing
+    ):
+        """The one case #913, #914 and #915 must all keep true after landing."""
+        cfg = bundled_config if routing == "anchored" else unanchored_config
+        cmd = f"git -C /repo push {_FORCE} origin main"
+        assert bash_hook.check_command(cmd, cfg)["decision"] == "block"
+
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("prefix", _GIT_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
+    def test_never_downgrades_a_block_to_ask(
+        self, bash_hook, bundled_config, reversed_config, prefix, rest, expected,
+        order,
+    ):
+        """Additive matching cannot remove a match — but it CAN change which
+        rule reports first, and that is not severity-neutral.
+
+        An `ask` match returns immediately, while a `bypassable` match is
+        deferred until after the rule loop. So a newly-visible `ask` rule can
+        preempt a block that fires today — and `ask` resolves to ALLOW under
+        bypassPermissions/auto. "Additive can only add matches" is true of
+        MATCHING and false of DECISION SEVERITY.
+
+        Asserted as PARITY against the plain form in the SAME config, under two
+        pattern orderings, rather than against a fixed verdict. That is the
+        invariant this normalizer actually owns, and the distinction is not
+        academic: reversing the pattern order really does move `git stash clear`
+        and `git push --force` from block to ask — but it moves the PLAIN forms
+        too, identically. That hazard is pre-existing and order-driven, and
+        pinning a fixed verdict here would have mis-attributed it to #913 while
+        still not detecting a normalizer-introduced downgrade.
+        """
+        if expected != "block":
+            pytest.skip("only meaningful where the plain form blocks")
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        plain = bash_hook.check_command(f"git {rest}", cfg)["decision"]
+        prefixed = bash_hook.check_command(f"git {prefix} {rest}", cfg)["decision"]
+        assert prefixed == plain, (
+            f"git {prefix} {rest} decided {prefixed} but plain decided {plain} "
+            f"({order} order)"
+        )
+        if order == "as-loaded":
+            assert prefixed == "block"
+
+    def test_fixture_actually_loads_the_whole_rule_set(self, bundled_config):
+        """Guard on the FIXTURE, not the behavior — the likeliest way this PR
+        ships green and covers nothing.
+
+        `load_config` generates the tooldef ask-patterns only when handed a
+        tooldefs_dir. Dropped, the fixture sees 178 patterns / 14 anchored
+        instead of 265 / 101 — every tooldef-generated rule invisible, which is
+        the half carrying #913's sharpest case (`git add` ask -> allow). The
+        counts are asserted so a future arg-drop fails loudly rather than
+        silently shrinking coverage.
+        """
+        patterns = bundled_config["bashToolPatterns"]
+        anchored = [p for p in patterns if p.get("anchored")]
+        assert (len(patterns), len(anchored)) == (265, 101)
+        assert any(p.get("source") == "tooldef" for p in patterns)
+
+    def test_quoted_path_with_spaces(self, bash_hook, bundled_config):
+        """The `-C` argument is consumed as ONE token, so a path containing a
+        space cannot push the subcommand out of reach."""
+        cmd = f'git -C "/my dir/repo" push {_FORCE}'
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+
+    @pytest.mark.parametrize(
+        "wrapper", ["sudo", "doas", "time", "nohup", "command", "xargs", "nice"]
+    )
+    def test_bare_wrapper_prefixed_invocation(
+        self, bash_hook, bundled_config, wrapper
+    ):
+        """`sudo git push --force` already matched; `sudo git -C … push --force`
+        must not be the inconsistent survivor — and that argument applies
+        unchanged to every other BARE wrapper, so the set covers them all
+        rather than just the one that prompted it.
+
+        `xargs` is here because it was the counter-example: it was excluded as
+        an "arg-consuming wrapper" on the strength of the `xargs -n1` form,
+        which left bare `xargs git -C /repo push --force` a live bypass under a
+        comment claiming zero-arg wrappers were covered. The exclusion is about
+        arity as written, not about which wrapper it is.
+        """
+        cmd = f"{wrapper} git -C /repo push {_FORCE}"
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+
+    @pytest.mark.parametrize(
+        "wrapper", ["timeout 5", "stdbuf -o0", "xargs -n1", "nice -n 5"]
+    )
+    def test_argument_carrying_wrapper_is_a_documented_limit(
+        self, bash_hook, bundled_config, wrapper
+    ):
+        """Pins the KNOWN GAP so it is a recorded limit, not a silent one.
+
+        A wrapper CARRYING ITS OWN ARGUMENTS is not covered — handling it means
+        modelling each wrapper's grammar, which is this bug's own mistake at one
+        remove. Note `xargs` and `nice` appear in BOTH this list and the bare
+        list: the axis is arity as written, not the wrapper's identity.
+
+        What must hold is that the failure is a missing haystack (no variant
+        produced), never an over-strip. If one of these ever starts blocking,
+        that is good news and this assertion should be inverted.
+        """
+        assert bash_hook.git_normalized_haystacks(
+            f"{wrapper} git -C /repo push {_FORCE}"
+        ) == []
+
+    def test_chained_subcommand(self, bash_hook, bundled_config):
+        cmd = f"cd /tmp && git -C /repo push {_FORCE}"
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+
+    @pytest.mark.parametrize("prefix", [
+        "-C /a -C /b",
+        "-c k=v -C /a",
+        "-C /a -c k=v -C /b",
+        "--git-dir /g --work-tree /w --namespace ns",
+        "--attr-source HEAD",
+        "--config-env=k=E",
+    ])
+    def test_stacked_and_repeated_options(self, bash_hook, bundled_config, prefix):
+        cmd = f"git {prefix} push {_FORCE}"
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+
+    # `-c <k>=<v>` values are executed by git (sshCommand, pager, alias, fsmonitor).
+    # An `rm`-shaped payload is blocked today by core.yaml's deletion rule seeing
+    # it in the command — nothing to do with a git rule. Normalization is ADDITIVE
+    # for exactly this reason: stripping `-c` and its value in place would delete
+    # the payload and turn all four into ALLOW.
+    #
+    # Scope of the claim: this pins that additivity PRESERVES the coverage that
+    # exists. It is not evidence the payload surface is covered — a `curl … | sh`
+    # value is allowed with or without this change.
+    @pytest.mark.parametrize("key", [
+        "core.sshCommand", "core.pager", "alias.zap", "core.fsmonitor",
+    ])
+    def test_config_payload_still_visible_to_content_rules(
+        self, bash_hook, bundled_config, key
+    ):
+        payload = "rm -" + "rf /tmp/x"
+        cmd = f"git -c {key}='{payload}' fetch origin"
+        result = bash_hook.check_command(cmd, bundled_config)
+        assert result["decision"] == "block", result
+
+
+class TestCrossIssueBackstops:
+    """Canaries for coverage that only LOOKS like it belongs to another rule.
+
+    These commands are gated today, but not by their own tool's rule — those
+    are global-option-bypassed exactly like git's were. They block only via the
+    generic `core.rm-file-deletion` rule, which is the rule #915 exists to
+    narrow. So the sequence "#913 lands green on git-only acceptance, #915
+    correctly narrows that rule" silently drops them to allow with nothing in
+    either suite noticing.
+
+    They are asserted HERE, in the PR that documents the class, so the drop
+    surfaces as a named failure rather than as coverage nobody knew existed.
+    A failure here is not necessarily a bug in the change that caused it — it
+    means this command now needs a rule of its own.
+    """
+
+    # block -> ask transitions this change introduces, pinned WITH their reason
+    # rather than forbidden by a blanket invariant.
+    #
+    # "No command moves block -> ask" is unsatisfiable as stated: these two are
+    # #915's false positive — a commit message REFUSED for describing a
+    # deletion — and the normalizer incidentally fixes them, because the
+    # tooldef `git commit` ask rule becomes visible and an `ask` match returns
+    # before a `bypassable` block is resolved. Both transitions are desirable.
+    # Written as a prohibition the assertion would go red on this branch, and
+    # the two ways to make it pass are "weaken the normalizer" and "delete the
+    # test". An expected-transition list that names WHY each is wanted is
+    # self-documenting; a set-exclusion predicate needs its own maintenance.
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("message", [
+        "cleanup: rm build/stale.txt was refused",
+        "dropped the stale file, no rm build/stale.txt needed",
+    ])
+    def test_expected_block_to_ask_transitions(
+        self, bash_hook, bundled_config, reversed_config, message, order
+    ):
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        cmd = f'git -C /repo commit -m "{message}"'
+        result = bash_hook.check_command(cmd, cfg)
+        assert result["decision"] == "ask", (
+            f"expected the #915 false-positive block to resolve to ask, got "
+            f"{result['decision']} via {result.get('id')!r} ({order} order)"
+        )
+        # …and it lands on parity with the plain form, which is why this is a
+        # fix rather than a divergence: on main the plain form already asked
+        # while the `-C` form blocked.
+        plain = bash_hook.check_command(f'git commit -m "{message}"', cfg)
+        assert plain["decision"] == result["decision"]
+
+    @pytest.mark.parametrize("cmd", [
+        "docker --context prod volume rm pgdata",
+        "aws --profile prod s3 rm s3://bucket --recursive",
+    ])
+    def test_generic_rm_rule_is_still_the_only_thing_catching_these(
+        self, bash_hook, bundled_config, cmd
+    ):
+        result = bash_hook.check_command(cmd, bundled_config)
+        assert result["decision"] == "block", result
+        assert result.get("id") == "core.rm-file-deletion-use-git-clean-or-manual-cleanup", (
+            f"{cmd!r} now blocks via {result.get('id')!r} — if that is a rule of "
+            "its own, good; update this canary. If it is another accident, it "
+            "needs one."
+        )
+
+
+class TestGitGlobalOptionNormalizer:
+    """The normalizer's contract at the seam, as a separate THIRD haystack.
+
+    Kept distinct from the raw and masked lists rather than rewriting either:
+    #914 needs the `-C` path visible to scope a grant, and #915's `-c` payload
+    cases are blocked only because a content rule can read the raw command.
+    """
+
+    def test_third_haystack_exposes_stripped_variant(self, bash_hook):
+        assert f"git push {_FORCE}" in bash_hook.git_normalized_haystacks(
+            f"git -C /repo push {_FORCE}"
+        )
+
+    def test_producers_are_left_alone(self, bash_hook):
+        """The raw and masked lists are UNCHANGED — the variant is additive at
+        the point of matching, not baked into the shared normalization."""
+        cmd = f"git -C /repo push {_FORCE}"
+        assert bash_hook.masked_subcommands(cmd) == [cmd]
+        subs, ambiguous = bash_hook.normalize_subcommands(cmd)
+        assert ambiguous is None
+        assert subs == [cmd]
+
+    def test_no_variant_for_a_plain_git_command(self, bash_hook):
+        assert bash_hook.git_normalized_haystacks(f"git push {_FORCE}") == []
+
+    def test_variant_is_derived_from_masked_tokens(self, bash_hook):
+        """Quoted content must not become matchable. Normalizing the RAW string
+        would hand `\\bgit\\s+clean\\b` a match inside an echo argument."""
+        assert bash_hook.git_normalized_haystacks(
+            "echo 'git -C /repo clean -fdx'"
+        ) == []
+
+    def test_message_content_is_masked_inside_the_variant(self, bash_hook):
+        """The sharp case for deriving from MASKED tokens.
+
+        `git -C /r commit -m 'echo git clean -fdx'` is a real git invocation
+        WITH a global option, so a variant is produced either way. Built from
+        shlex tokens the message text rides along and `\\bgit\\s+clean\\b`
+        matches inside it; built from masked tokens the message is a
+        placeholder and only the command survives.
+        """
+        variants = bash_hook.git_normalized_haystacks(
+            "git -C /r commit -m 'echo git clean -fdx'"
+        )
+        assert variants
+        assert all("clean" not in v for v in variants), variants
+
+    def test_value_taking_option_consumes_its_argument(self, bash_hook):
+        """Dropping only the flag would leave the value where the subcommand
+        belongs (`git /repo push …`) and the rule would still miss."""
+        assert bash_hook._strip_git_global_options(
+            ["git", "-C", "/repo", "push"]
+        ) == ["git", "push"]
+
+    def test_option_after_subcommand_is_untouched(self, bash_hook):
+        assert bash_hook._strip_git_global_options(["git", "log", "-C"]) is None
+
+    def test_exec_path_does_not_consume_a_token(self, bash_hook):
+        """Bare `--exec-path` prints and exits — only `--exec-path=<p>` carries a
+        value. Consuming the next token here would swallow the subcommand."""
+        assert bash_hook._strip_git_global_options(
+            ["git", "--exec-path", "status"]
+        ) == ["git", "status"]
+        assert bash_hook._strip_git_global_options(
+            ["git", "--exec-path=/x", "status"]
+        ) == ["git", "status"]
+
+    @pytest.mark.parametrize("opt", [
+        "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source",
+    ])
+    def test_value_options_accept_both_equals_and_space_form(self, bash_hook, opt):
+        """git 2.50.1 takes both, though the usage line advertises only `=`."""
+        assert bash_hook._strip_git_global_options(
+            ["git", opt, "v", "push"]
+        ) == ["git", "push"]
+        assert bash_hook._strip_git_global_options(
+            ["git", f"{opt}=v", "push"]
+        ) == ["git", "push"]
+
+    def test_non_git_command_untouched(self, bash_hook):
+        assert bash_hook._strip_git_global_options(["ls", "-C", "/repo"]) is None
+
+    def test_no_global_options_yields_no_variant(self, bash_hook):
+        assert bash_hook._strip_git_global_options(["git", "push"]) is None
 
 
 # ---------------------------------------------------------------------------
