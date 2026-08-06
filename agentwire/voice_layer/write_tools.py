@@ -43,7 +43,7 @@ useful spoken answer (spec §5).
 from __future__ import annotations
 
 from ..mcp_core import run_agentwire_cmd
-from .confirm import spoken_nonce
+from .confirm import spoken_nonce, strip_controls
 from .tools import ToolError, _session_arg
 
 #: The message kind a buddy write carries. See the module docstring: already in
@@ -82,7 +82,12 @@ def _instruction_arg(args: dict) -> str:
     value = args.get("message")
     if not isinstance(value, str) or not value.strip():
         raise ToolError("I need the message to pass on. Say what you want sent.")
-    text = value.strip()
+    # Stripped HERE, before the freeze, as well as in render_body. The
+    # realistic carrier of a control character is this field — it is
+    # model-supplied and was only length-bounded — and stripping at propose
+    # keeps the frozen argv clean by construction, so "frozen at propose" still
+    # means what it claims rather than "frozen, then sanitised later".
+    text = strip_controls(value).strip()
     if len(text) > MAX_INSTRUCTION_CHARS:
         raise ToolError(
             "That message is far longer than anything said aloud, so I probably "

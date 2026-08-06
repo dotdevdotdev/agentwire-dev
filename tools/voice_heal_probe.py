@@ -213,6 +213,61 @@ def main() -> int:
         print(f"    MAX_BODY_CHARS is currently {confirm.MAX_BODY_CHARS}")
         if ok and confirm.MAX_BODY_CHARS > max(ok):
             print("    WARNING: the cap is above the measured boundary.")
+
+        # ---- 4. Control characters — the second route to the same wedge ----
+        print("\n[3] Control characters in the body (post-strip)")
+        for label, raw in (
+            ("ansi_escape", "restart \x1b[31mthe portal\x1b[0m now"),
+            ("bel_soh", "restart the\x07 portal\x01 now"),
+            ("clean_control", "restart the portal now"),
+        ):
+            clear_box()
+            body = confirm.render_body(raw, "confirm tango", "a1b2c3")
+            line = rendered(body)
+            m = paste_and_measure(line)
+            has_ctrl = any(ord(c) < 0x20 and c not in "\t" for c in line)
+            print(f"    {label:<14} raw_ctrl_survived={has_ctrl!s:<5} stuck={m['stuck_matches']}")
+            if has_ctrl or not m["stuck_matches"]:
+                print(f"    FAIL: {label} would wedge.")
+                return 2
+        clear_box()
+
+        # ---- 5. The variable that ACTUALLY governs: coalesced length ------
+        # flush_session coalesces the whole queue into ONE paste
+        # (inbox.py:1059, "\n".join(m.render() ...)) and then tests EACH
+        # message's render against that single box. So no per-message cap can
+        # bound what gets pasted — and the coalesced blob is MULTI-LINE BY
+        # CONSTRUCTION, because the join is a newline.
+        print("\n[4] Coalesced drain — per-message cap does NOT bound this")
+        one = rendered(confirm.render_body(
+            "restart the portal and report what the tests did", "confirm tango", "a1b2c3"
+        ))
+        for count in (1, 2, 3, 4):
+            clear_box()
+            batch = [one] * count
+            blob = "\n".join(batch)
+            session_ready.paste_no_enter(SESSION, blob, pane_index=0)
+            deadline, box, prev, stable = time.time() + 20, "", None, 0
+            while time.time() < deadline:
+                b = prompt_router.input_box_content(
+                    pane_manager.capture_pane(SESSION, 0, lines=80)
+                ) or ""
+                if b and b == prev:
+                    stable += 1
+                    if stable >= 2:
+                        break
+                else:
+                    stable = 0
+                prev = b
+                time.sleep(0.6)
+            box = prev or ""
+            hits = sum(1 for m in batch if stuck_matches(m, box))
+            print(f"    {count} message(s), {len(blob):>5} chars -> box {len(box):>5}, "
+                  f"chip={'[Pasted text' in box!s:<5} stuck hits {hits}/{count}")
+        clear_box()
+        print("\n    Any count where hits < count is a permanently wedged message")
+        print("    on a swallowed Enter: never healed, never dead-lettered,")
+        print("    therefore never emailed. That is #930, not this slice.")
         return 0
     finally:
         if keep:

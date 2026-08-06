@@ -98,13 +98,18 @@ function createAnnouncer(deps) {
   var setTimer = deps.setTimer;
   var clearTimer = deps.clearTimer;
   var onLog = deps.onLog || function () {};
+  // Called with (meta, how) the moment there is EVIDENCE the text was spoken —
+  // "model" when a response.done carried it, "fallback" when the browser voice
+  // said it. This is what the proposal anchor is driven from: see the client's
+  // onSpoken handler and BLOCKING 2 in the phase-2 review.
+  var onSpoken = deps.onSpoken || function () {};
   // How long to wait for the model to actually say it before falling back to
   // the browser's own speech synthesis. Generous enough for a normal spoken
   // turn, short enough that the owner is not left in silence wondering.
   var fallbackMs = deps.fallbackMs || 6000;
 
   var queue = [];
-  var current = null;       // { text, timer }
+  var current = null;       // { text, meta, timer }
   var responseActive = false;
 
   // The model is told to say it exactly, but "exactly" is prompt compliance and
@@ -148,7 +153,12 @@ function createAnnouncer(deps) {
     item.timer = setTimer(function () {
       onLog("fallback", "no spoken confirmation within " + fallbackMs + "ms");
       if (current === item) current = null;
-      try { speak(item.text); } catch (e) { /* nothing left to try */ }
+      // The owner DID hear it — in a robot voice, but they heard it. Anything
+      // keyed on "was this spoken" (the proposal anchor) must be told so here,
+      // or the fallback that GUARANTEES speech becomes the reason a proposal
+      // is never anchored and the owner's correct nonce is refused forever.
+      try { speak(item.text, function () { onSpoken(item.meta, "fallback"); }); }
+      catch (e) { onSpoken(item.meta, "fallback"); }
       pump();
     }, fallbackMs);
   }
@@ -159,7 +169,7 @@ function createAnnouncer(deps) {
 
   function pump() {
     if (current || !queue.length) return;
-    current = { text: queue.shift(), timer: null };
+    current = queue.shift();
     var item = current;
 
     // Armed FIRST, before anything that could fail silently.
@@ -181,19 +191,27 @@ function createAnnouncer(deps) {
   }
 
   return {
-    announce: function (text) {
+    announce: function (text, meta) {
       if (!text) return;
-      queue.push(String(text));
+      queue.push({ text: String(text), meta: meta || null, timer: null });
       pump();
     },
     onResponseCreated: function () { responseActive = true; },
+    // A cancelled response only clears the in-flight flag. It must NEVER
+    // disarm or count as spoken: a cancelled turn can carry partial audio that
+    // said something else, and our OWN cancel produces one.
+    onResponseCancelled: function () { responseActive = false; },
     onResponseDone: function (transcript) {
       responseActive = false;
       if (!current) { pump(); return; }
       // The ONLY disarm: positive evidence that the reason was spoken.
       if (carriedTheReason(transcript, current.text)) {
-        disarm(current);
+        var done = current;
+        disarm(done);
         current = null;
+        // POSITIVE evidence this text was spoken by the model — the only
+        // thing the anchor may key on.
+        onSpoken(done.meta, "model");
         pump();
       }
       // Otherwise leave the timer armed. A response that said something else
@@ -282,7 +300,6 @@ let responseActive = false;
 let seqCounter = 0;
 const speechSeq = {};        // item_id -> the seq at which the owner BEGAN speaking
 const commitSeq = {};        // item_id -> the seq at which its audio committed
-let pendingAnchor = null;    // proposal id awaiting the response.done that spoke it
 // Every forward to the bridge is chained, and tool dispatch awaits the chain.
 // Without this the transcript POST and the confirm POST are independent fetches
 // that can land reordered, and the gate evaluates against a ring that has not
@@ -335,10 +352,28 @@ function forward(path, body) {
 
 // Everything the owner must HEAR goes through here. Never `log()` alone for
 // anything that changes what they should do next.
-function announce(text) {
+function announce(text, meta) {
   log("buddy", text, "buddy");
-  if (announcer) announcer.announce(text);
+  if (announcer) announcer.announce(text, meta);
   else { try { window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {} }
+}
+
+// The proposal anchor. Driven ONLY by evidence the proposal was spoken:
+// `how` is "model" (a response.done carried the text) or "fallback" (the
+// browser voice said it, and the owner did hear it).
+//
+// Anchoring on "the next response.done with any text" is what let the
+// announcer's own cancel steal the anchor, and left a fallback-spoken proposal
+// anchored by nothing at all — the owner hears the proposal, says the nonce,
+// and gets not_announced until the TTL. That is the one corner where the two
+// safety mechanisms defeated each other: not_announced is never SILENT — it
+// speaks correctly every time — but it can be PERSISTENTLY WRONG, and what
+// made it wrong was the fallback firing, which is the mechanism added to
+// GUARANTEE speech.
+function onSpoken(meta, how) {
+  if (!meta || !meta.anchor) return;
+  log("speak", "anchored proposal " + meta.anchor + " (" + how + ")", "tool");
+  forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
 }
 
 function send(event) {
@@ -402,19 +437,22 @@ async function handleFunctionCall(item) {
     return;
   }
 
-  // A proposal is anchored to the response.done of the turn that SPEAKS it,
-  // not to this tool call — the owner has not heard it yet.
-  if (result && result.anchor_proposal_id) pendingAnchor = result.anchor_proposal_id;
-
   // Anything the owner must hear goes through the announcer, which does not
   // depend on the model choosing to verbalize it. Note the ORDER: the output
   // is delivered first (an unresolved function call hangs the conversation),
   // with the ordinary response suppressed, and only then is the scripted
   // response created. Announcing first would create a response against an
   // unresolved call and race the ordinary one.
+  //
+  // A proposal rides along as `meta.anchor`: it is anchored when the announcer
+  // confirms the text was actually SPOKEN, by the model or by the fallback
+  // voice — never merely because some response.done happened to carry text.
   const mustSpeak = !!(result && result.must_speak && result.say);
   sendFunctionCallOutput(item.call_id, result, mustSpeak);
-  if (mustSpeak) announce(result.say);
+  if (mustSpeak) {
+    announce(result.say, result.anchor_proposal_id
+      ? { anchor: result.anchor_proposal_id } : null);
+  }
 }
 
 function spokenText(output) {
@@ -451,10 +489,26 @@ async function start() {
       // The non-model fallback. Not a nicety: it is what makes "a refusal
       // always speaks" structurally true rather than dependent on the model
       // choosing to comply, and it costs nothing and no dependency.
-      speak: (text) => {
+      // The last-resort voice. `speechSynthesis.speak()` does NOT throw when it
+      // silently fails — it just does nothing — so a try/except around it is
+      // "we tried and cannot know". `onend`/`onerror` are the one piece of
+      // evidence actually available, and for the mechanism whose entire job is
+      // that silence is unacceptable, taking it is cheap.
+      speak: (text, onSpokenAloud) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = () => {
+          log("speak", "browser voice finished", "tool");
+          if (onSpokenAloud) onSpokenAloud();
+        };
+        utterance.onerror = (event) => {
+          // Nothing left to escalate to, but the owner must not be left
+          // believing they were told: say so on screen and in the log.
+          log("error", "browser voice FAILED: " + (event && event.error), "err");
+        };
         window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+        window.speechSynthesis.speak(utterance);
       },
+      onSpoken,
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (handle) => window.clearTimeout(handle),
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
@@ -479,23 +533,24 @@ async function start() {
           responseActive = true;
           if (announcer) announcer.onResponseCreated();
           break;
-        case "response.done":
-        case "response.cancelled": {
+        // A CANCELLED response only clears the in-flight flag. It is never
+        // evidence of anything: it can carry partial audio that said something
+        // else, and our own announcer produces one on every refusal. Treating
+        // it as a spoken turn is how the proposal anchor got stolen — hole 2b
+        // reintroduced one layer below where the clock fix closed it.
+        case "response.cancelled":
+          responseActive = false;
+          if (announcer) announcer.onResponseCancelled();
+          break;
+        case "response.done": {
           responseActive = false;
           const output = (payload.response && payload.response.output) || [];
           const said = spokenText(output);
           if (said) log("buddy", said, "buddy");
+          // The anchor is driven from the announcer's own confirmation that
+          // the proposal text was spoken (see onSpoken below), NOT from "the
+          // next response.done carrying any text".
           if (announcer) announcer.onResponseDone(said);
-
-          // Conversation-item time for the buddy's own spoken turn. A proposal
-          // is anchored HERE — the moment the owner has actually heard what
-          // they would be approving — not at the tool call that minted it.
-          const doneSeq = nextSeq();
-          if (pendingAnchor && said) {
-            const proposalId = pendingAnchor;
-            pendingAnchor = null;
-            forward("/anchor", { proposal_id: proposalId, seq: doneSeq });
-          }
 
           const calls = output.filter((i) => i.type === "function_call");
           // Sequential, never concurrent — two dispatches would race their own
@@ -588,7 +643,6 @@ function stop() {
   audioEl = null;
   responseActive = false;
   announcer = null;
-  pendingAnchor = null;
   $start.disabled = false;
   $stop.disabled = true;
   setStatus("idle");

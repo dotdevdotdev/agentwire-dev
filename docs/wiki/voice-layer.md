@@ -553,6 +553,129 @@ nonce = choice(free)
 second, subtly-different way to do this sitting next to the right one is how
 the wrong one gets called later.
 
+### The #689 heal has a line-count cliff — a MESSAGING-subsystem fact (#930)
+
+**This is not a voice-layer fact and it should not be filed as one.** It is a
+property of `flush_session`'s `stuck` test and the #689 heal, and every long or
+coalesced message in the system is subject to it. Written up here because this
+is where it was measured; the fix belongs to #930.
+
+Reproduce with `tools/voice_heal_probe.py`, which creates its own throwaway
+80x24 tmux session running Claude Code, pastes real rendered messages, leaves
+the Enter unsent, and runs the actual heal. **A number without the method is a
+number the next person will distrust and re-derive**, so the method ships.
+
+#### The wrong model, and who held it
+
+The intuitive model is *chip versus text*: a paste either renders as
+`[Pasted text #N +M lines]` (heal fails) or as text (heal works). **That model
+is wrong, and it survived two independent sessions whose job was to be
+skeptical** — it is what the spec author and the adversarial reviewer both
+worked from, and the reviewer asserted it in a written finding. Its own summary
+afterwards: *"listing a failure mode without ranking or measuring it is not much
+better than missing it; I gave you a boundary claim dressed as measured when
+only the direction was."*
+
+There are **two failure regimes**, and the box windows long before it chips.
+
+#### Regime 1 — a single long line WINDOWS (measured, 80x24)
+
+| Rendered line | Box holds | `stuck` test |
+|---|---|---|
+| 430 | 440 | hit ✓ |
+| 520 | 532 | hit ✓ — last passing |
+| 540 | 480 | **miss** — the box renders only a window |
+| 880 | 16 | **miss** — now a chip |
+
+So `stuck` fails from ~530 chars, a full ~350 chars *before* the chip appears.
+"It isn't a chip" is not evidence the heal will fire.
+
+#### Regime 2 — FOUR OR MORE LINES chip, at any size (measured)
+
+Line count, not character count, is the trigger:
+
+| Lines | Chars | Box holds | Chip |
+|---|---|---|---|
+| 2 | 43 | 45 | no |
+| 3 | 65 | 69 | no |
+| **4** | **87** | **25** | **yes** |
+| 6 | 131 | 25 | yes |
+
+The same 87 characters on **one** line renders as text (box 89, no chip). Four
+lines chips at 87 characters.
+
+#### Why that matters: the drain coalesces
+
+`flush_session` joins the whole queue into ONE paste with a **newline**
+(`inbox.py:1059`, `"\n".join(m.render() for m in messages)`) and then tests
+**each** message's render against that single box content. Measured with real
+messages:
+
+| Queued | Chars | Box | `stuck` hits |
+|---|---|---|---|
+| 1 | 128 | 130 | 1/1 |
+| 2 | 257 | 263 | 2/2 |
+| 3 | 386 | 396 | 3/3 |
+| **4** | **515** | **25 (chip)** | **0/4** |
+
+**A drain coalescing four or more messages wedges every one of them** — no
+matter how short each is, and with every per-message cap fully respected.
+
+Two consequences worth stating plainly:
+
+- **The variable that governs is the COALESCED length and line count, not the
+  message length.** No cap expressed per-message can bound it. A message that
+  merely happens to be queued behind three others crosses the cliff through no
+  fault of its own.
+- **The coalesced blob is multi-line by construction**, because the join is a
+  newline. So every multi-message drain already has the property single messages
+  are careful to avoid, and has since coalescing landed. Combined with a
+  swallowed Enter — the condition the #689 heal exists for — the result is a
+  **permanent wedge: never healed, never dead-lettered, therefore never
+  emailed**, surfacing only via `doctor` after two hours. Two intermittent
+  conditions, so it would be rare and completely silent, which is consistent
+  with nobody having reported it.
+
+#### Caveats on the numbers
+
+Measured at **80x24**. The box shows a bounded number of ROWS, so **a shorter
+pane windows sooner**. Treat these as an upper bound for that geometry, not as
+constants.
+
+#### Why a live probe rather than a fixture
+
+The probe **failed on its first run** for a reason a fixture structurally cannot
+produce: it read the box too early and measured a partially-rendered paste — 38
+chars for a 159-char body. A fixture is fully rendered by construction, so it
+can never show you that. That is the argument for the probe existing.
+
+### What the voice layer's cap does and does not buy
+
+`MAX_BODY_CHARS = 300` and `MEASURED_STUCK_LIMIT_CHARS = 520` live in the voice
+layer as a **caller-side** cap. Making the cap a property of `msg` itself is the
+right long-term shape (#930) and is deliberately not done here: it changes
+behaviour for every sender in a shared subsystem, which is the same class of
+change as the `voice` kind deferred to Slice 1b, and it deserves its own review.
+
+**The residual, stated rather than implied.** The one-line rule protects the
+**single-message case**: a lone voice write is well inside both regimes (max
+rendered body 279, max rendered line 317, against a measured 520 and a 4-line
+cliff). It does **not** protect a voice write that is coalesced behind other
+messages — that is #930, it is governed by a variable the voice layer cannot
+observe, and no per-caller fix can bound it. Do not read the cap as "one line,
+so the heal fires."
+
+### Why backticks and quotes in a body are safe — and how that could silently stop being true
+
+Hops 1 through 3 are clean, measured: the bridge builds a **list argv**
+(`subprocess.run(["agentwire", *args])`, no `shell=True`), the inbox round-trips
+through `json.dumps`/`loads`, and the tmux buffer path carries backticks,
+`$(…)`, quotes, semicolons and backslashes intact. **That safety is a property
+of using list argv, not of the content being harmless** — refactoring any hop to
+build a shell string would silently reintroduce evaluation, and the body is
+model-supplied. Same hazard class as the control characters below: content that
+is fine as DATA becoming active in a layer that evaluates it.
+
 ### The body cap is measured, not chosen
 
 `tools/voice_heal_probe.py` pastes a real rendered message into a real Claude

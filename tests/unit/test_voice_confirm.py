@@ -255,6 +255,40 @@ class TestNonceGrammar:
         assert confirm.classify("confirm tango please", "tango") == confirm.APPROVED
         assert confirm.classify("yeah, confirm tango", "tango") == confirm.APPROVED
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "confirm tango, it is not urgent",
+            "confirm tango, the worker is on hold",
+            "confirm tango, I never got the other one",
+            "confirm tango, do not forget the other branch",
+        ],
+    )
+    def test_ordinary_speech_is_not_read_as_a_retraction(self, text):
+        """The FALSE-REJECT half of the denial grammar, priced.
+
+        An earlier version matched not/never/hold/forget and turned all of
+        these into "You said no, so I haven't sent it." The owner did not say
+        no. In a hands-free channel a false reject is never free: it costs a
+        whole proposal and there is no screen to explain why.
+        """
+        assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "confirm tango, no wait",
+            "no, confirm tango",
+            "confirm tango — actually stop",
+            "cancel that, confirm tango",
+            "confirm tango, nevermind",
+        ],
+    )
+    def test_real_retractions_are_still_caught(self, text):
+        """The false-ACCEPT half. A missed denial is recoverable — the write
+        still needs a nonce — but it should not be missed."""
+        assert confirm.classify(text, "tango") == confirm.DENIED, text
+
     def test_a_self_correction_reads_as_denied_not_as_a_typo(self):
         """"say it again" and "stop" are opposite advice."""
         assert confirm.classify("confirm tango, no wait", "tango") == confirm.DENIED
@@ -369,6 +403,23 @@ class TestGateRefusals:
         assert verdict.approved is False
         assert verdict.reason == "refused"
         assert runner.calls == []
+
+    def test_a_later_unrelated_remark_does_not_retroactively_deny(
+        self, convo, runner
+    ):
+        """The post-approval scan is bounded to the approval-to-confirm window.
+
+        An unbounded ring-tail scan lets an utterance from any later moment —
+        including one arriving during a retry's bounded await — retroactively
+        deny an approval, and report "You said no" about something said in a
+        different context.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says("and it is not urgent by the way")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is True, verdict.reason
+        assert len(runner.calls) == 1
 
     def test_an_approval_followed_by_a_denial_does_not_write(self, convo, runner):
         proposal = convo.announced_proposal()
@@ -863,10 +914,67 @@ class TestOutcomesAreDistinctAndSpoken:
             expected = label in confirm.WAIT_OUTCOMES
             assert verdict.to_dict()["owner_should_wait"] is expected, label
 
-    def test_every_declared_outcome_has_a_line(self):
+    def test_the_spoken_map_and_the_taxonomy_agree_both_ways(self, convo, clock):
+        """A one-directional guard is how a dead line ships.
+
+        "Every outcome has a line" catches a mute refusal. It does NOT catch a
+        LINE WITHOUT AN OUTCOME — and ``too_many_attempts`` shipped exactly
+        that: a carefully written sentence with no producer, while the attempt
+        that really retired a proposal said "say the phrase again" at the moment
+        that stopped being possible.
+        """
+        assert set(confirm.SPOKEN) == confirm.REASONS
         for reason, line in confirm.SPOKEN.items():
             assert line.strip(), reason
-        assert confirm.WAIT_OUTCOMES <= set(confirm.SPOKEN)
+        assert confirm.WAIT_OUTCOMES <= confirm.REASONS
+
+        # And every reason is genuinely REACHABLE, not merely declared.
+        observed = {v.reason for v in self._outcomes(convo, clock).values()}
+        observed |= self._hard_to_reach_outcomes(convo, clock)
+        assert observed == confirm.REASONS, confirm.REASONS - observed
+
+    def _hard_to_reach_outcomes(self, convo, clock) -> set:
+        """The three outcomes the ordinary scenario table does not produce."""
+        seen = set()
+
+        # too_many_attempts: the attempt that hits the cap must SAY it retired.
+        capped = convo.announced_proposal()
+        for _ in range(confirm.MAX_CONFIRM_ATTEMPTS - 1):
+            convo.says("that is not the phrase")
+            assert convo.spine.confirm(capped.token).reason == "refused"
+        convo.says("still not the phrase")
+        seen.add(convo.spine.confirm(capped.token).reason)
+
+        # wrong_nonce
+        wrong = convo.announced_proposal()
+        other = next(w for w in confirm.NONCE_WORDS if w != wrong.nonce)
+        convo.says(f"confirm {other}")
+        seen.add(convo.spine.confirm(wrong.token).reason)
+
+        # dispatch_failed
+        failing = RecordingRunner({"success": False, "error": "target gone"})
+        spine = confirm.ConfirmSpine(
+            convo.ring, wait_s=0.0, runner=failing, clock=clock
+        )
+        sub = Conversation(convo.ring, spine)
+        sub.seq = convo.seq + 500
+        proposal = sub.announced_proposal()
+        sub.approve(proposal)
+        seen.add(spine.confirm(proposal.token).reason)
+        return seen
+
+    def test_the_attempt_that_retires_the_proposal_says_so(self, convo, runner):
+        """It must not say "say the phrase again" as it destroys the proposal."""
+        proposal = convo.announced_proposal()
+        reasons = []
+        for _ in range(confirm.MAX_CONFIRM_ATTEMPTS):
+            convo.says("that is not the phrase")
+            reasons.append(convo.spine.confirm(proposal.token).reason)
+        assert reasons[-1] == "too_many_attempts"
+        assert reasons[:-1] == ["refused"] * (confirm.MAX_CONFIRM_ATTEMPTS - 1)
+        verdict = confirm.Verdict(approved=False, reason="too_many_attempts")
+        assert "start over" in verdict.spoken or "dropped" in verdict.spoken
+        assert runner.calls == []
 
     def test_every_refusal_is_flagged_must_speak(self, convo, clock):
         for label, verdict in self._outcomes(convo, clock).items():
@@ -888,6 +996,54 @@ class TestOutcomesAreDistinctAndSpoken:
         assert "queued" in payload["say"].lower()
         assert "sent" not in payload["say"].lower()
         assert payload["must_speak"] is True
+
+    def test_a_failed_dispatch_never_becomes_replayed_on_retry(self, ring, clock):
+        """BLOCKING 1: the write never happened, so nothing may say it did.
+
+        The proposal is retired and the ring entry spent before the argv runs.
+        If the token also landed in ``_succeeded``, a retry — which is exactly
+        what a model does after being told the handoff failed — got
+        ``replayed``: "I already sent that one." Over-claiming the SEND, on the
+        one path where the system already KNOWS it failed, to an owner who is
+        not watching a screen.
+
+        ``replayed`` must mean it really went out.
+        """
+        runner = RecordingRunner({"success": False, "error": "target gone"})
+        spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner, clock=clock)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+
+        first = spine.confirm(proposal.token)
+        assert first.reason == "dispatch_failed"
+
+        retry = spine.confirm(proposal.token)
+        assert retry.reason == "dispatch_failed", "must not claim it was sent"
+        assert retry.reason != "replayed"
+        assert "failed" in retry.spoken.lower()
+        assert "already sent" not in retry.spoken.lower()
+        # And it is not silently re-attempted: a failed dispatch may have
+        # partially written, so re-running risks a duplicate delivery.
+        assert len(runner.calls) == 1
+
+    def test_a_dispatch_that_raises_is_also_not_reported_as_sent(self, ring, clock):
+        def explode(_argv):
+            raise RuntimeError("boom")
+
+        spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=explode, clock=clock)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert spine.confirm(proposal.token).reason == "dispatch_failed"
+        assert spine.confirm(proposal.token).reason == "dispatch_failed"
+
+    def test_replayed_still_means_it_really_went_out(self, convo, runner):
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert convo.spine.confirm(proposal.token).reason == "replayed"
+        assert len(runner.calls) == 1
 
     def test_a_failed_dispatch_is_not_reported_as_queued(self, ring, clock):
         runner = RecordingRunner({"success": False, "error": "target gone"})
