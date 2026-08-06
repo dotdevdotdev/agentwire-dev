@@ -414,41 +414,33 @@ def safety_notify_unattended_block_cmd(
 ) -> int:
     """CLI command: ``agentwire safety notify-unattended-block``.
 
-    Invoked fire-and-forget by the bash damage-control hook when an
-    unattended (scheduler) run hits an ``ask``-tier command that isn't on the
-    allowlist. Emails the owner via the shared Resend wiring so the blocked
-    action surfaces immediately instead of silently disappearing.
+    Invoked fire-and-forget by the damage-control hooks when an unattended
+    (scheduler) run hits an ``ask``-tier command that isn't on the allowlist.
+
+    This used to email the owner **per block**, immediately, with no throttle
+    and no dedup: 96 emails over 14 days and accelerating, 54% of them the same
+    rule and most of those the same rule in the same session, looping (#925).
+    It now spools into :mod:`agentwire.safety_notify`, which digests and
+    throttles on the pattern ``auth_expired`` and the dead-letter escalation
+    already use.
+
+    Note what is NOT here: the audit log. The hook writes it via ``log_blocked``
+    on its own path *before* invoking this, so no throttling decision below can
+    make a block go unrecorded — the digest points at ``agentwire safety logs``
+    precisely because that record stays complete.
     """
     session = os.environ.get("AGENTWIRE_SESSION_NAME") or os.environ.get(
         "AGENTWIRE_SESSION_ID", "unknown"
     )
-    cwd = os.environ.get("PWD", "")
-    subject = f"[agentwire] Unattended action blocked: {reason[:80]}"
-    body = (
-        f"An unattended (scheduled) agent attempted an action that requires "
-        f"human confirmation, so it was **blocked** (fail-closed).\n\n"
-        f"- **Session:** {session}\n"
-        f"- **Working dir:** {cwd or 'unknown'}\n"
-        f"- **Rule:** {rule_id or 'unknown'}\n"
-        f"- **Reason:** {reason}\n"
-        f"- **Command:** `{command}`\n"
-        f"- **When:** {datetime.now().isoformat(timespec='seconds')}\n\n"
-        f"Nothing was executed. To permit this specific action for the task in "
-        f"future, add rule id `{rule_id}` to that task's `unattended_allow` in "
-        f"its `.agentwire.yml` (or to `safety.unattended_allow` globally)."
-    )
-    try:
-        from agentwire.channels.email import send_email
+    from agentwire import safety_notify
 
-        result = send_email(subject=subject, body=body)
-        if getattr(result, "success", False):
-            return 0
-        print(f"notify-unattended-block: email failed: "
-              f"{getattr(result, 'error', 'unknown')}", file=sys.stderr)
+    result = safety_notify.record_block(
+        rule_id=rule_id, session=session, reason=reason, command=command
+    )
+    if not result["spooled"]:
+        print("notify-unattended-block: could not spool the block", file=sys.stderr)
         return 1
-    except Exception as e:  # email not configured, etc. — never crash the notifier
-        print(f"notify-unattended-block: {e}", file=sys.stderr)
-        return 1
+    return 0
 
 
 def safety_logs_cmd(
