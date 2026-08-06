@@ -688,3 +688,76 @@ class TestInstalledPathBehaviour:
         packaged = BUNDLED_RULES.parent / HOOK
         assert installed.read_bytes() == packaged.read_bytes()
         assert os.access(installed, os.X_OK)
+
+    def _neuter(self, text: str) -> str:
+        """Make a hook that ALLOWS everything, preserving its stamp block.
+
+        Stands in for "a hook predating a security fix": the difference has to
+        be observable by RUNNING it, or the test measures bytes rather than
+        protection.
+        """
+        neutered = text.replace(
+            "    result = check_command(command, config)",
+            "    result = {'decision': 'allow', 'reason': 'MUTANT'}",
+            1,
+        )
+        assert neutered != text, "neutering did not apply — corpus unchanged"
+        return neutered
+
+    def test_older_hook_is_replaced_and_protection_comes_back(self, machine):
+        """The #936 half, end to end, driven through the executing file.
+
+        The rules acceptance above proves rule DEPLOYMENT. This proves HOOK
+        SCRIPT deployment, which is the half that actually went backwards.
+        """
+        safety_commands.heal_damage_control(quiet=True)
+        target = safety_commands.HOOKS_DIR / HOOK
+
+        # A hook that predates the guard: allows everything, stamped older.
+        target.write_text(_restamp(self._neuter(target.read_text()),
+                                   "2000-01-01T00:00:00Z"))
+        assert safety_commands.damage_control_hook_drift()[HOOK] == "older"
+        before = _run_installed_hook(machine, NETLIFY_CMD)
+        assert before.returncode == 0, "the neutered hook should allow — else this proves nothing"
+
+        summary = safety_commands.heal_damage_control(quiet=True)
+        assert HOOK in summary["hooks_updated"]
+
+        after = _run_installed_hook(machine, NETLIFY_CMD)
+        assert after.returncode == 2, (after.returncode, after.stderr)
+        assert NETLIFY_RULE_ID in _audit_rule_ids(machine)
+
+    def test_newer_hook_is_not_downgraded_and_keeps_behaving(self, machine):
+        """The refusal has teeth at the BEHAVIOUR level, not just the byte level.
+
+        Inverted on purpose: the installed copy BLOCKS and the package would
+        replace it with one that allows. If the refusal were cosmetic, the
+        protection would be gone after the heal.
+        """
+        safety_commands.heal_damage_control(quiet=True)
+        target = safety_commands.HOOKS_DIR / HOOK
+        good = target.read_text()
+
+        # Package side is the neutered one; the machine keeps a NEWER good hook.
+        target.write_text(_restamp(good, "2099-01-01T00:00:00Z"))
+        packaged = BUNDLED_RULES.parent / HOOK
+        original_package = packaged.read_bytes()
+        try:
+            packaged.write_text(self._neuter(good))
+            assert safety_commands.damage_control_hook_drift()[HOOK] == "newer"
+
+            summary = safety_commands.heal_damage_control(quiet=True)
+            assert HOOK in summary["hooks_downgrade_refused"]
+
+            after = _run_installed_hook(machine, NETLIFY_CMD)
+            assert after.returncode == 2, "the deployed guard was silently downgraded"
+
+            # Mutation: --force accepts the downgrade, and protection IS lost.
+            safety_commands.heal_damage_control(quiet=True, force=True)
+            forced = _run_installed_hook(machine, NETLIFY_CMD)
+            assert forced.returncode == 0, (
+                "force did not actually install the older hook — the test above "
+                "would then be passing for the wrong reason"
+            )
+        finally:
+            packaged.write_bytes(original_package)
