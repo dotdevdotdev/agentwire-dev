@@ -30,6 +30,12 @@ CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 
 #: Current GA flagship realtime model (2026-07). NOT "gpt-voice-2" — that name
 #: does not exist; see the docs findings in docs/wiki/voice-layer.md.
+#:
+#: When this id rotates, verify the replacement with ``GET /v1/models/<id>``.
+#: Do NOT verify it by minting a client secret: the client_secrets endpoint
+#: does not validate the model and returns 200 with a usable secret for an id
+#: that does not exist (measured 2026-08-06 — "gpt-voice-2" minted fine, while
+#: /v1/models 404s it). A mint that succeeds proves nothing about the model.
 DEFAULT_MODEL = "gpt-realtime-2.1"
 
 #: One of the newer natural voices.

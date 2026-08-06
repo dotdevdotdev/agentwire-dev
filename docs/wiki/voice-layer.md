@@ -35,6 +35,33 @@ data. Where the design hypothesis and the docs disagreed, the docs won.
 "gpt-voice-2". Everything else in the prompt's architecture survived contact
 with the docs.
 
+### How the model id was actually verified — and the footgun found doing it
+
+The claim above was re-challenged and re-verified against the live API on
+2026-08-06. The method matters more than the result, because **the obvious way
+to check a model id does not work**:
+
+```
+POST /v1/realtime/client_secrets   model=gpt-voice-2        → 200 OK, secret minted
+POST /v1/realtime/client_secrets   model=gpt-realtime-2.1   → 200 OK, secret minted
+```
+
+**The mint endpoint does not validate the model.** It happily issues an
+ephemeral secret for an id that does not exist; the model is only resolved
+later, at connect time. Anyone "confirming" a model by minting a secret will
+confirm a model that isn't there.
+
+The authoritative check is the models API:
+
+```
+GET /v1/models/gpt-voice-2       → 404  "The model 'gpt-voice-2' does not exist"
+GET /v1/models/gpt-realtime-2.1  → 200  id=gpt-realtime-2.1  owned_by=system
+```
+
+Corroborated by DocumentScribe's own `DEFAULT_REALTIME_MODEL`, which is the
+same string. When these ids rotate — and they will — verify with
+`GET /v1/models/<id>`, never with a mint.
+
 ---
 
 ## 2. The boundary: this is NOT a harness
@@ -213,6 +240,20 @@ session by that name — which one did you mean?").
 There is deliberately **no escape hatch** for a write. Adding one means adding a
 tool, in a diff someone reviews.
 
+**Clarification, because the "does not" list reads worse than the truth:** the
+voice conversation itself is complete and works end to end — mic in, voice out,
+barge-in, tool calls, spoken answers. What is missing is *write authority*, not
+voice. Asking "what's the fleet doing" and getting a spoken answer works today.
+
+**Two loose ends, distinct from the deferred slices above:**
+
+- **Not wired to a lifecycle host.** `agentwire buddy serve` is a foreground
+  process started by hand. See §6 — deliberate, but unfinished.
+- **`gh` is the one non-CLI dependency.** `fleet_pull_requests` shells out to
+  `gh` directly because agentwire has no wrapper for it. Every other tool goes
+  through the `agentwire` CLI as SSOT. If a `agentwire pr list --json` ever
+  lands, this tool should move to it.
+
 ---
 
 ## 5. What was taken from DocumentScribe, and what was not
@@ -337,19 +378,66 @@ the unguarded surface this design exists to avoid.
 
 ---
 
-## 8. Next slice — where the risk is
+## 8. TODO — next session picks up here
 
-In rough order, each its own reviewable diff:
+Ordered by risk, each its own reviewable diff. **Do not batch these.** The whole
+point of the ordering is that each one can be rejected on its own.
 
-1. **Spawning.** `worktree_create` via the CLI. This is where the buddy becomes
-   genuinely useful and where mis-transcription first has teeth. Needs
-   DocumentScribe's confirm-tier model: propose out loud with the *specifics*,
-   and require deliberate approval — filler agreement must not count.
-2. **Directing.** `msg send` to a session. Lower stakes than spawning (polite,
-   non-clobbering by construction) but still a write.
-3. **Proactive interruption.** The buddy noticing a dangling PR and saying so
-   unprompted. Technically easy (the spool is already there), socially the
-   hardest to get right — an assistant that interrupts badly gets turned off.
+### Open design questions — decide these BEFORE writing the code
 
-Everything above stays behind the same boundary: **the buddy starts and directs
-Claude sessions. It never does the work itself.**
+These came out of reviewing the spike with the owner and are genuinely
+undecided. A next session that picks an answer silently is the failure mode.
+
+- [ ] **Q1 — Where does the confirm tier live: in the voice model, or below
+      it?** *In the model* means the buddy asks "shall I spawn a worker on #884
+      on branch fix-884?" and treats the reply as approval. *Below it* means the
+      tool layer refuses any write that lacks a confirmation token minted by a
+      previous turn, so a hallucinated or mis-transcribed approval cannot
+      manufacture one. The second is more work and is the only one that holds if
+      the model is wrong about what it heard. **Recommendation: below it.**
+      DocumentScribe put it in the model and papered over the gaps with prompt
+      language; see §5 for why that is not a control mechanism.
+- [ ] **Q2 — Is "spawn a worker" a tool, or a handoff to a real session?** A
+      *tool* means the voice layer builds the `worktree_create` argv itself —
+      fast, but the voice layer now owns session-creation semantics, which is
+      the thing §2 says it must never do. A *handoff* means the buddy composes
+      the request and hands it to an actual orchestrator session, which already
+      has damage-control hooks, posture and prompt routing. **Recommendation:
+      handoff.** It keeps the "not a harness" boundary intact by construction
+      rather than by discipline.
+- [ ] **Q3 — What earns the right to interrupt?** Needed before any proactive
+      speech. Candidate triggers, roughly in descending defensibility: a
+      dead-lettered `done`/`escalation` (something is already lost), a dangling
+      PR with no live parent (#716), a session parked on a usage limit, a
+      scheduled task that failed. Everything else is noise. Also needs a
+      quiet-hours answer and a "not now" that persists.
+
+### The slices
+
+- [ ] **T1 — Spawning.** Delegate session creation. Where the buddy becomes
+      genuinely useful and where mis-transcription first has teeth. Blocked on
+      Q1 and Q2. Must carry DocumentScribe's anti-filler guardrail: "yeah",
+      "mmhmm", "sure" must not count as approval (§5).
+- [ ] **T2 — Directing.** `msg send` to a session. Lower stakes than spawning
+      (polite and non-clobbering by construction) but still a write. Blocked on
+      Q1.
+- [ ] **T3 — Proactive interruption.** Technically easy — the spool is already
+      there — and socially the hardest to get right. An assistant that
+      interrupts badly gets turned off. Blocked on Q3.
+- [ ] **T4 — Lifecycle host.** Wire §6's `services.custom` entry, if and when
+      the owner wants the buddy on the startup path. Independent of Q1–Q3; safe
+      to do first.
+- [ ] **T5 — Confirm the confirm.** Whatever Q1 decides, the confirmation path
+      must be reachable **hands-free**. DocumentScribe shipped a click-gated
+      confirm modal that a voice-only user could never reach (#748). If the only
+      way to approve is to touch the screen, the feature does not exist.
+
+### Standing constraints for whoever picks this up
+
+- **This branch is not for merge.** Personal project, owner's own install,
+  owner's own API key. Draft PR only; never mark ready, never merge to `main`.
+- **The boundary in §2 is not negotiable.** The buddy starts and directs Claude
+  sessions. It never does the work itself. Anything that reads as "it could just
+  fix that typo itself" reintroduces what #730 removed.
+- **Verify model ids with `GET /v1/models/<id>`**, never by minting a client
+  secret — see §1.
