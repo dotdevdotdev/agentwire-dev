@@ -1097,7 +1097,18 @@ _GIT_GLOBAL_FLAGS = {
 # ``sudo git push --force`` already matches, so leaving this out would keep the
 # very inconsistency the rule is meant to remove). ``_MASK`` covers a leading
 # ``VAR=value`` assignment, which ``masked_subcommands`` has already masked.
-_GIT_INVOCATION_PREFIXES = {"sudo", "env", "command", "nice", "nohup", _MASK}
+#
+# ZERO-ARG PREFIXES ONLY, and that is the whole of the claim. A wrapper that
+# consumes its own argument — ``timeout 5 git …``, ``stdbuf -o0 git …``,
+# ``xargs -n1 git …``, ``nice -n 5 git …`` — is NOT covered: its argument is
+# an unrecognized token, the scan bails, and no variant is produced. Those
+# forms keep the bypass. They are out of scope here rather than half-handled,
+# because consuming a wrapper's arguments means modelling each wrapper's own
+# grammar, which is the same mistake at one remove. Failure is closed-ish in
+# the sense that we simply add no haystack — never that we strip too much.
+_GIT_INVOCATION_PREFIXES = {
+    "sudo", "doas", "env", "command", "time", "nice", "nohup", _MASK,
+}
 
 
 def _strip_git_global_options(words: List[str]) -> Optional[List[str]]:
@@ -1136,6 +1147,14 @@ def _strip_git_global_options(words: List[str]) -> Optional[List[str]]:
             i += 1
             stripped = True
             continue
+        # MAINTENANCE EDGE: an option git adds after 2.50.1 is an unrecognized
+        # token here, so the scan stops and the partial strip leaves the
+        # subcommand still out of reach — ``git --future-opt -C /r push --force``
+        # reads as allow. Not exploitable today (git rejects the unknown option
+        # itself), and nothing in the suite fails when git grows one, so
+        # re-measure both sets on a git upgrade. Stopping is deliberate: the
+        # alternative — treating anything option-shaped as strippable — would
+        # let an unknown value-taking option swallow the subcommand.
         break
 
     if not stripped or i >= len(words):
@@ -1146,20 +1165,36 @@ def _strip_git_global_options(words: List[str]) -> Optional[List[str]]:
 def git_normalized_haystacks(command: str) -> List[str]:
     """Return the git-global-options-stripped forms of ``command``, if any.
 
-    This is a THIRD haystack variant, kept separate from the raw and masked
-    lists rather than rewriting either. Two rules depend on that separation:
+    This is an ADDITIVE haystack, kept alongside the raw and masked lists
+    rather than rewriting either, and fed to ALL rules — anchored and
+    unanchored alike. Both halves of that sentence are load-bearing.
 
-    * A rule that legitimately cares WHICH repo is being touched (a path rule,
-      an unattended path scope) still reads the un-stripped forms — the ``-C``
-      argument is set aside here, never discarded.
-    * ``-c <k>=<v>`` values are executed by git (``core.sshCommand``,
-      ``core.pager``, ``alias.*``, ``core.fsmonitor``). Those payloads are
-      caught today by CONTENT rules reading the raw command. Stripping in
-      place would delete the only haystack carrying them and turn a block into
-      an allow — the fix creating a worse bug than the one it closes.
+    ADDITIVE, because stripping is DELETION. ``-c <k>=<v>`` values are executed
+    by git (``core.sshCommand``, ``core.pager``, ``alias.*``,
+    ``core.fsmonitor``), so the value is a command payload sitting in the
+    haystack. Where a content rule DOES match that payload — the deletion rules
+    catch an ``rm``-shaped one — rewriting a haystack in place would delete it
+    from the only place it appears and turn a block into an allow: the fix
+    creating a worse bug than the one it closes. Coverage of these payloads is
+    partial, not a guarantee this function provides: a ``curl … | sh`` value is
+    allowed with or without normalization. Additivity preserves whatever
+    coverage exists; it does not create any.
+    (Note it is deletion, not masking, that would lose them: ``masked_subcommands``
+    blanks a token only when it is FULLY quoted, and ``core.pager='…'`` carries
+    an unquoted ``core.pager=`` prefix, so the payload survives masking and is
+    visible in both existing haystacks.) A rule that legitimately cares WHICH
+    repo is being touched — a path rule, an unattended path scope (#914) — reads
+    those same un-stripped forms: the ``-C`` argument is set aside, not discarded.
 
-    Derived from the MASKED token lists, so quoted argument text is already
-    masked out and a normalized form can never false-match on content.
+    FED TO ALL RULES, because the intersection "must stay unanchored AND
+    global-option-bypassable" is unreachable by a two-way split. Rules that are
+    deliberately unanchored to catch an ssh-wrapped form would never see
+    normalization and would stay permanently bypassed.
+
+    Masking is applied to the new path exactly as it is to the old one — the
+    variant is built from the MASKED token lists, so the anchored path receives
+    the normalized command masked, rather than being handed an unmasked
+    haystack that would reopen #675 on every anchored git rule.
     """
     out: List[str] = []
     for words in _masked_subcommand_words(command):

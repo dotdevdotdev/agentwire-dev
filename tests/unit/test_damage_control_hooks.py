@@ -614,6 +614,23 @@ def unanchored_config(bash_hook):
     return cfg
 
 
+@pytest.fixture(scope="module")
+def reversed_config(bash_hook):
+    """Bundled rules with the pattern list REVERSED.
+
+    Which decision wins is order-dependent: an `ask` match returns immediately,
+    a `bypassable` block is deferred until after the loop. So `ask` beats a
+    bypassable block in either order, and beats a plain block too when it sorts
+    earlier — meaning rule-file load/merge order decides the verdict. Making
+    `ask` rules newly visible can therefore reorder outcomes without touching a
+    single pattern, and a single-ordering assertion cannot see it.
+    """
+    cfg = copy.deepcopy(bash_hook.load_config(_DC_RULES, _DC_TOOLDEFS))
+    cfg["bashToolPatterns"] = list(reversed(cfg["bashToolPatterns"]))
+    cfg["safety"] = {"enabled": True, "disabled_rules": [], "unattended_allow": []}
+    return cfg
+
+
 class TestGitGlobalOptionBypass:
     """#913 — git's global options must not hide the subcommand from a rule."""
 
@@ -667,6 +684,43 @@ class TestGitGlobalOptionBypass:
         cmd = f"git -C /repo push {_FORCE} origin main"
         assert bash_hook.check_command(cmd, cfg)["decision"] == "block"
 
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("prefix", _GIT_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
+    def test_never_downgrades_a_block_to_ask(
+        self, bash_hook, bundled_config, reversed_config, prefix, rest, expected,
+        order,
+    ):
+        """Additive matching cannot remove a match — but it CAN change which
+        rule reports first, and that is not severity-neutral.
+
+        An `ask` match returns immediately, while a `bypassable` match is
+        deferred until after the rule loop. So a newly-visible `ask` rule can
+        preempt a block that fires today — and `ask` resolves to ALLOW under
+        bypassPermissions/auto. "Additive can only add matches" is true of
+        MATCHING and false of DECISION SEVERITY.
+
+        Asserted as PARITY against the plain form in the SAME config, under two
+        pattern orderings, rather than against a fixed verdict. That is the
+        invariant this normalizer actually owns, and the distinction is not
+        academic: reversing the pattern order really does move `git stash clear`
+        and `git push --force` from block to ask — but it moves the PLAIN forms
+        too, identically. That hazard is pre-existing and order-driven, and
+        pinning a fixed verdict here would have mis-attributed it to #913 while
+        still not detecting a normalizer-introduced downgrade.
+        """
+        if expected != "block":
+            pytest.skip("only meaningful where the plain form blocks")
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        plain = bash_hook.check_command(f"git {rest}", cfg)["decision"]
+        prefixed = bash_hook.check_command(f"git {prefix} {rest}", cfg)["decision"]
+        assert prefixed == plain, (
+            f"git {prefix} {rest} decided {prefixed} but plain decided {plain} "
+            f"({order} order)"
+        )
+        if order == "as-loaded":
+            assert prefixed == "block"
+
     def test_fixture_actually_loads_the_whole_rule_set(self, bundled_config):
         """Guard on the FIXTURE, not the behavior — the likeliest way this PR
         ships green and covers nothing.
@@ -689,11 +743,32 @@ class TestGitGlobalOptionBypass:
         cmd = f'git -C "/my dir/repo" push {_FORCE}'
         assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
 
-    def test_sudo_prefixed_invocation(self, bash_hook, bundled_config):
+    @pytest.mark.parametrize("wrapper", ["sudo", "doas", "time", "nohup", "command"])
+    def test_zero_arg_wrapper_prefixed_invocation(
+        self, bash_hook, bundled_config, wrapper
+    ):
         """`sudo git push --force` already matched; `sudo git -C … push --force`
-        must not be the inconsistent survivor."""
-        cmd = f"sudo git -C /repo push {_FORCE}"
+        must not be the inconsistent survivor — and the same argument applies
+        unchanged to every other zero-arg wrapper, so the set covers them all
+        rather than just the one that prompted it."""
+        cmd = f"{wrapper} git -C /repo push {_FORCE}"
         assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+
+    @pytest.mark.parametrize("wrapper", ["timeout 5", "stdbuf -o0", "xargs -n1"])
+    def test_arg_consuming_wrapper_is_a_documented_limit(
+        self, bash_hook, bundled_config, wrapper
+    ):
+        """Pins the KNOWN GAP so it is a recorded limit, not a silent one.
+
+        A wrapper that consumes its own argument is not covered — handling it
+        means modelling each wrapper's grammar, which is this bug's own mistake
+        at one remove. What must hold is that the failure is a missing haystack
+        (no variant produced), never an over-strip. If one of these ever starts
+        blocking, that is good news and this assertion should be inverted.
+        """
+        assert bash_hook.git_normalized_haystacks(
+            f"{wrapper} git -C /repo push {_FORCE}"
+        ) == []
 
     def test_chained_subcommand(self, bash_hook, bundled_config):
         cmd = f"cd /tmp && git -C /repo push {_FORCE}"
@@ -712,10 +787,14 @@ class TestGitGlobalOptionBypass:
         assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
 
     # `-c <k>=<v>` values are executed by git (sshCommand, pager, alias, fsmonitor).
-    # They are blocked today by core.yaml's rm rule seeing the payload in the RAW
-    # haystack — nothing to do with a git rule. Normalization is ADDITIVE for
-    # exactly this reason: stripping `-c` and its value in place would delete the
-    # only haystack that carries the payload and turn all four into ALLOW.
+    # An `rm`-shaped payload is blocked today by core.yaml's deletion rule seeing
+    # it in the command — nothing to do with a git rule. Normalization is ADDITIVE
+    # for exactly this reason: stripping `-c` and its value in place would delete
+    # the payload and turn all four into ALLOW.
+    #
+    # Scope of the claim: this pins that additivity PRESERVES the coverage that
+    # exists. It is not evidence the payload surface is covered — a `curl … | sh`
+    # value is allowed with or without this change.
     @pytest.mark.parametrize("key", [
         "core.sshCommand", "core.pager", "alias.zap", "core.fsmonitor",
     ])
@@ -726,6 +805,71 @@ class TestGitGlobalOptionBypass:
         cmd = f"git -c {key}='{payload}' fetch origin"
         result = bash_hook.check_command(cmd, bundled_config)
         assert result["decision"] == "block", result
+
+
+class TestCrossIssueBackstops:
+    """Canaries for coverage that only LOOKS like it belongs to another rule.
+
+    These commands are gated today, but not by their own tool's rule — those
+    are global-option-bypassed exactly like git's were. They block only via the
+    generic `core.rm-file-deletion` rule, which is the rule #915 exists to
+    narrow. So the sequence "#913 lands green on git-only acceptance, #915
+    correctly narrows that rule" silently drops them to allow with nothing in
+    either suite noticing.
+
+    They are asserted HERE, in the PR that documents the class, so the drop
+    surfaces as a named failure rather than as coverage nobody knew existed.
+    A failure here is not necessarily a bug in the change that caused it — it
+    means this command now needs a rule of its own.
+    """
+
+    # block -> ask transitions this change introduces, pinned WITH their reason
+    # rather than forbidden by a blanket invariant.
+    #
+    # "No command moves block -> ask" is unsatisfiable as stated: these two are
+    # #915's false positive — a commit message REFUSED for describing a
+    # deletion — and the normalizer incidentally fixes them, because the
+    # tooldef `git commit` ask rule becomes visible and an `ask` match returns
+    # before a `bypassable` block is resolved. Both transitions are desirable.
+    # Written as a prohibition the assertion would go red on this branch, and
+    # the two ways to make it pass are "weaken the normalizer" and "delete the
+    # test". An expected-transition list that names WHY each is wanted is
+    # self-documenting; a set-exclusion predicate needs its own maintenance.
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("message", [
+        "cleanup: rm build/stale.txt was refused",
+        "dropped the stale file, no rm build/stale.txt needed",
+    ])
+    def test_expected_block_to_ask_transitions(
+        self, bash_hook, bundled_config, reversed_config, message, order
+    ):
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        cmd = f'git -C /repo commit -m "{message}"'
+        result = bash_hook.check_command(cmd, cfg)
+        assert result["decision"] == "ask", (
+            f"expected the #915 false-positive block to resolve to ask, got "
+            f"{result['decision']} via {result.get('id')!r} ({order} order)"
+        )
+        # …and it lands on parity with the plain form, which is why this is a
+        # fix rather than a divergence: on main the plain form already asked
+        # while the `-C` form blocked.
+        plain = bash_hook.check_command(f'git commit -m "{message}"', cfg)
+        assert plain["decision"] == result["decision"]
+
+    @pytest.mark.parametrize("cmd", [
+        "docker --context prod volume rm pgdata",
+        "aws --profile prod s3 rm s3://bucket --recursive",
+    ])
+    def test_generic_rm_rule_is_still_the_only_thing_catching_these(
+        self, bash_hook, bundled_config, cmd
+    ):
+        result = bash_hook.check_command(cmd, bundled_config)
+        assert result["decision"] == "block", result
+        assert result.get("id") == "core.rm-file-deletion-use-git-clean-or-manual-cleanup", (
+            f"{cmd!r} now blocks via {result.get('id')!r} — if that is a rule of "
+            "its own, good; update this canary. If it is another accident, it "
+            "needs one."
+        )
 
 
 class TestGitGlobalOptionNormalizer:
