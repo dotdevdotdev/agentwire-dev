@@ -514,6 +514,83 @@ class TestGenericRmBackstopSurvivesAnchoring:
         assert bash_hook.masked_subcommands(command) == [command]
 
 
+class TestComposedWithGitNormalization:
+    """The cross-PR row neither #913 nor #915 could assert alone.
+
+    #918 added ``git_normalized_haystacks`` — additive, derived from the MASKED
+    tokens, fed to BOTH routings. That last property is what makes it compose
+    with anchoring: an anchored ``git.yaml`` rule is matched against masked
+    subcommands, and the normalized haystack is built from those same tokens, so
+    stripping ``-C <path>`` exposes the subcommand to a rule that would
+    otherwise never see it.
+
+    Before both landed, ``git -C /repo push --force`` was ALLOW: #913's bypass
+    hid it from ``\\bgit\\s+push``, and anchoring alone does not help because
+    ``-C /repo`` stays inline in the masked subcommand.
+
+    The rule ID is asserted, not just the verdict — a block from the generic
+    deletion rule or from an unrelated ask rule would satisfy a verdict-only
+    assertion while the git rule stayed bypassed.
+    """
+
+    FORCE = "--" + "force"
+
+    def test_forced_push_behind_dash_C_blocks_via_the_git_rule(
+        self, bash_hook, bundled_config
+    ):
+        result = bash_hook.check_command(
+            f"git -C /repo push {self.FORCE} origin main", bundled_config
+        )
+        assert result["decision"] == "block", (
+            f"the cross-PR case is {result['decision']} — #913's bypass is open "
+            f"again, or normalization stopped reaching anchored rules"
+        )
+        assert result["id"] == "git.git-push-force-use-force-with-lease", (
+            f"blocked, but by {result['id']!r} rather than the git rule — the "
+            f"git rule is still bypassed and something else took the credit"
+        )
+
+    @pytest.mark.parametrize(
+        "command,rule_id",
+        [
+            ("git -C /repo reset --hard HEAD~3", "git.git-reset-hard-use-soft-or-stash"),
+            ("git -C /repo clean -fd", "git.git-clean-with-force-directory-flags"),
+            ("git -C /repo stash clear", "git.git-stash-clear-deletes-all-stashes"),
+            ("git -C /repo filter-branch", "git.git-filter-branch-rewrites-entire-history"),
+        ],
+    )
+    def test_other_anchored_git_rules_also_reached(
+        self, bash_hook, bundled_config, command, rule_id
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] == "block"
+        assert result["id"] == rule_id
+
+    def test_safe_form_behind_dash_C_stays_ask_not_block(
+        self, bash_hook, bundled_config
+    ):
+        """The two-sided expectation: normalization must not rewrite the command
+        before the ``(?!-with-lease)`` lookahead sees it. A block here would
+        catch the SAFE form and train everyone toward the plain flag."""
+        result = bash_hook.check_command(
+            "git -C /repo push --force-with-lease origin main", bundled_config
+        )
+        assert result["decision"] == "ask", (
+            f"--force-with-lease behind -C decided {result['decision']}; must be "
+            f"ask — not allow (bypass survives), not block (lookahead defeated)"
+        )
+
+    def test_payload_prose_survives_normalization(self, bash_hook, bundled_config):
+        """#918 derives its haystack from the MASKED tokens, so quoted argument
+        text cannot become matchable — #915's fix is not undone by it."""
+        for body in (
+            "I did not rm the file",
+            "git reset --hard was refused by damage-control",
+        ):
+            cmd = f'agentwire msg send --to orch --kind done "{body}"'
+            assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
+
+
 class TestMutationProvesTheAssertionsHaveTeeth:
     """Anchor the must-not-anchor class and the guard measurably disappears.
 

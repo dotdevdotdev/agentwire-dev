@@ -703,15 +703,21 @@ class TestGitGlobalOptionBypass:
         ships green and covers nothing.
 
         `load_config` generates the tooldef ask-patterns only when handed a
-        tooldefs_dir. Dropped, the fixture sees 178 patterns / 14 anchored
-        instead of 265 / 101 — every tooldef-generated rule invisible, which is
+        tooldefs_dir. Dropped, the fixture sees 178 patterns / 151 anchored
+        instead of 265 / 238 — every tooldef-generated rule invisible, which is
         the half carrying #913's sharpest case (`git add` ask -> allow). The
         counts are asserted so a future arg-drop fails loudly rather than
         silently shrinking coverage.
+
+        The anchored count moved 101 -> 238 in #915, which extended `anchored`
+        from `git.yaml` alone (14) to the 14 command-prefix rule files (151);
+        87 tooldef-derived rules make up the rest. This guard caught that
+        change, which is exactly what it is for — the number is meant to be
+        updated deliberately, not widened into a range.
         """
         patterns = bundled_config["bashToolPatterns"]
         anchored = [p for p in patterns if p.get("anchored")]
-        assert (len(patterns), len(anchored)) == (265, 101)
+        assert (len(patterns), len(anchored)) == (265, 238)
         assert any(p.get("source") == "tooldef" for p in patterns)
 
     def test_quoted_path_with_spaces(self, bash_hook, bundled_config):
