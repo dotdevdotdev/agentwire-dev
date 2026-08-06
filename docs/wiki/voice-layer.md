@@ -672,9 +672,16 @@ Two consequences worth stating plainly:
   are careful to avoid, and has since coalescing landed. Combined with a
   swallowed Enter — the condition the #689 heal exists for — the result is a
   **permanent wedge: never healed, never dead-lettered, therefore never
-  emailed**, surfacing only via `doctor` after two hours. Two intermittent
-  conditions, so it would be rare and completely silent, which is consistent
-  with nobody having reported it.
+  emailed**, surfacing only via `doctor` after two hours.
+
+  **Do not read that as rare.** The first version of this note called it rare
+  because it needs "two intermittent conditions at once" — that was wrong, and
+  wrong in the same way an over-claim is wrong, just pointed the other way.
+  Four-plus coalesced messages is **routine on a busy fleet**, not intermittent:
+  it is the ordinary state of a recipient that has been busy for a minute. So
+  only one condition is actually intermittent, and **the rate is governed by the
+  swallowed-Enter path alone**. What makes it unreported is that it is silent,
+  not that it is uncommon.
 
 #### Caveats on the numbers
 
