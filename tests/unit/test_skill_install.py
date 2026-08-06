@@ -6,6 +6,7 @@ drift-aware symlink install + doctor-facing drift report. Everything runs agains
 monkeypatched temp dirs — the real ~/.claude/skills/ is never touched.
 """
 
+import pathlib
 import shutil
 
 import pytest
@@ -176,7 +177,13 @@ def test_install_hooks_installs_skills(env, tmp_path, monkeypatch):
     # damage-control healing from touching the real machine.
     monkeypatch.setattr(m, "get_hooks_source", lambda: tmp_path / "no-hooks")
     import agentwire.safety_commands as cs
-    monkeypatch.setattr(cs, "heal_damage_control", lambda quiet=True: None)
+    monkeypatch.setattr(cs, "heal_damage_control", lambda **kw: {})
+    # install_hooks now refuses outright from a non-canonical package (#936).
+    # Pin the running package AS canonical so this measures the skill wiring
+    # and not the guard — and so it behaves identically in a worktree (package
+    # root's .git is a FILE) and in CI's plain clone.
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(pathlib.Path(m.__file__).parent))
 
     _, target_root = env
     target = target_root / "wiki"

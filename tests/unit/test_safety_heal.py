@@ -19,6 +19,14 @@ def fake_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    # Machine-global installs are refused from a non-canonical package (#936).
+    # Pin the running package AS canonical so these measure the install, not
+    # the guard, and behave the same in a worktree as in CI's plain clone.
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.setenv(
+        "AGENTWIRE_CANONICAL_PACKAGE",
+        str(Path(__import__("agentwire").__file__).parent),
+    )
 
     cfg = home / ".agentwire"
     monkeypatch.setattr(safety_commands, "CONFIG_DIR", cfg)

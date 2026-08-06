@@ -7,8 +7,10 @@ history and ``scripts/regen_damage_control_hooks.py`` for how the hook scripts
 stay in sync.
 """
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -203,6 +205,10 @@ def get_safety_status() -> Dict[str, Any]:
         "logs_exist": LOGS_DIR.exists(),
         "tooldefs_dir": str(TOOLDEFS_DIR),
         "tooldefs_count": tooldefs_count,
+        # Two live rules sharing one id makes `disabled_rules` /
+        # `unattended_allow` ambiguous, and is the only visible symptom of a
+        # half-applied rule sync (#916).
+        "duplicate_rule_ids": list(patterns.get("_duplicate_rule_ids") or []),
         "pattern_counts": {
             "bash_patterns": len(patterns.get("bashToolPatterns", [])),
             "zero_access_paths": len(patterns.get("zeroAccessPaths", [])),
@@ -624,6 +630,10 @@ def _file_drift_state(target: Path, source: Path) -> str:
     ``ok`` when the bundled source is absent (nothing to compare) or the
     installed bytes match it; ``missing`` when the source ships but no copy is
     installed; ``stale`` when an installed copy differs from the bundled bytes.
+
+    Equality only. For files that carry a version stamp use
+    ``damage_control_hook_drift``, which can also say WHICH WAY the difference
+    runs — the distinction #936 is about.
     """
     if not source.exists():
         return "ok"
@@ -635,33 +645,215 @@ def _file_drift_state(target: Path, source: Path) -> str:
         return "stale"
 
 
+# --------------------------------------------------------------------------
+# Version ordering for the generated hook scripts (#936)
+# --------------------------------------------------------------------------
+#
+# The heal used to overwrite a hook whenever the bytes DIFFERED, in either
+# direction. Combined with `Path(__file__).parent` as the source, that let a
+# session on a stale branch reinstall a pre-fix security hook for the whole
+# machine — and `shutil.copy2` preserved the source mtime, so the downgrade was
+# invisible even to a timestamp check. Provenance (see `safety.provenance`) is
+# the guard; this stamp is what lets `doctor` NAME the direction.
+
+_STAMP_VAR = "AGENTWIRE_HOOK_STAMP"
+_STAMP_RE = re.compile(rf"^{_STAMP_VAR} = (\{{.*\}})\s*$", re.MULTILINE)
+
+
+def read_hook_stamp(path: Path) -> Optional[Dict[str, Any]]:
+    """Parse a hook script's generated stamp, or None if it carries none.
+
+    Only the five generated hooks are stamped; ``audit_logger.py`` is hand-
+    written and has no stamp, so its drift stays unordered by design.
+    """
+    try:
+        m = _STAMP_RE.search(path.read_text(errors="replace"))
+    except OSError:
+        return None
+    if not m:
+        return None
+    try:
+        stamp = json.loads(m.group(1))
+    except ValueError:
+        return None
+    return stamp if isinstance(stamp, dict) else None
+
+
+def _stamp_order(installed: Path, source: Path) -> str:
+    """``older`` | ``newer`` | ``stale`` for two differing stamped hooks.
+
+    ``stale`` means "differs, and nothing here can order them" — either copy
+    lacks a stamp, or the two stamps carry the same generation time.
+    """
+    a, b = read_hook_stamp(installed), read_hook_stamp(source)
+    if not a or not b:
+        return "stale"
+    ta, tb = a.get("generated_at"), b.get("generated_at")
+    if not isinstance(ta, str) or not isinstance(tb, str) or ta == tb:
+        return "stale"
+    return "older" if ta < tb else "newer"
+
+
 def damage_control_hook_drift() -> Dict[str, str]:
     """Drift state per DC hook script (``bash/edit/write/mcp-tool-...`` + logger).
 
-    Returns ``{filename: missing|stale|ok}`` comparing the installed copies in
-    ``~/.agentwire/hooks/damage-control/`` against the bundled package source.
+    ``{filename: ok | missing | older | newer | stale}`` comparing the installed
+    copies in ``~/.agentwire/hooks/damage-control/`` against the bundled package
+    source. ``newer`` is the #936 signal: the machine is carrying a hook this
+    package predates, so installing from here would DOWNGRADE it.
     """
     hooks_source = Path(__file__).parent / "hooks" / "damage-control"
+    states: Dict[str, str] = {}
+    for fn in DAMAGE_CONTROL_FILES:
+        src = hooks_source / fn
+        target = HOOKS_DIR / fn
+        state = _file_drift_state(target, src)
+        states[fn] = _stamp_order(target, src) if state == "stale" else state
+    return states
+
+
+# --------------------------------------------------------------------------
+# Three-way sync for rules + tooldefs (#916)
+# --------------------------------------------------------------------------
+#
+# Rules and tooldefs are host-editable, so a blanket overwrite is off the table:
+# clobbering a hand-written rule is a worse failure than shipping a stale one.
+# But "install missing only" meant they were written once and NEVER updated, so
+# every rule fix this repo ships has been inert on every existing machine.
+#
+# The missing leg of a three-way merge is the common ancestor, and
+# `agentwire/safety/rule_baselines.json` ships it: the sha256 of every version
+# of each file that has ever shipped. A live file matching one of those is a
+# pristine older release and is safe to bring forward; a live file matching
+# none of them was edited by hand and is left alone and reported.
+
+_BASELINES_PATH = Path(__file__).parent / "safety" / "rule_baselines.json"
+
+
+def load_rule_baselines() -> Dict[str, Dict[str, List[str]]]:
+    """The shipped-hash manifest: ``{"rules"|"tooldefs": {filename: [sha256]}}``."""
+    try:
+        data = json.loads(_BASELINES_PATH.read_text())
+    except (OSError, ValueError):
+        return {"rules": {}, "tooldefs": {}}
     return {
-        fn: _file_drift_state(HOOKS_DIR / fn, hooks_source / fn)
-        for fn in DAMAGE_CONTROL_FILES
+        section: data.get(section) or {}
+        for section in ("rules", "tooldefs")
+    }
+
+
+def _sha256(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _sync_state(target: Path, source: Path, shipped: List[str]) -> str:
+    """``ok`` | ``missing`` | ``outdated`` | ``unknown`` for one YAML file.
+
+    ``outdated`` — the installed bytes are a version we shipped, just not the
+    current one. Safe to update; nothing local is lost.
+    ``unknown`` — the installed bytes match no version we ever shipped. Called
+    UNKNOWN and not "customized" on purpose: it is usually a hand edit, but it
+    is also what a file older than our recorded history looks like, and we
+    cannot tell those apart. So it is reported and left alone rather than
+    classified into either bug; ``--force`` replaces it, keeping a backup.
+    """
+    if not target.exists():
+        return "missing"
+    digest = _sha256(target)
+    if digest is not None and digest == _sha256(source):
+        return "ok"
+    if digest is not None and digest in (shipped or []):
+        return "outdated"
+    return "unknown"
+
+
+def _yaml_sync_states(source_dir: Path, target_dir: Path, section: str) -> Dict[str, str]:
+    shipped = load_rule_baselines().get(section, {})
+    return {
+        src.name: _sync_state(target_dir / src.name, src, shipped.get(src.name, []))
+        for src in sorted(source_dir.glob("*.yaml"))
     }
 
 
 def rules_drift() -> Dict[str, str]:
-    """Drift state per bundled rule file vs ``~/.agentwire/damage-control/``.
+    """Sync state per bundled rule file vs ``~/.agentwire/damage-control/``.
 
-    Only the bundled rule set is inspected (user-added rules with no bundled
-    counterpart are not "drift"). Returns ``{filename: missing|stale|ok}``.
+    ``{filename: ok | missing | outdated | unknown}``. Only the bundled rule
+    set is inspected (a user-added rule with no bundled counterpart is not
+    drift).
     """
     try:
         source_dir = get_damage_control_source()
     except FileNotFoundError:
         return {}
-    return {
-        src.name: _file_drift_state(RULES_DIR / src.name, src)
-        for src in sorted(source_dir.glob("*.yaml"))
-    }
+    return _yaml_sync_states(source_dir, RULES_DIR, "rules")
+
+
+def tooldefs_drift() -> Dict[str, str]:
+    """Sync state per bundled tooldef file vs ``~/.agentwire/tooldefs/``.
+
+    Reported separately from rules because a drifted tooldef fails a DIFFERENT
+    way: it loses the pinned ``id:`` fields, which is what silently killed the
+    whole of ``DEFAULT_UNATTENDED_ALLOW`` on the machine that filed #916.
+    """
+    try:
+        source_dir = get_tooldefs_source()
+    except FileNotFoundError:
+        return {}
+    return _yaml_sync_states(source_dir, TOOLDEFS_DIR, "tooldefs")
+
+
+def _rule_entries(path: Path) -> Dict[str, List[str]]:
+    """Index one rule YAML by protection: ``{section: [key, ...]}``.
+
+    Bash rules are keyed by their regex (the thing that decides), path rules by
+    the path. Keys, not counts: doctor has to be able to NAME what is missing.
+    """
+    out: Dict[str, List[str]] = {}
+    if not yaml:
+        return out
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except (OSError, ValueError, Exception):  # noqa: B014 - yaml raises its own
+        return out
+    if not isinstance(data, dict):
+        return out
+    for key in ("bashToolPatterns", "zeroAccessPaths", "readOnlyPaths", "noDeletePaths"):
+        items = data.get(key) or []
+        keys = []
+        for it in items:
+            if isinstance(it, dict):
+                k = it.get("pattern") or it.get("path")
+                if k:
+                    keys.append(str(k))
+            elif isinstance(it, str):
+                keys.append(it)
+        if keys:
+            out[key] = keys
+    return out
+
+
+def rule_file_delta(live: Path, bundled: Path) -> Dict[str, List[str]]:
+    """``{"missing": [...], "extra": [...]}`` — protections, not bytes.
+
+    ``missing`` is bundled protection absent from the live file: drift that
+    REMOVES a guard. ``extra`` is a local addition. Doctor grades those
+    differently because they are not the same event, and reporting both as
+    "differs from bundled" is what let an entire deploy tier sit disabled while
+    the line above it read ``[ok]`` (#916).
+    """
+    live_idx, bundled_idx = _rule_entries(live), _rule_entries(bundled)
+    missing: List[str] = []
+    extra: List[str] = []
+    for section in set(live_idx) | set(bundled_idx):
+        live_keys = set(live_idx.get(section, []))
+        bundled_keys = set(bundled_idx.get(section, []))
+        missing.extend(sorted(bundled_keys - live_keys))
+        extra.extend(sorted(live_keys - bundled_keys))
+    return {"missing": missing, "extra": extra}
 
 
 def missing_damage_control_matchers() -> List[str]:
@@ -694,27 +886,123 @@ def missing_damage_control_matchers() -> List[str]:
     return missing
 
 
-def heal_damage_control(quiet: bool = False) -> Dict[str, Any]:
+def _write_installed(src: Path, target: Path, executable: bool = False) -> None:
+    """Copy bundled bytes to an installed path with a FRESH mtime.
+
+    Deliberately not ``shutil.copy2``: preserving the source mtime is what made
+    #936's downgrade invisible — the reinstalled pre-fix hook carried an mtime
+    EARLIER than the deployment it had just replaced, so "is my install newer
+    than the package?" could not see it. An install is an event; it should look
+    like one.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(src.read_bytes())
+    if executable:
+        target.chmod(0o755)
+
+
+def _backup_unknown(target: Path) -> Path:
+    """Move a hand-edited file aside before ``--force`` overwrites it."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = target.with_name(f"{target.name}.local-{stamp}.bak")
+    shutil.move(str(target), str(backup))
+    return backup
+
+
+def _sync_yaml_dir(
+    source_dir: Path,
+    target_dir: Path,
+    section: str,
+    force: bool,
+    log,
+    label: str,
+) -> Dict[str, List[str]]:
+    """Three-way sync one bundled YAML dir into its installed counterpart."""
+    result: Dict[str, List[str]] = {"installed": [], "updated": [], "unknown": []}
+    shipped = load_rule_baselines().get(section, {})
+    for src in sorted(source_dir.glob("*.yaml")):
+        target = target_dir / src.name
+        state = _sync_state(target, src, shipped.get(src.name, []))
+        if state == "ok":
+            continue
+        if state == "missing":
+            _write_installed(src, target)
+            result["installed"].append(src.name)
+            log(f"✓ Installed {label} {src.name}")
+        elif state == "outdated":
+            _write_installed(src, target)
+            result["updated"].append(src.name)
+            log(f"✓ Updated {label} {src.name} (was a previously shipped version)")
+        elif force:
+            backup = _backup_unknown(target)
+            _write_installed(src, target)
+            result["updated"].append(src.name)
+            log(f"✓ Replaced unrecognized {label} {src.name} (backup: {backup.name})")
+        else:
+            result["unknown"].append(src.name)
+            log(
+                f"⚠️  Left {label} {src.name} alone — its content matches NO version "
+                f"we ever shipped, so it is either hand-edited or older than our "
+                f"recorded history, and nothing here can tell those apart. "
+                f"`--force` replaces it (a .local-<ts>.bak is kept)."
+            )
+    return result
+
+
+def heal_damage_control(
+    quiet: bool = False,
+    force: bool = False,
+    allow_foreign: bool = False,
+) -> Dict[str, Any]:
     """Drift-aware sync of DC hook scripts, rules, tooldefs, and matchers.
 
-    Non-interactive. Agentwire-owned hook scripts are installed when missing and
-    overwritten when stale (they carry no user edits). Rules and tooldefs are
-    install-missing-only — an existing rule, including a hand-customized one, is
-    left untouched, so this never blind-clobbers user rules. Matchers are
-    registered if absent. Returns a summary dict of what changed.
+    Non-interactive. Three properties are load-bearing and were each a defect:
+
+    **Provenance (#936).** Machine-global files are written only from the
+    canonically installed tool. A checkout that is not the installed tool
+    refuses outright rather than pushing its own — possibly pre-security-fix —
+    copies over everything on the box.
+
+    **Ordering, not equality (#936).** A stamped hook that is NEWER than this
+    package is never overwritten without ``force``; the old code copied on any
+    difference, in either direction.
+
+    **Three-way, not install-missing-only (#916).** A rule/tooldef whose bytes
+    match a previously shipped version is brought forward; one that matches no
+    shipped version is treated as hand-edited and left alone. The old code never
+    updated either, so every shipped rule fix was inert on existing installs.
+
+    Two overrides, deliberately separate because they answer different
+    questions: ``allow_foreign`` says *this checkout may write machine-global
+    files*; ``force`` says *overwrite content I would otherwise hold back*
+    (a newer installed hook, a hand-edited rule — backed up first).
+
+    Returns a summary dict of what changed.
     """
     log = (lambda *a: None) if quiet else print
+
+    summary: Dict[str, Any] = {
+        "hooks_installed": [], "hooks_updated": [], "hooks_downgrade_refused": [],
+        "rules_installed": [], "rules_updated": [], "rules_unknown": [],
+        "tooldefs_installed": [], "tooldefs_updated": [], "tooldefs_unknown": [],
+        "matchers_added": 0, "policy_scaffolded": False,
+        "refused": False, "provenance": "",
+    }
+
+    from agentwire.safety import provenance as prov
+
+    state, canonical, running = prov.install_provenance()
+    summary["provenance"] = state
+    if state in prov.REFUSING_STATES and not allow_foreign:
+        summary["refused"] = True
+        for line in prov.refusal_lines(canonical, running, "damage-control hooks/rules"):
+            log(line)
+        return summary
 
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     RULES_DIR.mkdir(parents=True, exist_ok=True)
     TOOLDEFS_DIR.mkdir(parents=True, exist_ok=True)
-
-    summary: Dict[str, Any] = {
-        "hooks_installed": [], "hooks_updated": [],
-        "rules_installed": [], "tooldefs_installed": [], "matchers_added": 0,
-        "policy_scaffolded": False,
-    }
 
     # Host-owned policy file: create with `enabled: true` (fail-secure) if absent.
     # Never overwrite an existing one — it carries the owner's kill-switch state.
@@ -732,40 +1020,46 @@ def heal_damage_control(quiet: bool = False) -> Dict[str, Any]:
         state = _file_drift_state(target, src)
         if state == "ok":
             continue
-        shutil.copy2(src, target)
-        if fn.endswith(".py"):
-            target.chmod(0o755)
+        if state == "stale":
+            state = _stamp_order(target, src)
+        if state == "newer" and not force:
+            summary["hooks_downgrade_refused"].append(fn)
+            log(
+                f"⚠️  REFUSED to downgrade {fn}: the installed copy is NEWER than this "
+                f"package. Pull and rebuild, or pass --force to overwrite it anyway."
+            )
+            continue
+        _write_installed(src, target, executable=fn.endswith(".py"))
         if state == "missing":
             summary["hooks_installed"].append(fn)
             log(f"✓ Installed hook {fn}")
         else:
             summary["hooks_updated"].append(fn)
-            log(f"✓ Updated stale hook {fn}")
+            log(f"✓ Updated {state} hook {fn}")
 
-    # Rules: install missing only — never overwrite an existing (possibly
-    # hand-customized) rule file.
     try:
-        rules_source = get_damage_control_source()
-        for src in sorted(rules_source.glob("*.yaml")):
-            target = RULES_DIR / src.name
-            if not target.exists():
-                shutil.copy2(src, target)
-                summary["rules_installed"].append(src.name)
-                log(f"✓ Installed rule {src.name}")
+        rules = _sync_yaml_dir(
+            get_damage_control_source(), RULES_DIR, "rules", force, log, "rule"
+        )
+        summary["rules_installed"] = rules["installed"]
+        summary["rules_updated"] = rules["updated"]
+        summary["rules_unknown"] = rules["unknown"]
     except FileNotFoundError as e:
         log(f"⚠️  {e}")
 
-    # Tooldefs: install missing only (user overrides win, same as rules).
     try:
-        tooldefs_source = get_tooldefs_source()
-        for src in sorted(tooldefs_source.glob("*.yaml")):
-            target = TOOLDEFS_DIR / src.name
-            if not target.exists():
-                shutil.copy2(src, target)
-                summary["tooldefs_installed"].append(src.name)
-                log(f"✓ Installed tooldef {src.name}")
+        tooldefs = _sync_yaml_dir(
+            get_tooldefs_source(), TOOLDEFS_DIR, "tooldefs", force, log, "tooldef"
+        )
+        summary["tooldefs_installed"] = tooldefs["installed"]
+        summary["tooldefs_updated"] = tooldefs["updated"]
+        summary["tooldefs_unknown"] = tooldefs["unknown"]
     except FileNotFoundError as e:
         log(f"⚠️  {e}")
+
+    if summary["tooldefs_updated"] or summary["tooldefs_installed"]:
+        for line in unattended_grant_notice():
+            log(line)
 
     added = register_damage_control_in_settings()
     summary["matchers_added"] = added
@@ -775,14 +1069,50 @@ def heal_damage_control(quiet: bool = False) -> Dict[str, Any]:
     return summary
 
 
-def safety_install_cmd(assume_yes: bool = False) -> int:
+def unattended_grant_notice() -> List[str]:
+    """The loud notice that a tooldef refresh is a PERMISSIONS CHANGE (#916).
+
+    Repairing tooldef drift restores the pinned ``id:`` fields, which is what
+    ``DEFAULT_UNATTENDED_ALLOW`` names. On a machine whose tooldefs had drifted,
+    five of those six grants matched nothing at all, so the grants had never
+    been in force. Bringing the files forward therefore does not "restore" the
+    default — in practice it GRANTS it. It reads as a chore and lands as a
+    permissions change, so it says so out loud rather than in a changelog.
+    """
+    from agentwire.safety._core import DEFAULT_UNATTENDED_ALLOW
+    return [
+        "",
+        "!! TOOLDEFS CHANGED — this is a PERMISSIONS CHANGE, not a maintenance no-op.",
+        "   Tooldefs carry the stable `id:` fields that DEFAULT_UNATTENDED_ALLOW names.",
+        "   With them in place, UNATTENDED (scheduler) runs may now resolve these to",
+        "   allow, in ANY repo:",
+        f"     {', '.join(DEFAULT_UNATTENDED_ALLOW)}",
+        "   That is what the code has always specified. If the ids were missing before,",
+        "   those grants were inert and this switches them ON for the first time.",
+        "   To narrow them: `unattended_allow` in ~/.agentwire/damagecontrol.yml",
+        "   (path-scoped entries supported, #914).",
+        "",
+    ]
+
+
+def safety_install_cmd(
+    assume_yes: bool = False,
+    force: bool = False,
+    allow_foreign: bool = False,
+) -> int:
     """CLI command: ``agentwire safety install``.
 
     With ``--yes``/``assume_yes`` it runs unattended and drift-aware: installs
-    missing hook scripts/rules/tooldefs, updates stale *owned* hook scripts, and
-    registers any absent matchers, without prompting and without clobbering an
-    existing (possibly customized) rule. Without it, the same heal runs behind
-    the two interactive confirmations.
+    missing hook scripts/rules/tooldefs, updates stale *owned* hook scripts,
+    brings previously-shipped rule/tooldef versions forward, and registers any
+    absent matchers — without prompting, without downgrading a newer installed
+    hook, and without clobbering a hand-edited rule. Without it, the same heal
+    runs behind the two interactive confirmations.
+
+    ``--allow-foreign-source`` permits a non-canonical checkout to write;
+    ``--force`` overwrites content otherwise held back. Returns 1 when anything
+    was refused or held back, so a script can never read a refusal as success —
+    which is the whole of #936's operator picture.
     """
     print("AgentWire Safety Installation")
     print("=" * 50)
@@ -817,18 +1147,29 @@ def safety_install_cmd(assume_yes: bool = False) -> int:
         return 1
 
     print()
-    summary = heal_damage_control()
+    summary = heal_damage_control(force=force, allow_foreign=allow_foreign)
 
-    touched = (
-        summary["hooks_installed"] or summary["hooks_updated"]
-        or summary["rules_installed"] or summary["tooldefs_installed"]
-        or summary["matchers_added"] or summary["policy_scaffolded"]
+    if summary["refused"]:
+        return 1
+
+    touched = any(
+        summary[k] for k in (
+            "hooks_installed", "hooks_updated",
+            "rules_installed", "rules_updated",
+            "tooldefs_installed", "tooldefs_updated",
+            "matchers_added", "policy_scaffolded",
+        )
     )
+    held_back = summary["hooks_downgrade_refused"] or summary["rules_unknown"] or summary["tooldefs_unknown"]
     print()
     if touched:
         print("✓ Damage control synced.")
+    elif held_back:
+        print("⚠️  Damage control NOT fully synced — see the held-back files above.")
     else:
         print("✓ Damage control already in sync — nothing to do.")
+    if held_back:
+        return 1
     print()
     print("Next steps:")
     print("  1. Test with: agentwire safety check 'rm -rf /'")

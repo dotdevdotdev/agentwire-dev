@@ -320,11 +320,30 @@ def _install_managed_file(source: Path, target: Path, force: bool = False, copy:
     return True
 
 
-def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
+def install_hooks(
+    force: bool = False,
+    copy: bool = False,
+    allow_foreign: bool = False,
+) -> dict[str, str]:
     """Install/refresh all agentwire-owned hook files + settings.json registration.
 
-    Returns {filename: "installed" | "updated" | "current" | "missing-source"}.
+    Returns {filename: "installed" | "updated" | "current" | "missing-source" |
+    "refused-foreign"}.
+
+    Refuses outright when run from a checkout that is not the canonically
+    installed tool (#936). These targets are machine-global and installed as
+    SYMLINKS by default, so `hooks install` from a worktree does not merely copy
+    a stale file — it points every session's permission and idle hooks at a task
+    branch, which then changes under them on every commit.
     """
+    from agentwire.safety import provenance as prov
+
+    state, canonical, running = prov.install_provenance()
+    if state in prov.REFUSING_STATES and not allow_foreign:
+        for line in prov.refusal_lines(canonical, running, "agentwire-owned hooks"):
+            print(f"  {line}" if line else "")
+        return {name: "refused-foreign" for name, _t, _e in _managed_hook_files()}
+
     try:
         hooks_source = get_hooks_source()
     except FileNotFoundError:
@@ -353,12 +372,33 @@ def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
     # PreToolUse matchers), not just the settings.json matchers. This closes the
     # documented post-rebuild gap: CLAUDE.md tells users to re-run `hooks install`
     # after a rebuild, so it must actually sync the DC files/rules — drift-aware,
-    # never clobbering a customized rule.
+    # bringing previously-shipped versions forward and never clobbering a
+    # file it does not recognize.
+    #
+    # NOT quiet, and NOT silently swallowed: this heal can now legitimately
+    # decline to act (a newer installed hook, a hand-edited rule), and a decline
+    # an operator never sees is the #916/#936 failure mode itself — `hooks
+    # install` printing success while the thing it installs stays stale.
     try:
         from agentwire.safety_commands import heal_damage_control
-        heal_damage_control(quiet=True)
-    except Exception:
-        pass
+        dc = heal_damage_control(quiet=True, allow_foreign=allow_foreign)
+        held = (
+            dc.get("hooks_downgrade_refused", [])
+            + dc.get("rules_unknown", [])
+            + dc.get("tooldefs_unknown", [])
+        )
+        if held:
+            print(f"  Damage control: {len(held)} file(s) HELD BACK: {', '.join(held)}")
+            print("     Details/override: agentwire safety install --yes [--force]")
+        for key, verb in (("rules_updated", "rule"), ("tooldefs_updated", "tooldef")):
+            for name in dc.get(key, []):
+                print(f"  Damage control: updated {verb} {name}")
+        if dc.get("tooldefs_updated") or dc.get("tooldefs_installed"):
+            from agentwire.safety_commands import unattended_grant_notice
+            for line in unattended_grant_notice():
+                print(line)
+    except Exception as e:
+        print(f"  Warning: damage-control heal failed: {e}")
 
     # Global skills (currently just /wiki) are agentwire-owned too, and rotted
     # silently because nothing ever resynced the hand-placed copies. Heal them
@@ -370,7 +410,14 @@ def install_hooks(force: bool = False, copy: bool = False) -> dict[str, str]:
 
 def cmd_hooks_install(args) -> int:
     """Install agentwire-owned hook files and slash commands for AgentWire integration."""
-    results = install_hooks(force=args.force, copy=args.copy)
+    results = install_hooks(
+        force=args.force,
+        copy=args.copy,
+        allow_foreign=getattr(args, "allow_foreign_source", False),
+    )
+    if any(state == "refused-foreign" for state in results.values()):
+        # A refusal must never be reportable as a successful install (#936).
+        return 1
     for hook_name, target_dir, _event in _managed_hook_files():
         state = results.get(hook_name)
         if state in ("installed", "updated"):
@@ -602,6 +649,12 @@ def register_hooks_parser(subparsers) -> None:
     )
     hooks_install.add_argument(
         "--copy", action="store_true", help="Copy files instead of symlinking"
+    )
+    hooks_install.add_argument(
+        "--allow-foreign-source", action="store_true",
+        help="Let a checkout that is NOT the installed tool write these "
+             "machine-global files. Installing from a task branch is what "
+             "silently downgraded this machine's security hooks (#936)",
     )
     hooks_install.set_defaults(func=cmd_hooks_install)
 
