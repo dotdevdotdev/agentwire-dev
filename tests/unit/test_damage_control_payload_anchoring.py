@@ -454,11 +454,16 @@ CLIENT_WRAPPED_MASKED = [
     'mysql -e "DROP DATABASE production"',
     'mysql -e "UPDATE users SET admin = 1"',
     'mongosh --eval "db.users.deleteMany({ })"',
-    'python3 -c "import shutil; shutil.rmtree(\'/srv\')"',
     "perl -e 'unlink \"/srv/data\"'",
 ]
 
 CLIENT_WRAPPED_SURVIVES = [
+    # Covered by _EXEC_SURFACES now (`python3 -c` is a table entry), so it
+    # holds even under blanket anchoring and the mutation below is INERT
+    # for it. That is a genuine strengthening, not an inconvenience: it no
+    # longer depends on payloads.yaml staying unanchored. Asserted as
+    # refused above, excluded from mutation so that class stays honest.
+    'python3 -c "import shutil; shutil.rmtree(\'/srv\')"',
     'mongosh --eval "db.dropDatabase()"',        # no whitespace — not masked
     'mongosh --eval "db.users.deleteMany({})"',
 ]
@@ -1200,3 +1205,103 @@ class TestSshWrappedCoverageReduction:
             assert bash_hook.check_command(command, bundled_config)[
                 "decision"
             ] in REFUSED, f"{command!r} — remote.yaml's own coverage broke"
+
+
+class TestExecSurfacePayloadsStayVisible:
+    """A quoted payload on an EXEC SURFACE must not be masked away (#924 class).
+
+    Anchoring the rule files stops the raw haystack being consulted, so masking
+    a fully-quoted multi-word token took NINE measured commands from BLOCK to
+    ``allow`` **with no rule matching at all** — no grant consulted, and no
+    ``core.ambiguous-command`` backstop either, because with no ``$(`` present
+    the ambiguity detector never fires. Measured across real trees per revision
+    with ``_core`` imported from inside each, so neither side is a hybrid.
+
+    WHY THE OBVIOUS FIXES ARE WRONG, since all three were tried:
+
+    - ``$(``/backtick syntax (the fix one class up) misses every row here.
+    - Adding these names to ``_SHELL_NAMES`` is semantically false: that set
+      means "this payload IS a shell command" — true for ``sh -c``, false for
+      ``python3 -c``, where the payload is source that merely contains one.
+    - The additive-haystack pattern — emit every masked token as its own entry —
+      fixes all nine AND reinstates #915 for all prose, because a report payload
+      becomes a command-position entry again. The pattern that was right for
+      #918 and #932 is wrong here.
+
+    So the distinguisher is POSITION: is this token the value of an exec-surface
+    option? That needs a table, and ``_EXEC_SURFACES`` is the minimal instance
+    of #924's eventual one. A tool missing from it degrades to today's
+    behaviour, not worse.
+
+    Rule IDs are asserted, not verdicts — a block from some other rule satisfies
+    a verdict-only row while the payload stays invisible.
+    """
+
+    REGRESSED = [
+        ("tmux -c 'rm -rf /tmp/x' new-session", "core.rm-with-recursive-or-force-flags"),
+        ("tmux new-session -d 'rm -rf /tmp/x'", "core.rm-with-recursive-or-force-flags"),
+        ("""python3 -c 'import os; os.system("rm -rf /tmp/x")'""", "core.rm-with-recursive-or-force-flags"),
+        ("""perl -e 'system("rm -rf /tmp/x")'""", "core.rm-with-recursive-or-force-flags"),
+        ("""node -e 'require("child_process").execSync("rm -rf /tmp/x")'""", "core.rm-with-recursive-or-force-flags"),
+        ("""ruby -e 'system("rm -rf /tmp/x")'""", "core.rm-with-recursive-or-force-flags"),
+        ("""awk 'BEGIN{system("rm -rf /tmp/x")}'""", "core.rm-with-recursive-or-force-flags"),
+        ("watch -n1 'rm -rf /tmp/x'", "core.rm-with-recursive-or-force-flags"),
+        ("make -c 'rm -rf /tmp/x'", "core.rm-with-recursive-or-force-flags"),
+    ]
+
+    @pytest.mark.parametrize("command,rule_id", REGRESSED)
+    def test_regressed_row_refuses_by_its_own_rule(
+        self, bash_hook, bundled_config, command, rule_id
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] == "block", (
+            f"{command!r} is {result['decision']} — an exec-surface payload is "
+            f"masked away again. On main this blocks; anchored without the "
+            f"table it lands on allow with NO rule matching at all."
+        )
+        assert result["id"] == rule_id, (
+            f"{command!r} blocked via {result['id']!r}, not {rule_id!r} — "
+            f"something else took the credit and the payload is still hidden"
+        )
+
+    # HELD rows: correct before this change and must not move. A "fix" that
+    # works by widening the table until everything matches breaks these.
+    HELD = [
+        "timeout 5 sh -c 'rm -rf /tmp/x'",
+        "env FOO=1 sh -c 'rm -rf /tmp/x'",
+        "nohup sh -c 'rm -rf /tmp/x'",
+        "xargs -I{} sh -c 'rm -rf /tmp/x'",
+        "find . -exec sh -c 'rm -rf /tmp/x' ;",
+        "sh -c 'rm -rf /tmp/x'",
+        "bash -c 'rm -rf /tmp/x'",
+        "su -c 'rm -rf /tmp/x' root",
+        "ssh prod 'rm -rf /tmp/x'",
+        'psql -c "DROP TABLE users"',
+    ]
+
+    @pytest.mark.parametrize("command", HELD)
+    def test_held_row_unchanged(self, bash_hook, bundled_config, command):
+        assert bash_hook.check_command(command, bundled_config)["decision"] in REFUSED
+
+    def test_prose_is_still_masked(self, bash_hook, bundled_config):
+        """The bound on this fix: a report payload is NOT an exec surface.
+
+        This is the row that fails if anyone repairs the class with the additive
+        pattern instead of the table.
+        """
+        result = bash_hook.check_command(
+            "agentwire msg send --to orch --kind done "
+            '"the merge failed -- I did not rm -rf the file"',
+            bundled_config,
+        )
+        assert result["decision"] == "allow"
+
+    def test_a_missing_exec_surface_degrades_to_today_not_worse(
+        self, bash_hook, bundled_config
+    ):
+        """A tool absent from the table behaves exactly as it does now."""
+        assert "notatool" not in bash_hook._EXEC_SURFACES
+        result = bash_hook.check_command(
+            "notatool -c 'rm -rf /tmp/x'", bundled_config
+        )
+        assert result["decision"] == "allow"

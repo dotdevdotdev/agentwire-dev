@@ -1774,7 +1774,48 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
 
 _MASK = "\x00"
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w+)\1")
-_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+# ``su -c`` runs its argument through a login shell, so it belongs here
+# for the same reason: the value is a command, not content.
+_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "su"}
+
+#: EXEC SURFACES (#915 review, class of #924).
+#:
+#: A quoted multi-word token is masked as content — right for ``git commit -m
+#: "<prose>"``, and WRONG when the token is the value of an option the tool
+#: EXECUTES. Once the rule files are anchored the raw haystack is no longer
+#: consulted, so masking such a payload takes it from BLOCK to allow with NO
+#: rule matching at all: no grant consulted, and no ``core.ambiguous-command``
+#: backstop either, because with no ``$(`` the ambiguity detector never fires.
+#:
+#: The distinguisher cannot be SYNTAX — ``$(`` is one route here, not the
+#: defining property — and it cannot be ADDITIVITY: emitting every masked token
+#: as its own entry fixes all of these and reinstates #915 for all prose,
+#: because a report payload becomes a command-position entry again. It has to be
+#: POSITION: is this token the value of an exec-surface option? That needs a
+#: table, and this is the minimal instance of #924's eventual one.
+#:
+#: Value = the option flags whose value is the payload. An EMPTY set means the
+#: payload arrives positionally (``tmux new-session -d '<cmd>'``, ``watch -n1
+#: '<cmd>'``, ``awk '<program>'``), so any content token on that command counts.
+#:
+#: Distinct from ``_SHELL_NAMES``, which means "this payload is a shell command"
+#: and so gets RE-PARSED into subcommands. Here the payload is executable text
+#: that merely contains a command (``python3 -c 'os.system("…")'``), so it is
+#: emitted as a haystack string instead of re-parsed as shell.
+#:
+#: Missing an exec surface degrades to exactly today's behaviour, not worse.
+_EXEC_SURFACES: Dict[str, set] = {
+    "python": {"-c"}, "python3": {"-c"}, "python2": {"-c"},
+    "perl": {"-e", "-E"},
+    "ruby": {"-e"},
+    "node": {"-e", "-p", "--eval"},
+    "deno": {"-e", "--eval"},
+    "php": {"-r"},
+    "make": {"-c"},
+    "tmux": set(),
+    "watch": set(),
+    "awk": set(), "gawk": set(), "mawk": set(),
+}
 _ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
@@ -2435,13 +2476,38 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
                 continue
             if is_content:
                 # A ``sh -c "…"`` payload is a command, not content — rescan.
+                #
+                # ANY word so far may be the shell, not just words[0]: a wrapper
+                # prefix (``env FOO=1 sh -c``, ``nohup sh -c``, ``timeout 5 sh
+                # -c``, ``xargs -I{} sh -c``, ``find . -exec sh -c``) puts the
+                # shell in the middle. Keying on words[0] alone meant every one
+                # of those payloads was masked away with nothing rescanning it —
+                # a BLOCK -> ALLOW regression once the rules are anchored, since
+                # the raw haystack is no longer consulted for them.
                 if (
                     words
                     and prev.startswith("-")
                     and "c" in prev
-                    and words[0].rsplit("/", 1)[-1] in _SHELL_NAMES
+                    and any(w.rsplit("/", 1)[-1] in _SHELL_NAMES for w in words)
                 ):
                     results.extend(_masked_subcommand_words(resolved))
+                else:
+                    # Not a shell payload — but it may still be the value of an
+                    # EXEC SURFACE option, where the token is executable text
+                    # rather than data. Emit it as its own haystack entry so the
+                    # anchored rules see it; do NOT re-parse it as shell, since
+                    # `python3 -c` payloads are Python that merely contain a
+                    # command.
+                    exec_flags = None
+                    for w in words:
+                        cand = _EXEC_SURFACES.get(w.rsplit("/", 1)[-1])
+                        if cand is not None:
+                            exec_flags = cand
+                            break
+                    if exec_flags is not None and (
+                        not exec_flags or prev in exec_flags
+                    ):
+                        results.append([resolved])
                 words.append(_MASK)
                 prev = _MASK
             else:

@@ -804,6 +804,11 @@ class TestGitGlobalOptionBypass:
         assert result["decision"] == "block", result
 
 
+# Assembled so this file's own text can't trip a bash rule if it is ever
+# scanned as a command (same reason as `_FORCE` above).
+_RM_RF = "rm" + " -rf"
+
+
 class TestCrossIssueBackstops:
     """Canaries for coverage that only LOOKS like it belongs to another rule.
 
@@ -908,6 +913,72 @@ class TestCrossIssueBackstops:
             for p in cfg["bashToolPatterns"]
         ), "the rule being disabled does not exist — this test proves nothing"
         assert bash_hook.check_command(cmd, cfg)["decision"] == "block"
+
+    # EXEC-SURFACE OPTIONS: a stripped value that is itself a COMMAND.
+    #
+    # #918 covered git's (`-c core.sshCommand=<cmd>`, `-c core.pager=<cmd>`) and
+    # additivity is what keeps them visible. This table adds a SECOND one —
+    # `tmux -c <shell-command>` — and it is strictly more exposed than git's,
+    # for a reason that has nothing to do with this normalizer:
+    #
+    #   git -c core.pager='rm -rf /x'   the token carries an unquoted
+    #                                   `core.pager=` prefix, so it is not
+    #                                   FULLY quoted and masking leaves it
+    #   tmux -c 'rm -rf /x'             the token IS fully quoted and contains
+    #                                   whitespace, so `is_content` blanks it
+    #
+    # So tmux's payload survives on the RAW haystack only. Anchoring the
+    # deletion rules moves them to the masked haystack, where it is already
+    # gone — measured against #920's branch, where this exact command read
+    # `allow` OUTRIGHT with no rule matching, interactive AND unattended. Not
+    # `ask`: with no `$(` the ambiguity detector never fires, so
+    # `core.ambiguous-command` is not there to fail closed either. That is what
+    # makes it sharper than the quoted-substitution case that prompted the
+    # review — that one at least needed a grant to reach `allow`; this needs
+    # nothing. (`sh -c '<payload>'` survives only because `_SHELL_NAMES`
+    # rescans it. `tmux` is not in that set, and neither are the other
+    # `-c`/`-e`/`--eval` clients — the class is #924's.)
+    #
+    # NOT AN EXPECTED-RED CANARY. It was written as one, before the ruling that
+    # #920 must not ship a BLOCK -> ALLOW-outright regression with no backstop.
+    # So this is a live guarantee, not a tripwire for an accepted change: a
+    # failure here means an exec-surface payload became unreachable by every
+    # content rule, in a posture where nothing else fails closed.
+    #
+    # Fixing it is NOT this seat's — `is_content` belongs to #920, and the
+    # general exec-surface class to #924. What this test owes them is a named,
+    # reproducible failure rather than silence.
+    @pytest.mark.parametrize("cmd", [
+        f"tmux -c '{_RM_RF} /tmp/x' new-session",
+        f"git -c core.pager='{_RM_RF} /tmp/x' fetch origin",
+    ])
+    def test_exec_surface_option_payloads_stay_visible(
+        self, bash_hook, bundled_config, cmd
+    ):
+        result = bash_hook.check_command(cmd, bundled_config)
+        assert result["decision"] == "block", (
+            f"{cmd!r} is {result['decision']} — the command PAYLOAD of an "
+            "exec-surface option is no longer reachable by any content rule"
+        )
+
+    def test_the_normalizer_is_not_what_hides_an_exec_surface_payload(
+        self, bash_hook
+    ):
+        """Bounds the claim above to what this PR actually owns.
+
+        The variant drops `-c` and its value, by design — but it is ADDITIVE,
+        so the payload is still on the raw and masked lists exactly as before.
+        Whether a *rule* can see it there is the masking question, not this
+        one, and this assertion is what separates the two.
+        """
+        cmd = f"tmux -c '{_RM_RF} /tmp/x' new-session"
+        assert bash_hook.global_option_normalized_haystacks(cmd) == [
+            "tmux new-session"
+        ]
+        subs, _ = bash_hook.normalize_subcommands(cmd)
+        assert any(_RM_RF in s for s in [cmd] + subs), (
+            "the raw haystack lost the payload — that WOULD be this PR's bug"
+        )
 
 
 # ---------------------------------------------------------------------------
