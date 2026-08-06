@@ -641,12 +641,32 @@ def load_config(
 #           - ~/.claude/projects/*/memory/          # scoped: only under here
 #
 # A scoped grant applies only when EVERY directory the matching command would
-# act on resolves inside one of ``paths``. Anything that makes the target
-# directory unknowable — a ``cd``, an indirect runner (``sh -c``, ``xargs``,
-# ``sudo``, ``ssh`` …), command substitution — does NOT apply the grant, so the
-# unattended block fires exactly as it did before the grant existed. Scope
-# evaluation can only ever REFUSE a command the bare form would have allowed;
-# it can never permit one.
+# act on resolves inside one of ``paths``. Scope evaluation can only ever
+# REFUSE a command the bare grant would have allowed; it can never permit one.
+#
+# WHAT IT REFUSES RATHER THAN GUESSES — an enumerated list, not a guarantee.
+# ``command_scope_dirs`` refuses on: a ``cd`` not joined by ``&&``; an indirect
+# runner (``sh -c``, ``xargs``, ``sudo``, ``ssh`` …); a subshell/group; command
+# substitution / ``eval`` / a base64 pipeline; an unrecognized environment
+# assignment; and a rule whose pattern matches no single segment. It READS,
+# rather than refuses: the cwd, ``cd <literal> &&``, git's ``-C`` /
+# ``--git-dir`` / ``--work-tree``, git's ``GIT_DIR``-family environment
+# assignments, and the enclosing git repo root.
+#
+# That list is the honest form of the claim. An earlier draft of this comment
+# said "anything that makes the target directory unknowable does not apply the
+# grant", which was not true of the code beneath it: ``GIT_DIR=<other> git
+# commit`` was stripped as an environment assignment and silently measured
+# against the cwd — the PR reproducing the very defect class it exists to fix
+# (#913 is "the rule matched a phrasing, not an operation"; this matched the
+# ``-C`` phrasing and missed the assignment spelling of the same redirection,
+# while the ``env(1)`` spelling was already refused). Enumerate what is handled;
+# do not assert a closure property over shell semantics.
+#
+# NOT closed, and stated so rather than implied: ``git config core.worktree``
+# redirects a repo from inside its own config, which no reading of the command
+# can see; and resolution is a TOCTOU window — the hook validates a path the
+# command has not used yet.
 #
 # Hard ``block`` rules (rm -rf, git push --force, …) are unaffected — they fire
 # regardless. Interactive bypass sessions (no ``AGENTWIRE_UNATTENDED``) are
@@ -700,11 +720,21 @@ def parse_unattended_allow(raw: Any) -> Tuple[Dict[str, List[List[str]]], List[s
     unscoped. So ``{"git.commit": [[]]}`` grants commits anywhere, while
     ``{"git.commit": [["~/x/"]]}`` grants them only under ``~/x/``.
 
-    ``errors`` describes entries that were REFUSED (and therefore grant
-    nothing) — malformed shapes, missing ids, relative path patterns. Callers
-    that lint surface them; the hook simply gets a grant map without them,
-    which is the fail-closed direction: an entry the host thought they wrote
-    cannot silently become a broader grant than they typed.
+    ``errors`` describes entries that were REFUSED — malformed shapes, missing
+    ids, relative path patterns. A refused entry that NAMED a rule id maps that
+    id to the EMPTY scope list ``[]``, which is distinct from absent:
+
+        absent (``None``)  -> this layer says nothing; a looser layer may grant
+        ``[]``             -> this layer named the rule and granted nothing
+        ``[[]]``           -> unscoped grant
+        ``[[p, …]]``       -> scoped grant
+
+    That distinction is load-bearing, and getting it wrong is a WIDENING. If a
+    refused entry simply vanished, ``{id: git.commit, paths: [typo/relative]}``
+    would fall through to the unscoped ``git.commit`` in
+    ``DEFAULT_UNATTENDED_ALLOW`` — so a typo in a scope path would grant commits
+    EVERYWHERE, which is worse than the grant the host was trying to write.
+    Naming a rule always binds it, valid or not.
     """
     grants: Dict[str, List[List[str]]] = {}
     errors: List[str] = []
@@ -726,6 +756,11 @@ def parse_unattended_allow(raw: Any) -> Tuple[Dict[str, List[List[str]]], List[s
         if not rid:
             errors.append(f"entry {entry!r} has no `id`")
             continue
+        # Naming a rule BINDS it at this layer, whatever happens to the rest of
+        # the entry. `setdefault` alone (below) would leave a refused entry
+        # absent, and absent falls through to the looser layer — so a typo in a
+        # scope path would silently grant the rule everywhere.
+        grants.setdefault(rid, [])
         unknown = sorted(set(entry) - {"id", "paths"})
         if unknown:
             # Same reasoning as TaskConfig.unknown_keys (#867): a key we ignore
@@ -844,6 +879,27 @@ _INDIRECT_RUNNERS = {
 # it here gives both from one implementation.
 _GIT_DIR_OPTS_VALUE = {"-C", "--git-dir", "--work-tree"}
 
+# Global options that take a separate value but name no DIRECTORY. Their value
+# must still be consumed, or it gets mistaken for the subcommand.
+# ``--exec-path`` is deliberately absent: bare ``--exec-path`` makes git print
+# the exec path and exit, so ``git --exec-path status`` never runs ``status`` —
+# consuming a token there would swallow a subcommand a rule needs to see. Only
+# its ``=`` form carries a value, which the generic ``-`` branch handles.
+_GIT_OPTS_VALUE_NOT_DIR = {
+    "-c", "--config-env", "--namespace", "--attr-source", "--super-prefix",
+}
+
+# Environment assignments git honours to pick a DIFFERENT repo than the cwd.
+# `GIT_DIR=<other> git commit` beats the working directory outright (verified
+# against git 2.50.1), so an assignment prefix is a repo selector exactly like
+# `-C` — and one that `_strip_assignments` used to discard before anything
+# looked at it.
+_GIT_DIR_ENV_VARS = {
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE",
+}
+
 
 def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
     """Split a ``git`` argv into ``(directories it redirects to, remaining argv)``.
@@ -862,6 +918,9 @@ def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
                 dirs.append(argv[i + 1])
             i += 2
             continue
+        if tok in _GIT_OPTS_VALUE_NOT_DIR:
+            i += 2
+            continue
         matched = False
         for opt in _GIT_DIR_OPTS_VALUE:
             if tok.startswith(opt + "="):
@@ -871,11 +930,6 @@ def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
         if matched:
             i += 1
             continue
-        if tok == "-c" or tok == "--config-env":
-            # Takes a value, names no directory. Consume both so the value
-            # can't be mistaken for the subcommand.
-            i += 2
-            continue
         if tok.startswith("-"):
             i += 1
             continue
@@ -884,12 +938,43 @@ def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
     return dirs, rest
 
 
-def _strip_assignments(argv: List[str]) -> List[str]:
-    """Drop leading ``VAR=value`` prefixes (``FOO=1 git commit`` -> ``git commit``)."""
+def _git_repo_root(path: str) -> Optional[str]:
+    """Nearest enclosing directory containing ``.git``, walking up from ``path``.
+
+    git resolves the repo by walking UP, so the directory a command runs in is
+    not the repo it commits to. A scope naming ``<repo>/subdir`` would otherwise
+    grant over the whole of ``<repo>`` — silently, because the cwd it measured
+    really is inside the scope. Pure filesystem probing, no subprocess: the hook
+    is on the tool's hot path.
+
+    ``.git`` may be a file (worktrees, submodules) as well as a directory; both
+    count. Returns None when nothing is found — which happens for a path that
+    does not exist yet, so callers must not read None as "no constraint
+    needed" for a security decision, only as "no repo root discoverable".
+    """
+    current = os.path.abspath(path)
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def _split_assignments(argv: List[str]) -> Tuple[List[str], List[str]]:
+    """Split leading ``VAR=value`` prefixes off an argv.
+
+    Returns ``(assignments, rest)`` — NOT just ``rest``. Discarding them is how
+    ``GIT_DIR=<other-repo> git commit`` slipped past scope evaluation entirely:
+    the redirect vanished before anything looked at it and the check fell back
+    to the cwd, which was in scope. An assignment prefix is a repo selector
+    exactly like ``-C``.
+    """
     i = 0
     while i < len(argv) and _ASSIGN_TOKEN_RE.match(argv[i]):
         i += 1
-    return argv[i:]
+    return argv[:i], argv[i:]
 
 
 # Shell operators, and the grouping tokens that make a segment's execution
@@ -1019,7 +1104,7 @@ def command_scope_dirs(
     current_dir = cwd
 
     for argv, following_op in segments:
-        argv = _strip_assignments(argv)
+        assigns, argv = _split_assignments(argv)
         if not argv:
             continue
         head = os.path.basename(argv[0])
@@ -1055,7 +1140,7 @@ def command_scope_dirs(
             # second is what will match once #913 normalizes those options away
             # before rule matching. Handling both keeps scope evaluation
             # correct on either side of that change.
-            haystacks = [" ".join(argv), " ".join(stripped)]
+            haystacks = [" ".join(assigns + argv), " ".join(assigns + stripped)]
             try:
                 if not any(re.search(pattern, h, re.IGNORECASE) for h in haystacks):
                     continue
@@ -1066,11 +1151,43 @@ def command_scope_dirs(
         if head in _INDIRECT_RUNNERS:
             return [], f"command runs through {head} — target directory is not statically knowable"
 
+        # Environment assignments. Recognized git repo selectors are read as
+        # target directories; ANY other assignment refuses, because we cannot
+        # know whether an env var we do not model redirects the tool. This is
+        # the same answer `env VAR=… git commit` already got by being an
+        # indirect runner — the two spellings of one redirection now agree.
+        for assign in assigns:
+            name, _, value = assign.partition("=")
+            if name in _GIT_DIR_ENV_VARS:
+                if value:
+                    dirs.extend(_resolve_dir(value, current_dir))
+                continue
+            return [], (
+                f"command sets {name} — an environment override may redirect "
+                f"{head} to a different target, which is not statically knowable"
+            )
+
         if git_dirs:
             for d in git_dirs:
                 dirs.extend(_resolve_dir(d, current_dir))
         else:
             dirs.extend(_resolve_dir(".", current_dir))
+
+        if head == "git":
+            # git resolves its repo by walking UP from the working directory, so
+            # the directory the command runs in is NOT necessarily the repo it
+            # writes to. Require the enclosing repo ROOT to be in scope as well.
+            #
+            # CHOSEN over the alternative of refusing a non-root scope at lint
+            # time: a lint sees only the scope as written, and a scope like
+            # `~/.claude/projects/*/memory/` is legitimate right up until
+            # someone runs `git init ~/.claude`, after which every memory store
+            # is a subdirectory of one big repo. Checking at decision time
+            # follows the filesystem instead of a snapshot of it.
+            for candidate in list(dirs):
+                root = _git_repo_root(candidate)
+                if root:
+                    dirs.extend(_resolve_dir(root, current_dir))
 
     if pattern and considered == 0:
         # The rule matched the command as a whole but no individual segment —
@@ -1172,6 +1289,13 @@ def unattended_grant_allows(
     scopes = grants.get(rule_id)
     if scopes is None:
         return False, f"rule '{rule_id}' is not on the unattended allowlist"
+    if not scopes:
+        # Named by an entry that did not parse. Deliberately NOT a fall-through
+        # to a looser layer — see parse_unattended_allow.
+        return False, (
+            f"rule '{rule_id}' is named in unattended_allow but its entry is malformed, "
+            f"so it grants nothing (check `agentwire tasks review` for the reason)"
+        )
     if any(not s for s in scopes):
         return True, f"rule '{rule_id}' is granted unattended (unscoped)"
 
