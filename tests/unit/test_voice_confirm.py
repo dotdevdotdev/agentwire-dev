@@ -336,6 +336,68 @@ class TestNonceGrammar:
         still needs a nonce — but it should not be missed."""
         assert confirm.classify(text, "tango") == confirm.DENIED, text
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "wait for it, confirm tango",
+            "confirm tango — wait for it",
+            "wait for it now, confirm tango",
+            "confirm tango, wait for a second",
+            "hold on a second, confirm tango",
+            "hang on a minute, confirm tango",
+            "wait a moment, confirm tango",
+        ],
+    )
+    def test_hold_idioms_still_deny_despite_the_wait_exception(self, text):
+        """An EXCEPTION carries a higher bar than a denial word, and the
+        asymmetry is the opposite of the one governing the word list.
+
+        A missed denial word is recoverable: the write still needs a nonce, so
+        the owner can simply not say it. A wrong EXCEPTION is not — it means the
+        owner said no and the write went, which they cannot undo by declining to
+        speak, because they already spoke and it did not count.
+
+        So "wait for the tests" may suppress and **"wait for it" may not** — it
+        is an idiom meaning exactly "hold on". Measured: it approved before the
+        conditional rule landed.
+        """
+        assert confirm.classify(text, "tango") == confirm.DENIED, text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "confirm tango, wait for the tests to finish",
+            "confirm tango, wait for the deploy window",
+            "confirm tango, wait until Monday",
+            "confirm tango, wait for CI",
+        ],
+    )
+    def test_a_real_condition_still_suppresses(self, text):
+        """The other half. A determiner or noun after "wait for" is a condition;
+        a bare deictic is holding. The instrument is that test rather than an
+        idiom denylist, because a denylist here would be the same unbounded
+        shape the filler list was."""
+        assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    def test_the_post_approval_scan_uses_the_same_idiom_rule(self):
+        """``carries_denial`` is a second entry point into the grammar, so the
+        rule has to hold there too — an exception that only applied on one path
+        would be a hole with a longer name."""
+        assert confirm.carries_denial("wait for it") is True
+        assert confirm.carries_denial("hold on a second") is True
+        assert confirm.carries_denial("wait for the tests to finish") is False
+        assert confirm.carries_denial("don't forget the branch") is False
+
+    def test_exceptions_are_deliberately_few(self):
+        """The bar, asserted as a number.
+
+        Every exception is a place a denial can be suppressed, so the set is
+        kept small on purpose. Growing it is allowed; growing it without
+        noticing is what this catches.
+        """
+        assert len(confirm._DENIAL_EXCEPTIONS) == 1
+        assert len(confirm._CONDITIONAL_DENIAL_EXCEPTIONS) == 3
+
     def test_bigram_order_is_what_separates_the_two_measured_cases(self):
         """"hold on" denies; "on hold" does not.
 
