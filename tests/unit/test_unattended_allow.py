@@ -124,6 +124,39 @@ class TestUvRunIsPermittedUnattended:
         assert len(pats) == 2
         assert pats[0]["pattern"] == pats[1]["pattern"] == r"\buv\s+run\b"
 
+    def test_the_permission_survives_a_tooldef_reorder(self, tmp_path):
+        """The operation, exercised — not just the set membership.
+
+        Swapping the two ``uv run`` lines in uv.yaml changes which id every
+        command comes back with, and nothing else. With one id allowlisted that
+        silently revokes the permission; with both it cannot. Asserting the set
+        alone would pass either way for the corpus as shipped, since every
+        command resolves to whichever line happens to be first.
+        """
+        import shutil
+
+        import yaml
+
+        tooldefs = tmp_path / "tooldefs"
+        shutil.copytree(BUNDLED_TOOLDEFS, tooldefs)
+        doc = yaml.safe_load((tooldefs / "uv.yaml").read_text())
+        cmds = doc["commands"]
+        i = next(k for k, c in enumerate(cmds) if c["cmd"] == "uv run <script.py>")
+        j = next(k for k, c in enumerate(cmds) if c["cmd"] == "uv run <cmd>")
+        cmds[i], cmds[j] = cmds[j], cmds[i]
+        (tooldefs / "uv.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+        config = C.load_config(BUNDLED_RULES, tooldefs)
+        config["safety"] = {"enabled": True, "disabled_rules": [],
+                            "unattended_allow": []}
+
+        decision, rule_id = unattended_verdict(config, "uv run pytest -q")
+        assert rule_id == "tooldef.uv-run-a-command-in-project-environment", (
+            "the reorder did not move the id — this test is not exercising "
+            "what it claims to")
+        assert decision == "allow", (
+            "reordering two equivalent tooldef lines revoked the permission")
+
     def test_every_default_id_resolves_to_a_real_rule(self, cfg):
         """An allowlisted id matching nothing is a permission that does nothing.
 
