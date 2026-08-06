@@ -128,7 +128,11 @@ lands in a durable inbox and is injected only at a safe boundary.
    of its own pending messages rendered in the recipient's box, it heals via
    `session_ready.finish_submit` — an **Enter-only** retry (never a re-paste,
    so the #621 dedup holds), unlinking only once submission confirms and
-   otherwise deferring without penalty (`stuck_in_box`). As a last-resort
+   otherwise deferring without penalty (`stuck_in_box`). **That "finds one of
+   its own" test has a measured cliff** — the box windows or chips long before
+   you'd expect, so a coalesced drain of four or more messages wedges every one
+   of them with no dead-letter and no email:
+   [The #689 heal cliff](heal-line-count-cliff.md) (#930). As a last-resort
    backstop, the watchdog pane-sweep flushes a bare Enter on any pane —
    including a mid-generation one, where Enter merely queues the draft (#698;
    the old spinner gate left a stuck box on a busy orchestrator unrescued) —
