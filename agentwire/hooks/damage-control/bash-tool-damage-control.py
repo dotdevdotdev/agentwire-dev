@@ -2937,6 +2937,36 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             "disabled": True,
         }
 
+    # A SUBSTITUTION BODY IS A COMMAND — judge it as one, first (#925).
+    #
+    # Folding the body into the outer command's haystacks is not enough,
+    # because the ladder returns on the FIRST matching rule and reports one id,
+    # and the unattended resolver then keys the grant on that id. So an outer
+    # verb carrying a grant can launder an inner payload that carries none:
+    #
+    #   git commit -m "$(rmdir /tmp/x)"
+    #     outer matches git.commit  (ask, granted unscoped)  -> ALLOW
+    #     inner matches core.rmdir  (ask, NOT granted)       -> never consulted
+    #
+    # Same shape as the concealment shadowing fixed above, one level out, and
+    # introduced by the same narrowing: before #925 an inner body was not a
+    # haystack at all, so the command simply read as ambiguous. Judging the
+    # body independently is the fix that cannot be shadowed — the body's
+    # verdict is about the payload alone, so no outer grant applies to it.
+    #
+    # Bodies are strictly shorter than the command containing them, so the
+    # recursion terminates. A `block` wins outright; an `ask` is preferred over
+    # the outer command's own `ask`, since the outer one is the grantable one.
+    inner_ask = None
+    for _body in split_substitutions(_strip_heredoc_bodies(command))[1]:
+        if not _body.strip():
+            continue
+        _verdict = check_command(_body, config)
+        if _verdict["decision"] == "block":
+            return {**_verdict, "command": command, "inner_command": _body}
+        if _verdict["decision"] == "ask" and inner_ask is None:
+            inner_ask = {**_verdict, "command": command, "inner_command": _body}
+
     bash_patterns = config.get("bashToolPatterns", [])
     zero_access = config.get("zeroAccessPaths", [])
     read_only = config.get("readOnlyPaths", [])
@@ -3011,6 +3041,10 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                     # cannot read.
                     if ambiguous:
                         return _concealed_result(command, ambiguous)
+                    # An inner payload's own refusal outranks the outer verb's,
+                    # for the same reason: the outer id is the grantable one.
+                    if inner_ask is not None:
+                        return inner_ask
                     return {
                         "decision": "ask",
                         "reason": reason,
@@ -3088,6 +3122,8 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     # verify it statically — fail closed to ``ask`` (a block when unattended).
     if ambiguous:
         return _concealed_result(command, ambiguous)
+    if inner_ask is not None:
+        return inner_ask
 
     return {
         "decision": "allow",
