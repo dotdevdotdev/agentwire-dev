@@ -446,6 +446,45 @@ class TestInterpreterAndSqlPayloadsStillRefused:
         )
 
 
+class TestGenericRmBackstopSurvivesAnchoring:
+    """#913 interaction: anchoring must not narrow the generic rm backstop.
+
+    A global option before the subcommand bypasses the specific rule
+    (``docker --context prod volume rm x`` misses ``containers.docker-volume-rm``
+    — that is #913), leaving only the generic ``core.rm-file-deletion`` rule
+    holding it. This PR anchors that rule, so the question is whether the
+    backstop survives.
+
+    It does, and the reason is precise: masking blanks a quoted token only when
+    it CONTAINS WHITESPACE. These commands have no such token, so the masked
+    subcommand is byte-identical to the raw command and the rule matches through
+    both haystacks. The narrowing this PR applies is confined to quoted argument
+    CONTENT — which is the whole point.
+    """
+
+    GLOBAL_OPTION_BYPASSED = [
+        "docker --context prod volume rm pgdata",
+        "aws --profile prod s3 rm s3://bucket --recursive",
+        "docker --context prod volume rm 'my data'",
+    ]
+
+    @pytest.mark.parametrize("command", GLOBAL_OPTION_BYPASSED)
+    def test_still_blocked_by_the_generic_rule(
+        self, bash_hook, bundled_config, command
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] in REFUSED, (
+            f"{command!r} lost its last backstop — the specific rule is "
+            f"global-option-bypassed (#913) and the generic rm rule no longer "
+            f"reaches it"
+        )
+
+    def test_masked_form_is_identical_when_nothing_is_quoted(self, bash_hook):
+        """The mechanism behind the assertion above, asserted directly."""
+        command = "docker --context prod volume rm pgdata"
+        assert bash_hook.masked_subcommands(command) == [command]
+
+
 class TestMutationProvesTheAssertionsHaveTeeth:
     """Anchor the must-not-anchor class and the guard measurably disappears.
 
