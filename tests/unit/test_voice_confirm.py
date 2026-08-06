@@ -263,7 +263,6 @@ class TestNonceGrammar:
             "confirm tango, I never got the other one",
             "confirm tango, do not forget the other branch",
             "confirm tango, don't forget the other branch",
-            "confirm tango, wait for the tests to finish",
             "confirm tango, the deploy is on hold until Monday",
         ],
     )
@@ -339,27 +338,34 @@ class TestNonceGrammar:
     @pytest.mark.parametrize(
         "text",
         [
+            # The class, not a list of the ones we happened to think of.
             "wait for it, confirm tango",
+            "wait for those, confirm tango",
+            "wait for these, confirm tango",
+            "wait for mine, confirm tango",
+            "wait for both, confirm tango",
+            "wait for everything, confirm tango",
+            "wait for a second, confirm tango",
             "confirm tango — wait for it",
-            "wait for it now, confirm tango",
-            "confirm tango, wait for a second",
             "hold on a second, confirm tango",
             "hang on a minute, confirm tango",
             "wait a moment, confirm tango",
+            "wait up, confirm tango",
         ],
     )
-    def test_hold_idioms_still_deny_despite_the_wait_exception(self, text):
-        """An EXCEPTION carries a higher bar than a denial word, and the
-        asymmetry is the opposite of the one governing the word list.
+    def test_every_hold_denies_because_there_is_no_conditional_exception(self, text):
+        """A conditional ``("wait", "for")`` exception was tried and removed.
 
-        A missed denial word is recoverable: the write still needs a nonce, so
-        the owner can simply not say it. A wrong EXCEPTION is not — it means the
-        owner said no and the write went, which they cannot undo by declining to
-        speak, because they already spoke and it did not count.
+        It failed BOTH ways: "wait for those/these/mine/both/everything"
+        APPROVED (holds — the write went out), while "wait for that build"
+        DENIED (a real condition). The comment claimed a determiner/noun test
+        and the code was a hold-word denylist, three lines below a comment
+        saying denylists were the thing being avoided.
 
-        So "wait for the tests" may suppress and **"wait for it" may not** — it
-        is an idiom meaning exactly "hold on". Measured: it approved before the
-        conditional rule landed.
+        And inverting it does not rescue it: *"wait for a second"* (a hold) and
+        *"wait for a build"* (a condition) are structurally identical, so no
+        structural test separates them, and the only remaining instrument would
+        be a list of time-unit nouns whose incompleteness FAILS OPEN.
         """
         assert confirm.classify(text, "tango") == confirm.DENIED, text
 
@@ -367,36 +373,58 @@ class TestNonceGrammar:
         "text",
         [
             "confirm tango, wait for the tests to finish",
-            "confirm tango, wait for the deploy window",
             "confirm tango, wait until Monday",
-            "confirm tango, wait for CI",
+            "confirm tango, wait for that build",
         ],
     )
-    def test_a_real_condition_still_suppresses(self, text):
-        """The other half. A determiner or noun after "wait for" is a condition;
-        a bare deictic is holding. The instrument is that test rather than an
-        idiom denylist, because a denylist here would be the same unbounded
-        shape the filler list was."""
-        assert confirm.classify(text, "tango") == confirm.APPROVED, text
+    def test_a_real_condition_also_denies_and_that_cost_is_accepted(self, text):
+        """The price of the above, asserted so nobody "fixes" it by accident.
 
-    def test_the_post_approval_scan_uses_the_same_idiom_rule(self):
+        These are genuine approvals-with-a-condition and they now deny. The
+        owner re-proposes; nothing is lost but a turn. That is the recoverable
+        direction, and it is the whole reason the exception was dropped rather
+        than widened.
+        """
+        assert confirm.classify(text, "tango") == confirm.DENIED, text
+
+    def test_the_post_approval_scan_uses_the_same_rule(self):
         """``carries_denial`` is a second entry point into the grammar, so the
         rule has to hold there too — an exception that only applied on one path
         would be a hole with a longer name."""
-        assert confirm.carries_denial("wait for it") is True
-        assert confirm.carries_denial("hold on a second") is True
-        assert confirm.carries_denial("wait for the tests to finish") is False
-        assert confirm.carries_denial("don't forget the branch") is False
+        for hold in ("wait for it", "wait for those", "hold on a second", "no"):
+            assert confirm.carries_denial(hold) is True, hold
+        for fine in ("don't forget the branch", "not urgent", "on hold"):
+            assert confirm.carries_denial(fine) is False, fine
 
-    def test_exceptions_are_deliberately_few(self):
-        """The bar, asserted as a number.
+    def test_no_enumeration_sits_on_the_side_where_being_wrong_writes(self):
+        """The property, asserted instead of the cardinality.
 
-        Every exception is a place a denial can be suppressed, so the set is
-        kept small on purpose. Growing it is allowed; growing it without
-        noticing is what this catches.
+        Counting exceptions does not bound the risk: the old design had 3
+        conditional exceptions and the danger lived in a 17-entry hold-word
+        list the count never covered. What bounds the risk is that **every
+        surviving exception is a CLOSED phrase, not an open class** — so its
+        incompleteness cannot fail open, because there is no next word to have
+        missed.
+
+        The rule: when a set must be enumerated, enumerate the side whose
+        incompleteness is safe.
         """
-        assert len(confirm._DENIAL_EXCEPTIONS) == 1
-        assert len(confirm._CONDITIONAL_DENIAL_EXCEPTIONS) == 3
+        # The fail-open enumeration is gone entirely, not shortened.
+        assert not hasattr(confirm, "_BARE_DEICTICS")
+        assert not hasattr(confirm, "_CONDITIONAL_DENIAL_EXCEPTIONS")
+
+        # What remains is two closed phrases, spelled out so any change to them
+        # shows up in this test's own diff.
+        assert confirm._DENIAL_EXCEPTIONS == frozenset({("dont", "forget")})
+        assert confirm._DENIAL_BIGRAM_EXCEPTIONS == frozenset(
+            {("do", "not", "forget")}
+        )
+        # Each must be anchored on a real denial trigger, or it suppresses
+        # nothing and is dead weight pretending to be policy.
+        for first, _ in confirm._DENIAL_EXCEPTIONS:
+            assert first in confirm._DENIAL_WORDS, first
+        for first, second, _third in confirm._DENIAL_BIGRAM_EXCEPTIONS:
+            assert (first, second) in confirm._DENIAL_BIGRAMS
 
     def test_bigram_order_is_what_separates_the_two_measured_cases(self):
         """"hold on" denies; "on hold" does not.
