@@ -14,7 +14,6 @@ Two layers deliberately:
 """
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -108,7 +107,7 @@ class TestParseUnattendedAllow:
         assert grants == {"a.b": []}
         assert errors
 
-    def test_MALFORMED_SCOPE_DOES_NOT_FALL_THROUGH_TO_THE_UNSCOPED_DEFAULT(self, monkeypatch):
+    def test_malformed_scope_does_not_fall_through_to_the_unscoped_default(self, monkeypatch):
         """The sharpest failure mode in this feature, found by the acceptance
         matrix rather than by reasoning.
 
@@ -348,7 +347,7 @@ class TestGrantDecision:
         )
         assert ok, why
 
-    def test_out_of_scope_REFUSED(self, store):
+    def test_out_of_scope_refused(self, store):
         """The companion every scoped grant needs. Same grant, same command —
         only the directory differs."""
         _, other, scope = store
@@ -358,7 +357,7 @@ class TestGrantDecision:
         assert not ok
         assert str(other) in why and scope in why
 
-    def test_mixed_in_and_out_of_scope_is_REFUSED(self, store):
+    def test_mixed_in_and_out_of_scope_is_refused(self, store):
         """`cd <in-scope> && git -C <out-of-scope> commit` — ALL-paths
         semantics. A "some in-scope path appears" check passes this."""
         s, other, scope = store
@@ -369,7 +368,7 @@ class TestGrantDecision:
         assert not ok
         assert str(other) in why
 
-    def test_in_scope_git_dir_with_out_of_scope_work_tree_is_REFUSED(self, store):
+    def test_in_scope_git_dir_with_out_of_scope_work_tree_is_refused(self, store):
         """Allowed today by construction: the in-scope selector satisfies a
         naive check while the out-of-scope one does the actual work."""
         s, other, scope = store
@@ -380,7 +379,7 @@ class TestGrantDecision:
         assert not ok
         assert str(other) in why
 
-    def test_traversal_out_of_scope_is_REFUSED(self, store):
+    def test_traversal_out_of_scope_is_refused(self, store):
         s, _, scope = store
         ok, why = unattended_grant_allows(
             "git.commit", f"git -C {s}/../../.. commit -m x",
@@ -388,7 +387,7 @@ class TestGrantDecision:
         )
         assert not ok
 
-    def test_REAL_symlink_out_of_the_scope_dir_is_REFUSED(self, store):
+    def test_real_symlink_out_of_the_scope_dir_is_refused(self, store):
         """Not a string — an actual symlink on disk. The grantee can write
         inside the scope (`ln -s`, `mkdir`, `git init` are all allowed
         unattended), so a textual scope over a writable dir is one symlink from
@@ -404,7 +403,7 @@ class TestGrantDecision:
         assert not ok, "a symlink out of the scope dir must not be in scope"
         assert str(other) in why
 
-    def test_symlinked_scope_ROOT_still_admits_its_own_contents(self, tmp_path):
+    def test_symlinked_scope_root_still_admits_its_own_contents(self, tmp_path):
         """The other direction: resolving must not break a scope whose root is
         itself reached through a symlink."""
         real = tmp_path / "real" / "projects" / "p" / "memory"
@@ -418,7 +417,7 @@ class TestGrantDecision:
         )
         assert ok, why
 
-    def test_unresolvable_target_is_REFUSED_with_the_scope_named(self, store):
+    def test_unresolvable_target_is_refused_with_the_scope_named(self, store):
         s, _, scope = store
         ok, why = unattended_grant_allows(
             "git.commit", "sh -c 'git commit -m x'",
@@ -525,7 +524,7 @@ class TestAgainstBundledRules:
         assert not ok
         assert str(other) in why
 
-    def test_ACTING_ON_A_REPO_OUTSIDE_THE_SCOPE_IS_REFUSED_IN_EVERY_SPELLING(
+    def test_acting_on_a_repo_outside_the_scope_is_refused_in_every_spelling(
         self, bundled_config, store
     ):
         """THE OPERATION, with spellings as cases underneath it.
@@ -598,7 +597,7 @@ class TestAgainstBundledRules:
         # And the whole corpus must not be vacuous.
         assert sum(1 for _, reaches in spellings if reaches) >= 6
 
-    def test_scoped_grant_over_a_repo_SUBDIRECTORY_does_not_leak_to_the_repo(self, tmp_path):
+    def test_scoped_grant_over_a_repo_subdirectory_does_not_leak_to_the_repo(self, tmp_path):
         """git resolves its repo by walking UP, so the directory a command runs
         in is not the repo it writes to. Scope `<repo>/inner` must not grant
         over `<repo>` — the memory stores are safe today only because they
@@ -614,7 +613,7 @@ class TestAgainstBundledRules:
         assert not ok, "the enclosing repo root must be in scope too"
         assert str(repo) in why
 
-    def test_scope_at_the_repo_ROOT_still_works(self, tmp_path):
+    def test_scope_at_the_repo_root_still_works(self, tmp_path):
         """The companion: the root-scoped case must not be broken by the walk-up."""
         repo = tmp_path / "outer"
         repo.mkdir()
