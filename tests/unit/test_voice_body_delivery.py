@@ -184,6 +184,35 @@ class TestTheBodySurvivesTheRealPastePath:
         rows = -(-len(message.render()) // 80)
         assert rows < session_ready.VERIFY_SCROLLBACK_LINES
 
+    def test_the_worst_case_rendered_line_stays_under_the_measured_boundary(self):
+        """Asserted against the LIVE measurement, not against a guess.
+
+        ``MEASURED_STUCK_LIMIT_CHARS`` came out of ``tools/voice_heal_probe.py``
+        pasting into a real Claude Code pane: 520 hits the stuck test, 540 does
+        not (the box starts windowing). Above that the #689 heal never fires and
+        the message wedges permanently.
+
+        The worst case is a maxed-out body plus the longest sender name in the
+        wild — a worktree session, which nests.
+        """
+        long_sender = "agentwire-dev-voice-confirm-spine"
+        body = confirm.render_body("x" * 5000, "y" * 5000, "a1b2c3")
+        worst = inbox.Message(
+            id="1700000000000000000-abc123",
+            sender=long_sender,
+            to="orchestrator",
+            kind=write_tools.WRITE_KIND,
+            text=body,
+            ts=1700000000000,
+        ).render()
+        assert len(worst) <= confirm.MEASURED_STUCK_LIMIT_CHARS, (
+            f"worst-case rendered line is {len(worst)} chars against a measured "
+            f"boundary of {confirm.MEASURED_STUCK_LIMIT_CHARS}"
+        )
+        # And keep real margin: the measurement is pane-dependent, so a shorter
+        # pane windows sooner than the 80x24 it was taken at.
+        assert len(worst) <= confirm.MEASURED_STUCK_LIMIT_CHARS * 0.8
+
     def test_the_paste_path_would_not_submit_early(self, worst_case_body):
         """Bracketed paste, ``enter=False``. Asserted so a regression in the
         paste primitive shows up here rather than as a corrupted write."""

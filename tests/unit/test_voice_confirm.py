@@ -580,6 +580,48 @@ class TestArgvFreezing:
         assert result["success"] is True
         assert "victim-session" not in " ".join(runner.calls[0])
 
+    def test_exactly_one_field_completes_at_confirm_and_it_is_the_utterance(
+        self, convo, runner
+    ):
+        """The precise shape of guarantee (a), enforced rather than described.
+
+        Frozen at PROPOSE: the command, ``--to``, ``--from``, ``--kind``, the
+        instruction, the proposal id and the nonce. Completed at CONFIRM:
+        exactly one thing — the verbatim utterance inside the body — and it is
+        read from the transcript ring, whose only writer is
+        ``BuddyBridge.utterance`` (``POST /utterance``). No tool writes it.
+
+        If this test ever has to be relaxed, §3.7's honest limit must be
+        NARROWED to match, not qualified.
+        """
+        proposal = convo.announced_proposal(
+            session="orchestrator", instruction="restart the portal"
+        )
+        # What the argv would be for two DIFFERENT authorizing utterances.
+        first = proposal.build_argv("confirm tango")
+        second = proposal.build_argv("something else entirely")
+
+        # Everything but the body element is byte-identical.
+        assert first[:-1] == second[:-1] == list(proposal.argv_prefix)
+        # And the body differs only in the quoted `said:` clause.
+        assert first[-1].split("┃ said:")[0] == second[-1].split("┃ said:")[0]
+        assert first[-1].rsplit("┃", 1)[1] == second[-1].rsplit("┃", 1)[1]
+
+    def test_no_tool_can_write_into_the_transcript_ring(self, convo, runner, monkeypatch):
+        """The other half of the claim: the conversational model's only
+        confirm-time input is a token, and nothing it can call reaches the ring.
+        """
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
+        before = [(u.item_id, u.text) for u in convo.ring.snapshot()]
+        for name, args in (
+            ("propose_session_message", {"session": "orchestrator", "message": "hi"}),
+            ("send_session_message", {"confirm_token": "nope"}),
+            ("cancel_session_message", {"confirm_token": "nope"}),
+            ("fleet_sessions", {}),
+        ):
+            tools.dispatch(name, args, "buddy", convo.spine)
+        assert [(u.item_id, u.text) for u in convo.ring.snapshot()] == before
+
     def test_the_only_confirm_time_addition_is_machine_derived(self, convo, runner):
         proposal = convo.announced_proposal(instruction="restart the portal")
         convo.approve(proposal)
@@ -977,6 +1019,34 @@ class TestWriteToolSurface:
         assert result["success"] is False
         assert convo.spine.confirm(proposal.token).reason == "no_proposal"
         assert runner.calls == []
+
+    def test_the_scripted_text_matches_the_word_alphabet(self, convo, runner, live):
+        """Scripted instructions are the MECHANISM, so their content is not
+        cosmetic — a wrong script is the mechanism working as designed with the
+        wrong text.
+
+        This carried "say the two digits separately" long after the alphabet
+        became words, and survived precisely because it lives in a prompt string
+        no test exercised. Now one does.
+        """
+        result = write_tools.propose_session_message(
+            {"session": "orchestrator", "message": "restart it", "_buddy": "buddy"},
+            convo.spine,
+        )
+        scripted = result["say"].lower()
+        for stale in ("digit", "number", "two words", "spell it out", "separately"):
+            assert stale not in scripted.replace("do not spell it out", ""), stale
+        assert result["confirm_phrase"] == f"confirm {result['confirm_phrase'].split()[1]}"
+        assert result["confirm_phrase"].split()[1] in confirm.NONCE_WORDS
+        assert result["confirm_phrase"] in result["say"]
+
+    def test_the_persona_has_no_digit_era_phrasing(self):
+        from agentwire.voice_layer import instructions
+
+        text = instructions.build_instructions().lower()
+        assert "digits" not in text
+        assert "confirm four seven" not in text
+        assert "confirm tango" in text, "the example must show the real alphabet"
 
     def test_two_live_proposals_never_share_a_nonce(self, convo):
         """The two-proposal closure holds ONLY under uniqueness, and a

@@ -126,11 +126,18 @@ def propose_session_message(args: dict, spine) -> dict:
         # speaks this, which is what makes "the approval postdates the proposal"
         # mean "after the owner heard it".
         "anchor_proposal_id": proposal.id,
+        # Scripted text, so its CONTENT is the mechanism. A stale word here is
+        # not cosmetic — it is the scripted-instructions mechanism working
+        # exactly as designed, with the wrong script. (This string carried
+        # "say the two digits separately" from the digit-nonce design long
+        # after the alphabet became words, because it lives in a prompt string
+        # rather than in logic any test exercised.)
         "say": (
             f"Tell the owner plainly what you are about to send — the actual words, "
             f"'{instruction}', and that it is going to {session} — then say: "
-            f"to approve, say {phrase}. Say the two digits separately. Do not call "
-            f"send_session_message until you have said this and they have answered."
+            f"to approve, say {phrase}. Say the code word clearly, as a word; "
+            f"do not spell it out. Do not call send_session_message until you "
+            f"have said this and they have answered."
         ),
     }
 
