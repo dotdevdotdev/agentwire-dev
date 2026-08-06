@@ -161,6 +161,44 @@ class TestTheFallbackIsArmedNotTriggered:
         """)
         assert report["spoken"] == ["I didn't hear the confirmation phrase."]
 
+    def test_the_not_announced_recursion_cannot_go_silent(self):
+        """A ``not_announced`` that fails to announce is the recursion §3.4
+        exists to prevent. That is the one place the timer-armed fallback has to
+        be unconditional.
+
+        This outcome fires precisely WHILE the buddy's proposal turn is still in
+        flight — i.e. with ``responseActive`` true, the branch that used to
+        swallow announcements. If "I haven't finished saying it yet" is itself
+        swallowed by the response it describes, the owner hears nothing, waits,
+        and both parties wait for each other.
+
+        So: induce the exact state, drop the create server-side, and require
+        speech anyway.
+        """
+        report = run_announcer("""
+            announcer.onResponseCreated();   // the proposal turn is speaking
+            announcer.announce("Hang on — I haven't finished telling you what I'd send yet.");
+            // Server rejects the overlapping create. Client sees success.
+            fireTimers();
+        """)
+        assert len(cancels(report)) == 1
+        assert len(creates(report)) == 1
+        assert report["spoken"] == [
+            "Hang on — I haven't finished telling you what I'd send yet."
+        ]
+
+    def test_no_reason_is_special_cased_out_of_the_fallback(self):
+        """Every outcome the spine can produce arms the timer identically."""
+        from agentwire.voice_layer import confirm as confirm_mod
+
+        for reason, line in confirm_mod.SPOKEN.items():
+            report = run_announcer(f"""
+                announcer.onResponseCreated();
+                announcer.announce({json.dumps(line)});
+                fireTimers();
+            """)
+            assert report["spoken"] == [line], reason
+
     def test_a_response_that_says_something_else_does_not_disarm_it(self):
         report = run_announcer("""
             announcer.announce("That was a different code word, ask me again.");

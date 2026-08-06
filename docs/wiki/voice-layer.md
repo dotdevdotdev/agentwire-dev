@@ -518,6 +518,68 @@ The verbatim authorizing utterance rides along free, because the gate already ha
 to capture it. A recipient can always answer "did a human really say this, and in
 what words", and can see it when the buddy mis-paraphrased.
 
+### Two ways to draw a unique nonce, and why the obvious one is wrong
+
+Uniqueness among live proposals is what closes "one approval, two proposals".
+There are two ways to get it and they look equivalent:
+
+```python
+# The obvious one. It is wrong.
+nonce = choice(WORDS)
+for _ in range(tries):
+    if nonce not in taken: break
+    nonce = choice(WORDS)
+else:
+    raise
+```
+
+With **k of n** words taken, that fails spuriously with probability
+`(k/n) ** tries` — it refuses a legitimate proposal while a nonce is still
+free. At 19 of 20 taken and 64 tries that is **3.8%**: rare enough to read as a
+flake, frequent enough to happen. It shipped here, and it surfaced exactly that
+way — the exhaustion test passed on its own and failed once in the full suite.
+
+Draw from the free set instead. Then exhaustion is a hard error and
+near-exhaustion is a non-event:
+
+```python
+free = [w for w in WORDS if w not in taken]
+if not free:
+    raise RuntimeError("no free nonce — reusing one would let one approval satisfy two")
+nonce = choice(free)
+```
+
+`confirm.mint_nonce(taken)` is the only minting path, for the same reason: a
+second, subtly-different way to do this sitting next to the right one is how
+the wrong one gets called later.
+
+### The body cap is measured, not chosen
+
+`tools/voice_heal_probe.py` pastes a real rendered message into a real Claude
+Code pane and runs the actual heal. At 80x24, by rendered-line length:
+
+| Rendered line | Box holds | `stuck` test |
+|---|---|---|
+| 470 | 482 | hit ✓ |
+| 500 | 512 | hit ✓ |
+| 520 | 532 | hit ✓ — last passing |
+| 540 | 480 | **miss** — the box starts windowing |
+| 880 | 16 | **miss** — `[Pasted text …]` chip |
+
+**There are two failure regimes above the boundary, not one.** The box windows
+first, and only much later collapses to the chip — so "it isn't a chip" is not
+evidence the heal will fire. `MAX_BODY_CHARS = 300` puts the worst case
+(maxed body + the longest worktree sender name) near 385 against a measured
+520.
+
+The measurement is **pane-dependent**: the box shows a bounded number of rows,
+so a shorter pane windows sooner. Do not spend the headroom without
+re-measuring at the smallest pane you care about.
+
+The round trip itself is closed, live: paste → text lands → `stuck` hits →
+`finish_submit` submits → the dedup finds it on scrollback. `VERIFY_SCROLLBACK_LINES
+= 200` is not the binding constraint at these lengths (520 chars is ~7 rows).
+
 **One line, capped. Newlines are unsafe**, and the reason is not the one you
 expect. The paste is fine (bracketed paste, `enter=False`) and the #621 dedup is
 fine (it whitespace-normalizes both sides). **The #689 heal is what breaks:** a

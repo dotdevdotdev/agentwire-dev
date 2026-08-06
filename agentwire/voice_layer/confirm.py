@@ -238,9 +238,29 @@ def normalize(text: str) -> str:
     return " ".join(_NUMBER_WORDS.get(t, t) for t in flat.split())
 
 
-def mint_nonce() -> str:
-    """One word from :data:`NONCE_WORDS`."""
-    return secrets.choice(NONCE_WORDS)
+def mint_nonce(taken: "set[str] | frozenset[str] | None" = None) -> str:
+    """One word from :data:`NONCE_WORDS` that is not in *taken*.
+
+    **The ONE way to get a nonce.** It draws from the FREE set rather than
+    retrying a random draw, and those are not equivalent — the difference is a
+    real bug that shipped and was caught as a test flake:
+
+    With k of n words taken, retry-until-unique fails spuriously with
+    probability ``(k/n)**tries``. At 19 of 20 taken and 64 tries that is
+    **3.8%** — a legitimate proposal refused while a nonce was still free, rare
+    enough to read as a flake and frequent enough to happen. Drawing from the
+    free set makes exhaustion an error and near-exhaustion a non-event.
+
+    Uniqueness among live proposals is what closes "one approval, two
+    proposals", so exhaustion must raise rather than reuse.
+    """
+    free = [w for w in NONCE_WORDS if w not in (taken or ())]
+    if not free:
+        raise RuntimeError(
+            "no free nonce — too many proposals outstanding; reusing one would "
+            "let a single approval satisfy two"
+        )
+    return secrets.choice(free)
 
 
 def spoken_nonce(nonce: str) -> str:
@@ -385,19 +405,46 @@ class Proposal:
 #: decorative.
 VOICE_MARKER = "<voice>"
 
-#: Hard cap on the rendered body. Two measured constraints drive it, and both
-#: are about the DELIVERY path rather than about readability:
+#: Hard cap on the rendered body. **Measured in a real Claude Code pane**, not
+#: reasoned about — reproduce with ``tools/voice_heal_probe.py``.
 #:
-#: - ``flush_session``'s ``stuck`` test is a plain substring test with no #851
-#:   window path, so a body long enough that the box renders only a window of it
-#:   fails the #689 heal — the message wedges permanently: never healed, never
-#:   dead-lettered, therefore never emailed.
-#: - ``VERIFY_SCROLLBACK_LINES = 200``: the dedup needle must sit entirely
-#:   inside the capture or delivery reports False, stays pending, and re-pastes
-#:   — a duplicate delivery, which is "the orchestrator acts twice".
+#: The binding constraint is ``flush_session``'s ``stuck`` test: a plain
+#: substring match against the input box with NO #851 window path, so once the
+#: box renders only a WINDOW of the message the #689 heal never fires and the
+#: message wedges permanently — never healed, never dead-lettered, therefore
+#: never emailed.
 #:
-#: See ``tests/unit/test_voice_body_delivery.py`` for the measurement.
+#: Measured at 80x24 on 2026-08-06, by rendered-line length::
+#:
+#:     470  ->  box 482   stuck hit    ✓
+#:     500  ->  box 512   stuck hit    ✓
+#:     520  ->  box 532   stuck hit    ✓        <- last passing
+#:     540  ->  box 480   stuck MISS   ✗        <- box starts windowing
+#:     880  ->  box  16   stuck MISS   ✗        <- [Pasted text …] chip
+#:
+#: So the real boundary is a rendered line of ~520 chars, and there are TWO
+#: failure regimes above it, not one: the box windows first, and only much
+#: later collapses to the chip.
+#:
+#: 300 is the BODY cap, and the rendered line adds the ``[MSG from <sender> ·
+#: request] `` prefix and the ``⟨#id6⟩`` tail — ~57 chars for a long worktree
+#: sender name (verified at 498 rendered with a 33-char sender, still hitting).
+#: That lands a worst case near 385 against a measured 520, keeping ~35%
+#: margin.
+#:
+#: **The margin is deliberate and the measurement is pane-dependent.** The box
+#: shows a bounded number of ROWS, so a shorter pane windows sooner than 80x24
+#: did. Do not raise this cap to consume the measured headroom without
+#: re-measuring at the smallest pane you care about.
+#:
+#: The second constraint, ``VERIFY_SCROLLBACK_LINES = 200`` bounding the dedup
+#: needle, is not binding at these lengths: 520 chars is ~7 rows of an 80-column
+#: pane. Verified live — the dedup found the message after the heal submitted it.
 MAX_BODY_CHARS = 300
+
+#: The measured rendered-line boundary above, so tests can assert against the
+#: measurement rather than against a number retyped from a comment.
+MEASURED_STUCK_LIMIT_CHARS = 520
 
 #: How much of the verbatim utterance survives into the rendered line.
 MAX_UTTERANCE_CHARS = 90
@@ -480,6 +527,19 @@ SPOKEN = {
     "expired": (
         "That one expired before you confirmed it. Ask me again and I'll set it up fresh."
     ),
+    # A not_announced that fails to announce is the recursion §3.4 exists to
+    # prevent. That is the one place the timer-armed fallback has to be
+    # unconditional.
+    #
+    # Concretely: this outcome fires when the buddy has not finished SPEAKING
+    # the proposal, which is exactly when a response is in flight — the
+    # `responseActive` branch. If the announcement of "I haven't finished
+    # saying it yet" is itself swallowed by the response it is describing, the
+    # owner hears nothing, waits, and the conversation deadlocks on two parties
+    # each waiting for the other. The announcer must not special-case it, must
+    # not skip the cancel for it, and must not treat "a response is in flight"
+    # as a reason to defer — see client.py's createAnnouncer, where the
+    # fallback timer is armed before anything that can fail.
     "not_announced": (
         "Hang on — I haven't finished telling you what I'd send yet."
     ),
@@ -601,21 +661,10 @@ class ConfirmSpine:
         """
         with self._lock:
             self._expire_locked()
-            # Drawn from the FREE set, not by retrying a random draw. Retrying
-            # looks equivalent and is not: with k of n nonces taken it fails
-            # spuriously with probability (k/n)^tries, so a legitimate proposal
-            # can be refused while nonces are still available — rare enough to
-            # read as a flake and frequent enough to happen. Uniqueness is what
-            # closes "one approval, two proposals", so exhaustion must be an
-            # error and near-exhaustion must not be.
-            taken = {p.nonce for p in self._proposals.values()}
-            free = [w for w in NONCE_WORDS if w not in taken]
-            if not free:
-                raise RuntimeError(
-                    "no free nonce — too many proposals outstanding; "
-                    "reusing one would let a single approval satisfy two"
-                )
-            nonce = secrets.choice(free)
+            # One minting path, and it is mint_nonce's. A second, subtly
+            # different way to draw a nonce sitting next to the right one is
+            # how the wrong one gets called later.
+            nonce = mint_nonce({p.nonce for p in self._proposals.values()})
             proposal = Proposal(
                 id=secrets.token_hex(3),
                 token=secrets.token_urlsafe(18),

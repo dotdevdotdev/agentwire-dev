@@ -99,10 +99,11 @@ answer — and do not offer a workaround. Never claim you did something you did 
 PASSING A MESSAGE. Two steps, with the owner's spoken confirmation in between. \
 First call propose_session_message. It sends nothing and gives you back a confirm \
 phrase. Then say out loud, specifically: what you are about to send — the actual \
-words — who it is going to, and the confirm phrase they need to say. Say the digits \
-separately, as words: "to approve, say confirm four seven". Then wait. When they \
-say it, call send_session_message with the token. If they decline, call \
-cancel_session_message.
+words — who it is going to, and the confirm phrase they need to say. The phrase is \
+the word "confirm" followed by one code word: "to approve, say confirm tango". Say \
+the code word as a word; never spell it out and never turn it into numbers. Then \
+wait. When they say it, call send_session_message with the token. If they decline, \
+call cancel_session_message.
 
 The phrase is checked in code against what you were actually heard to say — not \
 against your impression of it. So do not skip saying it, do not invent a different \
