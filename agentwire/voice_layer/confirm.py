@@ -4,8 +4,11 @@
     conversational model invented**, which is the stated threat. It does **not**
     cover every mis-transcription — a transcriber hallucination or an
     approval-shaped utterance meant for someone else is a real residual risk
-    that the nonce narrows but does not eliminate. **A passed gate means the
-    message was queued, not delivered, and not acted on.** The ``said:`` clause
+    that the nonce narrows but does not eliminate. **A spoken retraction is caught
+    only when it uses a word or phrase the grammar knows** — "let's not", "on
+    second thought" and "I changed my mind" are not caught, and no word list
+    reaches them. **A passed gate means the message was queued, not delivered,
+    and not acted on.** The ``said:`` clause
     is evidence of what was **heard**, not proof of what was **said** — it is
     exactly as trustworthy as the local browser page, which holds the bridge
     token and can POST to ``/utterance``. It is **not** a security boundary
@@ -29,6 +32,15 @@ recipient reading ``said:`` will treat it as what the human said. Anything
 resident in the bridge's browser page holds the per-run bearer token and can
 POST arbitrary text to ``/utterance``, so the evidence property is weaker than
 a reader would otherwise assume.
+
+The retraction clause is a stated residual rather than a to-do. Chasing "let's
+not" / "on second thought" / "I changed my mind" is how this becomes the
+unbounded denylist the filler list already taught us to reject — the phrasings
+are open-ended and the list would never be done. What bounds the damage instead
+is that a retraction the grammar misses does NOT approve anything by itself: the
+write still needs the nonce, so the owner can simply not say it. The residual is
+"you said something meaning stop AND then said the nonce anyway", which is a
+narrower and much stranger thing to do than the clause's plain reading suggests.
 
 Rationale, deliberately kept OUT of the quotable sentence above — stacking
 mitigations into an honest limit is how it gets rounded back up: the residual is
@@ -250,18 +262,49 @@ _NUMBER_WORDS = {
 #: into "You said no". Those are recovered as ORDERED BIGRAMS below.
 _DENIAL_WORDS = frozenset(
     {"no", "nope", "dont", "stop", "cancel", "wait", "nevermind", "abort",
-     "scratch", "undo", "cancelled", "canceled"}
+     "scratch", "undo"}
 )
+
+#: Disfluencies that may be interleaved anywhere inside a retraction phrase.
+#:
+#: "hold, uh, on" and "do, um, not" are how people ACTUALLY speak at the exact
+#: moment this grammar has to work — a filler mid-retraction is the sound of
+#: someone changing their mind. Matching adjacent tokens only let both APPROVE
+#: the write: the same inversion as the apostrophe defect, arriving through
+#: disfluency instead of punctuation.
+#:
+#: Enumerating these is safe under the closed-phrase rule for a reason worth
+#: stating: skipping a filler can only ever make a denial EASIER to match, never
+#: harder. An unlisted filler fails CLOSED — the phrase simply does not match and
+#: the utterance denies on its own or is refused as not-the-nonce. This is an
+#: enumeration on the safe side.
+_FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "like", "you", "know"})
+
 
 #: Ordered pairs. Order is the whole point: **"hold on" denies, "on hold" does
 #: not** — which is the precise instrument for "confirm tango, the worker is on
 #: hold", a measured false positive from the previous round. Bare-word matching
 #: cannot express that distinction, which is why dropping the bare words was
 #: right and dropping the retractions with them was not.
+#: **Every entry is audited against the closed-phrase test**, and three failed
+#: it — each measured DENYING a real approval:
+#:
+#: - ``("not", "that")`` — "it is not that urgent" DENIED while "it is not
+#:   urgent" approved. It flipped on one added word, regressing the exact
+#:   false-positive class the bare-word tightening fixed. "not that" is not a
+#:   closed phrase, it is a fragment of open-ended speech.
+#: - ``("back", "off")`` — "back off the throttle after" DENIED. An
+#:   instruction, not a retraction.
+#: - bare ``cancelled``/``canceled``, removed from the word list above — "the
+#:   other task cancelled" DENIED. Ordinary past tense ABOUT SOMETHING ELSE.
+#:
+#: ``("scrap", "that")`` and ``("hold", "off")`` are added: closed retraction
+#: phrases one word from entries already here, so they were plain misses and
+#: cost nothing.
 _DENIAL_BIGRAMS = frozenset(
     {("do", "not"), ("never", "mind"), ("hold", "on"), ("hang", "on"),
-     ("forget", "it"), ("forget", "that"), ("not", "that"), ("back", "off"),
-     ("belay", "that")}
+     ("hold", "off"), ("forget", "it"), ("forget", "that"),
+     ("scrap", "that"), ("belay", "that")}
 )
 
 #: Pairs that SUPPRESS a single-word denial.
@@ -277,8 +320,18 @@ _DENIAL_BIGRAMS = frozenset(
 #:
 #: So: for the word list, prefer tight; for exceptions, **prefer few**.
 #:
-#: Unconditional. "don't forget the other branch" has no reading in which a
-#: person means "cancel" — the phrase is closed and the exception is exact.
+#: Unconditional, and safe for a STRUCTURAL reason rather than a semantic one.
+#:
+#: The intuition is "don't forget X has no reading meaning cancel" — arguable,
+#: and it survived eleven adversarial phrasings. But the checkable reason is
+#: better: **this exception suppresses exactly ONE token** — the ``dont`` at
+#: that index — and cannot mask a denial signal anywhere else, because the word
+#: loop continues past it and the bigram loop has already run. So its
+#: incompleteness has nothing to be incomplete ABOUT.
+#:
+#: That is the form a future exception should be argued in. Its one known miss,
+#: "don't forget, on second thought skip it", contains no grammar word at all
+#: and is the stated §3.7 residual, not a gap in this entry.
 _DENIAL_EXCEPTIONS = frozenset({("dont", "forget")})
 
 #: Trigrams that suppress a BIGRAM denial. "do not forget the other branch" is
@@ -320,31 +373,57 @@ _DENIAL_BIGRAM_EXCEPTIONS = frozenset({("do", "not", "forget")})
 #: The problem was never enumeration as such. It was that this enumeration sat
 #: on the side where being wrong WRITES.
 #:
-#: So ``wait`` denies unconditionally. The cost is real and accepted: "confirm
-#: tango, wait for the tests to finish" now denies, and the owner re-proposes.
-#: That is the recoverable direction. Do not reintroduce a conditional exception
-#: without a test that separates "wait for a second" from "wait for a build" —
-#: and if you find one, it is a genuine discovery, not a list.
+#: So ``wait`` denies unconditionally — and that is **correct behaviour, not a
+#: tolerated false reject.** The reason is semantic rather than budgetary: the
+#: write is ``msg send`` and it fires IMMEDIATELY. The buddy has no defer
+#: mechanism at all. So approving "confirm tango, wait until you hear back from
+#: the reviewer" would SEND NOW while the owner believes it is being held — a
+#: silent divergence between what they said and what happened, which is strictly
+#: worse than a re-propose. A "wait" clause attached to an approval is
+#: **semantically unhonorable**, and the correct home for it is the INSTRUCTION,
+#: frozen at propose ("tell the reviewer to wait until X"), where it is content
+#: for the recipient rather than a condition on the send.
+#:
+#: The cost is also smaller than it looks: matching is on the exact token, so
+#: ``waiting``/``waited``/``awaiting`` never fire. Only the bare imperative does.
+#:
+#: This holds **only while recovery is cheap** — see the newest-first binding in
+#: :meth:`ConfirmSpine._judge`. When recovery was broken, this rule composed with
+#: it into a dead proposal, and the ``denied`` line promising "say the phrase
+#: again" became false.
+#:
+#: Do not reintroduce a conditional exception without a test that separates
+#: "wait for a second" from "wait for a build" — and if you find one, it is a
+#: genuine discovery, not a list.
 
 
 def _denial_tokens(tokens: "list[str]") -> bool:
-    """Does this normalized token sequence contain a retraction?"""
-    for index in range(len(tokens) - 1):
-        pair = (tokens[index], tokens[index + 1])
-        if pair not in _DENIAL_BIGRAMS:
-            continue
-        third = tokens[index + 2] if index + 2 < len(tokens) else ""
-        if (*pair, third) in _DENIAL_BIGRAM_EXCEPTIONS:
-            continue
-        return True
-    for index, token in enumerate(tokens):
-        if token not in _DENIAL_WORDS:
-            continue
-        following = tokens[index + 1] if index + 1 < len(tokens) else ""
-        if (token, following) in _DENIAL_EXCEPTIONS:
-            continue
-        return True
-    return False
+    """Does this normalized token sequence contain a retraction?
+
+    Fillers are removed before matching rather than tolerated at each site: a
+    retraction split by a disfluency ("hold, uh, on") is the same retraction,
+    and handling that per-rule is how one of the rules ends up forgetting.
+    """
+    words = [t for t in tokens if t not in _FILLERS]
+
+    # Exceptions are evaluated FIRST and mask the span they cover. Checking
+    # them per-rule at match time let a later bigram fire before the exception
+    # for an earlier one was consulted — "dont forget that branch" denied via
+    # ("forget","that"), so the exception never protected the phrase it exists
+    # for. Masking makes the exception win over its whole clause regardless of
+    # what else matches downstream.
+    masked = list(words)
+    for index in range(len(masked)):
+        pair = tuple(masked[index:index + 2])
+        trio = tuple(masked[index:index + 3])
+        if pair in _DENIAL_EXCEPTIONS or trio in _DENIAL_BIGRAM_EXCEPTIONS:
+            for offset in range(index, min(index + len(trio or pair), len(masked))):
+                masked[offset] = ""
+
+    for index in range(len(masked) - 1):
+        if tuple(masked[index:index + 2]) in _DENIAL_BIGRAMS:
+            return True
+    return any(token in _DENIAL_WORDS for token in masked)
 
 
 _CONFIRM_WORDS = ("confirm", "confirmed")
@@ -1010,9 +1089,21 @@ class ConfirmSpine:
             # still to wait, and telling them to repeat would be wrong.
             return Verdict(approved=False, reason="pending_transcript")
 
+        # NEWEST approval first. Binding the OLDEST made a retraction PERMANENT:
+        # "confirm juniper" / "no wait" / "confirm juniper" denied, and stayed
+        # denied for the rest of the 120s TTL. Forward iteration broke on the
+        # first approval, so the post-approval scan started at the OLD one and
+        # the intervening denial sat inside the window forever — a newer, valid
+        # approval could never become the match.
+        #
+        # Newest-first makes the stale denial PREDATE the match, so the existing
+        # strictly-after rule excludes it and changing your mind back costs
+        # exactly one utterance. This also has to be right before any false
+        # reject can honestly be called cheap: "cheap" means recoverable, and
+        # recovery ran through this loop.
         match = None
         wrong_nonce = None
-        for entry in usable:
+        for entry in reversed(usable):
             outcome = classify(entry.text, proposal.nonce)
             if outcome == DENIED:
                 # An explicit take-back wins immediately, and is a DIFFERENT

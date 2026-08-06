@@ -327,9 +327,19 @@ jobs.
 > conversational model invented**, which is the stated threat. It does **not**
 > cover every mis-transcription — a transcriber hallucination or an
 > approval-shaped utterance meant for someone else is a real residual risk that
-> the nonce narrows but does not eliminate. **A passed gate means the message
-> was queued, not delivered, and not acted on.** It is **not** a security
-> boundary against an adversary.
+> the nonce narrows but does not eliminate. **A spoken retraction is caught only
+> when it uses a word or phrase the grammar knows** — "let's not", "on second
+> thought" and "I changed my mind" are not caught, and no word list reaches
+> them. **A passed gate means the message was queued, not delivered, and not
+> acted on.** It is **not** a security boundary against an adversary.
+
+The retraction clause is a **stated residual, not a to-do.** Chasing "let's not"
+/ "on second thought" is how this becomes the unbounded denylist the filler list
+already taught us to reject. What bounds the damage is that a missed retraction
+approves nothing by itself — the write still needs the nonce, so the owner can
+simply not say it. The residual is "said something meaning stop, AND then said
+the nonce anyway", which is narrower and stranger than the clause's plain
+reading suggests.
 
 **Widen this if you learn more; never narrow it.** Do not paraphrase it as "the
 confirm gate protects writes". The "queued, not delivered" clause is here rather
@@ -607,15 +617,39 @@ carries:
 
 Those two sentences are one rule, and the second is the half you need when you
 want to ADD something: the first explains why `_BARE_DEICTICS` had to go, and
-only the second explains why `("dont", "forget")` gets to stay. "Don't forget X"
-has no reading in which a person means "cancel" — the phrase is closed, so there
-is no unlisted variant waiting to approve a retraction. A list of *hold words* is
-an open class and can never earn that.
+only the second explains why `("dont", "forget")` gets to stay.
+
+The intuition is that "don't forget X" has no reading meaning "cancel". That is
+arguable. **The checkable reason is better, and it is the form to argue a new
+exception in:** this exception suppresses *exactly one token* — the `dont` at
+that index — and cannot mask a denial signal anywhere else, because the word
+loop continues past it and the bigram loop has already run. Its incompleteness
+has nothing to be incomplete *about*. A list of *hold words* can never make that
+claim: each entry masks an open-ended class of utterances.
 
 The problem was never enumeration as such. It was that this enumeration sat on
-the side where being wrong **writes**. So the conditional exception is gone:
-`wait` denies unconditionally, *"confirm tango, wait for the tests to finish"*
-denies, and the owner re-proposes.
+the side where being wrong **writes**. So the conditional exception is gone and
+`wait` denies unconditionally.
+
+**And that turned out to be correct behaviour, not a tolerated false reject** —
+for a reason neither the rule nor the cost model reaches. The write is
+`msg send` and it fires **immediately**; the buddy has no defer mechanism at
+all. Approving *"confirm tango, wait until you hear back from the reviewer"*
+would **send now** while the owner believes it is being held — a silent
+divergence between what they said and what happened, strictly worse than a
+re-propose. A "wait" clause attached to an approval is **semantically
+unhonorable**. Its correct home is the *instruction*, frozen at propose ("tell
+the reviewer to wait until X"), where it is content for the recipient rather
+than a condition on the send.
+
+The cost is smaller than it looks, too: matching is on the exact token, so
+`waiting` / `waited` / `awaiting` never fire — only the bare imperative does.
+
+**This is correct only while recovery is cheap.** Composed with a binding bug
+that made retractions permanent, it produced a *dead proposal*: the owner's
+natural recovery — saying the phrase cleanly — failed and kept failing to the
+TTL, and the `denied` line promising "say the phrase again" was thereby false.
+Deliberate denials and cheap recovery are one design, not two.
 
 **Corollary for anything guarding a set like this: assert the property, not the
 cardinality.** Counting the exceptions would not have caught this — the old
