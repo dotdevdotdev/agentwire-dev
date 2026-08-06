@@ -500,8 +500,19 @@ class TestTheAuditLogIsNotThrottled:
         "mcp-tool-damage-control.py",
     ])
     def test_the_hook_logs_before_it_notifies(self, hook):
+        """Anchored on the CALL, not on its argument list.
+
+        The first version of this matched the literal
+        ``_notify_unattended_block(command, reason, rule_id)`` and broke when
+        #917 started passing ``f"{reason} — {why}"`` — a pure rewording that
+        changed nothing about the ordering this test exists to protect. Guard
+        the operation, not the phrasing.
+        """
         src = (HOOKS_DIR / hook).read_text()
-        notify = src.index("_notify_unattended_block(command, reason, rule_id)")
+        calls = [i for i in range(len(src))
+                 if src.startswith("_notify_unattended_block(", i)]
+        assert calls, f"{hook}: no call to _notify_unattended_block"
+        notify = calls[-1]
         # The unattended branch's own log_blocked call, immediately above it.
         log = src.rindex("log_blocked", 0, notify)
         between = src[log:notify]

@@ -1194,6 +1194,24 @@ def command_scope_dirs(
     if pattern and pattern.startswith("ambiguous:"):
         return [], pattern.split(":", 1)[1] or "unverifiable command"
 
+    # Scope asks a DIFFERENT question from concealment, so it owns its own
+    # substitution check rather than borrowing one (#925).
+    #
+    # ``detect_obfuscation`` answers "can I tell what verb this runs?", and
+    # since #925 it answers None for ``git commit -m $(cat /tmp/x)`` — the verb
+    # is literally ``git commit``, and the substitution is an operand. Correct
+    # for that question. But scope asks "which DIRECTORY does this run in?",
+    # and ``git -C $(cat /tmp/x) commit`` shows a substitution can decide that
+    # too. Leaning on the other predicate meant this one silently changed
+    # meaning the moment that one was narrowed.
+    #
+    # So: any substitution anywhere makes the directory unknowable, and scope
+    # refuses rather than guesses — which is #914's whole posture. Keeping the
+    # check here also keeps #917's error text stable and independent of #925's
+    # land order, the same reason scope has its own segment splitter.
+    if _SUBSTITUTION_RE.search(command):
+        return [], "command substitution — execution directory is not statically knowable"
+
     obf = detect_obfuscation(command)
     if obf:
         return [], obf

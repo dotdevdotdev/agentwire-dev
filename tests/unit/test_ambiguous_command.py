@@ -46,6 +46,15 @@ EXPECTED_ANCHORED = 101
 
 AMBIGUOUS = "core.ambiguous-command"
 
+
+def _default_allowed_ids():
+    """Ids carrying a default grant, via the parser.
+
+    Since #914/#917 an entry may be ``{id, paths}`` rather than a bare
+    string, so membership-testing the raw list is only accidentally right.
+    """
+    return set(C.parse_unattended_allow(C.DEFAULT_UNATTENDED_ALLOW)[0])
+
 # Assembled rather than written literally: this file is itself scanned by the
 # hooks it tests, and a literal recursive-delete in the source gets the tooling
 # refused by the rule under test (#915, hit live while writing this).
@@ -125,7 +134,7 @@ class TestConcealmentStillFailsClosed:
         """The tier that actually matters: no human is present to confirm."""
         decision, rule_id = decide(cfg, command)
         if decision == "ask":
-            assert rule_id not in C.DEFAULT_UNATTENDED_ALLOW
+            assert rule_id not in _default_allowed_ids()
 
 
 class TestTheOperandCutWouldHaveBeenBackwards:
@@ -348,7 +357,7 @@ class TestConcealmentOutranksAShadowingAskRule:
         assert rule_id == AMBIGUOUS, (
             f"{command!r} came back as {rule_id!r} — if that id is on the "
             f"unattended allowlist, a concealed verb runs unattended")
-        assert rule_id not in C.DEFAULT_UNATTENDED_ALLOW
+        assert rule_id not in _default_allowed_ids()
 
     def test_a_hard_block_still_outranks_concealment(self, cfg):
         """Block is the MORE specific refusal and keeps its own id.
@@ -499,4 +508,4 @@ class TestNarrowingDidNotWeakenAnythingElse:
         assert decision in ("ask", "block")
         # And unattended, refusal means blocked.
         if decision == "ask":
-            assert decide(cfg, command)[1] not in C.DEFAULT_UNATTENDED_ALLOW
+            assert decide(cfg, command)[1] not in _default_allowed_ids()

@@ -69,20 +69,32 @@ def decide(cfg, command):
     return r["decision"], r.get("id")
 
 
-def unattended_verdict(cfg, command, allow=None):
-    """What an unattended session actually gets: the hook's resolution, in full.
+def default_allowed_ids():
+    """Rule ids carrying a default grant.
 
-    Mirrors the branch in every ``*-damage-control.py`` ``main()`` — a hard
-    block stays blocked; an ``ask`` becomes ``allow`` only if the MATCHED id is
-    on the allowlist, and ``block`` otherwise.
+    Goes through ``parse_unattended_allow`` rather than reading the list
+    directly: since #914/#917 an entry is either a bare id or a ``{id, paths}``
+    dict, so ``id in DEFAULT_UNATTENDED_ALLOW`` is only accidentally correct
+    while every entry happens to be a bare string.
+    """
+    return set(C.parse_unattended_allow(C.DEFAULT_UNATTENDED_ALLOW)[0])
+
+
+def unattended_verdict(cfg, command, cwd="/work/repo"):
+    """What an unattended session actually gets — via the SHIPPING resolver.
+
+    Calls #917's ``resolve_unattended_grants`` / ``unattended_grant_allows``
+    rather than re-implementing "is the id on the list", which stopped being
+    the real rule when grants became path-scoped. A test that models the
+    resolver instead of calling it passes while the resolver disagrees.
     """
     decision, rule_id = decide(cfg, command)
-    if decision == "block":
-        return "block", rule_id
-    if decision == "ask":
-        allowed = C.DEFAULT_UNATTENDED_ALLOW if allow is None else allow
-        return ("allow" if rule_id in allowed else "block"), rule_id
-    return decision, rule_id
+    if decision != "ask":
+        return decision, rule_id
+    grants = C.resolve_unattended_grants(cfg)
+    granted, _why = C.unattended_grant_allows(
+        rule_id, command, grants, cwd, pattern=None)
+    return ("allow" if granted else "block"), rule_id
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +127,7 @@ class TestUvRunIsPermittedUnattended:
         command returns is decided by which is listed first. Listing only one
         makes the permission depend on that ordering.
         """
-        assert UV_IDS <= C.DEFAULT_UNATTENDED_ALLOW
+        assert UV_IDS <= default_allowed_ids()
 
     def test_the_two_ids_really_are_the_same_operation(self, cfg):
         """The premise of the test above, measured rather than asserted."""
@@ -166,7 +178,7 @@ class TestUvRunIsPermittedUnattended:
         """
         ids = {p.get("id") for p in cfg["bashToolPatterns"]
                if isinstance(p, dict) and p.get("id")}
-        missing = sorted(C.DEFAULT_UNATTENDED_ALLOW - ids)
+        missing = sorted(default_allowed_ids() - ids)
         assert not missing, f"allowlisted ids match no rule in the corpus: {missing}"
 
 
@@ -248,7 +260,7 @@ class TestTheAllowlistCannotReachABlockTier:
         """
         by_id = {p["id"]: p for p in cfg["bashToolPatterns"]
                  if isinstance(p, dict) and p.get("id")}
-        for rule_id in sorted(C.DEFAULT_UNATTENDED_ALLOW):
+        for rule_id in sorted(default_allowed_ids()):
             rule = by_id.get(rule_id)
             assert rule is not None
             assert rule.get("ask") or rule.get("bypassable"), (
