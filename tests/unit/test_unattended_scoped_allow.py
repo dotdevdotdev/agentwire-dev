@@ -14,6 +14,7 @@ Two layers deliberately:
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -234,18 +235,29 @@ class TestPathInScope:
 
 class TestGitGlobalDirs:
     @pytest.mark.parametrize("argv,expected", [
-        (["git", "-C", "/r", "commit"], ["/r"]),
-        (["git", "--git-dir=/r/.git", "commit"], ["/r/.git"]),
-        (["git", "--git-dir", "/r/.git", "commit"], ["/r/.git"]),
-        (["git", "--work-tree=/w", "commit"], ["/w"]),
-        (["git", "--work-tree", "/w", "commit"], ["/w"]),
-        (["git", "--git-dir=/r/.git", "--work-tree=/w", "commit"], ["/r/.git", "/w"]),
-        (["git", "-C", "/a", "-C", "/b", "commit"], ["/a", "/b"]),
-        (["git", "commit"], []),
+        (["git", "-C", "/r", "commit"], {"chdir": ["/r"], "git_dir": None, "work_tree": None}),
+        (["git", "--git-dir=/r/.git", "commit"],
+         {"chdir": [], "git_dir": "/r/.git", "work_tree": None}),
+        (["git", "--git-dir", "/r/.git", "commit"],
+         {"chdir": [], "git_dir": "/r/.git", "work_tree": None}),
+        (["git", "--work-tree=/w", "commit"],
+         {"chdir": [], "git_dir": None, "work_tree": "/w"}),
+        (["git", "--work-tree", "/w", "commit"],
+         {"chdir": [], "git_dir": None, "work_tree": "/w"}),
+        (["git", "--git-dir=/r/.git", "--work-tree=/w", "commit"],
+         {"chdir": [], "git_dir": "/r/.git", "work_tree": "/w"}),
+        (["git", "commit"], {"chdir": [], "git_dir": None, "work_tree": None}),
+        # -C is a SEQUENCE (cumulative); --git-dir/--work-tree are single
+        # (last-one-wins). A flat list cannot express either relationship.
+        (["git", "-C", "/a", "-C", "b", "commit"],
+         {"chdir": ["/a", "b"], "git_dir": None, "work_tree": None}),
+        (["git", "--git-dir=/one/.git", "--git-dir=/two/.git", "commit"],
+         {"chdir": [], "git_dir": "/two/.git", "work_tree": None}),
     ])
-    def test_collects_every_selector(self, argv, expected):
+    def test_collects_every_selector_structurally(self, argv, expected):
         """All three selectors pick the repo independently, so a scope that
-        reads one of them is a scope over one of them."""
+        reads one of them is a scope over one of them — and they are returned
+        structured, because they do not relate to the cwd the same way."""
         assert git_global_dirs(argv)[0] == expected
 
     def test_strips_globals_to_the_form_rules_are_written_against(self):
@@ -452,6 +464,79 @@ class TestGrantDecision:
         )
         assert not ok
         assert "no filesystem target" in why
+
+    def test_cumulative_dash_c_chain_out_of_scope_is_refused(self, store):
+        """`git -C` is CUMULATIVE — the second is relative to the first.
+
+        Verified against real git 2.50.1:
+            $ git -C outer -C inner rev-parse --show-prefix
+            inner/
+
+        Resolving each `-C` against the cwd instead collapses both values onto
+        the in-scope store, so the check sees ONE in-scope directory and grants
+        while git chdirs to `<store>` and then to `<store>/../..`. This is the
+        exact construction that reaches an enclosing repo from a grant scoped
+        to a subdirectory of it — which is where `~/.claude/projects/*/memory/`
+        sits relative to `~/.claude`.
+        """
+        s, _, scope = store
+        ok, why = unattended_grant_allows(
+            "git.commit", f"git -C {s} -C ../.. commit -m x",
+            self._grants(scope), str(s), COMMIT_PATTERN,
+        )
+        assert not ok, "the -C chain lands outside the scope"
+        assert str(s.parents[1]) in why
+
+    def test_cumulative_dash_c_chain_within_scope_is_still_granted(self, store):
+        """The companion — chaining must not over-refuse. `<store>` then
+        `sub` lands at `<store>/sub`, still inside the scope."""
+        s, _, scope = store
+        (s / "sub").mkdir()
+        ok, why = unattended_grant_allows(
+            "git.commit", f"git -C {s} -C sub commit -m x",
+            self._grants(scope), str(s.parents[2]), COMMIT_PATTERN,
+        )
+        assert ok, why
+
+    def test_absolute_second_dash_c_discards_the_first(self, store):
+        """An absolute value RESETS the chain, so an in-scope first hop cannot
+        launder an out-of-scope second one."""
+        s, other, scope = store
+        ok, why = unattended_grant_allows(
+            "git.commit", f"git -C {s} -C {other} commit -m x",
+            self._grants(scope), str(s), COMMIT_PATTERN,
+        )
+        assert not ok
+        assert str(other) in why
+
+    def test_git_dir_resolves_against_the_dash_c_result_not_the_cwd(self, store):
+        """`--git-dir` is relative to the directory the `-C` chain produced.
+
+        Verified against real git 2.50.1:
+            $ cd <base>; git -C other --git-dir=.git rev-parse --absolute-git-dir
+            <base>/other/.git
+
+        The cwd here is deliberately NOT the `-C` target — three levels below
+        it — so the two resolutions land in different places and the test can
+        tell them apart. With cwd == the `-C` target they agree, and the test
+        passes whether or not the code is right (which is how the first draft
+        of it survived its own mutation).
+        """
+        s, other, scope = store
+        cwd = s / "deep" / "deeper" / "deepest"
+        cwd.mkdir(parents=True)
+        rel = os.path.relpath(str(other), str(s))
+        # from the -C result -> `other`, out of scope. From the cwd -> back
+        # inside the store, i.e. in scope and granted. Different verdicts.
+        assert path_in_scope(os.path.normpath(os.path.join(str(cwd), rel)), scope)
+        assert not path_in_scope(os.path.normpath(os.path.join(str(s), rel)), scope)
+
+        ok, why = unattended_grant_allows(
+            "git.commit", f"git -C {s} --git-dir={rel}/.git commit -m x",
+            self._grants(scope), str(cwd), COMMIT_PATTERN,
+        )
+        assert not ok
+        assert str(other) in why
 
     def test_bare_environment_assignment_refuses(self, store):
         """`FOO=1 git commit` — an env var we do not model. CHOSEN: refuse.

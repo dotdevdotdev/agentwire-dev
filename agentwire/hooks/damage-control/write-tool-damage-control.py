@@ -901,21 +901,53 @@ _GIT_DIR_ENV_VARS = {
 }
 
 
-def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
-    """Split a ``git`` argv into ``(directories it redirects to, remaining argv)``.
+def git_global_dirs(argv: List[str]) -> Tuple[Dict[str, Any], List[str]]:
+    """Split a ``git`` argv into ``(directory selectors, remaining argv)``.
+
+    Selectors are returned STRUCTURED, not as one flat list, because the three
+    options do not relate to each other or to the cwd the same way — and a flat
+    list cannot express either relationship. Verified against real git 2.50.1:
+
+    * ``-C`` is **CUMULATIVE**, folded left to right, each value resolved
+      against the previous result (an absolute value resets the chain)::
+
+          $ git -C outer -C inner rev-parse --show-prefix
+          inner/                       # not `outer/`, and not `inner` from cwd
+
+      Resolving each ``-C`` against the cwd instead collapses
+      ``git -C <in-scope> -C ../..`` onto the in-scope directory, so a scope
+      check sees one in-scope target and grants while git chdirs out of it.
+
+    * ``--git-dir`` / ``--work-tree`` are **LAST-ONE-WINS**, and a relative
+      value resolves against the directory the ``-C`` chain produced::
+
+          $ cd <base>; git -C other --git-dir=.git rev-parse --absolute-git-dir
+          <base>/other/.git            # relative to the -C result, not to cwd
 
     ``remaining argv`` is the command with git's global options removed —
     ``["git", "commit", "-m", "x"]`` for ``git -C /r commit -m x`` — which is
     the form a rule pattern like ``\\bgit\\s+commit\\b`` was written against.
     """
-    dirs: List[str] = []
+    chdir: List[str] = []
+    git_dir: Optional[str] = None
+    work_tree: Optional[str] = None
     rest: List[str] = argv[:1]
+
+    def _record(opt: str, value: str) -> None:
+        nonlocal git_dir, work_tree
+        if opt == "-C":
+            chdir.append(value)
+        elif opt == "--git-dir":
+            git_dir = value
+        else:
+            work_tree = value
+
     i = 1
     while i < len(argv):
         tok = argv[i]
         if tok in _GIT_DIR_OPTS_VALUE:
             if i + 1 < len(argv):
-                dirs.append(argv[i + 1])
+                _record(tok, argv[i + 1])
             i += 2
             continue
         if tok in _GIT_OPTS_VALUE_NOT_DIR:
@@ -924,7 +956,7 @@ def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
         matched = False
         for opt in _GIT_DIR_OPTS_VALUE:
             if tok.startswith(opt + "="):
-                dirs.append(tok[len(opt) + 1:])
+                _record(opt, tok[len(opt) + 1:])
                 matched = True
                 break
         if matched:
@@ -935,7 +967,7 @@ def git_global_dirs(argv: List[str]) -> Tuple[List[str], List[str]]:
             continue
         rest.extend(argv[i:])
         break
-    return dirs, rest
+    return {"chdir": chdir, "git_dir": git_dir, "work_tree": work_tree}, rest
 
 
 def _git_repo_root(path: str) -> Optional[str]:
@@ -1035,6 +1067,19 @@ def _cd_target(argv: List[str]) -> Optional[str]:
     return target
 
 
+def _abs_path(raw: str, base: str) -> str:
+    """``raw`` as a normalized absolute path, interpreted relative to ``base``.
+
+    Single-valued, unlike :func:`_resolve_dir` — used where a path must be
+    threaded into a further resolution (folding a ``-C`` chain), where two
+    candidate forms would have nothing to fold onto.
+    """
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(base, expanded)
+    return os.path.normpath(expanded)
+
+
 def _resolve_dir(raw: str, cwd: str) -> List[str]:
     """Absolute forms of ``raw`` interpreted relative to ``cwd``.
 
@@ -1132,7 +1177,10 @@ def command_scope_dirs(
             continue
 
         is_git = head == "git"
-        git_dirs, stripped = (git_global_dirs(argv) if is_git else ([], argv))
+        gopts, stripped = (
+            git_global_dirs(argv) if is_git
+            else ({"chdir": [], "git_dir": None, "work_tree": None}, argv)
+        )
 
         if pattern:
             # Match the rule against BOTH the segment as written and its
@@ -1151,27 +1199,39 @@ def command_scope_dirs(
         if head in _INDIRECT_RUNNERS:
             return [], f"command runs through {head} — target directory is not statically knowable"
 
+        # Fold the `-C` chain FIRST — it establishes the directory everything
+        # else on this segment is measured from. Left to right, each value
+        # against the running result, an absolute value resetting the chain
+        # (real git semantics; see git_global_dirs). Resolving each `-C`
+        # against the cwd instead lets `git -C <in-scope> -C ../..` collapse
+        # onto the in-scope directory and be granted while git walks out of it.
+        acting_dir = current_dir
+        for hop in gopts["chdir"]:
+            acting_dir = _abs_path(hop, acting_dir)
+        dirs.extend(_resolve_dir(acting_dir, current_dir))
+
+        # `--git-dir` / `--work-tree` are last-one-wins and resolve against the
+        # `-C` result, not the cwd.
+        for selector in (gopts["git_dir"], gopts["work_tree"]):
+            if selector:
+                dirs.extend(_resolve_dir(selector, acting_dir))
+
         # Environment assignments. Recognized git repo selectors are read as
         # target directories; ANY other assignment refuses, because we cannot
         # know whether an env var we do not model redirects the tool. This is
         # the same answer `env VAR=… git commit` already got by being an
         # indirect runner — the two spellings of one redirection now agree.
+        # Resolved against the acting directory for the same reason as above.
         for assign in assigns:
             name, _, value = assign.partition("=")
             if name in _GIT_DIR_ENV_VARS:
                 if value:
-                    dirs.extend(_resolve_dir(value, current_dir))
+                    dirs.extend(_resolve_dir(value, acting_dir))
                 continue
             return [], (
                 f"command sets {name} — an environment override may redirect "
                 f"{head} to a different target, which is not statically knowable"
             )
-
-        if git_dirs:
-            for d in git_dirs:
-                dirs.extend(_resolve_dir(d, current_dir))
-        else:
-            dirs.extend(_resolve_dir(".", current_dir))
 
         if head == "git":
             # git resolves its repo by walking UP from the working directory, so

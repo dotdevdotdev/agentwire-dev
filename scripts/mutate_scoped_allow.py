@@ -52,8 +52,8 @@ MUTATIONS = [
     Mutation(
         name="only-first-git-selector",
         property_broken="every repo selector is read (--git-dir AND --work-tree)",
-        old="            for d in git_dirs:\n                dirs.extend(_resolve_dir(d, current_dir))",
-        new="            dirs.extend(_resolve_dir(git_dirs[0], current_dir))",
+        old='        for selector in (gopts["git_dir"], gopts["work_tree"]):',
+        new='        for selector in (gopts["git_dir"],):',
     ),
     Mutation(
         name="cd-trusted-regardless-of-operator",
@@ -90,6 +90,18 @@ MUTATIONS = [
         property_broken="an unresolvable target refuses instead of guessing cwd",
         old='        return [], f"command runs through {head} — target directory is not statically knowable"',
         new="        dirs.extend(_resolve_dir('.', current_dir)); continue",
+    ),
+    Mutation(
+        name="dash-c-resolved-against-cwd",
+        property_broken="the -C chain is CUMULATIVE, each hop against the previous result",
+        old='        acting_dir = current_dir\n        for hop in gopts["chdir"]:\n            acting_dir = _abs_path(hop, acting_dir)',
+        new='        acting_dir = current_dir\n        for hop in gopts["chdir"]:\n            acting_dir = _abs_path(hop, current_dir)',
+    ),
+    Mutation(
+        name="git-dir-resolved-against-cwd",
+        property_broken="--git-dir/--work-tree resolve against the -C result, not the cwd",
+        old='            if selector:\n                dirs.extend(_resolve_dir(selector, acting_dir))',
+        new='            if selector:\n                dirs.extend(_resolve_dir(selector, current_dir))',
     ),
     Mutation(
         name="env-assignments-discarded",
