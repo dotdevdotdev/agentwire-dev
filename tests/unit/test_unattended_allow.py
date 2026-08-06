@@ -250,6 +250,77 @@ class TestHardBlocksSurvive:
         assert unattended_verdict(cfg, f"uv run {command}")[0] == "block"
 
 
+class TestTheResidualIsCharacterisedNotLeftOver:
+    """Why the launcher matrix is 52/78 and that is CLOSED, not partial.
+
+    The 78-cell matrix mixes two populations, and quoting it as a single
+    fraction makes a closed bypass read as a partially-closed one:
+
+      * 4 HARD-BLOCK payloads x 13 prefixes = 52 cells. This is the bypass
+        class. Measured by reverting the masked-rescan fix in place:
+        **13/52 held before, 52/52 after.** Closed.
+      * 2 ASK-TIER payloads x 13 prefixes = 26 cells. ``git branch -D`` and
+        ``git push --delete`` are ask-tier WITH NO PREFIX AT ALL, so the prefix
+        is not what defeats them and they were never members of the class.
+
+    The bare control row is what separates the two, and it is the whole
+    argument — without it, "26 not hard-blocked" is indistinguishable from a
+    live residual bypass. They also still REFUSE unattended; they are simply
+    not hard blocks, which is a deliberate tier choice rather than a defect.
+    (Distinct from #933, which is about read-only commands matched by write
+    rules — a different mechanism entirely.)
+    """
+
+    ASK_TIER = [
+        ("git branch -D main", "git.force-deletes-branch-even-if-unmerged"),
+        ("git push origin --delete main", "git.deletes-remote-branch"),
+    ]
+
+    @pytest.mark.parametrize("command,expected_id", ASK_TIER)
+    def test_the_residual_payloads_are_ask_tier_with_no_prefix(
+            self, cfg, command, expected_id):
+        """The control. If these ever read `block` bare, the 26 become a bypass."""
+        decision, rule_id = decide(cfg, command)
+        assert decision == "ask", (
+            f"{command!r} is now a hard block bare — the 26 residual cells are "
+            f"no longer explained by tier and must be re-characterised")
+        assert rule_id == expected_id
+
+    @pytest.mark.parametrize("prefix", PREFIXES)
+    @pytest.mark.parametrize("command,expected_id", ASK_TIER)
+    def test_the_prefix_changes_nothing_for_them(self, cfg, prefix, command,
+                                                 expected_id):
+        """Same tier and same rule id bare or prefixed — so not a bypass."""
+        decision, rule_id = decide(cfg, f"{prefix}bash -c '{command}'")
+        assert decision == "ask"
+        assert rule_id == expected_id
+
+    @pytest.mark.parametrize("prefix", PREFIXES)
+    @pytest.mark.parametrize("command,expected_id", ASK_TIER)
+    def test_and_they_still_refuse_unattended(self, cfg, prefix, command,
+                                              expected_id):
+        """The property that actually matters: nothing reaches a scheduler run.
+
+        "Not a hard block" and "reaches an unattended session" are different
+        things, and only the second is a safety hole. These are the first.
+        """
+        assert unattended_verdict(cfg, f"{prefix}bash -c '{command}'")[0] == "block"
+
+    def test_every_hard_block_payload_holds_on_every_prefix(self, cfg):
+        """The positive half, stated as one assertion over the real class.
+
+        52/52. This is what "closed" means, and it is asserted rather than
+        quoted from a matrix run once by hand.
+        """
+        unheld = [
+            (name, prefix)
+            for name, command, expected_id in HARD_BLOCKS
+            for prefix in PREFIXES
+            if decide(cfg, f"{prefix}bash -c '{command}'")[0] != "block"
+        ]
+        assert not unheld, f"{len(unheld)} hard-block cell(s) not held: {unheld}"
+
+
 class TestTheAllowlistCannotReachABlockTier:
     def test_no_default_id_belongs_to_a_hard_block_rule(self, cfg):
         """Structural: allowlisting only ever relaxes ``ask``, never ``block``.
