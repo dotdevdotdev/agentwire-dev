@@ -244,6 +244,26 @@ class TranscriptRing:
                     return []
                 self._condition.wait(remaining)
 
+    def unheard_between(self, after: int, ceiling: int) -> list[Utterance]:
+        """Ordered utterances in ``(after, ceiling]`` with NO transcript yet.
+
+        The denial half of the timing asymmetry the bounded await fixes for
+        approvals. An utterance whose ``speech_started`` was recorded but whose
+        transcript has not landed is invisible to :meth:`after` — it filters on
+        ``complete`` — so a denial spoken after the approval and not yet
+        transcribed did not block the write. The system already KNOWS the owner
+        spoke again (the sequence advanced); it just cannot yet say what they
+        said. That is ``pending_transcript``, never approval.
+        """
+        with self._condition:
+            return [
+                u
+                for u in self._items
+                if not u.complete
+                and u.speech_started_seq > after
+                and u.speech_started_seq <= ceiling
+            ]
+
     def snapshot(self) -> list[Utterance]:
         with self._condition:
             return list(self._items)
