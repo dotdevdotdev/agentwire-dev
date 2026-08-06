@@ -183,8 +183,11 @@ def test_install_hooks_installs_skills(env, tmp_path, monkeypatch):
     # and not the guard — and so it behaves identically in a worktree (package
     # root's .git is a FILE) and in CI's plain clone.
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
-    monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(pathlib.Path(m.__file__).parent))
-
+    from agentwire.safety import provenance as _prov
+    monkeypatch.setattr(
+        _prov, "canonical_package_dir",
+        lambda: pathlib.Path(__import__("agentwire").__file__).parent.resolve(),
+    )
     _, target_root = env
     target = target_root / "wiki"
     assert not target.exists()

@@ -23,9 +23,10 @@ def fake_env(tmp_path, monkeypatch):
     # Pin the running package AS canonical so these measure the install, not
     # the guard, and behave the same in a worktree as in CI's plain clone.
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
-    monkeypatch.setenv(
-        "AGENTWIRE_CANONICAL_PACKAGE",
-        str(Path(__import__("agentwire").__file__).parent),
+    from agentwire.safety import provenance as _prov
+    monkeypatch.setattr(
+        _prov, "canonical_package_dir",
+        lambda: Path(__import__("agentwire").__file__).parent.resolve(),
     )
 
     cfg = home / ".agentwire"

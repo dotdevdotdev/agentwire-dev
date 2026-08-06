@@ -971,6 +971,35 @@ always safe; `uv run agentwire` *from* a stale checkout never was. A cwd check
 gets both backwards. Nor on `PATH` — `uv run` puts an ephemeral venv first, so a
 `which`-based lookup reports the stale checkout AS the canonical install.
 
+**And there is no environment override**, deliberately. An earlier draft had
+`AGENTWIRE_CANONICAL_PACKAGE`; it was the wrong shape twice — it duplicated
+`--allow-foreign-source` with something undocumented, and a leading `VAR=value`
+assignment is collapsed to a mask token by `masked_subcommands`, so a
+command-position damage-control rule **cannot observe it being set**. An
+override invisible to the layer guarding machine-global writes is this whole
+section's failure mode one level in, and the threat model (an agent on a task
+branch) sets inline env vars routinely. The flag is an argument in command
+position and stays visible. Tests patch the resolver function instead.
+
+**`rebuild` carries the same guard**, and it is the one that matters most. It is
+the only installer-adjacent command that *changes the answer* every other
+provenance check reads — it reinstalls the tool FROM a source checkout, so a
+worktree it installs from **becomes canonical**:
+
+```
+uv run agentwire hooks install   (from a worktree)  -> refused
+uv run agentwire rebuild         (from a worktree)  -> worktree is now canonical
+agentwire hooks install                             -> proceeds, legitimately
+```
+
+Guarding the heal alone blocks the one-step and permits the two-step — and the
+second step is what the Dev Workflow tells people to run after a code change.
+The refusal is bound to `--allow-foreign-source`, **not** to `rebuild --force`,
+which means "rebuild despite being behind `origin/main`": folding them together
+would make a documented staleness override silently grant a machine-global one.
+(Distinct from the behind-main check, which says nothing about a worktree that
+is *ahead and divergent* rather than behind.)
+
 **2. Ordering — not equality.** The five generated hooks carry a stamp emitted
 by `scripts/regen_damage_control_hooks.py`:
 

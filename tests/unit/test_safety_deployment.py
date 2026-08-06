@@ -34,6 +34,10 @@ BUNDLED_RULES = Path(safety_commands.__file__).parent / "hooks" / "damage-contro
 BUNDLED_TOOLDEFS = Path(safety_commands.__file__).parent / "tooldefs"
 RUNNING_PKG = Path(safety_commands.__file__).parent
 
+#: Captured before any fixture pins it, so the resolver's own test can assert
+#: against the real implementation rather than the fixture's stub.
+_REAL_CANONICAL = prov.canonical_package_dir
+
 
 def sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
@@ -50,7 +54,12 @@ def machine(tmp_path, monkeypatch):
     # heal, not the guard — and so the suite behaves identically in a worktree
     # (where the package root's .git is a FILE) and in CI's plain clone.
     # Tests about the guard itself override this.
-    monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(RUNNING_PKG))
+    #
+    # Patched at the FUNCTION, not via an env var: there is deliberately no
+    # environment override in the shipped code, because a leading `VAR=value`
+    # assignment is masked by `masked_subcommands` and so cannot be seen by a
+    # command-position damage-control rule (#946 review, F1).
+    monkeypatch.setattr(prov, "canonical_package_dir", lambda: RUNNING_PKG.resolve())
 
     cfg = home / ".agentwire"
     monkeypatch.setattr(safety_commands, "CONFIG_DIR", cfg)
@@ -70,7 +79,7 @@ def machine(tmp_path, monkeypatch):
 class TestProvenance:
     def test_no_install_and_not_a_worktree_is_bootstrap(self, machine, monkeypatch):
         """A fresh machine must stay installable — refusing here bricks setup."""
-        monkeypatch.delenv("AGENTWIRE_CANONICAL_PACKAGE", raising=False)
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: None)
         monkeypatch.setattr(prov, "in_git_worktree", lambda _p: False)
         state, canonical, _running = prov.install_provenance()
         assert state == prov.BOOTSTRAP
@@ -78,7 +87,7 @@ class TestProvenance:
 
     def test_no_install_but_a_worktree_still_refuses(self, machine, monkeypatch):
         """A task branch is never a legitimate bootstrap source (#936)."""
-        monkeypatch.delenv("AGENTWIRE_CANONICAL_PACKAGE", raising=False)
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: None)
         monkeypatch.setattr(prov, "in_git_worktree", lambda _p: True)
         state, canonical, _running = prov.install_provenance()
         assert state == prov.WORKTREE
@@ -88,6 +97,74 @@ class TestProvenance:
         summary = safety_commands.heal_damage_control(quiet=True)
         assert summary["refused"] is True
         assert not safety_commands.HOOKS_DIR.exists()
+
+    def test_rebuild_refuses_to_install_a_worktree_as_the_tool(self, tmp_path, capsys):
+        """F2: the guard must not block the one-step and permit the two-step.
+
+        `rebuild` is the only installer-adjacent command that CHANGES the answer
+        every other provenance check reads:
+
+            uv run agentwire hooks install  (worktree) -> refused
+            uv run agentwire rebuild        (worktree) -> worktree becomes canonical
+            agentwire hooks install                    -> proceeds, legitimately
+
+        and that last step is the one CLAUDE.md tells people to run after a code
+        change. Guarding `heal` alone is a guard with a door beside it.
+        """
+        from agentwire import system_cli
+
+        class Args:
+            force = False
+            allow_foreign_source = False
+
+        reached_install = []
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(prov, "is_worktree_checkout", lambda _root: True)
+            # Anything past the guard eventually shells out; make that visible
+            # rather than letting a silent pass look like a refusal.
+            mp.setattr(system_cli, "_git_behind_origin",
+                       lambda _r: (reached_install.append("git-check"), (0, None))[1])
+            rc = system_cli.cmd_rebuild(Args())
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "REFUSED" in err
+        assert "WORKTREE" in err
+        assert reached_install == [], "rebuild ran on past the worktree guard"
+
+    def test_rebuild_proceeds_from_a_primary_checkout(self, capsys):
+        """Must-fail control for the test above: same call, guard says not a
+        worktree, and rebuild gets past it to the git-drift check."""
+        from agentwire import system_cli
+
+        class Args:
+            force = False
+            allow_foreign_source = False
+
+        reached = []
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(prov, "is_worktree_checkout", lambda _root: False)
+            mp.setattr(system_cli, "_git_behind_origin",
+                       lambda _r: (reached.append("git-check"), (5, None))[1])
+            rc = system_cli.cmd_rebuild(Args())
+
+        assert reached == ["git-check"], "the worktree guard blocked a primary checkout"
+        assert rc == 1  # stopped by the BEHIND-MAIN guard, a different refusal
+        assert "behind origin/main" in capsys.readouterr().out
+
+    def test_rebuild_worktree_guard_is_not_folded_into_force(self):
+        """--force means 'behind origin/main'. It must NOT also grant a
+        machine-global install from a task branch — that would make the
+        documented staleness override silently carry a second meaning."""
+        import inspect
+
+        from agentwire import system_cli
+
+        src = inspect.getsource(system_cli.cmd_rebuild)
+        guard = src.split("is_worktree_checkout", 1)[1].split("return 1", 1)[0]
+        assert "allow_foreign_source" in guard
+        assert "force" not in guard
 
     def test_worktree_detection_reads_the_dot_git_kind(self, tmp_path):
         """worktree -> .git is a FILE; primary checkout -> a DIR; installed -> neither."""
@@ -113,7 +190,7 @@ class TestProvenance:
     def test_other_install_is_foreign(self, machine, monkeypatch, tmp_path):
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(other))
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
         state, canonical, running = prov.install_provenance()
         assert state == prov.FOREIGN
         assert canonical == other.resolve()
@@ -121,7 +198,9 @@ class TestProvenance:
 
     def test_uv_tool_layout_is_found(self, machine, monkeypatch, tmp_path):
         """The documented install path, resolved from LAYOUT not from $PATH."""
-        monkeypatch.delenv("AGENTWIRE_CANONICAL_PACKAGE", raising=False)
+        # This is the one test that exercises the REAL resolver, so undo the
+        # fixture's pin first — otherwise it asserts against its own stub.
+        monkeypatch.setattr(prov, "canonical_package_dir", _REAL_CANONICAL)
         tools = tmp_path / "tools"
         pkg = tools / "agentwire-dev" / "lib" / "python3.13" / "site-packages" / "agentwire"
         pkg.mkdir(parents=True)
@@ -131,7 +210,7 @@ class TestProvenance:
     def test_foreign_heal_refuses_and_writes_nothing(self, machine, monkeypatch, tmp_path, capsys):
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(other))
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
 
         summary = safety_commands.heal_damage_control()
         out = capsys.readouterr().out
@@ -153,7 +232,7 @@ class TestProvenance:
         """
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(other))
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
 
         summary = safety_commands.heal_damage_control(quiet=True, allow_foreign=True)
         assert summary["refused"] is False
@@ -164,7 +243,7 @@ class TestProvenance:
         """A refusal must never be reportable as a successful install."""
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(other))
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
         assert safety_commands.safety_install_cmd(assume_yes=True) == 1
 
     def test_hooks_install_refuses_from_foreign_package(self, machine, monkeypatch, tmp_path):
@@ -173,7 +252,7 @@ class TestProvenance:
 
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setenv("AGENTWIRE_CANONICAL_PACKAGE", str(other))
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
 
         results = hooks_cli.install_hooks()
         assert results

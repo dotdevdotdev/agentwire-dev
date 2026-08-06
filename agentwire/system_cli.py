@@ -517,6 +517,22 @@ def cmd_rebuild(args) -> int:
         )
         return 1
 
+    # Worktree guard (#936): rebuild is the ONE installer-adjacent command that
+    # changes the answer every other provenance check depends on — it reinstalls
+    # the tool FROM this checkout, so a worktree it installs from BECOMES
+    # canonical, and every later `hooks install` then legitimately deploys this
+    # task branch machine-wide. Deliberately NOT folded into --force, which
+    # means "rebuild despite being behind main": that would make the documented
+    # staleness override silently grant a machine-global one too.
+    from agentwire.safety import provenance as prov
+
+    if prov.is_worktree_checkout(project_root) and not getattr(
+        args, "allow_foreign_source", False
+    ):
+        for line in prov.rebuild_refusal_lines(project_root):
+            print(f"  {line}" if line else "", file=sys.stderr)
+        return 1
+
     # Git-drift guard: rebuild is otherwise git-blind and will happily reinstall
     # stale code when local main was never pulled after a remote merge. Refuse
     # (unless --force) so the fix happens before the reinstall, not after.
@@ -665,6 +681,12 @@ def register_system_parser(subparsers) -> None:
     rebuild_parser.add_argument(
         "--force", action="store_true",
         help="Rebuild even when the local checkout is behind origin/main",
+    )
+    rebuild_parser.add_argument(
+        "--allow-foreign-source", action="store_true",
+        help="Install a linked git WORKTREE as the machine's tool. Doing this "
+             "makes that task branch canonical, so every later hooks/safety "
+             "install deploys it machine-wide (#936)",
     )
     rebuild_parser.set_defaults(func=cmd_rebuild)
 

@@ -88,12 +88,17 @@ def canonical_package_dir() -> Optional[Path]:
     friends put an ephemeral venv's ``agentwire`` first on ``PATH``, so a
     ``which``-based lookup would happily report the stale checkout as canonical
     — the exact confusion this module exists to prevent.
-    """
-    override = os.environ.get("AGENTWIRE_CANONICAL_PACKAGE")
-    if override:
-        p = Path(override).expanduser()
-        return p.resolve() if p.is_dir() else None
 
+    **There is deliberately no environment override.** An earlier draft had one,
+    and it was the wrong shape twice over: it duplicated
+    ``--allow-foreign-source`` with something undocumented, and — worse — a
+    leading ``VAR=value`` assignment is collapsed to a mask token by
+    ``masked_subcommands``, so a command-position damage-control rule *cannot
+    observe it being set*. An override invisible to the layer guarding
+    machine-global writes is this module's own failure mode one level in, and
+    the stated threat model (an agent on a task branch) sets inline env vars
+    routinely. The flag is an argument in command position and stays visible.
+    """
     home = Path.home()
 
     # uv tool install (the documented install path).
@@ -119,13 +124,51 @@ def canonical_package_dir() -> Optional[Path]:
     return None
 
 
-def in_git_worktree(package_dir: Path) -> bool:
-    """True when the package lives in a git WORKTREE (not a primary checkout).
+def is_worktree_checkout(repo_root: Path) -> bool:
+    """True when ``repo_root`` is a linked git WORKTREE, not a primary checkout.
 
     ``.git`` is a directory in a primary checkout and a FILE (holding a
-    ``gitdir:`` pointer) in a linked worktree. Absent in an installed package.
+    ``gitdir:`` pointer) in a linked worktree. Absent entirely in an installed
+    package.
     """
-    return (package_dir.parent / ".git").is_file()
+    return (repo_root / ".git").is_file()
+
+
+def in_git_worktree(package_dir: Path) -> bool:
+    """True when the *package* lives inside a linked git worktree."""
+    return is_worktree_checkout(package_dir.parent)
+
+
+def rebuild_refusal_lines(repo_root: Path) -> List[str]:
+    """Refusal for ``rebuild`` run against a linked worktree (#936, F2).
+
+    ``rebuild`` is the one installer-adjacent command that CHANGES the answer
+    every other guard depends on: it reinstalls the tool FROM a source checkout,
+    so a worktree it installs from BECOMES canonical. The guard then blocks the
+    one-step and permits the two-step —
+
+        uv run agentwire hooks install   (from a worktree)  -> refused
+        uv run agentwire rebuild         (from a worktree)  -> worktree is now canonical
+        agentwire hooks install                             -> proceeds, legitimately
+
+    — and that second step is exactly what CLAUDE.md tells people to run after a
+    code change. Guarding `heal` while leaving `rebuild` open would be a guard
+    with a door beside it.
+    """
+    return [
+        "REFUSED: rebuild would install a linked git WORKTREE as the machine's tool.",
+        f"  source checkout : {repo_root}",
+        "",
+        "  This is machine-global. The worktree would BECOME the canonical install,",
+        "  and every later `hooks install` / `safety install` would then legitimately",
+        "  deploy this task branch's security hooks to every session on the box —",
+        "  the two-step version of #936, via the documented post-change workflow.",
+        "",
+        "  Fix: rebuild from the primary checkout —",
+        "       cd <primary checkout> && git pull --ff-only && agentwire rebuild",
+        "  Or, if you genuinely mean to install THIS worktree machine-wide:",
+        "       agentwire rebuild --allow-foreign-source",
+    ]
 
 
 def install_provenance() -> Tuple[str, Optional[Path], Path]:
