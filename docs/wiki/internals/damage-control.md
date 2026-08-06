@@ -452,6 +452,22 @@ Three selectors pick a git repo independently — cwd, `-C`, and
 assignment, and is read the same way; an assignment naming a variable we do not
 model refuses, which is what the `env(1)` spelling already got.
 
+**They do not relate to the cwd the same way**, and reading them as if they did
+is a bypass rather than an inaccuracy (verified against git 2.50.1):
+
+- **`-C` is cumulative.** `git -C a -C b` chdirs to `a`, then to `b` *relative
+  to `a`* (`git -C outer -C inner rev-parse --show-prefix` → `inner/`); an
+  absolute value resets the chain. Resolving each `-C` against the cwd instead
+  collapses `git -C <in-scope> -C ../..` onto the in-scope directory, so the
+  check sees one in-scope target and grants while git walks out of it — into
+  the enclosing repo, which is exactly where `~/.claude/projects/*/memory/`
+  sits relative to `~/.claude`.
+- **`--git-dir` / `--work-tree` are last-one-wins**, and a relative value
+  resolves against the directory the `-C` chain produced, not the cwd.
+
+So the chain is folded first and everything else — including the `GIT_DIR`-family
+assignments — is measured from its result.
+
 The **repo root walk-up** matters because git resolves its repo by walking *up*
 from the working directory, so the directory a command runs in is not
 necessarily the repo it writes to. A scope naming `<repo>/subdir` would
