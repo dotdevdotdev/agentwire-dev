@@ -44,11 +44,13 @@ a longer body, and containment fails against the part it isn't showing.
 |---|---|---|
 | 430 | 440 | hit ✓ |
 | 520 | 532 | hit ✓ — last passing |
-| 540 | 480 | **miss** — the box renders only a window |
+| **530** | **467** | **miss** — first measured failure; the box renders only a window |
+| 540 | 480 | **miss** — still windowing |
 | 880 | 16 | **miss** — now a chip |
 
-So `stuck` fails from ~530 chars, a full ~350 chars *before* the chip appears.
-**"It isn't a chip" is not evidence the heal will fire.**
+So `stuck` fails from **530** chars — bracketed to `(520, 530]`, not estimated —
+a full ~350 chars *before* the chip appears. **"It isn't a chip" is not evidence
+the heal will fire.**
 
 ## Regime 2 — FOUR OR MORE LINES chip, at any size (measured)
 
@@ -71,7 +73,7 @@ right about the *chip* and it understates the picture:
 
 | Regime | Governed by | Chip? | `stuck` |
 |---|---|---|---|
-| Windowing | **characters** (~530+ on one line) | **no** | miss |
+| Windowing | **characters** (530+ on one line) | **no** | miss |
 | Chip | **lines** (4+, at any size) | yes | miss |
 
 The decisive pair, from the measurements above: **530 characters on ONE line
@@ -144,9 +146,18 @@ holds, and then runs the actual heal against it. **A number without the method
 is a number the next person will distrust and re-derive**, so the method is
 recorded here alongside the results.
 
-The probe itself was written on the branch the measurements were taken on
-(`voice-confirm-spine`, a personal spike that does not merge) and is **not on
-`main`** — #930 should carry its own, with rows for both regimes.
+The probe itself is **not on `main`**, and not merely because of where it was
+written. It imports `agentwire.voice_layer` to render its message bodies and
+pins the spike worktree by absolute path in its PEP-723 header, so it does not
+*run* on `main` at all. Porting it means rewriting it sender-agnostic — that is
+#930 work, not a copy.
+
+That is not the contradiction it looks like against this page's own "a number
+without the method gets re-derived". The method above is specified in enough
+detail to be rebuilt from — own throwaway 80x24 session, real rendered messages,
+Enter left unsent, capture the box, run the actual heal — so what #930 inherits
+is a **written spec for the replacement**, not a hole. It needs rows for both
+regimes.
 
 Why a live probe and not a unit fixture: the probe **failed on its first run**
 for a reason a fixture structurally cannot produce. It read the box too early
