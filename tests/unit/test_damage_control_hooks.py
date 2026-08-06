@@ -787,7 +787,7 @@ class TestGitGlobalOptionBypass:
         produced), never an over-strip. If one of these ever starts blocking,
         that is good news and this assertion should be inverted.
         """
-        assert bash_hook.git_normalized_haystacks(
+        assert bash_hook.global_option_normalized_haystacks(
             f"{wrapper} git -C /repo push {_FORCE}"
         ) == []
 
@@ -893,6 +893,191 @@ class TestCrossIssueBackstops:
         )
 
 
+# ---------------------------------------------------------------------------
+# tmux global options (#919, first of the class)
+# ---------------------------------------------------------------------------
+#
+# `tmux -L agentwire kill-server` was ALLOWED. That rule exists to stop an
+# agent destroying the fleet it is running inside, and every session on this
+# machine runs on a NAMED socket — so the guard held for the spelling nobody
+# uses and dropped for the one the fleet actually runs under.
+#
+# tmux is getopt-based, so the bypass has THREE spellings, not one:
+#   tmux -L agentwire kill-server     separate
+#   tmux -Lagentwire kill-server      ATTACHED
+#   tmux -2Lagentwire kill-server     BUNDLED flag + attached value
+# git REJECTS the attached form (`git -C/tmp` -> "unknown option"), which is
+# why #918 could ignore attached forms and document that as correct. Correct
+# for git, wrong here — hence `short_cluster` is a per-tool property of the
+# table rather than a convention inherited from whichever tool was fixed first.
+
+_KILL_SERVER = "kill-" + "server"
+
+# Expectations are the MEASURED plain-form verdicts, not the ones that would
+# be nice: `kill-session -a` is an `ask` rule in agentwire.yaml, and writing
+# `block` here would have made the corpus disagree with the rule set rather
+# than with the bug.
+_TMUX_GATED = [
+    (_KILL_SERVER, "block"),
+    (f"kill-session -t agentwire-{'dev'}", "block"),
+    ("kill-session -a", "ask"),
+]
+
+# Measured against tmux 3.5a: `-L`/`-S`/`-f`/`-c`/`-T` take a value in all
+# three spellings; `-2`/`-u`/`-C` stand alone.
+_TMUX_PREFIXES = [
+    "-L agentwire",
+    "-Lagentwire",
+    "-2Lagentwire",
+    "-uLagentwire",
+    "-S /tmp/tmux-501/default",
+    "-S/tmp/tmux-501/default",
+    "-f /tmp/tmux.conf -L agentwire",
+    "-2 -L agentwire",
+    "-2",
+]
+
+_TMUX_STILL_ALLOWED = [
+    "tmux list-sessions",
+    "tmux -L agentwire list-sessions",
+    "tmux -L agentwire display-message -p '#S'",
+    "tmux kill-session -t scratch",
+    "tmux -L agentwire kill-session -t scratch",
+    # Quoted content that merely MENTIONS the gated command (#675 masking).
+    f"echo 'tmux -L agentwire {_KILL_SERVER}'",
+]
+
+
+class TestTmuxGlobalOptionBypass:
+    """#919 — the fleet-kill rule must survive a socket option."""
+
+    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
+    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
+    def test_global_options_do_not_bypass(
+        self, bash_hook, bundled_config, unanchored_config, routing, prefix, rest,
+        expected,
+    ):
+        cfg = bundled_config if routing == "anchored" else unanchored_config
+        cmd = f"tmux {prefix} {rest}"
+        decision = bash_hook.check_command(cmd, cfg)["decision"]
+        assert decision == expected, (
+            f"{cmd!r} resolved to {decision} under {routing} routing, want {expected}"
+        )
+
+    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
+    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config, rest, expected):
+        """Anchors the pairs above: the plain form already decided this way."""
+        assert bash_hook.check_command(f"tmux {rest}", bundled_config)["decision"] == expected
+
+    @pytest.mark.parametrize("cmd", _TMUX_STILL_ALLOWED)
+    def test_no_over_blocking(self, bash_hook, bundled_config, cmd):
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
+
+    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
+    def test_blocks_via_the_tmux_rule_not_something_else(
+        self, bash_hook, bundled_config, prefix
+    ):
+        """Assert the RULE ID, not just the verdict.
+
+        Two commands can both read `block` before and after while the rule
+        producing it changes — which is how a fix can look like it landed while
+        the intended rule is still bypassed and some generic rule is carrying
+        the verdict (see TestCrossIssueBackstops for that failure in the wild).
+        """
+        result = bash_hook.check_command(f"tmux {prefix} {_KILL_SERVER}", bundled_config)
+        plain = bash_hook.check_command(f"tmux {_KILL_SERVER}", bundled_config)
+        assert result.get("id") == plain.get("id"), result
+        assert result.get("id", "").startswith("agentwire.tmux-kill-server"), result
+
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
+    def test_never_downgrades_a_block_to_ask(
+        self, bash_hook, bundled_config, reversed_config, prefix, rest, expected, order,
+    ):
+        """Parity with the plain form in the SAME config — see the git twin for
+        why a fixed verdict is the wrong invariant here."""
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        plain = bash_hook.check_command(f"tmux {rest}", cfg)["decision"]
+        prefixed = bash_hook.check_command(f"tmux {prefix} {rest}", cfg)["decision"]
+        assert prefixed == plain, (
+            f"tmux {prefix} {rest} decided {prefixed} but plain decided {plain} "
+            f"({order} order)"
+        )
+
+
+class TestShortOptionClusterIsPerTool:
+    """`short_cluster` is measured per tool, never inherited.
+
+    git rejects `-C/tmp` (git 2.50.1: "unknown option"), so #918 correctly
+    ignored attached forms. tmux accepts `-Lname` and `-2Lname` (tmux 3.5a,
+    confirmed by the socket path coming back in its own connect error for all
+    three spellings). Reading git's answer as the class's answer ships a tmux
+    fix that leaves two of the three spellings open.
+    """
+
+    def test_tmux_attached_short_option_is_normalized(self, bash_hook):
+        assert bash_hook._strip_global_options(
+            ["tmux", "-Lagentwire", _KILL_SERVER]
+        ) == ["tmux", _KILL_SERVER]
+
+    def test_tmux_bundled_flag_then_attached_value(self, bash_hook):
+        assert bash_hook._strip_global_options(
+            ["tmux", "-2Lagentwire", _KILL_SERVER]
+        ) == ["tmux", _KILL_SERVER]
+
+    def test_tmux_bundled_flag_then_separate_value(self, bash_hook):
+        assert bash_hook._strip_global_options(
+            ["tmux", "-uL", "agentwire", _KILL_SERVER]
+        ) == ["tmux", _KILL_SERVER]
+
+    def test_git_attached_form_is_not_treated_as_a_bypass(self, bash_hook):
+        """git rejects it, so there is nothing to normalize — and inventing a
+        variant here would block a command that cannot run."""
+        assert bash_hook._strip_global_options(
+            ["git", "-C/tmp", "push"]
+        ) is None
+
+    def test_unknown_cluster_character_bails_rather_than_guesses(self, bash_hook):
+        """A cluster with an unrecognized letter produces NO variant.
+
+        Guessing would let an unknown value-taking option swallow the
+        subcommand — the same failure the maintenance-edge comment describes,
+        arrived at from the other side.
+        """
+        assert bash_hook._strip_global_options(
+            ["tmux", "-Zq", _KILL_SERVER]
+        ) is None
+
+
+class TestGlobalOptionTableProvenance:
+    """Every row states how its grammar was established, and every row is
+    falsifiable by at least one acceptance-corpus command.
+
+    Both halves matter and the second is the load-bearing one. A wrong arity
+    guess FAILS OPEN in both directions — mark an option value-taking when it
+    is bare and the subcommand gets eaten; mark it bare when it takes a value
+    and the value stays inline — and neither shows up as a spurious block. So
+    nothing ever goes red on its own: a table row with no corpus entry asserts
+    a grammar nobody measured and nothing in this suite can contradict it.
+    """
+
+    def test_every_row_declares_provenance_and_version(self, bash_hook):
+        for tool, grammar in bash_hook._GLOBAL_OPTION_TABLE.items():
+            assert grammar["provenance"] in (
+                bash_hook._MEASURED, bash_hook._DOCUMENTED
+            ), f"{tool} has no provenance"
+            assert grammar["version"], f"{tool} names no measured/documented version"
+
+    def test_every_row_has_at_least_one_option(self, bash_hook):
+        for tool, grammar in bash_hook._GLOBAL_OPTION_TABLE.items():
+            assert (
+                grammar["value"] or grammar["flag"] or grammar["value_eq_only"]
+                or grammar["plus_selector"]
+            ), f"{tool} is an empty row — it claims a grammar it does not describe"
+
+
 class TestGitGlobalOptionNormalizer:
     """The normalizer's contract at the seam, as a separate THIRD haystack.
 
@@ -902,7 +1087,7 @@ class TestGitGlobalOptionNormalizer:
     """
 
     def test_third_haystack_exposes_stripped_variant(self, bash_hook):
-        assert f"git push {_FORCE}" in bash_hook.git_normalized_haystacks(
+        assert f"git push {_FORCE}" in bash_hook.global_option_normalized_haystacks(
             f"git -C /repo push {_FORCE}"
         )
 
@@ -916,12 +1101,12 @@ class TestGitGlobalOptionNormalizer:
         assert subs == [cmd]
 
     def test_no_variant_for_a_plain_git_command(self, bash_hook):
-        assert bash_hook.git_normalized_haystacks(f"git push {_FORCE}") == []
+        assert bash_hook.global_option_normalized_haystacks(f"git push {_FORCE}") == []
 
     def test_variant_is_derived_from_masked_tokens(self, bash_hook):
         """Quoted content must not become matchable. Normalizing the RAW string
         would hand `\\bgit\\s+clean\\b` a match inside an echo argument."""
-        assert bash_hook.git_normalized_haystacks(
+        assert bash_hook.global_option_normalized_haystacks(
             "echo 'git -C /repo clean -fdx'"
         ) == []
 
@@ -934,7 +1119,7 @@ class TestGitGlobalOptionNormalizer:
         matches inside it; built from masked tokens the message is a
         placeholder and only the command survives.
         """
-        variants = bash_hook.git_normalized_haystacks(
+        variants = bash_hook.global_option_normalized_haystacks(
             "git -C /r commit -m 'echo git clean -fdx'"
         )
         assert variants
@@ -943,20 +1128,20 @@ class TestGitGlobalOptionNormalizer:
     def test_value_taking_option_consumes_its_argument(self, bash_hook):
         """Dropping only the flag would leave the value where the subcommand
         belongs (`git /repo push …`) and the rule would still miss."""
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", "-C", "/repo", "push"]
         ) == ["git", "push"]
 
     def test_option_after_subcommand_is_untouched(self, bash_hook):
-        assert bash_hook._strip_git_global_options(["git", "log", "-C"]) is None
+        assert bash_hook._strip_global_options(["git", "log", "-C"]) is None
 
     def test_exec_path_does_not_consume_a_token(self, bash_hook):
         """Bare `--exec-path` prints and exits — only `--exec-path=<p>` carries a
         value. Consuming the next token here would swallow the subcommand."""
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", "--exec-path", "status"]
         ) == ["git", "status"]
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", "--exec-path=/x", "status"]
         ) == ["git", "status"]
 
@@ -965,18 +1150,18 @@ class TestGitGlobalOptionNormalizer:
     ])
     def test_value_options_accept_both_equals_and_space_form(self, bash_hook, opt):
         """git 2.50.1 takes both, though the usage line advertises only `=`."""
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", opt, "v", "push"]
         ) == ["git", "push"]
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", f"{opt}=v", "push"]
         ) == ["git", "push"]
 
     def test_non_git_command_untouched(self, bash_hook):
-        assert bash_hook._strip_git_global_options(["ls", "-C", "/repo"]) is None
+        assert bash_hook._strip_global_options(["ls", "-C", "/repo"]) is None
 
     def test_no_global_options_yields_no_variant(self, bash_hook):
-        assert bash_hook._strip_git_global_options(["git", "push"]) is None
+        assert bash_hook._strip_global_options(["git", "push"]) is None
 
 
 # ---------------------------------------------------------------------------
