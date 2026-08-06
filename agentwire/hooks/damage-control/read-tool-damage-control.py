@@ -2273,23 +2273,34 @@ def _strip_heredoc_bodies(command: str) -> str:
     return command[:nl + 1]
 
 
-def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
-    """Split ``command`` into subcommands of ``(token_text, fully_quoted)``.
+def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
+    """Split ``command`` into subcommands of ``(text, fully_quoted, expands)``.
 
     Quotes/escapes are resolved into the token text (so ``g''h`` -> ``gh``);
     ``fully_quoted`` is True when no character of the token was unquoted.
+
+    ``expands`` is True when the token contains a command substitution the
+    shell will actually RUN — i.e. ``$(...)`` or a backtick span appearing
+    unquoted or inside DOUBLE quotes. Inside single quotes the shell performs no
+    expansion, so ``git commit -m '$(...)'`` is an inert literal and must stay
+    maskable; treating it as a command is a false positive on a string nothing
+    executes.
     """
-    subs: List[List[Tuple[str, bool]]] = []
-    cur: List[Tuple[str, bool]] = []
+    subs: List[List[Tuple[str, bool, bool]]] = []
+    cur: List[Tuple[str, bool, bool]] = []
     buf: List[str] = []
     has_unquoted = False
     has_any = False
+    expands = False
+
+    def _has_subst(text: str) -> bool:
+        return "$(" in text or "`" in text
 
     def end_token() -> None:
-        nonlocal buf, has_unquoted, has_any
+        nonlocal buf, has_unquoted, has_any, expands
         if has_any:
-            cur.append(("".join(buf), not has_unquoted))
-        buf, has_unquoted, has_any = [], False, False
+            cur.append(("".join(buf), not has_unquoted, expands))
+        buf, has_unquoted, has_any, expands = [], False, False, False
 
     def end_sub() -> None:
         nonlocal cur
@@ -2305,6 +2316,8 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
             j = command.find("'", i + 1)
             if j == -1:
                 j = n
+            # Single quotes suppress expansion entirely — deliberately does NOT
+            # set `expands`, however substitution-shaped the contents look.
             buf.append(command[i + 1:j])
             has_any = True
             i = j + 1
@@ -2318,7 +2331,10 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
                 else:
                     out.append(command[j])
                     j += 1
-            buf.append("".join(out))
+            span = "".join(out)
+            if _has_subst(span):
+                expands = True
+            buf.append(span)
             has_any = True
             i = j + 1
         elif c == "\\" and i + 1 < n:
@@ -2338,6 +2354,8 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
                 i += 1
         else:
             buf.append(c)
+            if c == "`" or (c == "(" and buf[-2:-1] == ["$"]):
+                expands = True
             has_unquoted = True
             has_any = True
             i += 1
@@ -2378,7 +2396,7 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
     for toks in _scan_masked_tokens(command):
         words: List[str] = []
         prev = ""
-        for text, fully_quoted in toks:
+        for text, fully_quoted, expands in toks:
             resolved = _resolve(text)
             # A quoted token holding a COMMAND SUBSTITUTION is not content, no
             # matter how much prose surrounds it: ``git commit -m "$(rm -rf
@@ -2401,10 +2419,14 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
             # Not masking is strictly MORE inclusive, so it cannot weaken any
             # rule; the cost is that a report quoting a substitution alongside a
             # rule token can false-positive again, which is the safe direction.
-            has_substitution = "$(" in resolved or "`" in resolved
+            # `expands` comes from the SCANNER, which knows the quote type:
+            # single quotes suppress expansion, so `git commit -m '$(...)'` is
+            # an inert literal and stays maskable. Deriving this from `resolved`
+            # instead would lose that distinction and false-positive on a string
+            # the shell never runs.
             is_content = (
                 fully_quoted
-                and not has_substitution
+                and not expands
                 and (not resolved or any(ch in " \t\n" for ch in resolved))
             )
             if not words and _ASSIGN_TOKEN_RE.match(resolved):

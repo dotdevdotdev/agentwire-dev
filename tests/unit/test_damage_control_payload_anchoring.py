@@ -763,6 +763,37 @@ class TestQuotedCommandSubstitutionIsNotContent:
         )
         assert result["decision"] == "allow"
 
+    def test_single_quoted_substitution_is_inert_and_stays_masked(
+        self, bash_hook, bundled_config
+    ):
+        """EXPECTED NON-BLOCK, and the reason must travel with the row.
+
+        Single quotes suppress expansion, so ``git commit -m '$(rm -rf /x)'``
+        commits the literal text and runs nothing. There is no payload to catch,
+        and "fixing" this into a block would be a false positive on a string the
+        shell never executes.
+
+        My first version of the fix keyed on the RESOLVED token text, which has
+        already lost the quote type — so it blocked this. The scanner now
+        reports whether the substitution sat in an EXPANDING span, which is the
+        distinction that matters.
+
+        It lands on ``ask`` rather than ``allow`` only because ``$(`` in the raw
+        command trips the pre-existing obfuscation fallback — unrelated to this
+        PR, and the conservative direction.
+        """
+        result = bash_hook.check_command(
+            f"git commit -m '$({self.RM} /tmp/x)'", bundled_config
+        )
+        assert result["decision"] != "block", (
+            "a single-quoted substitution is inert — blocking it is a false "
+            "positive on text the shell never runs"
+        )
+        masked = bash_hook.masked_subcommands(f"git commit -m '$({self.RM} /x)'")
+        assert self.RM not in masked[0], (
+            "the single-quoted token should still be masked as content"
+        )
+
     def test_masked_form_keeps_the_substitution_visible(self, bash_hook):
         """The mechanism, asserted directly rather than via a verdict."""
         masked = bash_hook.masked_subcommands(f'git commit -m "$({self.RM} /x)"')
