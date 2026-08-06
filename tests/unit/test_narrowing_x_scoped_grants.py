@@ -44,7 +44,16 @@ BUNDLED_TOOLDEFS = REPO / "agentwire" / "tooldefs"
 EXPECTED_PATTERNS = 265
 EXPECTED_ANCHORED = 101
 
-STORE = "/Users/dotdev/.claude/projects/-x/memory"
+# A REAL directory, created per-test. The first version hardcoded an absolute
+# path under the dev machine's home, which does not exist on a CI runner — so
+# scope resolution (which realpaths both sides) matched locally and not in CI,
+# and the permitted branch was only ever evaluated on one machine. That is how
+# a wrong assertion in this file survived a green local run of 4547 tests.
+@pytest.fixture
+def store(tmp_path):
+    d = tmp_path / "projects" / "-x" / "memory"
+    d.mkdir(parents=True)
+    return str(d)
 
 
 @pytest.fixture
@@ -76,11 +85,31 @@ def verdict(cfg, command, cwd):
     return ("allow" if ok else "block"), r.get("id"), why
 
 
+def has_grant(cfg, rule_id):
+    """Is this rule id granted at all — structurally, not by reason text?
+
+    The first version of ``test_every_permit_names_its_grant`` asserted
+    ``"granted unattended" in why``. That is the UNSCOPED grant's wording; a
+    SCOPED grant that legitimately permits says "granted under <path>; this
+    command targets <path>" instead, so a correct permit failed the assertion.
+
+    It passed locally and failed in CI, which is the tell: the scope paths here
+    are absolute paths under a home directory that exists on the dev machine
+    and not on the runner, so locally the scope never matched, the permit never
+    happened, and the assertion was never reached. A test that only evaluates
+    its interesting branch on one machine is not testing that branch.
+
+    Guard the operation — "is there a grant behind this permit?" — not the
+    sentence the resolver happens to print.
+    """
+    return rule_id in C.resolve_unattended_grants(cfg)
+
+
 class TestTheRoutingReallyChanged:
     """The premise. Without this the rest could be measuring nothing."""
 
-    def test_a_substituted_operand_now_reaches_its_real_rule(self, cfg):
-        _, rule_id, _ = verdict(cfg, 'git commit -m "$(cat msg.txt)"', STORE)
+    def test_a_substituted_operand_now_reaches_its_real_rule(self, cfg, store):
+        _, rule_id, _ = verdict(cfg, 'git commit -m "$(cat msg.txt)"', store)
         assert rule_id == "git.commit", (
             "the narrowing is not routing this into grant evaluation, so the "
             "composition below is not being exercised")
@@ -89,14 +118,14 @@ class TestTheRoutingReallyChanged:
 class TestSubstitutionThatCannotDecideWhere:
     """A substituted commit MESSAGE. The grant applies normally."""
 
-    def test_an_unscoped_grant_permits_it(self, cfg):
-        decision, rule_id, why = verdict(cfg, 'git commit -m "$(cat msg.txt)"', STORE)
+    def test_an_unscoped_grant_permits_it(self, cfg, store):
+        decision, rule_id, why = verdict(cfg, 'git commit -m "$(cat msg.txt)"', store)
         assert (decision, rule_id) == ("allow", "git.commit")
         assert "granted unattended" in why, (
             "permitted with no affirmative grant behind it — that would be a "
             "hole rather than the policy")
 
-    def test_a_scoped_grant_refuses_it_because_scope_is_unknowable(self, cfg):
+    def test_a_scoped_grant_refuses_it_because_scope_is_unknowable(self, cfg, store):
         """Scope asks a different question and answers it independently.
 
         ``detect_obfuscation`` returns None here — the verb is literally
@@ -104,7 +133,7 @@ class TestSubstitutionThatCannotDecideWhere:
         still decide the directory, so scope keeps its own check.
         """
         decision, rule_id, why = verdict(
-            scoped(cfg, [STORE + "/"]), 'git commit -m "$(cat msg.txt)"', STORE)
+            scoped(cfg, [store + "/"]), 'git commit -m "$(cat msg.txt)"', store)
         assert (decision, rule_id) == ("block", "git.commit")
         assert "command substitution" in why
 
@@ -117,31 +146,58 @@ class TestSubstitutionThatCanDecideWhere:
         "git --git-dir=$(cat /tmp/dir)/.git commit -m x",
         "cd $(cat /tmp/dir) && git commit -m x",
     ])
-    def test_scoped_grant_refuses(self, cfg, command):
-        decision, _, why = verdict(scoped(cfg, [STORE + "/"]), command, STORE)
+    def test_scoped_grant_refuses(self, cfg, store, command):
+        decision, _, why = verdict(scoped(cfg, [store + "/"]), command, store)
         assert decision == "block", f"{command!r} was permitted: {why}"
 
 
 class TestNoComposedPermitIsUngranted:
     """The invariant that makes the whole composition safe to ship."""
 
+    # (command, cwd_is_store, scope_the_grant) — resolved against the `store`
+    # fixture inside the test, since a class-level list cannot use a fixture and
+    # a hardcoded absolute path is what made this file machine-dependent.
     CASES = [
-        ('git commit -m "$(cat msg.txt)"', STORE, None),
-        ('git commit -m "$(cat msg.txt)"', "/work/other", [STORE + "/"]),
-        ("git -C $(cat /tmp/dir) commit -m x", STORE, [STORE + "/"]),
-        ("uv run pytest $(cat files.txt)", "/work/repo", None),
-        ('git commit -m "memory: rewrite"', STORE, [STORE + "/"]),
+        ('git commit -m "$(cat msg.txt)"', True, False),
+        ('git commit -m "$(cat msg.txt)"', False, True),
+        ("git -C $(cat /tmp/dir) commit -m x", True, True),
+        ("uv run pytest $(cat files.txt)", False, False),
+        ('git commit -m "memory: rewrite"', True, True),
+        ('git commit -m "memory: rewrite"', False, True),
     ]
 
-    @pytest.mark.parametrize("command,cwd,paths", CASES)
-    def test_every_permit_names_its_grant(self, cfg, command, cwd, paths):
-        if paths:
-            scoped(cfg, paths)
+    @pytest.mark.parametrize("command,in_store,scope_it", CASES)
+    def test_every_permit_names_its_grant(self, cfg, store, command, in_store,
+                                          scope_it):
+        if scope_it:
+            scoped(cfg, [store + "/"])
+        cwd = store if in_store else "/work/other"
         decision, rule_id, why = verdict(cfg, command, cwd)
         if decision == "allow":
-            assert "granted unattended" in why, (
+            assert has_grant(cfg, rule_id), (
                 f"{command!r} was permitted with no grant behind it "
                 f"(rule={rule_id!r}, why={why!r})")
+            assert why, "a permit with no stated reason cannot be audited"
+
+    def test_a_scoped_grant_does_permit_in_scope(self, cfg, store):
+        """The branch CI caught and the dev machine never reached.
+
+        With a real, existing store directory the scope matches and the permit
+        actually happens — which is the only way the assertion above is
+        exercised at all. Asserted explicitly so it can never silently stop
+        happening again.
+        """
+        scoped(cfg, [store + "/"])
+        decision, rule_id, why = verdict(cfg, 'git commit -m "memory: rewrite"',
+                                         store)
+        assert (decision, rule_id) == ("allow", "git.commit"), why
+        assert has_grant(cfg, rule_id)
+
+    def test_and_refuses_out_of_scope(self, cfg, store):
+        scoped(cfg, [store + "/"])
+        decision, _, _ = verdict(cfg, 'git commit -m "memory: rewrite"',
+                                 "/work/other")
+        assert decision == "block"
 
     def test_scope_owns_its_substitution_check(self):
         """Regression guard for the coupling that caused this.

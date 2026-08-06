@@ -60,7 +60,12 @@ RM = "r" + "m"
 PAYLOADS = [
     (f"{RM} -rf /tmp/x", "core.rm-with-recursive-or-force-flags"),
     (f"sudo {RM} -rf /etc", "core.rm-with-recursive-or-force-flags"),
-    ("rmdir /Users/dotdev/projects/real", "core.rmdir-use-git-clean-or-manual-cleanup"),
+    # The path must NOT be allowlisted, or the bypassable path gate waves the
+    # rule through and this row asserts a refusal that never existed — the exact
+    # mistake an earlier draft made with `/tmp/x`, which IS allowlisted. Kept
+    # neutral rather than under a home directory so the verdict cannot depend on
+    # whose machine runs it (`TestPathAssumptions` below pins both halves).
+    ("rmdir /opt/not-allowlisted/real", "core.rmdir-use-git-clean-or-manual-cleanup"),
     ("git push --force origin main", "git.git-push-force-use-force-with-lease"),
     ("git reset --hard HEAD~5", "git.git-reset-hard-use-soft-or-stash"),
     ("git clean -fdx", "git.git-clean-with-force-directory-flags"),
@@ -206,6 +211,38 @@ class TestTheMechanism:
 
     def test_a_benign_payload_does_not_become_refused(self, cfg):
         assert unattended(cfg, 'git commit -m "$(date +%F)"')[0] == "allow"
+
+
+class TestPathAssumptions:
+    """Pin the premises the payload rows rest on, so neither can drift silently.
+
+    A row here asserts "this payload is refused". That is only meaningful if the
+    payload is refused STANDALONE — otherwise the row passes on a permission
+    that was never in question. Both halves are asserted rather than assumed,
+    because getting this wrong is what produced a false FAIL in the probe that
+    led to this file, and a machine-dependent green in its sibling.
+    """
+
+    def test_the_unallowlisted_path_really_is_refused_standalone(self, cfg):
+        assert unattended(cfg, "rmdir /opt/not-allowlisted/real") == (
+            "block", "core.rmdir-use-git-clean-or-manual-cleanup")
+
+    def test_and_an_allowlisted_one_really_is_permitted_standalone(self, cfg):
+        """The contrast. If this ever blocks, the row above proves nothing."""
+        assert unattended(cfg, "rmdir /tmp/x")[0] == "allow"
+
+    def test_the_verdicts_do_not_depend_on_the_home_directory(self, cfg,
+                                                              monkeypatch, tmp_path):
+        """No row here may change answer on a CI runner vs a dev machine.
+
+        Its sibling file failed exactly this way: absolute scope paths under a
+        home directory that exists locally and not on the runner, so the
+        interesting branch was only ever evaluated on one machine and a wrong
+        assertion survived a green local run of 4547 tests.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert unattended(cfg, "rmdir /opt/not-allowlisted/real")[0] == "block"
+        assert unattended(cfg, f'git commit -m "$({RM} -rf /tmp/x)"')[0] == "block"
 
     def test_single_quotes_expand_nothing_so_nothing_is_extracted(self):
         """SINGLE quotes suppress expansion entirely — nothing runs.
