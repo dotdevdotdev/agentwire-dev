@@ -9,8 +9,14 @@ blocked by the rules.
 
 #675 fixed this shape for tooldef-derived rules and for ``git.yaml`` with
 ``anchored: true`` (match masked command position, never quoted argument
-content). This extends the same per-rule property to the rest of the bundled
-set, and marks the rules that must NOT get it.
+content). This extends the same property to the rest of the bundled set, and
+marks the files that must NOT get it.
+
+SCOPE: the payload bug has THREE mechanisms and this fixes ONE of them —
+``bashToolPatterns``. The path ladders (mechanism 2) and whitespace-keyed
+masking (mechanism 3) are #922, and are asserted here as still-refused ON
+PURPOSE so a green run cannot read as "the reported symptom is fixed". See
+``TestRemainingPayloadMechanisms``.
 
 RULE SET UNDER TEST: the BUNDLED rules at
 ``agentwire/hooks/damage-control/rules/*.yaml`` — not ``~/.agentwire/
@@ -30,6 +36,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent.parent
 RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
+TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
 
 REFUSED = {"block", "ask"}
 SAFETY = {"enabled": True, "disabled_rules": [], "unattended_allow": []}
@@ -53,7 +60,23 @@ UNANCHORED = [(f, e) for f, e in BUNDLED if not e.get("anchored")]
 
 @pytest.fixture(scope="module")
 def bundled_config(bash_hook):
-    cfg = bash_hook.load_config(RULES_DIR, None)
+    """Bundled rules AND bundled tooldefs — what the real hook loads.
+
+    Loading rules alone is a fixture-shaped blind spot: the tooldef-derived
+    ask-rules are ~87 of the 265 patterns the hook actually sees, and omitting
+    them makes commands read ``allow`` here that are ``ask`` in reality. That
+    matters for this file specifically, because ``ask`` resolves to a BLOCK
+    under ``AGENTWIRE_UNATTENDED=1`` — so a payload carrier that is merely
+    "ask" is still broken on a scheduler dispatch.
+    """
+    cfg = bash_hook.load_config(RULES_DIR, TOOLDEFS_DIR)
+    assert not cfg.get("_parser_unavailable"), "rules failed to load"
+    # `source` is the rules-file stem for hand-written rules and the literal
+    # "tooldef" for generated ones, so it separates them reliably — an id prefix
+    # does not (a tooldef command with an explicit `id:` yields e.g. `git.push`,
+    # not `tooldef.*`).
+    hand = [p for p in cfg["bashToolPatterns"] if p.get("source") != "tooldef"]
+    assert len(hand) == 178, f"expected 178 hand-written rules, got {len(hand)}"
     cfg["safety"] = dict(SAFETY)
     return cfg
 
@@ -565,39 +588,53 @@ class TestItIsNotOnlyMsgSend:
     """Any command whose ARGUMENTS discuss a guarded operation — including the
     tooling you would use to audit the guard itself."""
 
+    # (carrier template, guarded-op payload). The assertion is PARITY: the same
+    # carrier with an innocuous payload must get the same verdict. Some carriers
+    # are ask-tier tooldef commands in their own right (`git commit`,
+    # `gh issue comment`) — that is by design and has nothing to do with #915,
+    # so asserting a bare `allow` would be asserting the wrong thing.
     CARRIERS = [
-        'echo "the rm -rf was refused by damage-control"',
-        'grep -rn "rm file deletion (use git clean or manual cleanup)" rules/',
-        'grep -rn "terraform destroy" docs/',
-        'git commit -m "note: rm -rf of the build dir was blocked"',
-        'gh issue comment 915 --body "damage-control refused rm -rf here"',
-        "gh pr create --body-file - <<EOF\nrm -rf was refused here\nEOF",
+        ('echo "{}"', "the rm -rf was refused by damage-control"),
+        ('grep -rn "{}" rules/', "rm file deletion (use git clean or manual cleanup)"),
+        ('grep -rn "{}" docs/', "terraform destroy"),
+        ('git commit -m "{}"', "note: rm -rf of the build dir was blocked"),
+        ('gh issue comment 915 --body "{}"', "damage-control refused rm -rf here"),
+        ("gh pr create --body-file - <<EOF\n{}\nEOF", "rm -rf was refused here"),
+        ('agentwire msg send --to orch --kind done "{}"',
+         "damage-control refused rm -rf on the stale worktree"),
     ]
+    INNOCUOUS = "everything went fine and nothing needed attention"
 
-    # KNOWN LIMIT: masking works on quoted tokens and heredoc bodies, not on
-    # trailing shell comments — `true  # git reset --hard was blocked` still
-    # matches, because `# …` is left inline in the masked subcommand. Out of
-    # scope here (it is a masked_subcommands change, owned by #913).
-    UNFIXED_COMMENT_FORM = "true  # note: git reset --hard was blocked"
 
-    @pytest.mark.parametrize("command", CARRIERS)
-    def test_allowed(self, bash_hook, bundled_config, command):
-        result = bash_hook.check_command(command, bundled_config)
-        assert result["decision"] == "allow", (
-            f"{command!r} refused for its argument text: {result['reason']}"
-        )
-
-    def test_trailing_shell_comment_is_a_known_remaining_hole(
-        self, bash_hook, bundled_config
+    @pytest.mark.parametrize(
+        "template,payload", CARRIERS, ids=[t[:28] for t, _ in CARRIERS]
+    )
+    def test_payload_text_does_not_change_the_verdict(
+        self, bash_hook, bundled_config, template, payload
     ):
-        """Documented, not fixed — asserted so the day it changes is visible."""
-        result = bash_hook.check_command(self.UNFIXED_COMMENT_FORM, bundled_config)
-        assert result["decision"] in REFUSED
+        loaded = bash_hook.check_command(template.format(payload), bundled_config)
+        plain = bash_hook.check_command(
+            template.format(self.INNOCUOUS), bundled_config
+        )
+        assert loaded["decision"] == plain["decision"], (
+            f"{template!r} changed verdict on its payload alone: "
+            f"{plain['decision']} with innocuous text, {loaded['decision']} with "
+            f"{payload!r} ({loaded['reason']}) — that is #915."
+        )
+        # and the reason must not be a rule about the operation being described
+        assert loaded.get("id") == plain.get("id"), (
+            f"{template!r} attributed to a different rule on payload alone: "
+            f"{plain.get('id')} -> {loaded.get('id')}"
+        )
 
     def test_reading_the_rules_is_not_blocked_by_the_rules(
         self, bash_hook, bundled_config
     ):
-        """The sharpest live instance: auditing the guard tripped the guard."""
+        """The sharpest live instance: auditing the guard tripped the guard.
+
+        Only the bashToolPatterns half — the same read against a *protected*
+        directory still fails via mechanism 2, asserted below.
+        """
         for command in (
             "diff ~/.agentwire/damage-control/core.yaml "
             "agentwire/hooks/damage-control/rules/core.yaml",
@@ -609,3 +646,78 @@ class TestItIsNotOnlyMsgSend:
                 f"reading the rules is refused by the rules: {command!r} "
                 f"-> {result['reason']}"
             )
+
+
+# ---------------------------------------------------------------------------
+# What this PR does NOT fix — tracked as #922
+# ---------------------------------------------------------------------------
+
+
+class TestRemainingPayloadMechanisms:
+    """The payload bug has THREE mechanisms; anchoring fixes ONE.
+
+    These are asserted as still-refused ON PURPOSE. A green suite must not be
+    readable as "the reported symptom is fixed" — it is not, and #915's own
+    headline example (a read whose search string mentions a deletion) is in
+    here. The day one of these starts passing, the assertion fails and someone
+    has to come update the story deliberately.
+
+    - **Mechanism 2 — the path ladders.** ``zeroAccessPaths`` /
+      ``readOnlyPaths`` / ``noDeletePaths`` iterate the RAW haystacks and have
+      no ``anchored`` concept at all, so a read whose SEARCH STRING mentions a
+      deletion is refused when the directory being read is protected.
+    - **Mechanism 3 — masking is keyed on WHITESPACE.** ``masked_subcommands``
+      blanks a fully-quoted token only when it contains whitespace, so a
+      single-word quoted payload is never masked.
+
+    Both are #922. They are deliberately out of scope here because this is a
+    guard-WEAKENING change and the governing question is *what else did this
+    just permit* — the path ladders gate reads of secrets, not just deletions,
+    so widening the blast radius to three ladder steps in the same diff is the
+    wrong trade.
+    """
+
+    # mechanism 2 — the literal incident from #915's body
+    LADDER_CASES = [
+        ('grep -rn "rm -rf" ~/.agentwire/', "noDeletePath"),
+        ('grep -rn "rm -rf" .git/', "noDeletePath"),
+        ('rg "rm -rf" ~/.claude/hooks/', "protectedControlPlane"),
+    ]
+
+    # mechanism 3 — a one-word payload in the exact reported carrier
+    WHITESPACE_CASES = [
+        'agentwire msg send --to orch --kind done "rmdir"',
+        'ssh prod "reboot"',
+        'mongosh --eval "db.dropDatabase()"',
+        # masking works on trailing comments no better than on one-word tokens
+        "true  # note: git reset --hard was blocked",
+    ]
+
+    @pytest.mark.parametrize("command,via", LADDER_CASES)
+    def test_path_ladder_still_refuses_a_read_that_mentions_a_deletion(
+        self, bash_hook, bundled_config, command, via
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] in REFUSED, (
+            f"{command!r} now passes — mechanism 2 looks fixed. If that is "
+            f"intentional (#922), update this test and #915's story."
+        )
+        assert via in str(result.get("pattern", "")), (
+            f"expected refusal via {via}, got {result.get('pattern')} — the "
+            f"mechanism changed even though the verdict did not"
+        )
+
+    @pytest.mark.parametrize("command", WHITESPACE_CASES)
+    def test_single_word_payload_is_never_masked(
+        self, bash_hook, bundled_config, command
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] in REFUSED, (
+            f"{command!r} now passes — mechanism 3 looks fixed (#922)."
+        )
+
+    def test_the_masking_control_case_does_pass(self, bash_hook, bundled_config):
+        """Two words, so it IS masked — the boundary mechanism 3 sits on."""
+        assert bash_hook.check_command(
+            'echo "terraform destroy"', bundled_config
+        )["decision"] == "allow"
