@@ -1,0 +1,814 @@
+"""The confirm spine — propose/confirm below the model (spike).
+
+    This defends against **mis-transcription and against an approval the
+    conversational model invented**, which is the stated threat. It does **not**
+    cover every mis-transcription — a transcriber hallucination or an
+    approval-shaped utterance meant for someone else is a real residual risk
+    that the nonce narrows but does not eliminate. **A passed gate means the
+    message was queued, not delivered, and not acted on.** It is **not** a
+    security boundary against an adversary.
+
+That paragraph is the guarantee, in full. **Widen it if you learn more; never
+narrow it.** Anyone holding the microphone can approve anything the buddy
+proposes. Do not paraphrase any of this as "the confirm gate protects writes" —
+a guarantee that gets rounded up in the retelling is how an operator-facing
+claim starts lying.
+
+The "queued, not delivered" clause lives *here*, in the paragraph the wiki and
+the docstring both carry, rather than only next to the spoken wording. This is
+what a future reader quotes when they ask what the gate guarantees, and without
+that clause they conclude "gate passed, so the write happened". It did not:
+``msg send`` queues, and delivery is at the recipient's next safe boundary.
+
+The split, and why it is two halves
+-----------------------------------
+
+**(a) Proposal binding, below the model.** :meth:`ConfirmSpine.confirm` accepts
+one argument: a token minted on a PRIOR turn by :meth:`ConfirmSpine.propose`.
+The argv is frozen at propose time (:class:`Proposal`) and TTL-bounded. Nothing
+between propose and confirm changes *what* runs, only *whether* it runs.
+
+**Single-use means consumed on SUCCESS, not on attempt**, and that is
+load-bearing rather than a detail. If a refused attempt burned the token, the
+``pending_transcript`` refusal below would tell the owner to wait when waiting
+cannot work — the spoken reason becomes a lie, and the owner is told to do the
+one thing that cannot help. Refused attempts are rate-limited
+(:data:`MAX_CONFIRM_ATTEMPTS`) instead.
+
+**(b) The approval judgment, also below the model.** DocumentScribe leaves this
+100% in the model: their anti-filler rule is a paragraph asking the model to be
+strict (``voice/instructions.ts`` lines 42-46), their own comment says "there's
+no code-level pattern match on 'yes'", and the stated fallback is "they tap the
+card" — a click surface a voice-only user cannot reach (#748). The part we were
+told to copy most carefully is the part that never worked hands-free.
+
+Why the approval is a NONCE and not an approval grammar
+--------------------------------------------------------
+
+The first design here gated on "an utterance matching an approval grammar and
+missing a filler denylist", and claimed that made two models fail the same way.
+**That claim was false, and the mechanism was weaker than it looked.** The two
+checks are not independent: both models consume the same audio. Three breaks,
+none of which need the conversational model to fail at all:
+
+- **Transcriber hallucination.** ``gpt-4o-mini-transcribe`` is Whisper-lineage,
+  and confident short outputs on near-silence — "Okay.", "Yeah.", "Thank you.",
+  "Yes." — are that family's best-documented failure. Three of those four were
+  in the original filler denylist, which is the tell: **the denylist was
+  enumerating a hallucination prior.** An unbounded denylist is not a
+  mechanism, it is a list of the failures you have thought of so far — the same
+  objection (b) raises against DocumentScribe's paragraph, one level down.
+- **An approval-shaped utterance meant for someone else** — "yeah, that's
+  right, anyway" to a person in the room. ``semantic_vad`` commits it.
+- **One approval, two proposals.** The old condition was existential ("there is
+  an utterance that postdates the proposal"), so one "yes" satisfied both P1 and
+  P2. §4 names that exact failure: acting twice.
+
+So the approval is a **spoken nonce**. The buddy speaks it in the proposal
+("say **confirm tango** to approve"), and the grammar is ``confirm <nonce>``.
+That **narrows** the first two — a nonce is not in a transcriber's prior, and
+nobody says "confirm tango" incidentally — and **closes** the third, because the
+nonce binds the utterance to one proposal (given uniqueness among live ones,
+which :meth:`ConfirmSpine.propose` enforces). It also makes the filler denylist
+redundant, which is the right shape. Cost: two words instead of one, still
+hands-free, so T5 holds.
+
+"Narrows", not "kills": a transcriber can still hallucinate, and a nonce word
+can still appear in speech meant for someone else. Claiming otherwise would
+contradict the honest limit above two paragraphs later.
+
+**The false-REJECT half is priced too, and it is the half that bites.** A nonce
+the transcriber renders inconsistently makes a CORRECT approval fail every
+time, and the taxonomy then tells the owner to say it again — so they repeat and
+fail identically. That is a livelock, and it is worse than the false-accept the
+strictness was buying. Hence :data:`NONCE_WORDS` (one spelling each, no digits)
+and containment rather than whole-utterance matching. See :func:`classify`.
+
+The nonce carries a second property worth naming: **the owner cannot say a
+nonce they have not heard**, which independently covers most of the barge-in
+hazard that :attr:`Proposal.anchor_seq` exists for. The anchor is kept anyway —
+two independent barriers, not one — but that is why the anchor is defence in
+depth rather than the only thing standing between a barge-in and a write.
+
+Bounded await, and three outcomes
+---------------------------------
+
+Fail-closed is right; fail-closed *immediately* is not. The conversational model
+starts generating as soon as VAD commits the turn, while transcription is a
+separate pass over the same buffer — so for a short utterance the confirm
+plausibly beats its own transcript a large fraction of the time. Refusing
+instantly would make every confirm cost two utterances, and worse: the first
+approval then sits stale in the ring, so if the owner says "no, wait" and the
+model retries, the gate finds the original approval and **writes after the owner
+said no**. Fail-closed plus retry manufactures the window.
+
+Hence: a bounded await on the ring's condition variable
+(:data:`APPROVAL_WAIT_S`), and **three outcomes, not two** — ``approved`` /
+``refused`` (a transcript arrived and did not match) / ``pending_transcript``
+(the await timed out). The last two demand OPPOSITE behaviour from the owner
+("say it again" vs "wait"), so collapsing them trains the owner to repeat into a
+system that needed them to hold still.
+
+The residual stale-approval window is closed from the other side too: a matched
+utterance is SPENT (:meth:`TranscriptRing.spend`), and any denial committed
+after the approval refuses the write.
+
+Every refusal must SPEAK — and this module cannot achieve that alone
+---------------------------------------------------------------------
+
+Silence is the one unacceptable failure mode: the owner is not looking at a
+screen, so a refusal they cannot hear is indistinguishable from not having been
+heard, and they simply repeat themselves.
+
+**Returning a reason does not achieve this.** A ``function_call_output`` is
+context; the model then says whatever it says. Refusing to leave the *judgment*
+in the model and then leaving the *announcement* in it is the same defect one
+level up. So this module's job ends at producing a distinct, actionable
+:attr:`Verdict.spoken` per outcome — and ``client.py`` owns the mechanism that
+makes it reach the ear (cancel the in-flight response, scripted
+``response.create``, verify against the following ``response.done``,
+``speechSynthesis`` fallback). Neither half is sufficient alone.
+
+No damage-control backstop on the sending — but the acting IS guarded
+----------------------------------------------------------------------
+
+Empirically confirmed (see the probe in ``tools/voice_dc_probe.py`` and the PR
+body): the Bash-tool path is hooked and over-blocks on prose (#915), and the
+bridge's ``subprocess.run`` path is not hooked at all. ``msg_send``'s MCP tool
+is not in the matcher list either, so **no programmatic path to ``msg send`` has
+damage-control coverage**.
+
+The precise statement, and it has to be this precise because every shorter
+version rounds up:
+
+    **The sending is unguarded. The acting-on-it inherits the recipient's
+    ordinary guards — which are guards on the OPERATION, not on WHO ASKED.**
+
+"The acting-on-it is guarded" overstates twice. On coverage: the recipient's
+hooks cover ``Bash``/``Edit``/``Write``/``Read``/``Grep``/``Glob`` and two MCP
+tools, so a recipient acting through any other ``mcp__agentwire__*`` tool
+(``session_send``, ``pane_spawn``, ``msg_send``, ``worktree_*``) is not guarded
+at all. And on kind, which matters more: **damage control cannot tell "the human
+asked" from "the buddy asked" from "a mis-transcription asked."** It is not a
+guard on the buddy's authority in any sense — the recipient is exactly as
+guarded as it was before, and the buddy has added a new way to ask it things.
+
+What actually constrains the buddy is the frozen argv and this gate. That is
+worth stating plainly rather than borrowing reassurance from the recipient's
+hooks.
+"""
+
+from __future__ import annotations
+
+import re
+import secrets
+import threading
+from dataclasses import dataclass, field
+
+from .transcript import TranscriptRing, Utterance
+
+#: How long a minted proposal stays confirmable, from the moment the buddy
+#: finished speaking it. Long enough to answer, short enough that an approval
+#: for something said minutes ago cannot land on it.
+PROPOSAL_TTL_S = 120.0
+
+#: How long ``confirm`` blocks waiting for the transcription model to catch up
+#: (§3.3). Long enough to absorb the ordinary transcript lag for a short
+#: utterance, short enough that the conversation does not read as dead — tool
+#: dispatch is sequential in the client, so this stalls the turn while it waits.
+APPROVAL_WAIT_S = 2.5
+
+#: Refused confirms tolerated per proposal before it is discarded. Refusals do
+#: NOT consume the token (see the module docstring), so something has to bound
+#: a model that keeps guessing.
+MAX_CONFIRM_ATTEMPTS = 5
+
+#: The nonce alphabet: short, phonetically distinct WORDS with one spelling each.
+#:
+#: **Digits were tried and they livelock.** "four seven" comes back from the
+#: transcriber as ``47``, ``four seven``, ``4-7`` or ``forty-seven`` — the least
+#: stable token type there is. Pairing that with an exact matcher makes a
+#: CORRECT approval fail deterministically, and under the taxonomy it fails as
+#: "that wasn't the phrase, say it again", so the owner repeats and fails
+#: identically. That is a livelock, and it is a worse outcome than the
+#: false-accept the strictness was buying: the gate exists to be usable
+#: hands-free.
+#:
+#: These are one-word, unambiguously spelled, and mutually distinct under
+#: ordinary mis-hearing. Chosen for how they SOUND, not for how they look.
+NONCE_WORDS = (
+    "tango", "harbor", "violet", "cobalt", "meadow", "falcon", "amber",
+    "kestrel", "juniper", "onyx", "saffron", "walrus", "domino", "pelican",
+    "quartz", "thistle", "vertigo", "narwhal", "gumbo", "ripcord",
+)
+
+#: Digit spellings, kept for normalization only. Nothing MINTS a digit nonce;
+#: this exists so that if one ever reaches the alphabet, "7" and "seven" match
+#: rather than livelocking — the false-reject half, priced.
+_NUMBER_WORDS = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "zero": "0",
+    "oh": "0",
+}
+
+#: Denial grammar (§3.1). Scanned over the remainder of the approving utterance
+#: AND over everything committed after it. The first design had none at all.
+_DENIAL_RE = re.compile(
+    r"\b(no|not|nope|dont|donot|stop|cancel|wait|hold|holdon|nevermind|never"
+    r"|abort|forget|scratch|undo)\b"
+)
+
+#: The one word that introduces an approval. Everything else about the match is
+#: the nonce.
+_CONFIRM_WORDS = ("confirm", "confirmed")
+
+_PUNCT_RE = re.compile(r"[^\w\s]+")
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize(text: str) -> str:
+    """Casefold, map digit spellings, strip punctuation, collapse whitespace.
+
+    Normalization runs on BOTH sides before matching. That is the half the
+    digit-nonce design failed to price: an exact matcher over an unnormalized
+    transcript rejects correct approvals, and a rejected correct approval is a
+    livelock, not a near-miss.
+    """
+    flat = _WS_RE.sub(" ", _PUNCT_RE.sub(" ", text.lower())).strip()
+    return " ".join(_NUMBER_WORDS.get(t, t) for t in flat.split())
+
+
+def mint_nonce() -> str:
+    """One word from :data:`NONCE_WORDS`."""
+    return secrets.choice(NONCE_WORDS)
+
+
+def spoken_nonce(nonce: str) -> str:
+    """How the buddy should SAY the nonce. It is already a word."""
+    return nonce
+
+
+#: The classification of an utterance against a proposal's nonce.
+APPROVED = "approved"
+DENIED = "denied"
+WRONG_NONCE = "wrong_nonce"
+NO_MATCH = "no_match"
+
+
+def classify(text: str, nonce: str) -> str:
+    """Classify *text* against *nonce*.
+
+    Four outcomes rather than a boolean, because each one calls for DIFFERENT
+    advice to the owner and collapsing them is how a recoverable state becomes
+    a loop:
+
+    - ``APPROVED`` — the phrase, said.
+    - ``DENIED`` — a take-back. Correct advice: stop. A boolean matcher would
+      report "wasn't the phrase, say it again", inviting the owner to repeat a
+      thing they just retracted.
+    - ``WRONG_NONCE`` — "confirm" plus a nonce that is not this proposal's.
+      Correct advice: ask what the code was. Repeating the wrong word forever
+      is the failure this outcome exists to prevent.
+    - ``NO_MATCH`` — no confirm phrase at all. Correct advice: say it.
+
+    **Matched by CONTAINMENT, not whole-utterance.** Whole-utterance strictness
+    was inherited from a design whose grammar was "yes" — a token carrying no
+    entropy, where containment let "yeah, that's right, anyway" through. The
+    nonce carries the entropy itself, so no incidental utterance contains it,
+    and strictness now buys nothing while rejecting the two most natural
+    phrasings ("confirm tango please", "yeah, confirm tango"). Rejecting a
+    correct approval is the expensive error here.
+    """
+    tokens = normalize(text).split()
+    if not tokens:
+        return NO_MATCH
+
+    target = normalize(nonce)
+    positions = [i for i, t in enumerate(tokens) if t in _CONFIRM_WORDS]
+    if not positions:
+        return NO_MATCH
+
+    for index in positions:
+        rest = tokens[index + 1:]
+        if not rest or rest[0] != target:
+            continue
+        # Found "confirm <nonce>". A denial anywhere in the utterance — before
+        # or after — is a take-back, and outranks the phrase.
+        if any(_DENIAL_RE.fullmatch(t) for t in tokens):
+            return DENIED
+        return APPROVED
+
+    # "confirm <something else>" is a different problem from "no confirm
+    # phrase at all", and the owner's next move differs.
+    if any(_DENIAL_RE.fullmatch(t) for t in tokens):
+        return DENIED
+    for index in positions:
+        rest = tokens[index + 1:]
+        if rest and rest[0] in NONCE_WORDS:
+            return WRONG_NONCE
+    return NO_MATCH
+
+
+def matches_nonce(text: str, nonce: str) -> bool:
+    """Convenience predicate: does *text* approve *nonce* outright?"""
+    return classify(text, nonce) == APPROVED
+
+
+def carries_denial(text: str) -> bool:
+    """Does *text* contain a refusal? Scanned over utterances AFTER an approval."""
+    return bool(_DENIAL_RE.search(normalize(text)))
+
+
+# =============================================================================
+# Proposals
+# =============================================================================
+
+
+@dataclass
+class Proposal:
+    """One frozen write, waiting for the owner's spoken nonce.
+
+    ``argv_prefix`` and ``instruction`` are captured at propose time and never
+    reassigned. :meth:`build_argv` is the only way to turn them into a command,
+    and it takes no caller-supplied parameters.
+
+    ``anchor_seq`` is the logical time at which the buddy finished SPEAKING this
+    proposal, supplied by the client's ``response.done`` for that turn. It is
+    ``None`` until then, and an unanchored proposal is not confirmable: at
+    propose time the owner has not yet heard what they would be approving, and
+    barge-in is native on WebRTC. Anchoring to the spoken turn rather than to
+    the tool call is what makes "postdates the proposal" mean "after the owner
+    heard it".
+
+    **On the one thing not frozen at propose time.** The argv is frozen at
+    propose AND the delivered body carries the verbatim authorizing utterance,
+    which does not exist until confirm. Both hold, because the confirm-time
+    addition is not an input: the utterance comes from the transcription ring
+    and the id from this store. Confirm's entire model-supplied surface is one
+    token string.
+    """
+
+    id: str
+    token: str
+    nonce: str
+    tool: str
+    session: str
+    instruction: str
+    argv_prefix: tuple[str, ...]
+    created_at: float
+    anchor_seq: "int | None" = None
+    anchored_at: float = 0.0
+    attempts: int = 0
+    params: dict = field(default_factory=dict)
+
+    @property
+    def announced(self) -> bool:
+        return self.anchor_seq is not None
+
+    def expired(self, now: float, ttl: float) -> bool:
+        # The TTL runs from the moment the owner HEARD it, not from the tool
+        # call: a proposal the buddy has not finished speaking has not started
+        # costing the owner anything yet.
+        started = self.anchored_at or self.created_at
+        return now >= started + ttl
+
+    def build_argv(self, utterance: str) -> list[str]:
+        return [*self.argv_prefix, render_body(self.instruction, utterance, self.id)]
+
+
+# =============================================================================
+# Attribution rendering (spec §4b)
+# =============================================================================
+
+#: The at-a-glance attribution marker, and it goes FIRST in the body. See
+#: :func:`render_body` for why the front position is load-bearing rather than
+#: decorative.
+VOICE_MARKER = "<voice>"
+
+#: Hard cap on the rendered body. Two measured constraints drive it, and both
+#: are about the DELIVERY path rather than about readability:
+#:
+#: - ``flush_session``'s ``stuck`` test is a plain substring test with no #851
+#:   window path, so a body long enough that the box renders only a window of it
+#:   fails the #689 heal — the message wedges permanently: never healed, never
+#:   dead-lettered, therefore never emailed.
+#: - ``VERIFY_SCROLLBACK_LINES = 200``: the dedup needle must sit entirely
+#:   inside the capture or delivery reports False, stays pending, and re-pastes
+#:   — a duplicate delivery, which is "the orchestrator acts twice".
+#:
+#: See ``tests/unit/test_voice_body_delivery.py`` for the measurement.
+MAX_BODY_CHARS = 300
+
+#: How much of the verbatim utterance survives into the rendered line.
+MAX_UTTERANCE_CHARS = 90
+
+#: How much of the instruction survives INTO THE RENDERED LINE. Distinct from
+#: ``write_tools.MAX_INSTRUCTION_CHARS``, which bounds what the model may
+#: propose at all; this one bounds what the recipient's pane has to render.
+MAX_RENDERED_INSTRUCTION_CHARS = 160
+
+
+def _one_line(text: str) -> str:
+    """Collapse *text* to a single line.
+
+    Load-bearing, and measured rather than assumed. The paste itself is safe
+    with newlines — ``pane_manager.send_to_target`` uses ``tmux paste-buffer
+    -p`` (bracketed paste) with ``enter=False`` — and the #621 dedup is safe
+    too, because ``message_on_scrollback`` whitespace-normalizes both sides.
+
+    **The #689 heal is what breaks.** A multi-line paste renders in Claude Code
+    as the ``[Pasted text #N +M lines]`` chip and nothing else, so
+    ``flush_session``'s ``stuck`` substring test finds nothing, ``finish_submit``
+    never runs, ``_box_static`` classifies it no-penalty after three sweeps, and
+    the message is **permanently wedged: never healed, never dead-lettered,
+    therefore never emailed** — surfacing only via ``doctor`` after two hours.
+    For a channel whose entire justification is "the owner is not watching a
+    screen", that is the worst available failure.
+    """
+    return _WS_RE.sub(" ", text.replace("\r", " ").replace("\n", " ")).strip()
+
+
+def _clip(text: str, limit: int) -> str:
+    text = _one_line(text)
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def render_body(instruction: str, utterance: str, proposal_id: str) -> str:
+    """The fixed one-line two-part shape every buddy write carries (§4b).
+
+    Part one is what the buddy asked for; part two is what the owner actually
+    said to authorize it, verbatim, plus the proposal id. The recipient can
+    check the paraphrase rather than trust it — and can see it when the buddy
+    got it wrong. Free, because the gate already had to capture that utterance.
+
+    Visible separators rather than newlines: scannable without being a wall,
+    and without the wedging failure newlines cause.
+
+    **The ``<voice>`` marker goes FIRST, and that placement is the whole of
+    Slice 1's attribution.** §4 rules that ``--from buddy`` alone is not enough
+    — a recipient must tell a buddy-originated request from a human-typed one
+    without reading carefully. With ``--kind request`` (see write_tools for why
+    the ``voice`` kind is deferred) the kind slot distinguishes nothing, so the
+    only prefix-level distinguisher left would be exactly the sender string §4
+    rejected. Putting the marker at the front of the BODY puts it in the same
+    position on screen the kind slot would have occupied, and touches no shared
+    code. Slice 1 does not claim kind-slot attribution; that arrives with 1b.
+    """
+    body = (
+        f"{VOICE_MARKER} {_clip(instruction, MAX_RENDERED_INSTRUCTION_CHARS)} "
+        f"┃ said: \"{_clip(utterance, MAX_UTTERANCE_CHARS)}\" "
+        f"┃ #{proposal_id}"
+    )
+    return _clip(body, MAX_BODY_CHARS)
+
+
+# =============================================================================
+# Outcomes
+# =============================================================================
+
+#: What the buddy SAYS for each outcome, keyed on the owner's next move (§3.4).
+#: Deliberately distinct: ``refused`` and ``pending_transcript`` require
+#: OPPOSITE behaviour, so collapsing them trains the owner to repeat into a
+#: system that needed them to wait.
+#:
+#: One dict, so an outcome without a line fails a test rather than shipping mute.
+SPOKEN = {
+    "no_proposal": (
+        "I don't have anything pending, so there's nothing to confirm. "
+        "Tell me again what you'd like sent."
+    ),
+    "expired": (
+        "That one expired before you confirmed it. Ask me again and I'll set it up fresh."
+    ),
+    "not_announced": (
+        "Hang on — I haven't finished telling you what I'd send yet."
+    ),
+    "replayed": "I already sent that one, so I'm not sending it again.",
+    "refused": (
+        "I didn't hear the confirmation phrase, so I haven't sent anything. "
+        "Say confirm and then the word I gave you."
+    ),
+    "wrong_nonce": (
+        "That was a different code word, so I haven't sent anything. "
+        "Ask me what the word was and I'll say it again."
+    ),
+    "denied": "You said no, so I haven't sent it.",
+    "pending_transcript": (
+        "Give me a second — I'm still catching up on what you said. Don't repeat it yet."
+    ),
+    "too_many_attempts": (
+        "I've got that wrong too many times, so I've dropped it. Ask me again from the top."
+    ),
+    "dispatch_failed": (
+        "You confirmed it, but the handoff itself failed, so it did not go through."
+    ),
+}
+
+#: Outcomes whose correct owner response is to WAIT rather than to speak again.
+#: Named so the persona and the tests can both reason about it.
+WAIT_OUTCOMES = frozenset({"pending_transcript", "not_announced"})
+
+
+@dataclass
+class Verdict:
+    """The outcome of a confirm. ``approved`` is the only one that writes."""
+
+    approved: bool
+    reason: str
+    utterance: str = ""
+    argv: "list[str] | None" = None
+    #: The ring entry the approval matched, so it can be spent on success.
+    utterance_item_id: str = ""
+
+    @property
+    def spoken(self) -> str:
+        if self.approved:
+            return ""
+        return SPOKEN.get(self.reason) or "I couldn't do that, so nothing was sent."
+
+    def to_dict(self) -> dict:
+        if self.approved:
+            # "queued", never "sent" (§3.6). ``agentwire msg send`` QUEUES: the
+            # CLI says so verbatim, delivery happens at the next safe boundary
+            # and can defer behind the box gates. From the owner's ear, "I told
+            # the orchestrator" followed by nothing is worse than a silent
+            # refusal, because success was affirmatively claimed.
+            return {
+                "success": True,
+                "reason": "queued",
+                "queued": True,
+                "sent": False,
+                "approved_by": self.utterance,
+                "say": (
+                    "Queued it — it'll land when that session is free."
+                ),
+                "must_speak": True,
+            }
+        return {
+            "success": False,
+            "reason": self.reason,
+            "say": self.spoken,
+            "must_speak": True,
+            "owner_should_wait": self.reason in WAIT_OUTCOMES,
+            **({"heard": self.utterance} if self.utterance else {}),
+        }
+
+
+class ConfirmSpine:
+    """The propose/confirm token store plus the code-side approval evaluation.
+
+    One per bridge, injected into tool dispatch. Deliberately not a module-level
+    singleton: a process-global store of pending writes outlives the
+    conversation that proposed them.
+    """
+
+    def __init__(
+        self,
+        ring: TranscriptRing,
+        *,
+        ttl_s: float = PROPOSAL_TTL_S,
+        wait_s: float = APPROVAL_WAIT_S,
+        runner=None,
+        clock=None,
+    ):
+        import time as _time
+
+        self._ring = ring
+        self._ttl_s = ttl_s
+        self._wait_s = wait_s
+        self._runner = runner
+        self._clock = clock or _time.monotonic
+        self._lock = threading.Lock()
+        self._proposals: dict[str, Proposal] = {}
+        self._succeeded: set[str] = set()
+
+    # -- propose ------------------------------------------------------------
+
+    def propose(
+        self,
+        *,
+        tool: str,
+        session: str,
+        instruction: str,
+        argv_prefix: "list[str] | tuple[str, ...]",
+        params: "dict | None" = None,
+    ) -> Proposal:
+        """Mint a single-use, TTL-bounded proposal with the argv frozen.
+
+        Nonces are unique among LIVE proposals: two outstanding proposals
+        sharing one would re-open the "one approval, two proposals" hole the
+        nonce exists to close.
+        """
+        with self._lock:
+            self._expire_locked()
+            # Drawn from the FREE set, not by retrying a random draw. Retrying
+            # looks equivalent and is not: with k of n nonces taken it fails
+            # spuriously with probability (k/n)^tries, so a legitimate proposal
+            # can be refused while nonces are still available — rare enough to
+            # read as a flake and frequent enough to happen. Uniqueness is what
+            # closes "one approval, two proposals", so exhaustion must be an
+            # error and near-exhaustion must not be.
+            taken = {p.nonce for p in self._proposals.values()}
+            free = [w for w in NONCE_WORDS if w not in taken]
+            if not free:
+                raise RuntimeError(
+                    "no free nonce — too many proposals outstanding; "
+                    "reusing one would let a single approval satisfy two"
+                )
+            nonce = secrets.choice(free)
+            proposal = Proposal(
+                id=secrets.token_hex(3),
+                token=secrets.token_urlsafe(18),
+                nonce=nonce,
+                tool=tool,
+                session=session,
+                instruction=instruction,
+                argv_prefix=tuple(argv_prefix),
+                created_at=self._clock(),
+                params=dict(params or {}),
+            )
+            self._proposals[proposal.token] = proposal
+        return proposal
+
+    def announce(self, proposal_id: str, seq: int) -> bool:
+        """Anchor a proposal to the ``response.done`` in which it was SPOKEN.
+
+        Called from the client once the buddy's spoken turn completes. Until
+        this lands the proposal is not confirmable — see
+        :attr:`Proposal.anchor_seq`.
+        """
+        with self._lock:
+            for proposal in self._proposals.values():
+                if proposal.id == proposal_id and proposal.anchor_seq is None:
+                    proposal.anchor_seq = seq
+                    proposal.anchored_at = self._clock()
+                    return True
+        return False
+
+    def pending(self) -> list[Proposal]:
+        with self._lock:
+            self._expire_locked()
+            return list(self._proposals.values())
+
+    # -- confirm ------------------------------------------------------------
+
+    def confirm(self, token: str) -> Verdict:
+        """Evaluate the gate for *token*; on approval, run the frozen argv.
+
+        The only parameter is the token, so there is structurally nothing to
+        mutate between propose and confirm.
+        """
+        proposal, refusal = self._claim(token)
+        if refusal is not None:
+            return refusal
+
+        anchor = proposal.anchor_seq or 0
+        found = self._ring.await_utterance_after(anchor, self._wait_s)
+        verdict = self._judge(proposal, found)
+
+        if not verdict.approved:
+            if verdict.reason in WAIT_OUTCOMES:
+                # A timing miss is not the model's fault and must not burn an
+                # attempt, or a slow transcriber would exhaust the proposal.
+                return verdict
+            self._penalize(token)
+            return verdict
+
+        self._ring.spend(verdict.utterance_item_id)
+        with self._lock:
+            self._proposals.pop(token, None)
+            self._succeeded.add(token)
+
+        argv = proposal.build_argv(verdict.utterance)
+        verdict.argv = argv
+        if self._runner is not None:
+            result = self._runner(argv) or {}
+            if not result.get("success", False):
+                return Verdict(
+                    approved=False, reason="dispatch_failed", utterance=verdict.utterance
+                )
+        return verdict
+
+    def cancel(self, token: str) -> Verdict:
+        """Retire a proposal without writing. Never gated — refusing is free."""
+        with self._lock:
+            self._proposals.pop(token, None)
+        return Verdict(approved=False, reason="denied")
+
+    # -- internals ----------------------------------------------------------
+
+    def _judge(self, proposal: Proposal, found: "list[Utterance]") -> Verdict:
+        if not found:
+            return Verdict(approved=False, reason="pending_transcript")
+
+        usable = [u for u in found if not u.estimated]
+        if not usable:
+            # Only entries with unknown ordering are available. Treated as a
+            # timing miss rather than a rejection: the owner's correct move is
+            # still to wait, and telling them to repeat would be wrong.
+            return Verdict(approved=False, reason="pending_transcript")
+
+        match = None
+        wrong_nonce = None
+        for entry in usable:
+            outcome = classify(entry.text, proposal.nonce)
+            if outcome == DENIED:
+                # An explicit take-back wins immediately, and is a DIFFERENT
+                # refusal from "that wasn't the phrase" — the owner should stop,
+                # not repeat themselves.
+                return Verdict(approved=False, reason="denied", utterance=entry.text)
+            if outcome == WRONG_NONCE and wrong_nonce is None:
+                wrong_nonce = entry
+            if outcome == APPROVED:
+                match = entry
+                break
+        if match is None:
+            if wrong_nonce is not None:
+                # "Right shape, wrong code" needs "ask me what the code was",
+                # not "say it again" — repeating the wrong word loops forever.
+                return Verdict(
+                    approved=False, reason="wrong_nonce", utterance=wrong_nonce.text
+                )
+            return Verdict(
+                approved=False, reason="refused", utterance=usable[-1].text
+            )
+
+        # A denial committed AFTER the approval refuses the write. This is what
+        # closes the stale-approval window the bounded await would otherwise
+        # leave open: the owner said the phrase, then changed their mind before
+        # the model got round to calling confirm.
+        later = self._ring.after(match.commit_seq, include_spent=True)
+        if any(carries_denial(entry.text) for entry in later):
+            return Verdict(approved=False, reason="denied", utterance=match.text)
+
+        return Verdict(
+            approved=True,
+            reason="approved",
+            utterance=match.text,
+            utterance_item_id=match.item_id,
+        )
+
+    def _claim(self, token: str) -> "tuple[Proposal | None, Verdict | None]":
+        with self._lock:
+            if token in self._succeeded:
+                return None, Verdict(approved=False, reason="replayed")
+
+            proposal = self._proposals.get(token)
+            # THIS token's expiry is decided before the general sweep. Sweeping
+            # first deletes it and the lookup then reports "no_proposal", which
+            # silently collapses two outcomes whose spoken advice differs
+            # ("ask me again" vs "tell me again what you wanted") — exactly the
+            # taxonomy collapse §3.4 forbids.
+            if proposal is not None and proposal.expired(self._clock(), self._ttl_s):
+                del self._proposals[token]
+                self._expire_locked()
+                return None, Verdict(approved=False, reason="expired")
+
+            self._expire_locked()
+            if proposal is None:
+                return None, Verdict(approved=False, reason="no_proposal")
+            if not proposal.announced:
+                return None, Verdict(approved=False, reason="not_announced")
+            return proposal, None
+
+    def _penalize(self, token: str) -> None:
+        with self._lock:
+            proposal = self._proposals.get(token)
+            if proposal is None:
+                return
+            proposal.attempts += 1
+            if proposal.attempts >= MAX_CONFIRM_ATTEMPTS:
+                del self._proposals[token]
+
+    def _expire_locked(self) -> None:
+        now = self._clock()
+        for token in [
+            t for t, p in self._proposals.items() if p.expired(now, self._ttl_s)
+        ]:
+            del self._proposals[token]
+
+
+__all__ = [
+    "APPROVAL_WAIT_S",
+    "MAX_BODY_CHARS",
+    "MAX_CONFIRM_ATTEMPTS",
+    "PROPOSAL_TTL_S",
+    "SPOKEN",
+    "WAIT_OUTCOMES",
+    "ConfirmSpine",
+    "Proposal",
+    "Verdict",
+    "APPROVED",
+    "DENIED",
+    "NONCE_WORDS",
+    "NO_MATCH",
+    "VOICE_MARKER",
+    "WRONG_NONCE",
+    "carries_denial",
+    "classify",
+    "matches_nonce",
+    "mint_nonce",
+    "normalize",
+    "render_body",
+    "spoken_nonce",
+]
