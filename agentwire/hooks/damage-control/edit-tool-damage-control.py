@@ -613,7 +613,8 @@ def load_config(
 #   1. ``AGENTWIRE_UNATTENDED_ALLOW`` — the per-task extension the scheduler
 #      stamps from a task's ``unattended_allow``,
 #   2. ``safety.unattended_allow`` from the host-owned damage-control files,
-#   3. ``DEFAULT_UNATTENDED_ALLOW`` below (work + open a PR + notify the owner
+#   3. ``DEFAULT_UNATTENDED_ALLOW`` below (work + verify that work + open a
+#      PR + notify the owner
 #      by email — nothing else irreversible or outward-facing).
 #
 # PRECEDENCE, NOT UNION (#914): the most specific source that NAMES a rule id
@@ -701,6 +702,34 @@ DEFAULT_UNATTENDED_ALLOW = [
     "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
     "gh.pr-create",  # open a PR — the human-reviewed gate
     "outbound.agentwire-email",  # blanket allow, any recipient (#804)
+    # Run the project's own tooling — tests, linters, the project CLI (#925).
+    #
+    # This tier is `ask` because `uv run` executes code, which is true of every
+    # scheduled task by definition: the dispatch already granted "run this
+    # agent on this repo". Withholding the project's OWN test runner from it
+    # does not withhold code execution, it only withholds VERIFICATION — the
+    # task still writes the change and still opens the PR, just without having
+    # been able to run the suite over it. 18 of the 111 unattended blocks
+    # measured over the 14 days to 2026-08-06 were exactly this, most of them
+    # one task repeatedly failing to run `uv run amo status`.
+    #
+    # Safe to allow only because the id it grants cannot shadow a hard block.
+    # Verified, not assumed: rules are evaluated in order and the FIRST match
+    # returns its id, so an earlier `ask` rule CAN hide a later `block` — the
+    # matrix in tests/unit/test_unattended_allow.py pins that every dangerous
+    # form behind `uv run` still comes back with the DESTRUCTIVE rule's id, not
+    # this one. `uv run bash -c 'git push --force'` did come back with this id
+    # before the masked-rescan fix above, which is why that fix ships here.
+    #
+    # BOTH ids, deliberately. `uv run <script.py>` and `uv run <cmd>` are two
+    # tooldef lines that compile to the IDENTICAL pattern `\buv\s+run\b`, so
+    # which id a command comes back with is decided by which yaml line sits
+    # higher, not by anything about the command. All 18 real blocks carried
+    # `-a-script-` for exactly that reason. Allowlisting only that one would be
+    # guarding the phrasing: reorder uv.yaml, or drop its `<script.py>` line,
+    # and the permission silently evaporates with nothing failing to say so.
+    "tooldef.uv-run-a-script-in-project-environment",
+    "tooldef.uv-run-a-command-in-project-environment",
 ]
 
 
@@ -2383,11 +2412,35 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
                 continue
             if is_content:
                 # A ``sh -c "…"`` payload is a command, not content — rescan.
+                #
+                # Keyed on the token BEFORE the ``-c`` flag, not on word 0.
+                # Requiring the shell to be the first word guarded the
+                # *phrasing* ("bash is what you typed first"), not the
+                # operation ("this payload is executed as a command"), so any
+                # launcher prefix moved the shell off word 0 and every ANCHORED
+                # rule went blind to the payload. Measured against the bundled
+                # corpus, 62 of 78 ``<prefix> bash -c '<destructive>'`` forms
+                # were not hard-blocked — ``git push --force`` /
+                # ``git reset --hard`` / ``git clean -fdx`` behind each of
+                # ``uv run``, ``env``, ``nice``, ``time``, ``nohup``,
+                # ``stdbuf``, ``timeout``, ``command``, ``xargs``, ``uvx``,
+                # ``poetry run``, ``npx``. ``rm -rf`` survived only because its
+                # rule is unanchored and still sees the raw haystack, which is
+                # luck rather than design.
+                #
+                # This is strictly additive: it can only append haystacks, so
+                # no rule that matched before stops matching. The residual
+                # false-positive surface is a command carrying a BARE ``bash``
+                # token followed by a ``-c`` flag followed by a quoted
+                # multi-word span (``echo bash -c 'some text'``). A report
+                # merely *describing* such a command cannot reach it — the
+                # description is itself one quoted span, so ``bash`` is never
+                # a token here (the #915 shape, checked in the corpus below).
                 if (
-                    words
+                    len(words) >= 2
                     and prev.startswith("-")
                     and "c" in prev
-                    and words[0].rsplit("/", 1)[-1] in _SHELL_NAMES
+                    and words[-2].rsplit("/", 1)[-1] in _SHELL_NAMES
                 ):
                     results.extend(_masked_subcommand_words(resolved))
                 words.append(_MASK)
