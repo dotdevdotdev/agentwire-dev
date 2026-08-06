@@ -470,8 +470,13 @@ the scope" as the threat model, not a cooperative caller.**
 
 **Two limits that are NOT closed**, stated rather than implied:
 
-- `git config core.worktree` redirects a repo from inside its own config. No
-  reading of the command can see that.
+- **`git config core.worktree` is a reachable two-step escape, not a theoretical
+  blind spot.** It redirects a repo from inside its own config, which no reading
+  of the command can see — *and the redirect is itself unrestricted* (`git
+  config core.worktree <elsewhere>` matches no rule at all, with or without
+  `-C`). So a session holding a scoped commit grant can point the in-scope
+  store's work tree elsewhere and then commit entirely within scope. Closing it
+  needs a rule making that `ask`-tier; tracked in #927.
 - Resolution is a **TOCTOU window**: the hook validates a path the command has
   not used yet.
 

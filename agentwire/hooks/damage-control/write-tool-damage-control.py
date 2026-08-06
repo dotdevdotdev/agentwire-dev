@@ -656,10 +656,17 @@ def load_config(
 # while the ``env(1)`` spelling was already refused). Enumerate what is handled;
 # do not assert a closure property over shell semantics.
 #
-# NOT closed, and stated so rather than implied: ``git config core.worktree``
-# redirects a repo from inside its own config, which no reading of the command
-# can see; and resolution is a TOCTOU window — the hook validates a path the
-# command has not used yet.
+# NOT closed, and stated so rather than implied:
+#   * ``git config core.worktree`` is a reachable TWO-STEP ESCAPE, not merely a
+#     parser blind spot. It redirects a repo from inside its own config, which
+#     no reading of the command can see — AND the redirect is itself unruled
+#     (``git config core.worktree <elsewhere>`` matches no rule, with or without
+#     ``-C``). A session holding a scoped commit grant can therefore point the
+#     in-scope store's work tree elsewhere and then commit entirely within
+#     scope. Closing it needs a rule making that ``ask``-tier, which is
+#     rule-file territory; tracked in #927.
+#   * Resolution is a TOCTOU window — the hook validates a path the command has
+#     not used yet.
 #
 # Hard ``block`` rules (rm -rf, git push --force, …) are unaffected — they fire
 # regardless. Interactive bypass sessions (no ``AGENTWIRE_UNATTENDED``) are
