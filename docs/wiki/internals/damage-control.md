@@ -270,8 +270,42 @@ filename. Rules moved into `payloads.yaml` carry an explicit `id:` pinned to
 their previous id, so `safety.disabled_rules` / `unattended_allow` entries keep
 working.
 
-Known limit: a **trailing shell comment** is not masked, so
-`true  # <guarded op> was blocked` still matches.
+##### What anchoring gave up — the ssh-wrapped class (#924)
+
+Anchoring the 151 command-prefix rules demotes roughly **125 of 151
+ssh-wrapped dangerous forms from refused to allowed**:
+`ssh prod "terraform destroy"`, `ssh prod "kubectl delete namespace prod"`,
+`ssh prod "gh repo delete …"` and so on now pass.
+
+This is a demotion of **incidental** coverage, not a broken guard: those forms
+only blocked because of the same match-anywhere behaviour that *is* the payload
+bug. `remote.yaml`'s 12 rules are the *intentional* ssh coverage and are
+untouched — but the coverage was real while it lasted, so it is stated here
+rather than left to be discovered.
+
+The fix is **#924**: extend the `_SHELL_NAMES` rescan to
+`ssh <host> "<payload>"` so every rule applies to the payload, after which
+`remote.yaml` becomes **deletable** rather than something to extend. Widening
+`remote.yaml` to ~120 ssh twins is explicitly not the answer — that duplicates
+the entire rule set, which is the coupling this design exists to avoid.
+
+Known limits, all asserted as expected-fail rows in
+`tests/unit/test_damage_control_payload_anchoring.py` so a green suite cannot
+imply they work:
+
+| limit | example | tracked |
+|---|---|---|
+| ssh-wrapped forms outside `remote.yaml`'s 12 | `ssh prod "terraform destroy"` | #924 |
+| path ladders have no `anchored` concept | `grep -rn "<deletion>" ~/.agentwire/` → blocked by `noDeletePath` | #922 |
+| masking is keyed on **whitespace** | `msg send --kind done "rmdir"` → still blocked | #922 |
+| trailing shell comment is not masked | `true  # <guarded op> was blocked` | #922 |
+
+The middle two are why the **payload bug has three mechanisms** and anchoring
+`bashToolPatterns` fixes only the first. The path ladders in particular run
+three different predicates (`protectedControlPlane`, `zeroAccessPaths`,
+`readOnly`/`noDelete`), which is why one anchored-style flag will not serve
+them — the same *(rule × command-form)* conclusion that made anchoring a
+per-file decision.
 
 Both invariants are enforced by
 `tests/unit/test_damage_control_payload_anchoring.py`, which also asserts a

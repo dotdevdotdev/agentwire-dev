@@ -428,8 +428,14 @@ SSH_WRAPPED_SURVIVES = [
 
 
 class TestSshWrappedCommandsStillRefused:
-    """The inner command arrives as a quoted arg — the reason remote.yaml
-    stays unanchored. remote.yaml had ZERO coverage in the suite before this."""
+    """remote.yaml's OWN 12 rules — its intentional ssh coverage — still hold.
+
+    SCOPE WARNING: this corpus is exactly those 12 forms. It says nothing about
+    ssh-wrapped commands generally, ~125 of which this PR demotes to allowed —
+    see TestSshWrappedCoverageReduction and #924. remote.yaml previously had no
+    coverage in the suite at all, which is why these 12 are asserted here; that
+    is not the same as ssh being handled.
+    """
 
     @pytest.mark.parametrize("command", SSH_WRAPPED_MASKED + SSH_WRAPPED_SURVIVES)
     def test_refused(self, bash_hook, bundled_config, command):
@@ -627,13 +633,15 @@ class TestItIsNotOnlyMsgSend:
             f"{plain.get('id')} -> {loaded.get('id')}"
         )
 
-    def test_reading_the_rules_is_not_blocked_by_the_rules(
+    def test_reading_an_unprotected_repo_path_is_not_blocked_by_bash_rules(
         self, bash_hook, bundled_config
     ):
-        """The sharpest live instance: auditing the guard tripped the guard.
+        """Named for what it proves, which is narrower than it looks.
 
-        Only the bashToolPatterns half — the same read against a *protected*
-        directory still fails via mechanism 2, asserted below.
+        All three commands read a path under the REPO, so no path ladder
+        engages — this exercises the bashToolPatterns half only. The original
+        reported command reads a PROTECTED directory and still fails
+        (mechanism 2, #922); see TestRemainingPayloadMechanisms.
         """
         for command in (
             "diff ~/.agentwire/damage-control/core.yaml "
@@ -721,3 +729,66 @@ class TestRemainingPayloadMechanisms:
         assert bash_hook.check_command(
             'echo "terraform destroy"', bundled_config
         )["decision"] == "allow"
+
+
+class TestSshWrappedCoverageReduction:
+    """DISCLOSURE: anchoring demotes ~125 of 151 ssh-wrapped dangerous forms
+    from refused to allowed, and this PR does not fix that. #924.
+
+    Read this before reading TestSshWrappedCommandsStillRefused, whose corpus
+    is EXACTLY the 12 forms ``remote.yaml`` protects — a corpus shaped to the
+    survivors, which proves nothing about the rest. That is the fixture-shaped
+    blind spot this file's own docstring calls out in the #675 test, reproduced
+    one level up.
+
+    Why it is a demotion rather than a regression in design: the pre-change
+    blocking of `ssh prod "<anything dangerous>"` was INCIDENTAL — it came from
+    the same match-anywhere behaviour that IS the bug. ``remote.yaml``'s 12
+    rules are the *intentional* ssh coverage and they are untouched. But the
+    coverage was real while it lasted, so it is stated, not buried.
+
+    The fix is #924 — extend the ``_SHELL_NAMES`` rescan to
+    ``ssh <host> "<payload>"`` so every rule applies to the payload, after
+    which ``remote.yaml`` becomes DELETABLE. It lives in ``masked_subcommands``,
+    which the orchestrator assigned to #913's plumbing, not here. Widening
+    ``remote.yaml`` to ~120 ssh twins is explicitly NOT the answer: it
+    duplicates the whole rule set, which is the second-thing-to-keep-in-sync
+    this PR exists to avoid.
+    """
+
+    # Representative sample of the demoted class, one per rule family.
+    DEMOTED = [
+        'ssh prod "terraform destroy"',
+        'ssh prod "gh repo delete owner/repo"',
+        'ssh prod "aws ec2 terminate-instances --instance-ids i-1"',
+        'ssh prod "gcloud projects delete my-proj"',
+        'ssh prod "kubectl delete namespace prod"',
+        'ssh prod "helm uninstall release"',
+        'ssh prod "docker volume rm pgdata"',
+        'ssh prod "npm unpublish my-pkg"',
+        'ssh prod "chmod 777 /srv"',
+        'ssh prod "tmux kill-server"',
+        'ssh prod "prisma migrate reset"',
+        'ssh prod "history -c"',
+    ]
+
+    @pytest.mark.parametrize("command", DEMOTED)
+    def test_ssh_wrapped_form_is_knowingly_allowed(
+        self, bash_hook, bundled_config, command
+    ):
+        """Expected-fail row. Green here means the gap is still open (#924)."""
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] not in REFUSED, (
+            f"{command!r} is now refused — #924 may have landed. If so, delete "
+            f"this row and update the disclosure in the PR body and the wiki."
+        )
+
+    def test_remote_yaml_intentional_coverage_is_what_survives(
+        self, bash_hook, bundled_config
+    ):
+        """The 12 forms remote.yaml exists for are unaffected — that is the
+        line between 'demoted incidental coverage' and 'broke the guard'."""
+        for command in SSH_WRAPPED_MASKED:
+            assert bash_hook.check_command(command, bundled_config)[
+                "decision"
+            ] in REFUSED, f"{command!r} — remote.yaml's own coverage broke"
