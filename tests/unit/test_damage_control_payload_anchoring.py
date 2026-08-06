@@ -591,6 +591,76 @@ class TestComposedWithGitNormalization:
             assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
 
 
+class TestComposedWithPathScopedGrants:
+    """Composition with #917's path-scoped `unattended_allow` grants.
+
+    #917 evaluates a scope only for a rule that MATCHED and resolved to ``ask``
+    under ``AGENTWIRE_UNATTENDED=1``. This PR changes WHICH rules match. The
+    hazard is therefore specific: a rule that stops matching because of
+    anchoring never reaches grant evaluation at all, so the scope check silently
+    does not run for it — and the command lands on ``allow`` for the *absence*
+    of a rule rather than for a grant anyone authored.
+
+    THE SETS INTERSECT AT EXACTLY ONE RULE, measured rather than assumed.
+    ``DEFAULT_UNATTENDED_ALLOW`` names six ids; five are tooldef-derived
+    (``git.add``, ``git.add-u``, ``git.commit``, ``git.push``, ``gh.pr-create``)
+    and were already anchored by #675, so this PR does not touch them. The sixth,
+    ``outbound.agentwire-email``, lives in ``outbound.yaml`` and IS newly
+    anchored here. That one row is the whole intersection.
+    """
+
+    GRANTED_HAND_WRITTEN_RULE = "outbound.agentwire-email"
+
+    def test_the_intersection_is_exactly_one_rule(self, bash_hook, bundled_config):
+        """Pin the premise — if a future grant names another hand-written rule,
+        this composition needs re-measuring rather than assuming."""
+        granted = {
+            e.get("id") if isinstance(e, dict) else e
+            for e in bash_hook.DEFAULT_UNATTENDED_ALLOW
+        }
+        hand_ids = {
+            p.get("id") for p in bundled_config["bashToolPatterns"]
+            if p.get("source") != "tooldef"
+        }
+        assert granted & hand_ids == {self.GRANTED_HAND_WRITTEN_RULE}, (
+            f"the #915/#917 intersection changed: {sorted(granted & hand_ids)}. "
+            f"Re-measure the composition before trusting this class."
+        )
+
+    def test_granted_rule_still_matches_so_scope_evaluation_is_reached(
+        self, bash_hook, bundled_config
+    ):
+        """The load-bearing assertion. Anchoring must not stop the granted rule
+        matching, or #917's scope check never runs for it."""
+        result = bash_hook.check_command(
+            "agentwire email --to a@b.c --subject hi --body hi", bundled_config
+        )
+        assert result["decision"] == "ask", (
+            f"the granted rule resolved {result['decision']}, not ask — #917 "
+            f"evaluates a scope only on an ask, so the grant is now bypassed "
+            f"in whichever direction this went"
+        )
+        assert result["id"] == self.GRANTED_HAND_WRITTEN_RULE
+
+    def test_prose_naming_the_granted_command_no_longer_matches_it(
+        self, bash_hook, bundled_config
+    ):
+        """The #915 fix, on the one rule that carries a grant.
+
+        This is a genuine behaviour change and it is the desirable direction: a
+        report that MENTIONS sending an email no longer consumes the grant path
+        at all. It lands on allow for having no rule, which is correct here
+        because nothing is being sent.
+        """
+        result = bash_hook.check_command(
+            'agentwire msg send --to orch --kind done '
+            '"agentwire email was refused, so the owner was not notified"',
+            bundled_config,
+        )
+        assert result["decision"] == "allow"
+        assert result.get("id") != self.GRANTED_HAND_WRITTEN_RULE
+
+
 class TestMutationProvesTheAssertionsHaveTeeth:
     """Anchor the must-not-anchor class and the guard measurably disappears.
 
@@ -762,11 +832,36 @@ class TestRemainingPayloadMechanisms:
     wrong trade.
     """
 
-    # mechanism 2 — the literal incident from #915's body
+    # These rows assert on ``~``-form protected paths, so they need $HOME to look
+    # like a real home — the same reason and the same marker as
+    # test_damage_control_bypass.py. The #893 redirect points HOME at a pytest
+    # tmp dir, which on Linux is under ``/tmp``, which core.yaml allowlists
+    # ``allow: all`` — and an allowlist entry OUTRANKS both noDeletePaths and
+    # protectedControlPlane (``check_command`` consults it inside each ladder).
+    # So the rows resolved to ``allow`` on CI for a reason with nothing to do
+    # with the mechanism. macOS temp is /private/var/folders, not allowlisted,
+    # which is why a local run could not see it.
+    #
+    # NOT a skip: conftest honours the marker by handing back the real paths, so
+    # the rows run and assert for real. Reads only; the session-scoped audit
+    # backstop still fails the run on any write.
+    pytestmark = pytest.mark.real_agentwire_home
+
+    # mechanism 2 — the literal incident from #915's body, in its literal form
     LADDER_CASES = [
         ('grep -rn "rm -rf" ~/.agentwire/', "noDeletePath"),
-        ('grep -rn "rm -rf" .git/', "noDeletePath"),
         ('rg "rm -rf" ~/.claude/hooks/', "protectedControlPlane"),
+        # `.git/` is a RELATIVE noDeletePath — no $HOME and no tmp prefix, so
+        # this row holds regardless of how the suite redirects HOME.
+        ('grep -rn "rm -rf" .git/', "noDeletePath"),
+    ]
+
+    # The same three ladder steps against explicit non-allowlisted literals, so
+    # at least one row per step is independent of $HOME *and* of the allowlist.
+    EXPLICIT_LADDER_CASES = [
+        ("noDeletePaths", 'grep -rn "rm -rf" /srv/protected/'),
+        ("readOnlyPaths", 'grep -rn "rm -rf" /srv/readonly/'),
+        ("zeroAccessPaths", 'grep -rn "rm -rf" /srv/secret/'),
     ]
 
     # mechanism 3 — a one-word payload in the exact reported carrier
@@ -790,6 +885,72 @@ class TestRemainingPayloadMechanisms:
         assert via in str(result.get("pattern", "")), (
             f"expected refusal via {via}, got {result.get('pattern')} — the "
             f"mechanism changed even though the verdict did not"
+        )
+
+    @pytest.mark.parametrize("ladder,command", EXPLICIT_LADDER_CASES)
+    def test_each_ladder_step_refuses_a_read_on_its_search_string(
+        self, bash_hook, ladder, command
+    ):
+        """One row per ladder step, against literal paths.
+
+        Three steps, three different predicates — which is why one
+        anchored-style flag cannot serve them and why they are #922 rather than
+        an extension of this PR.
+        """
+        cfg = {
+            "bashToolPatterns": [],
+            "zeroAccessPaths": [],
+            "readOnlyPaths": [],
+            "noDeletePaths": [],
+            "allowedPaths": [],
+            "safety": dict(SAFETY),
+        }
+        cfg[ladder] = [command.rsplit(" ", 1)[-1]]
+        result = bash_hook.check_command(command, cfg)
+        assert result["decision"] in REFUSED, (
+            f"{ladder} no longer refuses {command!r} — mechanism 2 looks fixed "
+            f"(#922). The ladder has no `anchored` concept; if it grew one, "
+            f"update this row and #915's story."
+        )
+
+    def test_protected_control_plane_step_refuses_a_read(self, bash_hook):
+        """Ladder step 0, with an EMPTY allowlist passed explicitly.
+
+        Deliberately not done with a tmp HOME. `tmp_path` is under `/tmp` on
+        Linux, which core.yaml allowlists `allow: all`, and the allowlist
+        outranks the protected control plane — so a tmp HOME is the one thing
+        guaranteed to make this row lie. Passing `allowed=[]` states the
+        precondition instead of depending on an environment to supply it.
+        """
+        command = 'rg "rm -rf" ~/.claude/hooks/'
+        blocked, reason = bash_hook.check_protected_command(command, [])
+        assert blocked, (
+            f"{command!r} no longer refused by the protected control plane — "
+            f"step 0 of mechanism 2 looks fixed (#922)"
+        )
+        assert reason
+
+    def test_allowlist_outranks_the_ladders(self, bash_hook):
+        """Pin the trap itself, since it has now cost two sessions a red CI.
+
+        An `allow: all` entry short-circuits BOTH ladders. That is why a tmp
+        HOME under /tmp turns these rows green-to-allow, and it is worth an
+        assertion rather than a comment.
+        """
+        cfg = {
+            "bashToolPatterns": [],
+            "zeroAccessPaths": [],
+            "readOnlyPaths": [],
+            "noDeletePaths": ["/srv/protected/"],
+            "allowedPaths": [],
+            "safety": dict(SAFETY),
+        }
+        command = 'grep -rn "rm -rf" /srv/protected/'
+        assert bash_hook.check_command(command, cfg)["decision"] in REFUSED
+        cfg["allowedPaths"] = [{"path": "/srv/*", "allow": "all"}]
+        assert bash_hook.check_command(command, cfg)["decision"] == "allow", (
+            "an allow:all entry no longer outranks noDeletePaths — the trap "
+            "that made this file's CI red has changed shape"
         )
 
     @pytest.mark.parametrize("command", WHITESPACE_CASES)
