@@ -19,41 +19,11 @@ from pathlib import Path
 
 import pytest
 
-HOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control"
+from tests.conftest import HOOKS_DIR  # noqa: F401  (used by subprocess tests)
 
-
-def _load_hook(filename: str):
-    """Load a hyphenated hook script as an importable module.
-
-    The script's `audit_logger` import resolves via sys.path injection so the
-    fallback no-op log_* functions are not needed.
-    """
-    sys.path.insert(0, str(HOOKS_DIR))
-    try:
-        path = HOOKS_DIR / filename
-        spec = importlib.util.spec_from_file_location(
-            filename.replace(".py", "").replace("-", "_"), path
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.pop(0)
-
-
-@pytest.fixture(scope="module")
-def bash_hook():
-    return _load_hook("bash-tool-damage-control.py")
-
-
-@pytest.fixture(scope="module")
-def edit_hook():
-    return _load_hook("edit-tool-damage-control.py")
-
-
-@pytest.fixture(scope="module")
-def write_hook():
-    return _load_hook("write-tool-damage-control.py")
+# The `bash_hook` / `edit_hook` / `write_hook` fixtures and the importlib
+# loader they share live in tests/conftest.py — one loader for every test that
+# needs a hook module.
 
 
 # ---------------------------------------------------------------------------
@@ -1691,11 +1661,6 @@ class TestAuditLogger:
 # the synthesizer, the unattended fail-closed ladder, the attended ask, and a
 # parity proof that the synthesized command decides identically to the literal
 # `agentwire email`/`quo` string.
-
-
-@pytest.fixture(scope="module")
-def mcp_hook():
-    return _load_hook("mcp-tool-damage-control.py")
 
 
 class TestMcpHookSynthesizer:

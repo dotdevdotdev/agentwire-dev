@@ -2,25 +2,32 @@ bashToolPatterns:
   # Permanent message deletion (bypasses trash)
   - pattern: '\bgws\s+gmail\s+users\.messages\.delete\b'
     reason: gws gmail delete (permanent, bypasses trash — use trash instead)
+    anchored: true
 
   - pattern: '\bgws\s+gmail\s+users\.messages\.batchDelete\b'
     reason: gws gmail batchDelete (permanently deletes multiple messages)
+    anchored: true
 
   # Drive permanent deletion
   - pattern: '\bgws\s+drive\s+files\.delete\b'
     reason: gws drive files.delete (permanent, bypasses trash)
+    anchored: true
 
   - pattern: '\bgws\s+drive\s+files\.emptyTrash\b'
     reason: gws drive emptyTrash (permanently deletes all trashed files)
+    anchored: true
 
   # Calendar destruction
   - pattern: '\bgws\s+calendar\s+calendars\.delete\b'
     reason: gws calendar delete (deletes entire calendar and all events)
+    anchored: true
 
   # Admin destructive operations
   - pattern: '\bgws\s+admin\s+users\.delete\b'
     reason: gws admin users.delete (permanently deletes a user account)
+    anchored: true
 
   - pattern: '\bgws\s+admin\s+users\.makeAdmin\b'
     reason: gws admin makeAdmin (grants admin privileges)
     ask: true
+    anchored: true

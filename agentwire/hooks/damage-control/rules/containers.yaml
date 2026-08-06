@@ -7,33 +7,38 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\bdocker\s+system\s+prune\s+.*-a'
     reason: docker system prune -a (removes all unused data)
-
-  - pattern: '\bdocker\s+rm\s+.*-f.*\$\(docker\s+ps'
-    reason: docker rm -f $(docker ps) (force removes containers)
+    anchored: true
 
   - pattern: '\bdocker\s+rmi\s+.*-f'
     reason: docker rmi -f (force removes images)
+    anchored: true
 
   - pattern: '\bdocker\s+volume\s+rm\b'
     reason: docker volume rm (data loss)
+    anchored: true
 
   - pattern: '\bdocker\s+volume\s+prune\b'
     reason: docker volume prune (removes unused volumes)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # KUBERNETES (kubectl) DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bkubectl\s+delete\s+namespace\b'
     reason: kubectl delete namespace
+    anchored: true
 
   - pattern: '\bkubectl\s+delete\s+all\s+--all'
     reason: kubectl delete all --all
+    anchored: true
 
   - pattern: '\bkubectl\s+delete\s+.*--all\s+--all-namespaces'
     reason: kubectl delete across all namespaces
+    anchored: true
 
   - pattern: '\bhelm\s+uninstall\b'
     reason: helm uninstall (removes release)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # CONTAINER REGISTRY PUBLISH / WORKLOAD DELETE (ask: true)
@@ -46,8 +51,10 @@ bashToolPatterns:
     reason: docker push (publishes an image to a registry)
     ask: true
     id: container.docker-push
+    anchored: true
 
   - pattern: '\bkubectl\s+delete\b'
     reason: kubectl delete (removes a Kubernetes resource)
     ask: true
     id: container.kubectl-delete
+    anchored: true
