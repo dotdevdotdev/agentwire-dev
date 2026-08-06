@@ -787,7 +787,7 @@ class TestGitGlobalOptionBypass:
         produced), never an over-strip. If one of these ever starts blocking,
         that is good news and this assertion should be inverted.
         """
-        assert bash_hook.git_normalized_haystacks(
+        assert bash_hook.global_option_normalized_haystacks(
             f"{wrapper} git -C /repo push {_FORCE}"
         ) == []
 
@@ -877,20 +877,585 @@ class TestCrossIssueBackstops:
         plain = bash_hook.check_command(f'git commit -m "{message}"', cfg)
         assert plain["decision"] == result["decision"]
 
+    # UPDATED BY #919, which is the outcome the canary was written to detect.
+    #
+    # #918 pinned these two as blocking ONLY via the generic
+    # `core.rm-file-deletion` rule — the rule #915 exists to narrow — and said
+    # in as many words: "if that is a rule of its own, good; update this
+    # canary". It now is. `containers.docker-volume-rm` and
+    # `aws.aws-s3-rm-recursive` were global-option-bypassed and are not any
+    # more, so the #915 ordering hazard these commands represented is gone:
+    # narrowing the generic rule can no longer drop them to allow.
+    #
+    # Asserted as "blocks via ITS OWN tool rule", not merely "blocks" — the
+    # whole point of the canary was that the verdict looked right while the
+    # rule behind it was the wrong one.
+    @pytest.mark.parametrize("cmd,rule_id", [
+        ("docker --context prod volume rm pgdata",
+         "containers.docker-volume-rm-data-loss"),
+        ("aws --profile prod s3 rm s3://bucket --recursive",
+         "aws.aws-s3-rm-recursive-deletes-all-objects"),
+    ])
+    def test_each_now_blocks_via_its_own_tool_rule(
+        self, bash_hook, bundled_config, cmd, rule_id
+    ):
+        result = bash_hook.check_command(cmd, bundled_config)
+        assert result["decision"] == "block", result
+        assert result.get("id") == rule_id, (
+            f"{cmd!r} blocks via {result.get('id')!r}, not its own tool rule "
+            f"{rule_id!r} — if that is another accident, it still needs one."
+        )
+
     @pytest.mark.parametrize("cmd", [
         "docker --context prod volume rm pgdata",
         "aws --profile prod s3 rm s3://bucket --recursive",
     ])
-    def test_generic_rm_rule_is_still_the_only_thing_catching_these(
+    def test_survives_the_generic_deletion_rule_being_narrowed(
         self, bash_hook, bundled_config, cmd
     ):
-        result = bash_hook.check_command(cmd, bundled_config)
-        assert result["decision"] == "block", result
-        assert result.get("id") == "core.rm-file-deletion-use-git-clean-or-manual-cleanup", (
-            f"{cmd!r} now blocks via {result.get('id')!r} — if that is a rule of "
-            "its own, good; update this canary. If it is another accident, it "
-            "needs one."
+        """The #915 interaction, asserted directly rather than inferred.
+
+        Simulates #915 landing — the generic `core.rm-file-deletion` rule
+        disabled — and requires these to keep blocking. Before #919 they went
+        straight to allow, and nothing in either PR's suite would have noticed,
+        because each PR was correct about its own scope.
+        """
+        cfg = copy.deepcopy(bundled_config)
+        cfg["safety"] = dict(cfg.get("safety", {}))
+        cfg["safety"]["disabled_rules"] = [
+            "core.rm-file-deletion-use-git-clean-or-manual-cleanup"
+        ]
+        # The simulation must actually simulate something: on the pre-#919
+        # code this same config turns both commands into `allow`.
+        assert any(
+            p.get("id") == "core.rm-file-deletion-use-git-clean-or-manual-cleanup"
+            for p in cfg["bashToolPatterns"]
+        ), "the rule being disabled does not exist — this test proves nothing"
+        assert bash_hook.check_command(cmd, cfg)["decision"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# tmux global options (#919, first of the class)
+# ---------------------------------------------------------------------------
+#
+# `tmux -L agentwire kill-server` was ALLOWED. That rule exists to stop an
+# agent destroying the fleet it is running inside, and every session on this
+# machine runs on a NAMED socket — so the guard held for the spelling nobody
+# uses and dropped for the one the fleet actually runs under.
+#
+# tmux is getopt-based, so the bypass has THREE spellings, not one:
+#   tmux -L agentwire kill-server     separate
+#   tmux -Lagentwire kill-server      ATTACHED
+#   tmux -2Lagentwire kill-server     BUNDLED flag + attached value
+# git REJECTS the attached form (`git -C/tmp` -> "unknown option"), which is
+# why #918 could ignore attached forms and document that as correct. Correct
+# for git, wrong here — hence `short_cluster` is a per-tool property of the
+# table rather than a convention inherited from whichever tool was fixed first.
+
+_KILL_SERVER = "kill-" + "server"
+
+# Expectations are the MEASURED plain-form verdicts, not the ones that would
+# be nice: `kill-session -a` is an `ask` rule in agentwire.yaml, and writing
+# `block` here would have made the corpus disagree with the rule set rather
+# than with the bug.
+_TMUX_GATED = [
+    (_KILL_SERVER, "block"),
+    (f"kill-session -t agentwire-{'dev'}", "block"),
+    ("kill-session -a", "ask"),
+]
+
+# Measured against tmux 3.5a: `-L`/`-S`/`-f`/`-c`/`-T` take a value in all
+# three spellings; `-2`/`-u`/`-C` stand alone.
+_TMUX_PREFIXES = [
+    "-L agentwire",
+    "-Lagentwire",
+    "-2Lagentwire",
+    "-uLagentwire",
+    "-S /tmp/tmux-501/default",
+    "-S/tmp/tmux-501/default",
+    "-f /tmp/tmux.conf -L agentwire",
+    "-2 -L agentwire",
+    "-2",
+]
+
+_TMUX_STILL_ALLOWED = [
+    "tmux list-sessions",
+    "tmux -L agentwire list-sessions",
+    "tmux -L agentwire display-message -p '#S'",
+    "tmux kill-session -t scratch",
+    "tmux -L agentwire kill-session -t scratch",
+    # Quoted content that merely MENTIONS the gated command (#675 masking).
+    f"echo 'tmux -L agentwire {_KILL_SERVER}'",
+]
+
+
+class TestTmuxGlobalOptionBypass:
+    """#919 — the fleet-kill rule must survive a socket option."""
+
+    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
+    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
+    def test_global_options_do_not_bypass(
+        self, bash_hook, bundled_config, unanchored_config, routing, prefix, rest,
+        expected,
+    ):
+        cfg = bundled_config if routing == "anchored" else unanchored_config
+        cmd = f"tmux {prefix} {rest}"
+        decision = bash_hook.check_command(cmd, cfg)["decision"]
+        assert decision == expected, (
+            f"{cmd!r} resolved to {decision} under {routing} routing, want {expected}"
         )
+
+    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
+    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config, rest, expected):
+        """Anchors the pairs above: the plain form already decided this way."""
+        assert bash_hook.check_command(f"tmux {rest}", bundled_config)["decision"] == expected
+
+    @pytest.mark.parametrize("cmd", _TMUX_STILL_ALLOWED)
+    def test_no_over_blocking(self, bash_hook, bundled_config, cmd):
+        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "allow"
+
+    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
+    def test_blocks_via_the_tmux_rule_not_something_else(
+        self, bash_hook, bundled_config, prefix
+    ):
+        """Assert the RULE ID, not just the verdict.
+
+        Two commands can both read `block` before and after while the rule
+        producing it changes — which is how a fix can look like it landed while
+        the intended rule is still bypassed and some generic rule is carrying
+        the verdict (see TestCrossIssueBackstops for that failure in the wild).
+        """
+        result = bash_hook.check_command(f"tmux {prefix} {_KILL_SERVER}", bundled_config)
+        plain = bash_hook.check_command(f"tmux {_KILL_SERVER}", bundled_config)
+        assert result.get("id") == plain.get("id"), result
+        assert result.get("id", "").startswith("agentwire.tmux-kill-server"), result
+
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
+    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
+    def test_never_downgrades_a_block_to_ask(
+        self, bash_hook, bundled_config, reversed_config, prefix, rest, expected, order,
+    ):
+        """Parity with the plain form in the SAME config — see the git twin for
+        why a fixed verdict is the wrong invariant here."""
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        plain = bash_hook.check_command(f"tmux {rest}", cfg)["decision"]
+        prefixed = bash_hook.check_command(f"tmux {prefix} {rest}", cfg)["decision"]
+        assert prefixed == plain, (
+            f"tmux {prefix} {rest} decided {prefixed} but plain decided {plain} "
+            f"({order} order)"
+        )
+
+
+class TestShortOptionClusterIsPerTool:
+    """`short_cluster` is measured per tool, never inherited.
+
+    git rejects `-C/tmp` (git 2.50.1: "unknown option"), so #918 correctly
+    ignored attached forms. tmux accepts `-Lname` and `-2Lname` (tmux 3.5a,
+    confirmed by the socket path coming back in its own connect error for all
+    three spellings). Reading git's answer as the class's answer ships a tmux
+    fix that leaves two of the three spellings open.
+    """
+
+    def test_tmux_attached_short_option_is_normalized(self, bash_hook):
+        assert bash_hook._strip_global_options(
+            ["tmux", "-Lagentwire", _KILL_SERVER]
+        ) == ["tmux", _KILL_SERVER]
+
+    def test_tmux_bundled_flag_then_attached_value(self, bash_hook):
+        assert bash_hook._strip_global_options(
+            ["tmux", "-2Lagentwire", _KILL_SERVER]
+        ) == ["tmux", _KILL_SERVER]
+
+    def test_tmux_bundled_flag_then_separate_value(self, bash_hook):
+        assert bash_hook._strip_global_options(
+            ["tmux", "-uL", "agentwire", _KILL_SERVER]
+        ) == ["tmux", _KILL_SERVER]
+
+    def test_git_attached_form_is_not_treated_as_a_bypass(self, bash_hook):
+        """git rejects it, so there is nothing to normalize — and inventing a
+        variant here would block a command that cannot run."""
+        assert bash_hook._strip_global_options(
+            ["git", "-C/tmp", "push"]
+        ) is None
+
+    def test_terraform_chdir_exists_only_in_the_equals_form(self, bash_hook):
+        """Measured against terraform 1.10.5: `-chdir=DIR` parses and a bare
+        `-chdir /infra` does not, so a bare one must NOT eat the next token.
+
+        Added because the mutation battery found this exact wrong row surviving
+        — the corpus exercises `-chdir=/infra` only, so the space-form arity was
+        asserted nowhere and `value_eq_only` could have been plain `value` with
+        every test still green.
+        """
+        assert bash_hook._strip_global_options(
+            ["terraform", "-chdir=/infra", "destroy"]
+        ) == ["terraform", "destroy"]
+        assert bash_hook._strip_global_options(
+            ["terraform", "-chdir", "/infra", "destroy"]
+        ) is None
+
+    def test_unknown_cluster_character_bails_rather_than_guesses(self, bash_hook):
+        """A cluster with an unrecognized letter produces NO variant.
+
+        Guessing would let an unknown value-taking option swallow the
+        subcommand — the same failure the maintenance-edge comment describes,
+        arrived at from the other side.
+        """
+        assert bash_hook._strip_global_options(
+            ["tmux", "-Zq", _KILL_SERVER]
+        ) is None
+
+
+class TestGlobalOptionTableProvenance:
+    """Every row states how its grammar was established, and every row is
+    falsifiable by at least one acceptance-corpus command.
+
+    Both halves matter and the second is the load-bearing one. A wrong arity
+    guess FAILS OPEN in both directions — mark an option value-taking when it
+    is bare and the subcommand gets eaten; mark it bare when it takes a value
+    and the value stays inline — and neither shows up as a spurious block. So
+    nothing ever goes red on its own: a table row with no corpus entry asserts
+    a grammar nobody measured and nothing in this suite can contradict it.
+    """
+
+    def test_every_row_declares_provenance_and_version(self, bash_hook):
+        for tool, grammar in bash_hook._GLOBAL_OPTION_TABLE.items():
+            assert grammar["provenance"] in (
+                bash_hook._MEASURED, bash_hook._DOCUMENTED
+            ), f"{tool} has no provenance"
+            assert grammar["version"], f"{tool} names no measured/documented version"
+
+    def test_every_row_has_at_least_one_option(self, bash_hook):
+        for tool, grammar in bash_hook._GLOBAL_OPTION_TABLE.items():
+            assert (
+                grammar["value"] or grammar["flag"] or grammar["value_eq_only"]
+                or grammar["plus_selector"]
+            ), f"{tool} is an empty row — it claims a grammar it does not describe"
+
+    def test_every_row_has_corpus_coverage(self, bash_hook):
+        """The load-bearing half. A row nothing exercises is UNFALSIFIABLE.
+
+        A wrong row cannot go red on its own — the failure mode is silence, so
+        the only detector is a corpus command whose expected verdict the wrong
+        row would break. This is enforced rather than reviewed because it costs
+        nothing to add a row and the omission is invisible.
+        """
+        covered = {cmd.split()[0] for _, _, cmd, _, _ in _CORPUS}
+        missing = set(bash_hook._GLOBAL_OPTION_TABLE) - covered
+        assert not missing, (
+            f"table rows with no acceptance-corpus command: {sorted(missing)} — "
+            "each asserts a grammar nothing in this suite can contradict"
+        )
+
+    def test_documented_rows_are_named(self, bash_hook):
+        """Pins WHICH rows are doc-derived, so a row cannot be quietly demoted
+        to a guess (or quietly promoted without a measurement)."""
+        documented = {
+            t for t, g in bash_hook._GLOBAL_OPTION_TABLE.items()
+            if g["provenance"] == bash_hook._DOCUMENTED
+        }
+        assert documented == {"pnpm"}, documented
+
+    def test_table_ships_in_code_not_in_a_rules_yaml(self, bash_hook):
+        """A DEPLOYMENT assertion, not a layering one.
+
+        `heal_damage_control` self-heals STALE hook scripts but installs rules
+        and tooldefs missing-only (`if not target.exists()`), so an existing
+        rule file is never brought forward by any command. A table shipped as
+        YAML would merge green and be INERT on day one on every installation
+        that already has the file. #918 deploys because it touched `_core.py`
+        and the generated hooks; #675's anchoring does not, because it lives in
+        `rules/git.yaml`.
+
+        So: the table is reachable from the hook module, and no rule file
+        carries a `globalOptions`-shaped key that a future refactor might have
+        moved it into.
+        """
+        assert bash_hook._GLOBAL_OPTION_TABLE
+        for path in sorted(_DC_RULES.glob("*.yaml")):
+            text = path.read_text()
+            assert "globalOption" not in text and "global_option" not in text, (
+                f"{path.name} carries global-option data — it would not reach "
+                "existing installs (see this test's docstring)"
+            )
+
+    def test_gh_is_not_a_bypass_and_has_no_row(self, bash_hook):
+        """`gh -R o/n repo delete` was reported as a bypass in #913's review
+        notes and in #919's issue body. It is not: measured, `gh -R cli/cli
+        repo view` -> "unknown shorthand flag: 'R' in -R", so the command never
+        runs. Pinned so a rebuild from those notes cannot re-add it.
+        """
+        assert "gh" not in bash_hook._GLOBAL_OPTION_TABLE
+        assert bash_hook._strip_global_options(
+            ["gh", "-R", "o/n", "repo", "delete"]
+        ) is None
+
+
+# ---------------------------------------------------------------------------
+# the acceptance corpus (#919)
+# ---------------------------------------------------------------------------
+#
+# Transcribed from the calibrated corpus held by the #913/#918 review seat, not
+# rebuilt from notes — rebuilding is how the disproved `gh -R` row would have
+# come back. Each entry is (label, tool, bypass command, plain baseline,
+# expected verdict), and BOTH halves are asserted: the baseline pins that the
+# rule set decides this way at all, and the bypass pins that the global option
+# no longer hides it.
+#
+# The expected verdicts are the MEASURED plain-form verdicts. Where a tool's
+# rule is `ask` rather than `block` (npm publish, cargo publish, pnpm publish)
+# the corpus says `ask` — an aspirational `block` would make the corpus
+# disagree with the rule set instead of with the bug.
+
+_RM = "rm"
+_RECURSIVE = "--recursive"
+_PRUNE_ALL = "prune -a"
+
+_CORPUS = [
+    ("kubectl --context", "kubectl",
+     "kubectl --context prod delete namespace prod",
+     "kubectl delete namespace prod", "block"),
+    ("kubectl -n", "kubectl",
+     "kubectl -n kube-system delete namespace prod",
+     "kubectl delete namespace prod", "block"),
+    ("kubectl --kubeconfig", "kubectl",
+     "kubectl --kubeconfig /tmp/kc delete namespace prod",
+     "kubectl delete namespace prod", "block"),
+    ("aws --profile", "aws",
+     "aws --profile prod ec2 terminate-instances --ids i",
+     "aws ec2 terminate-instances --ids i", "block"),
+    ("aws --region", "aws",
+     "aws --region us-east-1 ec2 terminate-instances --ids i",
+     "aws ec2 terminate-instances --ids i", "block"),
+    ("aws s3 rb", "aws",
+     f"aws --profile prod s3 rb s3://b {_FORCE}",
+     f"aws s3 rb s3://b {_FORCE}", "block"),
+    ("gcloud --project", "gcloud",
+     "gcloud --project foo projects delete p",
+     "gcloud projects delete p", "block"),
+    ("gcloud --account", "gcloud",
+     "gcloud --account a@b.c projects delete p",
+     "gcloud projects delete p", "block"),
+    ("docker --context", "docker",
+     f"docker --context prod system {_PRUNE_ALL}",
+     f"docker system {_PRUNE_ALL}", "block"),
+    ("docker -H", "docker",
+     f"docker -H tcp://prod:2375 system {_PRUNE_ALL}",
+     f"docker system {_PRUNE_ALL}", "block"),
+    ("helm --kube-context", "helm",
+     "helm --kube-context prod uninstall rel",
+     "helm uninstall rel", "block"),
+    ("terraform -chdir=", "terraform",
+     "terraform -chdir=/infra destroy -auto-approve",
+     "terraform destroy -auto-approve", "block"),
+    ("pulumi -C", "pulumi",
+     "pulumi -C /infra destroy --yes",
+     "pulumi destroy --yes", "block"),
+    ("npm --prefix", "npm",
+     f"npm --prefix /srv unpublish pkg {_FORCE}",
+     f"npm unpublish pkg {_FORCE}", "block"),
+    ("supabase --workdir", "supabase",
+     "supabase --workdir /srv db reset",
+     "supabase db reset", "block"),
+    ("redis-cli -h", "redis-cli",
+     "redis-cli -h prod.redis -p 6379 FLUSHALL",
+     "redis-cli FLUSHALL", "block"),
+    ("mysqladmin -u", "mysqladmin",
+     "mysqladmin -u root -h prod drop mydb",
+     "mysqladmin drop mydb", "block"),
+    ("tmux -L", "tmux",
+     f"tmux -L agentwire {_KILL_SERVER}", f"tmux {_KILL_SERVER}", "block"),
+    ("tmux -S", "tmux",
+     f"tmux -S /tmp/tmux-501/default {_KILL_SERVER}",
+     f"tmux {_KILL_SERVER}", "block"),
+    # tmux is getopt-based, so the attached and bundled spellings are real
+    # commands, not typos. A git-shaped table (attached forms ignored, correct
+    # FOR GIT) leaves the fleet-kill rule bypassed in two of its three
+    # spellings while the separate-form row goes green.
+    ("tmux -L attached", "tmux",
+     f"tmux -Lagentwire {_KILL_SERVER}", f"tmux {_KILL_SERVER}", "block"),
+    ("tmux -2L bundled", "tmux",
+     f"tmux -2Lagentwire {_KILL_SERVER}", f"tmux {_KILL_SERVER}", "block"),
+    ("pnpm -C", "pnpm", "pnpm -C /srv publish", "pnpm publish", "ask"),
+    ("cargo +toolchain", "cargo", "cargo +nightly publish", "cargo publish", "ask"),
+    ("git -C", "git",
+     f"git -C /repo push {_FORCE} origin main",
+     f"git push {_FORCE} origin main", "block"),
+]
+
+
+class TestAcceptanceCorpus:
+    """#919 — every measured baseline/bypass pair, under BOTH routings.
+
+    Run twice, once as loaded and once with `anchored` popped from every
+    pattern: the bypass is routing-independent, so a fix that reaches only one
+    haystack shows up immediately as a disagreement between the two runs.
+    """
+
+    @pytest.mark.parametrize("label,tool,bypass,plain,expected", _CORPUS,
+                             ids=[c[0] for c in _CORPUS])
+    def test_baseline_decides_this_way_at_all(
+        self, bash_hook, bundled_config, label, tool, bypass, plain, expected
+    ):
+        decision = bash_hook.check_command(plain, bundled_config)["decision"]
+        assert decision == expected, (
+            f"baseline {plain!r} is {decision}, not {expected} — the corpus "
+            "disagrees with the rule set, so its bypass row proves nothing"
+        )
+
+    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
+    @pytest.mark.parametrize("label,tool,bypass,plain,expected", _CORPUS,
+                             ids=[c[0] for c in _CORPUS])
+    def test_global_option_does_not_bypass(
+        self, bash_hook, bundled_config, unanchored_config, routing, label, tool,
+        bypass, plain, expected,
+    ):
+        cfg = bundled_config if routing == "anchored" else unanchored_config
+        decision = bash_hook.check_command(bypass, cfg)["decision"]
+        assert decision == expected, (
+            f"{bypass!r} resolved to {decision} under {routing} routing, "
+            f"want {expected}"
+        )
+
+    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
+    @pytest.mark.parametrize("label,tool,bypass,plain,expected", _CORPUS,
+                             ids=[c[0] for c in _CORPUS])
+    def test_bypass_lands_on_the_same_rule_as_the_baseline(
+        self, bash_hook, bundled_config, unanchored_config, routing, label, tool,
+        bypass, plain, expected,
+    ):
+        """Assert the RULE ID, not just the verdict.
+
+        Two commands can read `block` before and after while the rule producing
+        it changes — which is exactly how `docker --context prod volume rm` and
+        `aws --profile prod s3 rm --recursive` looked covered while their own
+        rules were bypassed and a generic deletion rule carried the verdict.
+        """
+        cfg = bundled_config if routing == "anchored" else unanchored_config
+        got = bash_hook.check_command(bypass, cfg)
+        want = bash_hook.check_command(plain, cfg)
+        assert got.get("id") == want.get("id"), (
+            f"{bypass!r} decided via {got.get('id')!r} but the plain form "
+            f"decided via {want.get('id')!r} ({routing} routing)"
+        )
+
+    @pytest.mark.parametrize("label,tool,bypass,plain,expected", _CORPUS,
+                             ids=[c[0] for c in _CORPUS])
+    def test_row_is_not_vacuous(
+        self, bash_hook, bundled_config, label, tool, bypass, plain, expected, monkeypatch
+    ):
+        """NON-VACUITY FLOOR: prove each row is carried by ITS OWN table entry.
+
+        A corpus row that passes because some other rule happens to catch the
+        command is indistinguishable from a row the fix actually closed — until
+        the day that other rule is narrowed and the row silently keeps passing.
+        (`docker --context prod volume rm` was exactly that: it blocked, via
+        the generic deletion rule, while `containers.docker-volume-rm` was
+        bypassed.)
+
+        So: delete this tool's row from the table and require the verdict OR
+        the rule ID to move. Rule ID as well as verdict, because a command that
+        keeps blocking through a different rule has NOT been proven by its row.
+        """
+        with_row = bash_hook.check_command(bypass, bundled_config)
+        table = dict(bash_hook._GLOBAL_OPTION_TABLE)
+        table.pop(tool)
+        monkeypatch.setattr(bash_hook, "_GLOBAL_OPTION_TABLE", table)
+        without_row = bash_hook.check_command(bypass, bundled_config)
+        assert (with_row["decision"], with_row.get("id")) != (
+            without_row["decision"], without_row.get("id")
+        ), (
+            f"{label}: removing the {tool!r} table row changes nothing about "
+            f"{bypass!r} ({with_row['decision']} via {with_row.get('id')!r}) — "
+            "this row proves the table entry, not the fix"
+        )
+
+    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
+    @pytest.mark.parametrize("label,tool,bypass,plain,expected", _CORPUS,
+                             ids=[c[0] for c in _CORPUS])
+    def test_never_downgrades_a_block_to_ask(
+        self, bash_hook, bundled_config, reversed_config, order, label, tool,
+        bypass, plain, expected,
+    ):
+        """Parity against the plain form in the SAME config, under two pattern
+        orderings — the invariant this normalizer owns. See the git twin for
+        why a fixed verdict is the wrong assertion."""
+        cfg = bundled_config if order == "as-loaded" else reversed_config
+        assert (
+            bash_hook.check_command(bypass, cfg)["decision"]
+            == bash_hook.check_command(plain, cfg)["decision"]
+        ), f"{label}: prefixed and plain disagree under {order} order"
+
+
+# Near-miss SAFE forms — the general shape of #918's `--force-with-lease`
+# guard. A normalizer that rewrites before a rule sees it can start blocking
+# the safe form, which trains everyone to reach for the dangerous one.
+#
+# Searched mechanically rather than assumed: across all 15 rule files and all
+# tooldefs there is exactly ONE negative-lookahead rule
+# (`\bgit\s+push\s+.*--force(?!-with-lease)`) and exactly ONE tooldef declaring
+# a safe variant of a blocked command (`git push --force-with-lease`), both
+# already covered by #918. So the general form of the guard needs no lookahead
+# twin per tool: assert the prefixed decision EQUALS the plain decision.
+_SAFE_NEAR_MISSES = [
+    "kubectl --context prod get pods",
+    "kubectl --context prod delete pod mypod",
+    "aws --profile prod s3 ls s3://bucket",
+    f"aws --profile prod s3 {_RM} s3://bucket/one-key",
+    "gcloud --project foo projects list",
+    "docker --context prod system prune",
+    "docker --context prod ps -a",
+    "helm --kube-context prod list",
+    "terraform -chdir=/infra plan",
+    "pulumi -C /infra preview",
+    "npm --prefix /srv install",
+    "supabase --workdir /srv db diff",
+    "redis-cli -h prod.redis -p 6379 GET mykey",
+    "mysqladmin -u root -h prod status",
+    "tmux -L agentwire list-sessions",
+    "cargo +nightly build",
+    "pnpm -C /srv install",
+]
+
+
+class TestSafeNearMissesKeepTheirPlainVerdict:
+    """The two-sided guard, generalised.
+
+    `docker --context prod system prune` (no `-a`) must decide exactly as
+    `docker system prune` does. Blocking it would be the normalizer catching
+    the safe form; allowing it where the plain form blocks would mean the
+    variant went missing.
+    """
+
+    @pytest.mark.parametrize("cmd", _SAFE_NEAR_MISSES)
+    def test_parity_with_the_plain_form(self, bash_hook, bundled_config, cmd):
+        words = cmd.split()
+        tool = words[0]
+        grammar = bash_hook._GLOBAL_OPTION_TABLE[tool]
+        # Rebuild the same command with the global options removed, so the
+        # comparison is against the form the rules were written for.
+        stripped = bash_hook._strip_global_options(words)
+        assert stripped is not None, f"{cmd!r} produced no variant to compare"
+        plain = " ".join(stripped)
+        assert grammar  # the row under test
+        assert (
+            bash_hook.check_command(cmd, bundled_config)["decision"]
+            == bash_hook.check_command(plain, bundled_config)["decision"]
+        ), f"{cmd!r} and {plain!r} disagree"
+
+    @pytest.mark.parametrize("cmd", _SAFE_NEAR_MISSES)
+    def test_safe_forms_are_not_newly_blocked(self, bash_hook, bundled_config, cmd):
+        """Stronger than parity where the plain form is allowed: name the
+        commands that must stay runnable, so a future over-strip is a named
+        failure rather than a quiet tax on everyone's workflow."""
+        decision = bash_hook.check_command(cmd, bundled_config)["decision"]
+        plain_decision = bash_hook.check_command(
+            " ".join(bash_hook._strip_global_options(cmd.split())), bundled_config
+        )["decision"]
+        if plain_decision == "allow":
+            assert decision == "allow", f"{cmd!r} is newly {decision}"
 
 
 class TestGitGlobalOptionNormalizer:
@@ -902,7 +1467,7 @@ class TestGitGlobalOptionNormalizer:
     """
 
     def test_third_haystack_exposes_stripped_variant(self, bash_hook):
-        assert f"git push {_FORCE}" in bash_hook.git_normalized_haystacks(
+        assert f"git push {_FORCE}" in bash_hook.global_option_normalized_haystacks(
             f"git -C /repo push {_FORCE}"
         )
 
@@ -916,12 +1481,12 @@ class TestGitGlobalOptionNormalizer:
         assert subs == [cmd]
 
     def test_no_variant_for_a_plain_git_command(self, bash_hook):
-        assert bash_hook.git_normalized_haystacks(f"git push {_FORCE}") == []
+        assert bash_hook.global_option_normalized_haystacks(f"git push {_FORCE}") == []
 
     def test_variant_is_derived_from_masked_tokens(self, bash_hook):
         """Quoted content must not become matchable. Normalizing the RAW string
         would hand `\\bgit\\s+clean\\b` a match inside an echo argument."""
-        assert bash_hook.git_normalized_haystacks(
+        assert bash_hook.global_option_normalized_haystacks(
             "echo 'git -C /repo clean -fdx'"
         ) == []
 
@@ -934,7 +1499,7 @@ class TestGitGlobalOptionNormalizer:
         matches inside it; built from masked tokens the message is a
         placeholder and only the command survives.
         """
-        variants = bash_hook.git_normalized_haystacks(
+        variants = bash_hook.global_option_normalized_haystacks(
             "git -C /r commit -m 'echo git clean -fdx'"
         )
         assert variants
@@ -943,20 +1508,20 @@ class TestGitGlobalOptionNormalizer:
     def test_value_taking_option_consumes_its_argument(self, bash_hook):
         """Dropping only the flag would leave the value where the subcommand
         belongs (`git /repo push …`) and the rule would still miss."""
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", "-C", "/repo", "push"]
         ) == ["git", "push"]
 
     def test_option_after_subcommand_is_untouched(self, bash_hook):
-        assert bash_hook._strip_git_global_options(["git", "log", "-C"]) is None
+        assert bash_hook._strip_global_options(["git", "log", "-C"]) is None
 
     def test_exec_path_does_not_consume_a_token(self, bash_hook):
         """Bare `--exec-path` prints and exits — only `--exec-path=<p>` carries a
         value. Consuming the next token here would swallow the subcommand."""
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", "--exec-path", "status"]
         ) == ["git", "status"]
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", "--exec-path=/x", "status"]
         ) == ["git", "status"]
 
@@ -965,18 +1530,18 @@ class TestGitGlobalOptionNormalizer:
     ])
     def test_value_options_accept_both_equals_and_space_form(self, bash_hook, opt):
         """git 2.50.1 takes both, though the usage line advertises only `=`."""
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", opt, "v", "push"]
         ) == ["git", "push"]
-        assert bash_hook._strip_git_global_options(
+        assert bash_hook._strip_global_options(
             ["git", f"{opt}=v", "push"]
         ) == ["git", "push"]
 
     def test_non_git_command_untouched(self, bash_hook):
-        assert bash_hook._strip_git_global_options(["ls", "-C", "/repo"]) is None
+        assert bash_hook._strip_global_options(["ls", "-C", "/repo"]) is None
 
     def test_no_global_options_yields_no_variant(self, bash_hook):
-        assert bash_hook._strip_git_global_options(["git", "push"]) is None
+        assert bash_hook._strip_global_options(["git", "push"]) is None
 
 
 # ---------------------------------------------------------------------------
