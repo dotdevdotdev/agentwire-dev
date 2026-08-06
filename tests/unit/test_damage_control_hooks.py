@@ -743,28 +743,42 @@ class TestGitGlobalOptionBypass:
         cmd = f'git -C "/my dir/repo" push {_FORCE}'
         assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
 
-    @pytest.mark.parametrize("wrapper", ["sudo", "doas", "time", "nohup", "command"])
-    def test_zero_arg_wrapper_prefixed_invocation(
+    @pytest.mark.parametrize(
+        "wrapper", ["sudo", "doas", "time", "nohup", "command", "xargs", "nice"]
+    )
+    def test_bare_wrapper_prefixed_invocation(
         self, bash_hook, bundled_config, wrapper
     ):
         """`sudo git push --force` already matched; `sudo git -C … push --force`
-        must not be the inconsistent survivor — and the same argument applies
-        unchanged to every other zero-arg wrapper, so the set covers them all
-        rather than just the one that prompted it."""
+        must not be the inconsistent survivor — and that argument applies
+        unchanged to every other BARE wrapper, so the set covers them all
+        rather than just the one that prompted it.
+
+        `xargs` is here because it was the counter-example: it was excluded as
+        an "arg-consuming wrapper" on the strength of the `xargs -n1` form,
+        which left bare `xargs git -C /repo push --force` a live bypass under a
+        comment claiming zero-arg wrappers were covered. The exclusion is about
+        arity as written, not about which wrapper it is.
+        """
         cmd = f"{wrapper} git -C /repo push {_FORCE}"
         assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
 
-    @pytest.mark.parametrize("wrapper", ["timeout 5", "stdbuf -o0", "xargs -n1"])
-    def test_arg_consuming_wrapper_is_a_documented_limit(
+    @pytest.mark.parametrize(
+        "wrapper", ["timeout 5", "stdbuf -o0", "xargs -n1", "nice -n 5"]
+    )
+    def test_argument_carrying_wrapper_is_a_documented_limit(
         self, bash_hook, bundled_config, wrapper
     ):
         """Pins the KNOWN GAP so it is a recorded limit, not a silent one.
 
-        A wrapper that consumes its own argument is not covered — handling it
-        means modelling each wrapper's grammar, which is this bug's own mistake
-        at one remove. What must hold is that the failure is a missing haystack
-        (no variant produced), never an over-strip. If one of these ever starts
-        blocking, that is good news and this assertion should be inverted.
+        A wrapper CARRYING ITS OWN ARGUMENTS is not covered — handling it means
+        modelling each wrapper's grammar, which is this bug's own mistake at one
+        remove. Note `xargs` and `nice` appear in BOTH this list and the bare
+        list: the axis is arity as written, not the wrapper's identity.
+
+        What must hold is that the failure is a missing haystack (no variant
+        produced), never an over-strip. If one of these ever starts blocking,
+        that is good news and this assertion should be inverted.
         """
         assert bash_hook.git_normalized_haystacks(
             f"{wrapper} git -C /repo push {_FORCE}"

@@ -1086,16 +1086,24 @@ _GIT_GLOBAL_FLAGS = {
 # very inconsistency the rule is meant to remove). ``_MASK`` covers a leading
 # ``VAR=value`` assignment, which ``masked_subcommands`` has already masked.
 #
-# ZERO-ARG PREFIXES ONLY, and that is the whole of the claim. A wrapper that
-# consumes its own argument — ``timeout 5 git …``, ``stdbuf -o0 git …``,
-# ``xargs -n1 git …``, ``nice -n 5 git …`` — is NOT covered: its argument is
-# an unrecognized token, the scan bails, and no variant is produced. Those
-# forms keep the bypass. They are out of scope here rather than half-handled,
-# because consuming a wrapper's arguments means modelling each wrapper's own
-# grammar, which is the same mistake at one remove. Failure is closed-ish in
-# the sense that we simply add no haystack — never that we strip too much.
+# The exclusion is about ARITY AS WRITTEN, not about which wrapper it is. Every
+# name below is covered when it appears BARE; the same name carrying its own
+# arguments is not — ``xargs git …`` normalizes, ``xargs -n1 git …`` does not,
+# and likewise ``nice`` vs ``nice -n 5``. The wrapper's argument is an
+# unrecognized token, the scan bails, and no variant is produced, so that form
+# keeps the bypass.
+#
+# Naming wrappers rather than arity is precisely the error this comment used to
+# make: it listed ``xargs -n1`` as an excluded WRAPPER, which read as excluding
+# ``xargs``, and bare ``xargs git -C /repo push --force`` stayed a live bypass
+# under a comment implying otherwise.
+#
+# Argument-carrying forms are out of scope rather than half-handled, because
+# consuming them means modelling each wrapper's own grammar — this bug's
+# mistake at one remove. Failure there is a MISSING haystack, never an
+# over-strip: we add nothing rather than stripping too much.
 _GIT_INVOCATION_PREFIXES = {
-    "sudo", "doas", "env", "command", "time", "nice", "nohup", _MASK,
+    "sudo", "doas", "env", "command", "time", "nice", "nohup", "xargs", _MASK,
 }
 
 
