@@ -224,6 +224,91 @@ class TestTheBodySurvivesTheRealPastePath:
         assert "paste-buffer" in send_source and '"-p"' in send_source
 
 
+class TestControlCharacters:
+    """The known-silent wedge reached by character rewriting instead of newlines.
+
+    A body carrying C0/C1 controls renders into the pane as an invisible control
+    ACTION, so the capture no longer contains the rendered needle, ``stuck``
+    misses, and the message wedges permanently. Whitespace matching does not
+    cover these —
+    it catches tab/newline/CR/FF/VT and nothing else.
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "restart \x1b[31mthe portal\x1b[0m",   # ANSI colour
+            "restart the\x07 portal",              # BEL
+            "restart the\x01 portal",              # SOH
+            "restart the\x7f portal",              # DEL
+            "restart the\x9b portal",              # C1 CSI
+        ],
+    )
+    def test_controls_never_reach_the_rendered_body(self, raw):
+        body = confirm.render_body(raw, "confirm tango", "a1b2c3")
+        assert not confirm._CONTROL_RE.search(body), repr(body)
+
+    def test_the_transcript_side_is_stripped_too(self):
+        body = confirm.render_body("restart", "confirm tango\x1b[2J", "a1b2c3")
+        assert not confirm._CONTROL_RE.search(body)
+
+    def test_the_instruction_is_stripped_at_propose_so_the_frozen_argv_is_clean(
+        self, monkeypatch
+    ):
+        """The realistic carrier is ``instruction`` — model-supplied and only
+        length-bounded. Stripping at propose keeps the frozen argv clean by
+        construction, so "frozen" still means what it claims."""
+        from agentwire.voice_layer import transcript
+        from agentwire.voice_layer import write_tools as wt
+
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
+        spine = confirm.ConfirmSpine(transcript.TranscriptRing(), wait_s=0.0)
+        result = wt.propose_session_message(
+            {
+                "session": "orchestrator",
+                "message": "restart \x1b[31mthe portal\x07",
+                "_buddy": "buddy",
+            },
+            spine,
+        )
+        proposal = next(p for p in spine.pending() if p.id == result["proposal_id"])
+        assert not confirm._CONTROL_RE.search(proposal.instruction)
+        assert not confirm._CONTROL_RE.search(result["message"])
+
+    def test_unicode_is_not_stripped(self):
+        """Measured: curly quotes, em dashes, accents and emoji round-trip
+        cleanly. Only control characters break — do not over-strip."""
+        body = confirm.render_body(
+            "restart the “portal” — café ✓ 🎉", "confirm tango", "a1b2c3"
+        )
+        for char in "“”—é✓🎉":
+            assert char in body, char
+
+
+class TestTheCoalescedResidualIsStated:
+    """§3.7 discipline applied to the cap: narrow, do not qualify.
+
+    The one-line rule protects the SINGLE-message case. A voice write coalesced
+    behind other messages is governed by the coalesced line count — a variable
+    the voice layer cannot observe — and no per-caller cap can bound it. The
+    wiki must not let the cap imply a guarantee it does not have.
+    """
+
+    def test_the_wiki_states_the_coalesced_residual(self):
+        from pathlib import Path
+
+        page = (
+            Path(__file__).resolve().parents[2] / "docs" / "wiki" / "voice-layer.md"
+        ).read_text(encoding="utf-8")
+        flat = " ".join(page.split())
+        assert "protects the **single-message case**" in flat
+        assert "no per-caller fix can bound it" in flat
+        assert 'Do not read the cap as "one line, so the heal fires."' in flat
+        # And the measured cliff is recorded, not just asserted.
+        assert "Four lines chips at 87 characters" in flat
+        assert "wedges every one of them" in flat
+
+
 class TestTheCohortInteraction:
     """`--kind request` drags in one interaction the deferred `voice` kind
     would not have had. Named here so it is a known quantity, not a surprise.

@@ -5,8 +5,11 @@
     cover every mis-transcription — a transcriber hallucination or an
     approval-shaped utterance meant for someone else is a real residual risk
     that the nonce narrows but does not eliminate. **A passed gate means the
-    message was queued, not delivered, and not acted on.** It is **not** a
-    security boundary against an adversary.
+    message was queued, not delivered, and not acted on.** The ``said:`` clause
+    is evidence of what was **heard**, not proof of what was **said** — it is
+    exactly as trustworthy as the local browser page, which holds the bridge
+    token and can POST to ``/utterance``. It is **not** a security boundary
+    against an adversary.
 
 That paragraph is the guarantee, in full. **Widen it if you learn more; never
 narrow it.** Anyone holding the microphone can approve anything the buddy
@@ -19,6 +22,19 @@ the docstring both carry, rather than only next to the spoken wording. This is
 what a future reader quotes when they ask what the gate guarantees, and without
 that clause they conclude "gate passed, so the write happened". It did not:
 ``msg send`` queues, and delivery is at the recipient's next safe boundary.
+
+The ``said:`` clause caveat is there because §4b's entire purpose is that the
+verbatim utterance is authorizing evidence a recipient can CHECK, and a
+recipient reading ``said:`` will treat it as what the human said. Anything
+resident in the bridge's browser page holds the per-run bearer token and can
+POST arbitrary text to ``/utterance``, so the evidence property is weaker than
+a reader would otherwise assume.
+
+Rationale, deliberately kept OUT of the quotable sentence above — stacking
+mitigations into an honest limit is how it gets rounded back up: the residual is
+small, because that field reaches only the attribution clause. ``--to``,
+``--from``, ``--kind`` and the instruction are all frozen at propose, so the
+worst available consequence is falsified *evidence*, never a redirected write.
 
 The split, and why it is two halves
 -----------------------------------
@@ -211,11 +227,29 @@ _NUMBER_WORDS = {
     "oh": "0",
 }
 
-#: Denial grammar (§3.1). Scanned over the remainder of the approving utterance
-#: AND over everything committed after it. The first design had none at all.
+#: Denial grammar (§3.1). Deliberately TIGHT, and the tightness is the whole
+#: lesson: an earlier version matched ``not``, ``never``, ``hold`` and
+#: ``forget``, which turned ordinary speech into retractions —
+#:
+#:     "confirm tango, it is not urgent"          -> denied
+#:     "confirm tango, the worker is on hold"     -> denied
+#:     "confirm tango, I never got the other one" -> denied
+#:
+#: and then told the owner *"You said no, so I haven't sent it."* They did not.
+#:
+#: **Both halves of the error have to be priced, and the false-REJECT half is
+#: the expensive one here.** This is the same mistake the digit nonce made: a
+#: miss looks free because it fails closed, but in a hands-free channel a false
+#: reject destroys a correct approval and there is no screen to explain why. A
+#: MISSED denial, by contrast, is recoverable — the write still needs a nonce,
+#: and the owner can simply not say it.
+#:
+#: So: only words that essentially always signal retraction in a reply to
+#: "say confirm <word> to approve". ``not``/``never``/``hold``/``forget`` are
+#: among the most common words in English and almost never mean "stop" on their
+#: own.
 _DENIAL_RE = re.compile(
-    r"\b(no|not|nope|dont|donot|stop|cancel|wait|hold|holdon|nevermind|never"
-    r"|abort|forget|scratch|undo)\b"
+    r"\b(no|nope|dont|donot|stop|cancel|wait|nevermind|abort|scratch|undo)\b"
 )
 
 #: The one word that introduces an approval. Everything else about the match is
@@ -224,6 +258,32 @@ _CONFIRM_WORDS = ("confirm", "confirmed")
 
 _PUNCT_RE = re.compile(r"[^\w\s]+")
 _WS_RE = re.compile(r"\s+")
+
+#: C0 and C1 control characters, plus DEL. NOT covered by ``\s+``, which only
+#: catches tab/newline/CR/FF/VT — ESC, BEL, SOH and friends pass straight
+#: through it.
+#:
+#: These are the known-silent wedge, measured against real tmux: a body carrying
+#: an ANSI escape or a BEL renders into the pane as an invisible control ACTION,
+#: so ``capture-pane`` returns text that no longer contains the rendered needle.
+#: ``flush_session``'s ``stuck`` substring test then misses, the #689 heal never
+#: fires, ``_box_static`` classifies it no-penalty, and the message is
+#: **permanently wedged: never healed, never dead-lettered, therefore never
+#: emailed** — the same failure newlines cause, reached by character rewriting.
+#:
+#: The realistic carrier is NOT the transcript (a speech-to-text model does not
+#: emit ESC) — it is ``instruction``, which is model-supplied and was only
+#: length-bounded. So this is applied at BOTH ends: here, and at propose time
+#: before the argv is frozen, so the frozen argv is clean by construction and
+#: "frozen" still means what it claims.
+#:
+#: Costs nothing in verbatim fidelity: no human utterance contains ESC.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def strip_controls(text: str) -> str:
+    """Remove C0/C1 controls and DEL. See :data:`_CONTROL_RE` for why."""
+    return _CONTROL_RE.sub("", text)
 
 
 def normalize(text: str) -> str:
@@ -471,8 +531,13 @@ def _one_line(text: str) -> str:
     therefore never emailed** — surfacing only via ``doctor`` after two hours.
     For a channel whose entire justification is "the owner is not watching a
     screen", that is the worst available failure.
+
+    Control characters are stripped here for the SAME failure reached a
+    different way — see :data:`_CONTROL_RE`. ``\\s+`` does not cover them.
     """
-    return _WS_RE.sub(" ", text.replace("\r", " ").replace("\n", " ")).strip()
+    return _WS_RE.sub(
+        " ", strip_controls(text).replace("\r", " ").replace("\n", " ")
+    ).strip()
 
 
 def _clip(text: str, limit: int) -> str:
@@ -487,6 +552,16 @@ def render_body(instruction: str, utterance: str, proposal_id: str) -> str:
     said to authorize it, verbatim, plus the proposal id. The recipient can
     check the paraphrase rather than trust it — and can see it when the buddy
     got it wrong. Free, because the gate already had to capture that utterance.
+
+    **The body never begins with a dash, and that is a safety property, not an
+    accident of layout.** ``instruction`` is model-supplied and ``_clip`` does
+    not strip leading dashes, so a body starting with the instruction could
+    reach the CLI as a FLAG rather than a value — this repo has shipped exactly
+    that bug twice (see ``tools._SESSION_RE``'s comment, which records both).
+    :data:`VOICE_MARKER` leads for attribution reasons, which happens to also
+    guarantee this; the assertion below makes the guarantee explicit rather
+    than incidental, so moving the marker fails loudly instead of silently
+    re-opening the hole.
 
     Visible separators rather than newlines: scannable without being a wall,
     and without the wedging failure newlines cause.
@@ -506,7 +581,11 @@ def render_body(instruction: str, utterance: str, proposal_id: str) -> str:
         f"┃ said: \"{_clip(utterance, MAX_UTTERANCE_CHARS)}\" "
         f"┃ #{proposal_id}"
     )
-    return _clip(body, MAX_BODY_CHARS)
+    body = _clip(body, MAX_BODY_CHARS)
+    # Explicit, not incidental — see the docstring. A body reaching the CLI as
+    # a flag is a bug this repo has shipped twice.
+    assert not body.startswith("-"), "rendered body must never lead with a dash"
+    return body
 
 
 # =============================================================================
@@ -567,6 +646,23 @@ SPOKEN = {
 #: Outcomes whose correct owner response is to WAIT rather than to speak again.
 #: Named so the persona and the tests can both reason about it.
 WAIT_OUTCOMES = frozenset({"pending_transcript", "not_announced"})
+
+#: Every reason :class:`ConfirmSpine` can return. The SSOT for the taxonomy.
+#:
+#: The guard on :data:`SPOKEN` has to run in BOTH directions. Checking only
+#: "every outcome has a line" catches a mute refusal but lets a LINE WITHOUT AN
+#: OUTCOME ship as dead code — which is exactly what happened:
+#: ``too_many_attempts`` had a carefully written spoken line and no producer,
+#: so the attempt that actually retired a proposal reported ``refused`` and
+#: told the owner to say the phrase again at the precise moment that stopped
+#: being possible.
+REASONS = frozenset(
+    {
+        "no_proposal", "expired", "not_announced", "replayed", "refused",
+        "wrong_nonce", "denied", "pending_transcript", "too_many_attempts",
+        "dispatch_failed",
+    }
+)
 
 
 @dataclass
@@ -640,7 +736,11 @@ class ConfirmSpine:
         self._clock = clock or _time.monotonic
         self._lock = threading.Lock()
         self._proposals: dict[str, Proposal] = {}
+        #: Tokens whose write genuinely went out. ``replayed`` means THIS.
         self._succeeded: set[str] = set()
+        #: Tokens whose write was attempted and FAILED. Kept apart from
+        #: _succeeded so a retry is told the truth rather than "already sent".
+        self._failed: set[str] = set()
 
     # -- propose ------------------------------------------------------------
 
@@ -712,30 +812,60 @@ class ConfirmSpine:
             return refusal
 
         anchor = proposal.anchor_seq or 0
+        # Snapshot the conversation's high-water mark BEFORE the await, so the
+        # post-approval denial scan is bounded to what the owner had actually
+        # said by the time this confirm started.
+        ceiling = max(self._ring.high_seq, anchor)
         found = self._ring.await_utterance_after(anchor, self._wait_s)
-        verdict = self._judge(proposal, found)
+        ceiling = max(ceiling, *(u.speech_started_seq for u in found)) if found else ceiling
+        verdict = self._judge(proposal, found, ceiling)
 
         if not verdict.approved:
             if verdict.reason in WAIT_OUTCOMES:
                 # A timing miss is not the model's fault and must not burn an
                 # attempt, or a slow transcriber would exhaust the proposal.
                 return verdict
-            self._penalize(token)
+            if self._penalize(token):
+                # The attempt that hits the cap RETIRES the proposal, so it must
+                # SAY so. Returning `refused` here — "say confirm and then the
+                # word I gave you" — tells the owner to do the one thing that
+                # can no longer work, at the exact moment it stopped working.
+                # Same shape as the pending_transcript token-burn trap, which
+                # §3.0(a) closed upstream and which survived here.
+                return Verdict(approved=False, reason="too_many_attempts")
             return verdict
 
         self._ring.spend(verdict.utterance_item_id)
         with self._lock:
             self._proposals.pop(token, None)
-            self._succeeded.add(token)
 
         argv = proposal.build_argv(verdict.utterance)
         verdict.argv = argv
         if self._runner is not None:
-            result = self._runner(argv) or {}
+            try:
+                result = self._runner(argv) or {}
+            except Exception as exc:  # a dispatch that raises must not read as sent
+                result = {"success": False, "error": str(exc)}
             if not result.get("success", False):
+                # NOT _succeeded. The write did not happen, and a token in
+                # _succeeded makes the retry say "I already sent that one" —
+                # over-claiming the SEND itself, on the one path where the
+                # system already KNOWS it failed, to an owner who is not
+                # watching a screen. ``replayed`` must mean it really went out.
+                #
+                # The retry gets dispatch_failed rather than another attempt on
+                # purpose: a failed dispatch may have partially written (the CLI
+                # can fail after enqueueing), so re-running the argv risks a
+                # duplicate delivery — "the orchestrator acts twice", the §4
+                # failure. Telling the owner the truth and letting them
+                # re-propose is the safe direction.
+                with self._lock:
+                    self._failed.add(token)
                 return Verdict(
                     approved=False, reason="dispatch_failed", utterance=verdict.utterance
                 )
+        with self._lock:
+            self._succeeded.add(token)
         return verdict
 
     def cancel(self, token: str) -> Verdict:
@@ -746,7 +876,9 @@ class ConfirmSpine:
 
     # -- internals ----------------------------------------------------------
 
-    def _judge(self, proposal: Proposal, found: "list[Utterance]") -> Verdict:
+    def _judge(
+        self, proposal: Proposal, found: "list[Utterance]", ceiling: int
+    ) -> Verdict:
         if not found:
             return Verdict(approved=False, reason="pending_transcript")
 
@@ -782,11 +914,24 @@ class ConfirmSpine:
                 approved=False, reason="refused", utterance=usable[-1].text
             )
 
-        # A denial committed AFTER the approval refuses the write. This is what
-        # closes the stale-approval window the bounded await would otherwise
-        # leave open: the owner said the phrase, then changed their mind before
-        # the model got round to calling confirm.
-        later = self._ring.after(match.commit_seq, include_spent=True)
+        # A denial committed AFTER the approval refuses the write. This closes
+        # the stale-approval window the bounded await would otherwise leave
+        # open: the owner said the phrase, then changed their mind before the
+        # model got round to calling confirm.
+        #
+        # BOUNDED to the approval→confirm window, not the whole ring tail: an
+        # unbounded scan lets an utterance from much later — including one that
+        # arrives during a RETRY's bounded await — retroactively deny an
+        # approval, and report "You said no" about something the owner said in
+        # a different context. `ceiling` is the ring's high-water mark as of
+        # this confirm's entry.
+        later = [
+            entry
+            for entry in self._ring.after(
+                match.speech_started_seq, include_spent=True
+            )
+            if entry.speech_started_seq <= ceiling
+        ]
         if any(carries_denial(entry.text) for entry in later):
             return Verdict(approved=False, reason="denied", utterance=match.text)
 
@@ -799,6 +944,8 @@ class ConfirmSpine:
 
     def _claim(self, token: str) -> "tuple[Proposal | None, Verdict | None]":
         with self._lock:
+            if token in self._failed:
+                return None, Verdict(approved=False, reason="dispatch_failed")
             if token in self._succeeded:
                 return None, Verdict(approved=False, reason="replayed")
 
@@ -820,14 +967,17 @@ class ConfirmSpine:
                 return None, Verdict(approved=False, reason="not_announced")
             return proposal, None
 
-    def _penalize(self, token: str) -> None:
+    def _penalize(self, token: str) -> bool:
+        """Count a refused attempt. Returns True if that RETIRED the proposal."""
         with self._lock:
             proposal = self._proposals.get(token)
             if proposal is None:
-                return
+                return False
             proposal.attempts += 1
             if proposal.attempts >= MAX_CONFIRM_ATTEMPTS:
                 del self._proposals[token]
+                return True
+            return False
 
     def _expire_locked(self) -> None:
         now = self._clock()

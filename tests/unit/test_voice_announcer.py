@@ -48,13 +48,15 @@ _HARNESS = """
 const events = [];
 const spoken = [];
 const logs = [];
+const anchored = [];
 let timers = [];
 let nextHandle = 1;
 let channelOpen = true;
 
 const announcer = createAnnouncer({
   send: (e) => { if (!channelOpen) return false; events.push(e); return true; },
-  speak: (t) => spoken.push(t),
+  speak: (t, onDone) => { spoken.push(t); if (onDone) onDone(); },
+  onSpoken: (meta, how) => anchored.push({ meta: meta, how: how }),
   setTimer: (fn, ms) => { const h = nextHandle++; timers.push({ h, fn, ms }); return h; },
   clearTimer: (h) => { timers = timers.filter((t) => t.h !== h); },
   onLog: (kind, detail) => logs.push(kind + ": " + detail),
@@ -68,7 +70,7 @@ function fireTimers() {
 }
 function report() {
   return JSON.stringify({
-    events, spoken, logs,
+    events, spoken, logs, anchored,
     armedTimers: timers.length,
     pending: announcer.pending(),
     armed: announcer.armed(),
@@ -136,6 +138,66 @@ class TestTheRefusalReachesTheChannel:
             announcer.announce("That was a different code word.");
         """)
         assert len(creates(report)) == 1
+
+
+class TestTheAnchorFollowsEvidenceOfSpeech:
+    """BLOCKING 2. The proposal anchor may key on nothing weaker than
+    "this text was actually spoken"."""
+
+    def test_a_confirmed_model_turn_anchors_the_proposal(self):
+        report = run_announcer("""
+            announcer.announce("I will ask the orchestrator to restart the portal. Say confirm tango.",
+                               { anchor: "a1b2c3" });
+            announcer.onResponseDone("I will ask the orchestrator to restart the portal. Say confirm tango.");
+        """)
+        assert report["anchored"] == [{"meta": {"anchor": "a1b2c3"}, "how": "model"}]
+
+    def test_a_cancelled_response_never_anchors(self):
+        """Our OWN cancel produces one of these, and it can carry partial audio
+        that said something else entirely."""
+        report = run_announcer("""
+            announcer.onResponseCreated();
+            announcer.announce("Say confirm tango to approve.", { anchor: "a1b2c3" });
+            announcer.onResponseCancelled();   // the turn we cancelled
+        """)
+        assert report["anchored"] == []
+
+    def test_a_response_saying_something_else_never_anchors(self):
+        report = run_announcer("""
+            announcer.announce("Say confirm tango to approve.", { anchor: "a1b2c3" });
+            announcer.onResponseDone("Sure, what would you like next?");
+        """)
+        assert report["anchored"] == []
+
+    def test_the_fallback_voice_does_anchor_because_the_owner_heard_it(self):
+        """The corner where the two safety mechanisms defeated each other.
+
+        A speechSynthesis utterance produces no response.done, so a
+        fallback-spoken proposal used to be anchored by nothing — the owner
+        heard it, said the nonce, and got not_announced until the TTL.
+        not_announced is never SILENT; it can be PERSISTENTLY WRONG, and what
+        made it wrong was the fallback firing, which is the mechanism added to
+        GUARANTEE speech.
+        """
+        report = run_announcer("""
+            announcer.announce("Say confirm tango to approve.", { anchor: "a1b2c3" });
+            fireTimers();   // model never said it; browser voice does
+        """)
+        assert report["spoken"] == ["Say confirm tango to approve."]
+        assert report["anchored"] == [{"meta": {"anchor": "a1b2c3"}, "how": "fallback"}]
+
+    def test_an_announcement_with_no_anchor_carries_no_anchor(self):
+        """An ordinary refusal reports that it was spoken — the announcer does
+        not know what an anchor is — and carries no meta, which is what the
+        client's ``onSpoken`` guard keys on."""
+        report = run_announcer("""
+            announcer.announce("I didn't hear the confirmation phrase.");
+            fireTimers();
+        """)
+        assert [a["meta"] for a in report["anchored"]] == [None]
+        # And the client refuses to anchor on a null meta.
+        page = client.page("buddy", "tok")
+        assert "if (!meta || !meta.anchor) return;" in page
 
 
 class TestTheFallbackIsArmedNotTriggered:
@@ -309,9 +371,85 @@ class TestThePageEmbedsTheRealThing:
         """
         page = client.page("buddy", "tok")
         send_at = page.index("sendFunctionCallOutput(item.call_id, result, mustSpeak)")
-        announce_at = page.index("if (mustSpeak) announce(result.say)")
+        announce_at = page.index("if (mustSpeak) {")
         assert send_at < announce_at
         assert "if (!suppressResponse) maybeCreateResponse();" in page
+
+    def test_the_anchor_is_never_driven_by_a_bare_response_done(self):
+        """BLOCKING 2. The anchor must key on evidence the PROPOSAL was spoken.
+
+        Binding it to "the next response.done carrying any text" let the
+        announcer's own ``response.cancel`` steal it — anchoring a proposal to a
+        turn that said something else, BEFORE the proposal was spoken. That is
+        the barge-in hole, reintroduced one layer below where the clock fix
+        closed it.
+        """
+        page = client.page("buddy", "tok")
+        assert "pendingAnchor" not in page, "the stealable anchor is gone"
+        # response.cancelled is its own case and never reaches onResponseDone.
+        cancelled_at = page.index('case "response.cancelled":')
+        done_at = page.index('case "response.done": {')
+        assert cancelled_at < done_at
+        assert "announcer.onResponseCancelled()" in page
+        # The only anchor forward is inside onSpoken.
+        assert page.count('forward("/anchor"') == 1
+        onspoken_at = page.index("function onSpoken(meta, how)")
+        anchor_at = page.index('forward("/anchor"')
+        assert onspoken_at < anchor_at
+
+    def test_every_client_side_spoken_literal_is_asserted(self):
+        """The category no test was exercising.
+
+        Two digit-era strings shipped on the spoken path because they lived in
+        prompt strings rather than in logic — and grepping for "digit" would
+        only ever have found the one that used the word. The client's own
+        ``announce()`` literals are the same category: a wrong instruction there
+        is indistinguishable from a right one at review time.
+
+        So the set is pinned. Adding one is fine; adding one without deciding
+        what it says is what this catches.
+        """
+        import re
+
+        page = client.page("buddy", "tok")
+        spoken = set(re.findall(r'announce\("([^"]+)"', page))
+        expected = {
+            "I couldn't reach my own tools just then, so I did nothing.",
+            "I lost the connection to the voice service, so I couldn't finish that.",
+            "I'm getting garbled data from the voice service — I may miss things.",
+            "I'm having trouble hearing you — the local bridge didn't answer.",
+            "Something went wrong handling that, so I did nothing.",
+            "The voice service reported an error, so I may have missed that.",
+        }
+        assert spoken == expected, spoken ^ expected
+
+        for line in spoken:
+            # Speakable: a whole sentence, no markup, no identifiers.
+            assert line[0].isupper(), line
+            assert line.rstrip().endswith("."), line
+            assert "`" not in line and "_" not in line, line
+            # And it must say what happened to the request, not just that
+            # something broke — the owner cannot see a screen.
+            assert any(
+                cue in line.lower()
+                for cue in ("did nothing", "couldn't finish", "may miss",
+                            "didn't answer", "may have missed")
+            ), line
+
+    def test_no_spoken_literal_carries_stale_nonce_wording(self):
+        """The digit-era lesson, applied to every spoken surface at once."""
+        from agentwire.voice_layer import confirm as confirm_mod
+        from agentwire.voice_layer import instructions
+
+        surfaces = [
+            client.page("buddy", "tok"),
+            instructions.build_instructions(),
+            " ".join(confirm_mod.SPOKEN.values()),
+        ]
+        for text in surfaces:
+            lowered = text.lower()
+            assert "two digits" not in lowered
+            assert "confirm four seven" not in lowered
 
     def test_the_client_has_no_silent_catch(self):
         """The four silent paths §3.5 names. ``catch { return; }`` was the
