@@ -318,6 +318,108 @@ class TestSubstitutionBodiesAreScannedAsCommands:
         assert decide(cfg, "echo $(echo $(echo $(echo hi)))")[0] == "allow"
 
 
+class TestConcealmentOutranksAShadowingAskRule:
+    """A cross-PR hole, invisible to either change's own suite.
+
+    The concealment check is a FALLTHROUGH — "nothing matched, and the verb was
+    unreadable" — so any earlier ``ask`` rule returns first and buries it. That
+    is harmless while both are merely ``ask``, and a hole the moment the
+    shadowing rule is on the unattended allowlist, because the resolver keys on
+    the id that came back:
+
+        uv run $(echo rm) -rf /tmp/victim
+          -> ask tooldef.uv-run-…   -> ALLOWED unattended
+
+    Part 2 (allowlisting uv-run) and Part 3 (narrowing concealment) are each
+    correct alone; only together do they open this. Found by running the
+    combined matrix after rebasing onto #918, which is the whole argument for
+    asking "what ELSE currently catches this?" rather than "does my change
+    break my own rule?".
+    """
+
+    @pytest.mark.parametrize("command", [
+        f"uv run $(echo {RM}) -rf /tmp/victim",
+        'uv run bash -c "$(echo git -C /other push --force)"',
+        f"uv run --extra dev $(echo {RM}) -rf /",
+        'uv run sh -c "$CODE"',
+    ])
+    def test_an_allowlisted_ask_cannot_launder_a_concealed_verb(self, cfg, command):
+        decision, rule_id = decide(cfg, command)
+        assert rule_id == AMBIGUOUS, (
+            f"{command!r} came back as {rule_id!r} — if that id is on the "
+            f"unattended allowlist, a concealed verb runs unattended")
+        assert rule_id not in C.DEFAULT_UNATTENDED_ALLOW
+
+    def test_a_hard_block_still_outranks_concealment(self, cfg):
+        """Block is the MORE specific refusal and keeps its own id.
+
+        Both are refusals, so nothing is at risk either way — but reporting
+        `ambiguous` for a force-push would lose the operator the one field that
+        says what was actually attempted.
+        """
+        decision, rule_id = decide(cfg, 'uv run bash -c "git push --force $(echo origin)"')
+        assert decision == "block"
+        assert rule_id == "git.git-push-force-use-force-with-lease"
+
+    def test_an_ordinary_ask_is_unaffected_when_nothing_is_concealed(self, cfg):
+        """The narrowing must not turn every ask into `ambiguous`."""
+        decision, rule_id = decide(cfg, "uv run pytest -q")
+        assert rule_id in {
+            "tooldef.uv-run-a-script-in-project-environment",
+            "tooldef.uv-run-a-command-in-project-environment",
+        }
+
+
+class TestInnerPathsDoNotSatisfyTheOuterBypassGate:
+    """The narrowing must not un-block `find $(…) -delete` (#925 review).
+
+    A ``bypassable`` rule is waved through when EVERY path in the command is
+    allowlisted. ``_extract_command_paths`` read the raw string, so
+    ``find $(cat /tmp/x) -delete`` yielded ``/tmp/x)`` — the *inner* ``cat``'s
+    argument, stray paren and all — which is under an allowlisted root, so the
+    gate certified the whole command and the delete rule was skipped.
+
+    The confusion predates this PR; ``core.ambiguous-command`` was refusing
+    every substitution and therefore masking it. Narrowing that check removes
+    the mask, so the fix belongs here rather than being inherited: a
+    substitution's output is not knowable, so it contributes NO certifiable
+    path, and the gate already refuses when handed none.
+    """
+
+    @pytest.mark.parametrize("command,expected_id", [
+        ("find $(cat /tmp/x) -delete",
+         "core.find-delete-recursive-deletion-use-git-clean-or-manual-clean"),
+        (f"find $(cat /tmp/x) -exec {RM} {{}} ;",
+         "core.rm-file-deletion-use-git-clean-or-manual-cleanup"),
+        (f"{RM} $(cat /tmp/x)",
+         "core.rm-file-deletion-use-git-clean-or-manual-cleanup"),
+    ])
+    def test_a_substituted_operand_cannot_certify_the_command(
+            self, cfg, command, expected_id):
+        decision, rule_id = decide(cfg, command)
+        assert decision == "block", f"{command!r} -> {decision} via {rule_id!r}"
+        assert rule_id == expected_id
+
+    @pytest.mark.parametrize("command,expected_id", [
+        ("find /tmp -delete",
+         "core.find-delete-recursive-deletion-use-git-clean-or-manual-clean"),
+        (f"find /tmp -exec {RM} {{}} ;",
+         "core.rm-file-deletion-use-git-clean-or-manual-cleanup"),
+    ])
+    def test_control_the_unsubstituted_form_was_always_blocked(
+            self, cfg, command, expected_id):
+        """Without this the test above could pass on a rule that never fired."""
+        assert decide(cfg, command) == ("block", expected_id)
+
+    def test_a_literal_allowlisted_path_is_still_waved_through(self, cfg):
+        """The gate must still WORK — this is a tightening, not a disabling."""
+        assert decide(cfg, f"{RM} /tmp/safe.txt")[0] == "allow"
+
+    def test_no_paths_are_harvested_from_a_substitution_body(self):
+        assert C._extract_command_paths("find $(cat /tmp/x) -delete") == []
+        assert "/tmp" in C._extract_command_paths("find /tmp -delete")
+
+
 class TestUnbalancedQuotesStillFailClosed:
     def test_unterminated_quote(self, cfg):
         assert decide(cfg, "echo 'unterminated && " + RM + " -rf /")[0] in ("ask", "block")
@@ -326,6 +428,55 @@ class TestUnbalancedQuotesStillFailClosed:
 # ---------------------------------------------------------------------------
 # Regression guard for the rest of the corpus
 # ---------------------------------------------------------------------------
+
+
+class TestTheSecurityCostOfNarrowing:
+    """The trade, written down and pinned rather than left to be discovered.
+
+    The blunt rule was refusing EVERY substitution, so it incidentally covered
+    verbs that have no rule of their own. Narrowing it means coverage rests
+    entirely on the verb having a rule — which is what the narrowing MEANS, and
+    is also its price:
+
+        truncate -s 0 $(…)   ask -> ALLOW
+        dd of=$(…)           ask -> ALLOW
+        shred -u $(…)        ask -> ALLOW
+        chown -R … $(…)      ask -> ALLOW
+        chmod -R 000 $(…)    ask -> ALLOW
+
+    These are ALLOWED now, deliberately. The answer to that gap is another
+    rule, not a wider net — a net that refuses every substitution refuses the
+    92 real scheduled commands too, which is the bug being fixed.
+
+    Pinned so the cost cannot drift silently in either direction: if someone
+    adds a `truncate` rule, this test fails and the docs get updated with it.
+    """
+
+    UNCOVERED = [
+        "truncate -s 0 $(cat /tmp/x)",
+        "dd if=/dev/zero of=$(cat /tmp/x)",
+        "shred -u $(cat /tmp/x)",
+        "chown -R nobody $(cat /tmp/x)",
+    ]
+
+    @pytest.mark.parametrize("command", UNCOVERED)
+    def test_a_ruleless_verb_with_a_substituted_operand_is_allowed(self, cfg, command):
+        assert decide(cfg, command) == ("allow", None), (
+            "this is the documented cost of #925 — if it now refuses, a rule "
+            "was added for this verb and the PR body / docs need updating")
+
+    @pytest.mark.parametrize("command", UNCOVERED)
+    def test_and_its_literal_form_is_equally_uncovered(self, cfg, command):
+        """The control that makes the cost honest.
+
+        The substituted form is allowed because the VERB has no rule, not
+        because the substitution hid it — the literal form is allowed too. So
+        nothing that was genuinely covered has been lost; what is gone is
+        coverage the blunt rule was providing by accident, for one spelling of
+        a command it never covered in general.
+        """
+        literal = command.replace("$(cat /tmp/x)", "/tmp/x")
+        assert decide(cfg, literal) == ("allow", None)
 
 
 class TestNarrowingDidNotWeakenAnythingElse:

@@ -364,7 +364,25 @@ def is_path_allowed_for_op(
 
 
 def _extract_command_paths(command: str) -> List[str]:
-    """Extract file/directory paths from a bash command string."""
+    """Extract file/directory paths from a bash command string.
+
+    Command substitutions are MASKED first, so a path belonging to a
+    substitution's INNER command is never offered to the OUTER command's
+    bypassable path gate (#925).
+
+    Without that, ``find $(cat /tmp/x) -delete`` extracted ``/tmp/x)`` — the
+    argument of the inner ``cat``, complete with the stray paren — decided that
+    every path in the command was allowlisted, and waved the bypassable
+    ``find … -delete`` rule through. The outer command's real operand is the
+    substitution's *output*, which is not knowable here; the honest answer is
+    that it contributes NO certifiable path, and ``is_command_path_allowed``
+    already refuses when it is handed none.
+
+    The confusion is older than #925 — ``core.ambiguous-command`` was refusing
+    every substitution and so masking it. Narrowing that check removes the mask,
+    which is why the fix ships here rather than being inherited.
+    """
+    command = split_substitutions(command)[0]
     paths = []
     for m in re.finditer(r'''["']([^"']+)["']''', command):
         candidate = m.group(1)
@@ -1992,6 +2010,28 @@ def detect_obfuscation(command: str) -> Optional[str]:
         if verb_idx >= len(tokens):
             continue
         # ...and then not a launcher standing in front of the real one.
+        # Under a LAUNCHER we cannot reliably say where the options stop and
+        # the command begins — `uv run --extra dev CMD` needs to know that
+        # `--extra` takes a value, while `xargs -I{} CMD` needs to know that
+        # `-I{}` does not. Modelling every launcher's flag arity is a losing
+        # game, so the ambiguity is resolved conservatively: a BARE
+        # substitution token anywhere in a launcher's argv could be the
+        # command, and fails closed.
+        #
+        # `uv run --extra dev $(echo rm) -rf /` is why. The verb scan stops at
+        # `dev` — a literal, so no concealment — and with uv-run allowlisted
+        # that ran unattended. Found by this file's own test, after the
+        # narrower version had already passed the rest of the suite.
+        #
+        # Scoped tightly: only BARE tokens (`$(…)` alone), so an embedded
+        # `--cov=$(pwd)` is untouched, and only under a launcher. The residual
+        # false positive is `uv run pytest $(cat files.txt)` — measured against
+        # the 06-24..08-05 corpus, that shape does not occur, and erring here
+        # costs one confirm while erring the other way runs an unknown verb.
+        launcher = tokens[verb_idx].rsplit("/", 1)[-1] in _LAUNCHERS
+        if launcher and any(t == _SUBST for t in tokens[verb_idx + 1:]):
+            return "concealed command"
+
         verb_idx = _effective_verb_index(tokens, verb_idx)
         if verb_idx < 0:
             continue
@@ -2774,6 +2814,23 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
 # ============================================================================
 
 
+def _concealed_result(command: str, reason: str) -> Dict[str, Any]:
+    """The ``core.ambiguous-command`` verdict. One constructor, two call sites.
+
+    Returned both from the end-of-ladder fallthrough and from the ask branch
+    that outranks a shadowing ask rule — spelling it twice is how the two drift
+    into disagreeing about the id, which is the field the unattended allowlist
+    keys on.
+    """
+    return {
+        "decision": "ask",
+        "reason": f"Unverifiable command ({reason}) — confirm before running",
+        "pattern": f"ambiguous:{reason}",
+        "command": command,
+        "id": "core.ambiguous-command",
+    }
+
+
 def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Decide whether a bash command should be allowed/blocked/asked.
 
@@ -2911,6 +2968,26 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             base = masked_haystacks if anchored else haystacks
             if _search(pattern, base + normalized_haystacks):
                 if should_ask:
+                    # Concealment OUTRANKS any other ask (#925). The check
+                    # below is a fallthrough — "nothing matched, and we could
+                    # not read the verb" — so ANY earlier ask rule returns
+                    # first and buries it. That is harmless while both are
+                    # ask... and a hole the moment the shadowing rule is on
+                    # the unattended allowlist, because the allowlist consults
+                    # the id that came back:
+                    #
+                    #   uv run $(echo rm) -rf /tmp/victim
+                    #     -> ask tooldef.uv-run-…  -> ALLOWED unattended
+                    #
+                    # Found by the cross-PR matrix after rebasing onto #918,
+                    # not by either change's own suite: Part 2 made the uv-run
+                    # id allowlistable and Part 3 narrowed concealment, and
+                    # only the two together open it. A hard `block` still wins
+                    # — it is the more specific refusal and keeps its own id —
+                    # but an `ask` must never launder a command whose verb we
+                    # cannot read.
+                    if ambiguous:
+                        return _concealed_result(command, ambiguous)
                     return {
                         "decision": "ask",
                         "reason": reason,
@@ -2984,16 +3061,10 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                 "command": command,
             }
 
-    # Nothing matched. If the command hid behind substitution/eval/etc. we could
-    # not verify it statically — fail closed to ``ask`` (a block when unattended).
+    # Nothing matched. If the command CONCEALED ITS VERB (#925) we could not
+    # verify it statically — fail closed to ``ask`` (a block when unattended).
     if ambiguous:
-        return {
-            "decision": "ask",
-            "reason": f"Unverifiable command ({ambiguous}) — confirm before running",
-            "pattern": f"ambiguous:{ambiguous}",
-            "command": command,
-            "id": "core.ambiguous-command",
-        }
+        return _concealed_result(command, ambiguous)
 
     return {
         "decision": "allow",
