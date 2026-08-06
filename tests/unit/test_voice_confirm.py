@@ -972,9 +972,32 @@ class TestOutcomesAreDistinctAndSpoken:
             reasons.append(convo.spine.confirm(proposal.token).reason)
         assert reasons[-1] == "too_many_attempts"
         assert reasons[:-1] == ["refused"] * (confirm.MAX_CONFIRM_ATTEMPTS - 1)
-        verdict = confirm.Verdict(approved=False, reason="too_many_attempts")
-        assert "start over" in verdict.spoken or "dropped" in verdict.spoken
+        # It names the owner's NEXT MOVE, not just the failure — the proposal
+        # is gone, so "say the phrase again" would be the one useless answer.
+        line = confirm.Verdict(approved=False, reason="too_many_attempts").spoken
+        assert "ask me again" in line.lower()
+        assert "say confirm" not in line.lower()
         assert runner.calls == []
+
+    def test_every_outcome_names_the_owners_next_move(self):
+        """The taxonomy rule, asserted across the whole map rather than per case.
+
+        Reporting a failure without naming what to do next leaves the owner to
+        infer it, from a channel with no screen. Each line must either tell them
+        to act, or explicitly tell them to stand down.
+        """
+        act = (
+            "ask me again", "say confirm", "tell me again", "don't repeat",
+            "hang on", "ask me what",
+        )
+        stand_down = (
+            "not sending", "haven't sent", "already sent", "nothing was sent",
+        )
+        for reason, line in confirm.SPOKEN.items():
+            lowered = line.lower()
+            assert any(cue in lowered for cue in act + stand_down), (
+                f"{reason}: {line!r} leaves the owner nothing to do"
+            )
 
     def test_every_refusal_is_flagged_must_speak(self, convo, clock):
         for label, verdict in self._outcomes(convo, clock).items():
@@ -1054,7 +1077,10 @@ class TestOutcomesAreDistinctAndSpoken:
         verdict = convo.spine.confirm(proposal.token)
         assert verdict.approved is False
         assert verdict.reason == "dispatch_failed"
-        assert verdict.spoken.strip()
+        # Names the next move: nothing was sent, and re-proposing is the only
+        # correct action, because the send is deliberately not re-attempted.
+        assert "nothing was sent" in verdict.spoken
+        assert "ask me again" in verdict.spoken.lower()
 
 
 # =============================================================================
