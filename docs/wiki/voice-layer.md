@@ -518,6 +518,46 @@ The verbatim authorizing utterance rides along free, because the gate already ha
 to capture it. A recipient can always answer "did a human really say this, and in
 what words", and can see it when the buddy mis-paraphrased.
 
+### Maintenance note: SPOKEN strings need tests, and they are the ones that don't have them
+
+A pattern worth knowing before you add a sentence the buddy says out loud.
+
+On this feature the code paths accumulated tests naturally and **the spoken
+paths kept not having them** — because a wrong sentence and a right sentence are
+*structurally identical at review time*. Both are a string literal in the right
+place. Nothing about a stale one looks stale.
+
+It has bitten twice already, and the second time was bigger than expected:
+
+- Two strings survived the nonce alphabet changing from digits to words — the
+  scripted `say` field in `write_tools` (*"Say the two digits separately"*) and
+  the persona's own example (*"to approve, say confirm four seven"*). Both would
+  have been spoken on **every proposal**. Grepping for `digit` would only ever
+  have found the one that used the word.
+- A later sweep found **six more**: the client's own `announce()` literals for
+  bridge-unreachable, channel-closed, garbled-data, tool-failure, service-error
+  and dispatch-failure. Not one was asserted anywhere.
+
+Scripted instructions are a *mechanism* — the whole reason they exist is that a
+specific turn says specific text. A wrong script is not cosmetic there; it is
+the mechanism working exactly as designed, with the wrong content.
+
+**So there is a set, and it is asserted.** If you add a spoken string, add it:
+
+| Surface | Guarded by |
+|---|---|
+| `confirm.SPOKEN` (per-outcome refusals) | `REASONS` ↔ `SPOKEN` **both ways**, plus a reachability test |
+| `Verdict.to_dict()["say"]` (success) | asserts "queued", forbids "sent" |
+| `write_tools` scripted `say` | asserts the live phrase, forbids digit-era wording |
+| `instructions.build_instructions()` | asserts the real alphabet appears |
+| `client.py` `announce()` literals | the set is **pinned**; each checked for speakability |
+
+The one-directional guard is worth calling out on its own: checking "every
+outcome has a line" catches a mute refusal but lets **a line without an outcome**
+ship as dead code — which is exactly how `too_many_attempts` shipped a carefully
+written sentence with no producer, while the attempt that really retired a
+proposal told the owner to repeat a phrase that had just stopped working.
+
 ### Two ways to draw a unique nonce, and why the obvious one is wrong
 
 Uniqueness among live proposals is what closes "one approval, two proposals".

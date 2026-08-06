@@ -638,8 +638,15 @@ SPOKEN = {
     "too_many_attempts": (
         "I've got that wrong too many times, so I've dropped it. Ask me again from the top."
     ),
+    # Names the owner's NEXT MOVE, not just the failure. The taxonomy rule is
+    # that every outcome tells them what to do, and "it failed" alone leaves
+    # them to infer it — from a channel with no screen. Re-proposing is the
+    # only correct move: the send is deliberately not re-attempted, because a
+    # dispatch that failed may have partially written and re-running it risks a
+    # duplicate delivery.
     "dispatch_failed": (
-        "You confirmed it, but the handoff itself failed, so it did not go through."
+        "You confirmed it, but the handoff itself failed, so nothing was sent. "
+        "Ask me again and I'll set it up fresh."
     ),
 }
 
