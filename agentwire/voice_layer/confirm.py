@@ -264,12 +264,45 @@ _DENIAL_BIGRAMS = frozenset(
      ("belay", "that")}
 )
 
-#: Pairs that SUPPRESS a single-word denial. Tiny, closed, and each earns its
-#: place against a realistic spoken phrase: "confirm tango, don't forget the
-#: other branch" is an approval with a reminder attached, and "wait for the
-#: tests" is an instruction, not a retraction.
-_DENIAL_EXCEPTIONS = frozenset(
-    {("dont", "forget"), ("wait", "for"), ("wait", "until"), ("wait", "till")}
+#: Pairs that SUPPRESS a single-word denial.
+#:
+#: **Exceptions carry a HIGHER bar than denial words, and the asymmetry is the
+#: opposite of the one that governs the word list.** For denial WORDS, prefer
+#: tight: a missed denial is recoverable, because the write still needs a nonce
+#: and the owner can simply not say it. That reasoning does NOT transfer here.
+#: An exception SUPPRESSES a denial, so a wrong one means **the owner said no
+#: and the write went** — not recoverable by declining to speak, because they
+#: already spoke and it did not count. Same failure as the normalization
+#: inversion, through a narrower door.
+#:
+#: So: for the word list, prefer tight; for exceptions, **prefer few**.
+#:
+#: Unconditional. "don't forget the other branch" has no reading in which a
+#: person means "cancel" — the phrase is closed and the exception is exact.
+_DENIAL_EXCEPTIONS = frozenset({("dont", "forget")})
+
+#: Conditional exceptions: suppressed ONLY when what follows is a real object.
+#:
+#: "wait for the tests to finish" is an approval with a condition attached, but
+#: **"wait for it" is an idiom meaning exactly "hold on"** — an unconditional
+#: ``("wait", "for")`` exception swallows a retraction and approves it, which is
+#: precisely the failure the paragraph above describes. Measured: before this
+#: rule, "wait for it, confirm tango" APPROVED.
+#:
+#: The instrument is a determiner/noun test rather than an idiom denylist,
+#: because a denylist here would be the same unbounded shape the filler list
+#: was: a bare deictic after "wait for" is holding, a determiner or noun is a
+#: condition. A missing third token also keeps the denial — "wait for" alone is
+#: not a condition.
+_CONDITIONAL_DENIAL_EXCEPTIONS = frozenset(
+    {("wait", "for"), ("wait", "until"), ("wait", "till")}
+)
+
+#: Bare deictics. After a conditional exception these mean the owner is holding,
+#: not naming a thing to wait on.
+_BARE_DEICTICS = frozenset(
+    {"it", "that", "this", "them", "him", "her", "us", "me", "now", "there",
+     "one", "a", "sec", "second", "moment", "minute", "bit"}
 )
 
 #: Trigrams that suppress a BIGRAM denial. "do not forget the other branch" is
@@ -296,6 +329,11 @@ def _denial_tokens(tokens: "list[str]") -> bool:
         following = tokens[index + 1] if index + 1 < len(tokens) else ""
         if (token, following) in _DENIAL_EXCEPTIONS:
             continue
+        if (token, following) in _CONDITIONAL_DENIAL_EXCEPTIONS:
+            third = tokens[index + 2] if index + 2 < len(tokens) else ""
+            # A real object suppresses; a bare deictic (or nothing) does not.
+            if third and third not in _BARE_DEICTICS:
+                continue
         return True
     return False
 

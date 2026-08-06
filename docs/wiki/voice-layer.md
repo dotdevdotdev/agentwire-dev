@@ -518,6 +518,58 @@ The verbatim authorizing utterance rides along free, because the gate already ha
 to capture it. A recipient can always answer "did a human really say this, and in
 what words", and can see it when the buddy mis-paraphrased.
 
+### A refusal may not claim more certainty than the success it points at
+
+The rule that generalises furthest out of this work, and it is cheap to check.
+
+`dispatch_failed` said *"…so nothing was sent. Ask me again."* That reads as
+helpful and it is a **definite claim the system cannot verify**:
+`run_agentwire_cmd` reports `success: False` on `subprocess.TimeoutExpired`, and
+a timed-out CLI may already have enqueued. Worse, pairing false certainty with
+"ask me again" invites a re-propose that **double-delivers** — the acting-twice
+failure, arrived at through a spoken line asserting more than the system knows.
+
+Sweeping for that shape found a second one that had been there longer, and it
+is the clearer illustration: **`replayed` said "I already sent that one" while
+the success path it refers back to says "queued"**. Those cannot both be right.
+The success line is careful precisely because `msg send` queues; a refusal
+pointing back at it inherited none of that care.
+
+So, as a rule:
+
+> **A refusal may not claim more certainty than the success it points at.**
+
+Applied here: `dispatch_failed` names the uncertainty *and* the next move — and
+note the next move **changes because of** the uncertainty. "Check that session
+before asking me again" is verify-then-decide, not re-propose. That instruction
+is only reachable by admitting what is unknown; stating the uncertainty made the
+advice better, not vaguer.
+
+**And a rewording for honesty can silently drop a taxonomy property.** That is
+the specific way this class of fix regresses: rewriting `replayed` to stop
+saying "sent" removed its stand-down cue, and the only reason it did not ship
+that way is that a test asserts every outcome names the owner's next move. If
+you reword a spoken line for accuracy, re-check the property it was carrying.
+
+### Denial words and denial EXCEPTIONS have opposite bars
+
+Both are one grammar and the instinct that serves one betrays the other.
+
+- **Denial words: prefer tight.** A missed denial is recoverable — the write
+  still needs a nonce, so the owner can simply not say it. Over-broad words are
+  the expensive direction: `not`/`never`/`hold`/`forget` turned *"confirm tango,
+  it is not urgent"* into *"You said no."*
+- **Exceptions: prefer few.** An exception SUPPRESSES a denial, so a wrong one
+  means **the owner said no and the write went** — which they cannot undo by
+  declining to speak, because they already spoke and it did not count.
+
+`("wait", "for")` is the worked example. *"Wait for the tests to finish"* is an
+approval with a condition; ***"wait for it"* is an idiom meaning exactly "hold
+on"***, and an unconditional exception swallowed it. The fix is a
+determiner/noun test rather than an idiom denylist — a denylist here would be
+the same unbounded shape the filler list was, and this file already learned that
+lesson once.
+
 ### Maintenance note: SPOKEN strings need tests, and they are the ones that don't have them
 
 A pattern worth knowing before you add a sentence the buddy says out loud.
