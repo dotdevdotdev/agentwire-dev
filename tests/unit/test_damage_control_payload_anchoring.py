@@ -661,6 +661,145 @@ class TestComposedWithPathScopedGrants:
         assert result.get("id") != self.GRANTED_HAND_WRITTEN_RULE
 
 
+class TestQuotedCommandSubstitutionIsNotContent:
+    """A dangerous command INSIDE a quoted substitution must still refuse.
+
+    The hole this closes, found in review: ``git commit -m "$(rm -rf /x)"`` went
+    BLOCK -> ALLOW **including under AGENTWIRE_UNATTENDED=1**, removing the
+    fail-closed guarantee that is the entire point of the unattended tier.
+
+    Three things had to line up and no one of them does it alone:
+
+    1. this PR anchors ``core.rm-*``, so the rules match the MASKED haystack;
+    2. masking blanks a fully-quoted whitespace-containing token — and
+       ``"$(rm -rf /x)"`` is exactly that — so the payload became invisible;
+    3. #917 ships ``git.commit`` in ``DEFAULT_UNATTENDED_ALLOW`` **unscoped**,
+       so the residual ``ask`` resolved to ``allow`` with no human. The scope
+       evaluator does return *unscopeable* for a substitution, but an unscoped
+       grant never consults it — bypassed, not defeated.
+
+    On main step 1 is absent, so the raw haystack still caught it. Nothing went
+    red because no test anywhere covered a dangerous command inside a QUOTED
+    substitution — the earlier falsification corpus was the mirror arrangement
+    (``rm -rf "$(cat f)"``, dangerous verb OUTSIDE the quotes), which survives
+    masking and always did.
+
+    Fix: ``is_content`` no longer masks a quoted token containing ``$(`` or a
+    backtick. Strictly more inclusive, so it cannot weaken any rule.
+    """
+
+    RM = "rm -" + "rf"
+    TF = "terraform " + "destroy"
+
+    #: (command, the rule family that must own the refusal)
+    GRANTED_CARRIER_CASES = [
+        (f'git commit -m "$({RM} /tmp/x)"', "core.rm-with-recursive-or-force-flags"),
+        (f'git commit -m "$({TF})"',
+         "infrastructure.terraform-destroy-destroys-all-infrastructure"),
+        ('git commit -m "$(gh repo delete o/r)"',
+         "cloud-hosting.gh-repo-delete-deletes-repository"),
+        ('git commit -m "$(kubectl delete namespace prod)"',
+         "containers.kubectl-delete-namespace"),
+        (f'git commit -m `{RM} /tmp/x`', "core.rm-with-recursive-or-force-flags"),
+    ]
+
+    @pytest.mark.parametrize("command,rule_id", GRANTED_CARRIER_CASES)
+    def test_refused_and_by_the_rule_that_owns_it(
+        self, bash_hook, bundled_config, command, rule_id
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] == "block", (
+            f"{command!r} decided {result['decision']} — the payload is hidden "
+            f"from the anchored rules again"
+        )
+        assert result["id"] == rule_id, (
+            f"{command!r} blocked via {result['id']!r}, not the rule that owns "
+            f"the payload — something else took the credit"
+        )
+
+    @pytest.mark.parametrize("command,_rule", GRANTED_CARRIER_CASES)
+    def test_unattended_column_specifically(
+        self, bash_hook, bundled_config, command, _rule
+    ):
+        """The column that actually mattered.
+
+        An interactive ``ask`` looks harmless and is what hid this: the carrier
+        holds an unscoped grant, so ``ask`` becomes ``allow`` with no human. A
+        hard ``block`` is the only verdict that survives the unattended
+        resolver, so assert the tier rather than merely "not allow".
+        """
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] == "block", (
+            f"{command!r} is {result['decision']}, not block — an ask on a "
+            f"carrier holding an unscoped grant resolves to ALLOW unattended"
+        )
+
+    def test_echo_contrast_proves_the_grant_is_load_bearing(
+        self, bash_hook, bundled_config
+    ):
+        """Same shape, no grant. It failed closed even while `git commit` did
+        not, which is what identified the grant as the third ingredient."""
+        result = bash_hook.check_command(
+            f'echo "$({self.RM} /tmp/x)"', bundled_config
+        )
+        assert result["decision"] == "block"
+
+    def test_mirror_arrangement_still_refused(self, bash_hook, bundled_config):
+        """Dangerous verb OUTSIDE the quotes — the earlier corpus. Never broke,
+        asserted so the two arrangements stay distinguishable in the record."""
+        result = bash_hook.check_command(
+            f'{self.RM} "$(cat /tmp/targets)"', bundled_config
+        )
+        assert result["decision"] == "block"
+
+    def test_prose_without_a_substitution_is_still_masked(
+        self, bash_hook, bundled_config
+    ):
+        """The #915 fix survives the repair — a plain report still sends."""
+        result = bash_hook.check_command(
+            'agentwire msg send --to orch --kind done '
+            '"the merge could not be completed -- I did not rm the file"',
+            bundled_config,
+        )
+        assert result["decision"] == "allow"
+
+    def test_masked_form_keeps_the_substitution_visible(self, bash_hook):
+        """The mechanism, asserted directly rather than via a verdict."""
+        masked = bash_hook.masked_subcommands(f'git commit -m "$({self.RM} /x)"')
+        assert masked == [f"git commit -m $({self.RM} /x)"]
+        # and a substitution-free quoted token is still masked
+        plain = bash_hook.masked_subcommands('git commit -m "a plain message"')
+        assert "a plain message" not in plain[0]
+
+    @pytest.mark.parametrize("command,_rule", GRANTED_CARRIER_CASES)
+    def test_mutation_reverting_the_fix_makes_these_go_red(
+        self, bash_hook, bundled_config, command, _rule
+    ):
+        """Re-mask quoted substitutions and every row above must fall through.
+
+        Without this the rows could be passing for an unrelated reason; with it,
+        the fix is shown to be what carries them.
+        """
+        original = bash_hook.masked_subcommands
+
+        def remasked(cmd):
+            # the pre-fix behaviour: blank any fully-quoted whitespace token,
+            # substitution or not — emulated by stripping the substitution
+            # spans before masking so `is_content` reverts to its old verdict
+            import re as _re
+            return original(_re.sub(r"\$\([^)]*\)|`[^`]*`", "PLACEHOLDER TEXT", cmd))
+
+        bash_hook.masked_subcommands = remasked
+        try:
+            result = bash_hook.check_command(command, bundled_config)
+        finally:
+            bash_hook.masked_subcommands = original
+        assert result["decision"] != "block", (
+            f"mutation is inert for {command!r} — it still blocks with the "
+            f"substitution masked, so the shipped row proves nothing"
+        )
+
+
 class TestMutationProvesTheAssertionsHaveTeeth:
     """Anchor the must-not-anchor class and the guard measurably disappears.
 

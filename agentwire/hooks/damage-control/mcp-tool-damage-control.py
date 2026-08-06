@@ -2386,7 +2386,33 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
         prev = ""
         for text, fully_quoted in toks:
             resolved = _resolve(text)
-            is_content = fully_quoted and (not resolved or any(ch in " \t\n" for ch in resolved))
+            # A quoted token holding a COMMAND SUBSTITUTION is not content, no
+            # matter how much prose surrounds it: ``git commit -m "$(rm -rf
+            # /x)"`` runs the payload. Masking it hid the payload from every
+            # anchored rule, and because ``git.commit`` carries an UNSCOPED
+            # default grant the residual ``ask`` resolved to ALLOW with no human
+            # — the fail-closed guarantee gone for that shape (#915 review).
+            #
+            # The failure needed three things and no one of them alone: this
+            # PR's anchoring (payload unseen), #917's unscoped grant (ask ->
+            # allow unattended), and the pre-existing whitespace-keyed masking.
+            # The ``echo "$(…)"`` control has the same shape with no grant and
+            # still fails closed, which is what proves the grant load-bearing.
+            #
+            # NB the mirror arrangement (``rm -rf "$(cat f)"`` — dangerous verb
+            # OUTSIDE the quotes) never broke: masking blanks the same token,
+            # but the verb is in command position and survives. The hazard is
+            # a benign outer command with the danger INSIDE the quotes.
+            #
+            # Not masking is strictly MORE inclusive, so it cannot weaken any
+            # rule; the cost is that a report quoting a substitution alongside a
+            # rule token can false-positive again, which is the safe direction.
+            has_substitution = "$(" in resolved or "`" in resolved
+            is_content = (
+                fully_quoted
+                and not has_substitution
+                and (not resolved or any(ch in " \t\n" for ch in resolved))
+            )
             if not words and _ASSIGN_TOKEN_RE.match(resolved):
                 # Leading VAR=value assignment — its value is data here (the
                 # assigns table already handles later ``$VAR`` expansion).
