@@ -535,7 +535,7 @@ class TestComposedWithGitNormalization:
 
     FORCE = "--" + "force"
 
-    def test_forced_push_behind_dash_C_blocks_via_the_git_rule(
+    def test_forced_push_behind_dash_c_blocks_via_the_git_rule(
         self, bash_hook, bundled_config
     ):
         result = bash_hook.check_command(
@@ -566,7 +566,7 @@ class TestComposedWithGitNormalization:
         assert result["decision"] == "block"
         assert result["id"] == rule_id
 
-    def test_safe_form_behind_dash_C_stays_ask_not_block(
+    def test_safe_form_behind_dash_c_stays_ask_not_block(
         self, bash_hook, bundled_config
     ):
         """The two-sided expectation: normalization must not rewrite the command
