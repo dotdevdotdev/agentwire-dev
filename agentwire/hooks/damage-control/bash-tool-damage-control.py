@@ -2484,6 +2484,25 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
                 # of those payloads was masked away with nothing rescanning it —
                 # a BLOCK -> ALLOW regression once the rules are anchored, since
                 # the raw haystack is no longer consulted for them.
+                #
+                # DO NOT HARMONISE THIS WITH ``_strip_global_options``, which
+                # scans only the narrow ``_WRAPPER_PREFIXES`` set and documents
+                # the resulting gap. The two loops look alike and want OPPOSITE
+                # answers, because they do different things:
+                #
+                #   here  — RE-SCANS a quoted payload that is already isolated.
+                #           A false positive costs a rescan of prose, bounded,
+                #           and anchoring is what contains it.
+                #   there — SYNTHESISES a new command-position haystack. Scan
+                #           any word and ``echo git -C /r push --force`` finds
+                #           "git" at index 1, emits ``echo git push --force``,
+                #           and the force-push rule matches an ECHO — a false
+                #           BLOCK on prose, produced by the guard that exists
+                #           because prose was being blocked (#675/#915).
+                #
+                # Verified: that echo is ``allow`` today and must stay so.
+                # Any-word is right for a payload you re-scan and wrong for a
+                # haystack you construct.
                 if (
                     words
                     and prev.startswith("-")

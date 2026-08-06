@@ -1305,3 +1305,50 @@ class TestExecSurfacePayloadsStayVisible:
             "notatool -c 'rm -rf /tmp/x'", bundled_config
         )
         assert result["decision"] == "allow"
+
+
+class TestPayloadRescanAndHaystackSynthesisDisagreeOnPurpose:
+    """The any-word rescan must NOT be copied into ``_strip_global_options``.
+
+    Two loops in ``_core.py`` look alike and want opposite answers:
+
+    - the payload rescan (this PR) scans ANY word for a shell name, because a
+      wrapper prefix puts the shell in the middle and the payload is already an
+      isolated quoted token — a false positive costs a rescan of prose;
+    - ``_strip_global_options`` (#919) scans only ``_WRAPPER_PREFIXES`` and
+      documents the resulting gap, because it SYNTHESISES a new command-position
+      haystack — scan any word there and ``echo git -C /r push --force``
+      emits ``echo git push --force``, matching the force-push rule on an
+      ECHO. That is #675/#915 re-opened by the guard that exists because prose
+      was being blocked.
+
+    Sitting in one file those read as an inconsistency to harmonise, and the
+    obvious harmonisation is the harmful direction. This pins the property so
+    the comment is not the only thing defending it.
+    """
+
+    ECHOES = [
+        "echo git -C /repo push --force",
+        'echo "git -C /repo push --force was refused by damage-control"',
+        'agentwire msg send --to orch --kind done '
+        '"git -C /repo push --force was refused"',
+    ]
+
+    @pytest.mark.parametrize("command", ECHOES)
+    def test_prose_naming_a_global_option_command_is_not_blocked(
+        self, bash_hook, bundled_config, command
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] == "allow", (
+            f"{command!r} is {result['decision']} — a synthesised haystack is "
+            f"matching prose. If _strip_global_options was widened to scan any "
+            f"word, revert that: the two loops disagree on purpose."
+        )
+
+    def test_the_real_command_still_blocks(self, bash_hook, bundled_config):
+        """The other side of the asymmetry — narrow there must not cost this."""
+        result = bash_hook.check_command(
+            "git -C /repo push --force origin main", bundled_config
+        )
+        assert result["decision"] == "block"
+        assert result["id"] == "git.git-push-force-use-force-with-lease"
