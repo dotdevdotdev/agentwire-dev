@@ -6,24 +6,31 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\bgcloud\s+projects\s+delete\b'
     reason: gcloud projects delete (DELETES ENTIRE PROJECT)
+    anchored: true
 
   - pattern: '\bgcloud\s+compute\s+instances\s+delete\b'
     reason: gcloud compute instances delete
+    anchored: true
 
   - pattern: '\bgcloud\s+sql\s+instances\s+delete\b'
     reason: gcloud sql instances delete
+    anchored: true
 
   - pattern: '\bgcloud\s+container\s+clusters\s+delete\b'
     reason: gcloud container clusters delete (GKE)
+    anchored: true
 
   - pattern: '\bgcloud\s+storage\s+rm\s+.*-r'
     reason: gcloud storage rm -r (recursive delete)
+    anchored: true
 
   - pattern: '\bgcloud\s+functions\s+delete\b'
     reason: gcloud functions delete
+    anchored: true
 
   - pattern: '\bgcloud\s+iam\s+service-accounts\s+delete\b'
     reason: gcloud iam service-accounts delete
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # GCP DEPLOYS (ask: true — outward-facing, caught in unattended sessions)
@@ -34,8 +41,10 @@ bashToolPatterns:
     reason: gcloud run deploy (ships a Cloud Run service)
     ask: true
     id: deploy.gcloud-run
+    anchored: true
 
   - pattern: '\bgcloud\s+app\s+deploy\b'
     reason: gcloud app deploy (ships an App Engine version)
     ask: true
     id: deploy.gcloud-app
+    anchored: true

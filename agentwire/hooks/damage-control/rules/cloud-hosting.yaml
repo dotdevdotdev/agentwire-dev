@@ -7,84 +7,103 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\bvercel\s+remove\s+.*--yes'
     reason: vercel remove --yes (removes deployment)
+    anchored: true
 
   - pattern: '\bvercel\s+projects\s+rm\b'
     reason: vercel projects rm (deletes project)
+    anchored: true
 
   - pattern: '\bvercel\s+env\s+rm\s+.*--yes'
     reason: vercel env rm --yes (removes env variables)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # NETLIFY DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bnetlify\s+sites:delete\b'
     reason: netlify sites:delete (deletes entire site)
+    anchored: true
 
   - pattern: '\bnetlify\s+functions:delete\b'
     reason: netlify functions:delete
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # CLOUDFLARE (wrangler) DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bwrangler\s+delete\b'
     reason: wrangler delete (deletes Worker)
+    anchored: true
 
   - pattern: '\bwrangler\s+r2\s+bucket\s+delete\b'
     reason: wrangler r2 bucket delete
+    anchored: true
 
   - pattern: '\bwrangler\s+kv:namespace\s+delete\b'
     reason: wrangler kv:namespace delete
+    anchored: true
 
   - pattern: '\bwrangler\s+d1\s+delete\b'
     reason: wrangler d1 delete (deletes database)
+    anchored: true
 
   - pattern: '\bwrangler\s+queues\s+delete\b'
     reason: wrangler queues delete
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # HEROKU DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bheroku\s+apps:destroy\b'
     reason: heroku apps:destroy
+    anchored: true
 
   - pattern: '\bheroku\s+pg:reset\b'
     reason: heroku pg:reset (resets database)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # FLY.IO DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bfly\s+apps\s+destroy\b'
     reason: fly apps destroy (Fly.io)
+    anchored: true
 
   - pattern: '\bfly\s+destroy\b'
     reason: fly destroy (Fly.io)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # DIGITALOCEAN (doctl) DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bdoctl\s+compute\s+droplet\s+delete\b'
     reason: doctl droplet delete (DigitalOcean)
+    anchored: true
 
   - pattern: '\bdoctl\s+databases\s+delete\b'
     reason: doctl databases delete (DigitalOcean)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # SUPABASE DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bsupabase\s+db\s+reset\b'
     reason: supabase db reset
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # GITHUB CLI DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bgh\s+repo\s+delete\b'
     reason: gh repo delete (deletes repository)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # PACKAGE REGISTRY DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
   - pattern: '\bnpm\s+unpublish\b'
     reason: npm unpublish (removes package from registry)
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # DEPLOYS (ask: true — outward-facing, caught in unattended sessions)
@@ -96,38 +115,46 @@ bashToolPatterns:
     reason: vercel deploy (ships a deployment)
     ask: true
     id: deploy.vercel
+    anchored: true
 
   - pattern: '\bvercel\s+(-[^\s]*\s+)*--prod\b'
     reason: vercel --prod (ships a production deployment)
     ask: true
     id: deploy.vercel-prod
+    anchored: true
 
   - pattern: '\bnetlify\s+deploy\b'
     reason: netlify deploy (ships a deployment)
     ask: true
     id: deploy.netlify
+    anchored: true
 
   - pattern: '\b(fly|flyctl)\s+deploy\b'
     reason: fly deploy (ships a Fly.io deployment)
     ask: true
     id: deploy.fly
+    anchored: true
 
   - pattern: '\bwrangler\s+(deploy|publish)\b'
     reason: wrangler deploy (ships a Cloudflare Worker)
     ask: true
     id: deploy.wrangler
+    anchored: true
 
   - pattern: '\brailway\s+(up|deploy)\b'
     reason: railway up (ships a Railway deployment)
     ask: true
     id: deploy.railway
+    anchored: true
 
   - pattern: '\brender\s+deploys?\s+create\b'
     reason: render deploys create (ships a Render deployment)
     ask: true
     id: deploy.render
+    anchored: true
 
   - pattern: '\bsupabase\s+functions\s+deploy\b'
     reason: supabase functions deploy (ships an edge function)
     ask: true
     id: deploy.supabase-functions
+    anchored: true

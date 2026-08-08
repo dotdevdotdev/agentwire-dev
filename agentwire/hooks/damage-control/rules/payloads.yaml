@@ -1,0 +1,118 @@
+# Wrapped-payload damage control rules
+#
+# Every rule here matches text that arrives INSIDE another command's quoted
+# argument -- a SQL statement handed to psql, a script handed to python -c /
+# perl -e / mongosh --eval, a $(...) substitution. They are the rules that fail
+# the anchoring shape test, so they live together in one uniformly UNANCHORED
+# file (#915).
+#
+# WHY A FILE AND NOT A PER-RULE FLAG. `anchored: true` swaps the haystack for
+# masked_subcommands(), which blanks every fully-quoted token containing
+# whitespace regardless of position. That is lossless for a command-prefix rule
+# and fatal here: masking removes exactly the text these rules exist to catch.
+# Anchoring is therefore decided per FILE, gated on the git.yaml shape test --
+# every rule command-prefix shaped AND the tool takes no inner-command payload
+# -- so there is no per-rule skip-list to keep in sync (see
+# ~/.claude/rules/architecture.md). remote.yaml is the other unanchored file:
+# ssh's payload is the same shape, and its rules are kept whole there because
+# they double-cover the local rules in core.yaml.
+#
+# Each rule carries an explicit `id:` pinned to the id it had before the move,
+# so `safety.disabled_rules` / `unattended_allow` entries keep working.
+#
+# DO NOT add `anchored: true` to anything in this file. The invariant is
+# enforced by tests/unit/test_damage_control_payload_anchoring.py.
+
+bashToolPatterns:
+
+  # ---------------------------------------------------------------------------
+  # INTERPRETER / CLIENT EVAL PAYLOADS
+  # ---------------------------------------------------------------------------
+
+  - pattern: 'shutil\.rmtree'
+    reason: shutil.rmtree recursive delete (equivalent to rm -rf)
+    id: core.shutil-rmtree-recursive-delete-equivalent-to-rm-rf
+    anchored: false
+
+  - pattern: '\bperl\b.*\bunlink\b'
+    reason: perl unlink delete (use git clean or manual cleanup)
+    bypassable: true
+    id: core.perl-unlink-delete-use-git-clean-or-manual-cleanup
+    anchored: false
+
+  - pattern: '\bmongosh.*dropDatabase'
+    reason: MongoDB dropDatabase
+    id: databases.mongodb-dropdatabase
+    anchored: false
+
+  - pattern: '\bmongo.*dropDatabase'
+    reason: MongoDB dropDatabase
+    id: databases.mongodb-dropdatabase-2
+    anchored: false
+
+  # ---------------------------------------------------------------------------
+  # SQL STATEMENTS
+  # ---------------------------------------------------------------------------
+
+  - pattern: 'DELETE\s+FROM\s+\w+\s*;'
+    reason: DELETE without WHERE clause (will delete ALL rows)
+    id: databases.delete-without-where-clause-will-delete-all-rows
+    anchored: false
+
+  - pattern: 'DELETE\s+FROM\s+\w+\s*$'
+    reason: DELETE without WHERE clause (will delete ALL rows)
+    id: databases.delete-without-where-clause-will-delete-all-rows-2
+    anchored: false
+
+  - pattern: 'DELETE\s+\*\s+FROM'
+    reason: DELETE * (will delete ALL rows)
+    id: databases.delete-will-delete-all-rows
+    anchored: false
+
+  - pattern: '\bTRUNCATE\s+TABLE\b'
+    reason: TRUNCATE TABLE (will delete ALL rows)
+    id: databases.truncate-table-will-delete-all-rows
+    anchored: false
+
+  - pattern: '\bDROP\s+TABLE\b'
+    reason: DROP TABLE
+    id: databases.drop-table
+    anchored: false
+
+  - pattern: '\bDROP\s+DATABASE\b'
+    reason: DROP DATABASE
+    id: databases.drop-database
+    anchored: false
+
+  - pattern: '\bDELETE\s+FROM\s+\w+\s+WHERE\b.*\bid\s*='
+    reason: SQL DELETE with specific ID
+    ask: true
+    id: databases.sql-delete-with-specific-id
+    anchored: false
+
+  - pattern: '\bpsql\b.*\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|CREATE\s+TABLE|GRANT\s+|REVOKE\s+)'
+    reason: psql executing a write statement (INSERT/UPDATE/ALTER/CREATE/GRANT)
+    ask: true
+    id: db.psql-write
+    anchored: false
+
+  - pattern: '\b(mysql|mariadb)\b.*\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|CREATE\s+TABLE|GRANT\s+|REVOKE\s+)'
+    reason: mysql executing a write statement (INSERT/UPDATE/ALTER/CREATE/GRANT)
+    ask: true
+    id: db.mysql-write
+    anchored: false
+
+  - pattern: '\bmongosh?\b.*\.(insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|replaceOne|bulkWrite)\b'
+    reason: mongosh executing a write operation (insert/update/delete)
+    ask: true
+    id: db.mongosh-write
+    anchored: false
+
+  # ---------------------------------------------------------------------------
+  # COMMAND SUBSTITUTION
+  # ---------------------------------------------------------------------------
+
+  - pattern: '\bdocker\s+rm\s+.*-f.*\$\(docker\s+ps'
+    reason: docker rm -f $(docker ps) (force removes containers)
+    id: containers.docker-rm-f-docker-ps-force-removes-containers
+    anchored: false

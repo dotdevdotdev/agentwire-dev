@@ -13,28 +13,34 @@ bashToolPatterns:
     reason: cargo publish (publishes a crate to crates.io)
     ask: true
     id: publish.cargo
+    anchored: true
 
   - pattern: '\bpoetry\s+publish\b'
     reason: poetry publish (publishes a package to PyPI)
     ask: true
     id: publish.poetry
+    anchored: true
 
   - pattern: '\btwine\s+upload\b'
     reason: twine upload (publishes a package to PyPI)
     ask: true
     id: publish.twine
+    anchored: true
 
   - pattern: '\b(pnpm|yarn)\s+publish\b'
     reason: pnpm/yarn publish (publishes a package to npm registry)
     ask: true
     id: publish.pnpm-yarn
+    anchored: true
 
   - pattern: '\bgem\s+push\b'
     reason: gem push (publishes a gem to RubyGems)
     ask: true
     id: publish.gem
+    anchored: true
 
   - pattern: '\bmvn\s+(deploy|.*\bdeploy:deploy)\b'
     reason: mvn deploy (publishes artifacts to a Maven repository)
     ask: true
     id: publish.maven
+    anchored: true

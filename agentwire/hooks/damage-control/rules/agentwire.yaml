@@ -10,27 +10,34 @@ bashToolPatterns:
   # Tmux session destruction
   - pattern: '\btmux\s+kill-server\b'
     reason: tmux kill-server (destroys ALL tmux sessions including AgentWire)
+    anchored: true
 
   - pattern: '\btmux\s+kill-session\s+.*\bagentwire'
     reason: tmux kill-session targeting AgentWire sessions
+    anchored: true
 
   - pattern: '\btmux\s+kill-session\s+.*-a\b'
     reason: tmux kill-session -a (kills all except current)
     ask: true
+    anchored: true
 
   # AgentWire CLI destructive commands (future-proofing)
   - pattern: '\bagentwire\s+destroy\b'
     reason: agentwire destroy (if implemented - destroys AgentWire state)
+    anchored: true
 
   - pattern: '\bagentwire\s+.*--force.*remove\b'
     reason: agentwire force remove operations
+    anchored: true
 
   # AgentWire directory destruction
   - pattern: '\brm\s+.*\.agentwire'
     reason: Removing .agentwire directory (destroys all AgentWire state)
+    anchored: true
 
   - pattern: '\brm\s+.*~/.agentwire'
     reason: Removing ~/.agentwire directory (destroys all AgentWire state)
+    anchored: true
 
   # Note: `agentwire tasks promote` (#720/#721) is blocked via
   # safety/_core.py's PROTECTED_COMMAND_PATTERNS instead of an ordinary

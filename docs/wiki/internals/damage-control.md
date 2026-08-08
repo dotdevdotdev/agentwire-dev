@@ -222,13 +222,97 @@ Block dangerous shell commands using regex patterns:
 bashToolPatterns:
   - pattern: '\brm\s+(-[^\s]*)*-[rRf]'
     reason: rm with recursive or force flags
+    anchored: true
 
   - pattern: '\bgit\s+push\s+--force\b'
     reason: git push --force (use --force-with-lease)
+    anchored: true
 
   - pattern: '\bsystemctl\s+stop\b'
     reason: stopping system services
+    anchored: true
 ```
+
+##### `anchored` — command position vs argument content (#675, #915)
+
+An unanchored rule matches the **raw command string**, so it fires on text that
+merely *mentions* the operation: a commit message, an `echo`, a `grep` whose
+search string is the rule's own reason, a `--kind done` report explaining that a
+deletion was refused. That is #915 — a report-back refused for what it says,
+and it reaches every command whose arguments discuss a guarded operation,
+including most of the tooling you would use to audit the guard.
+
+`anchored: true` matches against `masked_subcommands()` instead: quoted tokens
+that can only be content (a quoted token **containing whitespace**, a heredoc
+body) are blanked, while quoting obfuscation of the command itself still
+normalizes (`"rm" -rf`, `r\m`, `R=rm; $R`) and `sh -c "…"` payloads are
+recursively rescanned.
+
+**Anchoring is decided per FILE, not per rule.** A file may be anchored when
+every rule in it is command-prefix shaped **and** the tool takes no
+inner-command payload — the `git.yaml` shape test. Two reasons it cannot be a
+per-rule choice:
+
+- Masking blanks quoted content *regardless of position*, so a **wrapper** rule
+  whose danger arrives as a quoted payload — `ssh box "sudo rm -rf /var"`,
+  `psql -c "DROP TABLE users"`, `python -c "…shutil.rmtree…"` — loses exactly
+  the half it exists to read.
+- It is a *(rule × command-form)* property. Anchored `core.sudo-rm` still blocks
+  the local form but loses the ssh-wrapped one; its twin in `remote.yaml` is the
+  backstop that keeps that covered. Anchor both and the wrapped forms go from
+  double-covered to **uncovered**.
+
+So the wrapper rules live in two uniformly-**unanchored** files —
+`payloads.yaml` (SQL statements, interpreter `-c`/`-e`/`--eval` payloads,
+`$(…)` substitution) and `remote.yaml` (ssh) — rather than being flagged in
+place. No file mixes the two; a mixed file is a per-rule skip-list wearing a
+filename. Rules moved into `payloads.yaml` carry an explicit `id:` pinned to
+their previous id, so `safety.disabled_rules` / `unattended_allow` entries keep
+working.
+
+##### What anchoring gave up — the ssh-wrapped class (#924)
+
+Anchoring the 151 command-prefix rules demotes roughly **125 of 151
+ssh-wrapped dangerous forms from refused to allowed**:
+`ssh prod "terraform destroy"`, `ssh prod "kubectl delete namespace prod"`,
+`ssh prod "gh repo delete …"` and so on now pass.
+
+This is a demotion of **incidental** coverage, not a broken guard: those forms
+only blocked because of the same match-anywhere behaviour that *is* the payload
+bug. `remote.yaml`'s 12 rules are the *intentional* ssh coverage and are
+untouched — but the coverage was real while it lasted, so it is stated here
+rather than left to be discovered.
+
+The fix is **#924**: extend the `_SHELL_NAMES` rescan to
+`ssh <host> "<payload>"` so every rule applies to the payload, after which
+`remote.yaml` becomes **deletable** rather than something to extend. Widening
+`remote.yaml` to ~120 ssh twins is explicitly not the answer — that duplicates
+the entire rule set, which is the coupling this design exists to avoid.
+
+Known limits, all asserted as expected-fail rows in
+`tests/unit/test_damage_control_payload_anchoring.py` so a green suite cannot
+imply they work:
+
+| limit | example | tracked |
+|---|---|---|
+| ssh-wrapped forms outside `remote.yaml`'s 12 | `ssh prod "terraform destroy"` | #924 |
+| path ladders have no `anchored` concept | `grep -rn "<deletion>" ~/.agentwire/` → blocked by `noDeletePath` | #922 |
+| masking is keyed on **whitespace** | `msg send --kind done "rmdir"` → still blocked | #922 |
+| trailing shell comment is not masked | `true  # <guarded op> was blocked` | #922 |
+
+The middle two are why the **payload bug has three mechanisms** and anchoring
+`bashToolPatterns` fixes only the first. The path ladders in particular run
+three different predicates (`protectedControlPlane`, `zeroAccessPaths`,
+`readOnly`/`noDelete`), which is why one anchored-style flag will not serve
+them — the same *(rule × command-form)* conclusion that made anchoring a
+per-file decision.
+
+Both invariants are enforced by
+`tests/unit/test_damage_control_payload_anchoring.py`, which also asserts a
+dangerous form for every anchored rule against a **solo config of that rule
+alone** — a full-rule-set assertion can pass because some *other* rule caught
+the command, which is how a synthetic one-rule fixture stays green through real
+regressions.
 
 **Coverage**:
 - Destructive file operations (`rm -rf`, `shred`, `truncate`)
@@ -610,7 +694,7 @@ catastrophic, never-reversible verbs are `block` (fire in every mode).
 | **Outbound comms** | `agentwire email` | ask (unattended-allowed by default, #804) | `outbound.yaml` (`outbound.agentwire-email`) |
 | | `agentwire quo`, `twilio … messages create`, `aws ses send-email`, `aws sns publish`, `sendmail`, `mail -s` | ask | `outbound.yaml` (`outbound.*`) |
 | **DB migrations** | `prisma migrate deploy`/`dev`, `prisma db push`, `supabase db push`, `supabase migration up`, `alembic upgrade`/`downgrade`, `manage.py migrate`, `rails`/`rake db:migrate`, `knex migrate:*`, `sequelize db:migrate`, `flyway migrate`, `liquibase update` | ask | `databases.yaml` (`db.*`) |
-| **DB raw writes** | `psql`/`mysql` executing INSERT/UPDATE/ALTER/CREATE/GRANT, `mongosh` insert/update/delete | ask | `databases.yaml` (`db.psql-write`, `db.mysql-write`, `db.mongosh-write`) |
+| **DB raw writes** | `psql`/`mysql` executing INSERT/UPDATE/ALTER/CREATE/GRANT, `mongosh` insert/update/delete | ask | `payloads.yaml` (`db.psql-write`, `db.mysql-write`, `db.mongosh-write`) |
 | **DB schema-drop** | `prisma migrate reset`, `flyway clean` | **block** | `databases.yaml` (`db.prisma-reset`, `db.flyway-clean`) |
 | **Package publish** | `npm publish`, `uv publish` | ask | npm/uv tooldef |
 | | `cargo`/`poetry`/`pnpm`/`yarn publish`, `twine upload`, `gem push`, `mvn deploy` | ask | `publish.yaml` (`publish.*`) |
@@ -828,6 +912,10 @@ readOnlyPaths:
 **Heads-up:** the user-override directory **replaces** the bundled rules wholesale — copy what you need from `agentwire/hooks/damage-control/rules/` if you want to extend rather than override.
 
 **Pattern Tips**:
+- Declare `anchored:` on every rule — `true` for a command-prefix rule, `false`
+  if the danger arrives inside another command's quoted payload. The matcher
+  defaults to unanchored (fail-safe), which means a rule that omits it silently
+  reintroduces #915. See [`anchored`](#anchored--command-position-vs-argument-content-675-915).
 - Use `\b` for word boundaries: `\brm\b` matches `rm` but not `format`
 - Use `\s+` for required whitespace: `git\s+push` matches `git push`
 - Test patterns before deploying: `agentwire safety check "command"`

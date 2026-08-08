@@ -7,85 +7,97 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\brm\s+(-[^\s]*)*-[rRf]'
     reason: rm with recursive or force flags
+    anchored: true
 
   - pattern: '\brm\s+-[rRf]'
     reason: rm with recursive or force flags
+    anchored: true
 
   - pattern: '\brm\s+--recursive'
     reason: rm with --recursive flag
+    anchored: true
 
   - pattern: '\brm\s+--force'
     reason: rm with --force flag
+    anchored: true
 
   - pattern: '\bsudo\s+rm\b'
     reason: sudo rm
+    anchored: true
 
   - pattern: '\brmdir\b'
     reason: rmdir (use git clean or manual cleanup)
     bypassable: true
+    anchored: true
 
   - pattern: '\brm\s+[^-]'
     reason: rm file deletion (use git clean or manual cleanup)
     bypassable: true
+    anchored: true
 
   - pattern: '(?:^|[;&|])\s*trash\s+'
     reason: trash command (moves files to trash - use git clean or manual cleanup)
     bypassable: true
+    anchored: true
 
   # Non-``rm`` deletion paths that the literal-``rm`` rules miss.
   - pattern: '\bfind\b.*\s-delete\b'
     reason: find -delete (recursive deletion - use git clean or manual cleanup)
     bypassable: true
+    anchored: true
 
   - pattern: '\bfind\b.*-exec\s+rm\b'
     reason: find -exec rm (deletion via find - use git clean or manual cleanup)
     bypassable: true
-
-  - pattern: 'shutil\.rmtree'
-    reason: shutil.rmtree recursive delete (equivalent to rm -rf)
-
-  - pattern: '\bperl\b.*\bunlink\b'
-    reason: perl unlink delete (use git clean or manual cleanup)
-    bypassable: true
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # PERMISSION CHANGES
   # ---------------------------------------------------------------------------
   - pattern: '\bchmod\s+(-[^\s]+\s+)*777\b'
     reason: chmod 777 (world writable)
+    anchored: true
 
   - pattern: '\bchmod\s+-[Rr].*777'
     reason: recursive chmod 777
+    anchored: true
 
   - pattern: '\bchown\s+-[Rr].*\broot\b'
     reason: recursive chown to root
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # SYSTEM-LEVEL DESTRUCTION
   # ---------------------------------------------------------------------------
   - pattern: '\bmkfs\.'
     reason: filesystem format command
+    anchored: true
 
   - pattern: '\bdd\s+.*of=/dev/'
     reason: dd writing to device
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # PROCESS DESTRUCTION
   # ---------------------------------------------------------------------------
   - pattern: '\bkill\s+-9\s+-1\b'
     reason: kill all processes
+    anchored: true
 
   - pattern: '\bkillall\s+-9\b'
     reason: killall -9
+    anchored: true
 
   - pattern: '\bpkill\s+-9\b'
     reason: pkill -9
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # HISTORY/SHELL MANIPULATION
   # ---------------------------------------------------------------------------
   - pattern: '\bhistory\s+-c\b'
     reason: clearing shell history
+    anchored: true
 
 # ---------------------------------------------------------------------------
 # ZERO ACCESS PATHS - No read, write, or any access allowed

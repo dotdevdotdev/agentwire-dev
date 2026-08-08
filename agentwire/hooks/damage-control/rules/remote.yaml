@@ -1,6 +1,24 @@
 # Remote execution damage control rules
 # SSH remote execution safeguards
 
+# WHY THIS WHOLE FILE IS UNANCHORED (#915)
+#
+# Every rule here is a WRAPPER rule: the dangerous command is ssh's quoted
+# payload (``ssh box "<destructive command>"``). `anchored: true` matches
+# against masked_subcommands(), which blanks any fully-quoted token containing
+# whitespace -- so anchoring would blank exactly the half these rules exist to
+# read, and `ssh prod "sudo rm -rf /var/lib"` would become ALLOW.
+#
+# These rules also DOUBLE-COVER the local rules in core.yaml: anchored
+# `core.sudo-rm` still blocks `sudo rm /etc/hosts` but loses the ssh-wrapped
+# form, and this file is the backstop that keeps it covered. Anchoring
+# core.yaml and remote.yaml together would take the wrapped forms from
+# double-covered to UNCOVERED. That is why anchoring is decided per FILE
+# against a shape test rather than per rule.
+#
+# DO NOT add `anchored: true` to anything in this file. Enforced by
+# tests/unit/test_damage_control_payload_anchoring.py.
+
 bashToolPatterns:
   # ---------------------------------------------------------------------------
   # REMOTE EXECUTION SAFEGUARDS
@@ -11,41 +29,53 @@ bashToolPatterns:
   # SSH with destructive commands
   - pattern: '\bssh\s+.*\brm\s+-[rRf]'
     reason: SSH remote rm with recursive/force flags
+    anchored: false
 
   - pattern: '\bssh\s+.*\bsudo\s+rm\b'
     reason: SSH remote sudo rm
+    anchored: false
 
   - pattern: '\bssh\s+.*\bmkfs\b'
     reason: SSH remote filesystem format
+    anchored: false
 
   - pattern: '\bssh\s+.*\bdd\s+.*of=/dev/'
     reason: SSH remote dd to device
+    anchored: false
 
   - pattern: '\bssh\s+.*\breboot\b'
     reason: SSH remote reboot
     ask: true
+    anchored: false
 
   - pattern: '\bssh\s+.*\bshutdown\b'
     reason: SSH remote shutdown
     ask: true
+    anchored: false
 
   - pattern: '\bssh\s+.*\bsystemctl\s+stop\b'
     reason: SSH remote service stop
     ask: true
+    anchored: false
 
   # Remote database operations
   - pattern: '\bssh\s+.*\bdropdb\b'
     reason: SSH remote PostgreSQL database drop
+    anchored: false
 
   - pattern: '\bssh\s+.*\bmysqladmin\s+drop\b'
     reason: SSH remote MySQL database drop
+    anchored: false
 
   - pattern: '\bssh\s+.*\bredis-cli\s+FLUSHALL\b'
     reason: SSH remote Redis FLUSHALL
+    anchored: false
 
   # Remote Docker destruction
   - pattern: '\bssh\s+.*\bdocker\s+system\s+prune\s+-a'
     reason: SSH remote docker system prune -a
+    anchored: false
 
   - pattern: '\bssh\s+.*\bdocker\s+rm\s+.*-f'
     reason: SSH remote docker rm -f
+    anchored: false

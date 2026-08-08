@@ -7,58 +7,36 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   - pattern: '\bredis-cli\s+FLUSHALL'
     reason: redis-cli FLUSHALL (wipes ALL data)
+    anchored: true
 
   - pattern: '\bredis-cli\s+FLUSHDB'
     reason: redis-cli FLUSHDB (wipes database)
-
-  - pattern: '\bmongosh.*dropDatabase'
-    reason: MongoDB dropDatabase
-
-  - pattern: '\bmongo.*dropDatabase'
-    reason: MongoDB dropDatabase
+    anchored: true
 
   - pattern: '\bdropdb\b'
     reason: PostgreSQL dropdb
+    anchored: true
 
   - pattern: '\bmysqladmin\s+drop\b'
     reason: MySQL drop database
+    anchored: true
 
   # Migration tools that DROP/recreate the schema (data loss) — hard block.
   - pattern: '\bprisma\s+migrate\s+reset\b'
     reason: prisma migrate reset (drops the database and re-applies migrations)
     id: db.prisma-reset
+    anchored: true
 
   - pattern: '\bflyway\s+clean\b'
     reason: flyway clean (drops all objects in the schema)
     id: db.flyway-clean
+    anchored: true
 
-  # ---------------------------------------------------------------------------
-  # SQL DESTRUCTIVE OPERATIONS (catastrophic - no WHERE clause)
-  # ---------------------------------------------------------------------------
-  - pattern: 'DELETE\s+FROM\s+\w+\s*;'
-    reason: DELETE without WHERE clause (will delete ALL rows)
-
-  - pattern: 'DELETE\s+FROM\s+\w+\s*$'
-    reason: DELETE without WHERE clause (will delete ALL rows)
-
-  - pattern: 'DELETE\s+\*\s+FROM'
-    reason: DELETE * (will delete ALL rows)
-
-  - pattern: '\bTRUNCATE\s+TABLE\b'
-    reason: TRUNCATE TABLE (will delete ALL rows)
-
-  - pattern: '\bDROP\s+TABLE\b'
-    reason: DROP TABLE
-
-  - pattern: '\bDROP\s+DATABASE\b'
-    reason: DROP DATABASE
-
-  # ---------------------------------------------------------------------------
-  # SQL OPERATIONS REQUIRING CONFIRMATION (ask: true)
-  # ---------------------------------------------------------------------------
-  - pattern: '\bDELETE\s+FROM\s+\w+\s+WHERE\b.*\bid\s*='
-    reason: SQL DELETE with specific ID
-    ask: true
+  # NOTE: the raw SQL statement rules (DROP TABLE / TRUNCATE / DELETE-without-
+  # WHERE) and the psql/mysql/mongosh raw-write rules used to live here. They
+  # moved to payloads.yaml (#915) — they match text inside a client's quoted
+  # payload, which is the shape that cannot be anchored, and this file is
+  # uniformly anchored.
 
   # ---------------------------------------------------------------------------
   # SCHEMA MIGRATIONS (ask: true — apply DDL/DML to a database)
@@ -72,76 +50,70 @@ bashToolPatterns:
     reason: prisma migrate (applies database migrations)
     ask: true
     id: db.prisma-migrate
+    anchored: true
 
   - pattern: '\bprisma\s+db\s+push\b'
     reason: prisma db push (pushes schema changes to the database)
     ask: true
     id: db.prisma-db-push
+    anchored: true
 
   - pattern: '\bsupabase\s+db\s+push\b'
     reason: supabase db push (applies local migrations to the linked database)
     ask: true
     id: db.supabase-db-push
+    anchored: true
 
   - pattern: '\bsupabase\s+migration\s+up\b'
     reason: supabase migration up (applies pending migrations)
     ask: true
     id: db.supabase-migration-up
+    anchored: true
 
   - pattern: '\balembic\s+(upgrade|downgrade)\b'
     reason: alembic upgrade/downgrade (applies/reverts SQLAlchemy migrations)
     ask: true
     id: db.alembic
+    anchored: true
 
   - pattern: '\bmanage\.py\s+migrate\b'
     reason: Django manage.py migrate (applies database migrations)
     ask: true
     id: db.django-migrate
+    anchored: true
 
   - pattern: '\b(rails|rake)\s+db:migrate\b'
     reason: rails db:migrate (applies ActiveRecord migrations)
     ask: true
     id: db.rails-migrate
+    anchored: true
 
   - pattern: '\bknex\s+migrate:(latest|up|down|rollback)\b'
     reason: knex migrate (applies/reverts Knex migrations)
     ask: true
     id: db.knex-migrate
+    anchored: true
 
   - pattern: '\bsequelize\s+db:migrate\b'
     reason: sequelize db:migrate (applies Sequelize migrations)
     ask: true
     id: db.sequelize-migrate
+    anchored: true
 
   - pattern: '\bflyway\s+migrate\b'
     reason: flyway migrate (applies pending migrations)
     ask: true
     id: db.flyway-migrate
+    anchored: true
 
   - pattern: '\bliquibase\s+update\b'
     reason: liquibase update (applies pending changesets)
     ask: true
     id: db.liquibase-update
+    anchored: true
 
-  # ---------------------------------------------------------------------------
-  # RAW DML / DDL VIA DB CLIENTS (ask: true)
-  # ---------------------------------------------------------------------------
-  # Catastrophic statements (DROP/TRUNCATE/DELETE-without-WHERE) are hard-blocked
-  # above regardless of client. These catch the remaining write statements only
-  # when an actual DB client is on the command line, so SELECT-only queries stay
-  # `allow`-tier. File-fed scripts (psql -f, mysql < file) can't be introspected
-  # by a regex and remain a residual gap — see the wiki coverage matrix.
-  - pattern: '\bpsql\b.*\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|CREATE\s+TABLE|GRANT\s+|REVOKE\s+)'
-    reason: psql executing a write statement (INSERT/UPDATE/ALTER/CREATE/GRANT)
-    ask: true
-    id: db.psql-write
-
-  - pattern: '\b(mysql|mariadb)\b.*\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|CREATE\s+TABLE|GRANT\s+|REVOKE\s+)'
-    reason: mysql executing a write statement (INSERT/UPDATE/ALTER/CREATE/GRANT)
-    ask: true
-    id: db.mysql-write
-
-  - pattern: '\bmongosh?\b.*\.(insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|replaceOne|bulkWrite)\b'
-    reason: mongosh executing a write operation (insert/update/delete)
-    ask: true
-    id: db.mongosh-write
+  # Raw DML/DDL via DB clients (psql/mysql/mongosh write statements) and the
+  # catastrophic statement rules both live in payloads.yaml now — see the note
+  # above. The residual gap they carry (file-fed scripts: `psql -f`,
+  # `mysql < file`, which a regex cannot introspect) is documented there and in
+  # the wiki coverage matrix.

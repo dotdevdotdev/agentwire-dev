@@ -312,3 +312,60 @@ def clean_env(monkeypatch):
     for key in list(os.environ):
         if key.startswith("AGENTWIRE_"):
             monkeypatch.delenv(key)
+
+
+# ---------------------------------------------------------------------------
+# damage-control hooks
+# ---------------------------------------------------------------------------
+#
+# The hooks are PEP 723 inline-deps scripts under hyphenated filenames
+# (`bash-tool-damage-control.py`), so they load via importlib rather than a
+# normal import. One loader, shared by every test that needs a hook module.
+
+HOOKS_DIR = Path(__file__).resolve().parent.parent / "agentwire" / "hooks" / "damage-control"
+
+
+def load_damage_control_hook(filename: str):
+    """Load a hyphenated damage-control hook script as an importable module.
+
+    The script's `audit_logger` import resolves via sys.path injection so the
+    fallback no-op log_* functions are not needed.
+    """
+    import importlib.util
+
+    sys.path.insert(0, str(HOOKS_DIR))
+    try:
+        path = HOOKS_DIR / filename
+        spec = importlib.util.spec_from_file_location(
+            filename.replace(".py", "").replace("-", "_"), path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+@pytest.fixture(scope="module")
+def bash_hook():
+    return load_damage_control_hook("bash-tool-damage-control.py")
+
+
+@pytest.fixture(scope="module")
+def edit_hook():
+    return load_damage_control_hook("edit-tool-damage-control.py")
+
+
+@pytest.fixture(scope="module")
+def write_hook():
+    return load_damage_control_hook("write-tool-damage-control.py")
+
+
+@pytest.fixture(scope="module")
+def mcp_hook():
+    return load_damage_control_hook("mcp-tool-damage-control.py")
+
+
+@pytest.fixture(scope="module")
+def read_hook():
+    return load_damage_control_hook("read-tool-damage-control.py")

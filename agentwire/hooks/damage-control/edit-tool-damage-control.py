@@ -1770,7 +1770,48 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
 
 _MASK = "\x00"
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w+)\1")
-_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+# ``su -c`` runs its argument through a login shell, so it belongs here
+# for the same reason: the value is a command, not content.
+_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "su"}
+
+#: EXEC SURFACES (#915 review, class of #924).
+#:
+#: A quoted multi-word token is masked as content — right for ``git commit -m
+#: "<prose>"``, and WRONG when the token is the value of an option the tool
+#: EXECUTES. Once the rule files are anchored the raw haystack is no longer
+#: consulted, so masking such a payload takes it from BLOCK to allow with NO
+#: rule matching at all: no grant consulted, and no ``core.ambiguous-command``
+#: backstop either, because with no ``$(`` the ambiguity detector never fires.
+#:
+#: The distinguisher cannot be SYNTAX — ``$(`` is one route here, not the
+#: defining property — and it cannot be ADDITIVITY: emitting every masked token
+#: as its own entry fixes all of these and reinstates #915 for all prose,
+#: because a report payload becomes a command-position entry again. It has to be
+#: POSITION: is this token the value of an exec-surface option? That needs a
+#: table, and this is the minimal instance of #924's eventual one.
+#:
+#: Value = the option flags whose value is the payload. An EMPTY set means the
+#: payload arrives positionally (``tmux new-session -d '<cmd>'``, ``watch -n1
+#: '<cmd>'``, ``awk '<program>'``), so any content token on that command counts.
+#:
+#: Distinct from ``_SHELL_NAMES``, which means "this payload is a shell command"
+#: and so gets RE-PARSED into subcommands. Here the payload is executable text
+#: that merely contains a command (``python3 -c 'os.system("…")'``), so it is
+#: emitted as a haystack string instead of re-parsed as shell.
+#:
+#: Missing an exec surface degrades to exactly today's behaviour, not worse.
+_EXEC_SURFACES: Dict[str, set] = {
+    "python": {"-c"}, "python3": {"-c"}, "python2": {"-c"},
+    "perl": {"-e", "-E"},
+    "ruby": {"-e"},
+    "node": {"-e", "-p", "--eval"},
+    "deno": {"-e", "--eval"},
+    "php": {"-r"},
+    "make": {"-c"},
+    "tmux": set(),
+    "watch": set(),
+    "awk": set(), "gawk": set(), "mawk": set(),
+}
 _ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
@@ -2267,23 +2308,34 @@ def _strip_heredoc_bodies(command: str) -> str:
     return command[:nl + 1]
 
 
-def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
-    """Split ``command`` into subcommands of ``(token_text, fully_quoted)``.
+def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
+    """Split ``command`` into subcommands of ``(text, fully_quoted, expands)``.
 
     Quotes/escapes are resolved into the token text (so ``g''h`` -> ``gh``);
     ``fully_quoted`` is True when no character of the token was unquoted.
+
+    ``expands`` is True when the token contains a command substitution the
+    shell will actually RUN — i.e. ``$(...)`` or a backtick span appearing
+    unquoted or inside DOUBLE quotes. Inside single quotes the shell performs no
+    expansion, so ``git commit -m '$(...)'`` is an inert literal and must stay
+    maskable; treating it as a command is a false positive on a string nothing
+    executes.
     """
-    subs: List[List[Tuple[str, bool]]] = []
-    cur: List[Tuple[str, bool]] = []
+    subs: List[List[Tuple[str, bool, bool]]] = []
+    cur: List[Tuple[str, bool, bool]] = []
     buf: List[str] = []
     has_unquoted = False
     has_any = False
+    expands = False
+
+    def _has_subst(text: str) -> bool:
+        return "$(" in text or "`" in text
 
     def end_token() -> None:
-        nonlocal buf, has_unquoted, has_any
+        nonlocal buf, has_unquoted, has_any, expands
         if has_any:
-            cur.append(("".join(buf), not has_unquoted))
-        buf, has_unquoted, has_any = [], False, False
+            cur.append(("".join(buf), not has_unquoted, expands))
+        buf, has_unquoted, has_any, expands = [], False, False, False
 
     def end_sub() -> None:
         nonlocal cur
@@ -2299,6 +2351,8 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
             j = command.find("'", i + 1)
             if j == -1:
                 j = n
+            # Single quotes suppress expansion entirely — deliberately does NOT
+            # set `expands`, however substitution-shaped the contents look.
             buf.append(command[i + 1:j])
             has_any = True
             i = j + 1
@@ -2312,7 +2366,10 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
                 else:
                     out.append(command[j])
                     j += 1
-            buf.append("".join(out))
+            span = "".join(out)
+            if _has_subst(span):
+                expands = True
+            buf.append(span)
             has_any = True
             i = j + 1
         elif c == "\\" and i + 1 < n:
@@ -2332,6 +2389,8 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool]]]:
                 i += 1
         else:
             buf.append(c)
+            if c == "`" or (c == "(" and buf[-2:-1] == ["$"]):
+                expands = True
             has_unquoted = True
             has_any = True
             i += 1
@@ -2372,9 +2431,39 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
     for toks in _scan_masked_tokens(command):
         words: List[str] = []
         prev = ""
-        for text, fully_quoted in toks:
+        for text, fully_quoted, expands in toks:
             resolved = _resolve(text)
-            is_content = fully_quoted and (not resolved or any(ch in " \t\n" for ch in resolved))
+            # A quoted token holding a COMMAND SUBSTITUTION is not content, no
+            # matter how much prose surrounds it: ``git commit -m "$(rm -rf
+            # /x)"`` runs the payload. Masking it hid the payload from every
+            # anchored rule, and because ``git.commit`` carries an UNSCOPED
+            # default grant the residual ``ask`` resolved to ALLOW with no human
+            # — the fail-closed guarantee gone for that shape (#915 review).
+            #
+            # The failure needed three things and no one of them alone: this
+            # PR's anchoring (payload unseen), #917's unscoped grant (ask ->
+            # allow unattended), and the pre-existing whitespace-keyed masking.
+            # The ``echo "$(…)"`` control has the same shape with no grant and
+            # still fails closed, which is what proves the grant load-bearing.
+            #
+            # NB the mirror arrangement (``rm -rf "$(cat f)"`` — dangerous verb
+            # OUTSIDE the quotes) never broke: masking blanks the same token,
+            # but the verb is in command position and survives. The hazard is
+            # a benign outer command with the danger INSIDE the quotes.
+            #
+            # Not masking is strictly MORE inclusive, so it cannot weaken any
+            # rule; the cost is that a report quoting a substitution alongside a
+            # rule token can false-positive again, which is the safe direction.
+            # `expands` comes from the SCANNER, which knows the quote type:
+            # single quotes suppress expansion, so `git commit -m '$(...)'` is
+            # an inert literal and stays maskable. Deriving this from `resolved`
+            # instead would lose that distinction and false-positive on a string
+            # the shell never runs.
+            is_content = (
+                fully_quoted
+                and not expands
+                and (not resolved or any(ch in " \t\n" for ch in resolved))
+            )
             if not words and _ASSIGN_TOKEN_RE.match(resolved):
                 # Leading VAR=value assignment — its value is data here (the
                 # assigns table already handles later ``$VAR`` expansion).
@@ -2383,13 +2472,57 @@ def _masked_subcommand_words(command: str) -> List[List[str]]:
                 continue
             if is_content:
                 # A ``sh -c "…"`` payload is a command, not content — rescan.
+                #
+                # ANY word so far may be the shell, not just words[0]: a wrapper
+                # prefix (``env FOO=1 sh -c``, ``nohup sh -c``, ``timeout 5 sh
+                # -c``, ``xargs -I{} sh -c``, ``find . -exec sh -c``) puts the
+                # shell in the middle. Keying on words[0] alone meant every one
+                # of those payloads was masked away with nothing rescanning it —
+                # a BLOCK -> ALLOW regression once the rules are anchored, since
+                # the raw haystack is no longer consulted for them.
+                #
+                # DO NOT HARMONISE THIS WITH ``_strip_global_options``, which
+                # scans only the narrow ``_WRAPPER_PREFIXES`` set and documents
+                # the resulting gap. The two loops look alike and want OPPOSITE
+                # answers, because they do different things:
+                #
+                #   here  — RE-SCANS a quoted payload that is already isolated.
+                #           A false positive costs a rescan of prose, bounded,
+                #           and anchoring is what contains it.
+                #   there — SYNTHESISES a new command-position haystack. Scan
+                #           any word and ``echo git -C /r push --force`` finds
+                #           "git" at index 1, emits ``echo git push --force``,
+                #           and the force-push rule matches an ECHO — a false
+                #           BLOCK on prose, produced by the guard that exists
+                #           because prose was being blocked (#675/#915).
+                #
+                # Verified: that echo is ``allow`` today and must stay so.
+                # Any-word is right for a payload you re-scan and wrong for a
+                # haystack you construct.
                 if (
                     words
                     and prev.startswith("-")
                     and "c" in prev
-                    and words[0].rsplit("/", 1)[-1] in _SHELL_NAMES
+                    and any(w.rsplit("/", 1)[-1] in _SHELL_NAMES for w in words)
                 ):
                     results.extend(_masked_subcommand_words(resolved))
+                else:
+                    # Not a shell payload — but it may still be the value of an
+                    # EXEC SURFACE option, where the token is executable text
+                    # rather than data. Emit it as its own haystack entry so the
+                    # anchored rules see it; do NOT re-parse it as shell, since
+                    # `python3 -c` payloads are Python that merely contain a
+                    # command.
+                    exec_flags = None
+                    for w in words:
+                        cand = _EXEC_SURFACES.get(w.rsplit("/", 1)[-1])
+                        if cand is not None:
+                            exec_flags = cand
+                            break
+                    if exec_flags is not None and (
+                        not exec_flags or prev in exec_flags
+                    ):
+                        results.append([resolved])
                 words.append(_MASK)
                 prev = _MASK
             else:

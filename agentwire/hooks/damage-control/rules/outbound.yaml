@@ -24,11 +24,13 @@ bashToolPatterns:
     reason: agentwire email (sends an external email via Resend)
     ask: true
     id: outbound.agentwire-email
+    anchored: true
 
   - pattern: '\bagentwire\s+quo\b'
     reason: agentwire quo (sends an external SMS via Quo/OpenPhone)
     ask: true
     id: outbound.agentwire-quo
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # TWILIO (SMS / messaging)
@@ -37,6 +39,7 @@ bashToolPatterns:
     reason: twilio messages create (sends an SMS/MMS)
     ask: true
     id: outbound.twilio-messages
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # AWS messaging (SES email, SNS publish)
@@ -45,11 +48,13 @@ bashToolPatterns:
     reason: aws ses send-email (sends an external email)
     ask: true
     id: outbound.aws-ses
+    anchored: true
 
   - pattern: '\baws\s+sns\s+publish\b'
     reason: aws sns publish (sends an SMS/notification)
     ask: true
     id: outbound.aws-sns
+    anchored: true
 
   # ---------------------------------------------------------------------------
   # GENERIC MAIL TRANSPORTS
@@ -58,8 +63,10 @@ bashToolPatterns:
     reason: sendmail (sends external email)
     ask: true
     id: outbound.sendmail
+    anchored: true
 
   - pattern: '\b(mail|mailx)\s+(-[^\s]*\s+)*-s\b'
     reason: mail -s (sends external email)
     ask: true
     id: outbound.mail
+    anchored: true
