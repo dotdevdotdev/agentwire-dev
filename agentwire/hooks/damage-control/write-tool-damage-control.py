@@ -28,6 +28,9 @@ except ImportError:
     def log_disabled(*args, **kwargs): pass
 
 
+# === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "0a6727fc00fcdff5949441157317b97f2fa3cde1ef43604b85c976118db6af1a", "generated_at": "2026-08-06T16:03:47Z"}
+# === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
 Shared damage-control logic for both the agentwire CLI (`agentwire safety check`)
@@ -528,11 +531,32 @@ def _slug_for_rule(text: str, max_len: int = 60) -> str:
     return s[:max_len] or "rule"
 
 
-def _assign_rule_id(pattern_obj: Dict[str, Any], file_stem: str, taken: set) -> str:
-    """Generate (or honor) an ID for a bash pattern. Mutates pattern_obj in place."""
+def _assign_rule_id(
+    pattern_obj: Dict[str, Any],
+    file_stem: str,
+    taken: set,
+    duplicates: Optional[set] = None,
+) -> str:
+    """Generate (or honor) an ID for a bash pattern. Mutates pattern_obj in place.
+
+    A DERIVED id is de-conflicted with a ``-2`` suffix, but an EXPLICIT ``id:``
+    is honored verbatim — pinning is the whole point, and renaming one would
+    silently break the ``disabled_rules`` / ``unattended_allow`` entry that names
+    it. So collisions are possible, and they are never benign: two live rules
+    sharing one id makes both of those knobs ambiguous, and ambiguity on the
+    surface #914's scoped grants are built on is not something to discover from
+    behaviour. Collisions are recorded in ``duplicates`` and surfaced by
+    ``agentwire doctor`` / ``safety status`` / ``safety lint`` (#916).
+
+    A duplicate id is also the ONLY detector for a partially-applied rule set: a
+    new bundled file landing next to a stale one that still carries the same
+    pinned ids is otherwise invisible.
+    """
     existing = pattern_obj.get("id")
     if isinstance(existing, str) and existing.strip():
         pattern_obj["id"] = existing.strip()
+        if pattern_obj["id"] in taken and duplicates is not None:
+            duplicates.add(pattern_obj["id"])
         taken.add(pattern_obj["id"])
         return pattern_obj["id"]
     slug = _slug_for_rule(pattern_obj.get("reason", "rule"))
@@ -571,6 +595,7 @@ def load_config(
     if not rules_dir.exists():
         return merged
     taken_ids: set = set()
+    duplicate_ids: set = set()
     yaml_files = sorted(rules_dir.glob("*.yaml"))
     for rules_file in yaml_files:
         try:
@@ -581,7 +606,7 @@ def load_config(
                 if key == "bashToolPatterns":
                     for it in items:
                         if isinstance(it, dict):
-                            _assign_rule_id(it, rules_file.stem, taken_ids)
+                            _assign_rule_id(it, rules_file.stem, taken_ids, duplicate_ids)
                             it.setdefault("source", rules_file.stem)
                 merged[key].extend(items)
         except Exception:
@@ -589,9 +614,13 @@ def load_config(
     if tooldefs_dir is not None:
         tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir)
         for it in tooldef_patterns:
-            _assign_rule_id(it, "tooldef", taken_ids)
+            _assign_rule_id(it, "tooldef", taken_ids, duplicate_ids)
             it.setdefault("source", "tooldef")
         merged["bashToolPatterns"].extend(tooldef_patterns)
+    # Only present when something is actually wrong, so the healthy merged
+    # config keeps exactly the keys it always had.
+    if duplicate_ids:
+        merged["_duplicate_rule_ids"] = sorted(duplicate_ids)
     return merged
 
 

@@ -1,0 +1,116 @@
+{
+  "_comment": "sha256 of every version of each bundled rule/tooldef file that has ever shipped on the main line. Used by heal_damage_control to tell a pristine older release (safe to update) from a hand-customized file (never touched). Regenerate with scripts/gen_rule_baselines.py (#916).",
+  "rules": {
+    "agentwire.yaml": [
+      "2c49ab654ff58675a3917d852093bc5f5ecc7d16cab10cd5046d11e8cede9621",
+      "a30f698ca4156bc9a0715c5df4583c41d026a566d0bd8d534d263bec8b951e74",
+      "c471a54cf5045348dc1df644852dc5933aa8bfd0e1aee0cddc1a20862128adde"
+    ],
+    "aws.yaml": [
+      "847ff6327d7d6cc957cf4403e51c6c3fd329a16569f43a14622b9df729ac9364",
+      "9a9c4fdda58b121cd2d96e92f67b29f4f2a31d507871ece4adac09aa99c8ce86",
+      "accde6bb1ac049e29fc14978d6b1cbec67e89c7ebb898eaa3fbda8a6b006f3a6"
+    ],
+    "cloud-hosting.yaml": [
+      "251a3500b866dd227ab0f645cd092dff2595cf832f9fcccc4fd0ef46265f4495",
+      "9856be68e3b8efdc63855d8462650bb545de2ddd1012e2ef50628eaa2d4e049f",
+      "e26c4b12bd385584c41ded5468f44e07a7b243d32fe0fcffdcc6dd27fd4dbc28"
+    ],
+    "containers.yaml": [
+      "1fc8e742de4ed5816ca38cb824c00f8583429594da7ebc379cabb4ab7f5620dd",
+      "8bd36deac6b9e06f83cbd89ccd204f3c904a0a26ee0668edab998109cbf3161c",
+      "f24455216e8d4495fe1f34dab391f54b6137fafd5ae92c6350c083074abc1404"
+    ],
+    "control-plane.yaml": [
+      "7a55ddc53de37560525aea4c70e9546ca4ef50069b59d7d33d267a228a626ab3"
+    ],
+    "core.yaml": [
+      "41f84e6640a7b93c7241aa16b83c3a494e56fc81ff5045ba59f934531570902e",
+      "aac460ba170ab84b4cbeb4b7e8f55a0b94690bd0d260f26d358799afba1b79cf",
+      "c0ded80e7d544f10c9db2b831d10fd0469057d08b1737eaf3b7ce7485ba0ad17",
+      "c10d81a50fe5bf2b4d83a37bc9e58f22d2a8ea5265cd0757d6bceb38702481dd"
+    ],
+    "databases.yaml": [
+      "0547cffb489a750505941ba773a4be03dccc8217bb358aee12cf2cff663190d3",
+      "777a3de9576a1feb21e8a800735872fb413eec9fbcff9412f00f841c15f35853",
+      "7c0acb8060eba6e670b114984dc931af8c41e7e0bf58267514cfb73474749e30"
+    ],
+    "firebase.yaml": [
+      "368f5f37eb2b4ed14c74c2d17b0e4ff3f71741c076a1b768ab0d6019e0f5e102",
+      "95b9dcb891ff51f44618b51ae1dcb7143d356e031c8a853d98dc1c01a73436b1"
+    ],
+    "gcp.yaml": [
+      "4b0d923573c11d0651d278008dd7d03d3e4b42403e3e40f74c89d6dc1819641d",
+      "a4551d41185f1c75b0186ee6a4a775c40a9a352ca42f29caf6b5d635bf6a3e51",
+      "c925f1622c6569421e237566449b5311df05ffeef67ceb86909f91c054504cc6"
+    ],
+    "git.yaml": [
+      "2343436a92f2ba1c5eac88bebba6e5497154952f8177b217247639503aec3e32",
+      "c0681690aacd0f62f50c1bd439954a1b30ad5baf726d8c826f0e31eed0424263"
+    ],
+    "gws.yaml": [
+      "b972fa1b40f2b83075e07d4211359c36eeaddfd4abbd67b3acc02a411dddcd77",
+      "edf2589a0ca5358e4211c42df8a25214e7bc00f4173bf3bf8ec324213dff2ccf"
+    ],
+    "infrastructure.yaml": [
+      "4222a8a670b78e8ffab1b3497773b68f2014d486f54ff7fbb5d41ccadcbfb7fa",
+      "6b09bcc1f99f58ea3fca122bc57a9c6bd42b59348b47cc9a236f063e4bb77bff",
+      "d1a98c51bd97bb4afa4993d7dcc8de365f70530ea63e929fa91df05a19fc16eb"
+    ],
+    "outbound.yaml": [
+      "3061c0cce6e6b09f744a70b5db9b172575b9316906442611ebfb810e0d308568",
+      "33da113abeab721d9552773e95076b79833affa268318cc04ba4339407340d5b",
+      "ffbc4f3d175d33ecd488f55db92a140663b253f1e437872ff99db3bf0636d1d6"
+    ],
+    "payloads.yaml": [
+      "712be7a12564ec2f46b35a59a78a0e843f69c9b4b1e7cb20e4b320255c49d160"
+    ],
+    "publish.yaml": [
+      "65f9ffe77383a637d9667ba5535d9fc54b91960104100a5a2a664e65417093ca",
+      "89a44072b17789264f566637710f8ed31583f3fa966b663c8d62ada8a5adca76"
+    ],
+    "remote.yaml": [
+      "029d182c015d2d74d9ad63151ccd4175e6ee77d51e0128970b67939ae1c637e3",
+      "cb16dbba11c759950bfaf2dd3c39c8d74cd8d54787f5f28f10ab78f5be3dba96"
+    ]
+  },
+  "tooldefs": {
+    "aws.yaml": [
+      "d6b7cd1e4467dc44c870e9abc69bd9454ae853b107647df508622f7014322351"
+    ],
+    "docker.yaml": [
+      "bbbb7a3e31b57f42a3a9faad35dfe93364b36268eca21b9b57294d9f7d126031"
+    ],
+    "gcp.yaml": [
+      "4413cee9791ce455330f0a1497cff43088854c9231f89b601123ebf9650beb58"
+    ],
+    "gh.yaml": [
+      "a47c0605265d02c344160c90d941fdc11d0d47f66eb1b2a446091717363e04e6",
+      "a999db286f7651236c858e4aff7ade2d21199970a7beea1bd90993bf5ca9646e"
+    ],
+    "git.yaml": [
+      "28ad144fd96331325a283f6ac7255513ed82ec3dbf4aebac870793da6513e91d",
+      "95cbc99d28a36996b73a8f2aed7bcb7cbb18f4ffebfc8b630741dcddc1cb9a2f"
+    ],
+    "gws.yaml": [
+      "2d637c82796dc60efe692835f32ee35aebbb517805c8e30912a23172011f3dca",
+      "86cd44cb05b876ea5551de50f98d3d51c89bf413e464e371f49389c9ea787e1f",
+      "a7919e8e70943e9e7416a5d324250698faa21254ba3d5e6190134868f45c7939",
+      "b34ce09c497333a98419b1f25c34d4fa5e45e3c4d06c0c8fcd1b44bcb0fbc06a",
+      "da4e6c23cfe299087677303fa810bb74e2e99a088e3e1066dde29aca92c2d045",
+      "da7f3e1f7a3edeb5effd57b26a471d98b969931cced3beb919ddac92d6c1964b"
+    ],
+    "kubectl.yaml": [
+      "9269aafe2ba464ac906664f81ff76b9e84f0d6bee1157e2b232149163806fd87"
+    ],
+    "npm.yaml": [
+      "240331cbc025979f9fcc4fb78ac01abd976f87596e52d6d84417271ae1898577"
+    ],
+    "terraform.yaml": [
+      "7382a59f5229b68511a3442203fbedfc7c5cbf735f89cbaa66d1b915d605128c"
+    ],
+    "uv.yaml": [
+      "256d47c323cb54f2e1bd6333df4d92fdc6afb452031dc30e940e027e2ad331e2"
+    ]
+  }
+}

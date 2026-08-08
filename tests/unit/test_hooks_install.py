@@ -124,6 +124,16 @@ class TestInstallHooks:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        # Machine-global installs are refused from a non-canonical package
+        # (#936). Pin the running package AS canonical so these measure the
+        # install and not the guard, and behave identically in a worktree
+        # (package root's .git is a FILE) and in CI's plain clone.
+        monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+        from agentwire.safety import provenance as _prov
+        monkeypatch.setattr(
+            _prov, "canonical_package_dir",
+            lambda: Path(__import__("agentwire").__file__).parent.resolve(),
+        )
 
         hooks_src = tmp_path / "pkg-hooks"
         hooks_src.mkdir()

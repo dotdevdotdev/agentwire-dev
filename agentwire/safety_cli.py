@@ -42,7 +42,11 @@ def cmd_safety_logs(args) -> int:
 
 def cmd_safety_install(args) -> int:
     """CLI command: agentwire safety install"""
-    return safety_commands.safety_install_cmd(assume_yes=getattr(args, "yes", False))
+    return safety_commands.safety_install_cmd(
+        assume_yes=getattr(args, "yes", False),
+        force=getattr(args, "force", False),
+        allow_foreign=getattr(args, "allow_foreign_source", False),
+    )
 
 
 def cmd_safety_tooldefs_list(args) -> int:
@@ -113,7 +117,19 @@ def register_safety_parser(subparsers) -> None:
     safety_install.add_argument(
         "-y", "--yes", action="store_true",
         help="Non-interactive, drift-aware heal (install missing + update stale "
-             "owned hooks; never clobbers existing rules)",
+             "owned hooks + bring previously-shipped rules forward; never "
+             "clobbers a hand-edited rule)",
+    )
+    safety_install.add_argument(
+        "--force", action="store_true",
+        help="Overwrite content otherwise held back: downgrade a newer installed "
+             "hook, and replace hand-edited rules (a .local-<ts>.bak is kept)",
+    )
+    safety_install.add_argument(
+        "--allow-foreign-source", action="store_true",
+        help="Let a checkout that is NOT the installed tool write these "
+             "machine-global files. Installing from a task branch is what "
+             "silently downgraded this machine's security hooks (#936)",
     )
     safety_install.set_defaults(func=cmd_safety_install)
 

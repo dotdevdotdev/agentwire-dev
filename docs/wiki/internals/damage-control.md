@@ -937,6 +937,147 @@ readOnlyPaths:
 
 ---
 
+## Deployment: merged is not deployed (#936 + #916)
+
+`heal_damage_control` is the one function that puts rules, tooldefs and hook
+scripts onto a machine, and it used to fail in **opposite directions** for the
+two halves it manages:
+
+| | old mechanism | failure |
+|---|---|---|
+| hook scripts | `copy2` whenever bytes DIFFER, no ordering | went **backwards** freely |
+| rules / tooldefs | `if not target.exists()` | never went **forwards** at all |
+
+So "install brings things up to date" was wrong in both directions, differently
+— which is worse than wrong in one, because it made the outcome unpredictable.
+Both were observed, not theorised: a worktree on a pre-#918 checkout reinstalled
+the old `git -C` bypass machine-wide within an hour of the P0 being deployed and
+verified; and 9 of 15 live rule files had never been updated since install, so
+40 bundled patterns and 14 anchors were simply not in force.
+
+### Three properties, each a separate guard
+
+**1. Provenance — WHICH package may write.** Machine-global files are written
+only from the canonically installed tool (`agentwire/safety/provenance.py`).
+Four states: `canonical` (writes), `bootstrap` (no install exists — writes, or
+the tool would be uninstallable), `worktree` (no install and the source is a
+linked worktree — refuses), `foreign` (an install exists and is not what is
+running — refuses). Override: `--allow-foreign-source`.
+
+Deliberately **not** keyed on the cwd: `~/.local/bin/agentwire` is a console
+script with a venv shebang, so it imports site-packages regardless of where it
+was invoked from. Running `hooks install` *while sitting in* a worktree was
+always safe; `uv run agentwire` *from* a stale checkout never was. A cwd check
+gets both backwards. Nor on `PATH` — `uv run` puts an ephemeral venv first, so a
+`which`-based lookup reports the stale checkout AS the canonical install.
+
+**And there is no environment override**, deliberately. An earlier draft had
+`AGENTWIRE_CANONICAL_PACKAGE`; it was the wrong shape twice — it duplicated
+`--allow-foreign-source` with something undocumented, and a leading `VAR=value`
+assignment is collapsed to a mask token by `masked_subcommands`, so a
+command-position damage-control rule **cannot observe it being set**. An
+override invisible to the layer guarding machine-global writes is this whole
+section's failure mode one level in, and the threat model (an agent on a task
+branch) sets inline env vars routinely. The flag is an argument in command
+position and stays visible. Tests patch the resolver function instead.
+
+**`rebuild` carries the same guard**, and it is the one that matters most. It is
+the only installer-adjacent command that *changes the answer* every other
+provenance check reads — it reinstalls the tool FROM a source checkout, so a
+worktree it installs from **becomes canonical**:
+
+```
+uv run agentwire hooks install   (from a worktree)  -> refused
+uv run agentwire rebuild         (from a worktree)  -> worktree is now canonical
+agentwire hooks install                             -> proceeds, legitimately
+```
+
+Guarding the heal alone blocks the one-step and permits the two-step — and the
+second step is what the Dev Workflow tells people to run after a code change.
+The refusal is bound to `--allow-foreign-source`, **not** to `rebuild --force`,
+which means "rebuild despite being behind `origin/main`": folding them together
+would make a documented staleness override silently grant a machine-global one.
+(Distinct from the behind-main check, which says nothing about a worktree that
+is *ahead and divergent* rather than behind.)
+
+**2. Ordering — not equality.** The five generated hooks carry a stamp emitted
+by `scripts/regen_damage_control_hooks.py`:
+
+```python
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "…", "generated_at": "2026-08-06T…Z"}
+```
+
+`generated_at` moves only when the inlined `_core.py` actually changes, so the
+stamp is a property of the SOURCE TREE and orders two checkouts. Drift states
+become `ok | missing | older | newer | stale`, and a `newer` installed copy is
+never overwritten without `--force`. Installs also write with a **fresh mtime**
+— `copy2` preserving the source mtime is what made the original downgrade
+invisible to any timestamp check.
+
+Ordering is **prospective**: an install that predates the stamp reports `stale`
+(differs, unorderable) rather than a direction. Direction becomes available from
+the first stamped deploy onward. Provenance is what protects the interval.
+
+**3. Three-way sync — not install-missing-only.** Rules and tooldefs are
+host-editable, so a blanket overwrite is off the table. The missing leg of a
+three-way merge is the common ancestor, and `agentwire/safety/rule_baselines.json`
+ships it: the sha256 of **every version of each file that has ever shipped**,
+generated from git history by `scripts/gen_rule_baselines.py`.
+
+```
+live bytes == bundled        -> ok
+live sha256 in the manifest  -> outdated  : a pristine older release, updated
+live sha256 in neither       -> unknown   : reported, left alone, --force replaces
+```
+
+`unknown` is named for what it is. It is *usually* a hand edit, but it is also
+what a file older than our recorded history looks like, and nothing here can
+tell those apart — so it is classified explicitly rather than defaulted into
+either bug. `--force` replaces it and keeps a `.local-<ts>.bak`.
+
+Content-addressing is what makes this work for machines installed **before the
+mechanism existed**, which is every existing machine. A manifest written at
+install time would answer nothing for them.
+
+### A tooldef refresh is a PERMISSIONS CHANGE
+
+Say this out loud, because it reads as a chore and lands as a grant. Tooldefs
+carry the pinned `id:` fields that `DEFAULT_UNATTENDED_ALLOW` names. On a machine
+whose tooldefs had drifted, five of six default grants matched **nothing**, so
+they had never been in force. Repairing the drift does not "restore" the
+default — in practice it **grants** it: `git add`/`commit`/`push` and
+`gh pr create` permitted unattended in ANY repo. `heal` prints the notice
+whenever tooldefs change; narrow it with `unattended_allow` in
+`~/.agentwire/damagecontrol.yml` (path-scoped entries supported, #914).
+
+### Duplicate rule ids
+
+`_assign_rule_id` honours an explicit `id:` verbatim — pinning is the point, and
+renaming one would silently break the `disabled_rules` / `unattended_allow`
+entry naming it. So collisions are possible, and never benign: two live rules
+sharing an id makes both knobs ambiguous. `load_config` records them under
+`_duplicate_rule_ids`; `doctor` and `safety status` report them.
+
+It is also **the only detector for a partially-applied rule set** — a new
+bundled file landing beside a stale one that still carries the same pinned ids
+is otherwise invisible. Detection only: an ambiguous id does not change matching
+or grant resolution, because a wrongful refusal in the unattended tier is a
+silent loop with no screen to show it on.
+
+### What doctor can now say
+
+- `DC hook scripts OLDER than this package` / `... NEWER than this package` —
+  the second is the #936 signal and was structurally unsayable before.
+- `Damage-control rules are OUT OF DATE (a previously shipped version)` at
+  `[!!]`, not `[..] differ from bundled` — drift that REMOVES protections is a
+  different event from a local tweak.
+- `unrecognized AND MISSING bundled protections`, **naming** what is gone;
+  local additions only stay `[..]`.
+- `Running from a NON-CANONICAL package — installs are refused`.
+- `DUPLICATE rule ids in the loaded rule set`.
+
+---
+
 ## Troubleshooting
 
 ### Hook Not Blocking Expected Command

@@ -295,35 +295,142 @@ def _render_damage_control_section() -> int:
         print(f"  [..] Could not load safety module: {e}")
         return issues
 
+    # Which package is doctor speaking for? Every drift verdict below compares
+    # the machine against `Path(__file__).parent`, so from a worktree checkout
+    # they describe that branch, not the installed tool (#936).
+    try:
+        from .safety import provenance as prov
+        state, canonical, running = prov.install_provenance()
+    except Exception as e:
+        print(f"  [..] Could not resolve install provenance: {e}")
+    else:
+        if state in prov.REFUSING_STATES:
+            print("  [!!] Running from a NON-CANONICAL package — installs are refused")
+            print(f"       running from : {running}")
+            print(f"       installed at : {canonical or '(none — this is a git worktree)'}")
+            print("       Drift verdicts below compare the machine against THIS checkout.")
+            issues += 1
+        elif state == prov.BOOTSTRAP:
+            print("  [..] No canonical agentwire install found (bootstrap/dev checkout)")
+
     # DC hook-script staleness (bash/edit/write/mcp-tool + audit_logger).
+    # Direction matters and is now reportable (#936): `newer` means THIS package
+    # is behind what is deployed, so installing from here would downgrade the
+    # machine's guard — the failure that reverted #918 an hour after it shipped,
+    # under an [ok] line, because equality cannot see which way a difference runs.
     hook_drift = safety_commands.damage_control_hook_drift()
-    stale_hooks = [f for f, s in hook_drift.items() if s == "stale"]
-    missing_hooks = [f for f, s in hook_drift.items() if s == "missing"]
-    if stale_hooks or missing_hooks:
-        if missing_hooks:
-            print(f"  [!!] DC hook scripts missing: {', '.join(sorted(missing_hooks))}")
-        if stale_hooks:
-            print(f"  [!!] DC hook scripts STALE: {', '.join(sorted(stale_hooks))}")
-        print("       Fix: agentwire safety install --yes")
+    by_state = {}
+    for fn, state in hook_drift.items():
+        by_state.setdefault(state, []).append(fn)
+    if set(by_state) - {"ok"}:
+        if by_state.get("missing"):
+            print(f"  [!!] DC hook scripts missing: {', '.join(sorted(by_state['missing']))}")
+        if by_state.get("older"):
+            print(
+                "  [!!] DC hook scripts OLDER than this package: "
+                f"{', '.join(sorted(by_state['older']))}"
+            )
+        if by_state.get("stale"):
+            print(
+                "  [!!] DC hook scripts differ (no version stamp to order them): "
+                f"{', '.join(sorted(by_state['stale']))}"
+            )
+        if by_state.get("newer"):
+            print(
+                "  [!!] DC hook scripts installed are NEWER than this package: "
+                f"{', '.join(sorted(by_state['newer']))}"
+            )
+            print("       This checkout is BEHIND. Installing from here would DOWNGRADE")
+            print("       the machine's security hooks for every session (#936).")
+            print("       Fix: git pull --ff-only && agentwire rebuild")
+        if set(by_state) - {"ok", "newer"}:
+            print("       Fix: agentwire safety install --yes")
         issues += 1
     else:
         print("  [ok] DC hook scripts current")
 
-    # Installed-rules drift vs bundled rules (the incident's missing files).
-    rule_drift = safety_commands.rules_drift()
-    missing_rules = [f for f, s in rule_drift.items() if s == "missing"]
-    stale_rules = [f for f, s in rule_drift.items() if s == "stale"]
-    if missing_rules:
-        print(f"  [!!] Damage-control rules NOT installed: {', '.join(sorted(missing_rules))}")
+    # Installed rules/tooldefs vs bundled — DIRECTIONALLY (#916). "Differ from
+    # bundled" at [..] is true and useless: it cannot tell a local tweak from an
+    # entire deploy tier sitting disabled. Drift that REMOVES a bundled
+    # protection is [!!] and names what is gone.
+    for label, drift, source_getter, live_dir in (
+        ("rules", safety_commands.rules_drift(),
+         safety_commands.get_damage_control_source, safety_commands.RULES_DIR),
+        ("tooldefs", safety_commands.tooldefs_drift(),
+         safety_commands.get_tooldefs_source, safety_commands.TOOLDEFS_DIR),
+    ):
+        missing = sorted(f for f, s in drift.items() if s == "missing")
+        outdated = sorted(f for f, s in drift.items() if s == "outdated")
+        unknown = sorted(f for f, s in drift.items() if s == "unknown")
+        if missing:
+            print(f"  [!!] Damage-control {label} NOT installed: {', '.join(missing)}")
+            print("       Fix: agentwire safety install --yes")
+            issues += 1
+        if outdated:
+            print(
+                f"  [!!] Damage-control {label} are OUT OF DATE (a previously shipped "
+                f"version): {', '.join(outdated)}"
+            )
+            print("       Every rule fix shipped since then is NOT in force here.")
+            print("       Fix: agentwire safety install --yes")
+            issues += 1
+        if unknown:
+            # Matches no version we ever shipped. Never auto-healed, so say
+            # which direction it runs: drift that REMOVES a bundled protection
+            # is the dangerous half and is graded accordingly.
+            try:
+                source_dir = source_getter()
+            except FileNotFoundError:
+                source_dir = None
+            weakened: list[tuple[str, list[str]]] = []
+            extended: list[str] = []
+            for name in unknown:
+                if source_dir is None:
+                    weakened.append((name, []))
+                    continue
+                delta = safety_commands.rule_file_delta(live_dir / name, source_dir / name)
+                if delta["missing"]:
+                    weakened.append((name, delta["missing"]))
+                else:
+                    extended.append(name)
+            if weakened:
+                print(
+                    f"  [!!] Damage-control {label} unrecognized AND MISSING bundled "
+                    f"protections:"
+                )
+                for name, gone in weakened:
+                    if gone:
+                        preview = ", ".join(gone[:3]) + (" …" if len(gone) > 3 else "")
+                        print(f"       {name}: {len(gone)} not live — {preview}")
+                    else:
+                        print(f"       {name}: cannot compare (bundled source unavailable)")
+                print("       Fix: agentwire safety install --yes --force (keeps a backup)")
+                issues += 1
+            if extended:
+                print(
+                    f"  [..] Damage-control {label} with local additions only: "
+                    f"{', '.join(extended)}"
+                )
+        if not (missing or outdated or unknown):
+            print(f"  [ok] Damage-control {label} installed and match bundled")
+
+    # Duplicate rule ids — the only detector for a partially-applied rule set
+    # (#916). Two live rules sharing one id makes `disabled_rules` and
+    # `unattended_allow` ambiguous, which is the surface #914's scoped grants
+    # are built on.
+    try:
+        duplicates = safety_commands.load_patterns().get("_duplicate_rule_ids") or []
+    except Exception as e:
+        print(f"  [..] Could not check rule id uniqueness: {e}")
+        duplicates = []
+    if duplicates:
+        print(f"  [!!] DUPLICATE rule ids in the loaded rule set: {', '.join(duplicates)}")
+        print("       `disabled_rules` / `unattended_allow` naming one of these names")
+        print("       BOTH rules. Usually a half-applied rule sync.")
         print("       Fix: agentwire safety install --yes")
         issues += 1
-    elif stale_rules:
-        # Stale = installed copy differs from bundled. Could be an intentional
-        # customization, so warn (not error) and don't auto-overwrite.
-        print(f"  [..] Damage-control rules differ from bundled: {', '.join(sorted(stale_rules))}")
-        print("       (customized? `agentwire safety install --yes` leaves these untouched)")
     else:
-        print("  [ok] Damage-control rules installed and match bundled")
+        print("  [ok] Rule ids unique across the loaded rule set")
 
     # Matcher presence in ~/.claude/settings.json.
     missing_matchers = safety_commands.missing_damage_control_matchers()
