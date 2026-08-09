@@ -232,6 +232,22 @@ function createAnnouncer(deps) {
       });
       pump();
     },
+    // Withdraw announcements whose meta matches, queued or current (#963: the
+    // owner speaking first CANCELS the greeting; queueing it behind them would
+    // greet someone who has already moved on). A withdrawn item's fallback is
+    // disarmed and onSpoken never fires for it — it was never heard, and
+    // nothing downstream may believe it was. Note what this does NOT
+    // establish: it cannot recall audio the model has already emitted; native
+    // barge-in covers that, this covers the QUEUE and the TIMER.
+    cancel: function (match) {
+      queue = queue.filter(function (it) { return !match(it.meta); });
+      if (current && match(current.meta)) {
+        disarm(current);
+        if (responseActive) send({ type: "response.cancel" });
+        current = null;
+        pump();
+      }
+    },
     onResponseCreated: function () {
       responseActive = true;
       // A response beginning while this item is current is the one signal
@@ -279,6 +295,146 @@ function createAnnouncer(deps) {
     // Test/inspection surface.
     pending: function () { return (current ? 1 : 0) + queue.length; },
     armed: function () { return !!(current && current.timer); },
+  };
+}
+"""
+
+#: The buddy's clock (#962), same discipline as the announcer: a standalone
+#: factory with injected deps so the whole loop — peek, gate, coalesce,
+#: announce, ack-after-spoken — runs under ``node`` against a fake bridge and a
+#: fake timer. Spliced into the page by :func:`page`; exported by
+#: :func:`notifier_source` for the test harness.
+INBOX_NOTIFIER_JS = """
+// The buddy's clock. Before this, client.py contained no polling of any kind —
+// every action was downstream of the owner speaking, so the buddy could answer
+// a topic but never open one. This is the one clock: poll the buddy's spool,
+// and when a reply has arrived, volunteer it — through the injected
+// `announce`, which is the page's ONE speaking path (#950). The notice is a
+// bonus, never a contract: an empty spool produces silence, not chatter.
+//
+// Injected dependencies:
+//   fetchInbox() -> Promise<{success, messages}>  PEEK — never advances the cursor
+//   ackInbox()   -> Promise<{success, messages}>  read + advance the cursor
+//   announce(text, meta)   the page's announce() — no other voice exists here
+//   canSpeak() -> bool     owner not speaking, no active response, nothing queued
+//   setTimer(fn, ms) / clearTimer(handle), onLog(kind, detail), pollMs
+//   seen: {}   page-lifetime map of ids the owner has actually HEARD. Passed in
+//              rather than owned so it outlives this notifier: a reconnect
+//              builds a fresh notifier over the same map and cannot replay a
+//              spoken notice — while a notice announced but never SPOKEN is
+//              not in it, and is correctly said again.
+function createInboxNotifier(deps) {
+  var fetchInbox = deps.fetchInbox;
+  var ackInbox = deps.ackInbox;
+  var announce = deps.announce;
+  var canSpeak = deps.canSpeak;
+  var setTimer = deps.setTimer;
+  var clearTimer = deps.clearTimer;
+  var onLog = deps.onLog || function () {};
+  var pollMs = deps.pollMs;
+  var seen = deps.seen;
+
+  // Announced this session but not yet confirmed spoken. Per-notifier on
+  // purpose: if the session dies mid-announcement the map dies with it, so
+  // the unheard notice is retried — `seen` alone decides what is settled.
+  var inFlight = {};
+  // Acked-but-never-spoken messages (the peek/ack race — see noticeSpoken).
+  // The cursor has moved past them, so the spool will never return them
+  // again; this list is their only way back to the owner's ear.
+  var strays = [];
+  var timer = null;
+  var stopped = false;
+
+  function trimBody(text) {
+    var t = String(text || "").replace(/\\s+/g, " ").trim();
+    return t.length > 240 ? t.slice(0, 240) + "\\u2026" : t;
+  }
+
+  // Coalesce: several replies arriving together are ONE utterance, not a
+  // volley of interruptions. No promise language — "got back to you" states
+  // what happened, nothing about what will.
+  function composeNotice(messages) {
+    if (messages.length === 1) {
+      var m = messages[0];
+      return (m.from || "someone") + " got back to you: " + trimBody(m.text);
+    }
+    var parts = messages.map(function (msg) {
+      return "From " + (msg.from || "someone") + ": " + trimBody(msg.text);
+    });
+    return messages.length + " updates came in. " + parts.join(" ");
+  }
+
+  function pollOnce() {
+    return fetchInbox().then(function (res) {
+      if (!res || !res.success) {
+        onLog("inbox", "poll failed: " + ((res && res.error) || "no response"));
+        return;
+      }
+      // NEVER BARGE IN. A blocked tick marks nothing and loses nothing — the
+      // same replies are still unacked next tick. The gate is checked before
+      // anything is claimed, so waiting is free.
+      if (!canSpeak()) return;
+      var claimed = {};
+      var fresh = strays.splice(0).concat(res.messages || []).filter(function (m) {
+        if (!m || !m.id || seen[m.id] || inFlight[m.id] || claimed[m.id]) return false;
+        claimed[m.id] = true;
+        return true;
+      });
+      if (!fresh.length) return;
+      var ids = fresh.map(function (m) { return m.id; });
+      ids.forEach(function (id) { inFlight[id] = true; });
+      onLog("inbox", "volunteering " + fresh.length + " message(s)");
+      announce(composeNotice(fresh), { inboxIds: ids });
+    }).catch(function (err) {
+      onLog("inbox", "poll failed: " + err);
+    });
+  }
+
+  // ACK ONLY AFTER IT HAS ACTUALLY BEEN SPOKEN — the page calls this from the
+  // announcer's onSpoken, the moment there is evidence the owner heard it
+  // (model or fallback voice; either way, heard). The reverse order marks
+  // delivered a report the owner never heard.
+  function noticeSpoken(meta) {
+    if (!meta || !meta.inboxIds) return Promise.resolve();
+    meta.inboxIds.forEach(function (id) { seen[id] = true; });
+    return ackInbox().then(function (res) {
+      if (!res || !res.success) {
+        // Cursor not advanced: a page reload will re-read these. `seen`
+        // suppresses a replay for THIS page's lifetime, which is the right
+        // half to keep — re-reading is an annoyance, losing one is the bug.
+        onLog("inbox", "ack failed: " + ((res && res.error) || "no response"));
+        return;
+      }
+      // The ack read everything unread — including anything that landed
+      // between our peek and now. Those were acked but never spoken; queue
+      // them for the next tick's gate check rather than announcing here
+      // (announcing outside the gate is barging in by another door).
+      (res.messages || []).forEach(function (m) {
+        if (m && m.id && !seen[m.id] && !inFlight[m.id]) strays.push(m);
+      });
+    }).catch(function (err) {
+      onLog("inbox", "ack failed: " + err);
+    });
+  }
+
+  function schedule() {
+    if (stopped) return;
+    timer = setTimer(function () {
+      pollOnce().then(schedule, schedule);
+    }, pollMs);
+  }
+
+  return {
+    start: function () {
+      stopped = false;
+      pollOnce().then(schedule, schedule);
+    },
+    stop: function () {
+      stopped = true;
+      if (timer) { clearTimer(timer); timer = null; }
+    },
+    pollOnce: pollOnce,
+    noticeSpoken: noticeSpoken,
   };
 }
 """
@@ -345,6 +501,7 @@ _PAGE = """<!doctype html>
 <div id="log"></div>
 <script>
 __ANNOUNCER__
+__NOTIFIER__
 
 const TOKEN = __TOKEN__;
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -371,6 +528,49 @@ const commitSeq = {};        // item_id -> the seq at which its audio committed
 let forwardChain = Promise.resolve();
 let announcer = null;
 let parseFailuresAnnounced = 0;
+
+// --- the buddy's clock (#962) -----------------------------------------------
+// How often to peek at the spool. 5 seconds: a reply is a human-scale event —
+// the acceptance bound is "volunteered within a bounded interval", and 5s is
+// far inside conversational patience while keeping the cost at one tiny POST
+// to the LOCAL bridge per tick. Sub-second buys nothing (the notice still
+// waits for a gap in the conversation); minutes would make the volunteer
+// feature feel dead.
+const INBOX_POLL_MS = 5000;
+// Page-lifetime: ids the owner has actually HEARD. Never reset by stop() — a
+// reconnect must not replay every notice.
+const heardReplies = {};
+let inboxNotifier = null;
+let ownerSpeaking = false;
+
+// --- the greeting (#963) ----------------------------------------------------
+// The buddy speaks first — and since #950 the write path is fail-closed on
+// model audio, so a HEARD greeting proves the whole approval path at second
+// zero. That is why the greeting must be spoken by the MODEL: a fallback-
+// spoken greeting confirms the browser voice while the model's is dead and
+// nothing can ever be approved. The announcer's fallback stays armed (silence
+// is still unacceptable) but its text is MODEL_AUDIO_DEAD — the browser voice
+// surfaces the failure instead of impersonating health.
+const GREETING = "Hey, I'm listening. What's on your mind?";
+const MODEL_AUDIO_DEAD = "Heads up: my main voice isn't working, so nothing can be approved. Try stopping and starting again.";
+// Page-lifetime, never reset by stop(): a dropped and re-established
+// connection must not re-greet. Also set by the owner speaking first — a late
+// greeting after they've started talking is worse than none.
+let greeted = false;
+let sessionReady = false;   // the server's session.created arrived
+let audioAttached = false;  // pc.ontrack wired the model's audio to a sink
+
+// Channel-open is NOT readiness: session.created is the server saying the
+// session exists, and the audio element is what makes model speech audible.
+// Whichever lands last fires the greeting. What this does NOT establish: that
+// audio actually PLAYS — the disarm keys on the model's transcript, so a muted
+// tab still reads as healthy. That gap is inherent to every announcement, not
+// introduced here.
+function maybeGreet() {
+  if (greeted || !sessionReady || !audioAttached) return;
+  greeted = true;
+  announce(GREETING, { greeting: true }, MODEL_AUDIO_DEAD);
+}
 
 function nextSeq() { return ++seqCounter; }
 
@@ -450,6 +650,21 @@ let errorNoticePending = false;
 // GUARANTEE speech.
 function onSpoken(meta, how) {
   if (meta && meta.errorNotice) { errorNoticePending = false; return; }
+  if (meta && meta.inboxIds) {
+    // A volunteered inbox notice was heard — NOW it may be acked (#962).
+    if (inboxNotifier) inboxNotifier.noticeSpoken(meta);
+    return;
+  }
+  if (meta && meta.greeting) {
+    // The health check's verdict (#963). "fallback" here means the model
+    // never spoke the greeting — model audio is dead and, with #950's
+    // fail-closed write path, nothing can be approved. The browser voice has
+    // already said MODEL_AUDIO_DEAD aloud; this is the on-screen record.
+    if (how === "fallback") {
+      log("error", "model audio is DEAD — the write path cannot approve anything", "err");
+    }
+    return;
+  }
   if (!meta || !meta.anchor) return;
   log("speak", "anchored proposal " + meta.anchor + " (" + how + ")", "tool");
   forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
@@ -564,7 +779,7 @@ async function start() {
 
     audioEl = new Audio();
     audioEl.autoplay = true;
-    pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; };
+    pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; audioAttached = true; maybeGreet(); };
 
     dc = pc.createDataChannel("oai-events");
     announcer = createAnnouncer({
@@ -599,6 +814,20 @@ async function start() {
       clearTimer: (handle) => window.clearTimeout(handle),
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
     });
+    // The buddy's clock (#962). Its only voice is announce(); its gate is the
+    // same state the announcer tracks — the owner not speaking, no response in
+    // flight, nothing already queued to be said.
+    inboxNotifier = createInboxNotifier({
+      fetchInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: false } }),
+      ackInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: true } }),
+      announce: announce,
+      canSpeak: () => !ownerSpeaking && !responseActive && !!announcer && announcer.pending() === 0,
+      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimer: (handle) => window.clearTimeout(handle),
+      onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
+      pollMs: INBOX_POLL_MS,
+      seen: heardReplies,
+    });
     dc.addEventListener("open", () => { setStatus("listening"); $stop.disabled = false; });
     dc.addEventListener("close", () => setStatus("closed"));
     dc.addEventListener("message", (e) => {
@@ -615,6 +844,15 @@ async function start() {
         return;
       }
       switch (payload.type) {
+        // The server's own readiness signal — the session exists and can take
+        // a response.create. One leg of the greeting gate (#963).
+        case "session.created":
+          sessionReady = true;
+          maybeGreet();
+          // Start the clock only once the session is real — and after the
+          // greeting is queued, so the first tick defers behind it.
+          if (inboxNotifier) inboxNotifier.start();
+          break;
         case "response.created":
           responseActive = true;
           if (announcer) announcer.onResponseCreated();
@@ -671,6 +909,13 @@ async function start() {
         // approval for a proposal the owner never heard stated. That is the
         // hole the clock change exists to close, and the commit reopens it.
         case "input_audio_buffer.speech_started":
+          // The owner is talking. A greeting not yet fired is suppressed for
+          // good; one queued or mid-flight is withdrawn — cancelled, never
+          // queued behind them (#963). Native barge-in cuts any audio already
+          // playing; this kills the QUEUE and the fallback TIMER.
+          ownerSpeaking = true;
+          greeted = true;
+          if (announcer) announcer.cancel((m) => !!(m && m.greeting));
           if (payload.item_id) {
             const startSeq = nextSeq();
             speechSeq[payload.item_id] = startSeq;
@@ -682,6 +927,7 @@ async function start() {
         // The commit still matters — it binds the item and makes the ordering
         // choice inspectable — but it never gates.
         case "input_audio_buffer.committed":
+          ownerSpeaking = false;
           if (payload.item_id) {
             const seq = nextSeq();
             commitSeq[payload.item_id] = seq;
@@ -747,6 +993,14 @@ function stop() {
   audioEl = null;
   responseActive = false;
   announcer = null;
+  // Session-scoped readiness resets; `greeted` deliberately does NOT — a
+  // reconnect must stay quiet (#963).
+  sessionReady = false;
+  audioAttached = false;
+  ownerSpeaking = false;
+  // The clock dies with the session; `heardReplies` deliberately survives, so
+  // the fresh notifier after a reconnect cannot replay a spoken notice (#962).
+  if (inboxNotifier) { inboxNotifier.stop(); inboxNotifier = null; }
   // A notice pending when the session died was never going to be spoken by
   // it — carrying the flag into the next session would suppress that
   // session's FIRST error notice, silently.
@@ -774,10 +1028,20 @@ def announcer_source() -> str:
     return ANNOUNCER_JS
 
 
+def notifier_source() -> str:
+    """The inbox-notifier factory on its own, for the node-driven tests.
+
+    Same rule as :func:`announcer_source`: the code under test is
+    byte-identical to the code in the page.
+    """
+    return INBOX_NOTIFIER_JS
+
+
 def page(buddy: str, token: str) -> str:
     """Render the client page for one buddy + one run token."""
     return (
         _PAGE.replace("__ANNOUNCER__", ANNOUNCER_JS)
+        .replace("__NOTIFIER__", INBOX_NOTIFIER_JS)
         .replace("__BUDDY__", html.escape(buddy))
         .replace("__TOKEN__", json.dumps(token))
     )
