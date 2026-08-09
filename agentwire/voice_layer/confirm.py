@@ -1090,6 +1090,7 @@ class ConfirmSpine:
                 result = self._runner(argv) or {}
             except Exception as exc:  # a dispatch that raises must not read as sent
                 result = {"success": False, "error": str(exc)}
+            from . import outbox; outbox.record_write(proposal, argv, result)  # noqa: E702 — #958's ONE line in this file; never raises
             if not result.get("success", False):
                 # NOT _succeeded. The write did not happen, and a token in
                 # _succeeded makes the retry say "I already sent that one" —
