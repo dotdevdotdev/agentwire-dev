@@ -19,6 +19,16 @@ Verify as best you can from inside the worktree: run the test suite (e.g. `uv ru
 
 If you open a claude-in-chrome tab to verify your work (dev server, screenshots), track it immediately with `chrome_tab_track(tab_id=..., url=...)` — right after `tabs_create_mcp`. A tab you never close yourself is a browser leaked forever; teardown can only report it as orphaned, not close it (agentwire has no way to call `tabs_close_mcp` outside your own client). See "Finish" below.
 
+## Replying to the voice buddy
+
+A request whose body starts with `<voice>` was relayed from the owner **by voice**, via their voice buddy (the sender in the `[MSG from <sender> · …]` prefix, usually `buddy`). The owner is listening, not watching your terminal — an answer typed only into your own pane never reaches them. When you have the answer, reply by message to that sender:
+
+```
+agentwire msg send --to buddy --kind done "<one-or-two-sentence answer>"
+```
+
+Keep the reply to a sentence or two — it gets summarized aloud. Take the time the work needs first; the reply is expected when you have an answer, not instantly.
+
 ## Finish
 
 When the task is done:
