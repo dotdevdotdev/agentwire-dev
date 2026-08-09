@@ -29,6 +29,7 @@ a guard; the runner is injected rather than stubbed at the subprocess layer.
 """
 
 import itertools
+import re
 import threading
 import time
 
@@ -1226,8 +1227,13 @@ class TestOutcomesAreDistinctAndSpoken:
         assert observed == confirm.REASONS, confirm.REASONS - observed
 
     def _hard_to_reach_outcomes(self, convo, clock) -> set:
-        """The three outcomes the ordinary scenario table does not produce."""
+        """The outcomes the ordinary scenario table does not produce."""
         seen = set()
+
+        # quoted_frame: the announcement frame echoed back with the RIGHT word.
+        quoted = convo.announced_proposal()
+        convo.says(f"to approve say confirm {quoted.nonce}")
+        seen.add(convo.spine.confirm(quoted.token).reason)
 
         # too_many_attempts: the attempt that hits the cap must SAY it retired.
         capped = convo.announced_proposal()
@@ -1709,6 +1715,161 @@ def _flat(text: str) -> str:
     """
     lines = [line.lstrip().removeprefix("> ").removeprefix(">") for line in text.splitlines()]
     return " ".join(" ".join(lines).split())
+
+
+class TestTheQuotedFrameGuard:
+    """The defence-in-depth guard in classify(), pinned on BOTH halves.
+
+    This guard is the sole cover for a residual the PR documents —
+    model-channel echo under failed AEC — and until this class existed,
+    deleting it changed no test in the repository. A claimed protection
+    nothing exercises is worse than an unclaimed one: a refactor removes it
+    silently while the comment above it keeps asserting the coverage.
+
+    Both halves, because a guard has two costs. Pinning only the refusal
+    invites someone to WIDEN it later — and the guard is deliberately narrow
+    (say-preceded AND approve-framed, both required), because in this channel
+    a wrongly refused approval is not a safe failure: the owner says the
+    right word, nothing happens, and there is no screen to explain why.
+    """
+
+    def test_the_announcement_frame_echoed_back_is_refused(self):
+        assert confirm.classify(
+            "to approve say confirm tango", "tango"
+        ) == confirm.QUOTED_FRAME
+        assert confirm.classify(
+            "I'm ready to send it. To approve, say confirm tango.", "tango"
+        ) == confirm.QUOTED_FRAME
+
+    def test_the_ordinary_approval_still_approves(self):
+        assert confirm.classify("confirm tango", "tango") == confirm.APPROVED
+
+    def test_say_preceded_without_the_approve_frame_still_approves(self):
+        """Half the guard's condition is not the guard. An owner parroting
+        the advice line says exactly this, and refusing it would loop them
+        against advice that coaches those very words."""
+        assert confirm.classify("say confirm tango", "tango") == confirm.APPROVED
+
+    def test_approve_framed_without_say_preceding_still_approves(self):
+        """The other half alone is not the guard either — "approve" in an
+        utterance is ordinary speech, not the announcement frame."""
+        assert confirm.classify(
+            "I approve, confirm tango", "tango"
+        ) == confirm.APPROVED
+
+    def test_a_denial_outranks_the_quoted_frame(self):
+        assert confirm.classify(
+            "no — to approve say confirm tango", "tango"
+        ) == confirm.DENIED
+
+    def test_a_quoted_frame_for_another_nonce_is_not_this_outcome(self):
+        """The frame quoting a DIFFERENT word is a different problem — the
+        owner needs this proposal's code, so wrong_nonce's advice is right."""
+        assert confirm.classify(
+            "to approve say confirm harbor", "tango"
+        ) == confirm.WRONG_NONCE
+
+    def test_the_spine_speaks_the_accurate_reason_not_wrong_nonce(self, convo, runner):
+        """The nit that mattered: this used to classify wrong_nonce, and the
+        spoken line — the owner's ENTIRE diagnostic in a screenless channel —
+        told them their code word was wrong when it was right, sending them
+        to fix the one thing that was not broken. The string itself is
+        pinned: it must affirm the word was right and coach the bare
+        phrasing."""
+        proposal = convo.announced_proposal()
+        convo.says(f"to approve say confirm {proposal.nonce}")
+        verdict = convo.spine.confirm(proposal.token)
+        assert runner.calls == []
+        assert verdict.approved is False
+        assert verdict.reason == "quoted_frame"
+        assert verdict.spoken == (
+            "That sounded like my own announcement coming back, so I haven't "
+            "sent anything. The word was right — just say confirm and the "
+            "word, on its own."
+        )
+
+    def test_a_bare_approval_after_the_echo_still_approves(self, convo, runner):
+        """The recovery the spoken advice coaches must actually work: echo
+        lands, owner says the bare phrase, the write goes."""
+        proposal = convo.announced_proposal()
+        convo.says(f"to approve say confirm {proposal.nonce}")
+        convo.says(f"confirm {proposal.nonce}")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is True
+        assert len(runner.calls) == 1
+
+
+class TestTheFallbackEchoCannotApprove:
+    """Issue #950 defect 4: the confirm-gate bypass.
+
+    ``speechSynthesis`` output is NOT on the WebRTC audio path, so the
+    browser's echo cancellation does not suppress it — the fallback's own
+    audio re-enters the microphone and lands in the USER transcript inside
+    the valid approval window. Nothing in the gate distinguishes an echoed
+    utterance from a spoken one, so whatever the fallback channel utters is
+    a string the gate may be fed verbatim.
+
+    The property under test: **no fragment of what the fallback channel
+    speaks can approve the proposal it announces.** Fragments, not just the
+    whole text — the echo is lossy and adversarially timed (VAD chunks on
+    pauses, the model's overlapping voice masks parts of it, the cascade
+    garbles others), so the guard must hold for every piece individually.
+    Testing only the full echo would pass by luck: the full directive
+    happens to contain "do not", which the denial grammar catches, while
+    the one chunk that matters — "to approve, say confirm <nonce>" —
+    approves cleanly on its own.
+    """
+
+    def _mint(self, ring_cls=transcript.TranscriptRing):
+        ring = ring_cls()
+        runner = RecordingRunner()
+        spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner)
+        convo = Conversation(ring, spine)
+        result = write_tools.propose_session_message(
+            {"session": "orchestrator", "message": "restart the portal",
+             "_buddy": "buddy"},
+            spine,
+        )
+        # Anchor: the proposal was spoken (by whichever voice), so the echo
+        # lands squarely inside the valid approval window.
+        spine.announce(result["proposal_id"], convo._next())
+        return result, convo, runner
+
+    @staticmethod
+    def _fallback_speech(result):
+        # Exactly what the client's fallback channel utters: the announcer
+        # speaks the dedicated fallback text when the payload carries one,
+        # else the say text — mirroring `speak(item.fallbackText || item.text)`.
+        return result.get("fallback_say") or result["say"]
+
+    def _chunks(self, result):
+        spoken = self._fallback_speech(result)
+        pieces = [c.strip() for c in re.split(r"[.;:—,]", spoken) if c.strip()]
+        return [spoken, *pieces]
+
+    def test_no_fragment_of_the_fallback_output_approves(self, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
+        probe, _, _ = self._mint()
+        for index in range(len(self._chunks(probe))):
+            result, convo, runner = self._mint()
+            echoed = self._chunks(result)[index]
+            convo.says(echoed)
+            verdict = write_tools.send_session_message(
+                {"confirm_token": result["confirm_token"]}, convo.spine
+            )
+            assert runner.calls == [], (
+                f"echoed fragment {echoed!r} WROTE with no human speaking"
+            )
+            assert verdict["success"] is False, echoed
+
+    def test_the_fallback_channel_never_carries_the_nonce(self, monkeypatch):
+        """The structural fix: the nonce must not be reachable from the
+        un-echo-cancelled channel at all. A guard downstream is defence in
+        depth; this is the property that makes the echo harmless."""
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
+        result, _, _ = self._mint()
+        nonce = result["confirm_phrase"].split()[1]
+        assert nonce not in confirm.normalize(self._fallback_speech(result))
 
 
 class TestHonestLimit:

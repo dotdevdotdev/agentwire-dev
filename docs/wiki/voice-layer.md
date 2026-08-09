@@ -470,8 +470,19 @@ response is in flight, so the output lands and **no response is created** — th
 VAD is producing its own responses.
 
 So refusals go through an announcer in `client.py`: cancel the in-flight
-response (an error from cancelling an already-finished one is ignored), issue a
-scripted `response.create`, and verify against the following `response.done`.
+response (only when the client's mirror says one is active — the error a
+no-target cancel generates is suppressed rather than announced, or the error
+handler feeds itself; #950), issue a scripted `response.create`, and verify
+against the following `response.done`.
+
+Two #950 lessons live on this path. **`say` is literal text to utter, never a
+directive to the model** — the one payload that carried a directive got read
+aloud verbatim, the transcript-match disarm could then never fire, and the
+timer double-spoke every proposal. And **the `speechSynthesis` channel is
+outside WebRTC echo cancellation**, so its audio can re-enter the microphone
+and land in the *user* transcript: whatever it utters is a string the confirm
+gate may be fed. A proposal therefore ships a separate `fallback_say` with no
+nonce in it — an echo of the fallback cannot carry an approval, structurally.
 
 **The `speechSynthesis` fallback is armed by a timer, not triggered by a
 detected failure**, and that is the part that decides whether this property is
