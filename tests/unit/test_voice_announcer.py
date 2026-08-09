@@ -1194,6 +1194,28 @@ class TestTheInterruptTier:
         assert "held: 0" in report["logs"]
         assert len(report["announced"]) == 1
 
+    def test_the_interrupt_class_is_exactly_escalation(self):
+        """The wave-3 surviving mutant: widening the tier to include
+        kind:request passed the whole suite, because the waits test used
+        kind:done. This pins the CLASS boundary, not one member of it —
+        every non-escalation kind the msg channel ships (done, note,
+        request, ingest) must WAIT for the full gate, and each is
+        volunteered once it opens. `request` matters most: it is the kind
+        every buddy write emits, and the commonest actionable one."""
+        for kind in ("done", "note", "request", "ingest"):
+            report = run_notifier(f"""
+                spool = [{{ id: "m1", from: "reviewer", kind: "{kind}",
+                           text: "need a call" }}];
+                speakable = false;
+                interruptable = true;
+                await notifier.pollOnce();
+                logs.push("held: " + announcedCalls.length);
+                speakable = true;
+                await notifier.pollOnce();
+            """)
+            assert "held: 0" in report["logs"], f"kind {kind} rode the interrupt tier"
+            assert len(report["announced"]) == 1, f"kind {kind} was lost by waiting"
+
     def test_a_mixed_batch_under_interrupt_takes_only_the_escalation(self):
         """And the skipped ordinary message is NOT buried by the ack: acking
         the spoken escalation advances the cursor past everything, so the
@@ -1290,7 +1312,12 @@ const ledger = createReRaiseLedger({
   onLog: (kind, detail) => logs.push(kind + ": " + detail),
 });
 const texts = [];
-function tick() { const t = ledger.dueText(); if (t) texts.push(t); return t; }
+// The happy path: the composed reminder gets spoken, which is what spends it.
+function tick() {
+  const t = ledger.dueText();
+  if (t) { texts.push(t.text); ledger.spoken(t.ids); }
+  return t;
+}
 function report() {
   return JSON.stringify({ texts, logs, pending: ledger.pending() });
 }
@@ -1401,6 +1428,27 @@ class TestTheReRaiseLedger:
         """)
         assert len(report["texts"][0]) < 300
 
+    def test_an_unspoken_reminder_comes_due_again(self):
+        """The wave-3 D3 observation, fixed: composing the reminder spends
+        nothing. If the announcement dies before it is spoken (stop(), a
+        cancelled announce), the same reminder comes due again; only
+        spoken(ids) — the page's onSpoken evidence — closes it. Consuming at
+        compose time was the ack-before-spoken shape that was a real defect
+        in #962 D1."""
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            const first = ledger.dueText();          // composed, never spoken
+            const second = ledger.dueText();         // still due — not spent
+            texts.push(second.text);
+            ledger.spoken(second.ids);               // NOW it is spent
+            if (ledger.dueText() !== null) texts.push("BUG: third mention");
+            logs.push("same: " + (first.text === second.text));
+        """)
+        assert report["texts"] == [report["texts"][0]]  # exactly one close
+        assert "same: true" in report["logs"]
+        assert report["pending"] == 0
+
     def test_the_reminder_is_speakable_and_names_the_close(self):
         """The owner cannot skim speech: the reminder must say it is the
         second and last mention, so they know the buddy will now drop it."""
@@ -1430,7 +1478,8 @@ class TestReRaiseThroughTheNotifier:
         """)
         assert len(report["announced"]) == 1
         assert "Still open" in report["announced"][0]["text"]
-        assert report["announced"][0]["meta"] == {"reRaise": True}
+        assert report["announced"][0]["meta"] == {"reRaise": True,
+                                                  "reRaiseIds": ["m1"]}
 
     def test_fresh_news_outranks_the_reminder(self):
         report = run_notifier("""
@@ -1463,8 +1512,8 @@ class TestReRaiseThroughTheNotifier:
 
     def test_a_blocked_tick_does_not_burn_the_reminder(self):
         """Both halves: blocked is silent, and the SAME reminder still fires
-        on the next open tick — dueText marks re-raised only when the text is
-        actually taken."""
+        on the next open tick — dueText marks nothing; only spoken evidence
+        (the page's onSpoken) spends the second mention."""
         report = run_notifier("""
             let clock = 0;
             ledger = createReRaiseLedger({ now: () => clock, dueMs: 120000 });
@@ -1521,6 +1570,16 @@ class TestThePersonaAndInterruptWiring:
         assert '"request"' in register_at and '"escalation"' in register_at
         # And nowhere else on the page registers.
         assert page.count("reRaiseLedger.register(") == 1
+
+    def test_the_reminder_is_spent_only_from_on_spoken(self):
+        """The commit side of mark-on-spoken: exactly one spoken() call site
+        on the page, inside onSpoken's reRaise branch — the announce path
+        never spends the mention it is still trying to deliver."""
+        page = client.page("buddy", "tok")
+        assert page.count("reRaiseLedger.spoken(") == 1
+        onspoken = page.split("function onSpoken(meta, how)", 1)[1].split(
+            "function send(", 1)[0]
+        assert "reRaiseLedger.spoken(meta.reRaiseIds || [])" in onspoken
 
     def test_the_ledger_survives_stop(self):
         """Page-lifetime, like heardReplies: stop() must not touch it, or a

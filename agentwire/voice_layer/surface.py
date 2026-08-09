@@ -24,6 +24,18 @@ omission. A capability is excluded when it:
     is the polite, guarded channel: the recipient acts on it inside its own
     damage-control, posture and routing. That is why msg is a graded write and
     send is excluded.
+
+    The clause keys on the DISPATCH PATH, not the tool's name: anything that
+    reaches ``agentwire ensure`` — ``task_run``, ``scheduler_run`` — is (a),
+    because ensure creates the session when it is missing and then drives it
+    with prompts to completion. The tempting carve-out ("the task content is
+    owner-authored, in the protected ``.agentwire.tasks.yml``, behind a
+    nonce") was considered and REJECTED: authorship of the prompt does not
+    change who instantiated and drove the session, and the exclusion is not
+    "this is expensive" but "this is not this layer's job at all". A test
+    walks every tool's argv into the CLI call graph and fails any tier-1/2
+    tool whose path can create a session, so the next ensure-shaped verb
+    cannot land under an innocuous name.
 (b) **is another output channel to the owner** — ``say``, ``notify_user``,
     the listen/transcribe family. The buddy IS the voice channel; a second
     path that speaks or toasts is #950 (two paths racing to speak) in
@@ -97,7 +109,7 @@ TIER_WRITE_LIGHT = frozenset({
     "desktop_close_window", "desktop_focus_window", "desktop_tile_window",
     "desktop_minimize_all", "desktop_collage", "desktop_layout",
     "chrome_tab_track", "chrome_tab_untrack",
-    "scratchpad_add", "pane_jump", "pane_resize", "msg_pull",
+    "scratchpad_add", "pane_jump", "pane_resize",
 })
 
 #: Tier 2, gated grade — causes agents/humans to act, changes durable state,
@@ -107,20 +119,28 @@ TIER_WRITE_GATED = frozenset({
     "session_kill", "pane_kill", "pane_detach",
     "worktree_remove", "worktree_prune",
     "lock_clean", "lock_remove",
-    "msg_purge", "msg_flush",
-    "scheduler_run", "scheduler_enable", "scheduler_disable",
-    "task_run",
+    # msg_pull reads AND REMOVES another session's ingest messages (it takes
+    # a session param). The name reads like a fetch; the effect is a consume
+    # with no one-action undo — a mis-heard target silently destroys a
+    # Briefing-Mode anchor's queued pointers, and nothing tells anyone.
+    "msg_pull", "msg_purge", "msg_flush",
+    "scheduler_enable", "scheduler_disable",
     "tunnels_up", "tunnels_down",
 })
 
 #: Tier 3 — permanently excluded, by the lettered clauses in the module
 #: docstring. A DESIGN DECISION, not an oversight.
 TIER_EXCLUDED = frozenset({
-    # (a) creates or drives an agent session — the harness boundary (#730)
+    # (a) creates or drives an agent session — the harness boundary (#730).
+    # task_run and scheduler_run dispatch through `agentwire ensure`, which
+    # creates the session if missing and drives it with prompts — clause (a)
+    # by dispatch path, whatever the verb sounds like (see the docstring for
+    # the rejected owner-authored-content carve-out).
     "session_create", "session_recreate", "session_fork",
     "session_send", "session_send_keys",
     "pane_spawn", "pane_send", "pane_split",
     "worktree_create", "history_resume", "wait_children",
+    "task_run", "scheduler_run",
     "council_start", "council_stop", "council_ask",
     "council_collect", "council_minutes",
     # (b) another output channel to the owner (#950)
