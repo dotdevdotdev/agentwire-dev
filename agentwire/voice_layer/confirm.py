@@ -1031,6 +1031,13 @@ class Verdict:
     #: msg-shaped "queued" claim, which is the only honest default for a write
     #: that enqueues rather than completes.
     success_say: str = ""
+    #: The session the approved write acted on, copied from the proposal
+    #: FROZEN at propose time — never from anything supplied at confirm. The
+    #: client's re-raise ledger keys on this to retire reminders; before it,
+    #: the client guessed by remembering the last proposal, which is wrong
+    #: whenever two proposals interleave. Empty means the write has no session
+    #: target, and the key is then omitted rather than shipped empty.
+    acted_session: str = ""
 
     @property
     def spoken(self) -> str:
@@ -1056,6 +1063,14 @@ class Verdict:
                     "say": self.success_say,
                     "must_speak": True,
                     "confirm_terminal": True,
+                    # Only APPROVED payloads carry acted_session: a cancel is
+                    # terminal but is not acting, and retiring a reminder on
+                    # it silently deletes the re-raise (#967).
+                    **(
+                        {"acted_session": self.acted_session}
+                        if self.acted_session
+                        else {}
+                    ),
                 }
             return {
                 "success": True,
@@ -1068,6 +1083,11 @@ class Verdict:
                 ),
                 "must_speak": True,
                 "confirm_terminal": True,
+                **(
+                    {"acted_session": self.acted_session}
+                    if self.acted_session
+                    else {}
+                ),
             }
         return {
             "success": False,
@@ -1355,6 +1375,7 @@ class ConfirmSpine:
             utterance=match.text,
             utterance_item_id=match.item_id,
             success_say=proposal.success_say,
+            acted_session=proposal.session,
         )
 
     def _claim(self, token: str) -> "tuple[Proposal | None, Verdict | None]":
