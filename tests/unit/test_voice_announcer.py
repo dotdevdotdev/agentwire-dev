@@ -470,6 +470,132 @@ class TestOneAnnouncementLogsOnce:
         assert ".heard" in page
 
 
+class TestTheGreeting:
+    """#963. On connect the buddy speaks first — and the greeting doubles as
+    the health check for the fail-closed write path (#950): heard greeting =
+    model audio works = approvals can work. So the greeting must be spoken by
+    the MODEL; the browser fallback proving "a voice works" would prove exactly
+    the wrong voice. Resolution of that tension with the announcer's
+    default-fallback design: the fallback stays armed (silence is still
+    unacceptable) but its text is a WARNING that model audio is dead, riding
+    the existing fallbackText channel — the failure is surfaced, not papered
+    over."""
+
+    def test_a_model_spoken_greeting_disarms_and_reports_model(self):
+        report = run_announcer("""
+            announcer.announce("Hey, I'm listening. What's on your mind?",
+                               { greeting: true },
+                               "warning text");
+            announcer.onResponseDone("Hey I'm listening, what's on your mind?");
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert report["anchored"] == [{"meta": {"greeting": True}, "how": "model"}]
+
+    def test_dead_model_audio_surfaces_the_warning_not_the_greeting(self):
+        """THE non-cosmetic case: model audio dead. The browser voice must NOT
+        utter the greeting (that confirms the wrong voice while the write path
+        is silently unusable) — it utters the warning that names the failure."""
+        report = run_announcer("""
+            announcer.announce("Hey, I'm listening. What's on your mind?",
+                               { greeting: true },
+                               "Heads up, my main voice is not working.");
+            fireTimers();
+        """)
+        assert report["spoken"] == ["Heads up, my main voice is not working."]
+        assert report["anchored"] == [
+            {"meta": {"greeting": True}, "how": "fallback"}
+        ]
+
+    def test_cancel_withdraws_a_queued_greeting_entirely(self):
+        """The owner speaking first cancels the greeting, not queues behind it.
+        A withdrawn item must never be spoken by either voice and never reach
+        onSpoken."""
+        report = run_announcer("""
+            announcer.onResponseCreated();  // something else is speaking
+            announcer.announce("first item", null);
+            announcer.announce("the greeting", { greeting: true }, "warning");
+            announcer.cancel(function (m) { return m && m.greeting; });
+            announcer.onResponseDone("first item");
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert report["pending"] == 0
+        # only the first item's spoken evidence — the greeting never reports.
+        assert report["anchored"] == [{"meta": None, "how": "model"}]
+
+    def test_cancel_of_the_current_greeting_disarms_its_fallback(self):
+        """Cancelling mid-flight: the timer must be disarmed (or the fallback
+        speaks a greeting the owner already talked over), and a later
+        response.done carrying the greeting text must not count as spoken."""
+        report = run_announcer("""
+            announcer.announce("the greeting", { greeting: true }, "warning");
+            announcer.onResponseCreated();     // model begins speaking it
+            announcer.cancel(function (m) { return m && m.greeting; });
+            announcer.onResponseDone("the greeting");   // partial audio's ASR
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert report["anchored"] == []
+        assert report["armedTimers"] == 0
+
+    def test_cancel_leaves_unrelated_announcements_alone(self):
+        report = run_announcer("""
+            announcer.announce("a refusal that must still speak");
+            announcer.cancel(function (m) { return m && m.greeting; });
+            fireTimers();
+        """)
+        assert report["spoken"] == ["a refusal that must still speak"]
+
+    def test_the_page_greets_only_when_genuinely_ready(self):
+        """Channel-open is not readiness: the greet site requires the server's
+        session.created AND the audio track being attached, and fires once."""
+        page = client.page("buddy", "tok")
+        greet_body = page.split("function maybeGreet() {", 1)[1].split("\n}", 1)[0]
+        assert "if (greeted || !sessionReady || !audioAttached) return;" in greet_body
+        assert "greeted = true;" in greet_body
+        assert 'case "session.created":' in page
+        # both readiness legs re-check, whichever lands last.
+        assert page.count("maybeGreet()") >= 2
+
+    def test_the_page_never_regreets_on_reconnect(self):
+        """`greeted` is page-lifetime: stop() resets session state but must
+        NOT reset it — a dropped and re-established connection stays quiet."""
+        page = client.page("buddy", "tok")
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "greeted = false" not in stop_body
+        assert "greeted = true" not in stop_body
+
+    def test_the_owner_speaking_cancels_the_greeting_on_the_page(self):
+        """speech_started both suppresses a not-yet-fired greeting and
+        withdraws a queued/current one."""
+        page = client.page("buddy", "tok")
+        started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
+        started = started.split("break;", 1)[0]
+        assert "greeted = true;" in started
+        assert "announcer.cancel(" in started
+
+    def test_the_greeting_rides_announce_not_a_new_speaking_path(self):
+        """#950's constraint, pinned: response.create appears exactly twice in
+        the page — the announcer's pump and maybeCreateResponse. The greeting
+        (and everything else new) adds no third."""
+        page = client.page("buddy", "tok")
+        assert page.count('type: "response.create"') == 2
+        assert "announce(GREETING" in page
+
+    def test_the_greeting_literals_are_speakable(self):
+        page = client.page("buddy", "tok")
+        import re
+
+        greeting = re.search(r'const GREETING = "([^"]+)";', page)
+        warning = re.search(r'const MODEL_AUDIO_DEAD = "([^"]+)";', page)
+        assert greeting and warning
+        for line in (greeting.group(1), warning.group(1)):
+            assert "`" not in line and "_" not in line, line
+        # the warning names the consequence — the owner cannot see a screen.
+        assert "approve" in warning.group(1).lower()
+
+
 class TestThePageEmbedsTheRealThing:
     def test_the_page_contains_the_announcer_verbatim(self):
         """The tests above run ``announcer_source()``; the page must embed the

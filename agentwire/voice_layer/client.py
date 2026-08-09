@@ -232,6 +232,22 @@ function createAnnouncer(deps) {
       });
       pump();
     },
+    // Withdraw announcements whose meta matches, queued or current (#963: the
+    // owner speaking first CANCELS the greeting; queueing it behind them would
+    // greet someone who has already moved on). A withdrawn item's fallback is
+    // disarmed and onSpoken never fires for it — it was never heard, and
+    // nothing downstream may believe it was. Note what this does NOT
+    // establish: it cannot recall audio the model has already emitted; native
+    // barge-in covers that, this covers the QUEUE and the TIMER.
+    cancel: function (match) {
+      queue = queue.filter(function (it) { return !match(it.meta); });
+      if (current && match(current.meta)) {
+        disarm(current);
+        if (responseActive) send({ type: "response.cancel" });
+        current = null;
+        pump();
+      }
+    },
     onResponseCreated: function () {
       responseActive = true;
       // A response beginning while this item is current is the one signal
@@ -372,6 +388,35 @@ let forwardChain = Promise.resolve();
 let announcer = null;
 let parseFailuresAnnounced = 0;
 
+// --- the greeting (#963) ----------------------------------------------------
+// The buddy speaks first — and since #950 the write path is fail-closed on
+// model audio, so a HEARD greeting proves the whole approval path at second
+// zero. That is why the greeting must be spoken by the MODEL: a fallback-
+// spoken greeting confirms the browser voice while the model's is dead and
+// nothing can ever be approved. The announcer's fallback stays armed (silence
+// is still unacceptable) but its text is MODEL_AUDIO_DEAD — the browser voice
+// surfaces the failure instead of impersonating health.
+const GREETING = "Hey, I'm listening. What's on your mind?";
+const MODEL_AUDIO_DEAD = "Heads up: my main voice isn't working, so nothing can be approved. Try stopping and starting again.";
+// Page-lifetime, never reset by stop(): a dropped and re-established
+// connection must not re-greet. Also set by the owner speaking first — a late
+// greeting after they've started talking is worse than none.
+let greeted = false;
+let sessionReady = false;   // the server's session.created arrived
+let audioAttached = false;  // pc.ontrack wired the model's audio to a sink
+
+// Channel-open is NOT readiness: session.created is the server saying the
+// session exists, and the audio element is what makes model speech audible.
+// Whichever lands last fires the greeting. What this does NOT establish: that
+// audio actually PLAYS — the disarm keys on the model's transcript, so a muted
+// tab still reads as healthy. That gap is inherent to every announcement, not
+// introduced here.
+function maybeGreet() {
+  if (greeted || !sessionReady || !audioAttached) return;
+  greeted = true;
+  announce(GREETING, { greeting: true }, MODEL_AUDIO_DEAD);
+}
+
 function nextSeq() { return ++seqCounter; }
 
 function setStatus(text) { $status.textContent = text; }
@@ -450,6 +495,16 @@ let errorNoticePending = false;
 // GUARANTEE speech.
 function onSpoken(meta, how) {
   if (meta && meta.errorNotice) { errorNoticePending = false; return; }
+  if (meta && meta.greeting) {
+    // The health check's verdict (#963). "fallback" here means the model
+    // never spoke the greeting — model audio is dead and, with #950's
+    // fail-closed write path, nothing can be approved. The browser voice has
+    // already said MODEL_AUDIO_DEAD aloud; this is the on-screen record.
+    if (how === "fallback") {
+      log("error", "model audio is DEAD — the write path cannot approve anything", "err");
+    }
+    return;
+  }
   if (!meta || !meta.anchor) return;
   log("speak", "anchored proposal " + meta.anchor + " (" + how + ")", "tool");
   forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
@@ -564,7 +619,7 @@ async function start() {
 
     audioEl = new Audio();
     audioEl.autoplay = true;
-    pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; };
+    pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; audioAttached = true; maybeGreet(); };
 
     dc = pc.createDataChannel("oai-events");
     announcer = createAnnouncer({
@@ -615,6 +670,12 @@ async function start() {
         return;
       }
       switch (payload.type) {
+        // The server's own readiness signal — the session exists and can take
+        // a response.create. One leg of the greeting gate (#963).
+        case "session.created":
+          sessionReady = true;
+          maybeGreet();
+          break;
         case "response.created":
           responseActive = true;
           if (announcer) announcer.onResponseCreated();
@@ -671,6 +732,12 @@ async function start() {
         // approval for a proposal the owner never heard stated. That is the
         // hole the clock change exists to close, and the commit reopens it.
         case "input_audio_buffer.speech_started":
+          // The owner is talking. A greeting not yet fired is suppressed for
+          // good; one queued or mid-flight is withdrawn — cancelled, never
+          // queued behind them (#963). Native barge-in cuts any audio already
+          // playing; this kills the QUEUE and the fallback TIMER.
+          greeted = true;
+          if (announcer) announcer.cancel((m) => !!(m && m.greeting));
           if (payload.item_id) {
             const startSeq = nextSeq();
             speechSeq[payload.item_id] = startSeq;
@@ -747,6 +814,10 @@ function stop() {
   audioEl = null;
   responseActive = false;
   announcer = null;
+  // Session-scoped readiness resets; `greeted` deliberately does NOT — a
+  // reconnect must stay quiet (#963).
+  sessionReady = false;
+  audioAttached = false;
   // A notice pending when the session died was never going to be spoken by
   // it — carrying the flag into the next session would suppress that
   // session's FIRST error notice, silently.
