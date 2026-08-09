@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..mcp_core import run_agentwire_cmd
-from . import delivery
+from . import delivery, outbox
 
 # Session names as the inbox defines them, plus the optional `@machine` suffix
 # a remote session carries. Anchored: a partial match is how a fuzzy
@@ -210,6 +210,46 @@ def _buddy_inbox(args: dict) -> dict:
     }
 
 
+_MAX_SENT_LIMIT = 50
+
+
+def _buddy_sent(args: dict) -> dict:
+    """The buddy's OWN writes — what it has actually sent, verbatim (#958).
+
+    Reads the outbox the confirm spine appends to on every executed write, so
+    the ``body`` field here is the exact rendered string that went out — not a
+    description of it, and not a re-render. Delivery state is looked up live
+    against the recipient's inbox on every call, because it changes after the
+    write returns.
+    """
+    name = args.get("_buddy") or ""
+    if not name:
+        raise ToolError("buddy identity missing from tool context")
+    limit = _int_arg(args, "limit", 10, 1, _MAX_SENT_LIMIT)
+    proposal_id = args.get("proposal_id")
+    entries = outbox.read_outbox(name)
+    if isinstance(proposal_id, str) and proposal_id.strip():
+        wanted = proposal_id.strip()
+        entries = [e for e in entries if e.get("proposal_id") == wanted]
+    entries = entries[:limit]
+    return {
+        "success": True,
+        "count": len(entries),
+        "sent": [
+            {
+                "proposal_id": e.get("proposal_id", ""),
+                "session": e.get("session", ""),
+                "body": e.get("body", ""),
+                "instruction": e.get("instruction", ""),
+                "argv": e.get("argv", []),
+                "ts": e.get("ts", 0),
+                "delivery": outbox.delivery_state(e),
+            }
+            for e in entries
+        ],
+    }
+
+
 READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
     ReadOnlyTool(
         name="fleet_sessions",
@@ -320,6 +360,32 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
                 "unread_only": {
                     "type": "boolean",
                     "description": "Only unread messages. Default true.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ReadOnlyTool(
+        name="buddy_sent",
+        description=(
+            "Messages YOU have sent, newest first: the exact body that went out, "
+            "who it went to, and its current delivery state (queued, delivered, "
+            "dead_lettered, or dispatch_failed). This is the answer to any "
+            "question about a message you sent — what it said, whether something "
+            "was in it, what happened to it. Quote the body from here; never "
+            "answer from memory or by reading the recipient's terminal."
+        ),
+        run=_buddy_sent,
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": f"How many recent sends to return (1-{_MAX_SENT_LIMIT}, default 10).",
+                },
+                "proposal_id": {
+                    "type": "string",
+                    "description": "Only the send with this proposal id.",
                 },
             },
             "additionalProperties": False,
