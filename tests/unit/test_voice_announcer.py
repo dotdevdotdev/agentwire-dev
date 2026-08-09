@@ -604,6 +604,7 @@ _NOTIFIER_HARNESS = """
 const announcedCalls = [];
 const logs = [];
 const seen = {};
+const strays = [];
 let spool = [];
 let cursor = 0;
 let speakable = true;
@@ -628,12 +629,14 @@ function makeNotifier(overrides) {
     onLog: (kind, detail) => logs.push(kind + ": " + detail),
     pollMs: 5000,
     seen,
+    strays,
   }, overrides || {}));
 }
 let notifier = makeNotifier();
 function report() {
   return JSON.stringify({
     announced: announcedCalls, logs, cursor, seen, armedTimers: timers.length,
+    strays: strays.length,
   });
 }
 """
@@ -754,6 +757,25 @@ class TestTheBuddyClock:
         assert "billing" in report["announced"][1]["text"]
         assert report["announced"][1]["meta"]["inboxIds"] == ["m2"]
 
+    def test_a_stray_reply_survives_stop_before_the_next_tick(self):
+        """The wave-2 D1 construction: a reply lands between the peek and the
+        ack, the cursor advances past it, and the owner clicks Stop before the
+        next gated tick. The stray's home must outlive the notifier — the
+        spool will never return that message again (there is no ack-by-id),
+        so a per-notifier array is its grave."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+            spool.push({ id: "m2", from: "billing", kind: "note", text: "late arrival" });
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+            notifier.stop();             // owner clicks Stop with the stray pending
+            notifier = makeNotifier();   // the reconnect
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        assert "billing" in report["announced"][1]["text"]
+        assert report["announced"][1]["meta"]["inboxIds"] == ["m2"]
+
     def test_an_empty_inbox_is_silence(self):
         """The recipient never replying produces silence — no follow-up, no
         apology, no chatter."""
@@ -799,7 +821,8 @@ class TestTheBuddyClock:
         page = client.page("buddy", "tok")
         assert (
             "canSpeak: () => !ownerSpeaking && !responseActive"
-            " && !!announcer && announcer.pending() === 0," in page
+            " && !!announcer && announcer.pending() === 0"
+            " && !confirmGate.outstanding()," in page
         )
         started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
         assert "ownerSpeaking = true;" in started.split("break;", 1)[0]
@@ -826,6 +849,118 @@ class TestTheBuddyClock:
         assert "inboxNotifier.stop();" in stop_body
         assert "heardReplies =" not in stop_body
         assert "heardReplies[" not in stop_body
+
+    def test_strays_get_the_same_page_lifetime_home_as_heard_replies(self):
+        """D1: the page owns the strays array and passes it in like `seen`;
+        stop() must not touch it — a stray is cursor-past, so this array is
+        the only route left to the owner's ear."""
+        page = client.page("buddy", "tok")
+        assert "const strayReplies = [];" in page
+        wiring = page.split("createInboxNotifier({", 1)[1].split("});", 1)[0]
+        assert "strays: strayReplies," in wiring
+        # Pin the operations, not the mentions: stop() must not reassign or
+        # mutate the array (a comment naming it is fine).
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "strayReplies =" not in stop_body
+        assert "strayReplies." not in stop_body
+
+
+_CONFIRM_GATE_HARNESS = """
+let clock = 0;
+const gate = createConfirmGate({ now: () => clock, ttlMs: 120000 });
+function report() { return JSON.stringify({ outstanding: gate.outstanding() }); }
+"""
+
+
+def run_confirm_gate(script: str) -> dict:
+    program = "\n".join(
+        [
+            client.confirm_gate_source(),
+            _CONFIRM_GATE_HARNESS,
+            textwrap.dedent(script),
+            "console.log(report());",
+        ]
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", program],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node failed: {result.stderr.strip()}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+class TestTheConfirmGate:
+    """D2 (#962 never-barge-in): a spoken proposal awaiting the owner's
+    confirm word closes the volunteering gate — and BOTH halves are priced:
+    the block is real, and it expires with the proposal's TTL so an
+    unanswered proposal cannot silence the buddy forever."""
+
+    def test_no_proposal_means_the_gate_is_open(self):
+        assert run_confirm_gate("")["outstanding"] is False
+
+    def test_an_anchored_proposal_closes_the_gate(self):
+        assert run_confirm_gate("gate.anchored();")["outstanding"] is True
+
+    def test_a_resolved_proposal_reopens_it(self):
+        report = run_confirm_gate("""
+            gate.anchored();
+            gate.resolved();
+        """)
+        assert report["outstanding"] is False
+
+    def test_the_ttl_bounds_the_false_reject(self):
+        """The wrongful-no half: an owner who never answers must not mute
+        volunteering forever. The gate expires on the proposal's own TTL."""
+        report = run_confirm_gate("""
+            gate.anchored();
+            clock = 119999;
+            if (!gate.outstanding()) throw new Error("expired early");
+            clock = 120000;
+        """)
+        assert report["outstanding"] is False
+
+    def test_a_new_proposal_restarts_the_clock(self):
+        report = run_confirm_gate("""
+            gate.anchored();
+            clock = 100000;
+            gate.anchored();
+            clock = 200000;   // 100s after the second anchor, 200s after the first
+        """)
+        assert report["outstanding"] is True
+
+    def test_the_page_wires_the_gate_to_the_anchor_and_the_outcome(self):
+        """The gate's edges on the page: closed when the proposal is SPOKEN
+        (the onSpoken anchor branch), reopened only by a terminal outcome of
+        the write tools — a wait outcome (owner_should_wait) keeps the
+        proposal live, so it must not reopen the gate."""
+        page = client.page("buddy", "tok")
+        assert client.confirm_gate_source().strip() in page
+        # ttl mirrors confirm.PROPOSAL_TTL_S — the false-reject bound.
+        assert "ttlMs: 120000" in page
+        anchor_branch = page.split("if (!meta || !meta.anchor) return;", 1)[1]
+        assert "confirmGate.anchored();" in anchor_branch.split("}", 1)[0]
+        dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
+        dispatch = dispatch.split("function spokenText", 1)[0]
+        # The call must exist — split() on a missing token returns the whole
+        # string and every assertion below goes green on comments alone.
+        assert "confirmGate.resolved();" in dispatch
+        resolved_at = dispatch.split("confirmGate.resolved();", 1)[0]
+        assert '"send_session_message"' in resolved_at
+        assert '"cancel_session_message"' in resolved_at
+        assert "owner_should_wait" in resolved_at
+
+    def test_the_gate_survives_stop_because_the_proposal_does(self):
+        """The spine lives in the bridge, not the page: a reconnect inside
+        the TTL can still be answered, so stop() leaves the gate alone and
+        the TTL is what reopens it."""
+        page = client.page("buddy", "tok")
+        # Operations, not mentions: stop() must not resolve or re-anchor.
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "confirmGate.resolved" not in stop_body
+        assert "confirmGate.anchored" not in stop_body
 
 
 class TestThePageEmbedsTheRealThing:
