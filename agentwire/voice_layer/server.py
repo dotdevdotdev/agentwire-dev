@@ -15,6 +15,11 @@ page is served with. A tool-execution endpoint reachable from anywhere else on
 the network is precisely the unguarded surface this design is trying not to
 create.
 
+The loopback bind is **not** what keeps a remote page out, and reading it that
+way is how the hole in #977 got here: the attacker never sends the packet, the
+owner's browser does. A ``Host`` allowlist is the guard that actually
+corresponds to the threat — see :func:`allowed_hosts`.
+
 Two of the routes exist for the confirm gate's ordering:
 
 - ``/utterance`` — the audio-commit boundary and the transcription model's
@@ -46,6 +51,69 @@ from . import instructions as buddy_instructions
 DEFAULT_PORT = 8788
 
 _MAX_BODY = 64 * 1024
+
+#: The only names that may appear in a request's ``Host``. Loopback literals
+#: plus the name a human types for them — see :func:`allowed_hosts` for why the
+#: set is exactly this and no larger.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+def allowed_hosts(port: int) -> frozenset[str]:
+    """Every ``Host`` value this bridge will answer on ``port``.
+
+    Binding ``127.0.0.1`` does not make the bridge unreachable from the web,
+    because the attacker is not sending the packet — the OWNER'S BROWSER is.
+    A page on ``evil.com`` that rebinds its own name to ``127.0.0.1`` becomes
+    same-origin with the bridge, fetches ``/`` (served with no auth), reads the
+    ``TOKEN`` embedded in the page, and POSTs ``/tool`` with it. The one thing
+    it cannot forge is ``Host``: the browser sets it from the address bar, so
+    the rebound request says ``evil.com`` and the real client says a loopback
+    name.
+
+    **The false-reject half is the expensive one.** This is a screenless
+    channel: a refused local client is not an error the owner reads, it is a
+    buddy that stops working with no explanation. So the set is derived from
+    how the client ACTUALLY connects, not from a guess:
+
+    - ``client.py`` fetches ``/mint``, ``/tool``, ``/utterance`` and ``/anchor``
+      as RELATIVE paths, so ``Host`` is always whatever is in the address bar
+      — never a value the page chooses.
+    - ``serve()`` returns ``http://127.0.0.1:<port>/`` and ``agentwire buddy
+      serve`` prints exactly that, which makes ``127.0.0.1:<port>`` the common
+      case.
+    - ``localhost:<port>`` is what a human types instead, and ``[::1]:<port>``
+      is what a browser shows if it reaches for IPv6 first. The bind is
+      IPv4-only, so that last one normally fails at TCP rather than here — but
+      if it ever connects it is still the loopback, and refusing it would be a
+      false reject for no gain.
+    - A browser omits the port when it is the scheme default, so port 80 also
+      accepts the bare names. The bridge never defaults there, but ``--port
+      80`` is expressible and would otherwise refuse the only ``Host`` a
+      browser can send.
+
+    Matching is exact against this set (case-folded — ``Host`` is a hostname).
+    Anything else, including a name that RESOLVES to loopback, is foreign:
+    resolution is precisely what rebinding controls.
+
+    What this does not close, and is not claimed to: on a multi-user machine
+    any other local user can ``curl`` ``/`` and take the token, because
+    loopback is per-host, not per-user.
+    """
+    hosts = {f"{name}:{port}" for name in LOOPBACK_HOSTS}
+    if port == 80:
+        hosts |= set(LOOPBACK_HOSTS)
+    return frozenset(hosts)
+
+
+def host_allowed(header: str | None, port: int) -> bool:
+    """Whether a ``Host`` header value may be served on ``port``.
+
+    A missing header refuses. HTTP/1.0 permits omitting it, but nothing a
+    browser does omits it — so this costs no real client, while accepting an
+    absent ``Host`` would make the guard bypassable by anything hand-rolling a
+    request.
+    """
+    return (header or "").strip().lower() in allowed_hosts(port)
 
 
 class BuddyBridge:
@@ -187,12 +255,35 @@ def _handler_factory(bridge: BuddyBridge):
         def _json(self, code: int, payload: dict) -> None:
             self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
 
+        def _host_ok(self) -> bool:
+            """Checked FIRST on every route, GET included.
+
+            ``/`` is served with no auth at all, so it is the request that
+            hands the token over — a guard that ran only on the authenticated
+            POSTs would be checking the door after the key was taken.
+
+            The port comes from the LISTENING SOCKET rather than from an
+            argument: ``serve()`` may be given port 0, and an allowlist built
+            from the requested port would then match nothing at all.
+
+            Two ``Host`` headers are refused outright rather than resolved to
+            the first: which one a proxy or parser believes is the ambiguity,
+            and no browser sends two.
+            """
+            values = self.headers.get_all("Host") or []
+            if len(values) != 1:
+                return False
+            return host_allowed(values[0], self.server.server_address[1])
+
         def _authed(self) -> bool:
             header = self.headers.get("Authorization", "")
             supplied = header[7:] if header.startswith("Bearer ") else ""
             return secrets.compare_digest(supplied, bridge.token)
 
         def do_GET(self):  # noqa: N802  (stdlib naming)
+            if not self._host_ok():
+                self._json(403, {"success": False, "error": "forbidden host"})
+                return
             path = self.path.split("?", 1)[0]
             if path == "/":
                 page = client.page(bridge.buddy, bridge.token).encode("utf-8")
@@ -201,12 +292,31 @@ def _handler_factory(bridge: BuddyBridge):
             self._json(404, {"success": False, "error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if not self._host_ok():
+                self._json(403, {"success": False, "error": "forbidden host"})
+                return
             path = self.path.split("?", 1)[0]
             if not self._authed():
                 self._json(401, {"success": False, "error": "unauthorized"})
                 return
             try:
-                length = min(int(self.headers.get("Content-Length") or 0), _MAX_BODY)
+                # Clamped at BOTH ends. ``min`` alone let a negative through,
+                # and ``read(-1)`` is read-to-EOF: the handler parked until
+                # the client went away, with the request never having to send
+                # a body at all. ``max`` alone would drop the 64K cap.
+                # (Which way round the two nest does not matter; that both are
+                # present does.)
+                #
+                # WHAT THIS DOES NOT CLOSE: the parked-thread class itself.
+                # A request declaring ``Content-Length: 60000`` and sending 2
+                # bytes still parks this thread in ``read(60000)`` until the
+                # client disconnects — measured, 5 requests, 5 parked threads,
+                # on this fixed code. Only the negative case is closed here.
+                # Closing the rest needs a read timeout on the connection, not
+                # a bound on the declared length.
+                length = max(
+                    0, min(int(self.headers.get("Content-Length") or 0), _MAX_BODY)
+                )
                 raw = self.rfile.read(length) if length else b"{}"
                 payload = json.loads(raw.decode("utf-8") or "{}")
             except (ValueError, json.JSONDecodeError):
