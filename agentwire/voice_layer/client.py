@@ -249,9 +249,16 @@ function createAnnouncer(deps) {
       // still playing" — the deferral signal must not outlive it.
       if (current) current.sawCreate = false;
     },
+    // Returns true ONLY when this transcript is the model speaking the
+    // CURRENT scripted announcement — i.e. exactly when it disarms. The page's
+    // transcript log keys its kind off this verdict (#957): a true verdict
+    // logs as "heard" (the ASR of a text announce() already logged), anything
+    // else stays a plain buddy line. After the FALLBACK fires, `current` is
+    // cleared, so a late model utterance of the same text — the genuine
+    // double-speak (#950) — verdicts false and keeps its two-line signature.
     onResponseDone: function (transcript) {
       responseActive = false;
-      if (!current) { pump(); return; }
+      if (!current) { pump(); return false; }
       // The ONLY disarm: positive evidence that the reason was spoken.
       if (carriedTheReason(transcript, current.text)) {
         var done = current;
@@ -261,11 +268,13 @@ function createAnnouncer(deps) {
         // thing the anchor may key on.
         onSpoken(done.meta, "model");
         pump();
+        return true;
       }
       // Otherwise leave the timer armed. A response that said something else
       // is not evidence the owner heard the refusal — and it has FINISHED, so
       // it is no longer a reason to defer either.
-      else if (current) current.sawCreate = false;
+      current.sawCreate = false;
+      return false;
     },
     // Test/inspection surface.
     pending: function () { return (current ? 1 : 0) + queue.length; },
@@ -315,6 +324,11 @@ _PAGE = """<!doctype html>
   .you .who { color: var(--accent-2); }
   .buddy .who { color: var(--accent); }
   .tool { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12.5px; }
+  /* The spoken-transcript kind (#957): the model's ASR of a scripted
+     announcement already logged above it. Muted + italic so a normal
+     announcement pair cannot be misread as the buddy speaking twice. */
+  .heard { color: var(--muted); font-style: italic; }
+  .heard .who { color: var(--muted); }
   .err { color: #ff7b72; }
 </style>
 </head>
@@ -618,11 +632,18 @@ async function start() {
           responseActive = false;
           const output = (payload.response && payload.response.output) || [];
           const said = spokenText(output);
-          if (said) log("buddy", said, "buddy");
           // The anchor is driven from the announcer's own confirmation that
           // the proposal text was spoken (see onSpoken below), NOT from "the
           // next response.done carrying any text".
-          if (announcer) announcer.onResponseDone(said);
+          const saidOurScript =
+            announcer ? announcer.onResponseDone(said) === true : false;
+          // #957: the ASR of an announcement announce() already logged gets
+          // the distinct "heard" kind — one utterance, two visibly different
+          // entries (and a scripted-vs-spoken divergence stays inspectable).
+          // Anything else keeps the plain buddy kind, INCLUDING the model
+          // re-speaking a text the fallback already uttered — so a genuine
+          // double-speak (#950) still reads as the same line twice.
+          if (said) log(saidOurScript ? "heard" : "buddy", said, saidOurScript ? "heard" : "buddy");
 
           const calls = output.filter((i) => i.type === "function_call");
           // Sequential, never concurrent — two dispatches would race their own
