@@ -301,11 +301,19 @@ def _handler_factory(bridge: BuddyBridge):
                 return
             try:
                 # Clamped at BOTH ends. ``min`` alone let a negative through,
-                # and a negative length is read-to-EOF: the handler parks
-                # until the client goes away — one leaked thread per request,
-                # on a threading server, reported by nothing. ``max`` alone
-                # would drop the 64K cap. (Which way round the two nest does
-                # not matter; that both are present does.)
+                # and ``read(-1)`` is read-to-EOF: the handler parked until
+                # the client went away, with the request never having to send
+                # a body at all. ``max`` alone would drop the 64K cap.
+                # (Which way round the two nest does not matter; that both are
+                # present does.)
+                #
+                # WHAT THIS DOES NOT CLOSE: the parked-thread class itself.
+                # A request declaring ``Content-Length: 60000`` and sending 2
+                # bytes still parks this thread in ``read(60000)`` until the
+                # client disconnects — measured, 5 requests, 5 parked threads,
+                # on this fixed code. Only the negative case is closed here.
+                # Closing the rest needs a read timeout on the connection, not
+                # a bound on the declared length.
                 length = max(
                     0, min(int(self.headers.get("Content-Length") or 0), _MAX_BODY)
                 )

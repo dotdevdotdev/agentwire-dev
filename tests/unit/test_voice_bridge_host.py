@@ -290,11 +290,16 @@ class TestBodyLength:
     def test_content_length_minus_one_does_not_park_the_thread(self, bridge_server):
         """``min(int(hdr), _MAX_BODY)`` passes a negative straight through, and
         ``-1`` is the value ``read()`` DEFINES as read-to-EOF: the handler
-        blocks until the client disconnects, and on a threading server that is
-        one leaked thread per request with nothing reporting it. Measured, not
-        assumed — an unfixed bridge holds this connection open indefinitely
-        (verified at 3s, thread count +1), so the assertion is that a response
-        arrives AT ALL and ``raw()``'s timeout is the failure.
+        blocks until the client disconnects, having sent no body at all.
+        Measured, not assumed — an unfixed bridge holds this connection open
+        indefinitely (verified at 3s, thread count +1), so the assertion is
+        that a response arrives AT ALL and ``raw()``'s timeout is the failure.
+
+        The scope of this test is exactly the negative case. A parked handler
+        is still reachable by OVER-DECLARING a positive length (``60000``
+        declared, 2 bytes sent — measured at 5 parked threads on the fixed
+        code); that needs a read timeout on the connection and has no test
+        here.
 
         Note this is ``-1`` and not the issue's ``-5``: see the test below."""
         _, port = bridge_server
