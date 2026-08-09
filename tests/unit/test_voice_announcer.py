@@ -404,6 +404,72 @@ class TestTheFallbackIsArmedNotTriggered:
         assert report["spoken"] == ["first reason", "second reason"]
 
 
+class TestOneAnnouncementLogsOnce:
+    """#957. Every scripted announcement logged twice — announce() logged the
+    scripted text, then response.done logged the model's ASR of having said it
+    — rendering identically to the #950 double-speak defect on every utterance.
+
+    Fix is kind-splitting, not suppression: the response.done transcript is
+    classified by the announcer's OWN disarm verdict (onResponseDone returns
+    true only when this transcript is the model speaking the current scripted
+    announcement) and logged under a distinct "heard" kind. Everything else —
+    including the model re-speaking an announcement the FALLBACK already
+    uttered, the genuine double-speak — stays a plain buddy line, so the #950
+    signature remains visible.
+    """
+
+    def test_a_matching_done_classifies_as_our_script(self):
+        """The ASR transcript loses punctuation (the em-dash evidence in the
+        issue) — classification is the same overlap test as the disarm."""
+        report = run_announcer("""
+            announcer.announce("Queued it — it'll land when the box is free.");
+            logs.push("ours: " + announcer.onResponseDone("Queued it  it'll land when the box is free"));
+        """)
+        assert "ours: true" in report["logs"]
+
+    def test_an_unrelated_done_does_not(self):
+        report = run_announcer("""
+            announcer.announce("Say confirm tango to approve.");
+            logs.push("ours: " + announcer.onResponseDone("Sure, what next?"));
+        """)
+        assert "ours: false" in report["logs"]
+
+    def test_a_done_with_nothing_current_does_not(self):
+        report = run_announcer("""
+            logs.push("ours: " + announcer.onResponseDone("I'm ready to send it."));
+        """)
+        assert "ours: false" in report["logs"]
+
+    def test_a_genuine_double_speak_still_reads_as_two(self):
+        """THE requirement (#957 acceptance): model audio AND browser fallback
+        both uttering the announcement must remain distinguishable from normal
+        operation. The fallback fired first (clearing `current`), then the
+        model's transcript of the same text arrived — that transcript must NOT
+        classify as the scripted announcement, so the page logs it as a second
+        plain buddy line and the #950 signature stays visible. Collapsing it
+        would trade a false positive for a false negative on a closed
+        severity-1 defect."""
+        report = run_announcer("""
+            announcer.announce("Say confirm tango to approve.");
+            fireTimers();   // fallback speaks — the first voice
+            logs.push("ours: " + announcer.onResponseDone("Say confirm tango to approve."));
+        """)
+        assert report["spoken"] == ["Say confirm tango to approve."]
+        assert "ours: false" in report["logs"]
+
+    def test_the_page_logs_the_transcript_under_the_verdict_driven_kind(self):
+        """The wiring: the response.done log site keys the kind off the
+        announcer's verdict, and the scripted announce() log keeps the plain
+        buddy kind — two visibly different kinds for one utterance."""
+        page = client.page("buddy", "tok")
+        assert "announcer.onResponseDone(said) === true" in page
+        assert 'log(saidOurScript ? "heard" : "buddy", said, saidOurScript ? "heard" : "buddy");' in page
+        # The scripted-text log site is unchanged — kind "buddy".
+        assert 'log("buddy", text, "buddy");' in page
+        # And the heard kind is actually styled distinctly, not just named.
+        assert ".heard" in page
+
+
 class TestThePageEmbedsTheRealThing:
     def test_the_page_contains_the_announcer_verbatim(self):
         """The tests above run ``announcer_source()``; the page must embed the
