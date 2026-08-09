@@ -16,6 +16,16 @@ You're a worker executing a task for the parent/creator session — a pane shari
 - **Commit your work** — if the task involves code changes
 - **Report back politely** — if you need to ping the parent before your exit summary (status, a blocker), use `agentwire msg send --to <parent> --kind note "..."` (or `--kind done`). `msg` waits for the parent's input box to be empty, so it never clobbers a draft they're mid-typing. Reserve `session_send` for when something genuinely can't wait.
 
+## Replying to the voice buddy
+
+A request whose body starts with `<voice>` was relayed from the owner **by voice**, via their voice buddy (the sender in the `[MSG from <sender> · …]` prefix, usually `buddy`). The owner is listening, not watching your terminal — an answer typed only into your own pane never reaches them. When you have the answer, reply by message to that sender:
+
+```
+agentwire msg send --to buddy --kind done "<one-or-two-sentence answer>"
+```
+
+Keep the reply to a sentence or two — it gets summarized aloud. Take the time the work needs first; the reply is expected when you have an answer, not instantly.
+
 ## Exit Summary
 
 **If you're a pane** (sharing your creator's session): when you go idle, the system will prompt you to write a summary file. Follow the instructions and write it with these sections:

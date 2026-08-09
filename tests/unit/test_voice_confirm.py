@@ -1144,6 +1144,44 @@ class TestAttribution:
         assert request in body
         assert spoken not in body
 
+    def test_the_body_tells_the_recipient_how_to_reply(self):
+        """#962: in the live test the recipient answered in its own terminal
+        and the reply never reached the buddy. The body itself must make the
+        reply path obvious — a request whose reply channel is implicit gets an
+        on-screen answer the owner never hears."""
+        body = confirm.render_body(
+            "restart the portal", "confirm tango", "a1b2c3", reply_to="buddy"
+        )
+        assert confirm.reply_nudge("buddy") in body
+        assert 'msg send --to buddy' in body
+        # The id stays last: the nudge slots in before it, never after.
+        assert body.endswith("#a1b2c3")
+
+    def test_the_nudge_is_dropped_whole_when_the_budget_cannot_fit_it(self):
+        """Both halves: a nudge that fits ships verbatim; one that does not is
+        dropped ENTIRELY, never truncated into half a command — and it is never
+        the proposal id that pays for it."""
+        body = confirm.render_body(
+            "x" * confirm.MAX_RENDERED_INSTRUCTION_CHARS,
+            "y" * confirm.MAX_UTTERANCE_CHARS,
+            "a1b2c3",
+            reply_to="buddy",
+        )
+        assert len(body) <= confirm.MAX_BODY_CHARS
+        assert "reply:" not in body, "an over-budget nudge must vanish, not clip"
+        assert body.endswith("#a1b2c3")
+
+    def test_the_frozen_argv_carries_the_nudge_named_after_the_sender(
+        self, convo, runner
+    ):
+        """End to end through Proposal.build_argv: the reply target is read
+        from the frozen --from, so the nudge names whoever actually sent it."""
+        proposal = convo.announced_proposal(instruction="check the server")
+        convo.approve(proposal)
+        convo.spine.confirm(proposal.token)
+        body = runner.calls[0][-1]
+        assert confirm.reply_nudge("buddy") in body
+
     def test_this_diff_does_not_touch_the_shared_kind_enum(self):
         """§4a is deferred to Slice 1b — deliberately, see write_tools' docstring.
 

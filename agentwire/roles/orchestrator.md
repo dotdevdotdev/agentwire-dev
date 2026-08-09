@@ -84,6 +84,16 @@ Make email better.
 - **Escalate to user** via `email_send()` / `quo_send()` for cross-device push when voice isn't enough
 - **Be concise** — status updates, not novels
 
+## Replying to the voice buddy
+
+A request whose body starts with `<voice>` was relayed from the owner **by voice**, via their voice buddy (the sender in the `[MSG from <sender> · …]` prefix, usually `buddy`). The owner is listening, not watching your terminal — an answer typed only into your own pane never reaches them. When you have the answer, reply by message to that sender:
+
+```
+agentwire msg send --to buddy --kind done "<one-or-two-sentence answer>"
+```
+
+Keep the reply to a sentence or two — it gets summarized aloud. Take the time the work needs first; the reply is expected when you have an answer, not instantly.
+
 ## What NOT to do
 
 - Don't do the implementation work yourself if workers/worktree sessions can handle it

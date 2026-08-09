@@ -380,11 +380,40 @@ class TestInstructions:
         assert "must_speak" in text
         assert "owner_should_wait" in text
 
-    def test_does_not_speak_unprompted(self):
-        """No proactive interruption in this slice — the persona must say so."""
+    def test_volunteers_replies_only_and_still_never_interrupts(self):
+        """#962: the one thing raised unprompted is a reply to something the
+        buddy sent. The old absolute ("you speak when spoken to") is now false
+        — the announcer's clock speaks replies — but general unprompted status
+        and interruption stay banned."""
+        text = instructions.build_instructions()
+        flowed = " ".join(text.split())
+        assert "VOLUNTEERING." in text
+        assert "You speak when spoken to." not in flowed, (
+            "stale absolute: contradicts the reply announcer"
+        )
+        assert "do not volunteer status the owner did not ask for" in flowed
+        assert "never interrupt" in flowed
+
+    def test_a_volunteered_report_is_shape_not_recital(self):
+        """The owner's example is 'looks like there are four main options', not
+        four paragraphs of options. A monologue the owner did not ask for and
+        cannot skim is worse than silence."""
         flowed = " ".join(instructions.build_instructions().split())
-        assert "do not interrupt" in flowed
-        assert "You speak when spoken to." in flowed
+        assert "shape of the answer" in flowed
+        assert "hand the conversation back" in flowed
+
+    def test_a_volunteered_claim_is_grounded_in_output_actually_read(self):
+        """Same confabulation failure the BOUNDARY section closes, and a
+        proactive channel is the more dangerous place for it: the owner did
+        not ask, so they have no prior to check the claim against. The buddy
+        HAS real reading tools (buddy_inbox, fleet_session_output) — which
+        makes a plausible unread summary more tempting, not less, so the
+        persona must name both the instruments and the ban."""
+        flowed = " ".join(instructions.build_instructions().split())
+        assert "never what you expect the answer to be" in flowed
+        assert "buddy_inbox" in flowed
+        assert "fleet_session_output" in flowed
+        assert "say only that a reply arrived" in flowed
 
 
 # =============================================================================
