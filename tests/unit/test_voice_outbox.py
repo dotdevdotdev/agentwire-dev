@@ -23,14 +23,12 @@ string keeps this tool correct through that change unseen.
 """
 
 import itertools
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from agentwire import core, inbox
-from agentwire.voice_layer import confirm, delivery, instructions, tools, transcript
-from agentwire.voice_layer import outbox
+from agentwire.voice_layer import confirm, instructions, outbox, tools, transcript
 
 
 @pytest.fixture
