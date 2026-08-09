@@ -612,6 +612,49 @@ function createConfirmGate(deps) {
 }
 """
 
+#: Routes a write tool's outcome to the gate and the ledger. Extracted so the
+#: routing runs under node against REAL verdict payloads — the gate leg used
+#: to key on hard-coded tool names, which is exactly the condition #966's
+#: generalisation invalidates the moment a second write is declared; exported
+#: by :func:`outcome_router_source`.
+OUTCOME_ROUTER_JS = """
+// The client's read of a write tool's outcome. Two DIFFERENT signals, priced
+// separately:
+//
+// 1. "The confirm handshake is over" reopens the volunteering gate. That is
+//    the payload's own confirm_terminal — set by the spine for EVERY gated
+//    write, so a newly declared write (#966) reopens the gate without this
+//    file learning its name. Keying on tool names here is the false-reject
+//    trap: the second write's terminal outcome would not match, the gate
+//    would sit closed for its full TTL, and the buddy would go silently mute.
+//
+// 2. "The owner acted on that session" retires its re-raise reminders. NOT
+//    the same predicate: a cancel is terminal but is not acting — retiring on
+//    it loses the second mention the ledger exists to produce. Until the
+//    verdict payload carries the acted-on session itself, this leg stays
+//    scoped to the one session-targeted write, correlated through the most
+//    recent session-message proposal (the send outcome deliberately carries
+//    no parameters — the argv is frozen at propose time).
+function createOutcomeRouter(deps) {
+  var gate = deps.gate;
+  var ledger = deps.ledger;
+  var lastProposedSession = null;
+  return {
+    route: function (name, result) {
+      if (!result) return;
+      if (name === "propose_session_message" && result.success && result.session) {
+        lastProposedSession = result.session;
+      }
+      if (!result.confirm_terminal) return;
+      gate.resolved();
+      if (name === "send_session_message" && result.success && lastProposedSession) {
+        ledger.actedOn(lastProposedSession);
+      }
+    },
+  };
+}
+"""
+
 _PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -677,6 +720,7 @@ __ANNOUNCER__
 __NOTIFIER__
 __CONFIRM_GATE__
 __RERAISE__
+__OUTCOME_ROUTER__
 
 const TOKEN = __TOKEN__;
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -737,15 +781,6 @@ const reRaiseLedger = createReRaiseLedger({
   dueMs: RERAISE_DUE_MS,
   onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
 });
-// The target of the most recent proposal — the only place the client can
-// learn which session a confirmed send actually went to, because the send
-// outcome deliberately carries no parameters (the argv is frozen at propose
-// time). A confirm always executes the proposal whose token it holds, which
-// in practice is the last one proposed; the mismatch window (confirming an
-// older proposal after a newer propose) costs at most one wrongly-suppressed
-// or one extra mention, never a lost message.
-let lastProposedSession = null;
-
 // The confirm handshake's gate leg (#962, wave-2 D2): closed while a spoken
 // proposal awaits the owner's confirm word, reopened by a terminal write-tool
 // outcome or by the proposal's own TTL — never left waiting on an answer the
@@ -756,6 +791,15 @@ const confirmGate = createConfirmGate({
   now: () => Date.now(),
   // Mirrors confirm.PROPOSAL_TTL_S — the bound on the false-reject half.
   ttlMs: 120000,
+});
+
+// Page-lifetime like the gate and the ledger it drives: it holds the most
+// recent proposal's target session (the mismatch window — confirming an older
+// proposal after a newer propose — costs at most one wrongly-suppressed or
+// one extra mention, never a lost message).
+const outcomeRouter = createOutcomeRouter({
+  gate: confirmGate,
+  ledger: reRaiseLedger,
 });
 
 // --- the greeting (#963) ----------------------------------------------------
@@ -967,25 +1011,15 @@ async function handleFunctionCall(item) {
   // A proposal rides along as `meta.anchor`: it is anchored when the announcer
   // confirms the text was actually SPOKEN, by the model or by the fallback
   // voice — never merely because some response.done happened to carry text.
-  // A terminal outcome from the write tools ends the confirm handshake and
-  // reopens the volunteering gate. A wait outcome (owner_should_wait —
-  // pending_transcript / not_announced) keeps the proposal live, so it keeps
-  // the gate closed; the TTL covers an owner who never answers at all.
-  if (item.name === "propose_session_message" && result && result.success && result.session) {
-    lastProposedSession = result.session;
-  }
-  if (
-    (item.name === "send_session_message" || item.name === "cancel_session_message")
-    && result && !result.owner_should_wait
-  ) {
-    confirmGate.resolved();
-    // A QUEUED send is the observable "acted on it" (#967): something the
-    // owner was asked for actually went that session's way, so its pending
-    // reminders retire. A cancel is not acting — the reminder stands.
-    if (item.name === "send_session_message" && result.success && lastProposedSession) {
-      reRaiseLedger.actedOn(lastProposedSession);
-    }
-  }
+  // A terminal outcome from the write tools (confirm_terminal — set by the
+  // spine for every gated write, so a second declared write reopens the gate
+  // too) ends the confirm handshake and reopens the volunteering gate. A wait
+  // outcome (pending_transcript / not_announced) keeps the proposal live, so
+  // it keeps the gate closed; the TTL covers an owner who never answers at
+  // all. A QUEUED send is also the observable "acted on it" (#967) that
+  // retires the target session's reminders — a cancel is not acting, so the
+  // reminder stands. The router holds both rules.
+  outcomeRouter.route(item.name, result);
   const mustSpeak = !!(result && result.must_speak && result.say);
   sendFunctionCallOutput(item.call_id, result, mustSpeak);
   if (mustSpeak) {
@@ -1305,6 +1339,15 @@ def reraise_source() -> str:
     return RERAISE_JS
 
 
+def outcome_router_source() -> str:
+    """The write-outcome router on its own, for the node-driven tests.
+
+    Same rule as :func:`announcer_source`: the code under test is
+    byte-identical to the code in the page.
+    """
+    return OUTCOME_ROUTER_JS
+
+
 def confirm_gate_source() -> str:
     """The confirm-outstanding gate on its own, for the node-driven tests.
 
@@ -1321,6 +1364,7 @@ def page(buddy: str, token: str) -> str:
         .replace("__NOTIFIER__", INBOX_NOTIFIER_JS)
         .replace("__CONFIRM_GATE__", CONFIRM_GATE_JS)
         .replace("__RERAISE__", RERAISE_JS)
+        .replace("__OUTCOME_ROUTER__", OUTCOME_ROUTER_JS)
         .replace("__BUDDY__", html.escape(buddy))
         .replace("__TOKEN__", json.dumps(token))
     )
