@@ -924,32 +924,31 @@ class TestArgvFreezing:
         assert result["success"] is True
         assert "victim-session" not in " ".join(runner.calls[0])
 
-    def test_exactly_one_field_completes_at_confirm_and_it_is_the_utterance(
+    def test_nothing_completes_at_confirm_the_whole_argv_is_frozen(
         self, convo, runner
     ):
         """The precise shape of guarantee (a), enforced rather than described.
 
-        Frozen at PROPOSE: the command, ``--to``, ``--from``, ``--kind``, the
-        instruction, the proposal id and the nonce. Completed at CONFIRM:
-        exactly one thing — the verbatim utterance inside the body — and it is
-        read from the transcript ring, whose only writer is
-        ``BuddyBridge.utterance`` (``POST /utterance``). No tool writes it.
+        Everything is frozen at PROPOSE: the command, ``--to``, ``--from``,
+        ``--kind``, the instruction, the proposal id, the nonce, and — since
+        #953 — the body's ``said:`` slot too, which carries the request
+        utterance captured at propose. Confirm adds NOTHING to the argv:
+        ``build_argv`` takes no parameters, so the approving utterance has no
+        path back into the delivered body.
 
         If this test ever has to be relaxed, §3.7's honest limit must be
         NARROWED to match, not qualified.
         """
+        convo.says("please tell the orchestrator to restart the portal")
         proposal = convo.announced_proposal(
             session="orchestrator", instruction="restart the portal"
         )
-        # What the argv would be for two DIFFERENT authorizing utterances.
-        first = proposal.build_argv("confirm tango")
-        second = proposal.build_argv("something else entirely")
-
-        # Everything but the body element is byte-identical.
-        assert first[:-1] == second[:-1] == list(proposal.argv_prefix)
-        # And the body differs only in the quoted `said:` clause.
-        assert first[-1].split("┃ said:")[0] == second[-1].split("┃ said:")[0]
-        assert first[-1].rsplit("┃", 1)[1] == second[-1].rsplit("┃", 1)[1]
+        frozen = proposal.build_argv()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        # What ran is byte-identical to what was buildable before approval.
+        assert runner.calls[0] == frozen
+        assert frozen[:-1] == list(proposal.argv_prefix)
 
     def test_no_tool_can_write_into_the_transcript_ring(self, convo, runner, monkeypatch):
         """The other half of the claim: the conversational model's only
@@ -966,13 +965,13 @@ class TestArgvFreezing:
             tools.dispatch(name, args, "buddy", convo.spine)
         assert [(u.item_id, u.text) for u in convo.ring.snapshot()] == before
 
-    def test_the_only_confirm_time_addition_is_machine_derived(self, convo, runner):
+    def test_the_body_carries_the_id_and_never_the_nonce(self, convo, runner):
         proposal = convo.announced_proposal(instruction="restart the portal")
         convo.approve(proposal)
         convo.spine.confirm(proposal.token)
         body = runner.calls[0][-1]
         assert body.startswith(f"{confirm.VOICE_MARKER} restart the portal")
-        assert proposal.nonce in body
+        assert proposal.nonce not in body  # #953: the nonce stays in the gate
         assert proposal.id in body
 
 
@@ -1131,12 +1130,19 @@ class TestAttribution:
     def test_the_verbatim_utterance_is_the_transcription_models_words(
         self, convo, runner
     ):
-        """Not the buddy's paraphrase — the recipient can see a mis-paraphrase."""
+        """Not the buddy's paraphrase — the recipient can see a mis-paraphrase.
+
+        Since #953 the verbatim utterance in the body is the REQUEST, not the
+        approval: the approval is a nonce and never leaves the gate."""
+        request = "okay, get the portal restarted for me"
+        convo.says(request)
         proposal = convo.announced_proposal(instruction="restart the portal")
         spoken = f"okay, confirm {confirm.spoken_nonce(proposal.nonce)}"
         convo.says(spoken)
         convo.spine.confirm(proposal.token)
-        assert spoken in runner.calls[0][-1]
+        body = runner.calls[0][-1]
+        assert request in body
+        assert spoken not in body
 
     def test_this_diff_does_not_touch_the_shared_kind_enum(self):
         """§4a is deferred to Slice 1b — deliberately, see write_tools' docstring.
@@ -1931,3 +1937,66 @@ class TestHonestLimit:
                         f"{path.name} asserts '{claim}' without qualification"
                     )
                     start = index + len(claim)
+
+
+class TestTheNonceNeverLeavesTheGate:
+    """Issue #953: the approving utterance is ``confirm <nonce>`` by
+    construction, so putting it in the delivered body ships the nonce to the
+    recipient's scrollback on EVERY approved write — and carries none of the
+    verification §4b built the slot for. The slot now carries the owner's
+    REQUEST utterance, captured at propose time, which a recipient genuinely
+    can check the paraphrase against.
+    """
+
+    def test_the_delivered_body_never_contains_the_nonce(self, convo, runner):
+        convo.says("tell the orchestrator to restart the portal")
+        proposal = convo.announced_proposal(instruction="restart the portal")
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        body = runner.calls[0][-1]
+        assert proposal.nonce not in body
+        assert "confirm" not in body
+
+    def test_the_slot_carries_the_request_utterance_verbatim(self, convo, runner):
+        """§4b's actual intent: content a recipient can check the paraphrase
+        against — the transcription model's words, not the buddy's."""
+        spoken = "hey, tell the orchestrator to restart the portal"
+        convo.says(spoken)
+        proposal = convo.announced_proposal(instruction="restart the portal")
+        convo.approve(proposal)
+        convo.spine.confirm(proposal.token)
+        assert f'said: "{spoken}"' in runner.calls[0][-1]
+
+    def test_with_no_request_utterance_the_slot_is_gone_not_empty(self):
+        """A slot whose expected content is empty must not survive (#953
+        acceptance). Marker, instruction and id still deliver."""
+        body = confirm.render_body("restart the portal", "", "a1b2c3")
+        assert "said:" not in body
+        assert body.startswith(f"{confirm.VOICE_MARKER} restart the portal")
+        assert body.endswith("#a1b2c3")
+
+    def test_a_stale_confirm_phrase_is_never_selected_as_the_request(
+        self, convo, runner
+    ):
+        """The one path a nonce could re-enter: a prior proposal's approval or
+        wrong-nonce utterance sitting newest in the ring at propose time. That
+        is not a request, so selection skips it — falling back to the real
+        request sentence, false-reject half covered by the fallback below."""
+        convo.says("tell the orchestrator to restart the portal")
+        convo.says("confirm walrus")
+        proposal = convo.announced_proposal(instruction="restart the portal")
+        convo.approve(proposal)
+        convo.spine.confirm(proposal.token)
+        body = runner.calls[0][-1]
+        assert "walrus" not in body
+        assert 'said: "tell the orchestrator to restart the portal"' in body
+
+    def test_an_empty_ring_at_propose_still_delivers(self, convo, runner):
+        """The false-reject half: a missing request utterance must not block
+        or garble the write — the slot is simply absent."""
+        proposal = convo.announced_proposal(instruction="restart the portal")
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        body = runner.calls[0][-1]
+        assert "said:" not in body
+        assert proposal.nonce not in body
