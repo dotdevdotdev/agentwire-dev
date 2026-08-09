@@ -12,14 +12,15 @@ parameters — the model chooses *which* tool, never *what runs*. A garbled
 session name fails the pattern check and returns an error the buddy can read
 back, which is the correct outcome: ask again.
 
-**Reads are direct; the one write is a handoff.** Anything routed through a
+**Reads are direct; writes go through the spine.** Anything routed through a
 Claude session inherits damage-control hooks, worktree isolation, posture and
 prompt routing. Anything the voice layer does directly inherits none of that,
-so reads happen here and the single write
-(:mod:`~agentwire.voice_layer.write_tools`) is a message to a session that
-already has those guards — never an action the buddy takes itself. Its write is
-additionally gated below the model by
-:mod:`~agentwire.voice_layer.confirm`. There is still deliberately no escape
+so reads happen here and writes (:mod:`~agentwire.voice_layer.write_tools`)
+are declared specs gated below the model by
+:mod:`~agentwire.voice_layer.confirm` — the canonical one being a message to
+a session that already has those guards. Which capabilities may ever appear
+here at all is ruled by the tier audit in
+:mod:`~agentwire.voice_layer.surface`. There is still deliberately no escape
 hatch: adding a capability means adding a tool, in a diff someone reviews.
 
 Everything dispatches through the ``agentwire`` CLI, which is the documented
@@ -37,6 +38,7 @@ from typing import Callable
 
 from ..mcp_core import run_agentwire_cmd
 from . import delivery, outbox
+from .confirm import strip_controls
 
 # Session names as the inbox defines them, plus the optional `@machine` suffix
 # a remote session carries. Anchored: a partial match is how a fuzzy
@@ -59,6 +61,8 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 _MAX_OUTPUT_LINES = 200
 _MAX_PR_LIMIT = 50
+_MAX_QUERY_CHARS = 200
+_MAX_HISTORY_LIMIT = 50
 
 
 class ToolError(Exception):
@@ -93,6 +97,20 @@ def _int_arg(args: dict, key: str, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, n))
+
+
+#: The one shared schema for tools whose only argument is a session name.
+_SESSION_PARAM = {
+    "type": "object",
+    "properties": {
+        "session": {
+            "type": "string",
+            "description": "Exact session name, as reported by fleet_sessions.",
+        },
+    },
+    "required": ["session"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -185,6 +203,94 @@ def _fleet_pull_requests(args: dict) -> dict:
         return {"success": True, "pull_requests": json.loads(result.stdout or "[]")}
     except json.JSONDecodeError:
         return {"success": False, "error": "gh returned unparseable JSON"}
+
+
+def _query_arg(args: dict, key: str = "query") -> str:
+    """A free-text search string, made safe as a positional CLI argument.
+
+    Model-supplied free text is the one class of value that cannot be
+    pattern-anchored, so it gets the freeze discipline instead: controls
+    stripped, length-bounded, and leading dashes removed so it can never reach
+    the CLI as a flag (the twice-shipped bug — see ``_SESSION_RE``'s comment).
+    """
+    value = args.get(key)
+    text = strip_controls(value).strip() if isinstance(value, str) else ""
+    text = text.lstrip("-").strip()
+    if not text:
+        raise ToolError("I need a few words to search for. Say what to look up.")
+    return text[:_MAX_QUERY_CHARS]
+
+
+def _fleet_session_info(args: dict) -> dict:
+    return run_agentwire_cmd(["info", "-s", _session_arg(args)])
+
+
+def _fleet_scheduler_status(args: dict) -> dict:
+    return run_agentwire_cmd(["scheduler", "status"])
+
+
+def _fleet_scheduler_history(args: dict) -> dict:
+    return run_agentwire_cmd(["scheduler", "history", "--json"])
+
+
+def _fleet_scheduler_live(args: dict) -> dict:
+    return run_agentwire_cmd(["scheduler", "live", "--json"])
+
+
+def _fleet_tasks(args: dict) -> dict:
+    argv = ["task", "list"]
+    if args.get("session") is not None:
+        argv.append(_session_arg(args))
+    return run_agentwire_cmd(argv)
+
+
+def _fleet_machines(args: dict) -> dict:
+    return run_agentwire_cmd(["machine", "list"])
+
+
+def _fleet_services(args: dict) -> dict:
+    return run_agentwire_cmd(["services", "status"])
+
+
+def _fleet_history(args: dict) -> dict:
+    limit = _int_arg(args, "limit", 20, 1, _MAX_HISTORY_LIMIT)
+    return run_agentwire_cmd(["history", "list", "-n", str(limit)])
+
+
+def _fleet_locks(args: dict) -> dict:
+    return run_agentwire_cmd(["lock", "list"])
+
+
+def _fleet_portal(args: dict) -> dict:
+    return run_agentwire_cmd(["portal", "status"])
+
+
+def _fleet_councils(args: dict) -> dict:
+    return run_agentwire_cmd(["council", "list"])
+
+
+def _fleet_wiki_search(args: dict) -> dict:
+    return run_agentwire_cmd(["wiki", "query", _query_arg(args)])
+
+
+def _fleet_session_inbox(args: dict) -> dict:
+    return run_agentwire_cmd(["msg", "inbox", "-s", _session_arg(args)])
+
+
+def _fleet_roles(args: dict) -> dict:
+    return run_agentwire_cmd(["roles", "list"])
+
+
+def _fleet_network(args: dict) -> dict:
+    return run_agentwire_cmd(["network", "status"], json_output=False, timeout=60)
+
+
+def _fleet_voice_health(args: dict) -> dict:
+    return {
+        "success": True,
+        "tts": run_agentwire_cmd(["tts", "status"]),
+        "stt": run_agentwire_cmd(["stt", "status"]),
+    }
 
 
 def _buddy_inbox(args: dict) -> dict:
@@ -391,6 +497,132 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
             "additionalProperties": False,
         },
     ),
+    ReadOnlyTool(
+        name="fleet_session_info",
+        description=(
+            "Details of ONE session: working directory, panes, posture, roles. "
+            "Use the exact name from fleet_sessions."
+        ),
+        run=_fleet_session_info,
+        parameters=_SESSION_PARAM,
+    ),
+    ReadOnlyTool(
+        name="fleet_scheduler_status",
+        description="Scheduler health: enabled/disabled, what is currently dispatching.",
+        run=_fleet_scheduler_status,
+    ),
+    ReadOnlyTool(
+        name="fleet_scheduler_history",
+        description="Recent scheduled-task runs and how they ended.",
+        run=_fleet_scheduler_history,
+    ),
+    ReadOnlyTool(
+        name="fleet_scheduler_live",
+        description="Scheduled tasks currently running, with their sessions.",
+        run=_fleet_scheduler_live,
+    ),
+    ReadOnlyTool(
+        name="fleet_tasks",
+        description=(
+            "Named tasks configured for a session's project. Without a session, "
+            "lists tasks for the current project context."
+        ),
+        run=_fleet_tasks,
+        parameters={
+            "type": "object",
+            "properties": {
+                "session": {
+                    "type": "string",
+                    "description": "Exact session name, as reported by fleet_sessions.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ReadOnlyTool(
+        name="fleet_machines",
+        description="Registered remote machines and how to reach them.",
+        run=_fleet_machines,
+    ),
+    ReadOnlyTool(
+        name="fleet_services",
+        description="Configured services and whether each is up.",
+        run=_fleet_services,
+    ),
+    ReadOnlyTool(
+        name="fleet_history",
+        description="Recent past conversations across sessions, newest first.",
+        run=_fleet_history,
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": f"How many to return (1-{_MAX_HISTORY_LIMIT}, default 20).",
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ReadOnlyTool(
+        name="fleet_locks",
+        description="Active session locks — who is holding what.",
+        run=_fleet_locks,
+    ),
+    ReadOnlyTool(
+        name="fleet_portal",
+        description="Portal server status: running, ports, connected clients.",
+        run=_fleet_portal,
+    ),
+    ReadOnlyTool(
+        name="fleet_councils",
+        description="Council sittings that exist and whether each is live.",
+        run=_fleet_councils,
+    ),
+    ReadOnlyTool(
+        name="fleet_wiki_search",
+        description=(
+            "Search the knowledge wiki for past investigations and gotchas. "
+            "Returns ranked page paths with snippets."
+        ),
+        run=_fleet_wiki_search,
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A few words to search for.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
+    ReadOnlyTool(
+        name="fleet_session_inbox",
+        description=(
+            "Peek ANOTHER session's pending messages without consuming them — "
+            "what is queued for it that it has not seen yet. Your own mail is "
+            "buddy_inbox, not this."
+        ),
+        run=_fleet_session_inbox,
+        parameters=_SESSION_PARAM,
+    ),
+    ReadOnlyTool(
+        name="fleet_roles",
+        description="Available session roles and what each one is for.",
+        run=_fleet_roles,
+    ),
+    ReadOnlyTool(
+        name="fleet_network",
+        description="Network reachability of the portal and registered machines.",
+        run=_fleet_network,
+    ),
+    ReadOnlyTool(
+        name="fleet_voice_health",
+        description="Health of the voice pipeline itself: TTS and STT backends.",
+        run=_fleet_voice_health,
+    ),
 )
 
 TOOLS_BY_NAME = {t.name: t for t in READ_ONLY_TOOLS}
@@ -439,7 +671,7 @@ def write_tools() -> "tuple[WriteTool, ...]":
 
 
 def all_tools() -> "tuple[object, ...]":
-    """Every tool the model may call: the read allowlist plus the one write."""
+    """Every tool the model may call: the read allowlist plus the gated writes."""
     return (*READ_ONLY_TOOLS, *write_tools())
 
 

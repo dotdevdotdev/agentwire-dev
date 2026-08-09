@@ -69,7 +69,7 @@ class BuddyBridge:
         # the conversation that proposed them.
         self.ring = transcript.TranscriptRing()
         self.spine = confirm.ConfirmSpine(
-            self.ring, runner=runner or write_tools.dispatch_msg_send
+            self.ring, runner=runner or write_tools.dispatch_write
         )
 
     def utterance(self, payload: dict) -> dict:
