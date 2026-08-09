@@ -1227,8 +1227,13 @@ class TestOutcomesAreDistinctAndSpoken:
         assert observed == confirm.REASONS, confirm.REASONS - observed
 
     def _hard_to_reach_outcomes(self, convo, clock) -> set:
-        """The three outcomes the ordinary scenario table does not produce."""
+        """The outcomes the ordinary scenario table does not produce."""
         seen = set()
+
+        # quoted_frame: the announcement frame echoed back with the RIGHT word.
+        quoted = convo.announced_proposal()
+        convo.says(f"to approve say confirm {quoted.nonce}")
+        seen.add(convo.spine.confirm(quoted.token).reason)
 
         # too_many_attempts: the attempt that hits the cap must SAY it retired.
         capped = convo.announced_proposal()
@@ -1710,6 +1715,88 @@ def _flat(text: str) -> str:
     """
     lines = [line.lstrip().removeprefix("> ").removeprefix(">") for line in text.splitlines()]
     return " ".join(" ".join(lines).split())
+
+
+class TestTheQuotedFrameGuard:
+    """The defence-in-depth guard in classify(), pinned on BOTH halves.
+
+    This guard is the sole cover for a residual the PR documents —
+    model-channel echo under failed AEC — and until this class existed,
+    deleting it changed no test in the repository. A claimed protection
+    nothing exercises is worse than an unclaimed one: a refactor removes it
+    silently while the comment above it keeps asserting the coverage.
+
+    Both halves, because a guard has two costs. Pinning only the refusal
+    invites someone to WIDEN it later — and the guard is deliberately narrow
+    (say-preceded AND approve-framed, both required), because in this channel
+    a wrongly refused approval is not a safe failure: the owner says the
+    right word, nothing happens, and there is no screen to explain why.
+    """
+
+    def test_the_announcement_frame_echoed_back_is_refused(self):
+        assert confirm.classify(
+            "to approve say confirm tango", "tango"
+        ) == confirm.QUOTED_FRAME
+        assert confirm.classify(
+            "I'm ready to send it. To approve, say confirm tango.", "tango"
+        ) == confirm.QUOTED_FRAME
+
+    def test_the_ordinary_approval_still_approves(self):
+        assert confirm.classify("confirm tango", "tango") == confirm.APPROVED
+
+    def test_say_preceded_without_the_approve_frame_still_approves(self):
+        """Half the guard's condition is not the guard. An owner parroting
+        the advice line says exactly this, and refusing it would loop them
+        against advice that coaches those very words."""
+        assert confirm.classify("say confirm tango", "tango") == confirm.APPROVED
+
+    def test_approve_framed_without_say_preceding_still_approves(self):
+        """The other half alone is not the guard either — "approve" in an
+        utterance is ordinary speech, not the announcement frame."""
+        assert confirm.classify(
+            "I approve, confirm tango", "tango"
+        ) == confirm.APPROVED
+
+    def test_a_denial_outranks_the_quoted_frame(self):
+        assert confirm.classify(
+            "no — to approve say confirm tango", "tango"
+        ) == confirm.DENIED
+
+    def test_a_quoted_frame_for_another_nonce_is_not_this_outcome(self):
+        """The frame quoting a DIFFERENT word is a different problem — the
+        owner needs this proposal's code, so wrong_nonce's advice is right."""
+        assert confirm.classify(
+            "to approve say confirm harbor", "tango"
+        ) == confirm.WRONG_NONCE
+
+    def test_the_spine_speaks_the_accurate_reason_not_wrong_nonce(self, convo, runner):
+        """The nit that mattered: this used to classify wrong_nonce, and the
+        spoken line — the owner's ENTIRE diagnostic in a screenless channel —
+        told them their code word was wrong when it was right, sending them
+        to fix the one thing that was not broken. The string itself is
+        pinned: it must affirm the word was right and coach the bare
+        phrasing."""
+        proposal = convo.announced_proposal()
+        convo.says(f"to approve say confirm {proposal.nonce}")
+        verdict = convo.spine.confirm(proposal.token)
+        assert runner.calls == []
+        assert verdict.approved is False
+        assert verdict.reason == "quoted_frame"
+        assert verdict.spoken == (
+            "That sounded like my own announcement coming back, so I haven't "
+            "sent anything. The word was right — just say confirm and the "
+            "word, on its own."
+        )
+
+    def test_a_bare_approval_after_the_echo_still_approves(self, convo, runner):
+        """The recovery the spoken advice coaches must actually work: echo
+        lands, owner says the bare phrase, the write goes."""
+        proposal = convo.announced_proposal()
+        convo.says(f"to approve say confirm {proposal.nonce}")
+        convo.says(f"confirm {proposal.nonce}")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is True
+        assert len(runner.calls) == 1
 
 
 class TestTheFallbackEchoCannotApprove:

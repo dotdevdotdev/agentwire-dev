@@ -511,6 +511,13 @@ APPROVED = "approved"
 DENIED = "denied"
 WRONG_NONCE = "wrong_nonce"
 NO_MATCH = "no_match"
+#: The RIGHT nonce, inside the buddy's own announcement frame ("to approve,
+#: say confirm tango"). Its own outcome rather than folded into WRONG_NONCE,
+#: because the spoken reason is the owner's entire diagnostic and "that was a
+#: different code word" is false here — the word was right, the FRAMING is
+#: what refused it, and sending the owner to re-ask for a code they already
+#: have fixes the one thing that was not broken.
+QUOTED_FRAME = "quoted_frame"
 
 
 def classify(text: str, nonce: str) -> str:
@@ -562,11 +569,13 @@ def classify(text: str, nonce: str) -> str:
     def _quoted_frame(index: int) -> bool:
         return index > 0 and tokens[index - 1] == "say" and "approve" in tokens
 
+    quoted = False
     for index in positions:
         rest = tokens[index + 1:]
         if not rest or rest[0] != target:
             continue
         if _quoted_frame(index):
+            quoted = True
             continue
         # Found "confirm <nonce>". A denial anywhere in the utterance — before
         # or after — is a take-back, and outranks the phrase.
@@ -578,6 +587,11 @@ def classify(text: str, nonce: str) -> str:
     # phrase at all", and the owner's next move differs.
     if _denial_tokens(tokens):
         return DENIED
+    # Before the wrong-nonce scan, or a quoted correct nonce falls through to
+    # it (the target IS in NONCE_WORDS) and reports "different code word"
+    # about the right one.
+    if quoted:
+        return QUOTED_FRAME
     for index in positions:
         rest = tokens[index + 1:]
         if rest and rest[0] in NONCE_WORDS:
@@ -833,6 +847,15 @@ SPOKEN = {
         "That was a different code word, so I haven't sent anything. "
         "Ask me what the word was and I'll say it again."
     ),
+    # The right word inside the announcement frame ("to approve, say confirm
+    # tango"). NOT wrong_nonce: telling this owner their code word was wrong
+    # sends them to re-ask for the one thing they already have. The word was
+    # right; the phrasing read as my own announcement quoted back.
+    "quoted_frame": (
+        "That sounded like my own announcement coming back, so I haven't "
+        "sent anything. The word was right — just say confirm and the word, "
+        "on its own."
+    ),
     # Covers "no" AND "wait"/"hold on", so it must not assert the owner said
     # the word "no" — a reason that misinforms is the defect §3.4 is about.
     "denied": (
@@ -880,8 +903,8 @@ WAIT_OUTCOMES = frozenset({"pending_transcript", "not_announced"})
 REASONS = frozenset(
     {
         "no_proposal", "expired", "not_announced", "replayed", "refused",
-        "wrong_nonce", "denied", "pending_transcript", "too_many_attempts",
-        "dispatch_failed",
+        "wrong_nonce", "quoted_frame", "denied", "pending_transcript",
+        "too_many_attempts", "dispatch_failed",
     }
 )
 
@@ -1124,6 +1147,7 @@ class ConfirmSpine:
         # recovery ran through this loop.
         match = None
         wrong_nonce = None
+        quoted = None
         for entry in reversed(usable):
             outcome = classify(entry.text, proposal.nonce)
             if outcome == DENIED:
@@ -1133,10 +1157,19 @@ class ConfirmSpine:
                 return Verdict(approved=False, reason="denied", utterance=entry.text)
             if outcome == WRONG_NONCE and wrong_nonce is None:
                 wrong_nonce = entry
+            if outcome == QUOTED_FRAME and quoted is None:
+                quoted = entry
             if outcome == APPROVED:
                 match = entry
                 break
         if match is None:
+            if quoted is not None:
+                # The right word, quoted inside the announcement frame. More
+                # specific than wrong_nonce, and the spoken advice differs:
+                # the owner does not need a new code, only a bare phrasing.
+                return Verdict(
+                    approved=False, reason="quoted_frame", utterance=quoted.text
+                )
             if wrong_nonce is not None:
                 # "Right shape, wrong code" needs "ask me what the code was",
                 # not "say it again" — repeating the wrong word loops forever.
@@ -1247,6 +1280,7 @@ __all__ = [
     "DENIED",
     "NONCE_WORDS",
     "NO_MATCH",
+    "QUOTED_FRAME",
     "VOICE_MARKER",
     "WRONG_NONCE",
     "carries_denial",

@@ -726,6 +726,10 @@ function stop() {
   audioEl = null;
   responseActive = false;
   announcer = null;
+  // A notice pending when the session died was never going to be spoken by
+  // it — carrying the flag into the next session would suppress that
+  // session's FIRST error notice, silently.
+  errorNoticePending = false;
   $start.disabled = false;
   $stop.disabled = true;
   setStatus("idle");
