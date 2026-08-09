@@ -913,7 +913,7 @@ class TestArgvFreezing:
     def test_confirm_ignores_every_argument_except_the_token(self, convo, runner):
         proposal = convo.announced_proposal(session="orchestrator")
         convo.approve(proposal)
-        result = write_tools.send_session_message(
+        result = write_tools.WRITE_TOOL_FNS["send_session_message"](
             {
                 "confirm_token": proposal.token,
                 "session": "victim-session",
@@ -1425,7 +1425,7 @@ class TestOutcomesAreDistinctAndSpoken:
         # reports success=False on a subprocess timeout, where the CLI may
         # already have enqueued — and pairing false certainty with "ask me
         # again" invites a re-propose that double-delivers.
-        assert "can't tell whether it went out" in verdict.spoken
+        assert "can't tell whether it took effect" in verdict.spoken
         assert "check that session" in verdict.spoken.lower()
         assert "nothing was sent" not in verdict.spoken
 
@@ -1443,7 +1443,7 @@ class TestWriteToolSurface:
     def test_propose_writes_nothing_and_returns_a_spoken_phrase(
         self, convo, runner, live
     ):
-        result = write_tools.propose_session_message(
+        result = write_tools.WRITE_TOOL_FNS["propose_session_message"](
             {"session": "orchestrator", "message": "restart the portal", "_buddy": "buddy"},
             convo.spine,
         )
@@ -1457,7 +1457,7 @@ class TestWriteToolSurface:
     def test_a_garbled_session_name_fails_closed(self, convo, runner, live):
         for bad in ("--help", "../etc/passwd", "", None):
             with pytest.raises(tools.ToolError):
-                write_tools.propose_session_message(
+                write_tools.WRITE_TOOL_FNS["propose_session_message"](
                     {"session": bad, "message": "hello", "_buddy": "buddy"}, convo.spine
                 )
         assert runner.calls == []
@@ -1468,7 +1468,7 @@ class TestWriteToolSurface:
         """Spec §5, and the refusal is words the buddy can say."""
         monkeypatch.setattr(inbox, "live_sessions", lambda: {"something-else"})
         with pytest.raises(tools.ToolError, match="Nothing is listening"):
-            write_tools.propose_session_message(
+            write_tools.WRITE_TOOL_FNS["propose_session_message"](
                 {"session": "orchestrator", "message": "hello", "_buddy": "buddy"},
                 convo.spine,
             )
@@ -1499,7 +1499,7 @@ class TestWriteToolSurface:
         self, convo, monkeypatch
     ):
         monkeypatch.setattr(inbox, "live_sessions", lambda: None)
-        result = write_tools.propose_session_message(
+        result = write_tools.WRITE_TOOL_FNS["propose_session_message"](
             {"session": "orchestrator", "message": "hello", "_buddy": "buddy"},
             convo.spine,
         )
@@ -1507,7 +1507,7 @@ class TestWriteToolSurface:
 
     def test_an_absurdly_long_instruction_is_refused(self, convo, live):
         with pytest.raises(tools.ToolError):
-            write_tools.propose_session_message(
+            write_tools.WRITE_TOOL_FNS["propose_session_message"](
                 {
                     "session": "orchestrator",
                     "message": "x" * (write_tools.MAX_INSTRUCTION_CHARS + 1),
@@ -1520,7 +1520,7 @@ class TestWriteToolSurface:
         self, convo, runner, live
     ):
         """Q2 settled as handoff: the only write is a message to a real session."""
-        proposed = write_tools.propose_session_message(
+        proposed = write_tools.WRITE_TOOL_FNS["propose_session_message"](
             {"session": "orchestrator", "message": "restart the portal", "_buddy": "buddy"},
             convo.spine,
         )
@@ -1529,7 +1529,7 @@ class TestWriteToolSurface:
         )
         convo.buddy_speaks(proposal)
         convo.approve(proposal)
-        write_tools.send_session_message(
+        write_tools.WRITE_TOOL_FNS["send_session_message"](
             {"confirm_token": proposed["confirm_token"]}, convo.spine
         )
         argv = runner.calls[0]
@@ -1542,7 +1542,7 @@ class TestWriteToolSurface:
     def test_cancel_never_writes(self, convo, runner, live):
         proposal = convo.announced_proposal()
         convo.approve(proposal)
-        result = write_tools.cancel_session_message(
+        result = write_tools.WRITE_TOOL_FNS["cancel_session_message"](
             {"confirm_token": proposal.token}, convo.spine
         )
         assert result["success"] is False
@@ -1558,7 +1558,7 @@ class TestWriteToolSurface:
         became words, and survived precisely because it lives in a prompt string
         no test exercised. Now one does.
         """
-        result = write_tools.propose_session_message(
+        result = write_tools.WRITE_TOOL_FNS["propose_session_message"](
             {"session": "orchestrator", "message": "restart it", "_buddy": "buddy"},
             convo.spine,
         )
@@ -1869,7 +1869,7 @@ class TestTheFallbackEchoCannotApprove:
         runner = RecordingRunner()
         spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner)
         convo = Conversation(ring, spine)
-        result = write_tools.propose_session_message(
+        result = write_tools.WRITE_TOOL_FNS["propose_session_message"](
             {"session": "orchestrator", "message": "restart the portal",
              "_buddy": "buddy"},
             spine,
@@ -1898,7 +1898,7 @@ class TestTheFallbackEchoCannotApprove:
             result, convo, runner = self._mint()
             echoed = self._chunks(result)[index]
             convo.says(echoed)
-            verdict = write_tools.send_session_message(
+            verdict = write_tools.WRITE_TOOL_FNS["send_session_message"](
                 {"confirm_token": result["confirm_token"]}, convo.spine
             )
             assert runner.calls == [], (

@@ -60,7 +60,8 @@ def record_write(proposal, argv: list, result: dict) -> None:
         entry = {
             "proposal_id": getattr(proposal, "id", "") or "",
             "session": _flag_value(argv, "--to") or getattr(proposal, "session", ""),
-            "buddy": _flag_value(argv, "--from"),
+            "buddy": _flag_value(argv, "--from")
+            or str(getattr(proposal, "params", {}).get("_buddy") or ""),
             "kind": _flag_value(argv, "--kind"),
             "instruction": getattr(proposal, "instruction", "") or "",
             "body": argv[-1] if argv else "",
@@ -113,6 +114,12 @@ def delivery_state(entry: dict) -> dict:
     """
     if not entry.get("dispatched", False):
         return {"state": "dispatch_failed", "detail": str(entry.get("error", ""))}
+
+    if not str(entry.get("kind") or ""):
+        # Not a message handoff (no --kind in the argv): the write completed
+        # when the CLI returned, so there is no queue to interrogate and
+        # "delivered" would be a category error. "executed" is the whole truth.
+        return {"state": "executed"}
 
     from .. import inbox  # deferred, matching write_tools — keeps import light
 

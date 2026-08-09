@@ -687,6 +687,15 @@ class Proposal:
     #: :func:`request_utterance_from`. Empty means unknown, and the body's
     #: ``said:`` slot is then omitted rather than shipped empty.
     request_utterance: str = ""
+    #: Whether :meth:`build_argv` appends the rendered §4b body. The msg
+    #: handoff carries one; an argv-only write (every element validated at
+    #: freeze time, no free text) does not, and appending a body to it would
+    #: hand the CLI a positional argument it never asked for.
+    append_body: bool = True
+    #: What the buddy says when THIS write executes. Empty falls back to the
+    #: msg-shaped "queued" phrasing — see :meth:`Verdict.to_dict` for why the
+    #: two claims must differ (§3.6: never claim more than the write did).
+    success_say: str = ""
 
     @property
     def announced(self) -> bool:
@@ -703,6 +712,8 @@ class Proposal:
         # No parameters, deliberately: the approving utterance must never
         # reach the body again (#953), and a parameterless signature makes
         # that structural rather than a calling convention.
+        if not self.append_body:
+            return list(self.argv_prefix)
         return [
             *self.argv_prefix,
             render_body(
@@ -935,7 +946,7 @@ SPOKEN = {
     # "already SENT" was the same over-claim §3.6 forbids on the success path,
     # which says "queued" precisely because msg send queues. A refusal may not
     # claim more certainty than the success it refers back to.
-    "replayed": "I already passed that one on, so I'm not doing it again.",
+    "replayed": "I already did that one, so I'm not doing it again.",
     "refused": (
         "I didn't hear the confirmation phrase, so I haven't sent anything. "
         "Say confirm and then the word I gave you."
@@ -979,7 +990,7 @@ SPOKEN = {
     # decide, not re-propose. That is the honest instruction, and it is only
     # reachable by admitting what is unknown.
     "dispatch_failed": (
-        "The handoff failed and I can't tell whether it went out. "
+        "That failed partway and I can't tell whether it took effect. "
         "Check that session before asking me again."
     ),
 }
@@ -1016,6 +1027,10 @@ class Verdict:
     argv: "list[str] | None" = None
     #: The ring entry the approval matched, so it can be spent on success.
     utterance_item_id: str = ""
+    #: The proposal's own success line, when it declared one. Empty keeps the
+    #: msg-shaped "queued" claim, which is the only honest default for a write
+    #: that enqueues rather than completes.
+    success_say: str = ""
 
     @property
     def spoken(self) -> str:
@@ -1030,6 +1045,18 @@ class Verdict:
             # and can defer behind the box gates. From the owner's ear, "I told
             # the orchestrator" followed by nothing is worse than a silent
             # refusal, because success was affirmatively claimed.
+            if self.success_say:
+                # A write that COMPLETES when the runner returns says so
+                # plainly; "queued" would under-claim it the same way "sent"
+                # over-claims a queue (§3.6 cuts both ways).
+                return {
+                    "success": True,
+                    "reason": "done",
+                    "approved_by": self.utterance,
+                    "say": self.success_say,
+                    "must_speak": True,
+                    "confirm_terminal": True,
+                }
             return {
                 "success": True,
                 "reason": "queued",
@@ -1040,6 +1067,7 @@ class Verdict:
                     "Queued it — it'll land when that session is free."
                 ),
                 "must_speak": True,
+                "confirm_terminal": True,
             }
         return {
             "success": False,
@@ -1047,6 +1075,10 @@ class Verdict:
             "say": self.spoken,
             "must_speak": True,
             "owner_should_wait": self.reason in WAIT_OUTCOMES,
+            # Name-independent handshake signal: True exactly when this
+            # outcome ENDS the confirm exchange (the client's gate currently
+            # keys on tool names; this is the generic key to move it to).
+            "confirm_terminal": self.reason not in WAIT_OUTCOMES,
             **({"heard": self.utterance} if self.utterance else {}),
         }
 
@@ -1093,6 +1125,8 @@ class ConfirmSpine:
         instruction: str,
         argv_prefix: "list[str] | tuple[str, ...]",
         params: "dict | None" = None,
+        append_body: bool = True,
+        success_say: str = "",
     ) -> Proposal:
         """Mint a single-use, TTL-bounded proposal with the argv frozen.
 
@@ -1117,6 +1151,8 @@ class ConfirmSpine:
                 created_at=self._clock(),
                 params=dict(params or {}),
                 request_utterance=request_utterance_from(self._ring),
+                append_body=append_body,
+                success_say=success_say,
             )
             self._proposals[proposal.token] = proposal
         return proposal
@@ -1318,6 +1354,7 @@ class ConfirmSpine:
             reason="approved",
             utterance=match.text,
             utterance_item_id=match.item_id,
+            success_say=proposal.success_say,
         )
 
     def _claim(self, token: str) -> "tuple[Proposal | None, Verdict | None]":
