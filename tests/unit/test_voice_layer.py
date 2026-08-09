@@ -402,13 +402,17 @@ class TestInstructions:
         assert "shape of the answer" in flowed
         assert "hand the conversation back" in flowed
 
-    def test_a_volunteered_claim_is_grounded_in_the_received_reply(self):
+    def test_a_volunteered_claim_is_grounded_in_output_actually_read(self):
         """Same confabulation failure the BOUNDARY section closes, and a
         proactive channel is the more dangerous place for it: the owner did
-        not ask, so they have no prior to check the claim against."""
+        not ask, so they have no prior to check the claim against. The buddy
+        HAS real reading tools (buddy_inbox, fleet_session_output) — which
+        makes a plausible unread summary more tempting, not less, so the
+        persona must name both the instruments and the ban."""
         flowed = " ".join(instructions.build_instructions().split())
         assert "never what you expect the answer to be" in flowed
         assert "buddy_inbox" in flowed
+        assert "fleet_session_output" in flowed
         assert "say only that a reply arrived" in flowed
 
 
