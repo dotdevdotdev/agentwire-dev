@@ -608,6 +608,8 @@ const strays = [];
 let spool = [];
 let cursor = 0;
 let speakable = true;
+let interruptable = false;
+let ledger = null;
 let timers = [];
 let nextHandle = 1;
 
@@ -624,6 +626,8 @@ function makeNotifier(overrides) {
     fetchInbox, ackInbox,
     announce: (text, meta) => announcedCalls.push({ text, meta }),
     canSpeak: () => speakable,
+    canInterrupt: () => interruptable,
+    reRaise: ledger,
     setTimer: (fn, ms) => { const h = nextHandle++; timers.push({ h, fn, ms }); return h; },
     clearTimer: (h) => { timers = timers.filter((t) => t.h !== h); },
     onLog: (kind, detail) => logs.push(kind + ": " + detail),
@@ -646,6 +650,7 @@ def run_notifier(script: str) -> dict:
     program = "\n".join(
         [
             client.notifier_source(),
+            client.reraise_source(),
             _NOTIFIER_HARNESS,
             textwrap.dedent(script),
             "console.log(report());",
@@ -1149,3 +1154,384 @@ class TestThePageEmbedsTheRealThing:
         JSON-parse drop; a bare swallow must not come back."""
         page = client.page("buddy", "tok")
         assert "catch { return; }" not in page
+
+
+class TestTheInterruptTier:
+    """#967 reconciled with #962. The gate is two-tier: the full gate clears
+    everything; the interrupt gate clears ONLY escalation-kind messages. The
+    two legs that stay unconditional for BOTH tiers: never while the owner is
+    speaking, never inside a confirm handshake. The tier is a mechanism check
+    on the message KIND — the fleet's own already-made judgment — never on
+    how urgent the model feels."""
+
+    def test_an_escalation_speaks_when_only_the_interrupt_gate_is_open(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation",
+                       text: "a done report dead-lettered" }];
+            speakable = false;       // the buddy is mid-chatter
+            interruptable = true;    // but the owner is not speaking
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+        assert "dead-lettered" in report["announced"][0]["text"]
+
+    def test_an_ordinary_message_does_not_and_is_not_lost(self):
+        """Both halves: the non-escalation waits, and the SAME message is
+        volunteered once the full gate opens — a wrongly-silent tier is a
+        silent loop, not a safe failure."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            speakable = false;
+            interruptable = true;
+            await notifier.pollOnce();
+            logs.push("held: " + announcedCalls.length);
+            speakable = true;
+            await notifier.pollOnce();
+        """)
+        assert "held: 0" in report["logs"]
+        assert len(report["announced"]) == 1
+
+    def test_a_mixed_batch_under_interrupt_takes_only_the_escalation(self):
+        """And the skipped ordinary message is NOT buried by the ack: acking
+        the spoken escalation advances the cursor past everything, so the
+        done-report must come back through the strays path on the next full
+        tick — the same never-lose-one property the peek/ack race has."""
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "minecraft", kind: "done", text: "done" },
+              { id: "m2", from: "watchdog", kind: "escalation", text: "auth expired" },
+            ];
+            speakable = false;
+            interruptable = true;
+            await notifier.pollOnce();
+            logs.push("interrupt took: " + announcedCalls.length);
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+            speakable = true;
+            await notifier.pollOnce();
+        """)
+        assert "interrupt took: 1" in report["logs"]
+        assert len(report["announced"]) == 2
+        assert report["announced"][0]["meta"]["inboxIds"] == ["m2"]
+        assert report["announced"][1]["meta"]["inboxIds"] == ["m1"]
+
+    def test_the_owner_speaking_blocks_even_an_escalation(self):
+        """The unconditional leg. Nothing — including the alarm — speaks over
+        the owner; both gates report closed and the escalation waits."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "parked" }];
+            speakable = false;
+            interruptable = false;   // ownerSpeaking or confirm outstanding
+            await notifier.pollOnce();
+            interruptable = true;
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+
+    def test_an_escalation_stray_is_taken_and_an_ordinary_stray_stays(self):
+        """Strays are cursor-past — the array is their only route back. The
+        interrupt tick must pull only what it may speak and leave the rest
+        IN the array, not drop them on the floor."""
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "minecraft", kind: "note", text: "fyi" });
+            strays.push({ id: "s2", from: "watchdog", kind: "escalation", text: "blocked pane" });
+            speakable = false;
+            interruptable = true;
+            await notifier.pollOnce();
+            logs.push("strays left: " + strays.length);
+            speakable = true;
+            await notifier.pollOnce();
+        """)
+        assert "strays left: 1" in report["logs"]
+        assert len(report["announced"]) == 2
+        assert report["announced"][0]["meta"]["inboxIds"] == ["s2"]
+        assert report["announced"][1]["meta"]["inboxIds"] == ["s1"]
+
+    def test_an_escalation_notice_names_itself_as_one(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "auth expired" }];
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert text.startswith("Heads up")
+        assert "escalated" in text
+
+    def test_the_meta_carries_the_message_kinds_for_the_ledger(self):
+        """The page registers re-raise items from onSpoken, which sees only
+        the meta — so the meta must carry id/from/kind/text."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "reviewer", kind: "request", text: "need a call on the API shape" }];
+            await notifier.pollOnce();
+        """)
+        msgs = report["announced"][0]["meta"]["inboxMsgs"]
+        assert msgs == [{"id": "m1", "from": "reviewer", "kind": "request",
+                         "text": "need a call on the API shape"}]
+
+    def test_a_notifier_without_the_new_deps_behaves_as_before(self):
+        """The deps are optional: absent canInterrupt means escalations wait
+        like everything else — no tier appears by accident."""
+        report = run_notifier("""
+            notifier = makeNotifier({ canInterrupt: undefined, reRaise: undefined });
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "parked" }];
+            speakable = false;
+            await notifier.pollOnce();
+        """)
+        assert report["announced"] == []
+
+
+_RERAISE_HARNESS = """
+let clock = 0;
+const logs = [];
+const ledger = createReRaiseLedger({
+  now: () => clock,
+  dueMs: 120000,
+  onLog: (kind, detail) => logs.push(kind + ": " + detail),
+});
+const texts = [];
+function tick() { const t = ledger.dueText(); if (t) texts.push(t); return t; }
+function report() {
+  return JSON.stringify({ texts, logs, pending: ledger.pending() });
+}
+"""
+
+
+def run_reraise(script: str) -> dict:
+    program = "\n".join(
+        [
+            client.reraise_source(),
+            _RERAISE_HARNESS,
+            textwrap.dedent(script),
+            "console.log(report());",
+        ]
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", program],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node failed: {result.stderr.strip()}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+class TestTheReRaiseLedger:
+    """#967. Insistence is about the second attempt: something the owner was
+    told and did not act on is raised again, once; something they acted on is
+    not. Distinguishable in a test, not by taste."""
+
+    def test_not_acted_on_is_raised_again_after_the_due_window(self):
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "need a call on the API" });
+            clock = 119999;
+            tick();
+            clock = 120000;
+            tick();
+        """)
+        assert len(report["texts"]) == 1
+        assert "reviewer" in report["texts"][0]
+        assert "Still open" in report["texts"][0]
+
+    def test_acted_on_is_never_raised_again(self):
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            ledger.actedOn("reviewer");
+            clock = 999999;
+            tick();
+        """)
+        assert report["texts"] == []
+        assert report["pending"] == 0
+
+    def test_the_second_mention_is_also_the_last(self):
+        """Twice is a peer; a third time is a nag — and in a screenless
+        channel an unbounded reminder loop has no off switch."""
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            tick();
+            clock = 900000;
+            tick();
+            tick();
+        """)
+        assert len(report["texts"]) == 1
+
+    def test_acting_on_one_session_leaves_another_session_pending(self):
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "call on the API" });
+            ledger.register("m2", { from: "billing", text: "rotate the key" });
+            ledger.actedOn("reviewer");
+            clock = 500000;
+            tick();
+        """)
+        assert len(report["texts"]) == 1
+        assert "billing" in report["texts"][0]
+        assert "reviewer" not in report["texts"][0]
+
+    def test_registering_the_same_id_twice_does_not_double_the_reminder(self):
+        """A retried announcement after a reconnect re-registers; the clock
+        must not restart and the mention count must not double."""
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 100000;
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 120000;   // due from the FIRST registration
+            tick();
+            clock = 900000;
+            tick();
+        """)
+        assert len(report["texts"]) == 1
+
+    def test_two_due_items_are_one_utterance(self):
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "call on the API" });
+            ledger.register("m2", { from: "billing", text: "rotate the key" });
+            clock = 500000;
+            tick();
+        """)
+        assert len(report["texts"]) == 1
+        assert "reviewer" in report["texts"][0] and "billing" in report["texts"][0]
+
+    def test_a_long_body_is_trimmed_for_speech(self):
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "x".repeat(500) });
+            clock = 500000;
+            tick();
+        """)
+        assert len(report["texts"][0]) < 300
+
+    def test_the_reminder_is_speakable_and_names_the_close(self):
+        """The owner cannot skim speech: the reminder must say it is the
+        second and last mention, so they know the buddy will now drop it."""
+        report = run_reraise("""
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            tick();
+        """)
+        text = report["texts"][0]
+        assert "Second mention" in text
+        assert "`" not in text and "_" not in text
+
+
+class TestReRaiseThroughTheNotifier:
+    """The re-raise's clock is the notifier's own tick — no second timer, no
+    second speaking path. A reminder fires only on a QUIET full-gate tick:
+    fresh news outranks it, the interrupt tier never carries it."""
+
+    def test_a_quiet_full_gate_tick_speaks_the_due_reminder(self):
+        report = run_notifier("""
+            let clock = 0;
+            ledger = createReRaiseLedger({ now: () => clock, dueMs: 120000 });
+            notifier = makeNotifier({ reRaise: ledger });
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+        assert "Still open" in report["announced"][0]["text"]
+        assert report["announced"][0]["meta"] == {"reRaise": True}
+
+    def test_fresh_news_outranks_the_reminder(self):
+        report = run_notifier("""
+            let clock = 0;
+            ledger = createReRaiseLedger({ now: () => clock, dueMs: 120000 });
+            notifier = makeNotifier({ reRaise: ledger });
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            spool = [{ id: "m2", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+        assert "minecraft" in report["announced"][0]["text"]
+        assert "Still open" not in report["announced"][0]["text"]
+
+    def test_the_interrupt_tier_never_carries_a_reminder(self):
+        """A reminder is politeness, not an alarm — the relaxed gate must
+        not leak it past the buddy's own chatter."""
+        report = run_notifier("""
+            let clock = 0;
+            ledger = createReRaiseLedger({ now: () => clock, dueMs: 120000 });
+            notifier = makeNotifier({ reRaise: ledger });
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            speakable = false;
+            interruptable = true;
+            await notifier.pollOnce();
+        """)
+        assert report["announced"] == []
+
+    def test_a_blocked_tick_does_not_burn_the_reminder(self):
+        """Both halves: blocked is silent, and the SAME reminder still fires
+        on the next open tick — dueText marks re-raised only when the text is
+        actually taken."""
+        report = run_notifier("""
+            let clock = 0;
+            ledger = createReRaiseLedger({ now: () => clock, dueMs: 120000 });
+            notifier = makeNotifier({ reRaise: ledger });
+            ledger.register("m1", { from: "reviewer", text: "need a call" });
+            clock = 500000;
+            speakable = false;
+            await notifier.pollOnce();
+            speakable = true;
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+
+
+class TestThePersonaAndInterruptWiring:
+    """The page-source pins for #967: the tier, the ledger, and the pinned
+    speaking-path count."""
+
+    def test_the_page_wires_the_interrupt_gate_without_the_chatter_leg(self):
+        """canInterrupt keeps exactly the two unconditional legs of #962 —
+        owner not speaking, no confirm handshake — and drops responseActive /
+        announcer.pending, which is what lets an escalation pre-empt the
+        buddy's own speech via the announcer's existing cancel."""
+        page = client.page("buddy", "tok")
+        assert "canInterrupt: () => !ownerSpeaking && !confirmGate.outstanding()," in page
+        # The FULL gate is unchanged — #962's rule survives verbatim.
+        assert (
+            "canSpeak: () => !ownerSpeaking && !responseActive"
+            " && !!announcer && announcer.pending() === 0"
+            " && !confirmGate.outstanding()," in page
+        )
+
+    def test_the_interrupt_tier_adds_no_speaking_path(self):
+        """#950's pin: still exactly two response.create sites. The escalation
+        tier and the re-raise both ride announce()."""
+        page = client.page("buddy", "tok")
+        assert page.count('type: "response.create"') == 2
+
+    def test_the_page_embeds_the_ledger_verbatim_and_wires_it(self):
+        page = client.page("buddy", "tok")
+        assert client.reraise_source().strip() in page
+        assert "const RERAISE_DUE_MS" in page
+        assert "createReRaiseLedger({" in page
+        wiring = page.split("createInboxNotifier({", 1)[1].split("});", 1)[0]
+        assert "reRaise: reRaiseLedger," in wiring
+
+    def test_only_asking_kinds_enter_the_ledger_and_only_once_heard(self):
+        """register lives in onSpoken's inboxIds branch — the moment there is
+        evidence the owner heard the notice — and takes only request and
+        escalation. A done/note is news; re-raising news is chatter."""
+        page = client.page("buddy", "tok")
+        onspoken = page.split("function onSpoken(meta, how)", 1)[1].split("function send(", 1)[0]
+        register_at = onspoken.split("reRaiseLedger.register", 1)[0]
+        assert '"request"' in register_at and '"escalation"' in register_at
+        # And nowhere else on the page registers.
+        assert page.count("reRaiseLedger.register(") == 1
+
+    def test_a_queued_send_retires_the_reminder_and_a_cancel_does_not(self):
+        page = client.page("buddy", "tok")
+        dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
+        dispatch = dispatch.split("function spokenText", 1)[0]
+        assert "reRaiseLedger.actedOn(lastProposedSession);" in dispatch
+        acted_guard = dispatch.split("reRaiseLedger.actedOn", 1)[0]
+        assert 'item.name === "send_session_message" && result.success' in acted_guard
+        assert "lastProposedSession = result.session;" in dispatch
+
+    def test_the_ledger_survives_stop(self):
+        """Page-lifetime, like heardReplies: stop() must not touch it, or a
+        reconnect wipes the peer's memory of its own words."""
+        page = client.page("buddy", "tok")
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "reRaiseLedger." not in stop_body
+        assert "lastProposedSession =" not in stop_body
