@@ -109,9 +109,10 @@ def propose_session_message(args: dict, spine) -> dict:
         tool="send_session_message",
         session=session,
         instruction=instruction,
-        # Frozen here, at propose time. The body is the LAST element and is the
-        # only thing completed at confirm — from the transcript ring and the
-        # proposal id, never from anything a model says. See confirm.Proposal.
+        # Frozen here, at propose time — the WHOLE argv, body included. The
+        # body's said: slot carries the owner's request utterance captured by
+        # spine.propose from the transcript ring, never the approving
+        # utterance, which is a nonce and stays inside the gate (#953).
         argv_prefix=[
             "msg", "send", "--to", session, "--from", buddy, "--kind", WRITE_KIND,
         ],
