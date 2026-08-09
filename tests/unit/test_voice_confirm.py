@@ -1349,6 +1349,46 @@ class TestOutcomesAreDistinctAndSpoken:
             assert payload["must_speak"] is True, label
             assert payload["say"].strip(), label
 
+    def test_approved_payload_carries_the_frozen_acted_session(self, convo, runner):
+        """#967's missing key: the client used to GUESS which session a
+        confirmed write acted on by remembering the last proposal — wrong the
+        moment two proposals interleave. The spine knows exactly, from the
+        proposal frozen at propose time, so the approved payload says so."""
+        proposal = convo.announced_proposal(session="orchestrator")
+        convo.approve(proposal)
+        payload = convo.spine.confirm(proposal.token).to_dict()
+        assert payload["success"] is True
+        assert payload["acted_session"] == "orchestrator"
+
+    def test_acted_session_rides_the_success_say_branch_too(self):
+        payload = confirm.Verdict(
+            approved=True,
+            reason="approved",
+            success_say="Lit it.",
+            acted_session="watchtower",
+        ).to_dict()
+        assert payload["reason"] == "done"
+        assert payload["acted_session"] == "watchtower"
+
+    def test_a_sessionless_write_omits_acted_session(self):
+        """Absent, not empty: an empty string retiring reminders keyed to a
+        session named "" is nonsense, and the client keys on truthiness."""
+        payload = confirm.Verdict(approved=True, reason="approved").to_dict()
+        assert "acted_session" not in payload
+
+    def test_no_refusal_carries_acted_session(self, convo, clock):
+        """The priced false-accept, at the payload layer: a cancel or refusal
+        retiring a reminder means the re-raise silently never happens. No
+        non-approved payload may carry the key — including cancel."""
+        outcomes = dict(self._outcomes(convo, clock))
+        outcomes["cancelled"] = convo.spine.cancel(
+            convo.announced_proposal(session="orchestrator").token
+        )
+        for label, verdict in outcomes.items():
+            payload = verdict.to_dict()
+            assert payload["success"] is False, label
+            assert "acted_session" not in payload, label
+
     def test_success_says_queued_and_never_sent(self, convo, runner):
         """§3.6. ``msg send`` queues; delivery is at the next safe boundary and
         can defer. Claiming "sent" is worse than silence, because it is a claim.

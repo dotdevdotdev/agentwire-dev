@@ -1634,27 +1634,51 @@ class TestTheOutcomeRouter:
         assert report["resolved"] == 0
         assert report["actedOn"] == []
 
-    def test_a_queued_send_retires_the_proposed_sessions_reminder(self):
+    def test_a_queued_send_retires_the_acted_sessions_reminder(self):
         """#967's acted-on leg, against the real approved-verdict payload
-        shape: a QUEUED session-message send retires the reminders of the
-        session the last proposal named."""
+        shape: the payload's own acted_session — frozen at propose time —
+        names what to retire. No name check, no proposal memory."""
         approved = confirm.Verdict(
-            approved=True, reason="approved", utterance="confirm juniper"
+            approved=True,
+            reason="approved",
+            utterance="confirm juniper",
+            acted_session="reviewer",
         ).to_dict()
         assert approved["success"] is True and approved["confirm_terminal"] is True
         report = run_outcome_router(f"""
-            router.route("propose_session_message",
-                {{ success: true, session: "reviewer" }});
             router.route("send_session_message", {json.dumps(approved)});
         """)
         assert report["resolved"] == 1
         assert report["actedOn"] == ["reviewer"]
 
+    def test_interleaved_proposals_retire_the_confirmed_one(self):
+        """The case the old last-proposal correlation got wrong: propose to
+        alpha, propose to beta, then confirm ALPHA's write. The client-side
+        guess remembered only beta, so it retired beta's reminders — the
+        false-accept (beta's re-raise silently never happens) AND the
+        false-reject (alpha keeps nagging about something done) in one move.
+        The payload's frozen acted_session cannot make that mistake."""
+        approved_alpha = confirm.Verdict(
+            approved=True, reason="approved", acted_session="alpha"
+        ).to_dict()
+        report = run_outcome_router(f"""
+            router.route("propose_session_message",
+                {{ success: true, session: "alpha" }});
+            router.route("propose_session_message",
+                {{ success: true, session: "beta" }});
+            router.route("send_session_message", {json.dumps(approved_alpha)});
+        """)
+        assert report["resolved"] == 1
+        assert report["actedOn"] == ["alpha"]
+
     def test_a_session_message_cancel_reopens_but_never_retires(self):
         """The priced false-accept: a cancel is terminal but is NOT acting —
-        retiring on it silently loses the re-raise the ledger exists for."""
+        retiring on it silently loses the re-raise the ledger exists for.
+        The cancel payload carries no acted_session, so even with a prior
+        proposal in flight nothing retires."""
         denied = confirm.Verdict(approved=False, reason="denied").to_dict()
         assert denied["confirm_terminal"] is True
+        assert "acted_session" not in denied
         report = run_outcome_router(f"""
             router.route("propose_session_message",
                 {{ success: true, session: "reviewer" }});
@@ -1662,6 +1686,22 @@ class TestTheOutcomeRouter:
         """)
         assert report["resolved"] == 1
         assert report["actedOn"] == []
+
+    def test_a_second_gated_writes_approval_retires_its_own_session(self):
+        """The genericisation's payoff: a write declared from the outside
+        (#966) retires its OWN frozen session's reminders with no client-side
+        knowledge of its name — the same property the gate leg already has."""
+        approved = confirm.Verdict(
+            approved=True,
+            reason="approved",
+            success_say="Beacon lit.",
+            acted_session="watchtower",
+        ).to_dict()
+        report = run_outcome_router(f"""
+            router.route("send_beacon_flare", {json.dumps(approved)});
+        """)
+        assert report["resolved"] == 1
+        assert report["actedOn"] == ["watchtower"]
 
     def test_a_payloadless_result_routes_nowhere(self):
         report = run_outcome_router("""
