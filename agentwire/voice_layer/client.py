@@ -630,26 +630,19 @@ OUTCOME_ROUTER_JS = """
 //
 // 2. "The owner acted on that session" retires its re-raise reminders. NOT
 //    the same predicate: a cancel is terminal but is not acting — retiring on
-//    it loses the second mention the ledger exists to produce. Until the
-//    verdict payload carries the acted-on session itself, this leg stays
-//    scoped to the one session-targeted write, correlated through the most
-//    recent session-message proposal (the send outcome deliberately carries
-//    no parameters — the argv is frozen at propose time).
+//    it loses the second mention the ledger exists to produce. The spine sets
+//    acted_session on APPROVED payloads only, from the proposal frozen at
+//    propose time, so this leg is as name-free as the gate leg. The old
+//    client-side guess — remember the last proposal's session — retired the
+//    WRONG session's reminders whenever two proposals interleaved.
 function createOutcomeRouter(deps) {
   var gate = deps.gate;
   var ledger = deps.ledger;
-  var lastProposedSession = null;
   return {
     route: function (name, result) {
-      if (!result) return;
-      if (name === "propose_session_message" && result.success && result.session) {
-        lastProposedSession = result.session;
-      }
-      if (!result.confirm_terminal) return;
+      if (!result || !result.confirm_terminal) return;
       gate.resolved();
-      if (name === "send_session_message" && result.success && lastProposedSession) {
-        ledger.actedOn(lastProposedSession);
-      }
+      if (result.acted_session) ledger.actedOn(result.acted_session);
     },
   };
 }
