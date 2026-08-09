@@ -337,6 +337,10 @@ WRITE_TOOL_SPECS = tuple(
 #: directly rather than through ``tools.dispatch``.
 WRITE_TOOL_FNS = {name: fn for name, _desc, _schema, fn in WRITE_TOOL_SPECS}
 
+# The generated callables are this module's public functions — a caller may
+# say ``write_tools.propose_session_message`` without knowing the registry.
+globals().update(WRITE_TOOL_FNS)
+
 
 def dispatch_write(argv: list[str]) -> dict:
     """The runner ``ConfirmSpine`` calls on approval. One place, one command."""

@@ -274,6 +274,15 @@ class TestDeclaredWriteMechanism:
             assert "{phrase}" not in spec.fallback_template
             assert spec.params_schema.get("additionalProperties") is False
 
+    def test_an_argv_only_write_reads_as_executed_not_delivered(self):
+        """A kind-less outbox entry has no queue to interrogate; claiming
+        'delivered' for it would be a category error (§3.6)."""
+        from agentwire.voice_layer import outbox
+
+        entry = {"proposal_id": "abc123", "session": "target",
+                 "body": "target", "kind": "", "dispatched": True}
+        assert outbox.delivery_state(entry)["state"] == "executed"
+
     def test_confirm_terminal_marks_exactly_the_handshake_enders(self):
         """The name-independent key the client's confirm gate can move to."""
         spec = probe_spec()

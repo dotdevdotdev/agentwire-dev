@@ -126,6 +126,7 @@ class TestDeliveryState:
             "proposal_id": "abc123",
             "session": "orchestrator",
             "body": "<voice> hello ┃ #abc123",
+            "kind": "request",
             "dispatched": True,
         }
         base.update(over)
