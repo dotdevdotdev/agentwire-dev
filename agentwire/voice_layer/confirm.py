@@ -27,7 +27,9 @@ that clause they conclude "gate passed, so the write happened". It did not:
 ``msg send`` queues, and delivery is at the recipient's next safe boundary.
 
 The ``said:`` clause caveat is there because §4b's entire purpose is that the
-verbatim utterance is authorizing evidence a recipient can CHECK, and a
+verbatim REQUEST utterance (captured at propose — never the approving one,
+which is a nonce and stays inside the gate, #953) is evidence a recipient can
+CHECK the paraphrase against, and a
 recipient reading ``said:`` will treat it as what the human said. Anything
 resident in the bridge's browser page holds the per-run bearer token and can
 POST arbitrary text to ``/utterance``, so the evidence property is weaker than
@@ -604,6 +606,35 @@ def matches_nonce(text: str, nonce: str) -> bool:
     return classify(text, nonce) == APPROVED
 
 
+def request_utterance_from(ring) -> str:
+    """The owner's REQUEST sentence, read from the ring at propose time (#953).
+
+    This is what fills the body's ``said:`` slot. It used to be the APPROVING
+    utterance — which the gate guarantees is ``confirm <nonce>``, so the slot
+    shipped the nonce to the recipient on every approved write and carried
+    none of the paraphrase-check content §4b built it for. The request
+    utterance is the newest complete entry at propose time: the sentence that
+    asked for the message, spoken BEFORE this proposal's nonce existed, so it
+    cannot contain it by construction.
+
+    One selection rule, and it is selection rather than redaction: an entry
+    containing a confirm word is skipped. A stale ``confirm <word>`` from a
+    PRIOR proposal (wrong-nonce, expired, retried) can sit newest in the ring,
+    and it is not a request — it is the one remaining path a nonce string
+    could re-enter the body through. Skipping falls back to the next-newest
+    entry, and an empty result drops the slot entirely (:func:`render_body`),
+    so the false-reject half costs a missing annotation, never a blocked or
+    garbled write.
+    """
+    for entry in reversed(ring.snapshot()):
+        if not entry.complete:
+            continue
+        if any(t in _CONFIRM_WORDS for t in normalize(entry.text).split()):
+            continue
+        return entry.text
+    return ""
+
+
 def carries_denial(text: str) -> bool:
     """Does *text* contain a refusal? Scanned over utterances AFTER an approval."""
     return _denial_tokens(normalize(text).split())
@@ -630,12 +661,13 @@ class Proposal:
     the tool call is what makes "postdates the proposal" mean "after the owner
     heard it".
 
-    **On the one thing not frozen at propose time.** The argv is frozen at
-    propose AND the delivered body carries the verbatim authorizing utterance,
-    which does not exist until confirm. Both hold, because the confirm-time
-    addition is not an input: the utterance comes from the transcription ring
-    and the id from this store. Confirm's entire model-supplied surface is one
-    token string.
+    **Everything is frozen at propose time — including the body.** It used to
+    be that the body carried the confirm-time approving utterance; #953 killed
+    that, because the approving utterance is ``confirm <nonce>`` by
+    construction, so the slot shipped the nonce and verified nothing. The
+    ``said:`` slot now carries ``request_utterance``, captured from the
+    transcript ring at propose. Confirm's entire model-supplied surface is one
+    token string, and it no longer reaches the body at all.
     """
 
     id: str
@@ -650,6 +682,10 @@ class Proposal:
     anchored_at: float = 0.0
     attempts: int = 0
     params: dict = field(default_factory=dict)
+    #: The owner's request sentence at propose time — see
+    #: :func:`request_utterance_from`. Empty means unknown, and the body's
+    #: ``said:`` slot is then omitted rather than shipped empty.
+    request_utterance: str = ""
 
     @property
     def announced(self) -> bool:
@@ -662,8 +698,14 @@ class Proposal:
         started = self.anchored_at or self.created_at
         return now >= started + ttl
 
-    def build_argv(self, utterance: str) -> list[str]:
-        return [*self.argv_prefix, render_body(self.instruction, utterance, self.id)]
+    def build_argv(self) -> list[str]:
+        # No parameters, deliberately: the approving utterance must never
+        # reach the body again (#953), and a parameterless signature makes
+        # that structural rather than a calling convention.
+        return [
+            *self.argv_prefix,
+            render_body(self.instruction, self.request_utterance, self.id),
+        ]
 
 
 # =============================================================================
@@ -755,13 +797,19 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def render_body(instruction: str, utterance: str, proposal_id: str) -> str:
-    """The fixed one-line two-part shape every buddy write carries (§4b).
+def render_body(instruction: str, request_utterance: str, proposal_id: str) -> str:
+    """The fixed one-line shape every buddy write carries (§4b).
 
     Part one is what the buddy asked for; part two is what the owner actually
-    said to authorize it, verbatim, plus the proposal id. The recipient can
+    said when REQUESTING it, verbatim, plus the proposal id. The recipient can
     check the paraphrase rather than trust it — and can see it when the buddy
-    got it wrong. Free, because the gate already had to capture that utterance.
+    got it wrong.
+
+    **The request utterance, never the approving one (#953).** The approving
+    utterance is ``confirm <nonce>`` by construction — content-free for the
+    paraphrase check, and a leak of the nonce into the recipient's scrollback
+    on every write. When no request utterance was captured, the slot is
+    OMITTED: a slot whose expected content is empty must not survive.
 
     **The body never begins with a dash, and that is a safety property, not an
     accident of layout.** ``instruction`` is model-supplied and ``_clip`` does
@@ -786,11 +834,11 @@ def render_body(instruction: str, utterance: str, proposal_id: str) -> str:
     position on screen the kind slot would have occupied, and touches no shared
     code. Slice 1 does not claim kind-slot attribution; that arrives with 1b.
     """
-    body = (
-        f"{VOICE_MARKER} {_clip(instruction, MAX_RENDERED_INSTRUCTION_CHARS)} "
-        f"┃ said: \"{_clip(utterance, MAX_UTTERANCE_CHARS)}\" "
-        f"┃ #{proposal_id}"
-    )
+    parts = [f"{VOICE_MARKER} {_clip(instruction, MAX_RENDERED_INSTRUCTION_CHARS)}"]
+    if request_utterance.strip():
+        parts.append(f"said: \"{_clip(request_utterance, MAX_UTTERANCE_CHARS)}\"")
+    parts.append(f"#{proposal_id}")
+    body = " ┃ ".join(parts)
     body = _clip(body, MAX_BODY_CHARS)
     # Explicit, not incidental — see the docstring. A body reaching the CLI as
     # a flag is a bug this repo has shipped twice.
@@ -1019,6 +1067,7 @@ class ConfirmSpine:
                 argv_prefix=tuple(argv_prefix),
                 created_at=self._clock(),
                 params=dict(params or {}),
+                request_utterance=request_utterance_from(self._ring),
             )
             self._proposals[proposal.token] = proposal
         return proposal
@@ -1083,7 +1132,7 @@ class ConfirmSpine:
         with self._lock:
             self._proposals.pop(token, None)
 
-        argv = proposal.build_argv(verdict.utterance)
+        argv = proposal.build_argv()
         verdict.argv = argv
         if self._runner is not None:
             try:
@@ -1289,5 +1338,6 @@ __all__ = [
     "mint_nonce",
     "normalize",
     "render_body",
+    "request_utterance_from",
     "spoken_nonce",
 ]
