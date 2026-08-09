@@ -51,8 +51,14 @@ ADAPTERS = (VOICE_ADAPTER,)
 
 
 def session_state_dir(session: str) -> Path:
-    """The session's metadata directory (``~/.agentwire/sessions/<name>/``)."""
-    return core.CONFIG_DIR / "sessions" / session.split("@")[0]
+    """The session's metadata directory (``~/.agentwire/sessions/<name>/``).
+
+    Derived from the record path rather than rebuilt (#899): the ``@machine``
+    strip and the containment check both live in
+    :func:`core.session_metadata_path`, so a name that escapes the store raises
+    here instead of addressing a spool outside it.
+    """
+    return core.session_metadata_path(session).parent
 
 
 def spool_path(session: str) -> Path:

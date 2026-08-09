@@ -124,7 +124,7 @@ def unregister(name: str = DEFAULT_NAME, *, purge: bool = False) -> dict:
 
     removed = {"metadata": False, "spool": False, "cursor": False, "pending": 0}
 
-    meta_file = delivery.session_state_dir(name) / "metadata.json"
+    meta_file = core.session_metadata_path(name)
     if meta_file.exists():
         meta_file.unlink()
         removed["metadata"] = True
@@ -168,7 +168,7 @@ def status(name: str = DEFAULT_NAME) -> dict:
 
 def list_buddies() -> list[dict]:
     """Every voice-layer record in the session store."""
-    root = core.CONFIG_DIR / "sessions"
+    root = core.sessions_dir()
     if not root.exists():
         return []
     found = []
