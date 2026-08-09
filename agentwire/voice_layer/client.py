@@ -317,6 +317,18 @@ INBOX_NOTIFIER_JS = """
 //   ackInbox()   -> Promise<{success, messages}>  read + advance the cursor
 //   announce(text, meta)   the page's announce() — no other voice exists here
 //   canSpeak() -> bool     owner not speaking, no active response, nothing queued
+//   canInterrupt() -> bool the RELAXED gate for escalation-kind messages
+//              (#967, reconciled with #962): owner not speaking and no confirm
+//              handshake outstanding — the two legs that stay unconditional —
+//              but NOT waiting for the buddy's own speech to finish. An
+//              escalation is the fleet's already-made judgment (the same
+//              typed kind that emails the owner on dead-letter), so the
+//              interrupt decision is a mechanism check on the message kind,
+//              never "how urgent does the model feel". Optional; absent
+//              means escalations wait like everything else.
+//   reRaise    the re-raise ledger (optional). Ticked only on a FULL-gate
+//              poll with nothing fresh to say — a re-raise is politeness,
+//              never an interrupt, and fresh news always outranks a reminder.
 //   setTimer(fn, ms) / clearTimer(handle), onLog(kind, detail), pollMs
 //   seen: {}   page-lifetime map of ids the owner has actually HEARD. Passed in
 //              rather than owned so it outlives this notifier: a reconnect
@@ -340,6 +352,8 @@ function createInboxNotifier(deps) {
   var pollMs = deps.pollMs;
   var seen = deps.seen;
   var strays = deps.strays;
+  var canInterrupt = deps.canInterrupt || function () { return false; };
+  var reRaise = deps.reRaise || null;
 
   // Announced this session but not yet confirmed spoken. Per-notifier on
   // purpose: if the session dies mid-announcement the map dies with it, so
@@ -356,15 +370,21 @@ function createInboxNotifier(deps) {
   // Coalesce: several replies arriving together are ONE utterance, not a
   // volley of interruptions. No promise language — "got back to you" states
   // what happened, nothing about what will.
+  function isUrgent(m) { return !!m && m.kind === "escalation"; }
+
   function composeNotice(messages) {
+    // An escalation in the batch names itself as one — the owner should be
+    // able to hear the difference between news and an alarm.
+    var prefix = messages.some(isUrgent) ? "Heads up \\u2014 " : "";
     if (messages.length === 1) {
       var m = messages[0];
-      return (m.from || "someone") + " got back to you: " + trimBody(m.text);
+      var verb = isUrgent(m) ? " escalated: " : " got back to you: ";
+      return prefix + (m.from || "someone") + verb + trimBody(m.text);
     }
     var parts = messages.map(function (msg) {
       return "From " + (msg.from || "someone") + ": " + trimBody(msg.text);
     });
-    return messages.length + " updates came in. " + parts.join(" ");
+    return prefix + messages.length + " updates came in. " + parts.join(" ");
   }
 
   function pollOnce() {
@@ -373,21 +393,55 @@ function createInboxNotifier(deps) {
         onLog("inbox", "poll failed: " + ((res && res.error) || "no response"));
         return;
       }
-      // NEVER BARGE IN. A blocked tick marks nothing and loses nothing — the
-      // same replies are still unacked next tick. The gate is checked before
-      // anything is claimed, so waiting is free.
-      if (!canSpeak()) return;
+      // NEVER BARGE IN — on the OWNER. A blocked tick marks nothing and
+      // loses nothing: the same replies are still unacked next tick, so
+      // waiting is free. The gate is two-tier (#967 reconciling #962): the
+      // full gate clears everything; the interrupt gate clears ONLY
+      // escalation-kind messages, and still never fires while the owner is
+      // speaking or a confirm handshake is outstanding. #962's rule survives
+      // intact where it was about the human; the leg it loses is only
+      // "wait for the buddy's own chatter to finish".
+      var full = canSpeak();
+      if (!full && !canInterrupt()) return;
+      var take = function (m) { return full || isUrgent(m); };
+      // Strays: pull only what this tick may speak; the rest STAY in the
+      // array — a stray is cursor-past, so dropping one here loses it.
+      var pulled = [];
+      for (var i = 0; i < strays.length; ) {
+        if (take(strays[i])) pulled.push(strays.splice(i, 1)[0]);
+        else i++;
+      }
       var claimed = {};
-      var fresh = strays.splice(0).concat(res.messages || []).filter(function (m) {
+      var fresh = pulled.concat((res.messages || []).filter(take)).filter(function (m) {
         if (!m || !m.id || seen[m.id] || inFlight[m.id] || claimed[m.id]) return false;
         claimed[m.id] = true;
         return true;
       });
-      if (!fresh.length) return;
+      if (!fresh.length) {
+        // A quiet full-gate tick is the natural gap a re-raise waits for.
+        // Never on the interrupt tier: a reminder is not an alarm.
+        if (full && reRaise) {
+          var reminder = reRaise.dueText();
+          if (reminder) {
+            onLog("reraise", "second mention");
+            announce(reminder, { reRaise: true });
+          }
+        }
+        return;
+      }
       var ids = fresh.map(function (m) { return m.id; });
       ids.forEach(function (id) { inFlight[id] = true; });
       onLog("inbox", "volunteering " + fresh.length + " message(s)");
-      announce(composeNotice(fresh), { inboxIds: ids });
+      // inboxMsgs rides along so the page can register request/escalation
+      // notices in the re-raise ledger AT THE MOMENT THEY ARE HEARD (its
+      // onSpoken) — the ledger must never hold something the owner wasn't
+      // actually told.
+      announce(composeNotice(fresh), {
+        inboxIds: ids,
+        inboxMsgs: fresh.map(function (m) {
+          return { id: m.id, from: m.from, kind: m.kind, text: m.text };
+        }),
+      });
     }).catch(function (err) {
       onLog("inbox", "poll failed: " + err);
     });
@@ -438,6 +492,89 @@ function createInboxNotifier(deps) {
     },
     pollOnce: pollOnce,
     noticeSpoken: noticeSpoken,
+  };
+}
+"""
+
+#: Insistence as re-raise (#967). A peer says a thing once; if you visibly
+#: did not act on it, they say it again — and that needs no interrupt licence
+#: at all, because the re-raise waits for the same full gap any volunteered
+#: notice waits for. Same injected-deps discipline as the announcer and the
+#: notifier; exported by :func:`reraise_source` for the node tests.
+RERAISE_JS = """
+// "Told them, nothing changed." An item enters the ledger only when the owner
+// actually HEARD it (the page registers from the announcer's onSpoken, never
+// from the announce), because re-raising something never said is just saying
+// it — and re-raising something the owner never heard as "still open" reads
+// as an accusation.
+//
+// Resolution is an OBSERVED act, not a model judgment: the page marks a
+// session acted-on when a confirmed write actually went its way. The owner
+// acting outside the buddy's view (typing into the session themselves) is
+// invisible here, and that is priced: the cost is at most ONE extra mention,
+// because an item re-raises exactly once and is then dropped. Twice is a
+// peer; a third time is a nag, and an unbounded reminder loop in a screenless
+// channel is the nag with no off switch.
+function createReRaiseLedger(deps) {
+  var now = deps.now;
+  // How long "nothing changed" has to persist before the second mention.
+  var dueMs = deps.dueMs;
+  var onLog = deps.onLog || function () {};
+
+  var items = {}; // id -> { from, text, at, reRaised, resolved }
+
+  function trim(text) {
+    var t = String(text || "").replace(/\\s+/g, " ").trim();
+    return t.length > 160 ? t.slice(0, 160) + "\\u2026" : t;
+  }
+
+  return {
+    // Idempotent: the same heard notice registering twice (a retried
+    // announcement after a reconnect) must not double the reminder.
+    register: function (id, info) {
+      if (!id || items[id]) return;
+      items[id] = {
+        from: (info && info.from) || "someone",
+        text: trim(info && info.text),
+        at: now(),
+        reRaised: false,
+        resolved: false,
+      };
+      onLog("reraise", "tracking " + id);
+    },
+    // A confirmed write went to `session` — everything it asked about counts
+    // as acted on. Coarse on purpose: matching the reply to the exact request
+    // would need judgment, and a wrongly-suppressed reminder here costs one
+    // mention, not a lost message.
+    actedOn: function (session) {
+      Object.keys(items).forEach(function (id) {
+        if (items[id].from === session) items[id].resolved = true;
+      });
+    },
+    resolve: function (id) {
+      if (items[id]) items[id].resolved = true;
+    },
+    // The one output: text for everything due, or null. Marks what it returns
+    // as re-raised, so a due item speaks exactly once — the CALLER decides
+    // when a gap is a gap (the notifier's full gate), this only decides what
+    // is due.
+    dueText: function () {
+      var due = Object.keys(items).map(function (id) { return items[id]; })
+        .filter(function (it) {
+          return !it.resolved && !it.reRaised && now() - it.at >= dueMs;
+        });
+      if (!due.length) return null;
+      due.forEach(function (it) { it.reRaised = true; });
+      var parts = due.map(function (it) { return it.from + " asked: " + it.text; });
+      return "Still open from earlier — " + parts.join(" And ") +
+        " Nothing has gone their way since. Second mention, so I'll leave it with you.";
+    },
+    pending: function () {
+      return Object.keys(items).filter(function (id) {
+        var it = items[id];
+        return !it.resolved && !it.reRaised;
+      }).length;
+    },
   };
 }
 """
@@ -539,6 +676,7 @@ _PAGE = """<!doctype html>
 __ANNOUNCER__
 __NOTIFIER__
 __CONFIRM_GATE__
+__RERAISE__
 
 const TOKEN = __TOKEN__;
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -586,6 +724,27 @@ const heardReplies = {};
 const strayReplies = [];
 let inboxNotifier = null;
 let ownerSpeaking = false;
+
+// --- insistence as re-raise (#967) -------------------------------------------
+// "Told them, nothing changed" → one more mention at the next quiet full-gate
+// tick, then dropped. Page-lifetime like heardReplies: what the owner was told
+// must survive a stop()/reconnect, or every reconnect resets the peer's memory
+// of its own words. How long "nothing changed" persists before the second
+// mention — two minutes is a natural gap's scale, not a nag's.
+const RERAISE_DUE_MS = 120000;
+const reRaiseLedger = createReRaiseLedger({
+  now: () => Date.now(),
+  dueMs: RERAISE_DUE_MS,
+  onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
+});
+// The target of the most recent proposal — the only place the client can
+// learn which session a confirmed send actually went to, because the send
+// outcome deliberately carries no parameters (the argv is frozen at propose
+// time). A confirm always executes the proposal whose token it holds, which
+// in practice is the last one proposed; the mismatch window (confirming an
+// older proposal after a newer propose) costs at most one wrongly-suppressed
+// or one extra mention, never a lost message.
+let lastProposedSession = null;
 
 // The confirm handshake's gate leg (#962, wave-2 D2): closed while a spoken
 // proposal awaits the owner's confirm word, reopened by a terminal write-tool
@@ -707,8 +866,16 @@ let errorNoticePending = false;
 function onSpoken(meta, how) {
   if (meta && meta.errorNotice) { errorNoticePending = false; return; }
   if (meta && meta.inboxIds) {
-    // A volunteered inbox notice was heard — NOW it may be acked (#962).
+    // A volunteered inbox notice was heard — NOW it may be acked (#962), and
+    // NOW anything in it that asks for action enters the re-raise ledger
+    // (#967). Only kinds that ask — a done/note is news, not a request, and
+    // re-raising news is chatter.
     if (inboxNotifier) inboxNotifier.noticeSpoken(meta);
+    (meta.inboxMsgs || []).forEach((m) => {
+      if (m && (m.kind === "request" || m.kind === "escalation")) {
+        reRaiseLedger.register(m.id, m);
+      }
+    });
     return;
   }
   if (meta && meta.greeting) {
@@ -804,11 +971,20 @@ async function handleFunctionCall(item) {
   // reopens the volunteering gate. A wait outcome (owner_should_wait —
   // pending_transcript / not_announced) keeps the proposal live, so it keeps
   // the gate closed; the TTL covers an owner who never answers at all.
+  if (item.name === "propose_session_message" && result && result.success && result.session) {
+    lastProposedSession = result.session;
+  }
   if (
     (item.name === "send_session_message" || item.name === "cancel_session_message")
     && result && !result.owner_should_wait
   ) {
     confirmGate.resolved();
+    // A QUEUED send is the observable "acted on it" (#967): something the
+    // owner was asked for actually went that session's way, so its pending
+    // reminders retire. A cancel is not acting — the reminder stands.
+    if (item.name === "send_session_message" && result.success && lastProposedSession) {
+      reRaiseLedger.actedOn(lastProposedSession);
+    }
   }
   const mustSpeak = !!(result && result.must_speak && result.say);
   sendFunctionCallOutput(item.call_id, result, mustSpeak);
@@ -891,6 +1067,12 @@ async function start() {
       ackInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: true } }),
       announce: announce,
       canSpeak: () => !ownerSpeaking && !responseActive && !!announcer && announcer.pending() === 0 && !confirmGate.outstanding(),
+      // The interrupt tier (#967): an escalation may pre-empt the buddy's own
+      // speech — announce() cancels an in-flight response, which is the
+      // existing mechanism, not a new voice — but the owner-speaking and
+      // confirm-handshake legs of #962 stay unconditional.
+      canInterrupt: () => !ownerSpeaking && !confirmGate.outstanding(),
+      reRaise: reRaiseLedger,
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (handle) => window.clearTimeout(handle),
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
@@ -1073,7 +1255,10 @@ function stop() {
   // message for good), and `confirmGate` survives too: the spine lives in the
   // bridge, so a proposal outlasts a stop() and its TTL is what reopens the
   // gate. `heardReplies` survives so
-  // the fresh notifier after a reconnect cannot replay a spoken notice (#962).
+  // the fresh notifier after a reconnect cannot replay a spoken notice (#962),
+  // and the re-raise ledger survives with it (#967): what the owner was told
+  // is page-lifetime state, or a reconnect wipes the peer's memory of its own
+  // words and every pending reminder dies with it.
   if (inboxNotifier) { inboxNotifier.stop(); inboxNotifier = null; }
   // A notice pending when the session died was never going to be spoken by
   // it — carrying the flag into the next session would suppress that
@@ -1111,6 +1296,15 @@ def notifier_source() -> str:
     return INBOX_NOTIFIER_JS
 
 
+def reraise_source() -> str:
+    """The re-raise ledger on its own, for the node-driven tests.
+
+    Same rule as :func:`announcer_source`: the code under test is
+    byte-identical to the code in the page.
+    """
+    return RERAISE_JS
+
+
 def confirm_gate_source() -> str:
     """The confirm-outstanding gate on its own, for the node-driven tests.
 
@@ -1126,6 +1320,7 @@ def page(buddy: str, token: str) -> str:
         _PAGE.replace("__ANNOUNCER__", ANNOUNCER_JS)
         .replace("__NOTIFIER__", INBOX_NOTIFIER_JS)
         .replace("__CONFIRM_GATE__", CONFIRM_GATE_JS)
+        .replace("__RERAISE__", RERAISE_JS)
         .replace("__BUDDY__", html.escape(buddy))
         .replace("__TOKEN__", json.dumps(token))
     )
