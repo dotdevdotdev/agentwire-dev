@@ -306,12 +306,14 @@ session by that name — which one did you mean?").
 - Read-only fleet awareness: what is running, what is blocked, what needs you.
 - Reads its own mail from other sessions.
 - **One write: a message to a session that is already running** (§4a below).
-- Speaks only when spoken to.
+- Volunteers replies to things it sent (#962) at a gap; escalation-kind mail
+  may pre-empt the buddy's own speech, never the owner's (#967, Q3 below).
 
 **Does not — and this is where the risk lives:**
 - ❌ No spawning, no session creation, no worktrees. Ever. See [Cold fleet](#cold-fleet-the-buddy-never-starts-an-orchestrator).
 - ❌ No acting directly on the fleet — every write is a request to a session.
-- ❌ No proactive interruption.
+- ❌ Never speaks while the owner is speaking, and never inside a confirm
+  handshake — unconditional for every tier, including escalations.
 
 There is deliberately **no escape hatch**. Adding a capability means adding a
 tool, in a diff someone reviews.
@@ -1077,12 +1079,25 @@ undecided. A next session that picks an answer silently is the failure mode.
       **The cold-fleet corollary is ruled and not open:** if nothing is
       listening, the buddy says so and stops. It never bootstraps an
       orchestrator (see Cold fleet).
-- [ ] **Q3 — What earns the right to interrupt?** Needed before any proactive
-      speech. Candidate triggers, roughly in descending defensibility: a
-      dead-lettered `done`/`escalation` (something is already lost), a dangling
-      PR with no live parent (#716), a session parked on a usage limit, a
-      scheduled task that failed. Everything else is noise. Also needs a
-      quiet-hours answer and a "not now" that persists.
+- [x] **Q3 — What earns the right to interrupt? SETTLED (#967), and the answer
+      is a routing rule, not a judgment.** Every candidate condition — a
+      dead-lettered `done`, auth-expired, a usage-limit park, a blocked pane
+      silently swallowing inbound (#905), a dangling PR — is something the
+      fleet already detects and reports; the buddy does not re-derive that
+      judgment, it keys on the **typed message kind** already in the inbox:
+      `kind: escalation` is interrupt-class, everything else waits for a gap.
+      The reconciliation with #962's never-barge-in: that rule splits into
+      legs, and only one is relaxed. **Never while the owner is speaking** and
+      **never inside a confirm handshake** stay unconditional for every tier;
+      an escalation is allowed to skip only the "wait for the buddy's own
+      chatter to finish" leg (`canInterrupt()` beside `canSpeak()` in the
+      notifier — it pre-empts via the announcer's existing cancel, adding no
+      speaking path). And **insistence needed no interrupt licence at all**:
+      "told them, nothing changed" is a re-raise ledger — a heard `request`/
+      `escalation` that no confirmed write follows gets ONE more mention at
+      the next quiet full-gate tick, then is dropped. Twice is a peer; a
+      third time is a nag. Still open from the original question: quiet
+      hours, and a "not now" that persists.
 
 ### The slices
 
@@ -1091,9 +1106,13 @@ undecided. A next session that picks an answer silently is the failure mode.
       new authority. Do NOT let it become a tool that creates a session.
 - [x] **T2 — Directing.** `msg send` to a session, gated by the confirm spine.
       Shipped in Slice 1 (§4a).
-- [ ] **T3 — Proactive interruption.** Technically easy — the spool is already
-      there — and socially the hardest to get right. An assistant that
-      interrupts badly gets turned off. Blocked on Q3.
+- [x] **T3 — Proactive interruption.** Shipped with Q3's settlement (#967):
+      escalation-kind inbox messages ride the interrupt tier, everything else
+      waits, and the re-raise ledger carries insistence without interrupting
+      anything. Residual (still open): quiet hours, a persistent "not now",
+      and wiring fleet detectors to actually SEND `--kind escalation` to the
+      buddy — today the tier fires only for what other sessions choose to
+      escalate.
 - [ ] **T4 — Lifecycle host.** Wire §6's `services.custom` entry, if and when
       the owner wants the buddy on the startup path. Independent of Q1–Q3; safe
       to do first.

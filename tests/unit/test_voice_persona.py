@@ -109,11 +109,12 @@ class TestInsistenceAndTheBoundary:
         assert "decided in code" in text
 
     def test_never_over_the_owner_survives_as_the_unconditional_leg(self):
-        """#962 reconciliation, prompt side: the sentence narrowed from
-        "never interrupt" to "never speak over the owner" — which is the leg
-        that stays unconditional for every tier."""
+        """#962 reconciliation, prompt side: the sentence narrowed from a bare
+        "never interrupt" to "never interrupt THE OWNER" — the leg that stays
+        unconditional for every tier, while the code-side tier may pre-empt
+        the buddy's own speech."""
         text = full()
-        assert "never speak over the owner" in text
+        assert "never interrupt the owner" in text
 
     def test_the_support_layer_boundary_is_stated_in_full(self):
         persona = instructions.PERSONA
