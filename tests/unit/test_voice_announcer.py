@@ -36,7 +36,7 @@ import textwrap
 
 import pytest
 
-from agentwire.voice_layer import client
+from agentwire.voice_layer import client, confirm, transcript, write_tools
 
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None, reason="node is needed to run the client's own JS"
@@ -938,24 +938,27 @@ class TestTheConfirmGate:
 
     def test_the_page_wires_the_gate_to_the_anchor_and_the_outcome(self):
         """The gate's edges on the page: closed when the proposal is SPOKEN
-        (the onSpoken anchor branch), reopened only by a terminal outcome of
-        the write tools — a wait outcome (owner_should_wait) keeps the
-        proposal live, so it must not reopen the gate."""
+        (the onSpoken anchor branch), reopened by the outcome router — which
+        keys on the payload's confirm_terminal, never on tool names, so a
+        second declared write (#966) reopens it too. The behavioral half runs
+        under node in TestTheOutcomeRouter."""
         page = client.page("buddy", "tok")
         assert client.confirm_gate_source().strip() in page
+        assert client.outcome_router_source().strip() in page
         # ttl mirrors confirm.PROPOSAL_TTL_S — the false-reject bound.
         assert "ttlMs: 120000" in page
         anchor_branch = page.split("if (!meta || !meta.anchor) return;", 1)[1]
         assert "confirmGate.anchored();" in anchor_branch.split("}", 1)[0]
+        wiring = page.split("createOutcomeRouter({", 1)[1].split("});", 1)[0]
+        assert "gate: confirmGate," in wiring
+        assert "ledger: reRaiseLedger," in wiring
         dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
         dispatch = dispatch.split("function spokenText", 1)[0]
-        # The call must exist — split() on a missing token returns the whole
-        # string and every assertion below goes green on comments alone.
-        assert "confirmGate.resolved();" in dispatch
-        resolved_at = dispatch.split("confirmGate.resolved();", 1)[0]
-        assert '"send_session_message"' in resolved_at
-        assert '"cancel_session_message"' in resolved_at
-        assert "owner_should_wait" in resolved_at
+        assert "outcomeRouter.route(item.name, result);" in dispatch
+        # The router is the ONLY dispatcher of the outcome — a second inline
+        # gate/ledger call here would reintroduce the name-keyed path.
+        assert "confirmGate.resolved" not in dispatch
+        assert "reRaiseLedger.actedOn" not in dispatch
 
     def test_the_gate_survives_stop_because_the_proposal_does(self):
         """The spine lives in the bridge, not the page: a reconnect inside
@@ -1519,19 +1522,151 @@ class TestThePersonaAndInterruptWiring:
         # And nowhere else on the page registers.
         assert page.count("reRaiseLedger.register(") == 1
 
-    def test_a_queued_send_retires_the_reminder_and_a_cancel_does_not(self):
-        page = client.page("buddy", "tok")
-        dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
-        dispatch = dispatch.split("function spokenText", 1)[0]
-        assert "reRaiseLedger.actedOn(lastProposedSession);" in dispatch
-        acted_guard = dispatch.split("reRaiseLedger.actedOn", 1)[0]
-        assert 'item.name === "send_session_message" && result.success' in acted_guard
-        assert "lastProposedSession = result.session;" in dispatch
-
     def test_the_ledger_survives_stop(self):
         """Page-lifetime, like heardReplies: stop() must not touch it, or a
-        reconnect wipes the peer's memory of its own words."""
+        reconnect wipes the peer's memory of its own words. Same for the
+        router, whose proposal-target memory the actedOn leg depends on."""
         page = client.page("buddy", "tok")
         stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
         assert "reRaiseLedger." not in stop_body
-        assert "lastProposedSession =" not in stop_body
+        assert "outcomeRouter" not in stop_body
+
+
+# =============================================================================
+# The outcome router: the write outcome's two signals, behaviorally
+# =============================================================================
+
+_ROUTER_HARNESS = """
+const resolvedCalls = [];
+const actedOn = [];
+const router = createOutcomeRouter({
+  gate: { resolved: () => resolvedCalls.push(1) },
+  ledger: { actedOn: (s) => actedOn.push(s) },
+});
+function report() {
+  return JSON.stringify({ resolved: resolvedCalls.length, actedOn });
+}
+"""
+
+
+def run_outcome_router(script: str) -> dict:
+    program = "\n".join(
+        [
+            client.outcome_router_source(),
+            _ROUTER_HARNESS,
+            textwrap.dedent(script),
+            "console.log(report());",
+        ]
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", program],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node failed: {result.stderr.strip()}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def _second_write_tools():
+    """A SECOND gated write, declared from the OUTSIDE via #966's WriteSpec —
+    the write the hard-coded-name gate leg could never have reopened on. Built
+    through the real ``gated_triple`` + a real ``ConfirmSpine`` so the payloads
+    the router is fed are the generalisation's actual output, not a fixture's
+    idea of it."""
+    spec = write_tools.WriteSpec(
+        name="beacon_flare",
+        action="lighting the beacon",
+        params_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        freeze=lambda args: write_tools.FrozenWrite(
+            session="watchtower",
+            instruction="light it",
+            argv_prefix=("echo", "beacon"),
+            append_body=False,
+        ),
+        announce_template="Light the beacon at {session}? Say {phrase}.",
+        fallback_template="Light the beacon at {session}?",
+    )
+    triple = write_tools.gated_triple(spec)
+    handlers = {name: fn for name, _desc, _schema, fn in triple}
+    spine = confirm.ConfirmSpine(transcript.TranscriptRing(), wait_s=0.0)
+    return handlers, spine
+
+
+class TestTheOutcomeRouter:
+    """#966's composition seam: the gate leg used to reopen on hard-coded tool
+    names, so the FIRST second gated write would have left the gate closed for
+    its full TTL — the buddy silently mute, nothing on screen to say why. The
+    router keys on the payload's own confirm_terminal instead, and these tests
+    drive it with payloads produced by an actual second write."""
+
+    def test_a_second_gated_writes_cancel_reopens_the_gate(self):
+        handlers, spine = _second_write_tools()
+        proposal = handlers["propose_beacon_flare"]({}, spine)
+        outcome = handlers["cancel_beacon_flare"](
+            {"confirm_token": proposal["confirm_token"]}, spine
+        )
+        # The generalisation's promise, checked from outside: the terminal
+        # signal is in the payload, no client-side name list required.
+        assert outcome["confirm_terminal"] is True
+        report = run_outcome_router(f"""
+            router.route("cancel_beacon_flare", {json.dumps(outcome)});
+        """)
+        assert report["resolved"] == 1
+        # Terminal is NOT acted-on: a cancelled beacon retires no reminders.
+        assert report["actedOn"] == []
+
+    def test_a_second_writes_wait_outcome_keeps_the_gate_closed(self):
+        """The other edge: a confirm attempted before the proposal was spoken
+        is a WAIT outcome — the proposal is still live, so the gate must stay
+        closed rather than reopen volunteering mid-handshake."""
+        handlers, spine = _second_write_tools()
+        proposal = handlers["propose_beacon_flare"]({}, spine)
+        outcome = handlers["send_beacon_flare"](
+            {"confirm_token": proposal["confirm_token"]}, spine
+        )
+        assert outcome["reason"] in confirm.WAIT_OUTCOMES
+        assert outcome["confirm_terminal"] is False
+        report = run_outcome_router(f"""
+            router.route("send_beacon_flare", {json.dumps(outcome)});
+        """)
+        assert report["resolved"] == 0
+        assert report["actedOn"] == []
+
+    def test_a_queued_send_retires_the_proposed_sessions_reminder(self):
+        """#967's acted-on leg, against the real approved-verdict payload
+        shape: a QUEUED session-message send retires the reminders of the
+        session the last proposal named."""
+        approved = confirm.Verdict(
+            approved=True, reason="approved", utterance="confirm juniper"
+        ).to_dict()
+        assert approved["success"] is True and approved["confirm_terminal"] is True
+        report = run_outcome_router(f"""
+            router.route("propose_session_message",
+                {{ success: true, session: "reviewer" }});
+            router.route("send_session_message", {json.dumps(approved)});
+        """)
+        assert report["resolved"] == 1
+        assert report["actedOn"] == ["reviewer"]
+
+    def test_a_session_message_cancel_reopens_but_never_retires(self):
+        """The priced false-accept: a cancel is terminal but is NOT acting —
+        retiring on it silently loses the re-raise the ledger exists for."""
+        denied = confirm.Verdict(approved=False, reason="denied").to_dict()
+        assert denied["confirm_terminal"] is True
+        report = run_outcome_router(f"""
+            router.route("propose_session_message",
+                {{ success: true, session: "reviewer" }});
+            router.route("cancel_session_message", {json.dumps(denied)});
+        """)
+        assert report["resolved"] == 1
+        assert report["actedOn"] == []
+
+    def test_a_payloadless_result_routes_nowhere(self):
+        report = run_outcome_router("""
+            router.route("send_session_message", null);
+            router.route("buddy_inbox", { success: true, messages: [] });
+        """)
+        assert report["resolved"] == 0
+        assert report["actedOn"] == []
