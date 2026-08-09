@@ -544,6 +544,16 @@ class TestThePageEmbedsTheRealThing:
         assert "errorNoticePending" in page
         assert "window.speechSynthesis.cancel()" not in page
 
+    def test_stop_resets_the_error_notice_gate(self):
+        """The reset must live INSIDE stop(), pinned — a notice pending when a
+        session died was never going to be spoken by it, and carrying the flag
+        into the next session suppresses that session's FIRST error notice,
+        silently. Unpinned, a refactor drops the reset and nothing notices:
+        the exact unexercised-protection shape the quoted-frame guard had."""
+        page = client.page("buddy", "tok")
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "errorNoticePending = false;" in stop_body
+
     def test_the_proposal_say_field_is_speech_not_a_directive(self):
         """#950 root cause: one field carrying two kinds of value. `say` must
         now be literal first-person speech that the disarm check can match,
