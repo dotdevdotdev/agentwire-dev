@@ -29,6 +29,7 @@ a guard; the runner is injected rather than stubbed at the subprocess layer.
 """
 
 import itertools
+import re
 import threading
 import time
 
@@ -1709,6 +1710,79 @@ def _flat(text: str) -> str:
     """
     lines = [line.lstrip().removeprefix("> ").removeprefix(">") for line in text.splitlines()]
     return " ".join(" ".join(lines).split())
+
+
+class TestTheFallbackEchoCannotApprove:
+    """Issue #950 defect 4: the confirm-gate bypass.
+
+    ``speechSynthesis`` output is NOT on the WebRTC audio path, so the
+    browser's echo cancellation does not suppress it — the fallback's own
+    audio re-enters the microphone and lands in the USER transcript inside
+    the valid approval window. Nothing in the gate distinguishes an echoed
+    utterance from a spoken one, so whatever the fallback channel utters is
+    a string the gate may be fed verbatim.
+
+    The property under test: **no fragment of what the fallback channel
+    speaks can approve the proposal it announces.** Fragments, not just the
+    whole text — the echo is lossy and adversarially timed (VAD chunks on
+    pauses, the model's overlapping voice masks parts of it, the cascade
+    garbles others), so the guard must hold for every piece individually.
+    Testing only the full echo would pass by luck: the full directive
+    happens to contain "do not", which the denial grammar catches, while
+    the one chunk that matters — "to approve, say confirm <nonce>" —
+    approves cleanly on its own.
+    """
+
+    def _mint(self, ring_cls=transcript.TranscriptRing):
+        ring = ring_cls()
+        runner = RecordingRunner()
+        spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner)
+        convo = Conversation(ring, spine)
+        result = write_tools.propose_session_message(
+            {"session": "orchestrator", "message": "restart the portal",
+             "_buddy": "buddy"},
+            spine,
+        )
+        # Anchor: the proposal was spoken (by whichever voice), so the echo
+        # lands squarely inside the valid approval window.
+        spine.announce(result["proposal_id"], convo._next())
+        return result, convo, runner
+
+    @staticmethod
+    def _fallback_speech(result):
+        # Exactly what the client's fallback channel utters: the announcer
+        # speaks the dedicated fallback text when the payload carries one,
+        # else the say text — mirroring `speak(item.fallbackText || item.text)`.
+        return result.get("fallback_say") or result["say"]
+
+    def _chunks(self, result):
+        spoken = self._fallback_speech(result)
+        pieces = [c.strip() for c in re.split(r"[.;:—,]", spoken) if c.strip()]
+        return [spoken, *pieces]
+
+    def test_no_fragment_of_the_fallback_output_approves(self, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
+        probe, _, _ = self._mint()
+        for index in range(len(self._chunks(probe))):
+            result, convo, runner = self._mint()
+            echoed = self._chunks(result)[index]
+            convo.says(echoed)
+            verdict = write_tools.send_session_message(
+                {"confirm_token": result["confirm_token"]}, convo.spine
+            )
+            assert runner.calls == [], (
+                f"echoed fragment {echoed!r} WROTE with no human speaking"
+            )
+            assert verdict["success"] is False, echoed
+
+    def test_the_fallback_channel_never_carries_the_nonce(self, monkeypatch):
+        """The structural fix: the nonce must not be reachable from the
+        un-echo-cancelled channel at all. A guard downstream is defence in
+        depth; this is the property that makes the echo harmless."""
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
+        result, _, _ = self._mint()
+        nonce = result["confirm_phrase"].split()[1]
+        assert nonce not in confirm.normalize(self._fallback_speech(result))
 
 
 class TestHonestLimit:

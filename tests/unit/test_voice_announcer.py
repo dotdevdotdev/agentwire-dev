@@ -311,6 +311,89 @@ class TestTheFallbackIsArmedNotTriggered:
         assert len(creates(report)) == 1
         assert report["spoken"] == ["That expired before you confirmed it."]
 
+    def test_the_fallback_utters_the_fallback_text_not_the_say_text(self):
+        """#950 defect 4. speechSynthesis is outside WebRTC echo cancellation,
+        so whatever this channel utters can re-enter the mic and land in the
+        USER transcript. A proposal's `say` carries the nonce; its fallback
+        variant must not — and the announcer must route the right text to the
+        right channel."""
+        report = run_announcer("""
+            announcer.announce("I'm ready to send it. To approve, say confirm tango.",
+                               { anchor: "a1b2c3" },
+                               "I'm ready to send it. Ask me for the code word.");
+            fireTimers();
+        """)
+        assert report["spoken"] == ["I'm ready to send it. Ask me for the code word."]
+        assert report["anchored"] == [{"meta": {"anchor": "a1b2c3"}, "how": "fallback"}]
+
+    def test_the_disarm_still_verifies_against_the_say_text(self):
+        """The transcript check verifies what the MODEL was scripted to say,
+        regardless of the fallback variant riding along."""
+        report = run_announcer("""
+            const say = "I'm ready to send it. To approve, say confirm tango.";
+            announcer.announce(say, { anchor: "a1b2c3" }, "different fallback words");
+            announcer.onResponseDone(say);
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert report["anchored"] == [{"meta": {"anchor": "a1b2c3"}, "how": "model"}]
+
+    def test_a_response_created_after_the_announce_defers_the_timer_once(self):
+        """#950 defect 1's residual: at the timeout, a response that began
+        AFTER our announce may be the model still mid-audio on this very text.
+        One bounded deferral — it can delay speech, never suppress it."""
+        report = run_announcer("""
+            announcer.announce("a long announcement still being spoken");
+            announcer.onResponseCreated();   // plausibly our scripted turn
+            fireTimers();                    // defers, does not speak
+        """)
+        assert report["spoken"] == []
+        assert report["armedTimers"] == 1, "must re-arm, not give up"
+
+        report = run_announcer("""
+            announcer.announce("a long announcement still being spoken");
+            announcer.onResponseCreated();
+            fireTimers();                    // the one deferral
+            fireTimers();                    // second firing MUST speak
+        """)
+        assert report["spoken"] == ["a long announcement still being spoken"]
+
+    def test_a_response_in_flight_before_the_announce_never_defers(self):
+        """The not_announced recursion's exact state. A pre-existing response
+        is not evidence our text is being spoken, and deferring on it would
+        delay the one announcement that must be prompt."""
+        report = run_announcer("""
+            announcer.onResponseCreated();   // in flight BEFORE the announce
+            announcer.announce("Hang on — I haven't finished telling you yet.");
+            fireTimers();
+        """)
+        assert report["spoken"] == ["Hang on — I haven't finished telling you yet."]
+
+    def test_a_finished_or_cancelled_response_stops_deferring(self):
+        """Once the in-flight response ended without carrying the text, there
+        is no audio left to wait for — the next firing speaks."""
+        report = run_announcer("""
+            announcer.announce("the reason");
+            announcer.onResponseCreated();
+            announcer.onResponseDone("something else entirely");
+            fireTimers();
+        """)
+        assert report["spoken"] == ["the reason"]
+
+    def test_the_cancel_is_sent_only_when_a_response_is_active(self):
+        """#950 defect 2's first edge: an unconditional cancel with nothing
+        active errors server-side, and an error handler that speaks turns that
+        into a loop. Idle → no cancel; active → cancel."""
+        idle = run_announcer("""
+            announcer.announce("a refusal");
+        """)
+        assert len(cancels(idle)) == 0
+        active = run_announcer("""
+            announcer.onResponseCreated();
+            announcer.announce("a refusal");
+        """)
+        assert len(cancels(active)) == 1
+
     def test_queued_refusals_all_get_spoken(self):
         report = run_announcer("""
             announcer.announce("first reason");
@@ -450,6 +533,47 @@ class TestThePageEmbedsTheRealThing:
             lowered = text.lower()
             assert "two digits" not in lowered
             assert "confirm four seven" not in lowered
+
+    def test_the_error_handler_cannot_feed_itself(self):
+        """#950 defect 2, both edges, pinned on the page source: the error our
+        own best-effort cancel generates is never announced, and only one
+        error notice may be pending at a time. Plus defect 3: no cancel()
+        before speak() — it killed the previous utterance mid-word."""
+        page = client.page("buddy", "tok")
+        assert 'if (code === "response_cancel_not_active") break;' in page
+        assert "errorNoticePending" in page
+        assert "window.speechSynthesis.cancel()" not in page
+
+    def test_the_proposal_say_field_is_speech_not_a_directive(self):
+        """#950 root cause: one field carrying two kinds of value. `say` must
+        now be literal first-person speech that the disarm check can match,
+        and the model-facing directive must live in a key the announcer never
+        reads."""
+        from unittest.mock import patch
+
+        from agentwire import inbox
+        from agentwire.voice_layer import confirm as confirm_mod
+        from agentwire.voice_layer import transcript, write_tools
+
+        spine = confirm_mod.ConfirmSpine(transcript.TranscriptRing(), wait_s=0.0)
+        with patch.object(inbox, "live_sessions", lambda: {"orchestrator"}):
+            result = write_tools.propose_session_message(
+                {"session": "orchestrator", "message": "restart it",
+                 "_buddy": "buddy"},
+                spine,
+            )
+        for directive in ("tell the owner", "do not call", "spell it out"):
+            assert directive not in result["say"].lower()
+            assert directive not in result["fallback_say"].lower()
+        # And the model speaking `say` verbatim genuinely disarms the timer —
+        # the mechanism the directive-in-say defect broke.
+        report = run_announcer(f"""
+            const say = {json.dumps(result["say"])};
+            announcer.announce(say, null, {json.dumps(result["fallback_say"])});
+            announcer.onResponseDone(say);
+            fireTimers();
+        """)
+        assert report["spoken"] == []
 
     def test_the_client_has_no_silent_catch(self):
         """The four silent paths §3.5 names. ``catch { return; }`` was the

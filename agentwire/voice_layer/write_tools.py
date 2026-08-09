@@ -131,18 +131,40 @@ def propose_session_message(args: dict, spine) -> dict:
         # speaks this, which is what makes "the approval postdates the proposal"
         # mean "after the owner heard it".
         "anchor_proposal_id": proposal.id,
-        # Scripted text, so its CONTENT is the mechanism. A stale word here is
-        # not cosmetic — it is the scripted-instructions mechanism working
-        # exactly as designed, with the wrong script. (This string carried
-        # "say the two digits separately" from the digit-nonce design long
-        # after the alphabet became words, because it lives in a prompt string
-        # rather than in logic any test exercised.)
+        # `say` is LITERAL TEXT TO UTTER, like every other must_speak payload.
+        # It used to be a directive to the model ("Tell the owner plainly
+        # what you are about to send…"), which conflated two kinds of value in
+        # one field with one consumer that cannot tell them apart: the
+        # announcer scripted the directive verbatim, the transcript-match
+        # disarm could then never fire (the directive's words appear in no
+        # correct announcement), and the fallback timer always spoke — over
+        # the model, and carrying the nonce (#950 defects 1 and 4).
+        #
+        # Its content is still the mechanism, not cosmetics: a stale word here
+        # is the scripted-instructions mechanism working exactly as designed,
+        # with the wrong script.
         "say": (
-            f"Tell the owner plainly what you are about to send — the actual words, "
-            f"'{instruction}', and that it is going to {session} — then say: "
-            f"to approve, say {phrase}. Say the code word clearly, as a word; "
-            f"do not spell it out. Do not call send_session_message until you "
-            f"have said this and they have answered."
+            f"I'm ready to send to {session}: '{instruction}'. "
+            f"To approve, say {phrase}."
+        ),
+        # What the BROWSER-VOICE fallback speaks instead of `say`.
+        # speechSynthesis output is not on the WebRTC path, so echo
+        # cancellation does not suppress it — anything this channel utters can
+        # re-enter the microphone and land in the USER transcript inside the
+        # approval window. So the nonce must not be reachable from here: an
+        # echo of this text cannot carry an approval, structurally. The owner
+        # who only heard the fallback asks for the code word, and the model —
+        # whose audio IS echo-cancelled — speaks it.
+        "fallback_say": (
+            f"I'm ready to send to {session}: '{instruction}'. "
+            f"Ask me for the code word when you want me to send it."
+        ),
+        # Model-facing behaviour, moved OUT of the spoken field. This rides
+        # back as function_call_output context; the announcer never utters it.
+        "model_guidance": (
+            "Say the code word clearly, as a word; do not spell it out. "
+            "Do not call send_session_message until you have said the "
+            "proposal aloud and the owner has answered."
         ),
     }
 

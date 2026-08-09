@@ -109,7 +109,8 @@ function createAnnouncer(deps) {
   var fallbackMs = deps.fallbackMs || 6000;
 
   var queue = [];
-  var current = null;       // { text, meta, timer }
+  // { text, fallbackText, meta, timer, sawCreate, deferred }
+  var current = null;
   var responseActive = false;
 
   // The model is told to say it exactly, but "exactly" is prompt compliance and
@@ -151,13 +152,35 @@ function createAnnouncer(deps) {
   // "on failure, speak".
   function armFallback(item) {
     item.timer = setTimer(function () {
+      // ONE bounded deferral, on one narrow signal: a response was CREATED
+      // after our announce went out and has not finished. That response is
+      // plausibly the model speaking this very announcement, still mid-audio
+      // — firing now is the two-voices defect (#950 defect 1). Deferring can
+      // only DELAY speech, never suppress it: the flag is per-item, checked
+      // once, and the re-armed timer speaks unconditionally. A response
+      // created BEFORE the announce (the not_announced recursion's state)
+      // never defers — sawCreate is only set while this item is current.
+      if (item.sawCreate && !item.deferred) {
+        item.deferred = true;
+        onLog("fallback", "deferred once — a response is mid-flight");
+        armFallback(item);
+        return;
+      }
       onLog("fallback", "no spoken confirmation within " + fallbackMs + "ms");
       if (current === item) current = null;
       // The owner DID hear it — in a robot voice, but they heard it. Anything
       // keyed on "was this spoken" (the proposal anchor) must be told so here,
       // or the fallback that GUARANTEES speech becomes the reason a proposal
       // is never anchored and the owner's correct nonce is refused forever.
-      try { speak(item.text, function () { onSpoken(item.meta, "fallback"); }); }
+      //
+      // What this channel UTTERS is `fallbackText` when the payload carries
+      // one. speechSynthesis is outside the WebRTC path, so echo cancellation
+      // does not cover it — its audio can re-enter the mic and land in the
+      // USER transcript. A payload whose spoken text must not be echoable
+      // into an approval (a proposal carrying its nonce) supplies a
+      // fallback-safe variant; everything else falls through to `text`.
+      var say = item.fallbackText || item.text;
+      try { speak(say, function () { onSpoken(item.meta, "fallback"); }); }
       catch (e) { onSpoken(item.meta, "fallback"); }
       pump();
     }, fallbackMs);
@@ -175,10 +198,16 @@ function createAnnouncer(deps) {
     // Armed FIRST, before anything that could fail silently.
     armFallback(item);
 
-    // Best-effort cancel. response.cancel against an already-finished response
-    // is an error — ignore it and carry on: the timer is what guarantees the
-    // announcement, so nothing here needs to succeed for the owner to be told.
-    send({ type: "response.cancel" });
+    // Cancel ONLY when our mirror says a response is active. The mirror is
+    // stale by construction, and both stale directions are priced: stale-true
+    // sends a cancel with nothing active (the server errors, and the client
+    // suppresses that specific error rather than announcing it); stale-false
+    // skips the cancel, our create is rejected server-side, and the TIMER
+    // still speaks — nothing here needs to succeed for the owner to be told.
+    // The unconditional cancel was one edge of a closed loop: cancel with
+    // nothing active → error event → spoken error notice → another cancel
+    // (#950 defect 2).
+    if (responseActive) send({ type: "response.cancel" });
 
     send({
       type: "response.create",
@@ -191,16 +220,35 @@ function createAnnouncer(deps) {
   }
 
   return {
-    announce: function (text, meta) {
+    announce: function (text, meta, fallbackText) {
       if (!text) return;
-      queue.push({ text: String(text), meta: meta || null, timer: null });
+      queue.push({
+        text: String(text),
+        fallbackText: fallbackText ? String(fallbackText) : null,
+        meta: meta || null,
+        timer: null,
+        sawCreate: false,
+        deferred: false,
+      });
       pump();
     },
-    onResponseCreated: function () { responseActive = true; },
+    onResponseCreated: function () {
+      responseActive = true;
+      // A response beginning while this item is current is the one signal
+      // that its audio may be OURS mid-flight — see the deferral in
+      // armFallback. Only ever set while current, so a response that predates
+      // the announce cannot defer it.
+      if (current) current.sawCreate = true;
+    },
     // A cancelled response only clears the in-flight flag. It must NEVER
     // disarm or count as spoken: a cancelled turn can carry partial audio that
     // said something else, and our OWN cancel produces one.
-    onResponseCancelled: function () { responseActive = false; },
+    onResponseCancelled: function () {
+      responseActive = false;
+      // Whatever was in flight is dead, so it can no longer be "our audio
+      // still playing" — the deferral signal must not outlive it.
+      if (current) current.sawCreate = false;
+    },
     onResponseDone: function (transcript) {
       responseActive = false;
       if (!current) { pump(); return; }
@@ -215,7 +263,9 @@ function createAnnouncer(deps) {
         pump();
       }
       // Otherwise leave the timer armed. A response that said something else
-      // is not evidence the owner heard the refusal.
+      // is not evidence the owner heard the refusal — and it has FINISHED, so
+      // it is no longer a reason to defer either.
+      else if (current) current.sawCreate = false;
     },
     // Test/inspection surface.
     pending: function () { return (current ? 1 : 0) + queue.length; },
@@ -351,12 +401,26 @@ function forward(path, body) {
 }
 
 // Everything the owner must HEAR goes through here. Never `log()` alone for
-// anything that changes what they should do next.
-function announce(text, meta) {
+// anything that changes what they should do next. `fallbackText`, when given,
+// is what the browser-voice fallback utters instead of `text` — the
+// un-echo-cancelled channel gets the echo-safe variant.
+function announce(text, meta, fallbackText) {
   log("buddy", text, "buddy");
-  if (announcer) announcer.announce(text, meta);
-  else { try { window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {} }
+  if (announcer) announcer.announce(text, meta, fallbackText);
+  else {
+    try {
+      window.speechSynthesis.speak(
+        new SpeechSynthesisUtterance(fallbackText || text));
+    } catch (e) {}
+  }
 }
+
+// One spoken error notice at a time. An error event while a previous notice
+// is still unspoken logs but does not announce — the first is the actionable
+// signal, and announcing each one is the other edge of the announce → error →
+// announce loop (#950 defect 2). Cleared when the notice is actually SPOKEN
+// (see onSpoken), so a later, distinct error can announce again.
+let errorNoticePending = false;
 
 // The proposal anchor. Driven ONLY by evidence the proposal was spoken:
 // `how` is "model" (a response.done carried the text) or "fallback" (the
@@ -371,6 +435,7 @@ function announce(text, meta) {
 // made it wrong was the fallback firing, which is the mechanism added to
 // GUARANTEE speech.
 function onSpoken(meta, how) {
+  if (meta && meta.errorNotice) { errorNoticePending = false; return; }
   if (!meta || !meta.anchor) return;
   log("speak", "anchored proposal " + meta.anchor + " (" + how + ")", "tool");
   forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
@@ -450,8 +515,12 @@ async function handleFunctionCall(item) {
   const mustSpeak = !!(result && result.must_speak && result.say);
   sendFunctionCallOutput(item.call_id, result, mustSpeak);
   if (mustSpeak) {
+    // `say` is literal text to utter — the one payload that used to carry a
+    // model DIRECTIVE here got read aloud verbatim (#950 root cause).
+    // `fallback_say`, when present, is the echo-safe text for the
+    // browser-voice channel (it never carries a nonce).
     announce(result.say, result.anchor_proposal_id
-      ? { anchor: result.anchor_proposal_id } : null);
+      ? { anchor: result.anchor_proposal_id } : null, result.fallback_say);
   }
 }
 
@@ -505,7 +574,10 @@ async function start() {
           // believing they were told: say so on screen and in the log.
           log("error", "browser voice FAILED: " + (event && event.error), "err");
         };
-        window.speechSynthesis.cancel();
+        // No cancel() first: speechSynthesis queues natively, and cancelling
+        // here killed the PREVIOUS announcement mid-utterance — under a burst
+        // each notice interrupted the last and every one logged
+        // "browser voice FAILED: interrupted" (#950 defect 3).
         window.speechSynthesis.speak(utterance);
       },
       onSpoken,
@@ -607,12 +679,23 @@ async function start() {
           }
           break;
 
-        case "error":
+        case "error": {
           // Was DOM-only, i.e. silent to the ear. An error the owner cannot
           // hear about is one they will keep talking into.
           log("error", JSON.stringify(payload), "err");
-          announce("The voice service reported an error, so I may have missed that.");
+          // Our OWN best-effort cancel produces this one when the response it
+          // aimed at already finished. Announcing an error the announcer
+          // itself generated is the announce → cancel → error → announce loop
+          // (#950 defect 2): nothing was missed, nothing to say.
+          const code = payload.error && payload.error.code;
+          if (code === "response_cancel_not_active") break;
+          if (!errorNoticePending) {
+            errorNoticePending = true;
+            announce("The voice service reported an error, so I may have missed that.",
+              { errorNotice: true });
+          }
           break;
+        }
       }
     });
 

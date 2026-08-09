@@ -546,9 +546,27 @@ def classify(text: str, nonce: str) -> str:
     if not positions:
         return NO_MATCH
 
+    # The announcement frame, not an approval. The buddy's own proposal line
+    # is "… To approve, say confirm <nonce>." — and speechSynthesis audio is
+    # outside WebRTC echo cancellation, so a fragment of it can land in the
+    # USER transcript (#950 defect 4). The structural fix is that the fallback
+    # channel never carries the nonce; this is defence in depth for the frame
+    # itself: "confirm" immediately preceded by "say", in an utterance that
+    # also frames with "approve", is quoted instruction, and no human phrases
+    # an approval that way. Deliberately NARROW — both conditions — because
+    # the false-reject half is priced too: refusing a bare "say confirm
+    # tango" from an owner parroting the advice line would loop them against
+    # advice that says exactly those words. What this does NOT establish: an
+    # echo chunked down to bare "confirm <nonce>" (frame lost) still
+    # approves; only the nonce-free fallback text closes that.
+    def _quoted_frame(index: int) -> bool:
+        return index > 0 and tokens[index - 1] == "say" and "approve" in tokens
+
     for index in positions:
         rest = tokens[index + 1:]
         if not rest or rest[0] != target:
+            continue
+        if _quoted_frame(index):
             continue
         # Found "confirm <nonce>". A denial anywhere in the utterance — before
         # or after — is a take-back, and outranks the phrase.
@@ -794,9 +812,12 @@ SPOKEN = {
     # saying it yet" is itself swallowed by the response it is describing, the
     # owner hears nothing, waits, and the conversation deadlocks on two parties
     # each waiting for the other. The announcer must not special-case it, must
-    # not skip the cancel for it, and must not treat "a response is in flight"
-    # as a reason to defer — see client.py's createAnnouncer, where the
-    # fallback timer is armed before anything that can fail.
+    # not skip the cancel for it (the cancel is gated on the in-flight mirror,
+    # which is TRUE in exactly this state), and a response already in flight
+    # BEFORE the announce must never defer its fallback — see client.py's
+    # createAnnouncer: the timer is armed before anything that can fail, and
+    # the one bounded deferral keys only on a response created AFTER the
+    # announce, which can delay speech but never suppress it.
     "not_announced": (
         "Hang on — I haven't finished telling you what I'd send yet."
     ),
