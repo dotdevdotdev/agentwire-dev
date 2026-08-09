@@ -111,8 +111,11 @@ contradict the honest limit above two paragraphs later.
 the transcriber renders inconsistently makes a CORRECT approval fail every
 time, and the taxonomy then tells the owner to say it again — so they repeat and
 fail identically. That is a livelock, and it is worse than the false-accept the
-strictness was buying. Hence :data:`NONCE_WORDS` (one spelling each, no digits)
-and containment rather than whole-utterance matching. See :func:`classify`.
+strictness was buying. Hence :data:`NONCE_WORDS` (one TRANSCRIBER RENDERING
+each — which is a stronger claim than one spelling, and the difference cost two
+of the original twenty words) and containment rather than whole-utterance
+matching, with disfluencies skipped between the confirm word and the nonce.
+See :func:`classify`.
 
 The nonce carries a second property worth naming: **the owner cannot say a
 nonce they have not heard**, which independently covers most of the barge-in
@@ -227,10 +230,30 @@ MAX_CONFIRM_ATTEMPTS = 5
 #:
 #: These are one-word, unambiguously spelled, and mutually distinct under
 #: ordinary mis-hearing. Chosen for how they SOUND, not for how they look.
+#:
+#: **"One spelling each" is a claim about the TRANSCRIBER, not about the
+#: orthography**, and two of the original twenty failed it in the same way the
+#: digits did — not by mis-firing, but by livelocking:
+#:
+#: - ``harbor`` — a Whisper-lineage model emits en-GB ``harbour`` freely.
+#: - ``ripcord`` — a compound, and ``rip cord`` is an ordinary segmentation.
+#:
+#: Neither variant is in this tuple, so the outcome is not even
+#: ``wrong_nonce``: it is ``no_match``, whose spoken advice is "say confirm and
+#: then the word I gave you". The owner repeats the identical utterance, fails
+#: identically, and the proposal retires at :data:`MAX_CONFIRM_ATTEMPTS`. That
+#: is the digit failure exactly, reached through spelling rather than digits.
+#:
+#: They are REMOVED rather than aliased. A variant-folding map beside
+#: :data:`_NUMBER_WORDS` would fail only in the safe direction, but it can only
+#: fold token-for-token — ``rip cord`` is two tokens and needs a compound-merge
+#: pass — and folding a spelling for a word we no longer mint is machinery with
+#: nothing to do. The selection rule replaces both: **one morpheme, no
+#: en-US/en-GB split.**
 NONCE_WORDS = (
-    "tango", "harbor", "violet", "cobalt", "meadow", "falcon", "amber",
+    "tango", "banjo", "violet", "cobalt", "meadow", "falcon", "amber",
     "kestrel", "juniper", "onyx", "saffron", "walrus", "domino", "pelican",
-    "quartz", "thistle", "vertigo", "narwhal", "gumbo", "ripcord",
+    "quartz", "thistle", "vertigo", "narwhal", "gumbo", "lantern",
 )
 
 #: Digit spellings, kept for normalization only. Nothing MINTS a digit nonce;
@@ -304,9 +327,23 @@ _FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "like", "you", "know
 #: ``("scrap", "that")`` and ``("hold", "off")`` are added: closed retraction
 #: phrases one word from entries already here, so they were plain misses and
 #: cost nothing.
+#: ``("never", "confirm")`` closes the one place the "a missed retraction is
+#: safe" fallback does not hold. ``never`` is kept OUT of the word list above
+#: for good reason — it is among the commonest words in English — and the
+#: general argument for tolerating that is "the write still needs a nonce, so
+#: the owner can simply not say it". **That argument fails on this exact
+#: utterance**: "never confirm tango" IS the retraction and it CONTAINS the
+#: nonce, so the fallback the exclusion leans on is the very thing being
+#: spoken. Measured before the fix: APPROVED, along with "you should never
+#: confirm tango".
+#:
+#: Safe by the closed-phrase rule rather than by intuition: no genuine approval
+#: places those two tokens ADJACENT IN THAT ORDER. ``never`` anywhere else in
+#: the utterance stays the ordinary word it was excluded for being — "confirm
+#: tango, I never got the other one" still approves.
 _DENIAL_BIGRAMS = frozenset(
-    {("do", "not"), ("never", "mind"), ("hold", "on"), ("hang", "on"),
-     ("hold", "off"), ("forget", "it"), ("forget", "that"),
+    {("do", "not"), ("never", "mind"), ("never", "confirm"), ("hold", "on"),
+     ("hang", "on"), ("hold", "off"), ("forget", "it"), ("forget", "that"),
      ("scrap", "that"), ("belay", "that")}
 )
 
@@ -327,15 +364,43 @@ _DENIAL_BIGRAMS = frozenset(
 #:
 #: The intuition is "don't forget X has no reading meaning cancel" — arguable,
 #: and it survived eleven adversarial phrasings. But the checkable reason is
-#: better: **this exception suppresses exactly ONE token** — the ``dont`` at
-#: that index — and cannot mask a denial signal anywhere else, because the word
-#: loop continues past it and the bigram loop has already run. So its
-#: incompleteness has nothing to be incomplete ABOUT.
+#: better: **an exception suppresses exactly the tokens of its own span** —
+#: here the ``dont`` and the ``forget`` — and cannot mask a denial signal
+#: anywhere else, because the word loop continues past it and the bigram loop
+#: has already run. So its incompleteness has nothing to be incomplete ABOUT.
+#:
+#: **That sentence was false in the code for one round, and it is the whole
+#: safety argument.** The masking loop computed ``len(trio or pair)`` — and
+#: ``trio`` is non-empty whenever any token remains — so a matched TWO-token
+#: exception masked THREE tokens and ate the word after its own span.
+#: Measured: "confirm tango, don't forget — hold on" and "confirm tango, don't
+#: forget, cancel the other one" both APPROVED, and ``carries_denial("don't
+#: forget, wait")`` was False, so the post-approval scan was blind to it too.
+#: The span is now taken from the rule that actually matched. An exception's
+#: mask is only ever as safe as its length.
 #:
 #: That is the form a future exception should be argued in. Its one known miss,
 #: "don't forget, on second thought skip it", contains no grammar word at all
 #: and is the stated §3.7 residual, not a gap in this entry.
-_DENIAL_EXCEPTIONS = frozenset({("dont", "forget")})
+#:
+#: ``("cant", "wait")`` is the second entry and clears the same bar. It is a
+#: CLOSED idiom — "can't wait" has no reading meaning "hold off" — and it is a
+#: measured false reject: "confirm tango, tell them I can't wait to see it"
+#: DENIED on the bare ``wait``. Post-normalization ``cant`` is a distinct
+#: token, so the pair is expressible without touching ``wait`` itself, and the
+#: mask covers those two tokens only: any other retraction in the utterance
+#: still denies, including a second bare ``wait``.
+#:
+#: Its price, stated rather than assumed: a hesitated hold spelled "can't —
+#: wait!" normalizes to the same two tokens and is suppressed. That is a real
+#: false accept, and it is accepted for the same reason the ``("hold","on")``
+#: ordering is: the idiom is common in ordinary speech and the hold spelling is
+#: rare, and a lone ``wait`` anywhere else in the utterance still denies.
+#:
+#: Note the anchor sits at the TAIL here (``wait``), not the head. An exception
+#: must CONTAIN a denial trigger or it suppresses nothing; requiring it first
+#: would be a rule about spelling rather than about what is being suppressed.
+_DENIAL_EXCEPTIONS = frozenset({("dont", "forget"), ("cant", "wait")})
 
 #: Trigrams that suppress a BIGRAM denial. "do not forget the other branch" is
 #: the uncontracted twin of the ``("dont", "forget")`` exception above, and it
@@ -419,9 +484,21 @@ def _denial_tokens(tokens: "list[str]") -> bool:
     for index in range(len(masked)):
         pair = tuple(masked[index:index + 2])
         trio = tuple(masked[index:index + 3])
-        if pair in _DENIAL_EXCEPTIONS or trio in _DENIAL_BIGRAM_EXCEPTIONS:
-            for offset in range(index, min(index + len(trio or pair), len(masked))):
-                masked[offset] = ""
+        # The span comes from the rule that MATCHED, never from whichever slice
+        # happened to be longer. `len(trio or pair)` was 3 whenever a third
+        # token existed, so a two-token exception masked the word after its own
+        # span — and that word was allowed to be a denial trigger. See
+        # _DENIAL_EXCEPTIONS: the "suppresses exactly its own span" claim is the
+        # entire argument for these entries being safe, so the length is not an
+        # implementation detail of the loop.
+        if trio in _DENIAL_BIGRAM_EXCEPTIONS:
+            span = 3
+        elif pair in _DENIAL_EXCEPTIONS:
+            span = 2
+        else:
+            continue
+        for offset in range(index, index + span):
+            masked[offset] = ""
 
     for index in range(len(masked) - 1):
         if tuple(masked[index:index + 2]) in _DENIAL_BIGRAMS:
@@ -569,12 +646,30 @@ def classify(text: str, nonce: str) -> str:
     # advice that says exactly those words. What this does NOT establish: an
     # echo chunked down to bare "confirm <nonce>" (frame lost) still
     # approves; only the nonce-free fallback text closes that.
+    # Fillers are skipped BETWEEN the confirm word and the nonce, for the same
+    # reason the denial grammar strips them before matching: "confirm, uh,
+    # tango" is the phrase, said by someone hesitating before a code word,
+    # which is exactly how people say code words. Requiring strict adjacency
+    # refused a CORRECT approval and burned an attempt against the budget —
+    # the false-reject half, and in this channel that is a silent loop.
+    #
+    # Safe by the file's own asymmetry argument: BOTH content words are still
+    # required, in order. What is skipped is a closed set of disfluencies, and
+    # an unlisted one fails CLOSED (no match, re-propose) rather than open. The
+    # widening it does buy is real and small: "confirm — you know, tango was
+    # the word" now approves. Containment already approves any utterance
+    # carrying "confirm <nonce>", so this adds only the filler-separated
+    # spelling of the same thing.
+    def _rest_after(index: int) -> "list[str]":
+        return [t for t in tokens[index + 1:] if t not in _FILLERS]
+
     def _quoted_frame(index: int) -> bool:
-        return index > 0 and tokens[index - 1] == "say" and "approve" in tokens
+        preceding = [t for t in tokens[:index] if t not in _FILLERS]
+        return bool(preceding) and preceding[-1] == "say" and "approve" in tokens
 
     quoted = False
     for index in positions:
-        rest = tokens[index + 1:]
+        rest = _rest_after(index)
         if not rest or rest[0] != target:
             continue
         if _quoted_frame(index):
@@ -596,7 +691,7 @@ def classify(text: str, nonce: str) -> str:
     if quoted:
         return QUOTED_FRAME
     for index in positions:
-        rest = tokens[index + 1:]
+        rest = _rest_after(index)
         if rest and rest[0] in NONCE_WORDS:
             return WRONG_NONCE
     return NO_MATCH
@@ -973,6 +1068,14 @@ SPOKEN = {
     "pending_transcript": (
         "Give me a second — I'm still catching up on what you said. Don't repeat it yet."
     ),
+    # A duplicate confirm on a token already being processed. It must NOT say
+    # "nothing was sent" — the first confirm may be inside the runner as this
+    # is spoken — and it must not send the owner to re-propose, which is how a
+    # duplicate becomes a double delivery. Wait, then hear the real outcome.
+    "in_flight": (
+        "Hang on — I'm already working on that one. "
+        "I'll tell you how it went in a moment; don't repeat it yet."
+    ),
     "too_many_attempts": (
         "I've got that wrong too many times, so I've dropped it. Ask me again from the top."
     ),
@@ -997,7 +1100,11 @@ SPOKEN = {
 
 #: Outcomes whose correct owner response is to WAIT rather than to speak again.
 #: Named so the persona and the tests can both reason about it.
-WAIT_OUTCOMES = frozenset({"pending_transcript", "not_announced"})
+#: ``in_flight`` belongs here on both counts the flag drives: the owner's
+#: correct move is to wait, and ``confirm_terminal`` must stay False — closing
+#: the gate on a duplicate would close it out from under the confirm that is
+#: actually running.
+WAIT_OUTCOMES = frozenset({"pending_transcript", "not_announced", "in_flight"})
 
 #: Every reason :class:`ConfirmSpine` can return. The SSOT for the taxonomy.
 #:
@@ -1012,7 +1119,7 @@ REASONS = frozenset(
     {
         "no_proposal", "expired", "not_announced", "replayed", "refused",
         "wrong_nonce", "quoted_frame", "denied", "pending_transcript",
-        "too_many_attempts", "dispatch_failed",
+        "too_many_attempts", "dispatch_failed", "in_flight",
     }
 )
 
@@ -1134,6 +1241,8 @@ class ConfirmSpine:
         #: Tokens whose write was attempted and FAILED. Kept apart from
         #: _succeeded so a retry is told the truth rather than "already sent".
         self._failed: set[str] = set()
+        #: Tokens claimed by a confirm that has not returned yet. See _claim.
+        self._in_flight: set[str] = set()
 
     # -- propose ------------------------------------------------------------
 
@@ -1209,13 +1318,39 @@ class ConfirmSpine:
         if refusal is not None:
             return refusal
 
+        try:
+            return self._confirm_claimed(proposal, token)
+        finally:
+            # Released on EVERY exit, including a raising runner. A marker left
+            # set is a proposal wedged for its whole TTL, answering every retry
+            # with "still working on that one" — a silent loop, which is the
+            # expensive failure in a channel with no screen.
+            with self._lock:
+                self._in_flight.discard(token)
+
+    def _confirm_claimed(self, proposal: Proposal, token: str) -> Verdict:
         anchor = proposal.anchor_seq or 0
-        # Snapshot the conversation's high-water mark BEFORE the await, so the
-        # post-approval denial scan is bounded to what the owner had actually
-        # said by the time this confirm started.
+        # The high-water mark is read TWICE: once before the await, and again
+        # after it, taking the larger. The post-approval scan must be bounded —
+        # an unbounded ring tail lets an utterance from a different context
+        # retroactively deny — but bounding it to the PRE-await snapshot left
+        # the guard closed only for utterances the owner had already started
+        # when confirm was entered.
+        #
+        # The hole that leaves: a denial the owner BEGINS during the ≤2.5s
+        # await records its speech_started above the snapshot and carries no
+        # transcript yet, so `after` (which filters on complete) cannot see it
+        # and `unheard_between` excluded it for exceeding the ceiling. The
+        # write went out with a take-back mid-transcription. Re-reading makes
+        # the bound "everything the owner had started by the time this confirm
+        # reached its verdict" — still bounded, and still strictly before the
+        # verdict. The false-reject price is one pending_transcript wait, which
+        # the owner is told to sit through and which resolves on the next
+        # confirm; the widened `found` seqs are subsumed, since high_seq
+        # advances on every ring event.
         ceiling = max(self._ring.high_seq, anchor)
         found = self._ring.await_utterance_after(anchor, self._wait_s)
-        ceiling = max(ceiling, *(u.speech_started_seq for u in found)) if found else ceiling
+        ceiling = max(ceiling, self._ring.high_seq)
         verdict = self._judge(proposal, found, ceiling)
 
         if not verdict.approved:
@@ -1379,7 +1514,25 @@ class ConfirmSpine:
         )
 
     def _claim(self, token: str) -> "tuple[Proposal | None, Verdict | None]":
+        """Take exclusive ownership of *token*, or say why not.
+
+        **Single use is a property of this method, not of the timing.** The
+        proposal used to be consumed at the far side of the await and the
+        judge, so two confirms carrying one token could both pass here and both
+        reach the runner. It was not reproducible — client dispatch is
+        sequential per response and the judge window is sub-timeslice — but
+        each ``response.done`` spawns its own async IIFE and the bridge is a
+        ``ThreadingHTTPServer``, so the sequencing that made it safe is nowhere
+        in the code. This module's standard is guarantee by construction.
+
+        The marker also fixes what the second confirm was TOLD. Arriving while
+        the runner was mid-dispatch, it found the proposal already popped and
+        reported ``no_proposal`` — "tell me again what you'd like sent" —
+        inviting a re-propose of a write that was in the act of going out.
+        """
         with self._lock:
+            if token in self._in_flight:
+                return None, Verdict(approved=False, reason="in_flight")
             if token in self._failed:
                 return None, Verdict(approved=False, reason="dispatch_failed")
             if token in self._succeeded:
@@ -1401,6 +1554,7 @@ class ConfirmSpine:
                 return None, Verdict(approved=False, reason="no_proposal")
             if not proposal.announced:
                 return None, Verdict(approved=False, reason="not_announced")
+            self._in_flight.add(token)
             return proposal, None
 
     def _penalize(self, token: str) -> bool:
