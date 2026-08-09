@@ -346,8 +346,12 @@ class TestNarrowBoundary:
         text = instructions.build_instructions()
         boundary = text[text.index("BOUNDARY.") :]
         first_para = boundary.split("\n\n")[0]
-        assert "look" in first_para.lower()
-        assert "buddy_sent" in first_para or "tool" in first_para.lower()
+        # "look it up" specifically — a bare "look" also matches "looked
+        # wrong" in the anomaly clause, which let a gutted observable
+        # direction pass (caught by mutation testing).
+        assert "look it up" in first_para
+        assert "buddy_sent" in first_para
+        assert "decline" not in first_para.lower()
 
     def test_never_reassures_past_an_owner_reported_anomaly(self):
         flowed = " ".join(instructions.build_instructions().split()).lower()
