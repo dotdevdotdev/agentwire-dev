@@ -323,6 +323,12 @@ INBOX_NOTIFIER_JS = """
 //              builds a fresh notifier over the same map and cannot replay a
 //              spoken notice — while a notice announced but never SPOKEN is
 //              not in it, and is correctly said again.
+//   strays: [] page-lifetime array of acked-but-never-spoken replies (the
+//              peek/ack race — see noticeSpoken). The cursor is already past
+//              them, so the spool will NEVER return them again: this array is
+//              their only way back to the owner's ear, and giving it to the
+//              notifier to own meant a stop() before the next gated tick took
+//              it to the grave. Passed in for the same reason `seen` is.
 function createInboxNotifier(deps) {
   var fetchInbox = deps.fetchInbox;
   var ackInbox = deps.ackInbox;
@@ -333,15 +339,12 @@ function createInboxNotifier(deps) {
   var onLog = deps.onLog || function () {};
   var pollMs = deps.pollMs;
   var seen = deps.seen;
+  var strays = deps.strays;
 
   // Announced this session but not yet confirmed spoken. Per-notifier on
   // purpose: if the session dies mid-announcement the map dies with it, so
   // the unheard notice is retried — `seen` alone decides what is settled.
   var inFlight = {};
-  // Acked-but-never-spoken messages (the peek/ack race — see noticeSpoken).
-  // The cursor has moved past them, so the spool will never return them
-  // again; this list is their only way back to the owner's ear.
-  var strays = [];
   var timer = null;
   var stopped = false;
 
@@ -439,6 +442,39 @@ function createInboxNotifier(deps) {
 }
 """
 
+#: The confirm-outstanding gate (#962 never-barge-in, wave-2 D2). A proposal
+#: SPOKEN but not yet answered is a handshake in progress: the buddy must not
+#: volunteer an inbox notice between "say confirm X" and the owner saying it.
+#: The interjection cannot corrupt the confirm — the nonce is unreachable from
+#: any delivered body since #953 — it is barging in, which #962 forbids on its
+#: own. Both halves of the guard are priced (the messaging drain's lesson): the
+#: false-accept is one rude interjection; the false-reject is a buddy that goes
+#: silently mute in a screenless channel, so the block EXPIRES on the
+#: proposal's own TTL rather than on an outcome the owner may never produce.
+#: Same injected-deps discipline as the announcer and the notifier, so the TTL
+#: behaviour runs under node; exported by :func:`confirm_gate_source`.
+CONFIRM_GATE_JS = """
+// "A proposal is outstanding" is a client-side mirror of the spine, driven by
+// the two edges the client actually observes: anchored() when the announcer
+// confirms the proposal was SPOKEN (the same evidence that starts the server
+// TTL), resolved() when a write tool returns a terminal outcome. An outcome
+// the owner never produces is covered by the TTL, never waited on.
+function createConfirmGate(deps) {
+  var now = deps.now;
+  var ttlMs = deps.ttlMs;
+  // -1 is "no proposal", not a zero timestamp — a proposal anchored at
+  // clock 0 is still a proposal.
+  var since = -1;
+  return {
+    anchored: function () { since = now(); },
+    resolved: function () { since = -1; },
+    outstanding: function () {
+      return since >= 0 && now() - since < ttlMs;
+    },
+  };
+}
+"""
+
 _PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -502,6 +538,7 @@ _PAGE = """<!doctype html>
 <script>
 __ANNOUNCER__
 __NOTIFIER__
+__CONFIRM_GATE__
 
 const TOKEN = __TOKEN__;
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -540,8 +577,27 @@ const INBOX_POLL_MS = 5000;
 // Page-lifetime: ids the owner has actually HEARD. Never reset by stop() — a
 // reconnect must not replay every notice.
 const heardReplies = {};
+// Page-lifetime, like heardReplies: acked-but-never-spoken replies (the
+// peek/ack race). The cursor is already past them and the spool has no
+// ack-by-id, so this array is their only way back to the owner's ear — a
+// stop() or reconnect must not take it down with the notifier. A full page
+// unload still loses whatever is here; closing that residual needs an
+// ack-by-id the inbox does not offer.
+const strayReplies = [];
 let inboxNotifier = null;
 let ownerSpeaking = false;
+
+// The confirm handshake's gate leg (#962, wave-2 D2): closed while a spoken
+// proposal awaits the owner's confirm word, reopened by a terminal write-tool
+// outcome or by the proposal's own TTL — never left waiting on an answer the
+// owner may not give. Page-lifetime on purpose: the spine lives in the
+// bridge, so a proposal survives a stop(), and a reconnect inside the TTL
+// can still be answered.
+const confirmGate = createConfirmGate({
+  now: () => Date.now(),
+  // Mirrors confirm.PROPOSAL_TTL_S — the bound on the false-reject half.
+  ttlMs: 120000,
+});
 
 // --- the greeting (#963) ----------------------------------------------------
 // The buddy speaks first — and since #950 the write path is fail-closed on
@@ -666,6 +722,9 @@ function onSpoken(meta, how) {
     return;
   }
   if (!meta || !meta.anchor) return;
+  // The proposal is now HEARD and the confirm window is open — the same
+  // evidence that starts the server-side TTL closes the volunteering gate.
+  confirmGate.anchored();
   log("speak", "anchored proposal " + meta.anchor + " (" + how + ")", "tool");
   forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
 }
@@ -741,6 +800,16 @@ async function handleFunctionCall(item) {
   // A proposal rides along as `meta.anchor`: it is anchored when the announcer
   // confirms the text was actually SPOKEN, by the model or by the fallback
   // voice — never merely because some response.done happened to carry text.
+  // A terminal outcome from the write tools ends the confirm handshake and
+  // reopens the volunteering gate. A wait outcome (owner_should_wait —
+  // pending_transcript / not_announced) keeps the proposal live, so it keeps
+  // the gate closed; the TTL covers an owner who never answers at all.
+  if (
+    (item.name === "send_session_message" || item.name === "cancel_session_message")
+    && result && !result.owner_should_wait
+  ) {
+    confirmGate.resolved();
+  }
   const mustSpeak = !!(result && result.must_speak && result.say);
   sendFunctionCallOutput(item.call_id, result, mustSpeak);
   if (mustSpeak) {
@@ -821,12 +890,13 @@ async function start() {
       fetchInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: false } }),
       ackInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: true } }),
       announce: announce,
-      canSpeak: () => !ownerSpeaking && !responseActive && !!announcer && announcer.pending() === 0,
+      canSpeak: () => !ownerSpeaking && !responseActive && !!announcer && announcer.pending() === 0 && !confirmGate.outstanding(),
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (handle) => window.clearTimeout(handle),
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
       pollMs: INBOX_POLL_MS,
       seen: heardReplies,
+      strays: strayReplies,
     });
     dc.addEventListener("open", () => { setStatus("listening"); $stop.disabled = false; });
     dc.addEventListener("close", () => setStatus("closed"));
@@ -998,7 +1068,11 @@ function stop() {
   sessionReady = false;
   audioAttached = false;
   ownerSpeaking = false;
-  // The clock dies with the session; `heardReplies` deliberately survives, so
+  // The clock dies with the session; `heardReplies` and `strayReplies`
+  // deliberately survive (a stray is cursor-past — losing the array loses the
+  // message for good), and `confirmGate` survives too: the spine lives in the
+  // bridge, so a proposal outlasts a stop() and its TTL is what reopens the
+  // gate. `heardReplies` survives so
   // the fresh notifier after a reconnect cannot replay a spoken notice (#962).
   if (inboxNotifier) { inboxNotifier.stop(); inboxNotifier = null; }
   // A notice pending when the session died was never going to be spoken by
@@ -1037,11 +1111,21 @@ def notifier_source() -> str:
     return INBOX_NOTIFIER_JS
 
 
+def confirm_gate_source() -> str:
+    """The confirm-outstanding gate on its own, for the node-driven tests.
+
+    Same rule as :func:`announcer_source`: the code under test is
+    byte-identical to the code in the page.
+    """
+    return CONFIRM_GATE_JS
+
+
 def page(buddy: str, token: str) -> str:
     """Render the client page for one buddy + one run token."""
     return (
         _PAGE.replace("__ANNOUNCER__", ANNOUNCER_JS)
         .replace("__NOTIFIER__", INBOX_NOTIFIER_JS)
+        .replace("__CONFIRM_GATE__", CONFIRM_GATE_JS)
         .replace("__BUDDY__", html.escape(buddy))
         .replace("__TOKEN__", json.dumps(token))
     )
