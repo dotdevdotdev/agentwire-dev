@@ -705,8 +705,26 @@ class Proposal:
         # that structural rather than a calling convention.
         return [
             *self.argv_prefix,
-            render_body(self.instruction, self.request_utterance, self.id),
+            render_body(
+                self.instruction,
+                self.request_utterance,
+                self.id,
+                reply_to=self._reply_target(),
+            ),
         ]
+
+    def _reply_target(self) -> str:
+        """The sender name from the frozen argv — who a reply should address.
+
+        Read from the frozen ``--from`` rather than passed separately, so the
+        nudge can never name anyone other than the identity the message
+        actually goes out under.
+        """
+        prefix = self.argv_prefix
+        for index, token in enumerate(prefix[:-1]):
+            if token == "--from":
+                return prefix[index + 1]
+        return ""
 
 
 # =============================================================================
@@ -798,7 +816,25 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def render_body(instruction: str, request_utterance: str, proposal_id: str) -> str:
+def reply_nudge(reply_to: str) -> str:
+    """The body's reply-path slot: the literal command that reaches the buddy.
+
+    #962's live failure: the recipient answered a buddy request IN ITS OWN
+    TERMINAL, and the reply never came back — the owner is listening, not
+    watching that pane, so an on-screen answer is a lost one. ``--from buddy``
+    and the ``<voice>`` marker say who asked; neither says how to answer. This
+    slot does, as a runnable command rather than prose, because the recipient
+    is an agent and the one thing it reliably does with a command is run it.
+
+    The role text (worker/orchestrator) states the same etiquette; the slot is
+    what covers recipients running with no agentwire role text at all.
+    """
+    return f'reply: agentwire msg send --to {_clip(reply_to, 40)} --kind done "<answer>"'
+
+
+def render_body(
+    instruction: str, request_utterance: str, proposal_id: str, *, reply_to: str = ""
+) -> str:
     """The fixed one-line shape every buddy write carries (§4b).
 
     Part one is what the buddy asked for; part two is what the owner actually
@@ -840,6 +876,18 @@ def render_body(instruction: str, request_utterance: str, proposal_id: str) -> s
         parts.append(f"said: \"{_clip(request_utterance, MAX_UTTERANCE_CHARS)}\"")
     parts.append(f"#{proposal_id}")
     body = " ┃ ".join(parts)
+    # The reply-path slot (#962) is DROPPABLE, whole-or-not-at-all: it rides
+    # only when the full body still fits MAX_BODY_CHARS, and it slots in
+    # BEFORE the id so the id is never what pays for it. Both halves priced:
+    # included, it makes the reply path a runnable command; dropped, the cost
+    # is a missing nudge — the role text still states the etiquette — never a
+    # half-truncated command or a clipped id. A budget bump here would need
+    # the pane re-measurement MAX_BODY_CHARS documents; a droppable slot does
+    # not.
+    if reply_to.strip():
+        with_nudge = " ┃ ".join([*parts[:-1], reply_nudge(reply_to), parts[-1]])
+        if len(with_nudge) <= MAX_BODY_CHARS:
+            body = with_nudge
     body = _clip(body, MAX_BODY_CHARS)
     # Explicit, not incidental — see the docstring. A body reaching the CLI as
     # a flag is a bug this repo has shipped twice.
@@ -1340,6 +1388,7 @@ __all__ = [
     "mint_nonce",
     "normalize",
     "render_body",
+    "reply_nudge",
     "request_utterance_from",
     "spoken_nonce",
 ]
