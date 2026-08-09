@@ -943,6 +943,10 @@ class TestTheConfirmGate:
         anchor_branch = page.split("if (!meta || !meta.anchor) return;", 1)[1]
         assert "confirmGate.anchored();" in anchor_branch.split("}", 1)[0]
         dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
+        dispatch = dispatch.split("function spokenText", 1)[0]
+        # The call must exist — split() on a missing token returns the whole
+        # string and every assertion below goes green on comments alone.
+        assert "confirmGate.resolved();" in dispatch
         resolved_at = dispatch.split("confirmGate.resolved();", 1)[0]
         assert '"send_session_message"' in resolved_at
         assert '"cancel_session_message"' in resolved_at
