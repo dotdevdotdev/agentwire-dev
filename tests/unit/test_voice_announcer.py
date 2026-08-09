@@ -596,6 +596,238 @@ class TestTheGreeting:
         assert "approve" in warning.group(1).lower()
 
 
+# The buddy's clock (#962): a fake bridge with real cursor semantics — fetch
+# peeks from the cursor, ack advances it past everything unread — plus a fake
+# timer queue and a shared `seen` map so a reconnect (a second notifier over
+# the same page state) is a scenario the test can build.
+_NOTIFIER_HARNESS = """
+const announcedCalls = [];
+const logs = [];
+const seen = {};
+let spool = [];
+let cursor = 0;
+let speakable = true;
+let timers = [];
+let nextHandle = 1;
+
+function fetchInbox() {
+  return Promise.resolve({ success: true, messages: spool.slice(cursor) });
+}
+function ackInbox() {
+  const msgs = spool.slice(cursor);
+  cursor = spool.length;
+  return Promise.resolve({ success: true, messages: msgs });
+}
+function makeNotifier(overrides) {
+  return createInboxNotifier(Object.assign({
+    fetchInbox, ackInbox,
+    announce: (text, meta) => announcedCalls.push({ text, meta }),
+    canSpeak: () => speakable,
+    setTimer: (fn, ms) => { const h = nextHandle++; timers.push({ h, fn, ms }); return h; },
+    clearTimer: (h) => { timers = timers.filter((t) => t.h !== h); },
+    onLog: (kind, detail) => logs.push(kind + ": " + detail),
+    pollMs: 5000,
+    seen,
+  }, overrides || {}));
+}
+let notifier = makeNotifier();
+function report() {
+  return JSON.stringify({
+    announced: announcedCalls, logs, cursor, seen, armedTimers: timers.length,
+  });
+}
+"""
+
+
+def run_notifier(script: str) -> dict:
+    program = "\n".join(
+        [
+            client.notifier_source(),
+            _NOTIFIER_HARNESS,
+            textwrap.dedent(script),
+            "console.log(report());",
+        ]
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", program],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node failed: {result.stderr.strip()}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+class TestTheBuddyClock:
+    """#962. The notifier is the buddy's one clock: it polls the spool and
+    volunteers replies — through the injected announce(), never its own
+    speaking path."""
+
+    def test_three_replies_are_one_utterance(self):
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "minecraft", kind: "done", text: "finished; 4 options" },
+              { id: "m2", from: "billing", kind: "note", text: "deploy went out" },
+              { id: "m3", from: "docs", kind: "done", text: "draft ready" },
+            ];
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+        text = report["announced"][0]["text"]
+        for who in ("minecraft", "billing", "docs"):
+            assert who in text
+        assert report["announced"][0]["meta"]["inboxIds"] == ["m1", "m2", "m3"]
+
+    def test_it_never_barges_in_and_loses_nothing_by_waiting(self):
+        """Both halves of the gate: blocked while the owner is busy, and the
+        very same reply is volunteered on the next tick — a wrongly-silent
+        clock is a silent loop, not a safe failure."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            speakable = false;
+            await notifier.pollOnce();
+            logs.push("blocked: " + announcedCalls.length);
+            speakable = true;
+            await notifier.pollOnce();
+        """)
+        assert "blocked: 0" in report["logs"]
+        assert len(report["announced"]) == 1
+
+    def test_ack_happens_only_after_it_was_spoken(self):
+        """The cohort-teardown lesson: collect the report, THEN kill the
+        child. Acking on read marks delivered a report the owner never
+        heard."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+            logs.push("cursor after announce: " + cursor);
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+        """)
+        assert "cursor after announce: 0" in report["logs"]
+        assert report["cursor"] == 1
+        assert report["seen"] == {"m1": True}
+
+    def test_a_pending_notice_is_not_reannounced_by_the_next_tick(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+            await notifier.pollOnce();   // still unacked — must not repeat
+        """)
+        assert len(report["announced"]) == 1
+
+    def test_a_spoken_reply_is_never_replayed_across_a_reconnect(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+            cursor = 0;                  // even if the spool is re-read whole
+            notifier = makeNotifier();   // the reconnect
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+
+    def test_an_announced_but_unheard_reply_is_retried_after_reconnect(self):
+        """The other half: announced is not heard. A session that died before
+        speaking must not count the notice delivered — the new notifier says
+        it again."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();   // announced… and the session dies
+            notifier = makeNotifier();   // never spoken, never acked
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+
+    def test_a_reply_landing_between_speak_and_ack_is_not_silently_acked(self):
+        """ack advances the cursor past EVERYTHING unread, including a message
+        that arrived after the peek. That message was never spoken — it must
+        surface on a later tick, not vanish behind the cursor."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+            spool.push({ id: "m2", from: "billing", kind: "note", text: "late arrival" });
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        assert "billing" in report["announced"][1]["text"]
+        assert report["announced"][1]["meta"]["inboxIds"] == ["m2"]
+
+    def test_an_empty_inbox_is_silence(self):
+        """The recipient never replying produces silence — no follow-up, no
+        apology, no chatter."""
+        report = run_notifier("""
+            await notifier.pollOnce();
+            await notifier.pollOnce();
+        """)
+        assert report["announced"] == []
+
+    def test_a_failed_poll_is_logged_not_spoken_and_not_fatal(self):
+        report = run_notifier("""
+            notifier = makeNotifier({
+              fetchInbox: () => Promise.resolve({ success: false, error: "bridge down" }),
+            });
+            await notifier.pollOnce();
+        """)
+        assert report["announced"] == []
+        assert any("bridge down" in line for line in report["logs"])
+
+    def test_start_arms_the_loop_and_stop_disarms_it(self):
+        report = run_notifier("""
+            notifier.start();
+            await new Promise((r) => setImmediate(r));
+            logs.push("armed after start: " + timers.length);
+            notifier.stop();
+            logs.push("armed after stop: " + timers.length);
+        """)
+        assert "armed after start: 1" in report["logs"]
+        assert "armed after stop: 0" in report["logs"]
+
+    def test_the_page_wires_the_notifier_through_announce_only(self):
+        """No second speaking path (#950): the notifier's announce dep IS the
+        page's announce, the poll interval is a named constant, and the
+        response.create count is unchanged."""
+        page = client.page("buddy", "tok")
+        assert client.notifier_source().strip() in page
+        assert "const INBOX_POLL_MS" in page
+        assert "createInboxNotifier({" in page
+        assert "announce: announce," in page
+        assert page.count('type: "response.create"') == 2
+
+    def test_the_page_gates_on_owner_and_response_state(self):
+        page = client.page("buddy", "tok")
+        assert (
+            "canSpeak: () => !ownerSpeaking && !responseActive"
+            " && !!announcer && announcer.pending() === 0," in page
+        )
+        started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
+        assert "ownerSpeaking = true;" in started.split("break;", 1)[0]
+        committed = page.split('case "input_audio_buffer.committed":', 1)[1]
+        assert "ownerSpeaking = false;" in committed.split("break;", 1)[0]
+
+    def test_the_page_polls_the_inbox_tool_and_acks_via_on_spoken(self):
+        page = client.page("buddy", "tok")
+        assert (
+            'fetchInbox: () => post("/tool", { name: "buddy_inbox",'
+            " arguments: { ack: false } })," in page
+        )
+        assert (
+            'ackInbox: () => post("/tool", { name: "buddy_inbox",'
+            " arguments: { ack: true } })," in page
+        )
+        # onSpoken routes a spoken notice back to the notifier for the ack.
+        onspoken_body = page.split("function onSpoken(meta, how)", 1)[1]
+        assert "meta.inboxIds" in onspoken_body.split("function send", 1)[0]
+
+    def test_heard_replies_survive_stop_but_the_notifier_does_not(self):
+        page = client.page("buddy", "tok")
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "inboxNotifier.stop();" in stop_body
+        assert "heardReplies =" not in stop_body
+        assert "heardReplies[" not in stop_body
+
+
 class TestThePageEmbedsTheRealThing:
     def test_the_page_contains_the_announcer_verbatim(self):
         """The tests above run ``announcer_source()``; the page must embed the
