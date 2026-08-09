@@ -312,8 +312,13 @@ session by that name — which one did you mean?").
 **Does not — and this is where the risk lives:**
 - ❌ No spawning, no session creation, no worktrees. Ever. See [Cold fleet](#cold-fleet-the-buddy-never-starts-an-orchestrator).
 - ❌ No acting directly on the fleet — every write is a request to a session.
-- ❌ Never speaks while the owner is speaking, and never inside a confirm
-  handshake — unconditional for every tier, including escalations.
+- ❌ Never speaks while the owner is speaking — unconditional for every tier,
+  including escalations. And never inside a confirm handshake, where the
+  protected window opens at the anchor — the moment the proposal's
+  announcement is confirmed spoken — and closes on the outcome or the TTL.
+  (Before the anchor, an escalation can still pre-empt the proposal
+  announcement itself; that is recoverable — an unanchored proposal is
+  unconfirmable and the fallback timer re-speaks — not protected.)
 
 There is deliberately **no escape hatch**. Adding a capability means adding a
 tool, in a diff someone reviews.
@@ -1087,8 +1092,11 @@ undecided. A next session that picks an answer silently is the failure mode.
       judgment, it keys on the **typed message kind** already in the inbox:
       `kind: escalation` is interrupt-class, everything else waits for a gap.
       The reconciliation with #962's never-barge-in: that rule splits into
-      legs, and only one is relaxed. **Never while the owner is speaking** and
-      **never inside a confirm handshake** stay unconditional for every tier;
+      legs, and only one is relaxed. **Never while the owner is speaking**
+      stays unconditional for every tier, and **never inside a confirm
+      handshake** holds from the proposal's anchor (announcement confirmed
+      spoken) to its outcome or TTL — the window `confirmGate.outstanding()`
+      actually measures;
       an escalation is allowed to skip only the "wait for the buddy's own
       chatter to finish" leg (`canInterrupt()` beside `canSpeak()` in the
       notifier — it pre-empts via the announcer's existing cancel, adding no

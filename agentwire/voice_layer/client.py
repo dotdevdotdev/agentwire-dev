@@ -424,7 +424,9 @@ function createInboxNotifier(deps) {
           var reminder = reRaise.dueText();
           if (reminder) {
             onLog("reraise", "second mention");
-            announce(reminder, { reRaise: true });
+            // The ids ride along so the page can commit the second mention
+            // from onSpoken — dueText consumes nothing (see the ledger).
+            announce(reminder.text, { reRaise: true, reRaiseIds: reminder.ids });
           }
         }
         return;
@@ -554,20 +556,36 @@ function createReRaiseLedger(deps) {
     resolve: function (id) {
       if (items[id]) items[id].resolved = true;
     },
-    // The one output: text for everything due, or null. Marks what it returns
-    // as re-raised, so a due item speaks exactly once — the CALLER decides
-    // when a gap is a gap (the notifier's full gate), this only decides what
-    // is due.
+    // The one output: { text, ids } for everything due, or null. Marks
+    // NOTHING — the caller announces it, and only evidence the owner HEARD
+    // it (the page's onSpoken) commits the second mention via spoken(ids).
+    // Consuming at compose time was the ack-before-spoken shape #962 D1 was:
+    // a stop() or a cancelled announcement between compose and speech
+    // silently lost the one reminder this ledger exists to produce. Between
+    // announce and spoken the full gate stays closed (canSpeak requires an
+    // empty announcer queue), so a due item cannot be composed twice in
+    // flight; a withdrawn announcement simply comes due again — the retry
+    // is the point.
     dueText: function () {
-      var due = Object.keys(items).map(function (id) { return items[id]; })
-        .filter(function (it) {
-          return !it.resolved && !it.reRaised && now() - it.at >= dueMs;
-        });
-      if (!due.length) return null;
-      due.forEach(function (it) { it.reRaised = true; });
-      var parts = due.map(function (it) { return it.from + " asked: " + it.text; });
-      return "Still open from earlier — " + parts.join(" And ") +
-        " Nothing has gone their way since. Second mention, so I'll leave it with you.";
+      var ids = Object.keys(items).filter(function (id) {
+        var it = items[id];
+        return !it.resolved && !it.reRaised && now() - it.at >= dueMs;
+      });
+      if (!ids.length) return null;
+      var parts = ids.map(function (id) {
+        return items[id].from + " asked: " + items[id].text;
+      });
+      return {
+        text: "Still open from earlier — " + parts.join(" And ") +
+          " Nothing has gone their way since. Second mention, so I'll leave it with you.",
+        ids: ids,
+      };
+    },
+    // The reminder was confirmed spoken — NOW the second mention is spent.
+    spoken: function (ids) {
+      (ids || []).forEach(function (id) {
+        if (items[id]) items[id].reRaised = true;
+      });
     },
     pending: function () {
       return Object.keys(items).filter(function (id) {
@@ -902,6 +920,13 @@ let errorNoticePending = false;
 // GUARANTEE speech.
 function onSpoken(meta, how) {
   if (meta && meta.errorNotice) { errorNoticePending = false; return; }
+  if (meta && meta.reRaise) {
+    // The second mention is spent only NOW — the same ack-after-spoken
+    // discipline as inbox notices (#962): a reminder announced but never
+    // spoken comes due again instead of dying marked-but-unheard.
+    reRaiseLedger.spoken(meta.reRaiseIds || []);
+    return;
+  }
   if (meta && meta.inboxIds) {
     // A volunteered inbox notice was heard — NOW it may be acked (#962), and
     // NOW anything in it that asks for action enters the re-raise ledger

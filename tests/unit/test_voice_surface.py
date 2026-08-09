@@ -17,6 +17,7 @@ Three properties, each asserted structurally rather than by inspection:
 
 from __future__ import annotations
 
+import ast
 import itertools
 import re
 from pathlib import Path
@@ -106,6 +107,13 @@ class TestTierAudit:
         for a, b in itertools.combinations(surface.ALL_TIERS, 2):
             assert a & b == set(), f"names in two tiers: {sorted(a & b)}"
 
+    def test_a_destructive_consume_is_gated_not_light(self):
+        """B2 of the wave-3 review: msg_pull takes a session param and reads
+        AND REMOVES that session's ingest messages — no one-action undo. The
+        light grade came from the name reading like a fetch; the grade keys
+        on the effect."""
+        assert surface.tier_of("msg_pull") == "write_gated"
+
     def test_tier_of_covers_the_taxonomy(self):
         assert surface.tier_of("sessions_list") == "read"
         assert surface.tier_of("desktop_focus_window") == "write_light"
@@ -155,6 +163,206 @@ class TestTierThreeIsUnreachableByName:
                 assert not tool.name.endswith(capability), (
                     f"read tool {tool.name} shadows non-read capability {capability}"
                 )
+
+
+# =============================================================================
+# 2b. No tiered-in tool's dispatch path can create a session
+# =============================================================================
+#
+# The wave-3 lesson: `task_run` and `scheduler_run` sat GATED while both
+# dispatch through `agentwire ensure` — which creates the session when it is
+# missing and then drives it — clause (a) under names that don't look like it.
+# A by-name exclusion list cannot catch the next one, so this analyzer keys on
+# the DISPATCH PATH: it walks every MCP tool's argv into the CLI registrars,
+# resolves the handler function, and asks the package-wide call graph whether
+# that handler can reach session creation. The creation markers are the SSOT
+# helpers themselves (``build_agent_command``, ``create_and_register_worktree``
+# — CLAUDE.md: every launch site routes through them) plus a spawned
+# ``["agentwire", "ensure", ...]`` subprocess (the scheduler's dispatch shape).
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+_CREATION_MARKER_CALLS = {"build_agent_command", "create_and_register_worktree"}
+
+
+def _spawns_ensure(fn: ast.AST) -> bool:
+    """A literal ["agentwire", "ensure", ...] anywhere in the function body."""
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            vals = [e.value for e in node.elts if isinstance(e, ast.Constant)]
+            if any(a == "agentwire" and b == "ensure"
+                   for a, b in zip(vals, vals[1:])):
+                return True
+    return False
+
+
+def session_creating_functions() -> set[str]:
+    """Fixpoint over the package call graph: names that can reach creation.
+
+    Conservative on name collisions (same-named functions union their edges);
+    over-flagging surfaces as a failure here and gets resolved by a human,
+    which is the correct direction for a harness-boundary check.
+    """
+    package_root = Path(tools.__file__).resolve().parents[1]
+    funcs: dict[str, set[str]] = {}
+    marked: set[str] = set()
+    for path in package_root.rglob("*.py"):
+        if path.name.startswith("mcp_"):
+            continue  # the MCP layer is the SUBJECT of the check, not its map
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                calls = {n for sub in ast.walk(node)
+                         if isinstance(sub, ast.Call) and (n := _call_name(sub))}
+                funcs.setdefault(node.name, set()).update(calls)
+                if calls & _CREATION_MARKER_CALLS or _spawns_ensure(node):
+                    marked.add(node.name)
+    creating = set(marked)
+    changed = True
+    while changed:
+        changed = False
+        for name, calls in funcs.items():
+            if name not in creating and calls & creating:
+                creating.add(name)
+                changed = True
+    return creating
+
+
+def cli_verb_tree() -> dict:
+    """verb -> {"func": handler|None, "children": {subverb: handler}},
+    parsed from every ``*_cli.py`` registrar (add_parser / add_subparsers /
+    set_defaults(func=...) — the uniform registrar shape per CLAUDE.md #495).
+    """
+    package_root = Path(tools.__file__).resolve().parents[1]
+    tree: dict = {}
+    for path in package_root.glob("*_cli.py"):
+        module = ast.parse(path.read_text())
+        parser_parent: dict[str, str | None] = {}
+        parser_verb: dict[str, str] = {}
+        sub_owner: dict[str, str] = {}
+        parser_func: dict[str, str] = {}
+        for node in ast.walk(module):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                target = node.targets[0]
+                if not isinstance(target, ast.Name):
+                    continue
+                name = _call_name(node.value)
+                base = node.value.func.value if isinstance(
+                    node.value.func, ast.Attribute) else None
+                if (name == "add_parser" and node.value.args
+                        and isinstance(node.value.args[0], ast.Constant)):
+                    parser_parent[target.id] = base.id if isinstance(
+                        base, ast.Name) else None
+                    parser_verb[target.id] = node.value.args[0].value
+                elif name == "add_subparsers" and isinstance(base, ast.Name):
+                    sub_owner[target.id] = base.id
+            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                call = node.value
+                if _call_name(call) == "set_defaults" and isinstance(
+                        call.func.value, ast.Name):
+                    for kw in call.keywords:
+                        if kw.arg == "func" and isinstance(kw.value, ast.Name):
+                            parser_func[call.func.value.id] = kw.value.id
+        for var, verb in parser_verb.items():
+            parent = parser_parent.get(var)
+            func = parser_func.get(var)
+            if parent in sub_owner:
+                owner_verb = parser_verb.get(sub_owner[parent])
+                if owner_verb:
+                    tree.setdefault(owner_verb, {"func": None, "children": {}})[
+                        "children"][verb] = func
+                    continue
+            tree.setdefault(verb, {"func": None, "children": {}})
+            if func:
+                tree[verb]["func"] = func
+    assert tree, "parsed no CLI registrars — the analyzer itself broke"
+    return tree
+
+
+def mcp_tool_argvs() -> dict[str, list[list]]:
+    """tool name -> the constant-string argv literals its body builds."""
+    package_root = Path(tools.__file__).resolve().parents[1]
+    out: dict[str, list[list]] = {}
+    for path in package_root.glob("mcp_*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not any((isinstance(d, ast.Call) and _call_name(d) == "tool")
+                       or (isinstance(d, ast.Attribute) and d.attr == "tool")
+                       for d in node.decorator_list):
+                continue
+            argvs = []
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.List) and sub.elts
+                        and isinstance(sub.elts[0], ast.Constant)
+                        and isinstance(sub.elts[0].value, str)):
+                    argvs.append([e.value if isinstance(e, ast.Constant) else None
+                                  for e in sub.elts])
+            out[node.name] = argvs
+    return out
+
+
+#: Dispatches that reach a creating HANDLER in a mode that cannot create:
+#: handler -> the mode flags that select its non-creating branches. Keyed on
+#: the argv shape (the dispatch), never on the MCP tool's name — a new tool
+#: hitting cmd_worktree without one of these flags still fails the check.
+_NON_CREATING_MODES = {
+    "cmd_worktree": {"--list", "--status", "--remove", "--prune", "--dangling"},
+}
+
+
+def session_creating_tools() -> dict[str, str]:
+    """MCP tool -> the creating CLI handler its dispatch path reaches."""
+    creating = session_creating_functions()
+    verbs = cli_verb_tree()
+    flagged: dict[str, str] = {}
+    for tool, argvs in mcp_tool_argvs().items():
+        for argv in argvs:
+            entry = verbs.get(argv[0])
+            if not entry:
+                continue
+            func = entry["func"]
+            if len(argv) > 1 and argv[1] in entry["children"]:
+                func = entry["children"][argv[1]]
+            if func not in creating:
+                continue
+            if any(t in _NON_CREATING_MODES.get(func, ()) for t in argv if t):
+                continue
+            flagged[tool] = func
+    return flagged
+
+
+class TestNoTieredInToolCanCreateASession:
+    def test_the_analyzer_sees_the_known_creators(self):
+        """Must-fail control: an analyzer that goes blind would pass the main
+        assertion vacuously. ensure, the scheduler's forced run, and the raw
+        creation verbs must all register as session-creating."""
+        creating = session_creating_functions()
+        for fn in ("cmd_ensure", "cmd_new", "cmd_worktree",
+                   "cmd_scheduler_run", "cmd_spawn"):
+            assert fn in creating, fn
+        flagged = session_creating_tools()
+        # The two wave-3 escapees, caught by path — not by their names.
+        assert flagged.get("task_run") == "cmd_ensure"
+        assert flagged.get("scheduler_run") == "cmd_scheduler_run"
+
+    def test_every_session_creating_dispatch_path_is_excluded(self):
+        """Clause (a) by dispatch path: any MCP tool whose argv reaches a
+        handler that can create a session must sit in TIER_EXCLUDED."""
+        offenders = {
+            tool: fn for tool, fn in session_creating_tools().items()
+            if tool not in surface.TIER_EXCLUDED
+        }
+        assert offenders == {}, (
+            f"tools whose dispatch path can create a session but are not "
+            f"excluded: {offenders} — clause (a) keys on the path, not the name"
+        )
 
 
 # =============================================================================
