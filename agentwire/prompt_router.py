@@ -672,7 +672,7 @@ def _alert_no_parent(
     the previous (absent) stamp. So the marker was rewritten every 60s sweep
     with ``escalated_at=None`` and the alert re-fired every tick — measured at
     5 escalations for 5 sweeps of ONE prompt, which over a 12h lease is ~720.
-    That is precisely the failure mode the interrupt tier cannot survive: the
+    That is precisely the failure mode this tier cannot survive: the
     over-production does not merely annoy, it retires the tier.
 
     ``alerted_at`` therefore stamps on successful ENQUEUE, which is a local
