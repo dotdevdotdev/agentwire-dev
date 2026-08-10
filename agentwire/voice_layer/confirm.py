@@ -1232,10 +1232,29 @@ SPOKEN = {
     ),
     # Covers "no" AND "wait"/"hold on", so it must not assert the owner said
     # the word "no" — a reason that misinforms is the defect §3.4 is about.
+    #
+    # "Say the phrase again" is TRUE HERE and only here: an in-band denial
+    # leaves the proposal LIVE, so the nonce still works. It is false on the
+    # retraction paths, which pop — hence `cancelled` below rather than one
+    # line stretched over two different next moves.
     "denied": (
         "I heard you hold off, so I haven't sent it. "
         "Say the phrase again when you're ready."
     ),
+    # An explicit retraction that RETIRED the proposal: `cancel`, and the
+    # confirm barrier that finds a cancel already recorded.
+    #
+    # Split from `denied` for the reason the taxonomy exists — the owner's next
+    # move differs. `denied`'s advice is "say the phrase again", and following
+    # it here lands on `no_proposal` ("Tell me again what you'd like sent") one
+    # turn later: advice that cannot work, pointing at the exact line
+    # `_cancel_refusal` was built to keep off this path.
+    #
+    # A pure stand-down, and that is the whole content: the owner asked for
+    # this, so nothing further is required of them. It deliberately does NOT
+    # offer to set it up again — pressing for the write just retracted is the
+    # same defect from the other side.
+    "cancelled": "Okay — I've dropped that one, so I haven't sent anything.",
     "pending_transcript": (
         "Give me a second — I'm still catching up on what you said. Don't repeat it yet."
     ),
@@ -1311,6 +1330,13 @@ SPOKEN = {
 #: Six tokens is past the point where a human utters a machine's sentence word
 #: for word by coincidence: it takes ``hang on im already working on`` rather
 #: than ``hang on``.
+#:
+#: **Guarded from BELOW only, and that asymmetry is deliberate.** Lowering this
+#: is what the tests forbid, because it suppresses a real retraction and a
+#: suppressed retraction WRITES. Raising it is the fail-closed direction — a
+#: genuine echo stops being recognised, denies, and costs one re-spoken
+#: approval — so nothing pins it from above. Do not read the pins as saying 6
+#: is optimal in both directions; they say it is a FLOOR.
 _ECHO_MIN_TOKENS = 6
 
 
@@ -1406,7 +1432,7 @@ REASONS = frozenset(
         "no_proposal", "expired", "not_announced", "replayed", "refused",
         "wrong_nonce", "quoted_frame", "denied", "pending_transcript",
         "too_many_attempts", "dispatch_failed", "in_flight",
-        "cancel_in_flight", "nothing_to_cancel",
+        "cancel_in_flight", "nothing_to_cancel", "cancelled",
     }
 )
 
@@ -1704,9 +1730,13 @@ class ConfirmSpine:
         # nothing was acted on, so nothing was consumed.
         with self._lock:
             if token in self._cancelled:
-                self._proposals.pop(token, None)
+                # No pop here, deliberately: every writer of `_cancelled` pops
+                # in the same lock hold, so this could never be the removing
+                # one — an unreachable write that reads as a guarantee on the
+                # next pass, which is what this module objects to two branches
+                # away in `cancel`.
                 return Verdict(
-                    approved=False, reason="denied", utterance=verdict.utterance
+                    approved=False, reason="cancelled", utterance=verdict.utterance
                 )
             self._dispatching.add(token)
 
@@ -1837,12 +1867,29 @@ class ConfirmSpine:
                 # looked like they were buying — no cancel outcome leaves a
                 # live proposal — is real, and is pinned as a property.
                 return Verdict(approved=False, reason="cancel_in_flight")
+            # THE TERMINAL FACTS OUTRANK THE CLAIM, and getting that order
+            # wrong was the same over-claim in a third window — found by the
+            # lock-hold sweep rather than by reading.
+            #
+            # A confirm records its result and only THEN unwinds the claim, so
+            # between `_succeeded.add` and `_in_flight.discard` a token is both
+            # "written" and "claimed". Testing `_in_flight` first answered a
+            # cancel there with `cancelled` — "I haven't sent anything" — about
+            # a write that had already gone out. These two sets answer
+            # different questions: `_succeeded`/`_failed` are facts about the
+            # WRITE, `_in_flight` is a fact about the ATTEMPT, and only the
+            # first kind can contradict a spoken claim about sending.
+            if token in self._succeeded:
+                return Verdict(approved=False, reason="replayed")
+            if token in self._failed:
+                return Verdict(approved=False, reason="dispatch_failed")
             if token in self._in_flight:
-                # A confirm holds the claim but has not reached the runner.
-                # Nothing has been sent, so the cancel is simply honoured.
+                # A confirm holds the claim, has not reached the runner, and
+                # has not recorded a result. Nothing has been sent, so the
+                # cancel is simply honoured.
                 self._cancelled.add(token)
                 self._proposals.pop(token, None)
-                return Verdict(approved=False, reason="denied")
+                return Verdict(approved=False, reason="cancelled")
 
         proposal, refusal = self._claim(token, require_announced=False)
         if refusal is not None:
@@ -1851,7 +1898,7 @@ class ConfirmSpine:
             with self._lock:
                 self._cancelled.add(token)
                 self._proposals.pop(token, None)
-            return Verdict(approved=False, reason="denied")
+            return Verdict(approved=False, reason="cancelled")
         finally:
             # Same discipline as confirm: released on every exit, or the token
             # is wedged for its TTL answering every retry with "still working

@@ -558,6 +558,20 @@ Three things make the shared claim correct rather than merely shared:
   (no, wait) versus "did you stop it?" (no, and here is why) — and its spoken
   line names the move that is still open, because the one thing the owner asked
   for is the one thing no longer available.
+- **The barrier is ONE lock hold**, and that is the claim the redesign rests
+  on: reading `_cancelled` and then marking `_dispatching` in two holds leaves a
+  gap in which a cancel is told, truthfully by then but wrongly at the moment it
+  spoke, that the write was going out — #990 in its original form, restored by a
+  refactor. Pinned by sweeping *every* observable lock boundary rather than the
+  one that happens to be the barrier today, so moving it does not silence the
+  test.
+- **The terminal facts outrank the claim.** A confirm records its result and
+  only *then* unwinds, so between `_succeeded.add` and `_in_flight.discard` a
+  token is both written and claimed. Testing `_in_flight` first answered a cancel
+  there with "I haven't sent anything" about a write that had gone out — a third
+  window, found by the lock sweep rather than by reading. `_succeeded`/`_failed`
+  are facts about the WRITE; `_in_flight` is a fact about the ATTEMPT, and only
+  the first kind can contradict a spoken claim about sending.
 - **A cancel is never answered with confirm-shaped advice.** The claim is
   shared so the two paths cannot drift, but two of its lines argue for the very
   write just retracted — `no_proposal` says *"Tell me again what you'd like
@@ -570,6 +584,14 @@ Three things make the shared claim correct rather than merely shared:
   re-propose.
 - **No cancel outcome leaves a live proposal behind**, pinned as a property
   over every reachable one rather than at the site that used to break it.
+- **A successful cancel says `cancelled`, not `denied`.** `denied`'s advice —
+  *"Say the phrase again when you're ready"* — is true only of an in-band
+  denial, which leaves the proposal LIVE. A cancel pops it, so following that
+  advice lands on `no_proposal` (*"Tell me again what you'd like sent"*) one
+  turn later: the very line the translation above exists to keep off this path,
+  re-entering through another door. `cancelled` is a pure stand-down — the owner
+  asked for this, so nothing further is required of them, and it deliberately
+  does not offer to set the write up again.
 - It is a **wait** outcome, so `confirm_terminal` stays False: closing the
   handshake here would close it out from under the confirm still running.
 - The announcement requirement is **dropped** (`require_announced=False`). "The
@@ -826,7 +848,8 @@ the set `SPOKEN` is checked against **both ways**:
 | `refused` | say the phrase |
 | `wrong_nonce` | ask what the word was |
 | `quoted_frame` | say confirm and the word on its own — the word was right |
-| `denied` | say the phrase again when you're ready |
+| `denied` | say the phrase again when you're ready — the proposal is still live |
+| `cancelled` | nothing — you retracted it and it is gone |
 | `pending_transcript` | **wait** |
 | `in_flight` | **wait** — that confirm is already running |
 | `cancel_in_flight` | **wait** — the cancel lost the race *to the runner*; it is already going out |

@@ -1568,7 +1568,7 @@ class TestCancelTakesTheSameClaim:
         cancelled = spine.cancel(proposal.token)
         thread.join()
 
-        assert cancelled.reason == "denied", (
+        assert cancelled.reason == "cancelled", (
             "nothing has been sent yet, so the cancel wins outright"
         )
         # ...and the confirm does not then write behind the retraction.
@@ -1606,7 +1606,7 @@ class TestCancelTakesTheSameClaim:
         verdict = spine.confirm(proposal.token)
         thread.join()
 
-        assert verdict.reason == "denied"
+        assert verdict.reason == "cancelled"
         assert runner.calls == [], "the write must not go out behind a retraction"
         # The approving utterance is NOT spent: nothing was acted on.
         spent = [u for u in ring.snapshot() if u.spent]
@@ -1648,7 +1648,7 @@ class TestCancelTakesTheSameClaim:
         proposal = convo.announced_proposal()
         with convo.spine._lock:
             convo.spine._in_flight.add(proposal.token)
-        assert convo.spine.cancel(proposal.token).reason == "denied"
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
 
         second = convo.announced_proposal()
         with convo.spine._lock:
@@ -1697,7 +1697,7 @@ class TestCancelTakesTheSameClaim:
         outcomes[convo.spine.cancel(plain.token).reason] = plain
 
         assert set(outcomes) == {
-            "denied", "cancel_in_flight", "replayed", "nothing_to_cancel"
+            "cancelled", "cancel_in_flight", "replayed", "nothing_to_cancel"
         }, outcomes
         live = {p.token for p in convo.spine.pending()}
         for reason, proposal in outcomes.items():
@@ -1720,7 +1720,7 @@ class TestCancelTakesTheSameClaim:
         proposal live for its whole TTL over who was talking.
         """
         proposal = convo.propose()  # never announced
-        assert convo.spine.cancel(proposal.token).reason == "denied"
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
         assert convo.spine.confirm(proposal.token).reason == "no_proposal"
         assert runner.calls == []
 
@@ -1739,12 +1739,216 @@ class TestCancelTakesTheSameClaim:
         """The ordinary path is unchanged, and the claim is RELEASED — a marker
         left set would wedge the token for its whole TTL."""
         proposal = convo.announced_proposal()
-        assert convo.spine.cancel(proposal.token).reason == "denied"
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
         assert convo.spine.pending() == []
         assert convo.spine._in_flight == set()
         assert convo.spine._dispatching == set()
         assert convo.spine.confirm(proposal.token).reason == "no_proposal"
         assert runner.calls == []
+
+
+#: Cancel outcomes whose spoken line ASSERTS that nothing was sent. These are
+#: the ones that may never be spoken about a token whose write has run — the
+#: §3.6 over-claim, which is what #990 is.
+ASSERTS_NOTHING_SENT = frozenset({"cancelled", "nothing_to_cancel"})
+
+
+class _ObservableLock:
+    """A lock that lets an observer run at each RELEASE boundary.
+
+    The point is to make "these two operations happen under ONE hold" a
+    testable claim rather than a comment. Every moment the spine's lock is free
+    is a moment another caller can observe it, so firing the observer at each
+    release enumerates exactly the states the outside world can ever see —
+    without needing to know which release is the interesting one, which is what
+    makes the sweep survive a refactor that moves the boundary.
+
+    Single-threaded on purpose: the hook runs while the lock is genuinely free,
+    so there is no race to lose and no sleep to tune. A re-entrancy guard keeps
+    the observer's own lock traffic from re-triggering it.
+    """
+
+    def __init__(self, inner, observer):
+        self._inner = inner
+        self._observer = observer
+        self._firing = False
+        self.releases = 0
+
+    def acquire(self, *args, **kwargs):
+        return self._inner.acquire(*args, **kwargs)
+
+    def release(self):
+        self._inner.release()
+        if self._firing:
+            return
+        self.releases += 1
+        self._firing = True
+        try:
+            self._observer(self.releases)
+        finally:
+            self._firing = False
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
+class TestTheCancelBarrierIsONELockHold:
+    """The invariant the whole #990 redesign rests on, and it had no pin.
+
+    ``_confirm_claimed`` reads ``_cancelled`` and marks ``_dispatching`` in a
+    single hold, and the module comment says why: reading and then marking
+    leaves a window in which a cancel lands after the check and is told —
+    truthfully by then, but wrongly at the moment it spoke — that the write was
+    going out. Split into two holds, a cancel in the gap speaks *"I heard you
+    hold off, so I haven't sent it"* while the runner runs. That is #990 in its
+    ORIGINAL form, restored by a refactor the suite could not see.
+
+    A stated invariant with no test is the defect this run has found repeatedly.
+    So it is asserted the only way that survives the boundary moving: sweep
+    EVERY point at which the spine's lock is observable, and require that none
+    of them produces a cancel claiming nothing was sent while something was.
+    """
+
+    def _run(self, fire_at: int):
+        """One confirm, with a cancel fired at the *fire_at*-th lock release."""
+        ring = transcript.TranscriptRing()
+        runner = RecordingRunner()
+        spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+
+        seen: dict = {}
+
+        def observer(index: int) -> None:
+            if index != fire_at or "cancel" in seen:
+                return
+            seen["cancel"] = spine.cancel(proposal.token).reason
+
+        lock = _ObservableLock(threading.Lock(), observer)
+        spine._lock = lock
+        seen["confirm"] = spine.confirm(proposal.token)
+        seen["writes"] = len(runner.calls)
+        seen["releases"] = lock.releases
+        return seen
+
+    def test_no_observable_moment_lets_a_cancel_deny_a_write_that_happened(self):
+        """The pin. At every lock boundary, the two stories must agree."""
+        probe = self._run(fire_at=0)
+        total = probe["releases"]
+        assert total >= 3, "the confirm must take the lock several times"
+
+        stories = set()
+        for index in range(1, total + 1):
+            seen = self._run(fire_at=index)
+            reason = seen.get("cancel")
+            if reason is None:
+                continue
+            stories.add((reason, seen["writes"] > 0))
+            if seen["writes"]:
+                # Something was sent, so no cancel may CLAIM OTHERWISE. Stated
+                # as the property rather than as an allowed outcome: which
+                # outcome is correct here depends on how far the confirm got
+                # (`cancel_in_flight` mid-runner, `replayed` once recorded),
+                # and pinning one of them would fail on a correct answer — as
+                # this assertion did, on its first run, before it was rewritten
+                # to say what it actually means.
+                assert reason not in ASSERTS_NOTHING_SENT, (
+                    f"release {index}: cancel said {reason!r}, which claims "
+                    f"nothing was sent, while the runner had run"
+                )
+            else:
+                # Nothing was sent, so the confirm must not have written and
+                # the cancel must not have been told it was too late.
+                assert seen["confirm"].approved is False, index
+                assert reason != "cancel_in_flight", (
+                    f"release {index}: cancel said it was too late with nothing sent"
+                )
+
+        # The sweep must actually have exercised BOTH sides of the barrier, or
+        # it passes by never reaching the interesting states.
+        assert len(stories) >= 2, stories
+        assert any(sent for _, sent in stories), "no run reached the runner"
+        assert any(not sent for _, sent in stories), "no run stopped at the barrier"
+
+    def test_the_nothing_sent_set_really_says_nothing_was_sent(self):
+        """The control for the set the sweep is written in terms of.
+
+        A membership list is only as good as its membership: if ``cancelled``
+        ever stops claiming "I haven't sent anything", the sweep above goes on
+        passing while guarding nothing. Derived from the lines, not asserted
+        about them.
+        """
+        for reason in ASSERTS_NOTHING_SENT:
+            line = confirm.SPOKEN[reason].lower()
+            assert "haven't sent" in line, reason
+        # And the complement: the outcomes that may be spoken over a real write
+        # must NOT carry the claim.
+        for reason in ("cancel_in_flight", "replayed", "dispatch_failed"):
+            assert reason not in ASSERTS_NOTHING_SENT
+            assert "haven't sent" not in confirm.SPOKEN[reason].lower(), reason
+
+    def test_a_cancel_after_a_recorded_write_never_says_nothing_was_sent(
+        self, convo, runner
+    ):
+        """The third window the sweep found, kept as a named scenario.
+
+        A confirm records its result and only THEN unwinds the claim, so
+        between ``_succeeded.add`` and ``_in_flight.discard`` a token is both
+        written and claimed. Testing ``_in_flight`` first answered a cancel
+        there with "I haven't sent anything" about a write that had gone out —
+        the same over-claim, in a window nobody had enumerated.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+        # Reconstruct the window: the write is recorded, the claim not yet
+        # released.
+        with convo.spine._lock:
+            convo.spine._in_flight.add(proposal.token)
+        try:
+            verdict = convo.spine.cancel(proposal.token)
+        finally:
+            with convo.spine._lock:
+                convo.spine._in_flight.discard(proposal.token)
+
+        assert verdict.reason not in ASSERTS_NOTHING_SENT, verdict.reason
+        assert verdict.reason == "replayed"
+
+    def test_the_two_flags_are_never_both_observable(self, convo):
+        """The invariant stated directly as well as behaviourally.
+
+        ``_cancelled`` and ``_dispatching`` are set by the two sides of one
+        decision. If a token can ever be seen carrying both, the barrier was
+        not atomic — a cancel recorded a retraction for a confirm that had
+        already been cleared to dispatch.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        both: list = []
+
+        def observing_runner(argv):
+            with convo.spine._lock:
+                both.append(
+                    convo.spine._cancelled & convo.spine._dispatching
+                )
+            convo.spine.cancel(proposal.token)
+            with convo.spine._lock:
+                both.append(
+                    convo.spine._cancelled & convo.spine._dispatching
+                )
+            return {"success": True}
+
+        convo.spine._runner = observing_runner
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert both == [set(), set()], both
 
 
 class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
@@ -1764,7 +1968,7 @@ class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
 
     def test_a_second_cancel_does_not_ask_for_the_write_again(self, convo):
         proposal = convo.announced_proposal()
-        assert convo.spine.cancel(proposal.token).reason == "denied"
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
         again = convo.spine.cancel(proposal.token)
         assert again.reason == "nothing_to_cancel"
         spoken = again.spoken.lower()
@@ -1791,6 +1995,59 @@ class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
         clock.advance(confirm.PROPOSAL_TTL_S + 1)
         assert "ask me again" in convo.spine.confirm(proposal.token).spoken.lower()
         assert "tell me again" in confirm.SPOKEN["no_proposal"].lower()
+
+    def test_the_HAPPY_PATH_cancel_does_not_name_a_move_that_cannot_work(
+        self, convo, runner
+    ):
+        """The same defect on the outcome nobody looked at: the cancel that
+        SUCCEEDS.
+
+        ``denied`` says "Say the phrase again when you're ready" — true of an
+        in-band denial, which leaves the proposal live, and false of a cancel,
+        which pops it. Following that advice lands on ``no_proposal`` — *"Tell
+        me again what you'd like sent"* — one turn later, which is the exact
+        line ``_cancel_refusal`` exists to keep off this path. So the advice
+        was routed around at one door and re-entered through another.
+        """
+        proposal = convo.announced_proposal()
+        verdict = convo.spine.cancel(proposal.token)
+        assert verdict.reason == "cancelled"
+        assert "say the phrase" not in verdict.spoken.lower()
+
+        # The move it names must be one that WORKS. Following the retired
+        # advice is what this asserts about: saying the phrase now cannot.
+        convo.approve(proposal)
+        after = convo.spine.confirm(proposal.token)
+        assert after.approved is False
+        assert after.reason == "no_proposal"
+        assert runner.calls == []
+
+    def test_the_in_band_denial_KEEPS_that_advice(self, convo, runner):
+        """The must-fail control, and the reason this is two outcomes rather
+        than one reworded line: on the in-band path the proposal is still live,
+        the phrase still works, and telling the owner so is correct."""
+        proposal = convo.announced_proposal()
+        # A confirm word is required to reach the judge's DENIED branch at all
+        # — `classify` returns NO_MATCH before consulting the denial grammar
+        # otherwise, which is `refused`, not `denied`.
+        convo.says("no, don't confirm that")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.reason == "denied"
+        assert "say the phrase again" in verdict.spoken.lower()
+        # ...and it is true: the proposal survived, so the advice can be taken.
+        assert proposal.token in {p.token for p in convo.spine.pending()}
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+    def test_no_cancel_outcome_argues_for_the_write(self):
+        """Swept over the whole cancel vocabulary rather than the two lines
+        that were wrong, because the failure was a line reached from a path
+        nobody enumerated."""
+        for reason in ("cancelled", "nothing_to_cancel", "cancel_in_flight"):
+            spoken = confirm.SPOKEN[reason].lower()
+            for cue in self.RE_PROPOSE_CUES + ("say the phrase", "say confirm"):
+                assert cue not in spoken, (reason, cue)
 
     def test_the_honest_refusals_are_passed_through_unchanged(self, convo, runner):
         """``replayed`` and ``dispatch_failed`` are TRUE of a cancel and invite
@@ -2273,6 +2530,11 @@ class TestOutcomesAreDistinctAndSpoken:
         race_convo.approve(racing)
         race_spine.confirm(racing.token)
         seen |= set(cancelled)
+
+        # cancelled: the ordinary retraction. Split from `denied` because it
+        # POPS — "say the phrase again" cannot work once it has.
+        retracted = convo.announced_proposal()
+        seen.add(convo.spine.cancel(retracted.token).reason)
 
         # nothing_to_cancel: a cancel with nothing of ours to retract. It must
         # not reuse `no_proposal`/`expired`, whose lines argue for re-proposing

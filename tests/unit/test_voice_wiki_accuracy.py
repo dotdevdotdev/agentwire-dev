@@ -26,6 +26,7 @@ asserted on both sides, over `SOURCES` below.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -240,7 +241,7 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         assert rows == [], rows
 
     #: Words that describe a hole as still present. An OPEN marker in the same
-    #: PARAGRAPH as a closed issue id is the defect this catches.
+    #: SENTENCE as a closed issue id is the defect this catches.
     #:
     #: **This enumeration fails open and says so**: an unlisted phrasing slips
     #: through. What bounds it is that the vocabulary is the one a residual
@@ -253,38 +254,54 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         "pinned as behaviour", "pinned in the tests as behaviour", "to-do",
     )
 
-    #: Words marking the paragraph as talking about the CLOSURE or the history,
-    #: so an OPEN marker in that company is a correction rather than a claim.
+    #: Words marking the claim as being about the CLOSURE or the history, so an
+    #: OPEN marker in that company is a correction rather than an assertion.
     #: Same two-sided shape as `_RETIREMENT_MARKERS` above.
+    #:
     #: Deliberately NOT the bare stem "close": this page says "closes the
     #: approval direction" in the same breath as the stale claim it is about,
-    #: so a stem match let the offending paragraph neutralize itself — measured,
-    #: and the same too-loose-marker defect `_RETIREMENT_MARKERS` above records.
+    #: so a stem match let the offending sentence neutralize itself — measured,
+    #: and the same too-loose-marker defect `_RETIREMENT_MARKERS` records.
     CLOSURE_MARKERS = (
         "closed", "was open", "used to", "no longer", "rejected",
         "round 1", "originally",
     )
 
-    @staticmethod
-    def _paragraphs() -> "list[tuple[int, str]]":
-        """The RAW page as (line number, paragraph) pairs.
+    #: Sentence-ish boundaries. Newlines count, because a markdown LIST is one
+    #: block and its bullets are separate claims; `;` counts, because "#992 is
+    #: open; the scan no longer matters much" puts the suppressor in the second
+    #: clause of one sentence.
+    _UNIT_RE = re.compile(r"(?<=[.!?;:])\s+|\n")
 
-        **Paragraph-scoped, not window-scoped, and the difference is a measured
-        false negative.** A ±400-char window around the id caught nothing when
-        the stale paragraph sat immediately above the section that closes it:
-        the closure sentence next door was inside the window and silenced the
-        detector. The real defect was a SELF-CONTAINED paragraph making a claim,
-        so the unit the pin reasons about is a paragraph.
+    @classmethod
+    def _open_claims(cls, raw: str, issue: str) -> "list[str]":
+        """Sentences in *raw* that call *issue* open without retiring the claim.
+
+        **The suppressor is SENTENCE-scoped, and both wider scopes were
+        measured leaking.** A ±400-char window let the closure sentence next
+        door silence a stale paragraph. Block scoping then let a markdown LIST
+        launder one: a bullet saying "closed" suppressed a sibling bullet
+        saying "#992 still open", because a list is a single block. It also
+        missed "#992 remains open. See the table below for what is closed." and
+        "#992 is open; the scan no longer matters much" — a closure word in the
+        NEXT sentence, or the next clause, is not qualifying this one.
+
+        A sentence is the unit a claim is made in, so it is the unit the
+        suppressor gets.
         """
-        raw = WIKI.read_text(encoding="utf-8")
-        out, line = [], 1
-        for block in raw.split("\n\n"):
-            out.append((line, block))
-            line += block.count("\n") + 2
-        return out
+        found = []
+        for unit in cls._UNIT_RE.split(raw):
+            if issue not in unit:
+                continue
+            lowered = unit.lower()
+            if any(m in lowered for m in cls.CLOSURE_MARKERS):
+                continue
+            if any(m in lowered for m in cls.OPEN_MARKERS):
+                found.append(" ".join(unit.split())[:160])
+        return found
 
     @pytest.mark.parametrize("issue", CLOSED)
-    def test_no_PROSE_paragraph_still_calls_them_open(self, issue):
+    def test_no_PROSE_sentence_still_calls_them_open(self, issue):
         """The pin the round-1 version structurally could not be.
 
         That one read residual-TABLE rows, so a paragraph 240 lines above the
@@ -293,39 +310,50 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         page's own "#989/#990/#992 are CLOSED". Removing a table row is not the
         same claim as retiring a sentence, and only one of them was pinned.
         """
-        offences = []
-        for line, block in self._paragraphs():
-            lowered = block.lower()
-            if issue not in block:
-                continue
-            if any(m in lowered for m in self.CLOSURE_MARKERS):
-                continue
-            hit = [m for m in self.OPEN_MARKERS if m in lowered]
-            if hit:
-                offences.append((line, hit))
+        offences = self._open_claims(WIKI.read_text(encoding="utf-8"), issue)
         assert offences == [], offences
 
+    #: Placements a stale claim has actually taken, or was shown to be able to
+    #: take. Each is planted into the REAL page and run through the REAL
+    #: detector below — the round-2 control checked a planted sentence against
+    #: the two tuples and never invoked `_open_claims` at all, so it could not
+    #: have found the list-scoping leak it was supposed to guard.
+    PLACEMENTS = (
+        ("standalone paragraph", "The denial direction is open ({issue})."),
+        (
+            "bullet beside a closed sibling",
+            "- {issue} still open, nobody has taken it.\n"
+            "- The approval direction is closed.",
+        ),
+        (
+            "closure word in the NEXT sentence",
+            "{issue} remains open. See the table below for what is closed.",
+        ),
+        (
+            "closure word in the next CLAUSE",
+            "{issue} is open; the scan no longer matters much.",
+        ),
+    )
+
     @pytest.mark.parametrize("issue", CLOSED)
-    def test_the_prose_pin_can_actually_fire(self, issue):
-        """The must-fail control for the pin above, run per issue.
+    @pytest.mark.parametrize("label,template", PLACEMENTS)
+    def test_the_prose_pin_can_actually_fire(self, issue, label, template):
+        """The must-fail control, and it RUNS THE DETECTOR.
 
         An absence test over a vocabulary is exactly the shape that goes green
         because nothing can match it — six of this file's own claims once did.
-        So the detector is run over a page carrying the sentence it forbids,
-        planted where the real one lived: as its own paragraph, immediately
-        above the section that closes it, which is precisely the placement a
-        window-scoped detector could not see.
+        The round-2 version of this control only compared a planted string to
+        the two tuples, which is a test of the tuples, not of the detector: it
+        passed while the detector was blind to three of the four placements
+        below.
         """
-        planted = (
-            f"The denial direction is open ({issue}), and nobody has taken it."
+        anchor = "### Denial words and denial EXCEPTIONS have opposite bars"
+        raw = WIKI.read_text(encoding="utf-8")
+        assert anchor in raw, "anchor for the planted claim moved"
+        planted = raw.replace(
+            anchor, template.format(issue=issue) + "\n\n" + anchor, 1
         )
-        lowered = planted.lower()
-        assert issue in planted
-        assert any(m in lowered for m in self.OPEN_MARKERS)
-        assert not any(m in lowered for m in self.CLOSURE_MARKERS), (
-            "the planted sentence must not neutralize itself, or the control "
-            "proves only that the closure vocabulary works"
-        )
+        assert self._open_claims(planted, issue), label
 
     def test_the_mechanisms_they_installed_are_documented(self, page):
         """And the other direction: removing the row without documenting the
