@@ -30,6 +30,19 @@ The base is advanced by a whole :data:`~agentwire.voice_layer.server.MINT_SEQ_GA
 rather than by one, which is what makes it an epoch rather than a bump: two
 tabs minting against one bridge get non-overlapping numeric ranges, so tab A
 would have to emit a million events before it could reach into tab B's.
+
+Two properties of that base are load-bearing and are tested here rather than
+assumed, both found in review:
+
+- it is **reserved atomically** (``reserve_epoch``, one lock). Read-then-write
+  is two acquisitions, and two concurrent mints on the bridge's threading
+  server can be handed the same base — the two-interleaved-counters case, back
+  inside the fix for it.
+- it is **bounded** (:data:`~agentwire.voice_layer.server.MAX_SEQ`). The number
+  now crosses into the page's counter, where it is a double rather than an
+  int: past 2**53 an increment stops advancing and every event shares a
+  sequence, and past that it is ``Infinity``, whose anchors serialize as
+  ``null``. Both wedge the buddy silently for the rest of the bridge run.
 """
 
 from __future__ import annotations
@@ -208,3 +221,176 @@ class TestThePageTakesItsOriginFromTheMint:
         assert start.index("seqCounter = session.seq_base") < start.index(
             "pc.createDataChannel"
         )
+
+
+class TestTheEpochIsReservedAtomically:
+    """Review F1. ``high_seq`` read, then ``note_seq`` written, is two lock
+    acquisitions with a window between them — so two concurrent ``/mint`` on
+    the ``ThreadingHTTPServer`` can be handed the SAME base. That is exactly
+    the "second tab, two interleaved counters" case #978 names, reintroduced
+    inside the fix for it.
+
+    It did not reproduce under plain threading (the window is a couple of
+    bytecodes), and "not observed" is the argument this module refuses
+    everywhere else — ``TestSingleUseIsClaimedNotJudged`` is the same shape,
+    and the #978 work leaned on that reasoning. So the window is forced open
+    rather than raced for.
+    """
+
+    def test_two_concurrent_mints_never_share_a_base(self, monkeypatch):
+        import threading
+        import time as _time
+
+        class SlowReadRing(transcript.TranscriptRing):
+            """A ring whose ``high_seq`` READ is slow.
+
+            This is the whole test: a reserve that holds one lock across the
+            read and the write never calls this at all, so the window it opens
+            cannot exist. A read-then-write reserve calls it and both threads
+            come back with the same number.
+            """
+
+            @property
+            def high_seq(self):
+                value = transcript.TranscriptRing.high_seq.fget(self)
+                _time.sleep(0.05)
+                return value
+
+        from agentwire.voice_layer import realtime
+
+        monkeypatch.setattr(realtime, "mint_session", FakeMint())
+        b = server.BuddyBridge("buddy", "tok")
+        b.ring = SlowReadRing()
+
+        bases = []
+        lock = threading.Lock()
+
+        def one():
+            base = b.mint()["seq_base"]
+            with lock:
+                bases.append(base)
+
+        threads = [threading.Thread(target=one) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(set(bases)) == 2, f"two tabs were handed the same base: {bases}"
+
+    def test_many_concurrent_reservations_are_all_disjoint(self):
+        import threading
+
+        ring = transcript.TranscriptRing()
+        got = []
+        lock = threading.Lock()
+
+        def one():
+            base = ring.reserve_epoch(server.MINT_SEQ_GAP, server.MAX_SEQ)
+            with lock:
+                got.append(base)
+
+        threads = [threading.Thread(target=one) for _ in range(24)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(set(got)) == len(got)
+        # Disjoint, not merely distinct: consecutive bases are a whole gap
+        # apart, which is what stops one tab counting into the next's range.
+        ordered = sorted(got)
+        for lower, upper in zip(ordered, ordered[1:]):
+            assert upper - lower >= server.MINT_SEQ_GAP
+
+
+class TestASequenceIsBoundedAtBothEnds:
+    """Review F7, a coupling this work newly created.
+
+    ``high_seq`` used to be read-only state the bridge kept for its own
+    ordering. It now flows BACK into the client's clock through ``seq_base``,
+    so a client-supplied sequence is no longer just a number the ring
+    compares — it becomes the origin of every later page's counter, on the
+    other side of a JSON boundary where a Python int is NOT an int.
+
+    One malformed local POST of ``10**18`` permanently raises it. Every later
+    mint then hands out a base above 2**53, where ``++seqCounter`` is a no-op
+    in IEEE-754: every event shares one sequence, ``after(anchor)`` is
+    strictly-after, and the buddy answers ``pending_transcript`` forever.
+    Bigger still parses to ``Infinity`` in the page, which serializes anchors
+    as ``null`` — ``not_announced`` forever. Both silent, and both survive a
+    reload, because ``high_seq`` is bridge-lifetime.
+
+    Loopback- and token-gated, so this is robustness rather than a remote
+    attack — but #986 hardened this same bridge against this same class.
+    """
+
+    def test_an_absurd_speech_sequence_is_refused(self, bridge):
+        before = bridge.ring.high_seq
+        result = bridge.utterance({"item_id": "u1", "speech_started_seq": 10**18})
+        assert result["success"] is False
+        assert bridge.ring.high_seq == before, "a refused seq must not raise the clock"
+
+    def test_an_absurd_commit_sequence_is_refused(self, bridge):
+        before = bridge.ring.high_seq
+        assert bridge.utterance({"item_id": "u1", "commit_seq": 10**18})[
+            "success"
+        ] is False
+        assert bridge.ring.high_seq == before
+
+    def test_an_absurd_transcript_sequence_is_refused(self, bridge):
+        before = bridge.ring.high_seq
+        assert bridge.utterance(
+            {"item_id": "u1", "transcript": "hi", "speech_started_seq": 10**18}
+        )["success"] is False
+        assert bridge.ring.high_seq == before
+
+    def test_an_absurd_anchor_sequence_is_refused(self, bridge):
+        before = bridge.ring.high_seq
+        assert bridge.anchor({"proposal_id": "abc", "seq": 10**18})["success"] is False
+        assert bridge.ring.high_seq == before
+
+    def test_an_ordinary_sequence_is_untouched(self, bridge):
+        """The false-reject half, and it is the expensive one: a refused
+        utterance never enters the ring, so the owner's approval is invisible
+        and the buddy waits forever. The ceiling has to sit far above anything
+        a real session reaches."""
+        base = bridge.mint()["seq_base"]
+        assert bridge.utterance({"item_id": "u1", "speech_started_seq": base + 1})[
+            "success"
+        ] is True
+        assert bridge.ring.high_seq >= base + 1
+        assert server.MAX_SEQ > server.MINT_SEQ_GAP * 1000
+
+    def test_the_ceiling_stays_inside_what_the_page_can_count(self):
+        """The bound exists because the number crosses into JS. Everything the
+        bridge can ever hand out must stay a SAFE integer there, or the page's
+        ``++seqCounter`` silently stops advancing."""
+        assert server.MAX_SEQ < 2**53
+
+    def test_an_exhausted_sequence_space_refuses_rather_than_poisons(self, bridge):
+        """The other end. Handing out a base past the ceiling is the exact
+        wedge this guards, so exhaustion must be an error the page throws on,
+        never a number it counts from."""
+        bridge.ring.note_seq(server.MAX_SEQ - 1)
+        result = bridge.mint()
+        assert result["success"] is False
+        assert "seq_base" not in result
+
+    def test_exhaustion_is_checked_before_the_api_key_is_spent(self, bridge, monkeypatch):
+        from agentwire.voice_layer import realtime
+
+        minter = FakeMint()
+        monkeypatch.setattr(realtime, "mint_session", minter)
+        bridge.ring.note_seq(server.MAX_SEQ - 1)
+        bridge.mint()
+        assert minter.calls == 0
+
+
+class TestThePageRefusesAnUnusableOrigin:
+    def test_the_guard_requires_a_safe_integer_not_merely_a_number(self):
+        """``typeof x === "number"`` passes for ``Infinity``, and a page that
+        counts from Infinity serializes every anchor as ``null``."""
+        page = client.page("buddy", "tok")
+        assert "Number.isSafeInteger(session.seq_base)" in page
+        assert 'typeof session.seq_base !== "number"' not in page

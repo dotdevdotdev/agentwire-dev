@@ -125,15 +125,38 @@ function createAnnouncer(deps) {
   // How many times the fallback may stand down for an owner who is still
   // talking. BOTH halves priced: without a bound, a long monologue swallows a
   // refusal entirely, which is the one outcome the default-on timer exists to
-  // rule out — talking over the owner once beats never telling them. With it,
-  // the worst case is fallbackMs * (1 + this) before they are told.
+  // rule out — talking over the owner once beats never telling them.
+  //
+  // The worst case is fallbackMs * (2 + maxOwnerDeferrals), not (1 + …): this
+  // deferral is checked FIRST and re-arms, so the one-shot in-flight deferral
+  // below is still available on the re-armed timer and the two STACK. That is
+  // correct — they answer different questions ("is the owner talking" and "is
+  // this our own audio still playing"), and sharing a budget would let a
+  // monologue consume the grace that stops the buddy speaking over itself —
+  // but it makes the bound 5 intervals, and the arithmetic is now pinned by a
+  // test rather than asserted here.
   var maxOwnerDeferrals =
     deps.maxOwnerDeferrals === undefined ? 3 : deps.maxOwnerDeferrals;
+  // How long the browser voice may be believed to still be talking with no
+  // end event. speechSynthesis can drop an utterance without firing `onend`
+  // OR `onerror`, and `speaking` below gates volunteering — so without this
+  // the false-reject half is an UNBOUNDED mute, which is strictly worse than
+  // the interjection it prevents. Long enough to cover any real utterance.
+  var speakingMaxMs = deps.speakingMaxMs || fallbackMs * 5;
 
   var queue = [];
-  // { text, fallbackText, meta, timer, sawCreate, deferred, ownerDeferrals }
+  // { text, fallbackText, meta, timer, speakTimer, sawCreate, deferred,
+  //   ownerDeferrals }
   var current = null;
   var responseActive = false;
+  //: Items whose FALLBACK AUDIO has started and not yet ended (review F4).
+  //: The real speak() is asynchronous — onSpokenAloud runs from
+  //: utterance.onend — and armFallback nulls `current` before calling it, so
+  //: between those two moments the announcer reported nothing pending at all:
+  //: canInterrupt passed and an escalation went out while the browser voice
+  //: was still saying "...say confirm tango". The unit fixture called back
+  //: synchronously, so that window had zero width and nothing could see it.
+  var speaking = [];
 
   // Function words. They carry nothing about WHETHER the reason was stated,
   // and they dominate a short conversational line — the greeting is 7 of its
@@ -264,19 +287,39 @@ function createAnnouncer(deps) {
       // safe one there — claiming not-spoken would replay a notice the owner
       // may well have heard.
       var say = item.fallbackText || item.text;
+      // The buddy is SPEAKING from here until an end event says otherwise —
+      // armed before speak(), because a synchronous callback would otherwise
+      // clear a flag that had not been set yet. Watchdogged: an utterance
+      // dropped with no onend/onerror would leave the gates shut forever.
+      speaking.push(item);
+      item.speakTimer = setTimer(function () {
+        onLog("fallback", "no end event within " + speakingMaxMs + "ms");
+        stopSpeaking(item);
+      }, speakingMaxMs);
       try {
         speak(
           say,
-          function () { onSpoken(item.meta, "fallback"); },
-          function () { onNotSpoken(item.meta); }
+          function () { stopSpeaking(item); onSpoken(item.meta, "fallback"); },
+          function () { stopSpeaking(item); onNotSpoken(item.meta); }
         );
-      } catch (e) { onSpoken(item.meta, "fallback"); }
+      } catch (e) { stopSpeaking(item); onSpoken(item.meta, "fallback"); }
       pump();
     }, fallbackMs);
   }
 
   function disarm(item) {
     if (item && item.timer) { clearTimer(item.timer); item.timer = null; }
+  }
+
+  // The browser voice for this item is over — by its own end event, by its
+  // error, or by the watchdog. Idempotent: all three can be reached, and only
+  // the first one that arrives means anything.
+  function stopSpeaking(item) {
+    if (item && item.speakTimer) {
+      clearTimer(item.speakTimer);
+      item.speakTimer = null;
+    }
+    speaking = speaking.filter(function (it) { return it !== item; });
   }
 
   function pump() {
@@ -334,6 +377,7 @@ function createAnnouncer(deps) {
       queue.forEach(disarm);
       queue = [];
       if (current) { disarm(current); current = null; }
+      speaking.slice().forEach(stopSpeaking);
     },
     // Withdraw announcements whose meta matches, queued or current (#963: the
     // owner speaking first CANCELS the greeting; queueing it behind them would
@@ -406,10 +450,17 @@ function createAnnouncer(deps) {
     // thing that can see that window, so canInterrupt asks it.
     anchorPending: function () {
       if (current && current.meta && current.meta.anchor) return true;
-      return queue.some(function (it) { return !!(it.meta && it.meta.anchor); });
+      var carriesAnchor = function (it) { return !!(it.meta && it.meta.anchor); };
+      // `speaking` too: the fallback voice mid-utterance is the buddy STATING
+      // the proposal, which is the middle of the handshake by any reading.
+      return queue.some(carriesAnchor) || speaking.some(carriesAnchor);
     },
-    // Test/inspection surface.
-    pending: function () { return (current ? 1 : 0) + queue.length; },
+    // Test/inspection surface — and load-bearing: canSpeak keys on this, so
+    // an item whose fallback audio is still playing has to count, or a notice
+    // is volunteered straight over the buddy's own voice.
+    pending: function () {
+      return (current ? 1 : 0) + queue.length + speaking.length;
+    },
     armed: function () { return !!(current && current.timer); },
   };
 }
@@ -534,6 +585,11 @@ function createInboxNotifier(deps) {
         if (take(strays[i])) pulled.push(strays.splice(i, 1)[0]);
         else i++;
       }
+      // Which of the announced ids came OUT of the strays array. A stray is
+      // cursor-past, so releasing it on failure is not enough — it has to go
+      // back in, and only the poll that took it knows which ones those were.
+      var wasStray = {};
+      pulled.forEach(function (m) { if (m && m.id) wasStray[m.id] = true; });
       var claimed = {};
       var fresh = pulled.concat((res.messages || []).filter(take)).filter(function (m) {
         if (!m || !m.id || seen[m.id] || inFlight[m.id] || claimed[m.id]) return false;
@@ -563,6 +619,7 @@ function createInboxNotifier(deps) {
       // actually told.
       announce(composeNotice(fresh), {
         inboxIds: ids,
+        strayIds: ids.filter(function (id) { return wasStray[id]; }),
         inboxMsgs: fresh.map(function (m) {
           return { id: m.id, from: m.from, kind: m.kind, text: m.text };
         }),
@@ -610,8 +667,26 @@ function createInboxNotifier(deps) {
   // an id the owner HAS heard would replay it.
   function noticeFailed(meta) {
     if (!meta || !meta.inboxIds) return;
+    var body = {};
+    (meta.inboxMsgs || []).forEach(function (m) { if (m && m.id) body[m.id] = m; });
+    var cameFromStrays = {};
+    (meta.strayIds || []).forEach(function (id) { cameFromStrays[id] = true; });
+    var alreadyBack = {};
+    strays.forEach(function (m) { if (m && m.id) alreadyBack[m.id] = true; });
     meta.inboxIds.forEach(function (id) {
-      if (!seen[id]) delete inFlight[id];
+      if (seen[id]) return;
+      delete inFlight[id];
+      // A SPOOL message needs nothing more: the cursor never advanced (only
+      // noticeSpoken moves it), so the next peek returns it. A STRAY was
+      // spliced out of the array to be announced and the cursor is already
+      // past it, so releasing the id alone dropped it from BOTH places —
+      // "the next tick says it again" was false for exactly the class that
+      // becomes strays, which is escalations. Putting it back is the whole
+      // reason the array exists.
+      if (cameFromStrays[id] && !alreadyBack[id] && body[id]) {
+        alreadyBack[id] = true;   // idempotent: a second call must not double it
+        strays.push(body[id]);
+      }
     });
   }
 
@@ -1256,8 +1331,15 @@ async function start() {
     // called nextSeq() yet. No `|| 0` default: a bridge that did not answer
     // with a base is broken, and silently restarting at zero is the exact
     // defect this closes.
-    if (typeof session.seq_base !== "number") {
-      throw new Error("mint returned no sequence base");
+    //
+    // SAFE integer, not merely a number: `typeof Infinity === "number"` is
+    // true, and a counter at Infinity never advances and serializes every
+    // anchor as `null` — not_announced forever, silently. Anything at or past
+    // 2**53 has the same shape without the tell, since ++ stops advancing
+    // there. The bridge caps what it hands out (server.MAX_SEQ); this is the
+    // half that refuses to run on a base that got past it anyway.
+    if (!Number.isSafeInteger(session.seq_base) || session.seq_base < 0) {
+      throw new Error("mint returned an unusable sequence base");
     }
     seqCounter = session.seq_base;
 
