@@ -30,8 +30,18 @@ Two consequences worth stating plainly:
 
 - **`remain-on-exit` means `has-session` is no longer liveness.** Measured: `tmux has-session` returns 0 for a session whose pane is dead. So the `tmux_session` healthcheck asks `#{pane_dead}` too, for *both* kinds — `remain-on-exit` is a user tmux setting, so an agent session could always have been in this state and was reported healthy.
 - **A dead pane is not "already running".** A start that found a corpse clears it and respawns, or the watchdog would loop forever: healthcheck says unhealthy, watchdog starts, start says "already running".
+- **Neither is a placeholder.** Steps 2 and 3 run against a session step 1 just created, so a failure there is *our* placeholder — alive, running `sleep 3600`, and indistinguishable from a healthy process to `pane_dead`. It is killed and the start fails; `already running` is reachable only when the session genuinely pre-existed the call.
+- **Every `-s` and `-t` goes through `worktree.tmux_safe_name`.** tmux rewrites `.` and `:` to `_` at creation, so a target built from the raw name misses the session that was actually made — the spawn has five targets, and a teardown that misses reports success while the session survives (#868/#878). That mapping has one implementation by rule; never inline it.
 
-The process's last lines are surfaced to the operator (in the start message and the healthcheck detail), so a process that prints a secret on the way down surfaces it where its own log would have. Bounded to the last few lines, written to no file, and a deliberate trade: a refusal that cannot say why is the failure this exists to remove.
+### Where a crash line actually goes, and why it is redacted
+
+The process's last lines end up in the start message and in the healthcheck `detail` — and `detail` does not stay on a terminal. The portal watchdog passes it to `_notify_service_event`, which **toasts it in the browser and speaks it via `agentwire say`**. So a process printing `bearer eyJ…` as it died would have put that verbatim into a spoken utterance.
+
+Everything the pane yields is therefore run through `redact_secrets` at the single point every consumer reads through (`_tmux_pane_tail`), using the *same* pattern set as the argv check — one source of truth, because a second list drifts from the first the moment either is extended. The value is masked and the rest of the line kept: a redaction that ate the message would re-create the failure it guards.
+
+Two bounds, and they are different: `_TAIL_LINES` (3) bounds **lines**, `_TAIL_CHARS` (300) bounds **characters** — three lines of a 5000-column traceback is one utterance nobody can listen to. Redaction runs *before* the clip for legibility, not safety: clipping first is equally safe (a cut only removes trailing material, and the key stays in front of whatever value survives, so the pattern still matches), but a 400-character token would eat the whole budget and push the actionable part of the message off the end.
+
+Still: no file is written, and the channels are owner-facing. Surfacing the reason at all is a deliberate trade — a refusal that cannot say why is the failure this whole mechanism exists to remove.
 
 ## Registering a service
 

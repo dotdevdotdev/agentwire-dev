@@ -1618,6 +1618,12 @@ after a grace period, and fails with the process's last lines attached:
 in place — tmux's memory is the only copy — and the next start reads it before
 clearing it. Still no file, still 0700.
 
+Those last lines are **redacted before they leave the pane**, because they do
+not stay on a terminal: the healthcheck detail built from them is toasted by
+the portal watchdog and spoken through `agentwire say`, so a bridge printing
+`bearer eyJ…` on the way down would otherwise have had that read aloud. Same
+pattern set as the argv check, value masked and the message kept.
+
 ### Restart semantics: what a supervisor kill mid-handshake leaves behind
 
 Nothing pending, and this is now pinned rather than asserted. The confirm spine

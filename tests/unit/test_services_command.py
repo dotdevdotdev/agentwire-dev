@@ -343,6 +343,215 @@ class TestTheHealthcheckMustSeeADeadPane:
             CustomServiceConfig(name="buddy", command="x"))["running"] is False
 
 
+class TestThePlaceholderMustNeverOutliveTheSpawn:
+    """A spawn that fails partway must leave nothing behind claiming to be the
+    service.
+
+    The three-step spawn introduced a window the one-shot version did not have:
+    steps 2 and 3 run against a session step 1 just created, and the old
+    "lost a benign spawn race" handler treated ANY failure in the try block as
+    "someone else's session is already up". It isn't — it is the placeholder,
+    genuinely alive, running `sleep 3600`. `pane_dead` cannot see that (the
+    sleep loop is not a corpse), so the healthcheck calls it healthy: a sleep
+    loop reported as a running service, which is F1's false all-clear wearing a
+    different costume.
+
+    So `already running` must be reachable ONLY when the session genuinely
+    pre-existed this call.
+    """
+
+    def _svc(self):
+        return CustomServiceConfig(name="buddy", command="real-command --port 1")
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleep(self, monkeypatch):
+        monkeypatch.setattr(services.time, "sleep", lambda s: None)
+
+    def _failing_at(self, monkeypatch, failing: str, calls: list):
+        """Let every tmux call succeed except the one whose argv contains
+        *failing*."""
+        import subprocess as sp
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if failing in cmd:
+                raise sp.CalledProcessError(1, "tmux", stderr=b"tmux said no")
+            return _ok()
+        monkeypatch.setattr(services.subprocess, "run", run)
+
+    @pytest.mark.parametrize("failing", ["set-option", "respawn-pane"])
+    def test_a_failure_after_the_placeholder_exists_is_a_failed_start(
+        self, monkeypatch, failing,
+    ):
+        monkeypatch.setattr(services, "_tmux_session_exists", lambda n: False)
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: False)
+        calls = []
+        self._failing_at(monkeypatch, failing, calls)
+        ok, msg = services.start_service(self._svc())
+        assert ok is False, msg
+        assert "already running" not in msg
+
+    @pytest.mark.parametrize("failing", ["set-option", "respawn-pane"])
+    def test_the_placeholder_is_killed_rather_than_left_running(
+        self, monkeypatch, failing,
+    ):
+        """Otherwise the orphan sits there running a sleep loop, the healthcheck
+        reports it healthy, and the real service never starts again."""
+        monkeypatch.setattr(services, "_tmux_session_exists", lambda n: False)
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: False)
+        calls = []
+        self._failing_at(monkeypatch, failing, calls)
+        services.start_service(self._svc())
+        assert any("kill-session" in c for c in calls), calls
+
+    def test_a_genuinely_pre_existing_session_is_still_already_running(
+        self, monkeypatch,
+    ):
+        """The case the handler was written for, which must keep working: two
+        starts race, new-session loses on a duplicate, and the loser reports
+        the winner rather than a failure."""
+        import subprocess as sp
+        exists = iter([False, True])
+        monkeypatch.setattr(services, "_tmux_session_exists", lambda n: next(exists))
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: False)
+        killed = []
+
+        def run(cmd, **kw):
+            if "new-session" in cmd:
+                raise sp.CalledProcessError(1, "tmux", stderr=b"duplicate session")
+            if "kill-session" in cmd:
+                killed.append(cmd)
+            return _ok()
+        monkeypatch.setattr(services.subprocess, "run", run)
+        assert services.start_service(self._svc()) == (True, "already running")
+        # and it must NOT kill the winner's session on its way out
+        assert killed == []
+
+
+class TestNamesGoThroughTheOneMapping:
+    """tmux rewrites `.` and `:` in a session name; `worktree.tmux_safe_name`
+    is the single implementation of that mapping (#868/#878).
+
+    Building `-s` from the raw name and then targeting `-t` with the raw name
+    is the documented failure: tmux creates `a_b`, every subsequent target
+    misses, and teardown reports success while the session survives. That is
+    live here because the spawn now has FIVE targets, not one.
+    """
+
+    def test_every_tmux_target_uses_the_sanitized_name(self, monkeypatch):
+        from agentwire.worktree import tmux_safe_name
+        raw = "rev.dot:2"
+        safe = tmux_safe_name(raw)
+        assert safe == "rev_dot_2"  # the mapping, stated so a change is visible
+        calls = []
+        monkeypatch.setattr(services, "_tmux_session_exists", lambda n: False)
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: False)
+        monkeypatch.setattr(services.time, "sleep", lambda s: None)
+        monkeypatch.setattr(services.subprocess, "run",
+                            lambda cmd, **kw: calls.append(cmd) or _ok())
+        services.start_service(CustomServiceConfig(name=raw, command="x"))
+        targets = [part for call in calls for part in call if part.startswith("=")]
+        assert targets, calls
+        for target in targets:
+            assert safe in target, target
+            assert raw not in target, target
+        assert ["-s", safe] == [p for call in calls for i, p in enumerate(call)
+                                if p == "-s" or (i and call[i - 1] == "-s")]
+
+    @pytest.mark.parametrize("helper", ["_tmux_session_exists", "_tmux_pane_dead",
+                                        "_tmux_pane_tail"])
+    def test_the_probes_ask_about_the_name_tmux_actually_chose(
+        self, monkeypatch, helper,
+    ):
+        calls = []
+        monkeypatch.setattr(services.subprocess, "run",
+                            lambda cmd, **kw: calls.append(cmd) or _ok_text())
+        getattr(services, helper)("rev.dot:2")
+        flat = " ".join(calls[0])
+        assert "rev_dot_2" in flat
+        assert "rev.dot:2" not in flat
+
+
+def _ok_text():
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    return R()
+
+
+class TestACrashLineIsRedactedBeforeItIsSpoken:
+    """A captured crash line is exactly where a secret shows up, and `detail`
+    does not stay on the terminal.
+
+    It reaches the portal watchdog's `_notify_service_event`, which TOASTS it
+    and SPEAKS it through `agentwire say`. Owner-facing, so surfacing it at all
+    is a deliberate trade — but a process printing `bearer eyJ…` while dying
+    would have put that verbatim into a spoken utterance. Redaction happens at
+    the single choke point every consumer reads through, and uses the SAME
+    pattern set as the argv check rather than a second list that can drift.
+    """
+
+    def _tail(self, monkeypatch, text):
+        class R:
+            returncode = 0
+            stdout = text
+            stderr = ""
+        monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: R())
+        return services._tmux_pane_tail("x")
+
+    @pytest.mark.parametrize("line,secret", [
+        ("FATAL: bad creds: bearer eyJLEAKED", "eyJLEAKED"),
+        ("usage: bridge --token=SUPERSECRET123", "SUPERSECRET123"),
+        ("usage: bridge --token SUPERSECRET123", "SUPERSECRET123"),
+        ("usage: bridge --api-key sk-live-abc", "sk-live-abc"),
+        ("env PASSWORD=hunter2 not found", "hunter2"),
+    ])
+    def test_the_secret_is_masked(self, monkeypatch, line, secret):
+        tail = self._tail(monkeypatch, line)
+        assert secret not in tail, tail
+        assert "***" in tail
+
+    def test_the_rest_of_the_line_survives(self, monkeypatch):
+        """Redaction that ate the message would re-create the failure it is
+        guarding: a refusal that cannot say why."""
+        tail = self._tail(monkeypatch, "FATAL: bad creds: bearer eyJLEAKED")
+        assert "FATAL: bad creds" in tail
+
+    def test_an_ordinary_crash_line_is_untouched(self, monkeypatch):
+        assert self._tail(monkeypatch, "No voice buddy named 'nope'.") == (
+            "No voice buddy named 'nope'.")
+
+    def test_a_very_long_line_is_clipped(self, monkeypatch):
+        """`_TAIL_LINES` bounds LINES. Three lines of a 5000-column traceback is
+        one spoken utterance nobody can listen to."""
+        tail = self._tail(monkeypatch, "x" * 5000)
+        assert len(tail) <= services._TAIL_CHARS + 1
+        assert tail.endswith("…")
+
+    def test_redacting_before_the_clip_keeps_the_actionable_part(self, monkeypatch):
+        """Ordering, and the reason is legibility rather than safety.
+
+        Clipping first would be equally safe — a cut only removes trailing
+        material, and the key stays in front of whatever value survives, so the
+        pattern still matches. But a 400-character token would eat the whole
+        character budget and push the words the operator needs off the end.
+        Redaction shortens the value, so doing it first spends the cap on the
+        message.
+        """
+        secret = "SUPERSECRET" + "9" * 400
+        tail = self._tail(monkeypatch, f"bridge --token={secret} FATAL-boom")
+        assert "SUPERSECRET" not in tail, tail
+        assert "***" in tail
+        assert "FATAL-boom" in tail, tail
+
+    def test_redaction_uses_the_argv_pattern_set(self):
+        """One source of truth. A second list would drift from the argv check
+        the moment either is extended — which just happened to the argv one."""
+        for pattern in services._SECRET_ARGV_PATTERNS:
+            assert services.redact_secrets(f"x {pattern}VALUE") .endswith("***"), pattern
+
+
 @pytest.mark.requires_tmux
 class TestAgainstRealTmux:
     """The same claims against the real binary.
@@ -396,6 +605,85 @@ class TestAgainstRealTmux:
         assert ok is True, msg
         assert "FATAL: boom" in msg  # the previous run's reason, read before clearing
         assert services.run_healthcheck(self._svc("sleep 30"))[0] is True
+
+    def test_a_crash_line_carrying_a_secret_is_redacted(self):
+        """Against the real capture path, since that is where it would leak:
+        `detail` is toasted AND spoken by the portal watchdog."""
+        svc = self._svc('sh -c "echo bearer eyJLEAKED >&2; exit 1"')
+        ok, msg = services.start_service(svc)
+        assert ok is False
+        assert "eyJLEAKED" not in msg, msg
+        assert "***" in msg
+        assert "eyJLEAKED" not in services.run_healthcheck(svc)[1]
+
+
+@pytest.mark.requires_tmux
+class TestARewrittenNameAgainstRealTmux:
+    """Leg 1 of the placeholder finding, with zero mocks.
+
+    A service name containing `.` or `:` is rewritten by tmux itself, so a
+    spawn that creates with the raw name and then targets with the raw name
+    fails at step 2 — and used to leave the placeholder running while
+    `stop_service` reported "not running". A false all-clear plus an orphan,
+    and the service never runs again.
+    """
+
+    RAW = "zz983.dot:probe"
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        import subprocess as sp
+
+        from agentwire.worktree import tmux_safe_name
+        for name in (self.RAW, tmux_safe_name(self.RAW)):
+            sp.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
+        yield
+        for name in (self.RAW, tmux_safe_name(self.RAW)):
+            sp.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
+
+    def _svc(self, command):
+        return CustomServiceConfig(name=self.RAW, command=command)
+
+    def test_a_rewritten_name_starts_and_is_seen_and_stops(self):
+        svc = self._svc("sleep 30")
+        ok, msg = services.start_service(svc)
+        assert ok is True, msg
+        assert services.run_healthcheck(svc) == (True, "session exists")
+        ok, msg = services.stop_service(svc)
+        assert ok is True, msg
+        # The claim `stop_service` makes must be TRUE of the session tmux
+        # actually created, not of a name that never existed.
+        assert services._tmux_session_exists(self.RAW) is False
+
+    def test_no_orphan_placeholder_is_left_behind(self):
+        import subprocess as sp
+
+        from agentwire.worktree import tmux_safe_name
+        services.start_service(self._svc("sleep 30"))
+        services.stop_service(self._svc("sleep 30"))
+        live = sp.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                      capture_output=True, text=True).stdout
+        assert tmux_safe_name(self.RAW) not in live.split(), live
+
+    def test_a_partial_spawn_leaves_nothing_running(self, monkeypatch):
+        """Leg 2, against real tmux: only step 3 fails. Nothing may survive
+        claiming to be the service — least of all the sleep loop, which
+        `pane_dead` cannot distinguish from a healthy process."""
+        import subprocess as sp
+        real_run = sp.run
+
+        def run(cmd, **kw):
+            if isinstance(cmd, list) and "respawn-pane" in cmd:
+                raise sp.CalledProcessError(1, "tmux", stderr=b"injected")
+            return real_run(cmd, **kw)
+        monkeypatch.setattr(services.subprocess, "run", run)
+
+        ok, msg = services.start_service(self._svc("sleep 30"))
+        assert ok is False, msg
+        monkeypatch.undo()
+        assert services._tmux_session_exists(self.RAW) is False
+        # and nothing reports the corpse-free placeholder as healthy
+        assert services.run_healthcheck(self._svc("sleep 30"))[0] is False
 
 
 class TestInlineSecretsInArgv:
