@@ -40,9 +40,8 @@ from ..mcp_core import run_agentwire_cmd
 from . import delivery, outbox
 from .confirm import strip_controls
 
-# Session names as the inbox defines them, plus the optional `@machine` suffix
-# a remote session carries. Anchored: a partial match is how a fuzzy
-# transcription would slip through.
+# Session names as the inbox defines them. Anchored: a partial match is how a
+# fuzzy transcription would slip through.
 #
 # Every segment must START alphanumeric, which is doing two jobs the obvious
 # character class misses (both caught by tests, both real):
@@ -51,13 +50,31 @@ from .confirm import strip_controls
 #   - `.` is a legal name character, so it accepts `../etc/passwd`.
 # A leading separator is never a real session name, so requiring alphanumeric
 # first closes both without narrowing anything legitimate.
+#
+# `@` is admitted inside a segment. Remote `name@machine` targets are out of
+# scope (owner ruling, 2026-08-09) — but `@` does NOT mean
+# remote, and a gate keyed on the character told the owner a true local name
+# was unreachable. tmux accepts `@` verbatim (only `.` and `:` are rewritten,
+# #878) and `inbox._SESSION_RE` admits it, so `ops@edge` is a creatable,
+# addressable LOCAL session, and refusing it as "remote" is a confident
+# falsehood the owner has no move from — the expensive failure with no screen.
+#
+# So the SHAPE is validated here and the RULING is enforced by liveness in
+# `_session_arg`: a whole name tmux reports live is local by demonstration.
+# What that refuses is precisely a name nothing local answers to, which is
+# every genuinely remote target, said without claiming to know why.
 _SESSION_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*"
-    r"(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+    r"^[A-Za-z0-9][A-Za-z0-9._@-]*(?:/[A-Za-z0-9][A-Za-z0-9._@-]*)*$"
 )
 
 #: `owner/name`, the only form `gh --repo` should ever receive from a model.
-_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+#: The leading-alphanumeric rule binds the OWNER only, which is where GitHub
+#: actually constrains it (logins are alphanumeric-and-hyphen). REPOSITORY
+#: names may begin with `.`, `_` or `-` — `github/.github` is real — so
+#: extending the rule across the slash for symmetry would refuse real
+#: repositories to close a value-position flag the owner segment already
+#: closes (#979, wave-2 review).
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
 
 _MAX_OUTPUT_LINES = 200
 _MAX_PR_LIMIT = 50
@@ -76,6 +93,18 @@ class ToolError(Exception):
     """
 
 
+#: Spoken when a well-formed `@` name is not live locally. It states the one
+#: thing that was measured — nothing here answers to that name — and offers the
+#: remote case as a possibility, never as a diagnosis. Asserting "that's remote"
+#: about a name this layer cannot classify is how a correct transcription of a
+#: real local session became an unanswerable refusal.
+UNREACHABLE_AT_REFUSAL = (
+    "There's no live session called '{value}' on this machine. If it's running "
+    "somewhere else, I can't reach other machines yet. If it's local, check "
+    "fleet_sessions and say the name again."
+)
+
+
 def _session_arg(args: dict, key: str = "session") -> str:
     value = args.get(key)
     if (
@@ -83,11 +112,34 @@ def _session_arg(args: dict, key: str = "session") -> str:
         or not _SESSION_RE.match(value.strip())
         or ".." in value.split("/")  # belt-and-braces; the pattern already refuses it
     ):
+        # SHAPE first, always. A garbled name that happens to contain an `@`
+        # ("we b at x") is a mis-transcription, not a remote target, and
+        # answering it with the reachability message diagnoses the wrong
+        # problem — the owner is told to check another machine when what they
+        # need is to say the name again.
         raise ToolError(
             f"'{value}' is not a valid session name. Ask which session was meant, "
             "then use the exact name from fleet_sessions."
         )
-    return value.strip()
+    session = value.strip()
+    if "@" in session and not _is_live_locally(session):
+        raise ToolError(UNREACHABLE_AT_REFUSAL.format(value=strip_controls(session)[:60]))
+    return session
+
+
+def _is_live_locally(session: str) -> bool:
+    """Does local tmux report *session*, by its WHOLE name?
+
+    Only POSITIVE knowledge decides, matching ``write_tools._require_live``
+    (spec §5): ``live_sessions()`` returns None when tmux itself is
+    unreachable, which is an outage rather than a verdict, and refusing there
+    would ground every local ``@`` name during a tmux blip. The CLI reports
+    what it finds instead.
+    """
+    from .. import inbox
+
+    live = inbox.live_sessions()
+    return True if live is None else session in live
 
 
 def _int_arg(args: dict, key: str, default: int, lo: int, hi: int) -> int:
@@ -475,11 +527,18 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
         name="buddy_sent",
         description=(
             "Messages YOU have sent, newest first: the exact body that went out, "
-            "who it went to, and its current delivery state (queued, delivered, "
-            "dead_lettered, or dispatch_failed). This is the answer to any "
-            "question about a message you sent — what it said, whether something "
-            "was in it, what happened to it. Quote the body from here; never "
-            "answer from memory or by reading the recipient's terminal."
+            "who it went to, and its current delivery state. Quote the body from "
+            "here; never answer from memory or by reading the recipient's "
+            "terminal. The states, and exactly what each one licenses you to "
+            "say: 'queued' — still waiting in their inbox, not read yet; "
+            "'dead_lettered' — it failed and was dropped, say so and say why "
+            "(the reason is in detail); 'dispatch_failed' — it never went out "
+            "at all; 'executed' — the command ran and carried no message body; "
+            "'no_longer_queued' — it has left their queue, which is what "
+            "delivery looks like AND what a purge looks like, so say it is no "
+            "longer waiting and that you cannot confirm they read it; "
+            "'unknown' — you could not check. Never upgrade one of these to "
+            "'delivered'; that word claims more than anything here establishes."
         ),
         run=_buddy_sent,
         parameters={
