@@ -28,7 +28,14 @@ from types import SimpleNamespace
 import pytest
 
 from agentwire import core, inbox
-from agentwire.voice_layer import confirm, instructions, outbox, tools, transcript
+from agentwire.voice_layer import (
+    confirm,
+    instructions,
+    outbox,
+    tools,
+    transcript,
+    write_tools,
+)
 
 
 @pytest.fixture
@@ -40,7 +47,7 @@ def isolate(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _argv(session="orchestrator", buddy="buddy", body="<voice> hello ┃ #abc123"):
+def _argv(session="orchestrator", buddy="buddy", body="hello ┃ #abc123"):
     return [
         "msg", "send", "--to", session, "--from", buddy, "--kind", "request", body,
     ]
@@ -62,7 +69,7 @@ def _proposal(id="abc123", session="orchestrator", instruction="hello",
 class TestRecordWrite:
     def test_records_the_executed_body_verbatim(self, isolate):
         """The body in the record is argv[-1] — what RAN — not a re-render."""
-        argv = _argv(body="<voice> whatever confirm.py actually built ┃ #abc123")
+        argv = _argv(body="whatever confirm.py actually built ┃ #abc123")
         outbox.record_write(_proposal(), argv, {"success": True})
 
         entries = outbox.read_outbox("buddy")
@@ -130,7 +137,7 @@ class TestRecordWrite:
     def test_a_body_carrying_write_still_records_the_executed_string(self, isolate):
         """The other half: the fix must not cost the msg shape its verbatim
         body, which is the whole point of the outbox."""
-        argv = _argv(body="<voice> hello ┃ #abc123")
+        argv = _argv(body="hello ┃ #abc123")
         outbox.record_write(_proposal(), argv, {"success": True})
         (entry,) = outbox.read_outbox("buddy")
         assert entry["body"] == argv[-1]
@@ -154,7 +161,7 @@ class TestDeliveryState:
         base = {
             "proposal_id": "abc123",
             "session": "orchestrator",
-            "body": "<voice> hello ┃ #abc123",
+            "body": "hello ┃ #abc123",
             "kind": "request",
             "dispatched": True,
         }
@@ -162,12 +169,12 @@ class TestDeliveryState:
         return base
 
     def test_pending_message_reads_as_queued(self, isolate):
-        inbox.enqueue("orchestrator", "<voice> hello ┃ #abc123", kind="request", sender="buddy")
+        inbox.enqueue("orchestrator", "hello ┃ #abc123", kind=write_tools.WRITE_KIND, sender="buddy")
         assert outbox.delivery_state(self._entry())["state"] == "queued"
 
     def test_dead_lettered_message_reads_as_dead_lettered_with_reason(self, isolate):
         msgs = inbox.enqueue(
-            "orchestrator", "<voice> hello ┃ #abc123", kind="request", sender="buddy"
+            "orchestrator", "hello ┃ #abc123", kind=write_tools.WRITE_KIND, sender="buddy"
         )
         msg = msgs[0]
         msg.dead_ts = 1
@@ -198,7 +205,7 @@ class TestDeliveryState:
         dropped. Same trace as delivery, so the honest answer is the one that
         does not pick between them."""
         inbox.enqueue(
-            "orchestrator", "<voice> hello ┃ #abc123", kind="request", sender="buddy"
+            "orchestrator", "hello ┃ #abc123", kind=write_tools.WRITE_KIND, sender="buddy"
         )
         assert outbox.delivery_state(self._entry())["state"] == "queued"
         assert inbox.purge_pending("orchestrator") == 1
@@ -213,8 +220,8 @@ class TestDeliveryState:
         `@`), so asking for the whole string is the only question that can
         return an answer about this message."""
         inbox.enqueue(
-            "orchestrator@laptop", "<voice> hello ┃ #abc123",
-            kind="request", sender="buddy",
+            "orchestrator@laptop", "hello ┃ #abc123",
+            kind=write_tools.WRITE_KIND, sender="buddy",
         )
         # The local same-named session holds nothing; a strip would read it and
         # report "left the queue" about a message still sitting in the remote's.
@@ -239,7 +246,7 @@ class TestDeliveryState:
         the enqueued text ever diverge in shape, the ``#<id>`` tag still keys
         the match — the state must not silently flip to 'delivered'."""
         inbox.enqueue(
-            "orchestrator", "some future body shape #abc123", kind="request", sender="buddy"
+            "orchestrator", "some future body shape #abc123", kind=write_tools.WRITE_KIND, sender="buddy"
         )
         assert outbox.delivery_state(self._entry())["state"] == "queued"
 
@@ -349,9 +356,9 @@ class TestBuddySentTool:
     def test_answers_what_did_i_send_in_one_call(self, isolate):
         """The triggering question. The rendered body comes back verbatim,
         with delivery state, keyed by proposal id — no terminal scraping."""
-        argv = _argv(body="<voice> ship it ┃ said: \"confirm tango\" ┃ #abc123")
+        argv = _argv(body="ship it ┃ said: \"confirm tango\" ┃ #abc123")
         outbox.record_write(_proposal(), argv, {"success": True})
-        inbox.enqueue("orchestrator", argv[-1], kind="request", sender="buddy")
+        inbox.enqueue("orchestrator", argv[-1], kind=write_tools.WRITE_KIND, sender="buddy")
 
         result = tools.dispatch("buddy_sent", {}, buddy="buddy")
         assert result["success"] is True
@@ -391,11 +398,14 @@ class TestBuddySentTool:
 class TestGrounding:
     def test_states_what_a_message_is_once_it_leaves(self):
         """The ecosystem model: file inbox, empty-box injection (WHY 'queued
-        not sent' is true), the leading voice marker, defer and dead-letter."""
+        not sent' is true), the kind-slot attribution, defer and dead-letter."""
         flowed = " ".join(instructions.build_instructions().split())
         assert "file inbox" in flowed
         assert "input box is empty" in flowed
-        assert "<voice>" in flowed
+        # Slice 1b (#985): the buddy is told about the KIND, not a body marker.
+        assert '"voice" kind' in flowed
+        assert "[MSG from buddy \u00b7 voice]" in flowed
+        assert "<voice>" not in flowed
         assert "dead-letter" in flowed
 
     def test_points_at_buddy_sent_for_questions_about_its_own_writes(self):

@@ -1509,7 +1509,7 @@ class TestArgvFreezing:
         convo.approve(proposal)
         convo.spine.confirm(proposal.token)
         body = runner.calls[0][-1]
-        assert body.startswith(f"{confirm.VOICE_MARKER} restart the portal")
+        assert body.startswith("restart the portal")
         assert proposal.nonce not in body  # #953: the nonce stays in the gate
         assert proposal.id in body
 
@@ -1630,9 +1630,9 @@ class TestAttribution:
     def test_the_body_carries_instruction_verbatim_and_id_on_one_line(self):
         body = confirm.render_body("restart the portal", "confirm tango", "a1b2c3")
         assert "\n" not in body and "\r" not in body
-        # The marker goes FIRST — with --kind request the kind slot
-        # distinguishes nothing, so this is Slice 1's whole attribution.
-        assert body.startswith(f"{confirm.VOICE_MARKER} restart the portal")
+        # No marker: since #985 attribution is the `voice` kind slot, and the
+        # instruction leads the body.
+        assert body.startswith("restart the portal")
         assert 'said: "confirm tango"' in body
         assert body.endswith("#a1b2c3")
 
@@ -1653,9 +1653,11 @@ class TestAttribution:
             text="restart the portal",
             ts=1700000000000,
         ).render()
-        assert buddy.startswith(f"[MSG from buddy · request] {confirm.VOICE_MARKER} ")
+        # The distinguisher is the KIND SLOT, in the same on-screen position
+        # the `<voice>` marker used to occupy (#985).
+        assert buddy.startswith("[MSG from buddy · voice] restart the portal")
         assert "said:" in buddy and "┃" in buddy
-        assert confirm.VOICE_MARKER not in human
+        assert "· voice]" not in human
         assert "said:" not in human
 
     def test_the_body_is_one_line_even_when_the_inputs_are_not(self):
@@ -1724,14 +1726,12 @@ class TestAttribution:
         body = runner.calls[0][-1]
         assert confirm.reply_nudge("buddy") in body
 
-    def test_this_diff_does_not_touch_the_shared_kind_enum(self):
-        """§4a is deferred to Slice 1b — deliberately, see write_tools' docstring.
-
-        ``request`` is already in ESCALATE_KINDS, so the dead-letter-emails-the-
-        owner property the ``voice`` kind was argued for is already achieved.
-        """
-        assert write_tools.WRITE_KIND == "request"
-        assert "voice" not in inbox.KINDS
+    def test_the_write_rides_the_shared_kind_enum(self):
+        """§4a landed in Slice 1b (#985). The full ruling — active, escalatable,
+        not an interrupt — is pinned in test_voice_kind.py; this asserts only
+        that the buddy's write is the kind that carries it."""
+        assert write_tools.WRITE_KIND == "voice"
+        assert "voice" in inbox.KINDS
         assert write_tools.WRITE_KIND in inbox.ESCALATE_KINDS
         assert inbox.is_passive(write_tools.WRITE_KIND) is False
 
@@ -2137,7 +2137,7 @@ class TestWriteToolSurface:
         argv = runner.calls[0]
         assert argv[:2] == ["msg", "send"]
         assert argv[2:8] == [
-            "--to", "orchestrator", "--from", "buddy", "--kind", "request",
+            "--to", "orchestrator", "--from", "buddy", "--kind", "voice",
         ]
         assert len(argv) == 9  # prefix + exactly one body
 
@@ -2644,7 +2644,7 @@ class TestTheNonceNeverLeavesTheGate:
         acceptance). Marker, instruction and id still deliver."""
         body = confirm.render_body("restart the portal", "", "a1b2c3")
         assert "said:" not in body
-        assert body.startswith(f"{confirm.VOICE_MARKER} restart the portal")
+        assert body.startswith("restart the portal")
         assert body.endswith("#a1b2c3")
 
     def test_a_stale_confirm_phrase_is_never_selected_as_the_request(

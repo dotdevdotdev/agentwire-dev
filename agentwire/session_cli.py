@@ -1281,10 +1281,24 @@ def _format_worktree_row(r: dict) -> str:
             f"      {r.get('worktree_path')}")
 
 
+def _attach_dead_reports(rows: list[dict]) -> None:
+    """Badge each row with its session's dead-lettered load-bearing messages.
+
+    Kinds come from :func:`inbox.load_bearing`, never from a literal here.
+    ``--list`` and ``--watch`` used to hand-write their own two-kind tuple once
+    each — two of the three copies #985 deleted, and two chances for a
+    dead-lettered ``voice`` to badge on one surface and not the other.
+    """
+    from agentwire import inbox
+
+    for r in rows:
+        corpses = inbox.load_bearing(inbox.list_dead(r.get("session", "")))
+        r["dead_reports"] = [m.to_dict() for m in corpses]
+
+
 def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
     """List worktree registry entries (--list)."""
     show_all = getattr(args, 'all', False)
-    from agentwire import inbox
     if show_all:
         rows = worktree_registry.all_entries()
     else:
@@ -1297,12 +1311,11 @@ def _worktree_list(args, project_path: Path, json_mode: bool) -> int:
         # without N round-trips. Local git only (no network) — cheap per entry.
         if r["exists"]:
             r["git"] = worktree_status(Path(r.get("worktree_path", "")))
-        dead_msgs = inbox.list_dead(r.get("session", ""))
-        r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
         # Recorded creator/parent (persists after the session dies) — lets a
         # dead orphan entry still be placed in its family and re-adopted with
         # the same reporting relationship it had before (#781 ghost cards).
         r["created_by"] = _display_parent(r.get("session", ""), r.get("worktree_path", ""))
+    _attach_dead_reports(rows)
 
     if json_mode:
         _output_json({"success": True, "entries": rows})
@@ -1324,7 +1337,6 @@ def _worktree_watch(args, project_path: Path, json_mode: bool) -> int:
     import sys
     import time
 
-    from agentwire import inbox
     try:
         while True:
             show_all = getattr(args, 'all', False)
@@ -1338,8 +1350,7 @@ def _worktree_watch(args, project_path: Path, json_mode: bool) -> int:
                 r["exists"] = Path(r.get("worktree_path", "")).exists()
                 if r["exists"]:
                     r["git"] = worktree_status(Path(r.get("worktree_path", "")))
-                dead_msgs = inbox.list_dead(r.get("session", ""))
-                r["dead_reports"] = [m.to_dict() for m in dead_msgs if m.kind in ("done", "escalation")]
+            _attach_dead_reports(rows)
 
             if json_mode:
                 _output_json({"success": True, "entries": rows})

@@ -310,18 +310,27 @@ class TestTheCoalescedResidualIsStated:
 
 
 class TestTheCohortInteraction:
-    """`--kind request` drags in one interaction the deferred `voice` kind
-    would not have had. Named here so it is a known quantity, not a surprise.
+    """The kind slot and the cohort hold filter on DIFFERENT fields, so the
+    interaction changes shape whenever the kind does. Named here so it stays a
+    known quantity across that change rather than a surprise after it.
     """
 
-    def test_a_buddy_write_matches_the_cohort_report_filter(self, tmp_path, monkeypatch):
-        """``request`` is in ``cohort.REPORT_KINDS`` and ``_harvest`` filters on
-        kind — so IF the buddy were ever a pending cohort child of the
-        recipient, ``wait --children`` would harvest this write as a child
-        report and consume it.
+    def test_a_buddy_write_no_longer_matches_the_cohort_report_filter(
+        self, tmp_path, monkeypatch
+    ):
+        """Slice 1b inverted this (#985).
 
-        Asserted as a fact about the mechanism, because it is one. What makes
-        it unreachable today is the separate property below.
+        Under ``--kind request`` the buddy's write WAS in
+        ``cohort.REPORT_KINDS``, so if the buddy were ever a pending cohort
+        child of the recipient, ``wait --children`` would harvest the write as
+        a child report and consume it — the owner's words attributed to a
+        worker's roll-up. ``voice`` is deliberately absent from
+        ``REPORT_KINDS``, which closes that.
+
+        What remains is benign and asserted in
+        ``test_voice_kind.py::TestCohortInteraction``: ``_cohort_held`` holds by
+        SENDER, so such a message is held but not harvested — pending until the
+        cohort resolves, never consumed into someone else's report.
         """
         from agentwire import cohort
 
@@ -329,13 +338,15 @@ class TestTheCohortInteraction:
         monkeypatch.setattr(inbox, "EVENTS_FILE", tmp_path / "events.jsonl")
         monkeypatch.setattr(inbox, "live_sessions", lambda: {"orchestrator"})
 
+        assert write_tools.WRITE_KIND not in cohort.REPORT_KINDS
         body = confirm.render_body("restart the portal", "confirm tango", "a1b2c3")
         inbox.enqueue(
             "orchestrator", body, kind=write_tools.WRITE_KIND, sender="buddy"
         )
         harvested = cohort._harvest("orchestrator")
-        assert "buddy" in harvested, (
-            "kind filter admits it — the mitigation is enrollment, not kind"
+        assert "buddy" not in harvested, (
+            "the kind filter now excludes it — enrollment is no longer the only "
+            "thing standing between the owner's words and a child roll-up"
         )
 
     def test_the_buddy_is_never_enrolled_in_a_cohort(self):

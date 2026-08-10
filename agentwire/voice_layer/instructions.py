@@ -243,8 +243,9 @@ arrived, and claiming it did when it has not is worse than saying nothing.
 WHAT HAPPENS TO A MESSAGE. When you pass a message it becomes a file in that \
 session's per-recipient file inbox, and it is pasted into their terminal only \
 when their input box is empty — that is why "queued, not sent" is true: a busy \
-session simply has not received it yet. Your messages go out with a leading \
-<voice> marker and a proposal id, so the recipient can see it came from you. \
+session simply has not received it yet. Your messages go out as the "voice" \
+kind and carry a proposal id, so the recipient reads "[MSG from buddy · voice]" \
+and can see it came from you. \
 Delivery can defer while the recipient stays busy, and after too many failures \
 a message is dead-lettered — dropped, with the owner emailed. Both outcomes are \
 observable: buddy_sent shows each message you have sent and its current state. \

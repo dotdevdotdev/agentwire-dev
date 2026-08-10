@@ -935,10 +935,10 @@ point is that the human was not typing. The failure to prevent is not a *wrong*
 message — it is an orchestrator acting on instructions the human never gave, or
 acting twice.
 
-Slice 1 ships the body half:
+Since **Slice 1b (#985)** attribution lives in the **kind slot**:
 
 ```
-[MSG from buddy · request] <voice> restart the portal ┃ said: "can you tell the
+[MSG from buddy · voice] restart the portal ┃ said: "can you tell the
 orchestrator to restart the portal" ┃ reply: agentwire msg send --to buddy
 --kind done "<answer>" ┃ #a1b2c3  ⟨#f3a9c1⟩
 ```
@@ -969,7 +969,7 @@ while the example above showed it shipped to a terminal.
 "<answer>"`) rides in every body that fits. #962's live failure: the recipient
 answered a buddy request IN ITS OWN TERMINAL and the reply never came back — the
 owner is listening, not watching that pane, so an on-screen answer is a lost one.
-`--from buddy` and the `<voice>` marker say who asked; neither says how to
+`--from buddy` and the `· voice` kind slot say who asked; neither says how to
 answer. This does, as a runnable command rather than prose, because the recipient
 is an agent and the one thing it reliably does with a command is run it. It is
 **droppable, whole-or-not-at-all**: it slots in before the id (so the id never
@@ -983,13 +983,37 @@ the owner a recipient was told how to answer when the slot was dropped.
 The `--to` in that nudge is read out of the **frozen `--from`**, so it can never
 name anyone other than the identity the message actually goes out under.
 
-The `<voice>` marker goes **first in the body** and that placement is the whole
-of Slice 1's attribution. With `--kind request` the kind slot distinguishes
-nothing, so the only prefix-level distinguisher left would be exactly the sender
-string §4 rejects; putting the marker at the front of the body puts it in the
-position the kind slot would have occupied, and touches no shared code. **Slice 1
-does not claim kind-slot attribution** — that arrives with the `voice` kind in
-Slice 1b.
+**How this moved, and what moved with it.** Slice 1 shipped attribution as a
+`<voice>` marker at the **front of the body**, explicitly as a stand-in: with
+`--kind request` the kind slot distinguished nothing, so the only prefix-level
+distinguisher left would have been exactly the sender string §4 rejects, and the
+front of the body was the same on-screen position the kind slot would occupy.
+Slice 1b puts it in the slot for real. `inbox.Message.render` prints
+`[MSG from buddy · voice]`, so the distinguisher is now the same field
+`ESCALATE_KINDS` and the drain read — one thing, not two that can disagree. **No
+marker remains in the body**; a body still carrying one is stale text, not
+attribution.
+
+Two things travelled with the move and are easy to miss:
+
+- **The leading-dash guarantee was load-bearing and is now explicit.** The body
+  reaches the CLI as a positional, and `instruction` is model-supplied, so a body
+  opening with `-` is parsed as a flag — a bug this repo has shipped twice. The
+  marker used to make that impossible for free by occupying first position.
+  `confirm._lead_safe` now owns it deliberately, and `render_body`'s assertion
+  checks that one mechanism rather than an accident of layout.
+- **The body caps were re-measured and deliberately did not move.** Removing
+  `<voice> ` returns 8 chars to the body budget, and `request` → `voice` takes 2
+  chars off the rendered prefix; the worst rendered line falls 365 → 363 against
+  the measured 520-char wedge boundary, so the pane measurement behind
+  `MAX_BODY_CHARS = 300` still holds with slightly more margin than before. The
+  freed 8 chars are spent where #981 finding 6 says they compete: the droppable
+  reply nudge now survives in bodies that previously lost it.
+
+The kind ruling itself — active, escalatable, **not** an interrupt — lives with
+the kind table in
+[messaging.md](sessions/messaging.md#ruling-voice-is-active-and-escalatable-and-is-not-an-interrupt-985),
+next to the enum it constrains.
 
 The verbatim REQUEST utterance rides along free, because the gate already had to
 capture it. A recipient can always answer "did a human really say this, and in
@@ -1342,7 +1366,8 @@ written for whoever implements #930, not for this feature.
 layer as a **caller-side** cap. Making the cap a property of `msg` itself is the
 right long-term shape (#930) and is deliberately not done here: it changes
 behaviour for every sender in a shared subsystem, which is the same class of
-change as the `voice` kind deferred to Slice 1b, and it deserves its own review.
+change as the `voice` kind Slice 1b shipped (#985), and it deserves its own
+review.
 
 **The residual, stated rather than implied.** The one-line rule protects the
 **single-message case**: a lone voice write is well inside both regimes. State
@@ -1351,7 +1376,7 @@ taken before the reply nudge existed and the nudge now fills toward the cap, so 
 measured figure goes stale on the next slot that fits. The bound is
 `MAX_BODY_CHARS = 300`; the delivered line adds the `[MSG from <sender> · <kind>]`
 prefix and the `⟨#id6⟩` tail, so a 32-character worktree sender name lands the
-worst case at 365 against a measured 520 and a 4-line cliff. That derivation
+worst case at 363 against a measured 520 and a 4-line cliff. That derivation
 holds however the slots inside the body are rearranged. It does **not** protect a
 voice write that is coalesced behind other
 messages — that is #930, it is governed by a variable the voice layer cannot
@@ -1406,8 +1431,10 @@ Code pane and runs the actual heal. At 80x24, by rendered-line length:
 **There are two failure regimes above the boundary, not one.** The box windows
 first, and only much later collapses to the chip — so "it isn't a chip" is not
 evidence the heal will fire. `MAX_BODY_CHARS = 300` puts the worst case
-(a maxed body plus a 32-character worktree sender name) at 365 against a measured
-520.
+(a maxed body plus a 32-character worktree sender name) at 363 against a measured
+520. It was 365 while the kind slot read `request`; Slice 1b's shorter `voice`
+moved it down by 2, which is why re-measuring after that change was owed and why
+the cap itself did not need to move.
 
 The measurement is **pane-dependent**: the box shows a bounded number of rows,
 so a shorter pane windows sooner. Do not spend the headroom without
@@ -1429,34 +1456,47 @@ entire justification is "the owner is not watching a screen", that is the worst
 available failure. The same `stuck` test has no #851 window path, so an
 over-long single line fails identically — hence the cap.
 
-### Why `--kind request` and not a `voice` kind
+### The `voice` kind, and what the substitution dragged in
 
-A `voice` kind is deferred to Slice 1b deliberately. It is the only part of this
-work that would change behaviour for sessions with nothing to do with voice, it
-touches a shared subsystem's escalation and dead-letter paths, and its blast
-radius is non-obvious: `doctor_cli.py:1182` and `session_cli.py:1280`/`:1321`
-filter a hand-written `("done", "escalation")` tuple, so a dead-lettered message
-of a new kind would be invisible to `doctor`'s `[!!]` line and to `session
-info` — silently defeating the argument the kind was being made for.
+Slice 1 rode `--kind request` and deferred `voice` to **Slice 1b (#985)**
+deliberately: it is the only part of this work that changes behaviour for
+sessions with nothing to do with voice, it touches a shared subsystem's
+escalation and dead-letter paths, and its blast radius is non-obvious. Both
+halves shipped in 1b; the ruling that governs the kind lives with the enum in
+[messaging.md](sessions/messaging.md#ruling-voice-is-active-and-escalatable-and-is-not-an-interrupt-985)
+(active, escalatable, **not** an interrupt).
 
-`request` is already in `ESCALATE_KINDS`, so the dead-letter-emails-the-owner
-property is achieved today. When 1b lands it should fix those three call sites
-by **deriving from `inbox.ESCALATE_KINDS`** rather than adding a fourth
-hand-written tuple.
+**The three hand-written tuples were the real hazard.** `doctor`'s dead-letter
+section and both `worktree --list` / `--watch` each filtered their own
+`("done", "escalation")` literal. Two consequences, one of which was already
+live before voice existed:
 
-**Two things the substitution drags in**, both named rather than discovered
-later:
+- **That gap already bit `request`.** A dead-lettered `request` emailed the owner
+  (it is in `ESCALATE_KINDS`) but was invisible to `doctor`'s `[!!]` line and to
+  the `worktree --list` badge. Not a voice bug — a pre-existing disagreement
+  between three copies and the SSOT.
+- **Adding `voice` would have split them again**, this time on the one kind
+  whose sender is screenless: a dead-lettered voice message emailing the owner
+  on one path and vanishing on another.
 
-- **That `doctor` / `session info` gap already bites `request` today**, entirely
-  independent of voice — a dead-lettered `request` is invisible to both right
-  now. Worth fixing on its own merits; filed separately, not folded in here.
-- **`request` IS in `cohort.REPORT_KINDS`**, and `cohort._harvest` filters on
-  kind — so if the buddy were ever enrolled as a pending cohort child of the
-  recipient, `wait --children` would harvest the buddy's write as a child report
-  and consume it. What makes that unreachable today is that nothing enrols the
-  buddy; both halves are asserted in
-  `tests/unit/test_voice_body_delivery.py::TestTheCohortInteraction`, so if
-  enrolment ever changes the test fails rather than the report vanishing.
+So 1b deleted all three and routes them through **`inbox.load_bearing()`**, the
+one derivation from `inbox.ESCALATE_KINDS`. A test feeds one message of every
+kind through it and demands the survivors are set-equal to `ESCALATE_KINDS`, so a
+future kind cannot escape the consolidation by being forgotten at a call site.
+
+**The cohort interaction, which filters on two different fields.**
+`inbox._cohort_held` holds by **sender**; `cohort._harvest` harvests by **kind**.
+Under Slice 1 the buddy's write was a `request`, which IS in
+`cohort.REPORT_KINDS` — so had the buddy ever been enrolled as a pending cohort
+child of the recipient, `wait --children` would have harvested the buddy's write
+as a child report and consumed it. `voice` is deliberately **not** in
+`REPORT_KINDS` (the owner is not a child reporting on a task), which closes that
+specific hazard and leaves a benign one in its place: a `voice` message from a
+pending child is held by sender but never harvested, so it stays pending and
+delivers once the cohort resolves — a deferral, not a loss, and the same shape
+`ingest` already has. Both halves are pinned, in
+`tests/unit/test_voice_body_delivery.py::TestTheCohortInteraction` and
+`tests/unit/test_voice_kind.py::TestCohortInteraction`.
 
 ## Cold fleet: the buddy never starts an orchestrator
 
@@ -1889,22 +1929,23 @@ undecided. A next session that picks an answer silently is the failure mode.
       separable work from T2, and splitting it would have yielded an
       intermediate state strictly worse than not shipping — a write path with a
       confirm gate nobody can reach.
-- [ ] **Slice 1b — the `voice` kind.** Add `voice` to `inbox.KINDS` and
-      `ESCALATE_KINDS`, moving attribution from the body front to the kind slot.
-      Deliberately split out of Slice 1: it is the only part that changes
-      behaviour for sessions with nothing to do with voice. Must ALSO fix
-      `doctor_cli.py:1182` and `session_cli.py:1280`/`:1321` by deriving from
-      `inbox.ESCALATE_KINDS` rather than adding a fourth hand-written tuple, and
-      must test the `_cohort_held` interaction (it filters by **sender**, not
-      kind). See §4a.
-      **One decision this entry predates:** `inbox.KINDS` now carries `ingest`
-      and there is a `PASSIVE_KINDS = ("ingest",)` set — a kind that is never
-      auto-delivered and must be pulled. So adding `voice` is no longer a single
-      question: the implementer must ALSO rule passive-vs-active for it. A
-      `voice` kind is a message the buddy SENDS, so the active default is
-      probably right (a passive buddy write would sit undelivered until the
-      recipient pulled it, which defeats the handoff), but that is a ruling to
-      make out loud rather than to inherit from the enum's shape.
+- [x] **Slice 1b — the `voice` kind (#985).** `voice` is in `inbox.KINDS` and
+      `ESCALATE_KINDS`; attribution moved from the body front to the kind slot.
+      The three hand-written `("done", "escalation")` tuples are gone, replaced
+      by the one `inbox.load_bearing()` derivation, and the `_cohort_held`
+      interaction (held by **sender**, harvested by **kind**) is pinned. See
+      §4a.
+      **The ruling this entry called for**, made by the owner on 2026-08-10
+      rather than by the implementer, because it changes behaviour for non-voice
+      sessions: `voice` is **ACTIVE** (a passive buddy write would sit
+      undelivered until pulled, defeating the handoff — and would be a behaviour
+      *reduction* versus the body prefix it replaces) and **IS in
+      `ESCALATE_KINDS`** (the owner spoke it and walked away; screenless, a
+      silent dead-letter is unrecoverable). It is **not** an interrupt —
+      `ESCALATE_KINDS` governs dead-letter escalation, not the interrupt tier,
+      and `escalation` remains the only kind that pre-empts. Full text with the
+      kind table in
+      [messaging.md](sessions/messaging.md#ruling-voice-is-active-and-escalatable-and-is-not-an-interrupt-985).
 
 ### Drift has two directions, and the second one is easy to miss
 

@@ -800,7 +800,7 @@ class TestDeclaredWriteMechanism:
         )
         argv = proposal.build_argv()
         assert argv[:2] == ["msg", "send"]
-        assert argv[-1].startswith(confirm.VOICE_MARKER)
+        assert argv[-1].startswith("restart the portal")
 
     def test_a_declared_write_is_single_use(self):
         spec = probe_spec()

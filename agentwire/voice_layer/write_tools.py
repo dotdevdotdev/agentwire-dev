@@ -52,9 +52,16 @@ from ..mcp_core import run_agentwire_cmd
 from .confirm import spoken_nonce, strip_controls
 from .tools import ToolError, _session_arg
 
-#: The message kind a buddy handoff carries. Already in ``ESCALATE_KINDS``, so
-#: a dead-lettered buddy write emails the owner today.
-WRITE_KIND = "request"
+#: The message kind a buddy handoff carries (#985). In ``ESCALATE_KINDS``, so a
+#: dead-lettered buddy write emails the owner — which the owner ruling makes
+#: load-bearing rather than incidental: they spoke it and walked away, and
+#: screenless there is no graveyard to notice.
+#:
+#: It is ACTIVE, exactly as ``request`` was: auto-delivered when the recipient's
+#: box is empty, so the message drives the session as typing at it would. And it
+#: is NOT the interrupt tier — ``escalation`` remains the only kind that
+#: pre-empts. See ``inbox.KINDS`` for the ruling in full.
+WRITE_KIND = "voice"
 
 #: An instruction longer than this is not a spoken instruction — it is a
 #: mis-transcription or a runaway generation. Refuse rather than hand it on.
