@@ -1843,10 +1843,30 @@ undecided. A next session that picks an answer silently is the failure mode.
 - [x] **T3 — Proactive interruption.** Shipped with Q3's settlement (#967):
       escalation-kind inbox messages ride the interrupt tier, everything else
       waits, and the re-raise ledger carries insistence without interrupting
-      anything. Residual (still open): quiet hours, a persistent "not now",
-      and wiring fleet detectors to actually SEND `--kind escalation` to the
-      buddy — today the tier fires only for what other sessions choose to
-      escalate.
+      anything. **The producer half landed in #982** — the tier no longer fires
+      only for what other sessions choose to escalate. Four fleet detectors now
+      address the buddy directly through `agentwire/fleet_alerts.py` (generic
+      typed-kind messaging; the ruling table and the throttle bounds live in
+      [`sessions/messaging.md`](sessions/messaging.md#fleet-alerts--detectors-as-senders-982)).
+      Two things about that wiring belong here rather than there:
+      **(a) only two detectors got the interrupt tier** — expired login and a
+      root pane blocked with no parent, both cases where nothing but a human
+      clears it and something is burning meanwhile. A usage-limit park was
+      demoted to `note` (it self-heals) and `worktree --dangling` was not wired
+      at all (no autonomous trigger, nothing burning). The reasoning is Q3's,
+      applied to the sending side: this tier's expensive failure is
+      over-production, and a *true* alert the owner learns to ignore costs more
+      than a missed one, because it retires the tier for every other producer.
+      The 30s figure above is the bar an event has to clear to belong here at
+      all. **(b) The buddy's subscription is a lease, not a flag** — recorded in
+      its identity record at `buddy register` and renewed at `buddy serve`.
+      Because the buddy's mail is spooled rather than pasted, it never reads as
+      "gone" to the drain, so a permanent subscription would keep filling a
+      spool nobody reads and replay a fortnight of escalations at the next
+      start — every one of them arriving as an interrupt. A bridge left running
+      past its lease goes quiet until restart; that is the fail-safe direction
+      and it is the residual to close if anyone ever runs one for days.
+      Residual (still open): quiet hours, and a persistent "not now".
 - [x] **T4 — Lifecycle host.** Shipped (#983). The registry grew a generic
       `command` service kind — a supervised process rather than an agent
       session — and §6 carries the paste-ready entry, the reasons the

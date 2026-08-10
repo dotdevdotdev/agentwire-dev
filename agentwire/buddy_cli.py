@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 
+from . import fleet_alerts
 from .voice_layer import delivery, identity, realtime, tools
 
 
@@ -196,6 +197,9 @@ def cmd_buddy_serve(args) -> int:
 
     if not identity.is_registered(args.name):
         return _fail(f"No voice buddy named '{args.name}'.", getattr(args, "json", False))
+    # Renew the fleet-alert lease (#982) — a buddy being started is a buddy that
+    # wants the fleet's escalations, however long ago it was registered.
+    fleet_alerts.subscribe(args.name)
     httpd, url = server.serve(
         args.name, port=args.port, model=args.model, voice=args.voice
     )
