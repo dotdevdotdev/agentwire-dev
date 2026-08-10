@@ -226,6 +226,8 @@ def cmd_services_list(args) -> int:
 
     entries = [{
         "name": svc.name,
+        "kind": services_mod.service_kind(svc),
+        "command": svc.command,
         "project": svc.project,
         "autostart": svc.autostart,
         "restart": svc.restart,
@@ -249,8 +251,10 @@ def cmd_services_list(args) -> int:
         if e["disabled"]:
             flags.append("disabled")
         suffix = f" [{', '.join(flags)}]" if flags else ""
-        print(f"  {e['name']}  restart={e['restart']}  "
+        print(f"  {e['name']}  kind={e['kind']}  restart={e['restart']}  "
               f"healthcheck={e['healthcheck']['kind']}/{e['healthcheck']['interval']}s{suffix}")
+        if e["command"]:
+            print(f"    command: {e['command']}")
         if e["project"]:
             print(f"    project: {e['project']}")
     return 0
@@ -331,12 +335,13 @@ def cmd_services_down(args) -> int:
     json_mode = getattr(args, "json", False)
     name = args.name
     services_mod, reg = _load_services_registry()
-    if _find_service(services_mod, reg, name) is None:
+    svc = _find_service(services_mod, reg, name)
+    if svc is None:
         return _output_result(False, json_mode, f"Unknown service: {name}")
 
     # Disable BEFORE killing so the watchdog can't race a respawn
     services_mod.set_disabled(name, True)
-    ok, msg = services_mod.stop_service(name)
+    ok, msg = services_mod.stop_service(svc)
     return _output_result(ok, json_mode, f"{name}: {msg} (disabled until 'services up {name}')",
                           name=name, result=msg, disabled=True)
 

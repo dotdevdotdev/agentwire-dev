@@ -363,9 +363,20 @@ class CustomServiceConfig:
 
     Custom services show up in the portal's Services column, are booted by
     `agentwire up` AND on portal launch, and are watched by the portal's
-    service watchdog. A service is just an agentwire session created in a
-    project directory; `roles`/`posture` override the project's .agentwire.yml
-    when set.
+    service watchdog.
+
+    Two kinds, distinguished by whether `command` is set:
+
+    - **agent** (no `command`) — an agentwire session created in a project
+      directory; `roles`/`posture`/`context_policy` override the project's
+      .agentwire.yml when set.
+    - **command** (`command` set) — an arbitrary long-running process, run in
+      a detached tmux session of the same name. `roles`/`posture`/
+      `context_policy` are meaningless here (there is no agent) and are
+      rejected at parse time rather than silently ignored.
+
+    The command kind is deliberately generic: agentwire supervises a process,
+    it does not know or care what the process is.
 
     restart: never | on-failure | always — what the watchdog does when the
     healthcheck fails ("always" behaves like "on-failure" for tmux services;
@@ -378,6 +389,9 @@ class CustomServiceConfig:
     roles: Optional[str] = None  # comma-separated; overrides project .agentwire.yml
     posture: Optional[str] = None   # posture override (e.g. bypass, auto)
     restart: str = "on-failure"  # never | on-failure | always
+    # Shell command to supervise. When set this service is a plain process, not
+    # an agent session — see the class docstring.
+    command: Optional[str] = None
     healthcheck: HealthcheckConfig = field(default_factory=HealthcheckConfig)
     # Context auto-management policy (issue #442): clear | compact | none.
     # Default "none" — a service is only auto-managed when it opts in. Stateless
@@ -740,15 +754,39 @@ def _dict_to_config(data: dict) -> Config:
             context_policy = entry.get("context_policy", "none")
             if context_policy not in ("clear", "compact", "none"):
                 context_policy = "none"
+            command = entry.get("command") or None
+            roles = entry.get("roles")
+            posture = entry.get("posture")
+            if command:
+                # A command service supervises a PROCESS — there is no agent to
+                # carry a role, a posture or a context policy. Dropping these
+                # silently is how a service ends up looking guarded when nothing
+                # is reading the field, so say so.
+                stale = [
+                    k for k, v in (
+                        ("roles", roles), ("posture", posture),
+                        ("context_policy", context_policy if context_policy != "none" else None),
+                    ) if v
+                ]
+                if stale:
+                    print(
+                        f"Warning: service '{entry['name']}' sets command: — "
+                        f"{', '.join(stale)} {'have' if len(stale) > 1 else 'has'} no effect "
+                        "on a process service and will be ignored.",
+                        file=sys.stderr,
+                    )
+                roles = posture = None
+                context_policy = "none"
             custom_services.append(CustomServiceConfig(
                 name=entry["name"],
                 project=entry.get("project"),
                 autostart=entry.get("autostart", True),
-                roles=entry.get("roles"),
-                posture=entry.get("posture"),
+                roles=roles,
+                posture=posture,
                 restart=entry.get("restart", "on-failure"),
                 healthcheck=healthcheck,
                 context_policy=context_policy,
+                command=command,
             ))
     services = ServicesConfig(
         portal=portal_service,

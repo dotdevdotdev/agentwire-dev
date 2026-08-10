@@ -196,11 +196,17 @@ def run_healthcheck(svc: CustomServiceConfig) -> tuple[bool, str]:
     return False, "session not found"
 
 
+def service_kind(svc: CustomServiceConfig) -> str:
+    """"command" (a supervised process) or "agent" (an agentwire session)."""
+    return "command" if svc.command else "agent"
+
+
 def service_status(svc: CustomServiceConfig) -> dict:
     """Full status for one service (runs its healthcheck now)."""
     healthy, detail = run_healthcheck(svc)
     return {
         "name": svc.name,
+        "kind": service_kind(svc),
         "running": _tmux_session_exists(svc.name),
         "healthy": healthy,
         "detail": detail,
@@ -217,8 +223,74 @@ def service_status(svc: CustomServiceConfig) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 
+def _start_command_service(svc: CustomServiceConfig) -> tuple[bool, str]:
+    """Run a plain process under tmux, detached. Idempotent.
+
+    tmux IS the supervisor here, and that choice is what keeps a process
+    service's output off any world-readable surface: tmux captures stdout and
+    stderr into the pane's scrollback, which lives in the tmux server's memory
+    and is reachable only through the per-user socket dir ``/tmp/tmux-<uid>``
+    (mode 0700). Nothing is redirected to a file — deliberately. A wrapper that
+    is careful in its own code and then tees stdout into a log has not solved
+    the problem, and the same standard #887 holds ``~/.agentwire`` and
+    ``portal.token`` to applies here: owner-only or not at all.
+
+    What this does NOT hide is ``command`` itself: it lands in the process
+    table, where every local user can read it. Secrets belong in
+    ``~/.agentwire/.env``, never in a service's argv — see
+    ``command_secret_risk``.
+    """
+    if _tmux_session_exists(svc.name):
+        return True, "already running"
+    cwd = svc.project or str(Path.home())
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", svc.name, "-c", cwd, svc.command],
+            check=True, capture_output=True, timeout=30,
+        )
+        return True, "started"
+    except subprocess.CalledProcessError as e:
+        if _tmux_session_exists(svc.name):
+            return True, "already running"  # lost a benign spawn race
+        stderr = (e.stderr or b"").decode(errors="replace").strip()
+        return False, stderr or str(e)
+    except Exception as e:
+        return False, str(e)
+
+
+# Argv patterns that read as an inline secret. The process table is world-
+# readable, so a service command carrying one hands it to every local user —
+# the one leak a tmux-supervised process service still has.
+_SECRET_ARGV_PATTERNS = (
+    "--token=", "--api-key=", "--apikey=", "--secret=", "--password=",
+    "token=", "api_key=", "apikey=", "secret=", "password=", "bearer ",
+)
+
+
+def command_secret_risk(svc: CustomServiceConfig) -> str | None:
+    """The inline-secret pattern *svc*'s command carries, or None.
+
+    Detection only, and named rather than guessed at: the caller decides what
+    to do about it. A false positive here costs a doctor line; a miss costs a
+    credential.
+    """
+    if not svc.command:
+        return None
+    lowered = svc.command.lower()
+    for pattern in _SECRET_ARGV_PATTERNS:
+        if pattern in lowered:
+            return pattern
+    return None
+
+
 def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
-    """Start a service session (detached) if not already running. Idempotent."""
+    """Start a service (detached) if not already running. Idempotent.
+
+    A `command` service is a supervised process; everything else is an
+    agentwire agent session.
+    """
+    if svc.command:
+        return _start_command_service(svc)
     if _tmux_session_exists(svc.name):
         return True, "already running"
 
@@ -247,15 +319,27 @@ def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
         return False, str(e)
 
 
-def stop_service(name: str) -> tuple[bool, str]:
-    """Kill a service's tmux session."""
-    if not _tmux_session_exists(name):
+def stop_service(svc: CustomServiceConfig) -> tuple[bool, str]:
+    """Kill a service's tmux session.
+
+    A command service is killed through tmux directly: `agentwire kill`'s
+    graceful leg sends `/exit` to an *agent*, and there is no agent here — a
+    process would just be handed two characters it never asked for before the
+    kill landed anyway.
+    """
+    if not _tmux_session_exists(svc.name):
         return True, "not running"
     try:
-        subprocess.run(
-            [sys.executable, "-m", "agentwire", "kill", "-s", name, "--json"],
-            check=True, capture_output=True, timeout=30,
-        )
+        if svc.command:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", f"={svc.name}"],
+                check=True, capture_output=True, timeout=30,
+            )
+        else:
+            subprocess.run(
+                [sys.executable, "-m", "agentwire", "kill", "-s", svc.name, "--json"],
+                check=True, capture_output=True, timeout=30,
+            )
         return True, "stopped"
     except Exception as e:
         return False, str(e)

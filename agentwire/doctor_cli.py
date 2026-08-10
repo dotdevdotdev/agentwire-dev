@@ -1204,6 +1204,64 @@ def _render_secrets_permissions_section(
     return len(issues), fixed
 
 
+def _render_custom_services_section() -> int:
+    """Doctor section: every registry service, agent and process alike (#983).
+
+    Registry-driven, so a new ``services.custom`` entry is reported here the
+    moment it is registered — including a ``command`` service such as the voice
+    buddy's bridge, whose state was previously visible nowhere because it was
+    hand-launched and therefore in no registry at all.
+
+    Two things are reported that a bare healthcheck does not carry:
+
+    - the service's KIND, because "session not found" means a dead agent for
+      one kind and a dead process for the other, and the fix differs;
+    - an inline secret in a process service's ``command``, which is the one
+      leak the tmux supervisor does not close — argv is world-readable in the
+      process table. Same standard as #887's owner-only files, one surface
+      over.
+    """
+    from . import services as services_mod
+    from .config import load_config as _load_config_typed
+
+    issues = 0
+    try:
+        cfg = _load_config_typed()
+        disabled = services_mod.load_disabled()
+        registry = services_mod.registry(cfg)
+    except Exception as e:
+        print(f"  [..] Could not check custom services: {e}")
+        return 0
+
+    for svc in registry:
+        kind = services_mod.service_kind(svc)
+        try:
+            healthy, detail = services_mod.run_healthcheck(svc)
+        except Exception as e:  # a broken healthcheck must not hide the rest
+            print(f"  [..] Service {svc.name} ({kind}): healthcheck error — {e}")
+            continue
+        label = f"Service {svc.name} ({kind})"
+        if healthy:
+            print(f"  [ok] {label}: {detail}")
+        elif svc.name in disabled:
+            print(f"  [..] {label}: stopped via 'services down' ({detail})")
+        elif not svc.autostart:
+            print(f"  [..] {label}: not running (autostart off, {detail})")
+        else:
+            print(f"  [!!] {label}: unhealthy — {detail}")
+            print(f"     Run: agentwire services up {svc.name}")
+            issues += 1
+
+        risk = services_mod.command_secret_risk(svc)
+        if risk:
+            print(f"  [!!] Service {svc.name}: command carries '{risk}' — argv is "
+                  "world-readable in the process table")
+            print("     Fix: move the secret to ~/.agentwire/.env and read it "
+                  "from the environment")
+            issues += 1
+    return issues
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -1398,25 +1456,7 @@ def cmd_doctor(args) -> int:
     # Check custom services (registry-driven: built-in notifications bridge
     # + user-defined services from services.custom)
     print("\nChecking custom services...")
-    from . import services as services_mod
-    from .config import load_config as _load_config_typed
-    try:
-        _svc_cfg = _load_config_typed()
-        _svc_disabled = services_mod.load_disabled()
-        for svc in services_mod.registry(_svc_cfg):
-            healthy, detail = services_mod.run_healthcheck(svc)
-            if healthy:
-                print(f"  [ok] Service {svc.name}: {detail}")
-            elif svc.name in _svc_disabled:
-                print(f"  [..] Service {svc.name}: stopped via 'services down' ({detail})")
-            elif not svc.autostart:
-                print(f"  [..] Service {svc.name}: not running (autostart off, {detail})")
-            else:
-                print(f"  [!!] Service {svc.name}: unhealthy — {detail}")
-                print(f"     Run: agentwire services up {svc.name}")
-                issues_found += 1
-    except Exception as e:
-        print(f"  [..] Could not check custom services: {e}")
+    issues_found += _render_custom_services_section()
 
     # 5. Validate config
     print("\nChecking configuration...")

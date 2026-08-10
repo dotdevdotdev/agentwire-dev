@@ -1547,22 +1547,86 @@ changing underneath the conversation.**
 
 ## 6. Lifecycle host
 
-The buddy is not a tmux session, so it needs somewhere to live. The
+The buddy is not an agent session, so it needs somewhere to live. The
 [custom-services registry](services.md) is the natural home — autostart on
-portal launch, watchdog health checks, restart with backoff:
+portal launch, watchdog health checks, restart with backoff. What that registry
+had, until #983, was only *agent* services: every entry was an
+`agentwire new` session, and there was nowhere to declare a process. So the
+registry grew a second kind, `command`, which is entirely generic — it
+supervises a process and has no idea the voice layer exists. The buddy is one
+caller of it.
+
+The entry, ready to paste. It is **not** written into the owner's
+`config.yaml` by anything on this branch (that file is protected control plane,
+and a spike must not add itself to a startup path); wiring it up is one edit:
 
 ```yaml
-# ~/.agentwire/config.yaml  (NOT added by this branch — the owner's call)
+# ~/.agentwire/config.yaml
 services:
   custom:
     - name: buddy
       command: agentwire buddy serve buddy --port 8788
-      autostart: false
-      healthcheck: "curl -sf http://127.0.0.1:8788/ >/dev/null"
+      autostart: false        # flip to true when you want it on the startup path
+      restart: on-failure
+      healthcheck:
+        kind: tmux_session
+        interval: 60
 ```
 
-Not wired up by this branch on purpose: a spike must not add itself to the
-owner's startup path.
+Three details in that block are rulings, not defaults that happened to land:
+
+**`kind: tmux_session`, not the `curl http://127.0.0.1:8788/` this page used to
+suggest.** `/` is the route that hands over the run token — it is served with
+no auth at all, which is the whole reason the `Host` allowlist runs first on
+every route. A healthcheck polling it would pull a fresh copy of the token into
+the watchdog's process once a minute, forever, to learn something the tmux
+session already answers: the command service's session ENDS when its process
+does, so "the session exists" is the liveness signal. A probe should not fetch
+a secret to find out whether a port is open.
+
+**`autostart: false`.** The buddy needs `OPENAI_API_KEY` and a browser tab to
+be useful; a machine that boots it and never opens the page has spent nothing
+but a port. Still, opting in is the owner's call and doctor does not nag about
+a service nobody asked to run — an `autostart: false` entry reports `[..]`, not
+`[!!]`.
+
+**Nothing is redirected to a log.** tmux captures the process's stdout into the
+pane's scrollback, which lives in the tmux server's memory behind a 0700
+per-user socket dir. Measured, not assumed: the pane holds exactly the two
+lines `serve` prints, the token appears in neither, the HTTP server's request
+log is a no-op, and the token is absent from the process table. What the
+process table DOES expose is `command` itself, so a secret must never ride in a
+service's argv — doctor flags one that looks like it does.
+
+### Restart semantics: what a supervisor kill mid-handshake leaves behind
+
+Nothing pending, and this is now pinned rather than asserted. The confirm spine
+and the utterance ring are built per `BuddyBridge`, one bridge per `serve()`,
+and neither `confirm.py` nor `transcript.py` touches disk — so a watchdog kill
+between a proposal being anchored and its spoken nonce arriving leaves a
+proposal that exists nowhere. `tests/unit/test_buddy_restart.py` asserts both
+halves: the second run's spine and ring are empty and the dead run's token is
+refused, AND nothing under `~/.agentwire` gained the proposal's token, nonce or
+instruction. The second assertion is the one that survives someone deciding
+proposals should be durable; the first alone would still pass if a restart
+merely *reloaded* them.
+
+One thing a restart does not undo, and it is worth being exact rather than
+reassuring: a kill that lands *after* the write dispatched but *before* the
+announcement is confirmed spoken leaves the write **sent and unannounced**. The
+restart is clean; the fleet still got the message. That is a narrower guarantee
+than "mid-handshake work is rolled back", and nothing here rolls anything back.
+
+**The greet is the liveness probe.** Because the token is minted per run, a
+restart invalidates the open tab — its POSTs 401 rather than half-working — so
+the acceptance path is *reload, then Start talking*, and the greeting is what
+says the whole approval path came back up (a heard greeting proves model audio,
+which #950 made the write path fail-closed on). #995 records that the wires
+arming that greet have no pin at all: cutting `maybeGreet()` out of
+`pc.ontrack` leaves the entire suite green — **measured, 5736 unit tests, zero
+failures**. `tests/unit/test_buddy_restart.py` executes both arming legs,
+extracted from the page the server actually serves, and each cut now turns it
+red.
 
 ---
 
@@ -1728,9 +1792,15 @@ undecided. A next session that picks an answer silently is the failure mode.
       and wiring fleet detectors to actually SEND `--kind escalation` to the
       buddy — today the tier fires only for what other sessions choose to
       escalate.
-- [ ] **T4 — Lifecycle host.** Wire §6's `services.custom` entry, if and when
-      the owner wants the buddy on the startup path. Independent of Q1–Q3; safe
-      to do first.
+- [x] **T4 — Lifecycle host.** Shipped (#983). The registry grew a generic
+      `command` service kind — a supervised process rather than an agent
+      session — and §6 carries the paste-ready entry, the reasons the
+      healthcheck is `tmux_session` rather than a poll of the token-bearing
+      `/`, and the restart ruling with its pins. The one step deliberately NOT
+      taken: the entry is not written into the owner's `config.yaml`. Residual,
+      named rather than closed: a kill landing after the write dispatched but
+      before the announcement is confirmed spoken leaves the write sent and
+      unannounced.
 - [x] **T5 — Confirm the confirm.** Satisfied by construction, not by a separate
       step: the approval surface IS speech (a spoken nonce), so there is no card
       to tap and nothing to reach for. DocumentScribe shipped a click-gated

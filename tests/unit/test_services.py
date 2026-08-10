@@ -284,7 +284,7 @@ class TestServicesCLI:
     def test_down_disables_then_stops(self, cli, capsys, monkeypatch):
         calls = []
         monkeypatch.setattr(services, "stop_service",
-                            lambda name: (calls.append(("stop", name, "tracker" in services.load_disabled())) or True, "stopped"))
+                            lambda svc: (calls.append(("stop", svc.name, "tracker" in services.load_disabled())) or True, "stopped"))
         assert cli.cmd_services_down(self._args(name="tracker")) == 0
         # Disabled flag was already set when stop ran (no watchdog race)
         assert calls == [("stop", "tracker", True)]
