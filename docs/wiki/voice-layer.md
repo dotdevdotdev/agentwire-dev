@@ -51,25 +51,53 @@ answer without you first enabling the thing. It reports only whether the key is
 ### What "off" costs you: nothing, and that is tested
 
 With the flag off, this feature is not merely dormant — it is **absent from the
-tokens every session pays for**. The only surface that ever reached a non-voice
-user was ~10 lines of voice-buddy etiquette in the shipped role prompts
-(`agentwire.md`, `orchestrator.md`, `worker.md`, `worker-worktree.md`). Those
-lines now sit inside `<!-- beta:voice_layer -->` markers that
-`roles.apply_beta_blocks` strips at parse time — the one funnel every role
-reader goes through, so `agentwire role show` and a live session launch agree.
+tokens every session pays for**. There are **two** model-facing surfaces, and
+the count is the interesting part: the first review of the gate found the
+second one.
 
-The bar is **byte-identical to `origin/main`**, and it is proved rather than
-asserted: `tests/unit/test_beta_flag.py` diffs the rendered prompt against a
-snapshot of main's role files in `tests/fixtures/main_roles/`, with the
+1. **Role prompts** — ~10 lines of voice-buddy etiquette in `agentwire.md`,
+   `orchestrator.md`, `worker.md`, `worker-worktree.md`.
+2. **The `msg_send` MCP tool description** — ~316 characters documenting the
+   `voice` kind, which loads into **every agent session in every install**, and
+   which the first pass missed while stating in its commit message that the
+   role prompts were the only such surface. That claim was inherited from the
+   brief rather than measured, which is exactly how a gate ends up with a hole
+   in it. The blast radius was one docstring (no new MCP tools, no other
+   description changed) — established by diffing the whole schema, not by
+   reading the diff of the file we already knew about.
+
+Both go through one mechanism, `agentwire/beta.py`: `<!-- beta:voice_layer -->`
+markers resolved by `beta.render`, called from `roles.parse_role_file` (the one
+funnel every role reader goes through, so `agentwire roles show` and a live
+session launch agree) and from the `beta.gated_doc` decorator, applied *below*
+`@mcp.tool()` so FastMCP registers the resolved text.
+
+The bar is **byte-identical to `origin/main`**, and it is proved per surface
+rather than per file — `tests/unit/test_beta_flag.py` diffs against snapshots of
+main (`tests/fixtures/main_roles/`, `tests/fixtures/main_mcp_tools.json`), each
 snapshot itself checked against `origin/main` so it cannot drift into agreeing
-with the branch, and a must-fail control that goes red if the gate ever stops
-stripping anything.
+with the branch, with must-fail controls that go red if the gate ever stops
+stripping. The MCP proof covers **all 108 tool descriptions by name**, so the
+next ungated docstring trips it rather than shipping. Measured live with the
+gate off, `msg_send`'s published description is 1800 characters — the same
+number `origin/main` publishes.
 
 A marker naming an unknown flag **fails closed** (the block is removed): text
 that no gate can turn off is the failure this mechanism exists to prevent. What
-makes that safe rather than silent is the paired audit — a test walks every
-shipped role file and fails on any marker whose flag `config.BETA_FLAG_NAMES`
-does not know, so a typo is caught at CI rather than deleting a section forever.
+makes that safe rather than silent is the paired audit — a test resolves every
+shipped role file with all flags on and fails on any marker-shaped text left
+over, which catches an unknown flag, a mistyped close tag, and the two shapes
+that used to fail open (indented markers, a close tag at EOF with no trailing
+newline). Only a real YAML boolean opens a gate, too: `voice_layer: "false"`
+leaves it **off**, because `bool("false")` is `True` and a gate whose failure
+direction is ON is the wrong shape however unlikely the input.
+
+The gate is also cheap, which matters because it sits on paths every session
+touches whether or not anyone enabled the feature: text containing no marker
+never consults the config at all, and the flag set is read once per process
+through a narrow read of `config.yaml` rather than a full `load_config` (which
+imports the channel registry). Parsing all 24 role files costs 13.8ms against
+main's 11ms — it was 242ms and 24 stderr log lines before those two fixes.
 
 ### The one thing the flag does not gate, and why
 

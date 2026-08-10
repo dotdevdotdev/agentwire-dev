@@ -95,6 +95,21 @@ def beta_gated(fn):
     return wrapper
 
 
+def _no_buddy(name: str) -> str:
+    """The one wording for "that buddy isn't registered", with the next move.
+
+    Four call sites said this and only ``status`` named the fix, so the same
+    dead end read as actionable or not depending on which verb you happened to
+    reach it through. Same standard as the beta refusal above: a refusal that
+    does not carry the next move is the defect this project keeps closing, and
+    in this channel the user is often not looking at a screen at all.
+    """
+    return (
+        f"No voice buddy named '{name}' — register it with "
+        f"`agentwire buddy register {name}`."
+    )
+
+
 def _emit(payload: dict, json_mode: bool, lines: "list[str] | None" = None) -> int:
     if json_mode:
         print(json.dumps(payload, indent=2))
@@ -140,11 +155,7 @@ def cmd_buddy_status(args) -> int:
     except identity.BuddyError as exc:
         return _fail(str(exc), json_mode)
     if not status["registered"]:
-        return _fail(
-            f"No voice buddy named '{args.name}' — register it with "
-            f"`agentwire buddy register {args.name}`.",
-            json_mode,
-        )
+        return _fail(_no_buddy(args.name), json_mode)
     return _emit(
         {"success": True, **status},
         json_mode,
@@ -194,7 +205,7 @@ def cmd_buddy_inbox(args) -> int:
     """What other sessions have reported to the buddy."""
     json_mode = getattr(args, "json", False)
     if not identity.is_registered(args.name):
-        return _fail(f"No voice buddy named '{args.name}'.", json_mode)
+        return _fail(_no_buddy(args.name), json_mode)
     messages = delivery.read_spool(
         args.name, unread_only=not args.all, ack=args.ack
     )
@@ -243,7 +254,7 @@ def cmd_buddy_mint(args) -> int:
     from .voice_layer import instructions as buddy_instructions
 
     if not identity.is_registered(args.name):
-        return _fail(f"No voice buddy named '{args.name}'.", json_mode)
+        return _fail(_no_buddy(args.name), json_mode)
     try:
         session = realtime.mint_session(
             instructions=buddy_instructions.build_instructions(),
@@ -270,7 +281,7 @@ def cmd_buddy_serve(args) -> int:
     from .voice_layer import server
 
     if not identity.is_registered(args.name):
-        return _fail(f"No voice buddy named '{args.name}'.", getattr(args, "json", False))
+        return _fail(_no_buddy(args.name), getattr(args, "json", False))
     # Renew the fleet-alert lease (#982) — a buddy being started is a buddy that
     # wants the fleet's escalations, however long ago it was registered. Guarded:
     # a failure here costs alerts, and a bridge that refuses to serve because the

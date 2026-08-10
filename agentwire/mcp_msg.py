@@ -1,5 +1,6 @@
 """MCP tools — msg domain."""
 
+from .beta import gated_doc
 from .mcp_core import (
     get_caller_session,
     mcp,
@@ -8,6 +9,7 @@ from .mcp_core import (
 
 
 @mcp.tool()
+@gated_doc
 def msg_send(to: str, text: str, kind: str = "note", ref: str = "") -> str:
     """Send a POLITE, non-interrupting message to another session's inbox.
 
@@ -30,15 +32,17 @@ def msg_send(to: str, text: str, kind: str = "note", ref: str = "") -> str:
         to: Recipient session name, or "@all" to broadcast to every live
             agent session except yourself.
         text: The message body.
-        kind: One of note (default), done, request, escalation, ingest, voice.
+        kind: One of note (default), done, request, escalation, ingest.
             `ingest` is PASSIVE — never auto-delivered, so it never drives the
             recipient into a turn; it waits until they `msg_pull` it. Use it for
             "output ready to ingest" awareness signals (Briefing Mode): drop a
             passive pointer to a file the recipient reads on the human's cue.
-            `voice` is the owner speaking through their voice buddy — active
+            <!-- beta:voice_layer -->
+            Also `voice` — the owner speaking through their voice buddy: active
             (it drives the recipient like a `request`) and escalatable, but NOT
             an interrupt; `escalation` remains the only kind that pre-empts.
             The buddy sets it; don't hand-pick it for ordinary agent mail.
+            <!-- /beta:voice_layer -->
         ref: Optional machine-readable pointer (e.g. a report file path),
             surfaced as a typed field on the message — pair with kind="ingest"
             so the recipient can open the file without parsing free text.

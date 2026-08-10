@@ -26,53 +26,6 @@ class MergedRole:
     instructions: str  # concatenated
 
 
-#: A beta-gated region of a role prompt:
-#:
-#:     <!-- beta:voice_layer -->
-#:     ...markdown that only ships when beta.voice_layer is on...
-#:     <!-- /beta:voice_layer -->
-#:
-#: The open and close tags must name the SAME flag, so a half-edited marker
-#: matches nothing and the text is left exactly as written.
-BETA_BLOCK_RE = re.compile(
-    r"^<!-- beta:([a-z0-9_]+) -->\n(.*?)^<!-- /beta:\1 -->\n",
-    re.MULTILINE | re.DOTALL,
-)
-
-
-def beta_flag_names() -> frozenset[str]:
-    """The flags a role file may legally reference. Owned by ``config``.
-
-    Imported lazily rather than at module import: ``roles`` sits under
-    ``core``'s import, and config loading pulls in the channel registry.
-    """
-    from ..config import BETA_FLAG_NAMES
-
-    return BETA_FLAG_NAMES
-
-
-def apply_beta_blocks(text: str, enabled: set[str]) -> str:
-    """Resolve every ``<!-- beta:flag -->`` region in a role prompt.
-
-    Enabled flag → the block's body ships, with the marker lines removed (they
-    are scaffolding; shipping them would cost the tokens the gate exists to
-    save). Disabled — or a flag name nothing knows about — → the whole region
-    goes, markers included.
-
-    **An unknown flag fails CLOSED**, and that direction is chosen rather than
-    inherited: text no gate can turn off is precisely the failure this gate
-    exists to prevent, while a typo'd marker is caught by the audit in
-    ``tests/unit/test_beta_flag.py`` before it can silently delete a section.
-    """
-    known = beta_flag_names()
-
-    def _resolve(match: "re.Match") -> str:
-        flag, body = match.group(1), match.group(2)
-        return body if (flag in known and flag in enabled) else ""
-
-    return BETA_BLOCK_RE.sub(_resolve, text)
-
-
 def parse_role_file(path: Path) -> RoleConfig | None:
     """Parse a role markdown file with YAML frontmatter.
 
@@ -86,9 +39,9 @@ def parse_role_file(path: Path) -> RoleConfig | None:
 
         # Role instructions here...
 
-    Beta-gated regions (``<!-- beta:flag -->``) are resolved HERE rather than
-    at any single call site, because this is the one funnel every role reader
-    in the tree goes through — ``load_roles`` (session launch), ``agentwire
+    Beta-gated regions (``<!-- beta:flag -->``, see :mod:`agentwire.beta`) are
+    resolved HERE rather than at any single call site, because this is the one
+    funnel every role reader in the tree goes through — ``load_roles`` (session launch), ``agentwire
     roles list``, ``agentwire role show``, the MCP ``role_show``. A gate
     applied at the launch path only would leave ``role show`` describing a
     prompt no session receives.
@@ -107,9 +60,9 @@ def parse_role_file(path: Path) -> RoleConfig | None:
     except Exception:
         return None
 
-    from ..config import enabled_beta_flags
+    from ..beta import render as render_beta
 
-    content = apply_beta_blocks(content, enabled_beta_flags())
+    content = render_beta(content)
 
     # Parse YAML frontmatter
     frontmatter = {}

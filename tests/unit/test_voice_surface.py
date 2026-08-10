@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import ast
 import itertools
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,14 +73,19 @@ def _spine():
 # 1. The tier audit cannot drift
 # =============================================================================
 
-_MCP_TOOL_RE = re.compile(r"@mcp\.tool\([^)]*\)\s*\ndef\s+(\w+)")
+def mcp_tool_names(sources: "list[str] | None" = None) -> set[str]:
+    r"""Every ``@mcp.tool`` name in ``agentwire/mcp_*.py``.
 
-
-def mcp_tool_names() -> set[str]:
-    package_root = Path(tools.__file__).resolve().parents[1]
-    names: set[str] = set()
-    for module in package_root.glob("mcp_*.py"):
-        names |= {m.group(1) for m in _MCP_TOOL_RE.finditer(module.read_text())}
+    Delegates to :func:`mcp_tool_defs` rather than running its own regex, and
+    that consolidation is a bug fix rather than tidying. The regex it replaced
+    was ``@mcp\.tool\([^)]*\)\s*\ndef\s+(\w+)`` — it required the ``def``
+    to be the NEXT line, so a tool wearing a second decorator became invisible
+    to the audit. It went unnoticed because nothing here stacked one until the
+    beta gate did (``@mcp.tool()`` / ``@gated_doc`` / ``def msg_send``), and
+    the direction that hid it is the dangerous one: a tool the audit cannot
+    see is a tool nobody is required to place in a tier.
+    """
+    names = set(mcp_tool_defs(sources))
     assert names, "found no @mcp.tool definitions — the parse itself broke"
     return names
 
@@ -1153,3 +1157,34 @@ class TestRequireLiveNamesTheMechanismItActuallyHas:
         monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: None)
         assert tools._session_arg({"session": "web@laptop"}) == "web@laptop"
         write_tools._require_live("web@laptop", cannot="")
+
+
+class TestTheAuditSeesThroughDecorators:
+    """The blind spot the beta gate exposed: the tier audit's tool discovery
+    must not depend on ``def`` following ``@mcp.tool()`` on the very next line.
+
+    A tool the discovery cannot see is a tool ``test_every_mcp_tool_is_tiered``
+    cannot force anyone to tier — the audit fails OPEN, silently, and the
+    module's whole claim ("every tool name is placed in exactly one tier by a
+    written rule") quietly stops being true.
+    """
+
+    STACKED = (
+        "@mcp.tool()\n"
+        "@gated_doc\n"
+        "def stacked_tool(x: str) -> str:\n"
+        '    """doc"""\n'
+        "    return x\n"
+    )
+
+    def test_a_stacked_decorator_does_not_hide_a_tool(self):
+        assert "stacked_tool" in mcp_tool_names([self.STACKED])
+
+    def test_the_control_a_plain_tool_is_still_found(self):
+        plain = "@mcp.tool()\ndef plain_tool() -> str:\n    return ''\n"
+        assert mcp_tool_names([plain]) == {"plain_tool"}
+
+    def test_the_real_package_still_exposes_msg_send(self):
+        """The concrete regression: ``msg_send`` wears ``@gated_doc`` now, and
+        the old regex reported it as a ghost tier entry."""
+        assert "msg_send" in mcp_tool_names()

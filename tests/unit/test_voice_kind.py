@@ -214,7 +214,7 @@ class TestLoadBearingIsDerivedOnce:
         import re
         from pathlib import Path
 
-        from agentwire.roles import apply_beta_blocks, beta_flag_names
+        from agentwire.beta import apply_beta_blocks, flag_names
 
         root = Path(__file__).resolve().parents[2]
         kinds = set(inbox.KINDS)
@@ -238,7 +238,7 @@ class TestLoadBearingIsDerivedOnce:
                 )
 
         for path in (root / "agentwire" / "roles").glob("*.md"):
-            found = _named(apply_beta_blocks(path.read_text(), set(beta_flag_names())))
+            found = _named(apply_beta_blocks(path.read_text(), set(flag_names())))
             if not found:
                 continue
             checked += 1
