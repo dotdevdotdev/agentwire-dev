@@ -22,9 +22,13 @@ BEFORE the gone gate. Ordering matters in both directions:
   off disk. Spooling it first would consume it out from under that collection.
 - **Before the gone gate** — that gate is the one that would kill the message.
 
-Delivery here means *handed to the buddy's spool*, an append-only JSONL file
-the voice layer reads when the owner asks. It is deliberately a PULL, not a
-push: this slice never interrupts. See ``docs/wiki/voice-layer.md``.
+Delivery here means *handed to the buddy's spool*, an append-only JSONL file the
+voice layer reads. Nothing pushes into the conversation from THIS side: the drain
+appends and stops, which is what keeps this module out of the interrupt question
+entirely. The pull is no longer only on demand, though — ``client.py`` polls the
+spool on its own clock and volunteers at a gap (#962), and escalation-kind mail
+rides a relaxed gate (#967). "This slice never interrupts" was true of the seam
+and stopped being true of the layer. See ``docs/wiki/voice-layer.md``.
 
 Registration is data, not code: a session opts in by carrying ``delivery``
 in its ``metadata.json`` (the #871 SSOT store). No existing session has that

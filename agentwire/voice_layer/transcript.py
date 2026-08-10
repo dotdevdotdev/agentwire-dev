@@ -113,15 +113,13 @@ class Utterance:
     def complete(self) -> bool:
         return bool(self.text.strip())
 
-    @property
-    def ordered(self) -> bool:
-        """Can this entry be placed in conversation order at all?
-
-        False when no ``speech_started`` was seen. Such an entry is refused as
-        an approval: guessing its position is what the whole clock change
-        exists to stop.
-        """
-        return self.speech_started_seq > 0 and not self.estimated
+    # There is deliberately NO ``ordered`` property here, and its absence is
+    # worth one comment because it existed for a while and was read by nothing.
+    # It answered "can this entry be placed in conversation order at all" as
+    # ``speech_started_seq > 0 and not estimated`` — a reasonable predicate that
+    # was NOT the gate's predicate: ``ConfirmSpine._judge`` filters on
+    # ``.estimated`` directly. A property that documents a rule nothing enforces
+    # is worse than no property, because the next reader takes it for the rule.
 
 
 class TranscriptRing:

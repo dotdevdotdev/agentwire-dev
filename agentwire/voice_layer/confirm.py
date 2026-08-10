@@ -930,10 +930,12 @@ VOICE_MARKER = "<voice>"
 #: later collapses to the chip.
 #:
 #: 300 is the BODY cap, and the rendered line adds the ``[MSG from <sender> ·
-#: request] `` prefix and the ``⟨#id6⟩`` tail — ~57 chars for a long worktree
-#: sender name (verified at 498 rendered with a 33-char sender, still hitting).
-#: That lands a worst case near 385 against a measured 520, keeping ~35%
-#: margin.
+#: <kind>] `` prefix and the ``  ⟨#id6⟩`` tail — 33 chars plus the sender name,
+#: so 66 for a 32-character worktree sender. That lands the worst case at 365
+#: against a measured 520, keeping ~30% margin. (Derived from
+#: ``inbox.Message.render``'s format, not from a probe reading: the probe's
+#: numbers describe synthetic bodies at chosen lengths, and quoting one of those
+#: as "the worst case" is how this comment previously arrived at ~57 and ~385.)
 #:
 #: **The margin is deliberate and the measurement is pane-dependent.** The box
 #: shows a bounded number of ROWS, so a shorter pane windows sooner than 80x24
