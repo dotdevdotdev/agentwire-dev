@@ -221,10 +221,19 @@ class TranscriptRing:
         *ceiling*. The number leaves Python for the page's own counter, where
         past 2**53 an increment silently stops advancing, so exhaustion has to
         be an error the page refuses on rather than a number it counts from.
+
+        A BLOCK, and the ceiling test says so: the page counts UP from its
+        base, so what has to fit under *ceiling* is ``base + gap``, not
+        ``base``. Testing the base alone let the final reservation land exactly
+        on the ceiling — a page that mints successfully and then has zero
+        usable sequences, every forward silently refused. Unreachable in
+        practice (~35 million mints on one bridge process) and that is not the
+        point: the sentence above claims a block, so the code has to reserve
+        one.
         """
         with self._condition:
             base = self._high_seq + gap
-            if base > ceiling:
+            if base + gap > ceiling:
                 return 0
             self._high_seq = base
             return base

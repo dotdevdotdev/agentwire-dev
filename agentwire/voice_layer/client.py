@@ -141,8 +141,27 @@ function createAnnouncer(deps) {
   // end event. speechSynthesis can drop an utterance without firing `onend`
   // OR `onerror`, and `speaking` below gates volunteering — so without this
   // the false-reject half is an UNBOUNDED mute, which is strictly worse than
-  // the interjection it prevents. Long enough to cover any real utterance.
-  var speakingMaxMs = deps.speakingMaxMs || fallbackMs * 5;
+  // the interjection it prevents.
+  //
+  // SCALED BY LENGTH, because a flat bound is not "long enough for any real
+  // utterance" and saying so was false: composeNotice coalesces up to 240
+  // characters PER MESSAGE, so a three-reply batch is around a minute of
+  // speech and a five-reply batch several. A flat 30s watchdog fires
+  // mid-utterance, which reopens both gates and lets the MODEL start a
+  // response over the browser voice — the two-voices defect (#950), reached
+  // through the mechanism added to bound a mute.
+  //
+  // The per-character rate is deliberately SLOWER than any real voice (~7
+  // characters a second against a typical 15). The two directions are not
+  // symmetric: over-estimating only delays a backstop that matters solely
+  // when the browser has already silently dropped the utterance, while
+  // under-estimating produces the overlap on every ordinary long notice.
+  var speakingBaseMs = deps.speakingMaxMs || fallbackMs * 5;
+  var speakingMsPerChar =
+    deps.speakingMsPerChar === undefined ? 140 : deps.speakingMsPerChar;
+  function speakingBudget(text) {
+    return speakingBaseMs + String(text || "").length * speakingMsPerChar;
+  }
 
   var queue = [];
   // { text, fallbackText, meta, timer, speakTimer, sawCreate, deferred,
@@ -292,10 +311,11 @@ function createAnnouncer(deps) {
       // clear a flag that had not been set yet. Watchdogged: an utterance
       // dropped with no onend/onerror would leave the gates shut forever.
       speaking.push(item);
+      var budget = speakingBudget(say);
       item.speakTimer = setTimer(function () {
-        onLog("fallback", "no end event within " + speakingMaxMs + "ms");
+        onLog("fallback", "no end event within " + budget + "ms");
         stopSpeaking(item);
-      }, speakingMaxMs);
+      }, budget);
       try {
         speak(
           say,

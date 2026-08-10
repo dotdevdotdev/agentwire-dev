@@ -100,6 +100,7 @@ function report() {
   return JSON.stringify({
     events, spoken, logs, anchored, notSpoken,
     armedTimers: timers.length,
+    armedMs: timers.map((t) => t.ms),
     pending: announcer.pending(),
     armed: announcer.armed(),
     anchorPending: announcer.anchorPending(),
@@ -2341,7 +2342,16 @@ class TestAFailedStrayIsPutBack:
 
     def test_a_heard_stray_is_never_put_back(self):
         """``seen`` outranks the release, here as everywhere: re-queueing a
-        stray the owner HAS heard replays it with no cursor to suppress it."""
+        stray the owner HAS heard replays it with no cursor to suppress it.
+
+        The array is read BEFORE the next poll, and that is the whole test.
+        The first version ended with a trailing ``pollOnce()`` and passed
+        whether the guard was there or not: the poll pulls the wrongly-restored
+        stray, drops it for being ``seen``, and leaves the array at 0 either
+        way — laundering the very state under test. It was counted as a pin
+        and pinned nothing (mutation: removing ``if (seen[id]) return;``
+        survived all 625 voice tests).
+        """
         report = run_notifier("""
             strays.push({ id: "s1", from: "watchdog", kind: "escalation",
                           text: "wedged" });
@@ -2349,10 +2359,24 @@ class TestAFailedStrayIsPutBack:
             const meta = announcedCalls[0].meta;
             await notifier.noticeSpoken(meta);
             notifier.noticeFailed(meta);
-            await notifier.pollOnce();
+            logs.push("strays after failing a HEARD stray: " + strays.length);
         """)
+        assert "strays after failing a HEARD stray: 0" in report["logs"]
         assert len(report["announced"]) == 1
-        assert report["strays"] == 0
+
+    def test_the_same_shape_unheard_DOES_come_back(self):
+        """The discriminator for the assertion above. Identical script minus
+        the ``noticeSpoken``, read at the same instant: the array must be 1,
+        or the test above would pass simply because nothing is ever restored.
+        """
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
+                          text: "wedged" });
+            await notifier.pollOnce();
+            notifier.noticeFailed(announcedCalls[0].meta);
+            logs.push("strays after failing an UNHEARD stray: " + strays.length);
+        """)
+        assert "strays after failing an UNHEARD stray: 1" in report["logs"]
 
     def test_a_spool_message_is_not_pushed_into_the_strays_array(self):
         """The other direction. A message still in the spool needs only the
@@ -2551,3 +2575,59 @@ class TestTheDedupHalfOfTheWeightingIsPinned:
         """)
         assert report["spoken"] == []
         assert [a["how"] for a in report["anchored"]] == ["model"]
+
+
+class TestTheSpeakingWatchdogScalesWithTheUtterance:
+    """Review N3. ``speakingMaxMs`` was flat and its comment claimed it was
+    "long enough to cover any real utterance". That is false for exactly the
+    case the notifier is built to produce: ``composeNotice`` coalesces up to
+    240 characters PER MESSAGE, so three replies is around a minute of speech
+    and five is several — against a 30s watchdog, demonstrated firing
+    mid-utterance.
+
+    Mitigated rather than catastrophic (``speechSynthesis`` queues natively,
+    and the anchor still fires at the real ``onend``), but the fire reopens
+    both gates and lets the MODEL start a response over the browser voice —
+    the two-voices defect, reached through the mechanism added to bound a
+    mute. So the bound scales instead of the sentence being narrowed.
+    """
+
+    def _watchdog_ms(self, text_js: str) -> int:
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({text_js});
+            fireTimers();
+        """)
+        assert len(report["armedMs"]) == 1
+        return report["armedMs"][0]
+
+    def test_a_long_notice_gets_a_longer_budget(self):
+        short = self._watchdog_ms(json.dumps("Done."))
+        long_notice = self._watchdog_ms(json.dumps("x" * 1200))
+        assert long_notice > short
+
+    def test_the_budget_outlasts_a_five_message_batch(self):
+        """The concrete shape: five coalesced replies at the 240-char clip.
+        At a realistic 15 characters a second that is ~80s of speech, so a
+        watchdog that fires before then is firing mid-utterance."""
+        ms = self._watchdog_ms(json.dumps("y" * (5 * 240)))
+        assert ms > 80_000
+
+    def test_a_flat_thirty_seconds_would_not_have(self):
+        """The control that makes the number above mean something."""
+        ms = self._watchdog_ms(json.dumps("y" * (5 * 240)))
+        assert ms > 30_000
+
+    def test_the_rate_errs_slow(self):
+        """The asymmetry, pinned. Over-estimating only delays a backstop that
+        matters when the browser has already dropped the utterance;
+        under-estimating overlaps two voices on every ordinary long notice."""
+        chars = 1000
+        ms = self._watchdog_ms(json.dumps("z" * chars))
+        # Slower than 10 characters a second, i.e. slower than any real voice.
+        assert (ms / chars) > 100
+
+    def test_a_short_notice_still_gets_a_usable_floor(self):
+        """The other half: an empty or one-word utterance must not end up with
+        a near-zero watchdog that fires before it starts."""
+        assert self._watchdog_ms(json.dumps("Hi.")) >= 30_000

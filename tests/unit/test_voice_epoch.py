@@ -394,3 +394,39 @@ class TestThePageRefusesAnUnusableOrigin:
         page = client.page("buddy", "tok")
         assert "Number.isSafeInteger(session.seq_base)" in page
         assert 'typeof session.seq_base !== "number"' not in page
+
+
+class TestAReservationIsAWholeBlock:
+    """Review N2. ``reserve_epoch`` returns a BASE the page counts UP from, so
+    what has to fit under the ceiling is ``base + gap`` — testing the base
+    alone let the final reservation land exactly on it. That page mints
+    successfully and then has ZERO usable sequences: every forward is refused
+    for exceeding :data:`~agentwire.voice_layer.server.MAX_SEQ`, silently, for
+    the rest of the run.
+
+    Unreachable in practice — roughly 35 million mints on one bridge process —
+    and that is not the argument. ``reserve_epoch``'s own first sentence claims
+    a block of ``gap`` sequences, so the code has to reserve one.
+    """
+
+    def test_a_base_landing_exactly_on_the_ceiling_is_refused(self):
+        ring = transcript.TranscriptRing()
+        ring.note_seq(server.MAX_SEQ - server.MINT_SEQ_GAP)
+        assert ring.reserve_epoch(server.MINT_SEQ_GAP, server.MAX_SEQ) == 0
+
+    def test_the_last_usable_reservation_keeps_its_whole_block(self):
+        """The false-reject half: the guard must not refuse a reservation that
+        genuinely fits, or it retires the sequence space a whole epoch early."""
+        ring = transcript.TranscriptRing()
+        ring.note_seq(server.MAX_SEQ - 2 * server.MINT_SEQ_GAP)
+        base = ring.reserve_epoch(server.MINT_SEQ_GAP, server.MAX_SEQ)
+        assert base == server.MAX_SEQ - server.MINT_SEQ_GAP
+        # ...and every sequence that page can count to is still acceptable.
+        assert base + server.MINT_SEQ_GAP <= server.MAX_SEQ
+
+    def test_the_page_it_hands_that_base_to_can_actually_use_it(self, bridge):
+        bridge.ring.note_seq(server.MAX_SEQ - 2 * server.MINT_SEQ_GAP)
+        base = bridge.mint()["seq_base"]
+        assert bridge.utterance(
+            {"item_id": "u1", "speech_started_seq": base + server.MINT_SEQ_GAP}
+        )["success"] is True
