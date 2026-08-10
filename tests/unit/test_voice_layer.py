@@ -361,11 +361,16 @@ class TestInstructions:
 
     def test_states_its_limits_truthfully_and_the_freshness_rule(self):
         """Slice 1 gave the buddy one write, so "you can only look" became a
-        lie. The persona must state the NEW boundary, not the old one."""
+        lie. The persona must state the NEW boundary, not the old one — and
+        since #980 it states it by DERIVATION from the tool list rather than
+        by enumerating negatives, because the enumeration went stale the same
+        way (``session_kill`` is a wireable gated write, so "you cannot stop
+        one" was one spec away from being false with nothing to catch it)."""
         text = instructions.build_instructions()
         assert "LIMITS." in text
         assert "only look" not in text, "stale claim: the buddy can write now"
-        assert "cannot start a session" in text
+        assert "if none does, you cannot" in text
+        assert "never start, restart or drive a session" in text
         assert "FRESHNESS." in text
         assert "IDENTITY." in text
 
@@ -380,19 +385,26 @@ class TestInstructions:
         assert "must_speak" in text
         assert "owner_should_wait" in text
 
-    def test_volunteers_replies_only_and_still_never_interrupts(self):
-        """#962: the one thing raised unprompted is a reply to something the
-        buddy sent. The old absolute ("you speak when spoken to") is now false
-        — the announcer's clock speaks replies — but general unprompted status
-        and interruption stay banned."""
+    def test_volunteers_only_what_code_hands_it_and_still_never_interrupts(self):
+        """#962 wrote this as "replies only", which was the whole unprompted
+        set at the time. #967 then shipped two more paths (the re-raise ledger
+        and the escalation interrupt tier) and #980 reconciled the prose: the
+        set is whatever the client hands the model, and the model may not
+        extend it. The old absolute ("you speak when spoken to") stays false,
+        and interruption of the OWNER stays banned on every tier."""
         text = instructions.build_instructions()
         flowed = " ".join(text.split())
         assert "VOLUNTEERING." in text
         assert "You speak when spoken to." not in flowed, (
             "stale absolute: contradicts the reply announcer"
         )
-        assert "do not volunteer status the owner did not ask for" in flowed
-        assert "never interrupt" in flowed
+        assert "do not volunteer status the owner did not ask for" not in flowed, (
+            "stale absolute: contradicts the re-raise ledger and the "
+            "escalation tier, both of which volunteer unasked"
+        )
+        assert "Everything you say unprompted is handed to you by code" in flowed
+        assert "You do not add to that list" in flowed
+        assert "never interrupt the owner" in flowed
 
     def test_a_volunteered_report_is_shape_not_recital(self):
         """The owner's example is 'looks like there are four main options', not
@@ -413,7 +425,9 @@ class TestInstructions:
         assert "never what you expect the answer to be" in flowed
         assert "buddy_inbox" in flowed
         assert "fleet_session_output" in flowed
-        assert "say only that a reply arrived" in flowed
+        # "something", not "a reply": the unprompted set is wider than replies
+        # (#980) — a request or an escalation is grounded the same way.
+        assert "say only that something arrived" in flowed
 
 
 # =============================================================================
