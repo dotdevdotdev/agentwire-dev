@@ -327,6 +327,42 @@ _FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "like", "you", "know
 #: ``("scrap", "that")`` and ``("hold", "off")`` are added: closed retraction
 #: phrases one word from entries already here, so they were plain misses and
 #: cost nothing.
+_DENIAL_BIGRAMS = frozenset(
+    {("do", "not"), ("never", "mind"), ("hold", "on"), ("hang", "on"),
+     ("hold", "off"), ("forget", "it"), ("forget", "that"),
+     ("scrap", "that"), ("belay", "that")}
+)
+
+#: Words tolerated BETWEEN the two halves of a gapped bigram.
+#:
+#: **"Adjacent" was already a fiction and that is what made this a blocker.**
+#: ``_denial_tokens`` strips ``_FILLERS`` before matching, so every entry in
+#: this grammar has always been "adjacent modulo a skip set" — which is why
+#: "never, uh, confirm tango" denied while "never ever confirm tango"
+#: APPROVED. Shipping the pair as strictly adjacent stated a rule the matcher
+#: did not implement, and the gap it left was the commonest intensifier in the
+#: language. Also measured: really / once / actually / seriously, and
+#: ``carries_denial("never ever confirm that")`` was False, so the
+#: post-approval scan was blind to it too and the write EXECUTED.
+#:
+#: Closed class on purpose: degree adverbs, nothing else. An open gap ("any
+#: word between never and confirm") would deny "I would never send that
+#: without checking — confirm tango", which is an approval.
+#:
+#: **This enumeration sits on the FAIL-OPEN side, and unlike ``_FILLERS`` it
+#: cannot be moved off it.** An unlisted gap word ends the run and the
+#: utterance approves — "never absolutely confirm tango" would approve if
+#: ``absolutely`` were missing. What bounds it is that the class is closed and
+#: small; what does not bound it is anything structural. That is the honest
+#: shape of this entry, stated rather than implied.
+_NEVER_GAP_WORDS = frozenset(
+    {"ever", "once", "again", "really", "actually", "seriously", "truly",
+     "honestly", "literally", "absolutely", "definitely", "certainly",
+     "just", "simply", "please"}
+)
+
+#: Ordered pairs matched with a bounded, closed gap between them.
+#:
 #: ``("never", "confirm")`` closes the one place the "a missed retraction is
 #: safe" fallback does not hold. ``never`` is kept OUT of the word list above
 #: for good reason — it is among the commonest words in English — and the
@@ -338,14 +374,14 @@ _FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "like", "you", "know
 #: confirm tango".
 #:
 #: Safe by the closed-phrase rule rather than by intuition: no genuine approval
-#: places those two tokens ADJACENT IN THAT ORDER. ``never`` anywhere else in
-#: the utterance stays the ordinary word it was excluded for being — "confirm
-#: tango, I never got the other one" still approves.
-_DENIAL_BIGRAMS = frozenset(
-    {("do", "not"), ("never", "mind"), ("never", "confirm"), ("hold", "on"),
-     ("hang", "on"), ("hold", "off"), ("forget", "it"), ("forget", "that"),
-     ("scrap", "that"), ("belay", "that")}
-)
+#: places those two tokens in that order separated only by a degree adverb.
+#: ``never`` anywhere else stays the ordinary word it was excluded for being —
+#: "confirm tango, I never got the other one" still approves.
+#:
+#: ONE rule, one place: the pair is deliberately NOT also in
+#: :data:`_DENIAL_BIGRAMS`. Two spellings of one rule drift apart, and the
+#: zero-gap case is just this rule with an empty run.
+_GAPPED_DENIAL_BIGRAMS = {("never", "confirm"): _NEVER_GAP_WORDS}
 
 #: Pairs that SUPPRESS a single-word denial.
 #:
@@ -503,7 +539,28 @@ def _denial_tokens(tokens: "list[str]") -> bool:
     for index in range(len(masked) - 1):
         if tuple(masked[index:index + 2]) in _DENIAL_BIGRAMS:
             return True
+    if _gapped_bigram(masked):
+        return True
     return any(token in _DENIAL_WORDS for token in masked)
+
+
+def _gapped_bigram(masked: "list[str]") -> bool:
+    """Does *masked* contain a :data:`_GAPPED_DENIAL_BIGRAMS` pair?
+
+    The run of tolerated words between the two halves is closed and ends at the
+    first word outside it — including a masked-out ``""``, so an exception's
+    suppression still stops this rule rather than being skipped through.
+    """
+    for (first, second), gap_words in _GAPPED_DENIAL_BIGRAMS.items():
+        for index, token in enumerate(masked):
+            if token != first:
+                continue
+            for follower in masked[index + 1:]:
+                if follower == second:
+                    return True
+                if follower not in gap_words:
+                    break
+    return False
 
 
 _CONFIRM_WORDS = ("confirm", "confirmed")
@@ -1344,10 +1401,21 @@ class ConfirmSpine:
         # write went out with a take-back mid-transcription. Re-reading makes
         # the bound "everything the owner had started by the time this confirm
         # reached its verdict" — still bounded, and still strictly before the
-        # verdict. The false-reject price is one pending_transcript wait, which
-        # the owner is told to sit through and which resolves on the next
-        # confirm; the widened `found` seqs are subsumed, since high_seq
+        # verdict. The widened `found` seqs are subsumed, since high_seq
         # advances on every ring event.
+        #
+        # THE PRICE, stated at its true size. It is not "one pending_transcript
+        # wait": `unheard_between` has no staleness bound, so an utterance that
+        # never completes — a cough, a VAD blip, TTS bleed, any speech_started
+        # with no transcript to follow — sits in this window and refuses every
+        # confirm until the TTL expires it. And it refuses as a WAIT outcome,
+        # so no attempt is burned, `too_many_attempts` never fires, and the
+        # owner hears "give me a second" for up to 120s and then "that one
+        # expired" — a spoken loop, which in a screenless channel is the
+        # expensive failure. The bound belongs in TranscriptRing (age the
+        # entry, or cap the wait), NOT here: this function cannot tell a
+        # never-completing entry from a slow one without reading the ring's
+        # own clock. Pinned in the tests as a residual, not as a design.
         ceiling = max(self._ring.high_seq, anchor)
         found = self._ring.await_utterance_after(anchor, self._wait_s)
         ceiling = max(ceiling, self._ring.high_seq)
@@ -1479,8 +1547,12 @@ class ConfirmSpine:
         # unbounded scan lets an utterance from much later — including one that
         # arrives during a RETRY's bounded await — retroactively deny an
         # approval, and report "You said no" about something the owner said in
-        # a different context. `ceiling` is the ring's high-water mark as of
-        # this confirm's entry.
+        # a different context. `ceiling` covers everything the owner had
+        # started by the time this confirm reached its verdict: it is read
+        # before the await AND again after it (see `confirm`), so an utterance
+        # begun DURING the await is inside the window. Saying "as of this
+        # confirm's entry" here described the old, narrower bound and would
+        # have let the widened window be reviewed as the one it replaced.
         later = [
             entry
             for entry in self._ring.after(

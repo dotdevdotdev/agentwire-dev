@@ -321,6 +321,29 @@ class TestNonceGrammar:
         ) == confirm.DENIED
         assert confirm.carries_denial("don't forget, wait") is True
 
+    #: Every exception, as a raw utterance a transcriber would actually emit.
+    #: Hand-written because normalization is one-way — nothing derives "don't"
+    #: from ``dont`` — but CHECKED against the live sets below in both
+    #: directions, so an exception added without a spelling here fails this
+    #: control loudly instead of escaping it.
+    EXCEPTION_SPELLINGS = ("don't forget", "can't wait", "do not forget")
+
+    def test_the_exception_spellings_cover_every_live_exception(self):
+        """The control's own coverage, asserted rather than trusted.
+
+        The first version of this test hardcoded ``("don't forget", "do not
+        forget")`` while its docstring claimed "every exception" — and the
+        entry this PR ADDS, ``("cant","wait")``, was not in it. No live defect
+        (the cross-product denies), but the control did not cover the thing it
+        shipped with, and the next exception would have escaped it silently.
+        """
+        spelled = {
+            tuple(confirm.normalize(phrase).split())
+            for phrase in self.EXCEPTION_SPELLINGS
+        }
+        live = confirm._DENIAL_EXCEPTIONS | confirm._DENIAL_BIGRAM_EXCEPTIONS
+        assert spelled == live, live ^ spelled
+
     def test_a_denial_trigger_following_any_exception_still_denies(self):
         """The composition, generatively — the shape the existing generative
         test structurally cannot reach.
@@ -328,13 +351,16 @@ class TestNonceGrammar:
         ``test_an_unknown_word_after_a_denial_trigger_still_denies`` always
         places the trigger FIRST, so no arrangement it generates puts a
         trigger inside an exception's over-long mask. This one puts every
-        trigger immediately after every exception, in both the contracted and
-        uncontracted spelling, since normalization does not merge them.
+        trigger immediately after every exception, and BOTH sides are derived
+        from the live tables: a new exception or a new trigger — including a
+        gapped one — enters this cross-product automatically.
         """
-        triggers = sorted(confirm._DENIAL_WORDS) + [
-            " ".join(bigram) for bigram in sorted(confirm._DENIAL_BIGRAMS)
-        ]
-        for exception in ("don't forget", "do not forget"):
+        triggers = sorted(confirm._DENIAL_WORDS)
+        triggers += [" ".join(bigram) for bigram in sorted(confirm._DENIAL_BIGRAMS)]
+        for (first, second), gap_words in confirm._GAPPED_DENIAL_BIGRAMS.items():
+            triggers.append(f"{first} {second}")
+            triggers += [f"{first} {gap} {second}" for gap in sorted(gap_words)]
+        for exception in self.EXCEPTION_SPELLINGS:
             for trigger in triggers:
                 text = f"confirm tango, {exception} {trigger}"
                 assert confirm.classify(text, "tango") == confirm.DENIED, text
@@ -377,6 +403,75 @@ class TestNonceGrammar:
         assert confirm.classify(text, "tango") == confirm.DENIED, (
             f"{text!r} normalized to {confirm.normalize(text)!r}"
         )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "never ever confirm tango",
+            "never really confirm tango",
+            "never once confirm tango",
+            "never actually confirm tango",
+            "never, seriously, confirm tango",
+            "you should never ever confirm tango",
+            "never ever, uh, confirm tango",
+            "never ever ever confirm tango",
+        ],
+    )
+    def test_an_intensified_never_confirm_is_still_a_retraction(self, text):
+        """The blocker's own shape, one word wider.
+
+        ``("never","confirm")`` as an ADJACENT pair left "never ever confirm
+        tango" approving — the identical inversion, reached by the commonest
+        intensifier there is. The entry was never really "adjacent tokens"
+        anyway: ``_denial_tokens`` strips ``_FILLERS`` first, which is why
+        "never, uh, confirm tango" denies. So it is "adjacent modulo a skip
+        set", and this widens the skip set rather than inventing a mechanism.
+        """
+        assert confirm.classify(text, "tango") == confirm.DENIED, (
+            f"{text!r} normalized to {confirm.normalize(text)!r}"
+        )
+
+    def test_the_post_approval_scan_sees_the_intensified_form_too(self):
+        """``carries_denial`` was blind to it as well, which is what let it
+        through AFTER the approval had already matched."""
+        for text in ("never ever confirm that", "never actually confirm it"):
+            assert confirm.carries_denial(text) is True, text
+
+    def test_only_a_closed_gap_set_is_skipped_between_never_and_confirm(self):
+        """The false-reject bound.
+
+        An UNBOUNDED "never … confirm" rule would deny "I would never send
+        that without checking — confirm tango", which is an approval. The gap
+        is a closed set of degree adverbs, and any other word ends the run.
+        """
+        for text in (
+            "confirm tango, I never asked you to confirm anything",
+            "confirm tango, I would never send that without checking",
+            "confirm tango, I never got the other one",
+        ):
+            assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    def test_the_never_gap_set_is_closed_class_and_fails_open(self):
+        """The enumeration's SIDE, stated rather than assumed.
+
+        Unlike ``_FILLERS`` (skipping one can only make a denial easier to
+        match, so an unlisted filler fails closed), this set sits on the
+        fail-open side: an unlisted gap word ends the run and the utterance
+        approves. What bounds it is that the class is closed — degree adverbs
+        and nothing else — and the file says so out loud rather than implying
+        coverage.
+        """
+        assert confirm._GAPPED_DENIAL_BIGRAMS == {
+            ("never", "confirm"): confirm._NEVER_GAP_WORDS
+        }
+        # No open-class word may enter the gap set: a noun or verb there turns
+        # "never" back into the ordinary word it was excluded for being.
+        for word in confirm._NEVER_GAP_WORDS:
+            assert word.isalpha() and word.islower(), word
+            assert word not in confirm._DENIAL_WORDS, word
+        # And the pair itself is not ALSO a plain bigram — one rule, one place,
+        # or the two spellings of it drift apart.
+        assert ("never", "confirm") not in confirm._DENIAL_BIGRAMS
 
     def test_never_apart_from_confirm_is_still_ordinary_speech(self):
         """The false-reject price of the bigram above, pinned.
@@ -902,6 +997,24 @@ class TestGateRefusals:
         assert convo.spine.confirm(proposal.token).approved is True
         assert len(runner.calls) == 1
 
+    def test_an_intensified_never_confirm_after_the_approval_does_not_write(
+        self, convo, runner
+    ):
+        """The spine-level repro of the reviewer's blocker.
+
+        The owner approves, then takes it back with "never ever confirm that"
+        before the model gets round to calling confirm. The post-approval scan
+        runs the same grammar, so an adjacency-only entry let the write
+        EXECUTE — the take-back was spoken, in time, and did not count.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says("never ever confirm that")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is False
+        assert verdict.reason == "denied"
+        assert runner.calls == []
+
     def test_an_approval_followed_by_a_denial_does_not_write(self, convo, runner):
         proposal = convo.announced_proposal()
         convo.approve(proposal)
@@ -1117,6 +1230,73 @@ class TestBoundedAwait:
         assert timing_verdict.spoken != rejected_verdict.spoken
         assert timing_verdict.to_dict()["owner_should_wait"] is True
         assert rejected_verdict.to_dict()["owner_should_wait"] is False
+
+
+class TestTheUnheardWindowHasNoStalenessBound:
+    """The widened ceiling's real price, pinned as behaviour.
+
+    Re-reading ``high_seq`` after the await is the intended safety gain — a
+    denial STARTED during the await now blocks. But ``unheard_between`` has no
+    staleness bound of its own, so the cost is not "one ``pending_transcript``
+    wait" as the first version of this PR claimed: **any** ``speech_started``
+    that never completes — a cough, a VAD blip, TTS bleed — sits in the window
+    and refuses every confirm until the TTL expires the proposal.
+
+    It is a spoken LOOP, not a refusal: ``pending_transcript`` is a WAIT
+    outcome, so it burns no attempt, so ``too_many_attempts`` never fires and
+    the owner is never told the proposal died. They are told "give me a second"
+    for up to the 120s TTL and then, on the next try, "that one expired".
+
+    Pinned rather than fixed here: the bound belongs in
+    ``TranscriptRing.unheard_between`` (``transcript.py``), which another
+    worker owns this wave. Nothing in the suite saw this shape —
+    ``test_a_denial_that_lands_as_harmless_lets_the_approval_through`` asserts
+    only the case where the utterance DOES complete.
+    """
+
+    def test_one_never_completing_utterance_refuses_every_confirm_until_ttl(
+        self, convo, clock, runner
+    ):
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.starts_speaking()  # cough / VAD blip: no commit, no transcript
+
+        for _ in range(confirm.MAX_CONFIRM_ATTEMPTS + 1):
+            verdict = convo.spine.confirm(proposal.token)
+            assert verdict.reason == "pending_transcript"
+        assert runner.calls == []
+
+        # No attempt is burned, so the retirement path that would at least SAY
+        # something never fires. The proposal is alive and unusable.
+        live = {p.token: p for p in convo.spine.pending()}
+        assert live[proposal.token].attempts == 0
+
+        # It ends by expiring, up to PROPOSAL_TTL_S later, with nothing having
+        # told the owner anything but "give me a second".
+        clock.advance(confirm.PROPOSAL_TTL_S + 1)
+        assert convo.spine.confirm(proposal.token).reason == "expired"
+        assert runner.calls == []
+
+    def test_the_module_states_this_residual_rather_than_the_cheaper_one(self):
+        """The prose half. A guarantee stated broader than the code gets
+        rounded back up — so the claim is NARROWED at the site, not qualified.
+        """
+        source = _flat(_confirm_source())
+        for clause in (
+            "has no staleness bound",
+            "never completes",
+            "until the TTL expires it",
+        ):
+            assert clause in source, clause
+
+    def test_no_stale_sentence_survives_at_the_use_site(self):
+        """The comment at the scan and the comment at the read must describe
+        the SAME ceiling. A correct paragraph at one site does not repair a
+        false sentence at the other — that is how the widened window would be
+        reviewed as the old one."""
+        source = _flat(_confirm_source())
+        assert "high-water mark as of this confirm's entry" not in source
+        assert "everything the owner had started by the time this confirm" in source
 
 
 class TestSingleUseIsClaimedNotJudged:
@@ -2158,6 +2338,22 @@ def _flat(text: str) -> str:
     """
     lines = [line.lstrip().removeprefix("> ").removeprefix(">") for line in text.splitlines()]
     return " ".join(" ".join(lines).split())
+
+
+def _confirm_source() -> str:
+    """``confirm.py`` with comment markers stripped, for prose assertions.
+
+    A sentence written across several ``#`` lines is one sentence, and a
+    comment beside the code is exactly where the stale claim lived. Stripping
+    the markers lets an assertion match either home.
+    """
+    from pathlib import Path
+
+    lines = [
+        line.lstrip().removeprefix("#:").removeprefix("#").strip()
+        for line in Path(confirm.__file__).read_text(encoding="utf-8").splitlines()
+    ]
+    return "\n".join(lines)
 
 
 class TestTheQuotedFrameGuard:
