@@ -432,12 +432,41 @@ def _notify_parked(state: dict) -> bool:
         state.get("excerpt", ""),
         "```",
     ]
+    _alert_fleet(state)
     return _send_notification(
         state,
         subject=f"[agentwire] usage limit: {session} parked until {_fmt_local(state['reset_at'])}",
         body="\n".join(lines),
         mark_notified=True,
     )
+
+
+def _alert_fleet(state: dict) -> None:
+    """Tell subscribed sessions a session parked (#982). A NOTE, deliberately.
+
+    A park is self-healing: the reset time is parsed, the resume nudge is armed,
+    and the owner's own email ends "no action needed". There is nothing for
+    anyone to do with it in the next thirty seconds, so it does not earn the
+    interrupt tier — it is exactly the kind of fleet news that should wait for
+    a gap. Demoting it is what keeps `escalation` worth acting on.
+
+    Throttling is inherited, not added: the only caller is
+    :func:`_notify_parked`, which ``park`` reaches once per park thanks to its
+    ``is_parked`` guard. Sent BEFORE the email so a dead Resend key (the
+    common local case) cannot silently take the fleet channel with it.
+    """
+    try:
+        from . import fleet_alerts
+
+        fleet_alerts.emit_for(
+            "usage_limit_park",
+            f"Session {state['session']} hit a usage limit and was parked"
+            f"{' on task ' + state['task'] if state.get('task') else ''}. "
+            f"Limit resets {_fmt_local(state['reset_at'])}; it will be nudged to "
+            f"continue at {_fmt_local(state['resume_at'])}. No action needed.",
+        )
+    except Exception as e:  # best-effort; the park is what matters
+        log_event("fleet_alert_failed", session=state.get("session"), error=str(e))
 
 
 def _notify_resumed(state: dict) -> None:
