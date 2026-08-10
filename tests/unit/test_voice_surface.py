@@ -211,37 +211,69 @@ def _argv_compatible(voice_argv: list, mcp_argv: list) -> bool:
     )
 
 
+#: The ONE wired mapping the argv cross-check cannot corroborate, recorded as
+#: a (tool, capability) PAIR and asserted set-equal. Scoping the exemption to
+#: the capability NAME instead covered all 15 capabilities that build no
+#: extractable argv — including `wiki_lint` and `wiki_status`, both tier READ,
+#: so a future tool mapped to either would have been graded read with nothing
+#: able to contradict it. An exemption that widens by itself is the failure
+#: mode this whole file exists to make impossible.
+_UNCORROBORATED = frozenset({("fleet_wiki_search", "wiki_query")})
+
+
+def _dispatched_argvs(tool_name: str) -> list[list]:
+    """What *tool_name* actually sends to the CLI, with the CLI stubbed out."""
+    from unittest import mock
+
+    seen: list[list] = []
+    with mock.patch(
+        "agentwire.voice_layer.tools.run_agentwire_cmd",
+        lambda argv, **kw: seen.append(list(argv)) or {"success": True},
+    ):
+        tools.dispatch(tool_name, dict(_SWEEP_ARGS), "buddy")
+    return seen
+
+
+def uncorroborated_pairs(mapping: dict) -> set:
+    """(tool, capability) pairs the argv cross-check cannot corroborate.
+
+    Reported separately from the mismatches so the exemption can be asserted
+    set-equal — a new uncheckable mapping is red, and so is a stale entry here
+    once the capability grows an extractable argv.
+    """
+    mcp_argvs = mcp_tool_argvs()
+    pairs = set()
+    for tool in tools.READ_ONLY_TOOLS:
+        for capability in mapping.get(tool.name, ()):
+            if _dispatched_argvs(tool.name) and not mcp_argvs.get(capability):
+                pairs.add((tool.name, capability))
+    return pairs
+
+
 def capability_argv_mismatches(mapping: dict) -> dict[str, str]:
     """Wired read tools whose dispatched argv contradicts their mapped capability.
 
-    A capability with no extractable argv cannot corroborate anything; that is
-    tolerated ONLY for capabilities already recorded in ``UNANALYZABLE_TOOLS``,
-    so the exemption is a named one rather than a silent pass.
+    A capability with no extractable argv corroborates nothing. That is
+    tolerated only for the exact pairs in :data:`_UNCORROBORATED` — never for a
+    capability name, which would exempt every tool that ever maps to it.
     """
-    from unittest import mock
-
     mcp_argvs = mcp_tool_argvs()
     mismatches: dict[str, str] = {}
     for tool in tools.READ_ONLY_TOOLS:
         capabilities = mapping.get(tool.name)
         if not capabilities:
             continue
-        seen: list[list] = []
-        with mock.patch(
-            "agentwire.voice_layer.tools.run_agentwire_cmd",
-            lambda argv, **kw: seen.append(list(argv)) or {"success": True},
-        ):
-            tools.dispatch(tool.name, dict(_SWEEP_ARGS), "buddy")
+        seen = _dispatched_argvs(tool.name)
         if not seen:
             continue  # voice-native (gh, spool) — ruled in VOICE_NATIVE
         for capability in capabilities:
             candidates = mcp_argvs.get(capability, [])
             if not candidates:
-                if capability in UNANALYZABLE_TOOLS:
+                if (tool.name, capability) in _UNCORROBORATED:
                     continue
                 mismatches[tool.name] = (
-                    f"{capability} builds no extractable argv and is not "
-                    "recorded as unanalyzable"
+                    f"{capability} builds no extractable argv, so this mapping "
+                    "is unfalsifiable and is not a recorded exemption"
                 )
                 continue
             if not any(
@@ -308,12 +340,34 @@ class TestEveryWiredToolIsRuled:
         mutated["fleet_session_output"] = ("sessions_list",)
         assert "fleet_session_output" in capability_argv_mismatches(mutated)
 
+    def test_the_uncorroborable_exemption_is_scoped_to_named_pairs(self):
+        """The exemption is one MAPPING, not a capability name.
+
+        Scoped to the name, it covered every capability that builds no
+        extractable argv — 15 of them, three of which (`wiki_lint`,
+        `wiki_query`, `wiki_status`) are tier READ, so any future tool mapped
+        to one would be graded read and be structurally unfalsifiable. That is
+        the exemption widening in silence, which is the thing
+        ``UNANALYZABLE_TOOLS`` is asserted set-equal to prevent."""
+        assert uncorroborated_pairs(surface.TOOL_CAPABILITY) == _UNCORROBORATED
+        # The pair exists because of the analyzer's blind spot, and the two
+        # records must agree about which capability that is.
+        for _tool, capability in _UNCORROBORATED:
+            assert capability in UNANALYZABLE_TOOLS
+
+    def test_a_second_uncheckable_mapping_is_not_covered_by_the_first(self):
+        """Watched failing before the scoping: `wiki_status` is uncheckable and
+        tier READ, so under a name-scoped exemption this mapping passed with
+        nothing corroborating it."""
+        mutated = dict(surface.TOOL_CAPABILITY)
+        mutated["fleet_locks"] = ("wiki_status",)
+        assert "fleet_locks" in capability_argv_mismatches(mutated)
+        assert ("fleet_locks", "wiki_status") in uncorroborated_pairs(mutated)
+
     def test_an_uncheckable_mapping_is_named_not_waved_through(self):
-        """`wiki_query` builds no extractable argv, so the cross-check cannot
-        corroborate it. That exemption is allowed only for a capability already
-        recorded as unanalyzable — otherwise 'no argv to compare' becomes a
-        silent pass, which is the shape being fixed."""
-        assert "wiki_query" in UNANALYZABLE_TOOLS
+        """The exempted mapping is still held to the rest of the check: point
+        `fleet_wiki_search` somewhere that DOES build an argv and it must be
+        compared against it like any other."""
         mutated = dict(surface.TOOL_CAPABILITY)
         mutated["fleet_wiki_search"] = ("council_list",)
         assert "fleet_wiki_search" in capability_argv_mismatches(mutated)

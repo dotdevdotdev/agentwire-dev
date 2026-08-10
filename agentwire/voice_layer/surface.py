@@ -140,11 +140,25 @@ that reads :data:`TOOL_CAPABILITY` believes it, so a wrong entry —
 green and made "a wired tool's tier is derivable" mean "a hand-written map
 nothing checks", which is the same over-claim this module polices one level
 up. The audit now runs each read tool with the CLI stubbed and compares the
-argv it really builds against the argv the mapped MCP capability builds. One
-entry cannot be corroborated that way: ``wiki_query`` builds no extractable
-argv, so ``fleet_wiki_search``'s mapping rests on reading it. That exemption is
-allowed only for capabilities the analyzer already records as unanalyzable, and
-it is stated here rather than left as a silent pass.
+argv it really builds against the argv the mapped MCP capability builds.
+
+**Where that check has no purchase, stated at its real size.** Fifteen
+capabilities build no argv the analyzer can extract — nine ``desktop_*``,
+``desktop_write_artifact``, ``notify_user``, ``transcribe``, and ``wiki_lint``
+/ ``wiki_query`` / ``wiki_status`` — and a mapping onto any of them is
+unfalsifiable, not verified. Three of the fifteen are tier READ, so the
+exemption is granted per (tool, capability) PAIR and asserted set-equal
+(``_UNCORROBORATED`` in the audit), never per capability name: name-scoped, one
+recorded exemption silently covered all fifteen, and any future tool mapped to
+``wiki_lint`` or ``wiki_status`` would have been graded read with nothing able
+to contradict it. Exactly one wired mapping needs it today —
+``fleet_wiki_search`` → ``wiki_query`` — and that one rests on a human having
+read it.
+
+A weaker residual, unfixed and named: the comparison is a prefix match, so a
+capability whose extracted argv is a single token (``panes_list`` builds
+``["info"]``) corroborates any voice argv starting with that token. It
+discriminates less than the others; it is not nothing.
 
 One light write IS wired: ``buddy_inbox(ack=true)`` advances the buddy's own
 read cursor. Light because the message itself is untouched — the same tool with
