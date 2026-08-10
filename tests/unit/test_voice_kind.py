@@ -135,17 +135,85 @@ class TestLoadBearingIsDerivedOnce:
         assert {m.kind for m in inbox.load_bearing(every)} == set(inbox.ESCALATE_KINDS)
 
     def test_no_consumer_carries_its_own_kind_literal(self):
-        """The failure this issue exists to prevent, asserted structurally.
+        """The failure this issue exists to prevent, matched on the OPERATION.
 
-        Three modules used to hand-write ``("done", "escalation")``. A fourth
-        copy — or a surviving third — silently disagrees with the other two."""
+        This test was spelling-keyed on review (#1004 nit 4): it grepped for
+        ``kind in ("done"``, so re-inlining the same literal as
+        ``("escalation", "done")`` — different order, identical defect — stayed
+        green at both sites. A test named for catching a hand-written kind
+        enumeration must catch one however it is spelled.
+
+        So it walks the AST instead and flags ANY tuple/list/set literal of
+        string constants that is a non-trivial subset of ``inbox.KINDS``,
+        wherever it appears and in whatever order. The three SSOT assignments
+        (``KINDS`` / ``PASSIVE_KINDS`` / ``ESCALATE_KINDS``) are the only
+        permitted ones, exempted by assignment target rather than by content.
+        """
+        import ast
         import inspect
 
+        ssot = {"KINDS", "PASSIVE_KINDS", "ESCALATE_KINDS"}
+        kinds = set(inbox.KINDS)
+
         for module in (doctor_cli, session_cli, inbox):
-            source = inspect.getsource(module)
-            # The code form specifically — the prose above deliberately quotes
-            # the deleted literal, and a naive substring test would catch that.
-            assert 'kind in ("done"' not in source, module.__name__
+            tree = ast.parse(inspect.getsource(module))
+            exempt = {
+                id(node.value)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if isinstance(target, ast.Name) and target.id in ssot
+            }
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                    continue
+                if id(node) in exempt:
+                    continue
+                values = [
+                    e.value for e in node.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                ]
+                if len(values) != len(node.elts) or len(values) < 2:
+                    continue
+                assert not set(values) <= kinds, (
+                    f"{module.__name__}:{node.lineno} hand-writes a kind "
+                    f"enumeration {tuple(values)} — derive from "
+                    f"inbox.ESCALATE_KINDS via inbox.load_bearing()"
+                )
+
+    def test_no_shipped_prose_carries_a_stale_kind_enumeration(self):
+        """Nit 3, generalised: a fourth copy in a channel the model READS.
+
+        The consolidation deleted the code literals and left the prose ones —
+        ``agentwire/roles/agentwire.md`` and two ``SKILL.md`` files each spell
+        out ``note|done|request|escalation``. That copy had already gone stale
+        on ``ingest`` before ``voice`` existed, which is the same defect step 3
+        exists to prevent, in the surface an agent actually consults.
+
+        Prose cannot derive from the enum, so it gets the next best thing: any
+        pipe-separated run naming two or more kinds must name them ALL.
+        """
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        kinds = set(inbox.KINDS)
+        runs = re.compile(r"[A-Za-z*`]+(?:\|[A-Za-z*`]+)+")
+
+        checked = 0
+        for path in [*(root / "agentwire" / "roles").glob("*.md"),
+                     *(root / ".claude" / "skills").rglob("SKILL.md")]:
+            for run in runs.findall(path.read_text()):
+                tokens = {tok.strip("*`") for tok in run.split("|")}
+                named = tokens & kinds
+                if len(named) < 2:
+                    continue
+                checked += 1
+                assert named == kinds, (
+                    f"{path.relative_to(root)} enumerates kinds but is missing "
+                    f"{sorted(kinds - named)}: {run}"
+                )
+        assert checked, "found no kind enumeration to check — regex went stale"
 
     def test_doctor_reports_a_dead_lettered_voice_message(self, isolate, capsys):
         _corpse("orchestrator", "voice")
@@ -235,6 +303,66 @@ class TestAttributionLeftTheBody:
         body = confirm.render_body("--force a restart", "confirm tango", "a1b2c3")
         assert not body.startswith("-")
         assert "force a restart" in body
+
+    def test_a_split_dash_run_is_stripped_too(self):
+        """The reviewer's case on #1004, and it was DATA LOSS, not cosmetics.
+
+        The first fix stripped only the leading dash RUN (``lstrip("-")`` before
+        ``.strip()``), so ``"- - force"`` kept its second dash and tripped
+        ``render_body``'s guard. That guard fires inside ``build_argv()``, which
+        ``ConfirmSpine.confirm`` calls AFTER ``_proposals.pop()`` and OUTSIDE the
+        runner's ``try`` — so the proposal is already consumed and the approving
+        utterance already spent. Screenless, the owner loses the message
+        entirely, with no retry and nothing on screen saying why.
+        """
+        for instruction in (
+            "- - force a restart",
+            "-\t-x",
+            "- -x",
+            "--- ---",
+            "  --  --  restart the portal",
+        ):
+            body = confirm.render_body(instruction, "", "a1b2c3")
+            assert not body.startswith("-"), instruction
+
+    def test_lead_safe_is_total_over_adversarial_prefixes(self):
+        """Totality is the point, not a longer list of cases.
+
+        ``_lead_safe`` has to be TOTAL because the alternative — a guard that
+        raises here — destroys the message. Swept over every prefix built from
+        dash/space/tab up to length 4, against a real instruction and against
+        nothing but the prefix.
+        """
+        from itertools import product
+
+        for n in range(5):
+            for combo in product("- \t", repeat=n):
+                prefix = "".join(combo)
+                for tail in ("restart the portal", ""):
+                    body = confirm.render_body(prefix + tail, "", "a1b2c3")
+                    assert not body.startswith("-"), repr(prefix + tail)
+                    assert body.endswith("#a1b2c3"), repr(prefix + tail)
+
+    def test_the_guarantee_survives_assertions_being_disabled(self):
+        """The second-order half, and the one that matters more than the regex.
+
+        The original guard was an ``assert``, which ``python -O`` compiles out —
+        so in optimised mode a flag-shaped body shipped silently, which is the
+        bug the guard was named for. A guarantee that evaporates under a
+        standard interpreter flag is not a guarantee. Run in a real ``-O``
+        subprocess, because that is the only way to observe it.
+        """
+        import subprocess
+        import sys
+
+        out = subprocess.run(
+            [sys.executable, "-O", "-c",
+             "from agentwire.voice_layer import confirm;"
+             "print(confirm.render_body('- - force a restart', '', 'a1b2c3'))"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert not out.startswith("-"), out
+        assert out.endswith("#a1b2c3")
 
     def test_an_all_dash_instruction_still_renders_a_safe_body(self):
         body = confirm.render_body("---", "", "a1b2c3")

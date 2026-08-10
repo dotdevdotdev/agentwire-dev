@@ -1025,8 +1025,14 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+#: Leading dashes and whitespace, in any interleaving. ``lstrip("-")`` is NOT
+#: this: it stops at the first non-dash, so ``"- - force"`` keeps its second
+#: dash. See :func:`_lead_safe` for why the difference was data loss.
+_LEAD_DASH_RE = re.compile(r"^[-\s]+")
+
+
 def _lead_safe(text: str) -> str:
-    """Strip leading dashes so *text* can never open the rendered body.
+    """Strip every leading dash so *text* can never open the rendered body.
 
     Until #985 this was free: the body opened with the ``<voice>`` marker, so
     the model-supplied instruction was never in first position. Moving
@@ -1034,13 +1040,30 @@ def _lead_safe(text: str) -> str:
     CLI as a POSITIONAL — a leading ``-`` is parsed as a flag, a bug this repo
     has shipped twice (see ``tools._SESSION_RE``'s comment, which records both).
 
-    So the guarantee that used to be a side effect of layout is now explicit
-    and owned here, which is what makes ``render_body``'s assertion a check on
-    one deliberate mechanism rather than on an accident. Stripping rather than
-    escaping because nothing real is lost: a spoken instruction does not begin
-    with a hyphen, and one that does is a mis-transcription.
+    **This function must be TOTAL, and that is a data-loss argument rather than
+    a tidiness one.** The guarantee used to be enforced by an ``assert`` in
+    :func:`render_body`, with this function merely usually-right: it stripped
+    only the first dash RUN, so ``"- - force a restart"`` reached the assert and
+    raised. ``render_body`` is called from ``Proposal.build_argv()``, which
+    ``ConfirmSpine.confirm`` runs **after** ``_proposals.pop()`` and **outside**
+    the runner's ``try`` — the proposal is already consumed and the approving
+    utterance already spent, so the raise destroyed the message with no retry
+    and, for a screenless owner, nothing anywhere saying why.
+
+    So: no raise on this path, and no ``assert`` either. An assert is compiled
+    out by ``python -O``, which turned the incomplete strip into the *silent*
+    version of the same bug — a flag-shaped body shipped with the guard gone.
+    A guarantee that evaporates under a standard interpreter flag is not a
+    guarantee. The regex is total and idempotent, ``render_body`` applies it to
+    the finished body as the single enforcement point, and totality is swept in
+    ``test_voice_kind.py`` over every dash/space/tab prefix up to length 4 plus
+    a real ``-O`` subprocess.
+
+    Stripping rather than escaping because nothing real is lost: a spoken
+    instruction does not begin with a hyphen, and one that does is a
+    mis-transcription.
     """
-    return _one_line(text).lstrip("-").strip()
+    return _LEAD_DASH_RE.sub("", _one_line(text)).strip()
 
 
 def reply_nudge(reply_to: str) -> str:
@@ -1116,10 +1139,14 @@ def render_body(
         if len(with_nudge) <= MAX_BODY_CHARS:
             body = with_nudge
     body = _clip(body, MAX_BODY_CHARS)
-    # Explicit, not incidental — see the docstring. A body reaching the CLI as
-    # a flag is a bug this repo has shipped twice.
-    assert not body.startswith("-"), "rendered body must never lead with a dash"
-    return body
+    # THE enforcement point, and it corrects rather than complains. `_clip` only
+    # truncates the tail, so this cannot touch the id; `_lead_safe` is total and
+    # idempotent, so on the overwhelmingly common path it is a no-op over a
+    # string that already passed through it. What it replaces was an `assert`,
+    # which (a) raised from inside `build_argv()` — after the proposal was
+    # consumed, so the owner simply lost the message — and (b) vanished under
+    # `python -O`, shipping the flag-shaped body it existed to prevent.
+    return _lead_safe(body)
 
 
 # =============================================================================

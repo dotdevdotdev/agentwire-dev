@@ -37,6 +37,7 @@ import textwrap
 
 import pytest
 
+from agentwire import inbox
 from agentwire.voice_layer import client, confirm, transcript, write_tools
 
 pytestmark = pytest.mark.skipif(
@@ -1304,11 +1305,18 @@ class TestTheInterruptTier:
         """The wave-3 surviving mutant: widening the tier to include
         kind:request passed the whole suite, because the waits test used
         kind:done. This pins the CLASS boundary, not one member of it —
-        every non-escalation kind the msg channel ships (done, note,
-        request, ingest) must WAIT for the full gate, and each is
-        volunteered once it opens. `request` matters most: it is the kind
-        every buddy write emits, and the commonest actionable one."""
-        for kind in ("done", "note", "request", "ingest"):
+        every non-escalation kind the msg channel ships must WAIT for the
+        full gate, and each is volunteered once it opens.
+
+        **Derived from `inbox.KINDS`, never listed.** A hardcoded
+        `("done", "note", "request", "ingest")` said "every non-escalation
+        kind" in its docstring and meant "the four that existed when it was
+        written": #985 added `voice` — the kind every buddy write now emits,
+        and one the owner ruled explicitly is NOT an interrupt — and this test
+        did not notice. Widening `isUrgent` to include it left all 181 green.
+        The list is now the enum minus the one member of the tier, so a
+        seventh kind is covered on the day it is added."""
+        for kind in [k for k in inbox.KINDS if k != "escalation"]:
             report = run_notifier(f"""
                 spool = [{{ id: "m1", from: "reviewer", kind: "{kind}",
                            text: "need a call" }}];
