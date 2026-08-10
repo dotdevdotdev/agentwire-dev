@@ -30,6 +30,7 @@ a guard; the runner is injected rather than stubbed at the subprocess layer.
 
 import itertools
 import re
+import textwrap
 import threading
 import time
 
@@ -1814,10 +1815,24 @@ class TestTheCancelBarrierIsONELockHold:
     of them produces a cancel claiming nothing was sent while something was.
     """
 
-    def _run(self, fire_at: int):
-        """One confirm, with a cancel fired at the *fire_at*-th lock release."""
+    def _run(self, fire_at: int, *, dispatch_succeeds: bool = True):
+        """One confirm, with a cancel fired at the *fire_at*-th lock release.
+
+        **Parametrised over the dispatch OUTCOME, and that is not decoration.**
+        The first version built a bare ``RecordingRunner()``, so every sweep ran
+        a SUCCEEDING dispatch and half the state space simply did not exist
+        while it swept: nothing ever entered ``_failed``, so the window in which
+        a token is both "dispatch came back failed" and "dispatching" was
+        unreachable — and the sweep reported exhaustive coverage of it. A sweep
+        that is exhaustive over lock releases but not over outcomes is
+        exhaustive in ONE AXIS, which is the shape of a green test that proves
+        the fixture.
+        """
         ring = transcript.TranscriptRing()
-        runner = RecordingRunner()
+        runner = RecordingRunner(
+            {"success": True} if dispatch_succeeds
+            else {"success": False, "error": "target gone"}
+        )
         spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner)
         convo = Conversation(ring, spine)
         proposal = convo.announced_proposal()
@@ -1828,6 +1843,14 @@ class TestTheCancelBarrierIsONELockHold:
         def observer(index: int) -> None:
             if index != fire_at or "cancel" in seen:
                 return
+            # The spine's own record of the write, read at the moment the
+            # cancel speaks. This is what makes "the outcome is already
+            # recorded" a question the assertion can ask, rather than one
+            # inferred from which release index we happen to be at.
+            seen["recorded"] = (
+                proposal.token in spine._succeeded
+                or proposal.token in spine._failed
+            )
             seen["cancel"] = spine.cancel(proposal.token).reason
 
         lock = _ObservableLock(threading.Lock(), observer)
@@ -1837,19 +1860,38 @@ class TestTheCancelBarrierIsONELockHold:
         seen["releases"] = lock.releases
         return seen
 
-    def test_no_observable_moment_lets_a_cancel_deny_a_write_that_happened(self):
+    @pytest.mark.parametrize("dispatch_succeeds", [True, False])
+    def test_no_observable_moment_lets_a_cancel_misreport_the_write(
+        self, dispatch_succeeds
+    ):
         """The pin. At every lock boundary, the two stories must agree."""
-        probe = self._run(fire_at=0)
+        probe = self._run(fire_at=0, dispatch_succeeds=dispatch_succeeds)
         total = probe["releases"]
         assert total >= 3, "the confirm must take the lock several times"
 
         stories = set()
         for index in range(1, total + 1):
-            seen = self._run(fire_at=index)
+            seen = self._run(fire_at=index, dispatch_succeeds=dispatch_succeeds)
             reason = seen.get("cancel")
             if reason is None:
                 continue
             stories.add((reason, seen["writes"] > 0))
+
+            # ONCE THE OUTCOME IS RECORDED, THE CANCEL MUST REPORT IT. The
+            # third and fourth windows are both this rule violated from
+            # different sides: a token sits in `_succeeded`/`_failed` while
+            # still marked claimed (third) or still marked dispatching
+            # (fourth), and cancel answered from the marker instead of from the
+            # record. `cancel_in_flight` is the sharpest case — "it's already
+            # going out ... we can undo it from there" is two definite claims
+            # about a dispatch the system has already recorded it CANNOT
+            # characterise (see `dispatch_failed`'s own line).
+            if seen.get("recorded"):
+                assert reason in ("replayed", "dispatch_failed"), (
+                    f"release {index}: the outcome was already recorded and "
+                    f"cancel said {reason!r}"
+                )
+
             if seen["writes"]:
                 # Something was sent, so no cancel may CLAIM OTHERWISE. Stated
                 # as the property rather than as an allowed outcome: which
@@ -1921,6 +1963,130 @@ class TestTheCancelBarrierIsONELockHold:
 
         assert verdict.reason not in ASSERTS_NOTHING_SENT, verdict.reason
         assert verdict.reason == "replayed"
+
+    @pytest.mark.parametrize(
+        "recorded,marker,expected",
+        [
+            # The THIRD window: outcome recorded, claim not yet released.
+            ("_succeeded", "_in_flight", "replayed"),
+            ("_failed", "_in_flight", "dispatch_failed"),
+            # The FOURTH: outcome recorded, the DISPATCHING marker not yet
+            # cleared. `_dispatching` was tested above both terminal facts, so
+            # a cancel here was told "it's already going out ... we can undo it
+            # from there" about a dispatch already recorded as failed — two
+            # definite claims about the one outcome `dispatch_failed` exists to
+            # say cannot be characterised.
+            ("_succeeded", "_dispatching", "replayed"),
+            ("_failed", "_dispatching", "dispatch_failed"),
+        ],
+    )
+    def test_a_recorded_outcome_outranks_every_in_progress_marker(
+        self, convo, runner, recorded, marker, expected
+    ):
+        """Both halves of the rule, on both markers, as a table.
+
+        The rule this branch introduced — *only facts about the WRITE can
+        contradict a spoken claim about sending* — was applied against
+        ``_in_flight`` and not against ``_dispatching``, and its ``_failed``
+        half was never exercised at all: deleting that check left the whole
+        suite green. A rule stated once and enforced against one of the two
+        markers is the shape both of those defects share, so it is asserted as
+        the cross-product rather than at the site that happened to break.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+
+        with convo.spine._lock:
+            convo.spine._succeeded.discard(proposal.token)
+            getattr(convo.spine, recorded).add(proposal.token)
+            getattr(convo.spine, marker).add(proposal.token)
+        try:
+            verdict = convo.spine.cancel(proposal.token)
+        finally:
+            with convo.spine._lock:
+                getattr(convo.spine, marker).discard(proposal.token)
+
+        assert verdict.reason == expected, (recorded, marker, verdict.reason)
+        assert verdict.reason not in ASSERTS_NOTHING_SENT
+
+    def test_the_barrier_read_and_mark_are_SYNTACTICALLY_inside_one_hold(self):
+        """The blind spot a boundary sweep has BY CONSTRUCTION.
+
+        The sweep fires at lock RELEASES, so it can only see states that a
+        release creates. Move the ``_cancelled`` read outside every lock and
+        there is no release between the read and the mark to fire at — the
+        sweep stays green while a cancel landing there is told "I haven't sent
+        anything" with the runner already called. That is the same bug, in the
+        one form the instrument cannot reach.
+
+        So this one is read off the SOURCE. A structural assertion is the right
+        tool exactly when the property is "these statements are in this scope",
+        which no amount of runtime observation can establish.
+        """
+        import ast
+        import inspect
+
+        source = inspect.getsource(confirm.ConfirmSpine._confirm_claimed)
+        tree = ast.parse(textwrap.dedent(source))
+
+        def holds_the_lock(node) -> bool:
+            return isinstance(node, ast.With) and any(
+                isinstance(item.context_expr, ast.Attribute)
+                and item.context_expr.attr == "_lock"
+                for item in node.items
+            )
+
+        def mentions(node, name: str) -> bool:
+            return any(
+                isinstance(child, ast.Attribute) and child.attr == name
+                for child in ast.walk(node)
+            )
+
+        barriers = [
+            node
+            for node in ast.walk(tree)
+            if holds_the_lock(node)
+            and mentions(node, "_cancelled")
+            and mentions(node, "_dispatching")
+        ]
+        assert len(barriers) == 1, (
+            "the _cancelled read and the _dispatching mark must sit in exactly "
+            f"one `with self._lock` block; found {len(barriers)}"
+        )
+
+        # ...and the two halves of the decision happen nowhere else. Two holds,
+        # a mark placed after the block, or an unlocked read all fail here.
+        #
+        # Scoped to the READ and the MARK, not to every mention: the `finally`
+        # that DISCARDS `_dispatching` is a legitimate second touch, and a
+        # blanket "this name appears once" would forbid releasing the marker at
+        # all. What must be atomic is deciding, not unwinding.
+        barrier = barriers[0]
+        span = range(barrier.lineno, (barrier.end_lineno or barrier.lineno) + 1)
+
+        def is_mark(node) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_dispatching"
+            )
+
+        stray = [
+            child.lineno
+            for child in ast.walk(tree)
+            if (
+                (isinstance(child, ast.Attribute) and child.attr == "_cancelled")
+                or is_mark(child)
+            )
+            and child.lineno not in span
+        ]
+        assert stray == [], (
+            f"the _cancelled read or the _dispatching mark sits outside the "
+            f"barrier hold, at lines {stray} (relative to _confirm_claimed)"
+        )
 
     def test_the_two_flags_are_never_both_observable(self, convo):
         """The invariant stated directly as well as behaviourally.

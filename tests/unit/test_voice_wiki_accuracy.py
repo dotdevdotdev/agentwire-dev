@@ -272,30 +272,68 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         "round 1", "originally",
     )
 
-    #: Sentence-ish boundaries. Newlines count, because a markdown LIST is one
-    #: block and its bullets are separate claims; `;` counts, because "#992 is
-    #: open; the scan no longer matters much" puts the suppressor in the second
-    #: clause of one sentence.
-    _UNIT_RE = re.compile(r"(?<=[.!?;:])\s+|\n")
+    #: Lines that START A NEW CLAIM rather than continuing one: markdown
+    #: structure. Everything else is a SOFT wrap and gets joined back up.
+    #:
+    #: This file hand-wraps prose — 1351 of its 2345 source lines continue a
+    #: sentence — so splitting on every newline (which is what fixed the bullet
+    #: leak) chopped hand-wrapped sentences in half and put the id and the
+    #: marker in different units. That is not hypothetical: **the actual
+    #: round-1 stale paragraph, in its original wrapping, was not caught** —
+    #: only once unwrapped by hand. A pin that catches the defect that started
+    #: this only in a form it never had is "catches the placement it was built
+    #: from", one level up.
+    _STRUCTURAL_RE = re.compile(r"^\s*(?:[-*+]\s|\||#{1,6}\s|>|\[\^)")
+
+    #: Sentence boundaries WITHIN a joined block. `;` and `:` count, because
+    #: "#992 is open; the scan no longer matters much" puts the suppressor in
+    #: the next clause of one sentence.
+    _SENTENCE_RE = re.compile(r"(?<=[.!?;:])\s+")
+
+    @classmethod
+    def _units(cls, raw: str) -> "list[str]":
+        """*raw* as claims: soft wraps joined, structural lines kept apart."""
+        blocks: list[str] = []
+        for line in raw.splitlines():
+            if not line.strip():
+                blocks.append("")
+                continue
+            if not blocks or blocks[-1] == "" or cls._STRUCTURAL_RE.match(line):
+                blocks.append(line.strip())
+            else:
+                blocks[-1] = blocks[-1] + " " + line.strip()
+        units: list[str] = []
+        for block in blocks:
+            units.extend(cls._SENTENCE_RE.split(block))
+        return units
 
     @classmethod
     def _open_claims(cls, raw: str, issue: str) -> "list[str]":
-        """Sentences in *raw* that call *issue* open without retiring the claim.
+        """Claims in *raw* that call *issue* open without retiring the claim.
 
-        **The suppressor is SENTENCE-scoped, and both wider scopes were
-        measured leaking.** A ±400-char window let the closure sentence next
-        door silence a stale paragraph. Block scoping then let a markdown LIST
-        launder one: a bullet saying "closed" suppressed a sibling bullet
-        saying "#992 still open", because a list is a single block. It also
-        missed "#992 remains open. See the table below for what is closed." and
-        "#992 is open; the scan no longer matters much" — a closure word in the
-        NEXT sentence, or the next clause, is not qualifying this one.
+        **Three scopes were measured leaking before this one.** A ±400-char
+        window let the closure sentence next door silence a stale paragraph.
+        Block scoping let a markdown LIST launder one, because a list is a
+        single block and a bullet saying "closed" suppressed a sibling bullet
+        saying "#992 still open". Splitting on every newline fixed that and
+        broke the opposite way: hand-wrapped prose got chopped mid-sentence, so
+        the id and the marker landed in different units — which is how the
+        ORIGINAL stale paragraph escaped a pin written to catch exactly it.
 
-        A sentence is the unit a claim is made in, so it is the unit the
-        suppressor gets.
+        So: join soft wraps, split hard only before markdown structure, then
+        split the result into sentences. A claim is the unit, whatever the
+        line breaks are doing.
+
+        **Known misses, recorded rather than chased.** A claim split across two
+        sentences by a pronoun ("#992 is the echo hole. It is still open.")
+        carries no id in the sentence that carries the marker. And a table row
+        that mentions both the id and the word "closed" suppresses itself.
+        Both need the id resolved across sentences, which is a different
+        instrument; neither has occurred, and this one now catches every
+        placement that has.
         """
         found = []
-        for unit in cls._UNIT_RE.split(raw):
+        for unit in cls._units(raw):
             if issue not in unit:
                 continue
             lowered = unit.lower()
@@ -337,6 +375,38 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         (
             "closure word in the next CLAUSE",
             "{issue} is open; the scan no longer matters much.",
+        ),
+        # THE ONE THE CONTROL WAS BLIND TO. Every template above is a single
+        # line, and this file hand-wraps prose — so the control could not
+        # exercise the wrapping, and the pin missed the ACTUAL round-1
+        # paragraph in its ACTUAL form while passing on the same words typed
+        # flat. Reproduced verbatim from the sentence that survived round 1,
+        # line breaks included, because the line breaks were the defect.
+        (
+            "hand-wrapped, as the real stale paragraph was",
+            "**That closes the approval direction only, and the denial "
+            "direction is\nopen ({issue}).** `carries_denial` is not "
+            "nonce-gated, and the fallback\nvoice also speaks inbox notices, "
+            "re-raises and error notices.",
+        ),
+        (
+            "wrapped so the id and the marker are on DIFFERENT lines",
+            "The scan still has the hole {issue}\ndescribes, and it is open.",
+        ),
+        ("heading", "### {issue} is still open"),
+        ("table row", "| {issue} | `_judge` | still open, nobody took it |"),
+        ("blockquote", "> {issue} remains open."),
+        ("nested list", "  - {issue} is open, see above."),
+        # THE ONE THAT MAKES THE STRUCTURAL SPLIT LOAD-BEARING. With terminal
+        # punctuation the sentence split alone separates sibling bullets, so
+        # the bullet placement above passes even with structural splitting
+        # removed — it proved the sentence rule, not the structure rule. A
+        # bullet list without full stops is the shape where only the structure
+        # rule keeps a "closed" sibling from laundering its neighbour, and this
+        # page writes lists both ways.
+        (
+            "bullets with NO terminal punctuation",
+            "- {issue} is open\n- the approval direction is closed",
         ),
     )
 

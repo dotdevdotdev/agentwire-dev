@@ -1854,8 +1854,32 @@ class ConfirmSpine:
           confirm-shaped advice to re-propose the write just retracted.
         """
         with self._lock:
+            # THE RECORDED OUTCOME OUTRANKS EVERY IN-PROGRESS MARKER, and the
+            # order of these three tests is the whole of it.
+            #
+            # `_succeeded`/`_failed` are facts about the WRITE; `_dispatching`
+            # and `_in_flight` are facts about the ATTEMPT, and only the first
+            # kind can contradict a spoken claim about sending. That rule was
+            # stated one round ago and applied against `_in_flight` alone,
+            # which left the identical hole on the other marker: a confirm adds
+            # `_failed` and only THEN clears `_dispatching`, so in between, a
+            # cancel testing the marker first was told "Too late to stop that
+            # one — it's already going out … we can undo it from there" about a
+            # dispatch already recorded as FAILED. Two definite claims, about
+            # the one outcome the system has established it CANNOT characterise
+            # (see `dispatch_failed`'s line: "I can't tell whether it took
+            # effect"). A rule enforced against one of two markers is not a
+            # rule; it is a fix at the site that happened to break.
+            #
+            # Hoisting costs nothing where `cancel_in_flight` is right: mid-
+            # runner NEITHER terminal fact is set, so it still wins there.
+            if token in self._succeeded:
+                return Verdict(approved=False, reason="replayed")
+            if token in self._failed:
+                return Verdict(approved=False, reason="dispatch_failed")
             if token in self._dispatching:
-                # The ONE true "too late": the argv is inside the runner.
+                # The ONE true "too late": the argv is inside the runner, and
+                # no outcome has been recorded for it yet.
                 #
                 # Nothing is popped or marked here, and that is deliberate
                 # rather than an omission: `_dispatch` popped the proposal
@@ -1867,22 +1891,6 @@ class ConfirmSpine:
                 # looked like they were buying — no cancel outcome leaves a
                 # live proposal — is real, and is pinned as a property.
                 return Verdict(approved=False, reason="cancel_in_flight")
-            # THE TERMINAL FACTS OUTRANK THE CLAIM, and getting that order
-            # wrong was the same over-claim in a third window — found by the
-            # lock-hold sweep rather than by reading.
-            #
-            # A confirm records its result and only THEN unwinds the claim, so
-            # between `_succeeded.add` and `_in_flight.discard` a token is both
-            # "written" and "claimed". Testing `_in_flight` first answered a
-            # cancel there with `cancelled` — "I haven't sent anything" — about
-            # a write that had already gone out. These two sets answer
-            # different questions: `_succeeded`/`_failed` are facts about the
-            # WRITE, `_in_flight` is a fact about the ATTEMPT, and only the
-            # first kind can contradict a spoken claim about sending.
-            if token in self._succeeded:
-                return Verdict(approved=False, reason="replayed")
-            if token in self._failed:
-                return Verdict(approved=False, reason="dispatch_failed")
             if token in self._in_flight:
                 # A confirm holds the claim, has not reached the runner, and
                 # has not recorded a result. Nothing has been sent, so the

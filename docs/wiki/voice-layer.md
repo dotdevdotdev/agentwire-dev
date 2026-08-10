@@ -565,13 +565,22 @@ Three things make the shared claim correct rather than merely shared:
   refactor. Pinned by sweeping *every* observable lock boundary rather than the
   one that happens to be the barrier today, so moving it does not silence the
   test.
-- **The terminal facts outrank the claim.** A confirm records its result and
-  only *then* unwinds, so between `_succeeded.add` and `_in_flight.discard` a
-  token is both written and claimed. Testing `_in_flight` first answered a cancel
-  there with "I haven't sent anything" about a write that had gone out — a third
-  window, found by the lock sweep rather than by reading. `_succeeded`/`_failed`
-  are facts about the WRITE; `_in_flight` is a fact about the ATTEMPT, and only
-  the first kind can contradict a spoken claim about sending.
+- **The recorded outcome outranks EVERY in-progress marker**, and it took two
+  goes to get that right. A confirm records its result and only *then* unwinds,
+  so a token sits in `_succeeded`/`_failed` while still marked. Testing
+  `_in_flight` first answered a cancel there with "I haven't sent anything"
+  about a write that had gone out — the third window. The rule that fixed it —
+  `_succeeded`/`_failed` are facts about the WRITE, `_in_flight` and
+  `_dispatching` are facts about the ATTEMPT, and only the first kind can
+  contradict a spoken claim about sending — was then applied against
+  `_in_flight` **and not against `_dispatching`**, leaving the identical hole on
+  the other marker: between `_failed.add` and `_dispatching.discard`, a cancel
+  was told *"Too late to stop that one — it's already going out … we can undo it
+  from there"* about a dispatch already recorded as FAILED. Two definite claims,
+  about the one outcome `dispatch_failed` exists to say cannot be characterised.
+  Both terminal checks now sit above both markers, and the property is pinned as
+  the cross-product rather than at either site. **A rule enforced against one of
+  two markers is not a rule.**
 - **A cancel is never answered with confirm-shaped advice.** The claim is
   shared so the two paths cannot drift, but two of its lines argue for the very
   write just retracted — `no_proposal` says *"Tell me again what you'd like
