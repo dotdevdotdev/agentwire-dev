@@ -302,6 +302,24 @@ clear without a human, and is something burning while it waits?*
 | dead-lettered load-bearing mail | `request`, promoted to `escalation` iff the lost message *was* an escalation | Someone must go look at `agentwire msg dead`. The floor is `request` because the realistic bad case is one stuck recipient — 147 dead letters in ~2s, observed — and that shape must not buy 147 interrupts. One alert per **batch**, matching the digest email's coalescing. |
 | dangling PR (`worktree --dangling`) | **not wired** | No autonomous trigger (only `doctor` and the explicit flag, both run by a human already reading the output) and no per-finding throttle state to reuse, so a producer would re-announce the same durable, passive condition every invocation. Nothing is burning while a dangling PR waits. |
 
+**No alert rides an email-shaped throttle.** Each producer stamps its own state
+on a successful *enqueue* — a local write — rather than reusing the stamp that
+gates its owner email. That distinction is load-bearing rather than fussy:
+`channels/email.py` **raises** `EmailConfigError` when `RESEND_API_KEY` is
+absent, so on a keyless machine (the ordinary state of a fresh install) the
+email-shaped gates never close at all, and anything riding one re-fires on every
+60s watchdog tick. Note what this claim does *not* say: three email callers
+(`auth_expired._escalate`, `prompt_router._escalate_no_parent`,
+`usage_limit._send_notification`) still gate persistent state on a successful
+send. That is untouched and out of scope here — but it is why a future producer
+must not be wired to `notified`, `escalated_at` or their siblings.
+
+A stamp also records that somebody **was told**, never that we tried: when an
+alert reaches no subscriber, no stamp is written. Otherwise an operator who
+subscribes during a live incident would hear nothing until the TTL expired,
+which is the failure that is hardest to notice — it looks exactly like a quiet
+fleet.
+
 Two guards keep the dead-letter mirror from feeding itself: alerts carry a
 distinct sender (`fleet-alerts`) and are never mirrored, and any subscriber
 named as a *recipient* of the lost batch is excluded. Either alone is
@@ -346,6 +364,20 @@ record store: that walk measured ~326ms against 1155 records, and one caller
 sits on the synchronous permission-hook path. The index names *candidates* and
 each candidate's own record decides, so a stale entry is verified away and a
 lost index costs alerts (never spurious ones) until this rebuilds it.
+
+**The residual, stated because it is the one silent stop left:** a lost index
+zeroes alerts quietly, and `list` reads that same index — so the surface meant
+to reveal the stop would otherwise agree with it. `list` therefore reports
+`index_present` and refuses to render a missing index as a confident zero. It
+cannot do better than that: a machine where nobody ever subscribed also has no
+index, and from the outside those two states are identical. `reindex` settles
+it, cheaply, in both directions.
+
+`subscribe` requires the session to already have a record. It used to create one
+— a `{}` entry in the store that is the SSOT for conversation identity (#871),
+counted by `core.recorded_sessions()` and indistinguishable from a real session.
+A subscription is a property *of* a session, so one it can invent is not a
+subscription.
 
 ## Broadcast
 

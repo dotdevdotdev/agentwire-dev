@@ -41,6 +41,14 @@ def isolate(tmp_path, monkeypatch):
 
 
 def _subscribe(name: str = "listener") -> str:
+    """A subscriber is a session that EXISTS — the record comes first.
+
+    Not fixture ceremony: a subscription is a property of a session, and
+    ``subscribe`` refuses a name with no record precisely so it can never mint
+    one into the #871 store.
+    """
+    if not core.session_metadata_path(name).exists():
+        core.store_session_metadata(name, {"role": "worker", "created_at": "x"})
     fleet_alerts.subscribe(name)
     return name
 
@@ -143,6 +151,30 @@ class TestSubscription:
     def test_a_malformed_subscription_is_ignored_not_honored(self, isolate):
         core.store_session_metadata("listener", {fleet_alerts.SUBSCRIBE_KEY: True})
         assert fleet_alerts.subscribers() == []
+
+    def test_subscribing_an_unknown_session_refuses_and_writes_nothing(self, isolate):
+        """The session-record store is the #871 SSOT for conversation identity.
+
+        A verb that mints ``{}`` into it on a typo is the wrong shape whatever
+        the typo case: the empty record is indistinguishable from a real one to
+        ``core.recorded_sessions()``, which sweeps and doctor surfaces count.
+        The help text already promised a record must exist; now the code does.
+        """
+        with pytest.raises(ValueError):
+            fleet_alerts.subscribe("typoo")
+        assert core.recorded_sessions() == []
+        assert not core.session_metadata_path("typoo").exists()
+        assert fleet_alerts.subscribers() == []
+
+    def test_a_refused_subscription_leaves_no_index_entry(self, isolate):
+        _subscribe("listener")
+        with pytest.raises(ValueError):
+            fleet_alerts.subscribe("typoo")
+        assert fleet_alerts.subscribers() == ["listener"]
+
+    def test_unsubscribing_an_unknown_session_creates_no_record(self, isolate):
+        assert fleet_alerts.unsubscribe("typoo") is False
+        assert core.recorded_sessions() == []
 
     def test_unsubscribe(self, isolate):
         _subscribe("listener")
@@ -516,6 +548,77 @@ class TestKeylessMachine:
         assert len(_inbox_messages("listener")) == 2
 
 
+class TestNoStampWhenNobodyHeard:
+    """A stamp records that somebody WAS TOLD, never that we tried.
+
+    The expensive direction: an operator who subscribes during a live incident
+    must still hear about it. If a throttle stamp were burned while nobody was
+    listening, the alert would be suppressed for the rest of its TTL and the
+    subscriber would sit through the incident in silence — the failure that is
+    hardest to notice, because the system looks exactly like a quiet fleet.
+
+    ``if not reached: return previous`` is what makes that work. It was correct
+    but unasserted, which for behaviour in this direction is the same as
+    undefended.
+    """
+
+    @pytest.fixture(autouse=True)
+    def keyless(self, monkeypatch):
+        from agentwire.channels.email import EmailConfigError
+
+        def raises(**kwargs):
+            raise EmailConfigError("Email API key not configured.")
+
+        monkeypatch.setattr("agentwire.channels.email.send_email", raises)
+
+    def test_auth_outage_alerts_a_subscriber_that_arrives_mid_incident(self, isolate):
+        for _ in range(3):
+            auth_expired.record_outage({"session": "a", "transcript": "/t.jsonl"})
+        assert json.loads(auth_expired.state_path().read_text())["alerted_at"] is None
+
+        _subscribe("listener")  # a listener comes up mid-outage
+        auth_expired.record_outage({"session": "a", "transcript": "/t.jsonl"})
+        assert len(_inbox_messages("listener")) == 1
+
+    def test_no_parent_sweep_alerts_a_subscriber_that_arrives_mid_incident(
+        self, isolate, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
+        monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "pr-events.jsonl")
+        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
+
+        for _ in range(3):
+            prompt_router.route_prompt("root-1", 0, _prompt_info(), source="sweep")
+        assert prompt_router.read_marker("root-1", 0)["alerted_at"] is None
+
+        _subscribe("listener")
+        prompt_router.route_prompt("root-1", 0, _prompt_info(), source="sweep")
+        assert len(_inbox_messages("listener")) == 1
+
+    def test_park_notes_a_subscriber_that_arrives_mid_park(
+        self, isolate, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(usage_limit, "STATE_DIR", tmp_path / "usage-limit")
+        now = datetime.now(timezone.utc)
+        state = {
+            "session": "worker-1",
+            "detected_at": now.isoformat(),
+            "parked_at": now.isoformat(),
+            "reset_at": (now + timedelta(hours=2)).isoformat(),
+            "resume_at": (now + timedelta(hours=2)).isoformat(),
+            "excerpt": "",
+            "notified": False,
+        }
+        usage_limit.write_park_state(state)
+        for _ in range(3):
+            usage_limit._notify_parked(usage_limit.read_park_state("worker-1"))
+        assert not usage_limit.read_park_state("worker-1").get("fleet_alerted")
+
+        _subscribe("listener")
+        usage_limit._notify_parked(usage_limit.read_park_state("worker-1"))
+        assert len(_inbox_messages("listener")) == 1
+
+
 class TestCostWhenNobodyListens:
     """"Zero behavior change with no subscriber" has to mean zero WORK, too.
 
@@ -584,6 +687,11 @@ class TestCliSurface:
         args = build_parser().parse_args(argv)
         return args.func(args)
 
+    @pytest.fixture(autouse=True)
+    def a_real_session(self, isolate):
+        """`listener` is an existing session here — the CLI refuses to invent one."""
+        core.store_session_metadata("listener", {"role": "worker", "created_at": "x"})
+
     def test_subscribe_list_unsubscribe_round_trip(self, isolate, capsys):
         assert self._run(["alerts", "subscribe", "listener"]) == 0
         capsys.readouterr()
@@ -598,6 +706,46 @@ class TestCliSurface:
         self, isolate, capsys
     ):
         assert self._run(["alerts", "unsubscribe", "nobody"]) == 1
+
+    def test_subscribe_typo_fails_and_mints_no_record(self, isolate, capsys):
+        assert self._run(["alerts", "subscribe", "typoo"]) == 1
+        assert "typoo" not in core.recorded_sessions()
+
+    def test_list_never_reports_a_missing_index_as_a_confident_zero(
+        self, isolate, capsys
+    ):
+        """The one surface built to make a silent stop visible must not agree
+        with it. `list` reads the same index the emit path does, so a lost index
+        would otherwise render as "nobody is subscribed" — while a live lease
+        sits right there in the record store, hearing nothing.
+
+        What it can honestly say is narrower than I first wrote: a machine where
+        nobody ever subscribed ALSO has no index, and from here those two are
+        identical. So the answer is flagged as unconfident either way, and
+        `reindex` is what settles it.
+        """
+        self._run(["alerts", "subscribe", "listener"])
+        capsys.readouterr()
+        self._run(["alerts", "list", "--json"])
+        assert json.loads(capsys.readouterr().out)["index_present"] is True
+
+        fleet_alerts.subscribers_index_path().unlink()
+        self._run(["alerts", "list", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert out["subscribers"] == [] and out["index_present"] is False
+
+        # ...and the lease was never gone — reindex proves the zero was false.
+        self._run(["alerts", "reindex", "--json"])
+        capsys.readouterr()
+        self._run(["alerts", "list", "--json"])
+        assert json.loads(capsys.readouterr().out)["subscribers"] == ["listener"]
+
+    def test_list_says_so_in_prose_too(self, isolate, capsys):
+        self._run(["alerts", "subscribe", "listener"])
+        fleet_alerts.subscribers_index_path().unlink()
+        capsys.readouterr()
+        self._run(["alerts", "list"])
+        assert "reindex" in capsys.readouterr().out
 
     def test_reindex_is_reachable_from_the_cli(self, isolate, capsys):
         self._run(["alerts", "subscribe", "listener"])
