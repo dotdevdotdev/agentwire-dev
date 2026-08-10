@@ -2685,14 +2685,27 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
         assert "TWO bounded deferrals" in note
 
     def test_the_note_states_the_bound_the_constants_produce(self):
-        """24s here, 30s in general — derived, so bumping either constant in
-        ``client.py`` fails this sentence in ``confirm.py``."""
+        """Every number in the paragraph, DERIVED — bumping either constant in
+        ``client.py`` fails the sentence in ``confirm.py`` that quotes it.
+        Transcription across two files with nothing connecting them is how the
+        first number went stale, and the second one after it."""
         fallback, owner = self._constants()
-        here = fallback * (1 + owner) // 1000
-        general = fallback * (2 + owner) // 1000
+        both_legs = fallback * (2 + owner) // 1000       # the bound: 30s
+        unacked = fallback * (1 + owner) // 1000         # the sub-case: 24s
+        silence = fallback * 2 // 1000                   # the owner's: 12s
         note = _source_prose(confirm.__file__)
-        assert f"{1 + owner} intervals — {here}s" in note
-        assert f"{2 + owner} intervals, {general}s" in note
+        assert f"{2 + owner} intervals — {both_legs}s" in note
+        assert f"{1 + owner} ({unacked}s)" in note
+        assert f"at {silence}s" in note
+
+    def test_the_note_does_not_present_the_sub_case_as_the_bound(self):
+        """The corrected error, pinned in the direction it actually went: 24s
+        was stated as this outcome's bound when it is the unacked sub-case, and
+        6s as the owner's silence when the in-flight leg is available here."""
+        note = _source_prose(confirm.__file__)
+        assert "the worst case in this outcome 4 intervals" not in note
+        assert "where the in-flight leg is unavailable" not in note
+        assert "BOTH are live in this state" in note
 
     def test_the_reason_the_deadlock_argument_survives_is_stated(self):
         """Not "30s is fine" — the argument has to name WHY, or the next bump
@@ -2702,10 +2715,40 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
         assert "a deferral is not a suppression" in note
         assert "not the owner's silence" in note
 
-    def test_this_outcomes_own_state_cannot_take_the_in_flight_deferral(self):
-        """The behavioural half of the claim: a response created BEFORE the
-        announce never sets ``sawCreate``, so the only deferrals available here
-        are the owner-speaking ones — the fallback speaks on fire 4, not 5."""
+    def test_the_ordinary_path_here_takes_BOTH_legs_and_speaks_on_fire_five(self):
+        """The behavioural half of the claim, and the correction to a first
+        version of this test that could not see it.
+
+        The response already in flight cannot defer — ``sawCreate`` is only set
+        while the item is current, and that one predates the announce. But it
+        is not the only response in play: this outcome fires with
+        ``responseActive`` true, so pump() CANCELS that response and creates
+        ours, and the server's ack of OUR create lands while the item is still
+        current (client.py ``onResponseCreated``). Both legs are therefore live
+        in this state on the ordinary path, and the fallback speaks on fire 5.
+
+        The fixture omitting that ack is what made "4 intervals" look pinned.
+        """
+        fallback, owner = self._constants()
+        report = run_announcer(f"""
+            announcer.onResponseCreated();     // in flight BEFORE the announce
+            announcer.announce("Hang on — I haven't finished telling you.");
+            announcer.onResponseCreated();     // the server ACKS our own create
+            ownerIsSpeaking = true;
+            for (let i = 0; i < {owner + 2}; i++) {{
+                fireTimers();
+                logs.push("fire " + (i + 1) + " spoken=" + spoken.length);
+            }}
+        """)
+        for n in range(1, owner + 2):
+            assert f"fire {n} spoken=0" in report["logs"]
+        assert f"fire {owner + 2} spoken=1" in report["logs"]
+
+    def test_only_an_unacked_create_leaves_the_in_flight_leg_untaken(self):
+        """The sub-case, named as one. With no ack for our own create nothing
+        ever sets ``sawCreate``, so the owner-speaking deferrals are the only
+        ones available and speech lands one interval earlier. This is the state
+        the paragraph calls out as the exception — not the bound."""
         fallback, owner = self._constants()
         report = run_announcer(f"""
             announcer.onResponseCreated();     // in flight BEFORE the announce
@@ -2720,16 +2763,23 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
             assert f"fire {n} spoken=0" in report["logs"]
         assert f"fire {owner + 1} spoken=1" in report["logs"]
 
-    def test_an_owner_who_stops_talking_is_spoken_to_at_the_next_fire(self):
-        """What bounds the owner's SILENCE rather than the buddy's wait, and
-        the sentence the rewritten paragraph rests on."""
+    def test_an_owner_who_stops_talking_waits_at_most_one_more_deferral(self):
+        """What bounds the owner's SILENCE rather than the buddy's wait — two
+        intervals, not one. The owner-speaking leg stops deferring the moment
+        they go quiet, but the in-flight leg does not key on the owner at all,
+        so a single unspent in-flight deferral still lands between their
+        silence and the speech. That is the 12s the paragraph states."""
         report = run_announcer("""
             announcer.announce("Hang on — I haven't finished telling you.");
+            announcer.onResponseCreated();     // the server ACKS our own create
             ownerIsSpeaking = true;
-            fireTimers();
+            fireTimers();                      // owner-speaking deferral
             ownerIsSpeaking = false;
+            fireTimers();                      // in-flight deferral, owner silent
+            logs.push("after one silent fire: spoken=" + spoken.length);
             fireTimers();
         """)
+        assert "after one silent fire: spoken=0" in report["logs"]
         assert len(report["spoken"]) == 1
 
 

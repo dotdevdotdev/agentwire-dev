@@ -1099,15 +1099,18 @@ SPOKEN = {
     # which is TRUE in exactly this state), and its fallback must stay
     # reachable — see client.py's createAnnouncer: the timer is armed before
     # anything that can fail, and TWO bounded deferrals may POSTPONE it,
-    # neither of which can cancel it. They differ on whether this outcome's own
-    # state can take them. The in-flight one keys on a response created AFTER the
-    # announce (`sawCreate` is only set while the item is current), so the
-    # response already in flight HERE never defers; the owner-speaking one
-    # (`maxOwnerDeferrals`, 3) does not care which response is running and can
-    # fire in any state. At `fallbackMs` 6000 that makes the worst case in this
-    # outcome 4 intervals — 24s — rising to the announcer's general worst case
-    # of 5 intervals, 30s, only if a NEW response also starts after the
-    # announce. The deadlock sentence above was written against 2 intervals, 12s.
+    # neither of which can cancel it. BOTH are live in this state, which is not
+    # obvious and was got wrong once. The in-flight leg keys on a response
+    # created AFTER the announce (`sawCreate` is only set while the item is
+    # current), so the response already in flight HERE cannot take it — but
+    # that is not the only response in play: this outcome fires with
+    # `responseActive` TRUE, so pump() cancels that one and creates OURS, and
+    # the server's ack of our create sets `sawCreate` while the item is still
+    # current. The owner-speaking leg (`maxOwnerDeferrals`, 3) never cared which
+    # response is running. So at `fallbackMs` 6000 the bound here is the
+    # announcer's general worst case, 5 intervals — 30s — dropping to 4 (24s)
+    # only in the sub-case where our own create is never acked at all. The
+    # deadlock sentence above was written against 2 intervals, 12s.
     #
     # The deadlock argument survives the bigger number, and not by calling 30s
     # tolerable. It survives because a deferral is not a suppression: each is
@@ -1115,10 +1118,12 @@ SPOKEN = {
     # condition left to fail. And the leg that grew is the one that costs the
     # owner nothing — the owner-speaking deferral is taken only when the owner
     # IS speaking at the moment of the check, so it extends the buddy's wait,
-    # not the owner's silence. An owner who stops talking is spoken to at the
-    # next fire, which bounds the silence anyone can be left in waiting for
-    # THIS refusal at 12s (6s in this outcome's own state, where the in-flight
-    # leg is unavailable). A deadlock needs both parties waiting; only one is.
+    # not the owner's silence. An owner who stops talking stops that leg
+    # deferring at once; the in-flight leg does not key on them at all, so at
+    # most one unspent deferral still lands between their silence and the
+    # speech. That bounds the silence anyone can be left in waiting for THIS
+    # refusal at 12s, whatever the 30s above does to the buddy's own patience.
+    # A deadlock needs both parties waiting; only one of them ever is.
     "not_announced": (
         "Hang on — I haven't finished telling you what I'd send yet."
     ),
