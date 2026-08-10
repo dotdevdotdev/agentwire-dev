@@ -155,6 +155,8 @@ class TestCommandServiceSupervision:
         exists = iter([False, True])
         monkeypatch.setattr(services, "_tmux_session_exists", lambda n: next(exists))
         monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: False)
+        # The winner is running the real command, not our placeholder.
+        monkeypatch.setattr(services, "_tmux_pane_is_placeholder", lambda n: False)
 
         def boom(*a, **k):
             raise sp.CalledProcessError(1, "tmux", stderr=b"duplicate session")
@@ -404,6 +406,38 @@ class TestThePlaceholderMustNeverOutliveTheSpawn:
         services.start_service(self._svc())
         assert any("kill-session" in c for c in calls), calls
 
+    def test_a_timeout_after_the_server_created_the_session_is_not_already_running(
+        self, monkeypatch,
+    ):
+        """The residual door into the same failure.
+
+        `CalledProcessError` from new-session means tmux refused and created
+        nothing. `TimeoutExpired` does not: the server can have made the session
+        and simply not answered inside 30s. `created_here` is still False there,
+        so the pre-existing-session branch would report a LIVE PLACEHOLDER as
+        `already running` — the exact state this class exists to make
+        unreachable. Unrealistic (new-session taking 30s), but the guard is one
+        condition and the failure mode is proven.
+        """
+        import subprocess as sp
+        exists = iter([False, True])
+        monkeypatch.setattr(services, "_tmux_session_exists", lambda n: next(exists))
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: False)
+        monkeypatch.setattr(services, "_tmux_pane_is_placeholder", lambda n: True)
+        killed = []
+
+        def run(cmd, **kw):
+            if "new-session" in cmd:
+                raise sp.TimeoutExpired("tmux", 30)
+            if "kill-session" in cmd:
+                killed.append(cmd)
+            return _ok()
+        monkeypatch.setattr(services.subprocess, "run", run)
+        ok, msg = services.start_service(self._svc())
+        assert ok is False, msg
+        assert "already running" not in msg
+        assert killed, "the live placeholder was left behind"
+
     def test_a_genuinely_pre_existing_session_is_still_already_running(
         self, monkeypatch,
     ):
@@ -422,10 +456,30 @@ class TestThePlaceholderMustNeverOutliveTheSpawn:
             if "kill-session" in cmd:
                 killed.append(cmd)
             return _ok()
+        monkeypatch.setattr(services, "_tmux_pane_is_placeholder", lambda n: False)
         monkeypatch.setattr(services.subprocess, "run", run)
         assert services.start_service(self._svc()) == (True, "already running")
         # and it must NOT kill the winner's session on its way out
         assert killed == []
+
+    def test_the_placeholder_check_reads_the_pane_s_own_start_command(self, monkeypatch):
+        """The discriminator, and the direction that matters is the false
+        reject: `respawn-pane` REPLACES `pane_start_command`, so a healthy
+        service reports its real command and is never mistaken for a
+        placeholder. If it did not, this guard would kill live services."""
+        seen = {}
+
+        def run(cmd, **kw):
+            class R:
+                returncode = 0
+                stderr = ""
+                stdout = seen["reply"]
+            return R()
+        monkeypatch.setattr(services.subprocess, "run", run)
+        seen["reply"] = services._PLACEHOLDER_CMD + "\n"
+        assert services._tmux_pane_is_placeholder("x") is True
+        seen["reply"] = "agentwire buddy serve buddy --port 8788\n"
+        assert services._tmux_pane_is_placeholder("x") is False
 
 
 class TestNamesGoThroughTheOneMapping:
@@ -545,6 +599,25 @@ class TestACrashLineIsRedactedBeforeItIsSpoken:
         assert "***" in tail
         assert "FATAL-boom" in tail, tail
 
+    @pytest.mark.parametrize("line", [
+        "Authorization: Basic dXNlcjpwdw==",
+        "X-Api-Key: 6f1e2d3c4b5a",
+        "password: hunter2",                       # colon, not equals
+        "unauthorized: 7f3a9c1e5b2d4088aa11bb22cc33dd44ee55ff66",  # bare hex
+        "using key sk-proj-abcdef123456",          # no key in front
+    ])
+    def test_the_limit_is_where_the_wiki_says_it_is(self, line):
+        """The boundary, pinned so it cannot drift away from the doc.
+
+        These are NOT redacted, and that is a deliberate stopping point: a
+        keyless-entropy detector over crash output would eat stack addresses,
+        hashes and commit SHAs, and that cost lands on the one thing this
+        mechanism exists to deliver — a line the operator can act on. If
+        someone widens the detector, this test fails and the wiki table gets
+        updated with it.
+        """
+        assert services.redact_secrets(line) == line
+
     def test_redaction_uses_the_argv_pattern_set(self):
         """One source of truth. A second list would drift from the argv check
         the moment either is extended — which just happened to the argv one."""
@@ -605,6 +678,26 @@ class TestAgainstRealTmux:
         assert ok is True, msg
         assert "FATAL: boom" in msg  # the previous run's reason, read before clearing
         assert services.run_healthcheck(self._svc("sleep 30"))[0] is True
+
+    def test_a_repeated_start_does_not_disturb_a_live_service(self):
+        """The false-reject half of the placeholder guard, which is the
+        expensive direction: a live service must survive a redundant start
+        untouched. Same pane, same PID — not merely 'still healthy'."""
+        svc = self._svc("sleep 30")
+        assert services.start_service(svc)[0] is True
+        import subprocess as sp
+
+        def pid():
+            return sp.run(
+                ["tmux", "display-message", "-p", "-t", f"={self.NAME}:.0",
+                 "#{pane_pid}"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+        before = pid()
+        assert before
+        assert services.start_service(svc) == (True, "already running")
+        assert pid() == before, "a redundant start replaced a live service"
 
     def test_a_crash_line_carrying_a_secret_is_redacted(self):
         """Against the real capture path, since that is where it would leak:

@@ -39,6 +39,17 @@ The process's last lines end up in the start message and in the healthcheck `det
 
 Everything the pane yields is therefore run through `redact_secrets` at the single point every consumer reads through (`_tmux_pane_tail`), using the *same* pattern set as the argv check — one source of truth, because a second list drifts from the first the moment either is extended. The value is masked and the rest of the line kept: a redaction that ate the message would re-create the failure it guards.
 
+**It masks a value that follows a key it recognises. That is all it does**, and the boundary is worth stating rather than leaving a reader to infer "secrets are redacted":
+
+| Caught | Not caught |
+|---|---|
+| `--token=x`, `--token x` (and `--api-key`, `--apikey`, `--api_key`, `--secret`, `--password`, `--passwd`) | `Authorization: Basic dXNlcjpwdw==` |
+| bare `token=`, `secret=`, `password=`, `passwd=`, `apikey=`, `api-key=`, `api_key=` | colon-separated headers — `X-Api-Key: 6f1e…` |
+| the same forms inside a URL — `?token=…` | `password: hunter2` (colon, not equals) |
+| `bearer x` / `Authorization: Bearer x`, case-insensitively | bare high-entropy strings with no key in front — a 40-char hex digest, a lone JWT, `sk-proj-…` |
+
+The right-hand column is a deliberate stopping point, not an oversight: a keyless-entropy detector run over crash output would eat stack addresses, hashes and commit SHAs, and the cost of that lands on the one thing this mechanism exists to deliver — a crash line the operator can act on. A process that prints its own credentials in a shape with no key in front of them will have them toasted and spoken.
+
 Two bounds, and they are different: `_TAIL_LINES` (3) bounds **lines**, `_TAIL_CHARS` (300) bounds **characters** — three lines of a 5000-column traceback is one utterance nobody can listen to. Redaction runs *before* the clip for legibility, not safety: clipping first is equally safe (a cut only removes trailing material, and the key stays in front of whatever value survives, so the pattern still matches), but a 400-character token would eat the whole budget and push the actionable part of the message off the end.
 
 Still: no file is written, and the channels are owner-facing. Surfacing the reason at all is a deliberate trade — a refusal that cannot say why is the failure this whole mechanism exists to remove.

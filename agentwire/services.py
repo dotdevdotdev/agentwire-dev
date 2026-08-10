@@ -219,6 +219,29 @@ def _tmux_pane_dead(name: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "1"
 
 
+#: What step 1 runs while step 2 sets ``remain-on-exit`` — see
+#: ``_start_command_service``. A module constant because it is also the
+#: discriminator: a session running THIS is a half-built spawn, never a service.
+_PLACEHOLDER_CMD = "sh -c 'while :; do sleep 3600; done'"
+
+
+def _tmux_pane_is_placeholder(name: str) -> bool:
+    """Is *name*'s pane still running the spawn placeholder?
+
+    ``respawn-pane`` REPLACES ``pane_start_command`` (measured, tmux 3.5a), so
+    a service that finished starting reports its own command here and can never
+    be mistaken for a placeholder. That direction is the one that matters: this
+    predicate gates a kill, and a false positive would tear down a live
+    service.
+    """
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", f"={_tmux_name(name)}:.0",
+         "#{pane_start_command}"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == _PLACEHOLDER_CMD
+
+
 def _tmux_pane_tail(name: str) -> str:
     """The last few non-empty lines of *name*'s pane, redacted, or "".
 
@@ -374,8 +397,7 @@ def _start_command_service(svc: CustomServiceConfig) -> tuple[bool, str]:
     created_here = False
     try:
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", name, "-c", cwd,
-             "sh -c 'while :; do sleep 3600; done'"],
+            ["tmux", "new-session", "-d", "-s", name, "-c", cwd, _PLACEHOLDER_CMD],
             check=True, capture_output=True, timeout=30,
         )
         created_here = True
@@ -389,13 +411,30 @@ def _start_command_service(svc: CustomServiceConfig) -> tuple[bool, str]:
             check=True, capture_output=True, timeout=30,
         )
     except Exception as e:
-        if created_here:
+        # `created_here` covers the ordinary route; the placeholder check covers
+        # the rest. `new-session` raising CalledProcessError means tmux refused
+        # and made nothing — but TimeoutExpired does NOT: the server can have
+        # created the session and simply not answered in time, leaving
+        # `created_here` False with a live placeholder sitting there. Asking
+        # what the pane is actually running closes that without having to
+        # enumerate the ways it can happen.
+        #
+        # Probing to decide that must not itself throw: this runs while an
+        # error is already in hand, and a second failure here would replace the
+        # real reason with a traceback about the probe.
+        try:
+            ours = created_here or _tmux_pane_is_placeholder(svc.name)
+            foreign = (not ours and _tmux_session_exists(svc.name)
+                       and not _tmux_pane_dead(svc.name))
+        except Exception:
+            ours, foreign = created_here, False
+        if ours:
             # Ours, and it is only running the placeholder. Take it with us.
             subprocess.run(
                 ["tmux", "kill-session", "-t", f"={name}"],
                 capture_output=True, timeout=30,
             )
-        elif _tmux_session_exists(svc.name) and not _tmux_pane_dead(svc.name):
+        elif foreign:
             return True, "already running"  # genuinely lost a benign spawn race
         stderr = ""
         if isinstance(e, subprocess.CalledProcessError):

@@ -1622,7 +1622,10 @@ Those last lines are **redacted before they leave the pane**, because they do
 not stay on a terminal: the healthcheck detail built from them is toasted by
 the portal watchdog and spoken through `agentwire say`, so a bridge printing
 `bearer eyJ…` on the way down would otherwise have had that read aloud. Same
-pattern set as the argv check, value masked and the message kept.
+pattern set as the argv check, value masked and the message kept — and it masks
+a value that follows a key it recognises, nothing more; the exact boundary
+(what it does not catch, and why that is a stopping point rather than a gap) is
+tabulated in [services.md](services.md).
 
 ### Restart semantics: what a supervisor kill mid-handshake leaves behind
 
