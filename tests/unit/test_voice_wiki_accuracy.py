@@ -516,7 +516,7 @@ class TestTheOpenResidualsAreNamed:
     """A wiki that describes what we meant is how the next contributor argues
     from a mechanism that does not exist."""
 
-    @pytest.mark.parametrize("issue", [989, 990, 992, 995, 996, 997])
+    @pytest.mark.parametrize("issue", [989, 990, 992, 1009])
     def test_residual_is_recorded(self, page, issue):
         assert f"#{issue}" in page
 
@@ -525,6 +525,31 @@ class TestTheOpenResidualsAreNamed:
 
     def test_the_echoed_denial_hole_is_described(self, page):
         assert "`carries_denial` is not nonce-gated" in page
+
+    def test_the_page_does_not_call_onNotSpoken_a_positive_report_only(self, page):
+        """The wiki carried the same sentence ``client.py``'s handler did —
+        "positive evidence ... reached only from `speechSynthesis`'s own
+        `onerror`" — and #996 made the watchdog a second caller whose evidence
+        is an INFERENCE, not a report. Left alone it contradicted this page's
+        own #996 bullet twenty-five lines above it, in the same section."""
+        assert "reached only from `speechSynthesis`'s own `onerror`" not in page
+        assert "two callers carrying different kinds of evidence" in page
+        assert "a guess, made in one direction on purpose" in page
+
+    @pytest.mark.parametrize("issue", [995, 996, 997])
+    def test_a_closed_one_is_not_still_listed_as_a_hole(self, page, issue):
+        """The other direction, and it is not symmetric with the assertion
+        above: a residual listed after it is closed sends the next contributor
+        to build around a hole that is not there, and this table is the one
+        place they would look. These three were closed together; the row is
+        gone and the closure is recorded instead."""
+        table = page.split("| # | Where | The hole |", 1)[1].split("**Closed", 1)[0]
+        # Keyed on the ROW, not on the mention. #1009's row describes the debt
+        # #997's fix left behind and so names it — a bare substring check read
+        # that as "#997 is still listed", which is the pin failing for a reason
+        # that has nothing to do with what it guards.
+        assert f"| #{issue} |" not in table
+        assert f"#{issue}" in page
 
 
 class TestTheDeliverySeamNoLongerClaimsItNeverInterrupts:

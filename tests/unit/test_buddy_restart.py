@@ -31,6 +31,7 @@ import urllib.request
 import pytest
 
 from agentwire.voice_layer import client, server
+from tests.page_slice import page_slice
 
 # ─────────────────────────────────────────────────────────────
 # A real serve() → kill → serve() cycle
@@ -205,32 +206,36 @@ def _page() -> str:
     return client.page("buddy", "tok")
 
 
-def _slice(page: str, start_pat: str, end_pat: str, what: str, *, shape: str) -> str:
-    """Cut a region out of the served page, failing loudly if the anchor moved.
+#: The slicer moved to :mod:`tests.page_slice` when the rest of #995's wires
+#: got pinned in ``test_client_wires.py`` — one extractor, not two.
+_slice = page_slice
 
-    Extraction rather than a copy, for the reason ``announcer_source`` gives:
-    a test that re-derives its subject proves something about the copy. And a
-    silent miss here would be the worst outcome — the wire could be gone and
-    this file would still be green, which is the #995 failure repeated by the
-    test written to close it.
 
-    "Loudly" has to cover the PARTIAL match too. A start anchor that still hits
-    while the end anchor has drifted yields a syntactically broken fragment,
-    and what the reader then sees is an opaque node ``SyntaxError`` rather than
-    "the anchor moved". So each slice declares the *shape* it must still have —
-    chosen to be invariant under the mutations these tests exist to catch, so a
-    cut wire fails as a behaviour failure and never as a stale-anchor one.
+def _ontrack_slice(page: str) -> str:
+    """The ``pc.ontrack`` wire, cut out of *page*.
+
+    A FUNCTION rather than an inline call, so the reflow test below exercises
+    the anchors and the shape THIS program uses instead of a copy of them. The
+    first version hardcoded its own copy of the regex, which made the tightening
+    unpinned: reverting the shape here left every file green while the test
+    still claimed to prove the diagnostic. Same fix as ``test_client_wires.py``,
+    which is where it was got right first.
     """
-    start = re.search(start_pat, page)
-    assert start, f"anchor for {what} not found — the page moved, this test is stale"
-    end = re.search(end_pat, page[start.start():])
-    assert end, f"end anchor for {what} not found — the page moved, this test is stale"
-    region = page[start.start():start.start() + end.end()]
-    assert re.search(shape, region), (
-        f"extracted {what} does not have the shape this test assumes — the page "
-        f"moved and the extraction is stale, NOT a behaviour failure. Got:\n{region}"
+    return _slice(
+        page, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
+        # An assignment of an arrow function with a BALANCED brace body. True
+        # with or without the maybeGreet() call inside it, which is what keeps
+        # a cut wire failing as a behaviour failure.
+        #
+        # Tightened from `=>[\s\S]*;` while closing #995's other four wires:
+        # the end anchor is "the first `;` at end of line", so a REFLOWED
+        # handler — formatting only, wire intact — truncates at its first
+        # statement, and the old shape accepted that fragment because it too
+        # ends in `;`. The reader then got an opaque node SyntaxError instead
+        # of "the anchor moved", which is the degradation this guard exists to
+        # prevent. Demanding the closing brace is what a fragment cannot fake.
+        shape=r"^pc\.ontrack\s*=\s*\([^()]*\)\s*=>\s*\{[^{}]*\}\s*;\s*$",
     )
-    return region
 
 
 def _greet_program(*, fire: str) -> str:
@@ -242,12 +247,7 @@ def _greet_program(*, fire: str) -> str:
         # Whether maybeGreet's BODY still greets is what the tests decide.
         shape=r"let greeted[\s\S]*function maybeGreet\(\)\s*\{[\s\S]*\}\s*$",
     )
-    ontrack = _slice(
-        page, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
-        # An assignment of an arrow function, ending in a statement. True with
-        # or without the maybeGreet() call inside it.
-        shape=r"^pc\.ontrack\s*=\s*\([\s\S]*=>[\s\S]*;\s*$",
-    )
+    ontrack = _ontrack_slice(page)
     session_created = _slice(
         page, r'case "session\.created":', r"break;", "the session.created wire",
         shape=r'^case "session\.created":[\s\S]*break;$',
@@ -338,6 +338,29 @@ class TestBothGreetWiresAreLoadBearing:
         )
         assert len(report["announced"]) == 1
         assert report["notifierStarts"] == 2  # the notifier wire ran both times
+
+    def test_a_reflowed_ontrack_says_the_anchor_moved(self):
+        """The guard, measured on this slice too.
+
+        Reflowing the wire one statement per line changes nothing but
+        whitespace — the greet is still armed — and before the shape was
+        tightened the truncated fragment was accepted and node died on it. A
+        reader debugging that sees a SyntaxError and no clue which line moved.
+        """
+        page = _page()
+        original = [ln for ln in page.splitlines() if "pc.ontrack =" in ln]
+        assert len(original) == 1, "the wire this test reflows is not where it was"
+        reflowed = page.replace(original[0], "\n".join([
+            "    pc.ontrack = (e) => {",
+            "      audioEl.srcObject = e.streams[0];",
+            "      audioAttached = true;",
+            "      maybeGreet();",
+            "    };",
+        ]))
+        assert "maybeGreet();" in reflowed, "the reflow broke the wire it reflows"
+        with pytest.raises(AssertionError) as excinfo:
+            _ontrack_slice(reflowed)
+        assert "does not have the shape this test assumes" in str(excinfo.value)
 
     def test_the_session_created_wire_also_starts_the_inbox_notifier(self):
         """Ordering that the wire encodes: the notifier starts AFTER the greeting
