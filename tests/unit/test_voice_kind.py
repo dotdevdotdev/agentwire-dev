@@ -321,6 +321,12 @@ class TestAttributionLeftTheBody:
             "- -x",
             "--- ---",
             "  --  --  restart the portal",
+            # Three-group cases. render_body absorbs two groups by applying
+            # _lead_safe twice, so anything shallower cannot see an incomplete
+            # strip — every case above this line passed the round-1 bug.
+            "- - - force a restart",
+            "-\t-\n- x",
+            "  -  -  -  restart the portal",
         ):
             body = confirm.render_body(instruction, "", "a1b2c3")
             assert not body.startswith("-"), instruction
@@ -330,12 +336,21 @@ class TestAttributionLeftTheBody:
 
         ``_lead_safe`` has to be TOTAL because the alternative — a guard that
         raises here — destroys the message. Swept over every prefix built from
-        dash/space/tab up to length 4, against a real instruction and against
-        nothing but the prefix.
+        dash/space/tab, against a real instruction and against nothing but the
+        prefix.
+
+        **Length 5, and the bound is load-bearing.** ``render_body`` applies
+        ``_lead_safe`` TWICE — once to the instruction, once to the finished
+        body — so it absorbs two leading dash GROUPS on its own. Over
+        ``"- \\t"`` a prefix of length 4 yields at most two groups, so a
+        range(5) sweep passed even against the round-1 ``lstrip("-").strip()``
+        that this pin exists to catch: 237 green while ``"- - - force"``
+        genuinely rendered a dash-led body. Deleting the assert made this sweep
+        the compensating control, and a blind control is worse than none.
         """
         from itertools import product
 
-        for n in range(5):
+        for n in range(6):
             for combo in product("- \t", repeat=n):
                 prefix = "".join(combo)
                 for tail in ("restart the portal", ""):
@@ -358,7 +373,9 @@ class TestAttributionLeftTheBody:
         out = subprocess.run(
             [sys.executable, "-O", "-c",
              "from agentwire.voice_layer import confirm;"
-             "print(confirm.render_body('- - force a restart', '', 'a1b2c3'))"],
+             # THREE groups: two are absorbed by render_body's two _lead_safe
+             # applications regardless of whether the function itself is total.
+             "print(confirm.render_body('- - - force a restart', '', 'a1b2c3'))"],
             capture_output=True, text=True, check=True,
         ).stdout.strip()
         assert not out.startswith("-"), out

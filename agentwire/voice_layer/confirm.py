@@ -1560,6 +1560,22 @@ class ConfirmSpine:
         with self._lock:
             self._proposals.pop(token, None)
 
+        # RESIDUAL, stated rather than implied (#1004 review). This line sits
+        # after the pop and outside the try below, so anything it throws eats
+        # the proposal with the approving utterance already spent — silent loss
+        # to an owner who is not watching a screen. The concrete lead-dash
+        # hazard that used to live here is closed by TOTALITY, not by position:
+        # build_argv, _reply_target, render_body, _lead_safe, _clip, _one_line,
+        # reply_nudge and strip_controls are all total on str, so there is no
+        # raise path left. A FUTURE throw is the open part.
+        #
+        # Moving it inside the try is NOT the one-line change it looks like:
+        # `argv` would be unbound in the except, and `record_write` /
+        # `verdict.argv` both need a defined value — so it forces a ruling on
+        # what `buddy_sent` shows for a write whose argv never existed, and
+        # `buddy_sent` is precisely the surface the persona is told to trust
+        # for "what did you send". That is its own change, deliberately not
+        # rushed in alongside the kind migration.
         argv = proposal.build_argv()
         verdict.argv = argv
         if self._runner is not None:
