@@ -226,8 +226,306 @@ class TestNonceGrammar:
 
     def test_a_wrong_nonce_is_its_own_outcome(self):
         """"repeat it" and "ask what the code was" are different advice."""
-        assert confirm.classify("confirm harbor", "tango") == confirm.WRONG_NONCE
+        assert confirm.classify("confirm violet", "tango") == confirm.WRONG_NONCE
         assert confirm.classify("confirm tango", "tango") == confirm.APPROVED
+
+    def test_no_nonce_word_has_a_second_transcriber_rendering(self):
+        """The premise :func:`test_the_alphabet_has_one_spelling_per_word`
+        states but does not test.
+
+        That test checks ORTHOGRAPHY — alpha, lowercase, normalize-stable —
+        which every word here passes by construction. It proves the fixture's
+        own definition, not the property the docstring claims: that a
+        Whisper-lineage transcriber emits ONE rendering for the word.
+
+        Two shipped words failed that, and both livelocked rather than
+        misfiring — neither variant is in the alphabet, so the outcome is
+        ``no_match`` ("say confirm and then the word I gave you"), the owner
+        repeats identically, and the proposal retires at
+        ``MAX_CONFIRM_ATTEMPTS``:
+
+        - ``harbor`` — en-GB ``harbour`` is an ordinary rendering.
+        - ``ripcord`` — a compound; ``rip cord`` is an ordinary segmentation.
+
+        This enumeration DOES sit on the fail-open side (an unlisted
+        variant-prone word ships), and saying so is the point: the pin below
+        is a regression anchor for two measured failures, not a proof of
+        coverage. What bounds the class is the selection rule stated in
+        :data:`confirm.NONCE_WORDS` — one morpheme, no en-US/en-GB split.
+        """
+        variant_prone = {
+            # measured, and the reason this test exists
+            "harbor", "harbour", "ripcord", "rip", "cord",
+            # the same two classes, spelled out so the rule is legible
+            "color", "colour", "gray", "grey", "meter", "metre",
+            "airplane", "aeroplane", "donut", "doughnut",
+            "backup", "sunset", "keyboard", "rainfall",
+        }
+        assert "harbor" in variant_prone and "ripcord" in variant_prone
+        for word in confirm.NONCE_WORDS:
+            assert word not in variant_prone, word
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "confirm, uh, tango",
+            "confirm um tango",
+            "confirm, you know, tango",
+            "confirm... er, tango, thanks",
+        ],
+    )
+    def test_a_filler_between_confirm_and_the_nonce_still_approves(self, text):
+        """The false-reject half, in the one place the grammar forgot it.
+
+        The denial grammar strips ``_FILLERS`` before matching; the approval
+        path required ``rest[0] == target`` with no skipping. So hesitating
+        before a code word — which is exactly how people say code words —
+        refused a CORRECT approval and burned an attempt.
+
+        The tested templates above place fillers before and after the phrase,
+        never BETWEEN it, so the gap was fixture-shaped rather than argued.
+        """
+        assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    def test_only_fillers_are_skipped_between_confirm_and_the_nonce(self):
+        """The control that keeps the fix from being "skip anything".
+
+        Both content words are still required, adjacent modulo disfluency.
+        A real word between them is a different utterance, not a hesitation.
+        """
+        assert confirm.classify("confirm that tango", "tango") == confirm.NO_MATCH
+        assert confirm.classify("confirm the tango step", "tango") == confirm.NO_MATCH
+        # and the wrong-nonce scan uses the same skipping, or a hesitated
+        # wrong code word reports "say it again" instead of "ask me the word".
+        assert confirm.classify("confirm, uh, violet", "tango") == confirm.WRONG_NONCE
+
+    def test_an_exception_never_masks_the_token_after_its_own_span(self):
+        """BLOCKER: the masking loop ate one token too many.
+
+        ``trio`` is non-empty whenever any token remains, so
+        ``len(trio or pair)`` was 3 even when the 2-token exception
+        ``("dont","forget")`` was what matched — the exception swallowed the
+        word AFTER its own span, and that word was allowed to be a denial
+        trigger. Reproduced through the real pipeline: both of these APPROVED.
+
+        This falsified the load-bearing claim in
+        :data:`confirm._DENIAL_EXCEPTIONS` — "suppresses exactly ONE token …
+        cannot mask a denial signal anywhere else" — which is the entire
+        argument for the entry being safe.
+        """
+        assert confirm.classify(
+            "confirm tango, don't forget — hold on", "tango"
+        ) == confirm.DENIED
+        assert confirm.classify(
+            "confirm tango, don't forget, cancel the other one", "tango"
+        ) == confirm.DENIED
+        assert confirm.carries_denial("don't forget, wait") is True
+
+    #: Every exception, as a raw utterance a transcriber would actually emit.
+    #: Hand-written because normalization is one-way — nothing derives "don't"
+    #: from ``dont`` — but CHECKED against the live sets below in both
+    #: directions, so an exception added without a spelling here fails this
+    #: control loudly instead of escaping it.
+    EXCEPTION_SPELLINGS = ("don't forget", "can't wait", "do not forget")
+
+    def test_the_exception_spellings_cover_every_live_exception(self):
+        """The control's own coverage, asserted rather than trusted.
+
+        The first version of this test hardcoded ``("don't forget", "do not
+        forget")`` while its docstring claimed "every exception" — and the
+        entry this PR ADDS, ``("cant","wait")``, was not in it. No live defect
+        (the cross-product denies), but the control did not cover the thing it
+        shipped with, and the next exception would have escaped it silently.
+        """
+        spelled = {
+            tuple(confirm.normalize(phrase).split())
+            for phrase in self.EXCEPTION_SPELLINGS
+        }
+        live = confirm._DENIAL_EXCEPTIONS | confirm._DENIAL_BIGRAM_EXCEPTIONS
+        assert spelled == live, live ^ spelled
+
+    def test_a_denial_trigger_following_any_exception_still_denies(self):
+        """The composition, generatively — the shape the existing generative
+        test structurally cannot reach.
+
+        ``test_an_unknown_word_after_a_denial_trigger_still_denies`` always
+        places the trigger FIRST, so no arrangement it generates puts a
+        trigger inside an exception's over-long mask. This one puts every
+        trigger immediately after every exception, and BOTH sides are derived
+        from the live tables: a new exception or a new trigger — including a
+        gapped one — enters this cross-product automatically.
+        """
+        triggers = sorted(confirm._DENIAL_WORDS)
+        triggers += [" ".join(bigram) for bigram in sorted(confirm._DENIAL_BIGRAMS)]
+        for (first, second), gap_words in confirm._GAPPED_DENIAL_BIGRAMS.items():
+            triggers.append(f"{first} {second}")
+            triggers += [f"{first} {gap} {second}" for gap in sorted(gap_words)]
+        for exception in self.EXCEPTION_SPELLINGS:
+            for trigger in triggers:
+                text = f"confirm tango, {exception} {trigger}"
+                assert confirm.classify(text, "tango") == confirm.DENIED, text
+
+    def test_the_exception_still_suppresses_its_own_span(self):
+        """The other half: narrowing the mask must not kill the exception.
+
+        "don't forget X" is not a retraction, and it was measured DENYING
+        real approvals before the exception existed.
+        """
+        for text in (
+            "confirm tango, don't forget the other branch",
+            "confirm tango, do not forget the other branch",
+            "confirm tango, don't forget",
+        ):
+            assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "never confirm tango",
+            "Never confirm tango.",
+            "you should never confirm tango",
+            "never, uh, confirm tango",
+        ],
+    )
+    def test_never_confirm_is_a_retraction(self, text):
+        """BLOCKER: the inversion class, reached through ``never``.
+
+        ``never`` is deliberately absent from :data:`confirm._DENIAL_WORDS`
+        (recovered only as ``("never","mind")``) because it is among the
+        commonest words in English. The general fallback for a missed
+        retraction — "the write still needs a nonce, so the owner can simply
+        not say it" — does not apply to THIS utterance: it IS the retraction
+        and it CONTAINS the nonce.
+
+        ``("never","confirm")`` is a closed ordered bigram: no genuine
+        approval says those two tokens adjacent in that order.
+        """
+        assert confirm.classify(text, "tango") == confirm.DENIED, (
+            f"{text!r} normalized to {confirm.normalize(text)!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "never ever confirm tango",
+            "never really confirm tango",
+            "never once confirm tango",
+            "never actually confirm tango",
+            "never, seriously, confirm tango",
+            "you should never ever confirm tango",
+            "never ever, uh, confirm tango",
+            "never ever ever confirm tango",
+        ],
+    )
+    def test_an_intensified_never_confirm_is_still_a_retraction(self, text):
+        """The blocker's own shape, one word wider.
+
+        ``("never","confirm")`` as an ADJACENT pair left "never ever confirm
+        tango" approving — the identical inversion, reached by the commonest
+        intensifier there is. The entry was never really "adjacent tokens"
+        anyway: ``_denial_tokens`` strips ``_FILLERS`` first, which is why
+        "never, uh, confirm tango" denies. So it is "adjacent modulo a skip
+        set", and this widens the skip set rather than inventing a mechanism.
+        """
+        assert confirm.classify(text, "tango") == confirm.DENIED, (
+            f"{text!r} normalized to {confirm.normalize(text)!r}"
+        )
+
+    def test_the_post_approval_scan_sees_the_intensified_form_too(self):
+        """``carries_denial`` was blind to it as well, which is what let it
+        through AFTER the approval had already matched."""
+        for text in ("never ever confirm that", "never actually confirm it"):
+            assert confirm.carries_denial(text) is True, text
+
+    def test_only_a_closed_gap_set_is_skipped_between_never_and_confirm(self):
+        """The false-reject bound.
+
+        An UNBOUNDED "never … confirm" rule would deny "I would never send
+        that without checking — confirm tango", which is an approval. The gap
+        is a closed set of degree adverbs, and any other word ends the run.
+        """
+        for text in (
+            "confirm tango, I never asked you to confirm anything",
+            "confirm tango, I would never send that without checking",
+            "confirm tango, I never got the other one",
+        ):
+            assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    def test_the_never_gap_set_is_closed_class_and_fails_open(self):
+        """The enumeration's SIDE, stated rather than assumed.
+
+        Unlike ``_FILLERS`` (skipping one can only make a denial easier to
+        match, so an unlisted filler fails closed), this set sits on the
+        fail-open side: an unlisted gap word ends the run and the utterance
+        approves. What bounds it is that the class is closed — degree adverbs
+        and nothing else — and the file says so out loud rather than implying
+        coverage.
+        """
+        assert confirm._GAPPED_DENIAL_BIGRAMS == {
+            ("never", "confirm"): confirm._NEVER_GAP_WORDS
+        }
+        # No open-class word may enter the gap set: a noun or verb there turns
+        # "never" back into the ordinary word it was excluded for being.
+        for word in confirm._NEVER_GAP_WORDS:
+            assert word.isalpha() and word.islower(), word
+            assert word not in confirm._DENIAL_WORDS, word
+        # And the pair itself is not ALSO a plain bigram — one rule, one place,
+        # or the two spellings of it drift apart.
+        assert ("never", "confirm") not in confirm._DENIAL_BIGRAMS
+
+    def test_an_exception_mask_ends_the_gap_run_rather_than_being_skipped(self):
+        """The one sentence in ``_gapped_bigram``'s docstring nothing pinned.
+
+        It claims the run ends at a masked-out ``""``, "so an exception's
+        suppression still stops this rule rather than being skipped through".
+        Making the run SKIP the ``""`` instead left the whole suite green —
+        a load-bearing docstring sentence with no test, which is the exact
+        shape of the round-1 blocker.
+
+        Direction matters and is stated: the skip variant is STRICTER, so this
+        pins the false-reject side. What it protects is the composition rule
+        the exceptions are built on — a suppressed span stays suppressed for
+        every downstream rule, not just for the ones that already ran.
+        """
+        for text in (
+            "never, don't forget, confirm tango",
+            "never, do not forget, confirm tango",
+        ):
+            assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    def test_never_apart_from_confirm_is_still_ordinary_speech(self):
+        """The false-reject price of the bigram above, pinned.
+
+        Only the adjacent, ordered pair fires. ``never`` elsewhere in the
+        utterance is the ordinary word it was excluded for being.
+        """
+        for text in (
+            "confirm tango, I never got the other one",
+            "confirm tango, I never said that",
+            "confirm tango, that never happened",
+        ):
+            assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
+    def test_the_cant_wait_idiom_does_not_read_as_a_hold(self):
+        """A closed idiom, suppressed on the file's own enumerate-the-safe-side
+        rule: post-normalization ``cant`` is a distinct token, and "can't wait"
+        has no reading meaning "hold off"."""
+        assert confirm.classify(
+            "confirm tango, tell them I can't wait to see it", "tango"
+        ) == confirm.APPROVED
+        assert confirm.carries_denial("can't wait to see it") is False
+
+    def test_suppressing_cant_wait_does_not_suppress_a_real_hold(self):
+        """Its false-accept price, bounded: the suppression covers exactly
+        those two tokens, so any other retraction in the utterance still
+        denies — including a second bare ``wait``."""
+        for text in (
+            "confirm tango, I can't wait — actually stop",
+            "confirm tango, can't wait, no",
+            "confirm tango, can't wait, hold on",
+            "wait, confirm tango, I can't wait to see it",
+        ):
+            assert confirm.classify(text, "tango") == confirm.DENIED, text
 
     def test_an_absent_nonce_is_no_match(self):
         for text in ("confirm", "confirm it", "confirm that one"):
@@ -483,16 +781,21 @@ class TestNonceGrammar:
         assert not hasattr(confirm, "_BARE_DEICTICS")
         assert not hasattr(confirm, "_CONDITIONAL_DENIAL_EXCEPTIONS")
 
-        # What remains is two closed phrases, spelled out so any change to them
-        # shows up in this test's own diff.
-        assert confirm._DENIAL_EXCEPTIONS == frozenset({("dont", "forget")})
+        # What remains is three closed phrases, spelled out so any change to
+        # them shows up in this test's own diff.
+        assert confirm._DENIAL_EXCEPTIONS == frozenset(
+            {("dont", "forget"), ("cant", "wait")}
+        )
         assert confirm._DENIAL_BIGRAM_EXCEPTIONS == frozenset(
             {("do", "not", "forget")}
         )
-        # Each must be anchored on a real denial trigger, or it suppresses
-        # nothing and is dead weight pretending to be policy.
-        for first, _ in confirm._DENIAL_EXCEPTIONS:
-            assert first in confirm._DENIAL_WORDS, first
+        # Each must CONTAIN a real denial trigger, or it suppresses nothing and
+        # is dead weight pretending to be policy. Position is not fixed: the
+        # trigger anchors ``dont forget`` at the head and ``cant wait`` at the
+        # tail, and requiring the head would have rejected the second for the
+        # wrong reason.
+        for pair in confirm._DENIAL_EXCEPTIONS:
+            assert any(token in confirm._DENIAL_WORDS for token in pair), pair
         for first, second, _third in confirm._DENIAL_BIGRAM_EXCEPTIONS:
             assert (first, second) in confirm._DENIAL_BIGRAMS
 
@@ -714,6 +1017,24 @@ class TestGateRefusals:
         assert convo.spine.confirm(proposal.token).approved is True
         assert len(runner.calls) == 1
 
+    def test_an_intensified_never_confirm_after_the_approval_does_not_write(
+        self, convo, runner
+    ):
+        """The spine-level repro of the reviewer's blocker.
+
+        The owner approves, then takes it back with "never ever confirm that"
+        before the model gets round to calling confirm. The post-approval scan
+        runs the same grammar, so an adjacency-only entry let the write
+        EXECUTE — the take-back was spoken, in time, and did not count.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says("never ever confirm that")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is False
+        assert verdict.reason == "denied"
+        assert runner.calls == []
+
     def test_an_approval_followed_by_a_denial_does_not_write(self, convo, runner):
         proposal = convo.announced_proposal()
         convo.approve(proposal)
@@ -858,6 +1179,63 @@ class TestBoundedAwait:
         assert convo.spine.confirm(proposal.token).approved is False
         assert runner.calls == []
 
+    def test_a_denial_that_STARTS_during_the_await_still_blocks(self, runner):
+        """The half of the ``unheard_between`` guarantee the ceiling excluded.
+
+        ``ceiling`` was snapshotted BEFORE the ≤2.5s await and widened only by
+        the sequences of entries that came back in ``found``. A denial the
+        owner BEGINS during the await lands its ``speech_started`` above that
+        snapshot and carries no transcript, so it is in neither set:
+        ``after`` filters on ``complete`` and ``unheard_between`` excludes it
+        for exceeding the ceiling. The write executed while a take-back was
+        mid-transcription — the exact hazard the guard claims to close, closed
+        only for utterances started BEFORE confirm was entered.
+
+        The fixture has to be able to CONSTRUCT that shape, which the
+        ``wait_s=0`` spine provably cannot: with no await there is no window
+        for an utterance to start inside. Real threads, and the ordering is
+        forced rather than raced — the denial's ``speech_started`` is emitted
+        BEFORE the approval's transcript, so the await is still blocked when
+        the sequence advances and the wakeup happens after it.
+        """
+        ring = transcript.TranscriptRing()
+        spine = confirm.ConfirmSpine(ring, wait_s=2.0, runner=runner)
+        convo = Conversation(ring, spine)
+
+        proposal = convo.announced_proposal()
+        approval = convo.says("", transcribe=False)  # spoken; no transcript yet
+        phrase = f"confirm {confirm.spoken_nonce(proposal.nonce)}"
+
+        denial_item = "item_denial_mid_await"
+
+        def speak_during_the_await():
+            time.sleep(0.15)                        # confirm is inside the await
+            ring.speech_started(denial_item, convo._next())
+            ring.transcribe(approval, phrase)       # ...and only then does it wake
+
+        thread = threading.Thread(target=speak_during_the_await)
+        thread.start()
+        verdict = spine.confirm(proposal.token)
+        thread.join()
+
+        approved_entry = next(
+            e for e in ring.snapshot() if e.item_id == approval
+        )
+        started = next(e for e in ring.snapshot() if e.item_id == denial_item)
+        assert started.speech_started_seq > approved_entry.speech_started_seq, (
+            "fixture must start the denial after the approval, or it proves nothing"
+        )
+
+        assert verdict.approved is False
+        assert verdict.reason == "pending_transcript"
+        assert runner.calls == []
+
+        # And the false-reject half: once it lands harmless, the approval goes.
+        ring.commit(denial_item, convo._next())
+        ring.transcribe(denial_item, "thanks, that's the one")
+        assert spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
     def test_a_timeout_is_distinguishable_from_a_rejection(self, convo, runner):
         """The two demand OPPOSITE behaviour, so they must never collapse."""
         timing = convo.announced_proposal()
@@ -872,6 +1250,167 @@ class TestBoundedAwait:
         assert timing_verdict.spoken != rejected_verdict.spoken
         assert timing_verdict.to_dict()["owner_should_wait"] is True
         assert rejected_verdict.to_dict()["owner_should_wait"] is False
+
+
+class TestTheUnheardWindowHasNoStalenessBound:
+    """The widened ceiling's real price, pinned as behaviour.
+
+    Re-reading ``high_seq`` after the await is the intended safety gain — a
+    denial STARTED during the await now blocks. But ``unheard_between`` has no
+    staleness bound of its own, so the cost is not "one ``pending_transcript``
+    wait" as the first version of this PR claimed: **any** ``speech_started``
+    that never completes — a cough, a VAD blip, TTS bleed — sits in the window
+    and refuses every confirm until the TTL expires the proposal.
+
+    It is a spoken LOOP, not a refusal: ``pending_transcript`` is a WAIT
+    outcome, so it burns no attempt, so ``too_many_attempts`` never fires and
+    the owner is never told the proposal died. They are told "give me a second"
+    for up to the 120s TTL and then, on the next try, "that one expired".
+
+    Pinned rather than fixed here: the bound belongs in
+    ``TranscriptRing.unheard_between`` (``transcript.py``), which another
+    worker owns this wave. Nothing in the suite saw this shape —
+    ``test_a_denial_that_lands_as_harmless_lets_the_approval_through`` asserts
+    only the case where the utterance DOES complete.
+    """
+
+    def test_one_never_completing_utterance_refuses_every_confirm_until_ttl(
+        self, convo, clock, runner
+    ):
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.starts_speaking()  # cough / VAD blip: no commit, no transcript
+
+        for _ in range(confirm.MAX_CONFIRM_ATTEMPTS + 1):
+            verdict = convo.spine.confirm(proposal.token)
+            assert verdict.reason == "pending_transcript"
+        assert runner.calls == []
+
+        # No attempt is burned, so the retirement path that would at least SAY
+        # something never fires. The proposal is alive and unusable.
+        live = {p.token: p for p in convo.spine.pending()}
+        assert live[proposal.token].attempts == 0
+
+        # It ends by expiring, up to PROPOSAL_TTL_S later, with nothing having
+        # told the owner anything but "give me a second".
+        clock.advance(confirm.PROPOSAL_TTL_S + 1)
+        assert convo.spine.confirm(proposal.token).reason == "expired"
+        assert runner.calls == []
+
+    def test_the_module_states_this_residual_rather_than_the_cheaper_one(self):
+        """The prose half. A guarantee stated broader than the code gets
+        rounded back up — so the claim is NARROWED at the site, not qualified.
+        """
+        source = _flat(_confirm_source())
+        for clause in (
+            "has no staleness bound",
+            "never completes",
+            "until the TTL expires it",
+        ):
+            assert clause in source, clause
+
+    def test_no_stale_sentence_survives_at_the_use_site(self):
+        """The comment at the scan and the comment at the read must describe
+        the SAME ceiling. A correct paragraph at one site does not repair a
+        false sentence at the other — that is how the widened window would be
+        reviewed as the old one."""
+        source = _flat(_confirm_source())
+        assert "high-water mark as of this confirm's entry" not in source
+        assert "everything the owner had started by the time this confirm" in source
+
+
+class TestSingleUseIsClaimedNotJudged:
+    """Single-use has to be a property of the CLAIM, not of the timing.
+
+    ``_claim`` neither removed the proposal nor marked it in flight, so
+    consumption happened after the await and the judge. Two confirms carrying
+    the same token could both pass the claim and both reach the runner. It was
+    not reproducible in 250 threaded trials — client dispatch is sequential per
+    response and the judge window is sub-timeslice — but "not observed" is the
+    argument this module refuses everywhere else: each ``response.done`` spawns
+    its own async IIFE and the bridge is a ``ThreadingHTTPServer``, so nothing
+    in the code guarantees the sequencing that made it safe.
+
+    The related wart is fixed by the same marker: a confirm arriving while the
+    runner is mid-dispatch used to report ``no_proposal`` — "tell me again what
+    you'd like sent" — which invites a re-propose that DOUBLE-SENDS.
+    """
+
+    def test_a_second_confirm_during_dispatch_is_refused_not_told_to_re_propose(
+        self, convo
+    ):
+        """The re-entrant construction: the second confirm arrives from inside
+        the runner, i.e. strictly while the first one is dispatching."""
+        nested: list[str] = []
+        calls: list[list[str]] = []
+
+        def reentrant_runner(argv):
+            calls.append(list(argv))
+            nested.append(convo.spine.confirm(proposal.token).reason)
+            return {"success": True}
+
+        convo.spine._runner = reentrant_runner
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(calls) == 1, "the duplicate must not reach the runner"
+        assert nested == ["in_flight"], nested
+
+    def test_a_confirm_while_another_is_awaiting_never_reaches_the_runner(
+        self, runner
+    ):
+        """The claim is held across the AWAIT too, not only across dispatch —
+        which is where the two-thread window is widest (up to 2.5s)."""
+        ring = transcript.TranscriptRing()
+        spine = confirm.ConfirmSpine(ring, wait_s=1.0, runner=runner)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+
+        verdicts: list[confirm.Verdict] = []
+        thread = threading.Thread(
+            target=lambda: verdicts.append(spine.confirm(proposal.token))
+        )
+        thread.start()
+        time.sleep(0.15)  # the first confirm is inside its bounded await
+        duplicate = spine.confirm(proposal.token)
+        thread.join()
+
+        assert duplicate.reason == "in_flight"
+        assert runner.calls == []
+        # The duplicate is a WAIT outcome: the owner's move is to wait, and the
+        # gate must stay open for the confirm that is actually running.
+        assert duplicate.to_dict()["owner_should_wait"] is True
+        assert duplicate.to_dict()["confirm_terminal"] is False
+
+    def test_the_claim_is_released_on_every_exit(self, convo, runner):
+        """The other half. A marker that is not released is a proposal wedged
+        for its whole TTL, reported as "still working on it" forever — a
+        silent loop in a channel with no screen."""
+        proposal = convo.announced_proposal()
+        assert convo.spine.confirm(proposal.token).reason == "pending_transcript"
+        convo.says("that is not the phrase")
+        assert convo.spine.confirm(proposal.token).reason == "refused"
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+        # And after success it is replayed — the marker must not shadow that.
+        assert convo.spine.confirm(proposal.token).reason == "replayed"
+        assert len(runner.calls) == 1
+
+    def test_a_dispatch_that_raises_still_releases_the_claim(self, ring, clock):
+        def exploding(argv):
+            raise RuntimeError("boom")
+
+        spine = confirm.ConfirmSpine(
+            ring, wait_s=0.0, runner=exploding, clock=clock
+        )
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert spine.confirm(proposal.token).reason == "dispatch_failed"
+        # Not in_flight: the failure is reported honestly on the retry.
+        assert spine.confirm(proposal.token).reason == "dispatch_failed"
 
 
 # =============================================================================
@@ -1303,6 +1842,26 @@ class TestOutcomesAreDistinctAndSpoken:
         proposal = sub.announced_proposal()
         sub.approve(proposal)
         seen.add(spine.confirm(proposal.token).reason)
+
+        # in_flight: a duplicate confirm arriving while the first is dispatching.
+        # Last, and on its own sequence range, so its ring entries cannot sit
+        # newer than another case's approval.
+        nested = []
+        busy_spine = confirm.ConfirmSpine(
+            convo.ring,
+            wait_s=0.0,
+            runner=lambda argv: (
+                nested.append(busy_spine.confirm(busy.token).reason),
+                {"success": True},
+            )[1],
+            clock=clock,
+        )
+        busy_convo = Conversation(convo.ring, busy_spine)
+        busy_convo.seq = sub.seq + 500
+        busy = busy_convo.announced_proposal()
+        busy_convo.approve(busy)
+        busy_spine.confirm(busy.token)
+        seen |= set(nested)
         return seen
 
     def test_the_attempt_that_retires_the_proposal_says_so(self, convo, runner):
@@ -1801,6 +2360,22 @@ def _flat(text: str) -> str:
     return " ".join(" ".join(lines).split())
 
 
+def _confirm_source() -> str:
+    """``confirm.py`` with comment markers stripped, for prose assertions.
+
+    A sentence written across several ``#`` lines is one sentence, and a
+    comment beside the code is exactly where the stale claim lived. Stripping
+    the markers lets an assertion match either home.
+    """
+    from pathlib import Path
+
+    lines = [
+        line.lstrip().removeprefix("#:").removeprefix("#").strip()
+        for line in Path(confirm.__file__).read_text(encoding="utf-8").splitlines()
+    ]
+    return "\n".join(lines)
+
+
 class TestTheQuotedFrameGuard:
     """The defence-in-depth guard in classify(), pinned on BOTH halves.
 
@@ -1850,8 +2425,18 @@ class TestTheQuotedFrameGuard:
         """The frame quoting a DIFFERENT word is a different problem — the
         owner needs this proposal's code, so wrong_nonce's advice is right."""
         assert confirm.classify(
-            "to approve say confirm harbor", "tango"
+            "to approve say confirm violet", "tango"
         ) == confirm.WRONG_NONCE
+
+    def test_a_hesitated_frame_is_still_the_frame(self):
+        """The frame lookback skips fillers for the same reason the approval
+        path does — the TTS echo is chunked by VAD and a disfluency can land
+        between "say" and "confirm". Narrow as ever: both conditions still
+        required."""
+        assert confirm.classify(
+            "to approve, say, uh, confirm tango", "tango"
+        ) == confirm.QUOTED_FRAME
+        assert confirm.classify("say, uh, confirm tango", "tango") == confirm.APPROVED
 
     def test_the_spine_speaks_the_accurate_reason_not_wrong_nonce(self, convo, runner):
         """The nit that mattered: this used to classify wrong_nonce, and the
