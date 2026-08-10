@@ -220,7 +220,12 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
     described where it lives instead.
     """
 
-    CLOSED = ("#989", "#990", "#992")
+    #: Every residual this page has retired. **Not just the ones this wave
+    #: closed** — the defect is a stale sentence, and it does not care which
+    #: PR left it behind, so the pin covers #1007's three as well as the beta
+    #: gate's. Extending it was free here and would not have been later: a
+    #: closed hole only accumulates prose.
+    CLOSED = ("#989", "#990", "#992", "#995", "#996", "#997")
 
     @staticmethod
     def _residual_rows() -> "list[str]":
