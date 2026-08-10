@@ -1579,10 +1579,15 @@ Three details in that block are rulings, not defaults that happened to land:
 suggest.** `/` is the route that hands over the run token — it is served with
 no auth at all, which is the whole reason the `Host` allowlist runs first on
 every route. A healthcheck polling it would pull a fresh copy of the token into
-the watchdog's process once a minute, forever, to learn something the tmux
-session already answers: the command service's session ENDS when its process
-does, so "the session exists" is the liveness signal. A probe should not fetch
-a secret to find out whether a port is open.
+the watchdog's process once a minute, forever, to learn something tmux already
+answers. A probe should not fetch a secret to find out whether a port is open.
+
+What "the tmux session answers" is **not** simply "the session exists" — that
+sentence was true only while nothing kept a dead pane around, and the buddy's
+own spawn now deliberately does. `tmux has-session` returns 0 for a session
+whose pane is a corpse, so the `tmux_session` healthcheck asks `#{pane_dead}`
+as well. Without that second clause, retaining the crash reason would have
+traded a false success at start for a permanent one.
 
 **`autostart: false`.** The buddy needs `OPENAI_API_KEY` and a browser tab to
 be useful; a machine that boots it and never opens the page has spent nothing
@@ -1596,7 +1601,22 @@ per-user socket dir. Measured, not assumed: the pane holds exactly the two
 lines `serve` prints, the token appears in neither, the HTTP server's request
 log is a no-op, and the token is absent from the process table. What the
 process table DOES expose is `command` itself, so a secret must never ride in a
-service's argv — doctor flags one that looks like it does.
+service's argv — doctor flags one that looks like it does, in both the
+`--token=x` and `--token x` joinings, since they reach `ps` identically.
+
+### The failure the buddy hits first
+
+`agentwire buddy serve <name>` with an unregistered name refuses and exits at
+once — and with `autostart: false` shipped above, opting in is precisely when
+the owner meets it. A supervisor that reported that as a successful start would
+hand them a success line, a `[!!] unhealthy` from doctor a second later
+prescribing the command that just claimed success, and no copy anywhere of the
+process's own explanation. That is the shape this whole branch exists to
+remove, so the command kind spawns with `remain-on-exit on`, re-reads the pane
+after a grace period, and fails with the process's last lines attached:
+`process exited immediately: No voice buddy named 'nope'.` The corpse is left
+in place — tmux's memory is the only copy — and the next start reads it before
+clearing it. Still no file, still 0700.
 
 ### Restart semantics: what a supervisor kill mid-handshake leaves behind
 

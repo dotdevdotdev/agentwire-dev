@@ -205,7 +205,7 @@ def _page() -> str:
     return client.page("buddy", "tok")
 
 
-def _slice(page: str, start_pat: str, end_pat: str, what: str) -> str:
+def _slice(page: str, start_pat: str, end_pat: str, what: str, *, shape: str) -> str:
     """Cut a region out of the served page, failing loudly if the anchor moved.
 
     Extraction rather than a copy, for the reason ``announcer_source`` gives:
@@ -213,12 +213,24 @@ def _slice(page: str, start_pat: str, end_pat: str, what: str) -> str:
     silent miss here would be the worst outcome — the wire could be gone and
     this file would still be green, which is the #995 failure repeated by the
     test written to close it.
+
+    "Loudly" has to cover the PARTIAL match too. A start anchor that still hits
+    while the end anchor has drifted yields a syntactically broken fragment,
+    and what the reader then sees is an opaque node ``SyntaxError`` rather than
+    "the anchor moved". So each slice declares the *shape* it must still have —
+    chosen to be invariant under the mutations these tests exist to catch, so a
+    cut wire fails as a behaviour failure and never as a stale-anchor one.
     """
     start = re.search(start_pat, page)
     assert start, f"anchor for {what} not found — the page moved, this test is stale"
     end = re.search(end_pat, page[start.start():])
-    assert end, f"end anchor for {what} not found"
-    return page[start.start():start.start() + end.end()]
+    assert end, f"end anchor for {what} not found — the page moved, this test is stale"
+    region = page[start.start():start.start() + end.end()]
+    assert re.search(shape, region), (
+        f"extracted {what} does not have the shape this test assumes — the page "
+        f"moved and the extraction is stale, NOT a behaviour failure. Got:\n{region}"
+    )
+    return region
 
 
 def _greet_program(*, fire: str) -> str:
@@ -226,10 +238,19 @@ def _greet_program(*, fire: str) -> str:
     greet_block = _slice(
         page, r"const GREETING\s*=", r"function maybeGreet\(\)\s*\{[\s\S]*?\n\}",
         "the greeting block",
+        # Shape, not behaviour: the declarations and the function's existence.
+        # Whether maybeGreet's BODY still greets is what the tests decide.
+        shape=r"let greeted[\s\S]*function maybeGreet\(\)\s*\{[\s\S]*\}\s*$",
     )
-    ontrack = _slice(page, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire")
+    ontrack = _slice(
+        page, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
+        # An assignment of an arrow function, ending in a statement. True with
+        # or without the maybeGreet() call inside it.
+        shape=r"^pc\.ontrack\s*=\s*\([\s\S]*=>[\s\S]*;\s*$",
+    )
     session_created = _slice(
         page, r'case "session\.created":', r"break;", "the session.created wire",
+        shape=r'^case "session\.created":[\s\S]*break;$',
     )
     # `case`/`break` are only legal inside a switch; the body is what is under
     # test, so it is lifted into a function verbatim.
@@ -280,6 +301,25 @@ class TestBothGreetWiresAreLoadBearing:
         assert report["announced"] == []
         assert report["greeted"] is False
 
+    def test_the_ontrack_wire_greets_when_it_lands_last(self):
+        """THE pin for #995's worst wire, and the ordering is load-bearing.
+
+        ``pc.ontrack``'s ``maybeGreet()`` call only decides anything when
+        ontrack arrives SECOND — with the other order, session.created's call
+        fires the greeting and the cut is masked. A single "both wires" test in
+        the convenient order would have left the wire unpinned while looking
+        like it covered it.
+        """
+        report = _run_greet("fireSessionCreated(); fireOntrack();")
+        assert len(report["announced"]) == 1
+        assert report["greeted"] is True
+
+    def test_the_session_created_wire_greets_when_it_lands_last(self):
+        """The mirror, pinning the other wire's call for the same reason."""
+        report = _run_greet("fireOntrack(); fireSessionCreated();")
+        assert len(report["announced"]) == 1
+        assert report["greeted"] is True
+
     def test_both_wires_greet_exactly_once(self):
         report = _run_greet("fireOntrack(); fireSessionCreated();")
         assert report["greeted"] is True
@@ -291,13 +331,6 @@ class TestBothGreetWiresAreLoadBearing:
         # would confirm the browser voice while model audio is dead, and
         # nothing could be approved (#950).
         assert "isn't working" in item["fallback"]
-
-    def test_the_other_order_greets_too(self):
-        """Whichever lands last fires it — the wires are symmetric, and a
-        greeting that depended on arrival order would be a race the owner hears
-        as intermittent silence."""
-        report = _run_greet("fireSessionCreated(); fireOntrack();")
-        assert len(report["announced"]) == 1
 
     def test_a_second_pass_does_not_re_greet(self):
         report = _run_greet(

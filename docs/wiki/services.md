@@ -15,9 +15,23 @@ A service is an **agent** or a **command**, and the only thing that decides is w
 | What runs | an agentwire session (`agentwire new`) | your process, in a detached tmux session |
 | `roles` / `posture` / `context_policy` | apply | **rejected** — there is no agent to carry them |
 | Stopped by | `agentwire kill` (graceful `/exit` first) | `tmux kill-session` |
-| Default healthcheck | the tmux session exists | the tmux session exists (it ends when the process does) |
+| Default healthcheck | session exists **and** its pane is not dead | same |
+| A failed start | `agentwire new` exits non-zero | the pane is re-read after a grace period |
 
-The command kind is deliberately generic. agentwire supervises a process; it does not know or care what the process is. The voice buddy's bridge is one caller (see [voice-layer §6](voice-layer.md#6-lifecycle-host)), and nothing in the mechanism mentions it.
+The command kind is deliberately generic. agentwire supervises a process; it does not know or care what the process is.
+
+## A created pane is not a surviving process
+
+`tmux new-session` returning 0 says a pane was made. The command inside it may already have exited — a missing key, a bad flag, a name that isn't registered — and reporting that as `started` produces the worst shape available: a success line, then `[!!] unhealthy` from doctor one second later prescribing the command that just claimed success, with the process's own stderr gone along with the pane. Screenless, that is a fix-loop behind an all-clear.
+
+So a command service is spawned in three steps — a placeholder, `remain-on-exit on`, then the real command via `respawn-pane` — and the pane is re-read after `STARTUP_GRACE_S`. The ordering is why the placeholder exists at all: setting the option *after* launching the real command is a race that a fast-dying process wins, and fast-dying processes are exactly the ones whose reason is needed. A process that died reports `process exited immediately: <its last lines>`, and the corpse is deliberately left in place — tmux's memory is the only copy of that output, and the next start reads it before clearing it.
+
+Two consequences worth stating plainly:
+
+- **`remain-on-exit` means `has-session` is no longer liveness.** Measured: `tmux has-session` returns 0 for a session whose pane is dead. So the `tmux_session` healthcheck asks `#{pane_dead}` too, for *both* kinds — `remain-on-exit` is a user tmux setting, so an agent session could always have been in this state and was reported healthy.
+- **A dead pane is not "already running".** A start that found a corpse clears it and respawns, or the watchdog would loop forever: healthcheck says unhealthy, watchdog starts, start says "already running".
+
+The process's last lines are surfaced to the operator (in the start message and the healthcheck detail), so a process that prints a secret on the way down surfaces it where its own log would have. Bounded to the last few lines, written to no file, and a deliberate trade: a refusal that cannot say why is the failure this exists to remove.
 
 ## Registering a service
 
@@ -92,7 +106,7 @@ One thing that is **not** hidden, and cannot be: `command` itself lands in the p
 
 ## Restart semantics
 
-The watchdog kills and respawns; it does not resume. A command service is therefore responsible for landing in a sane state on a cold start, and the useful question to ask of any candidate is *what does a restart mid-operation leave behind?* — with in-memory-only per-run state, the answer is "nothing", and that is worth a test rather than an assumption. The buddy bridge's is [`tests/unit/test_buddy_restart.py`](../../tests/unit/test_buddy_restart.py).
+The watchdog kills and respawns; it does not resume. A command service is therefore responsible for landing in a sane state on a cold start, and the useful question to ask of any candidate is *what does a restart mid-operation leave behind?* — if the answer is "nothing, the state is per-run and in memory", that is worth a test rather than an assumption, because it is one refactor away from being false and nothing fails when it becomes false.
 
 ## Internals
 
