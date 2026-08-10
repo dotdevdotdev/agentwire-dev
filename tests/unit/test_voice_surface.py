@@ -21,6 +21,7 @@ import ast
 import itertools
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,6 +122,29 @@ class TestTierAudit:
         assert surface.tier_of("session_create") == "excluded"
         assert surface.tier_of("no_such_capability") == "untiered"
 
+    def test_a_report_that_authors_an_artifact_is_not_a_read(self):
+        """#979/3: scheduler_report sat in TIER_READ while it writes an HTML
+        artifact into ~/.agentwire/artifacts/ and can push a click-to-open
+        portal notification — clause (d) and clause (b). 'Expand reads freely'
+        would have wired it confirm-free on the strength of the word report."""
+        assert surface.tier_of("scheduler_report") == "excluded"
+
+    def test_a_detach_that_creates_a_session_is_excluded_not_gated(self):
+        """#979/3: pane_detach's own docstring says the target session is
+        'created if doesn't exist' — clause (a), and the created session has
+        no #871 metadata record. The dispatch-path analyzer cannot see it
+        (no build_agent_command on that path), so the tier entry is the only
+        guard and a nonce is not the right one."""
+        assert surface.tier_of("pane_detach") == "excluded"
+
+    def test_each_reclassification_carries_a_written_ruling(self):
+        """A bare tier move is not a ruling. surface.py is the precedent
+        store, so the reason must be readable in the module that holds the
+        decision — a future reader hits the docstring, not this test."""
+        doc = surface.__doc__ or ""
+        for name in ("scheduler_report", "pane_detach"):
+            assert name in doc, f"{name} moved tier with no written ruling"
+
 
 class TestTierThreeIsUnreachableByName:
     """The design decision, asserted — not inferred from an absence."""
@@ -144,14 +168,14 @@ class TestTierThreeIsUnreachableByName:
 
     def test_every_wired_write_is_tiered_gated(self):
         """A shipped WriteSpec must correspond to a TIER_WRITE_GATED capability."""
-        capability_of = {"session_message": "msg_send"}
         for spec in write_tools.WRITE_SPECS:
-            capability = capability_of.get(spec.name)
-            assert capability is not None, (
+            capabilities = surface.TOOL_CAPABILITY.get(f"send_{spec.name}")
+            assert capabilities, (
                 f"WriteSpec {spec.name} has no declared capability mapping — "
-                "add it here so its tier is auditable"
+                "add it to surface.TOOL_CAPABILITY so its tier is auditable"
             )
-            assert capability in surface.TIER_WRITE_GATED
+            for capability in capabilities:
+                assert capability in surface.TIER_WRITE_GATED
 
     def test_every_wired_read_observes_a_tiered_read(self):
         """No read tool may be named after a write or excluded capability."""
@@ -163,6 +187,62 @@ class TestTierThreeIsUnreachableByName:
                 assert not tool.name.endswith(capability), (
                     f"read tool {tool.name} shadows non-read capability {capability}"
                 )
+
+
+class TestEveryWiredToolIsRuled:
+    """#979/5: the tier audit swept ``@mcp.tool`` names — a namespace that is
+    not the exposed surface. ``buddy_inbox``, ``buddy_sent`` and
+    ``fleet_pull_requests`` have no MCP capability behind them, so 'EVERY tool
+    appears in exactly one tier' was true and beside the point: the next
+    voice-native tool could ship with nothing forcing a grade out of anyone.
+    Concretely ``buddy_inbox(ack=true)`` mutates state from the read-only
+    allowlist."""
+
+    def test_every_wired_tool_maps_to_a_capability_or_a_native_ruling(self):
+        unruled = surface.unruled_tools(
+            [t.name for t in tools.READ_ONLY_TOOLS]
+            + [f"send_{s.name}" for s in write_tools.WRITE_SPECS]
+        )
+        assert unruled == {}, (
+            f"wired tools with no tier and no voice-native ruling: {unruled} — "
+            "rule them in voice_layer/surface.py"
+        )
+
+    def test_no_wired_tool_maps_to_an_excluded_capability(self):
+        """The by-name check catches `propose_worktree_create`; it cannot catch
+        a wired read whose CAPABILITY is excluded under an unrelated name —
+        which is precisely the scheduler_report shape (#979/3)."""
+        wired = {t.name for t in tools.READ_ONLY_TOOLS} | {
+            f"send_{s.name}" for s in write_tools.WRITE_SPECS
+        }
+        for name in wired:
+            for capability in surface.TOOL_CAPABILITY.get(name, ()):
+                assert capability not in surface.TIER_EXCLUDED, (
+                    f"{name} wires excluded capability {capability}"
+                )
+
+    def test_a_new_unruled_tool_turns_this_red(self):
+        """Mutation check: the leg above is worthless if it passes for a name
+        nobody ever ruled on."""
+        unruled = surface.unruled_tools(["fleet_sessions", "buddy_telepathy"])
+        assert set(unruled) == {"buddy_telepathy"}
+
+    def test_a_native_tool_that_mutates_is_ruled_as_a_write(self):
+        """buddy_inbox(ack=true) advances the read cursor. It sits in the
+        read-only allowlist because the WIRING has one shape; its GRADE is a
+        separate question and gets a separate answer."""
+        assert surface.VOICE_NATIVE["buddy_inbox"]["grade"] == "write_light"
+        assert surface.VOICE_NATIVE["buddy_sent"]["grade"] == "read"
+        for ruling in surface.VOICE_NATIVE.values():
+            assert ruling["ruling"].strip(), "a grade with no reason is not a ruling"
+
+    def test_the_docstring_no_longer_claims_no_light_writes_are_wired(self):
+        """The sentence was true when written and false the moment buddy_inbox
+        shipped. Rewritten, not qualified — a stale guarantee gets rounded back
+        up by the next reader."""
+        doc = " ".join((surface.__doc__ or "").split())
+        assert "currently none are wired" not in doc
+        assert "buddy_inbox" in doc
 
 
 # =============================================================================
@@ -285,27 +365,80 @@ def cli_verb_tree() -> dict:
     return tree
 
 
-def mcp_tool_argvs() -> dict[str, list[list]]:
-    """tool name -> the constant-string argv literals its body builds."""
-    package_root = Path(tools.__file__).resolve().parents[1]
-    out: dict[str, list[list]] = {}
-    for path in package_root.glob("mcp_*.py"):
-        for node in ast.parse(path.read_text()).body:
+def mcp_tool_defs(sources: "list[str] | None" = None) -> dict[str, ast.AST]:
+    """tool name -> its ``@mcp.tool``-decorated function node.
+
+    *sources* replaces the packaged ``mcp_*.py`` modules with literal source
+    strings, which is how the must-fail controls below exercise shapes the
+    real package does not currently contain.
+    """
+    if sources is None:
+        package_root = Path(tools.__file__).resolve().parents[1]
+        sources = [p.read_text() for p in package_root.glob("mcp_*.py")]
+    out: dict[str, ast.AST] = {}
+    for source in sources:
+        for node in ast.parse(source).body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not any((isinstance(d, ast.Call) and _call_name(d) == "tool")
                        or (isinstance(d, ast.Attribute) and d.attr == "tool")
                        for d in node.decorator_list):
                 continue
-            argvs = []
-            for sub in ast.walk(node):
-                if (isinstance(sub, ast.List) and sub.elts
-                        and isinstance(sub.elts[0], ast.Constant)
-                        and isinstance(sub.elts[0].value, str)):
-                    argvs.append([e.value if isinstance(e, ast.Constant) else None
-                                  for e in sub.elts])
-            out[node.name] = argvs
+            out[node.name] = node
     return out
+
+
+def mcp_tool_argvs(sources: "list[str] | None" = None) -> dict[str, list[list]]:
+    """tool name -> the constant-string argv literals its body builds.
+
+    **The covered shape, stated** (#979/4): a LIST LITERAL whose first element
+    is a string constant, appearing anywhere in the tool's body. That is the
+    shape ``run_agentwire_cmd(["worktree", ...])`` takes and nothing else. An
+    argv assembled dynamically — built by a helper, extended from a variable,
+    chosen by a branch that stores the verb in a name — contributes NOTHING
+    here, and a tool with no extracted argv is therefore UNCHECKED by the
+    dispatch-path analyzer rather than cleared by it. Those tools are flagged
+    for manual placement by
+    ``TestNoTieredInToolCanCreateASession`` (the manual-placement leg)
+    instead of passing silently, which is the direction this whole check
+    claims to fail in.
+    """
+    out: dict[str, list[list]] = {}
+    for name, node in mcp_tool_defs(sources).items():
+        argvs = []
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.List) and sub.elts
+                    and isinstance(sub.elts[0], ast.Constant)
+                    and isinstance(sub.elts[0].value, str)):
+                argvs.append([e.value if isinstance(e, ast.Constant) else None
+                              for e in sub.elts])
+        out[name] = argvs
+    return out
+
+
+def in_process_creating_tools(sources: "list[str] | None" = None) -> dict[str, str]:
+    """MCP tool -> the session-creating function it calls IN PROCESS.
+
+    The second blind spot (#979/4): ``session_creating_functions`` deliberately
+    skips ``mcp_*.py`` when building its map, so an MCP tool that reaches a
+    creation helper directly — no CLI dispatch, no argv to walk — was invisible
+    to the whole check. No shipped tool has that shape today; the control below
+    proves the detector would see one, because a check that is silently green
+    and a check that is green because the codebase is clean are the same
+    observation until you force the difference.
+    """
+    # The markers themselves count: they are the creation, so a tool calling
+    # ``build_agent_command`` directly is the shortest possible version of
+    # this path and must not need an intermediary to register.
+    creating = session_creating_functions() | _CREATION_MARKER_CALLS
+    flagged: dict[str, str] = {}
+    for name, node in mcp_tool_defs(sources).items():
+        calls = {n for sub in ast.walk(node)
+                 if isinstance(sub, ast.Call) and (n := _call_name(sub))}
+        hit = sorted(calls & creating)
+        if hit or _spawns_ensure(node):
+            flagged[name] = hit[0] if hit else "agentwire ensure"
+    return flagged
 
 
 #: Dispatches that reach a creating HANDLER in a mode that cannot create:
@@ -315,6 +448,23 @@ def mcp_tool_argvs() -> dict[str, list[list]]:
 _NON_CREATING_MODES = {
     "cmd_worktree": {"--list", "--status", "--remove", "--prune", "--dangling"},
 }
+
+#: MCP tools the dispatch-path analyzer extracts NO argv from, and therefore
+#: never checked — each one placed in its tier by hand, by reading it. They
+#: reach their work through a Python API rather than a CLI argv: the desktop
+#: family writes the portal's window state, the wiki family calls
+#: ``agentwire.wiki`` directly, ``notify_user``/``transcribe`` go through the
+#: portal and the STT backend, ``desktop_write_artifact`` writes a file.
+#: Adding to this set is a claim that a human looked; the leg that asserts it
+#: is the thing stopping a new tool from being unchecked AND unnoticed.
+UNANALYZABLE_TOOLS = frozenset({
+    "desktop_close_window", "desktop_collage", "desktop_focus_window",
+    "desktop_layout", "desktop_minimize_all", "desktop_open_artifact",
+    "desktop_open_panel", "desktop_open_session", "desktop_tile_window",
+    "desktop_write_artifact",
+    "notify_user", "transcribe",
+    "wiki_lint", "wiki_query", "wiki_status",
+})
 
 
 def session_creating_tools() -> dict[str, str]:
@@ -351,6 +501,55 @@ class TestNoTieredInToolCanCreateASession:
         # The two wave-3 escapees, caught by path — not by their names.
         assert flagged.get("task_run") == "cmd_ensure"
         assert flagged.get("scheduler_run") == "cmd_scheduler_run"
+
+    def test_a_tool_with_no_extractable_argv_is_flagged_for_manual_placement(self):
+        """#979/4: the analyzer's covered shape is narrower than 'every MCP
+        tool'. A tool it extracts no argv from is UNCHECKED, and an unchecked
+        tool passing the main assertion is silent green — the exact direction
+        the docstring claims this check avoids. Recorded here so a NEW one
+        fails until a human places it by hand."""
+        unanalyzable = {t for t, argvs in mcp_tool_argvs().items() if not argvs}
+        assert unanalyzable == UNANALYZABLE_TOOLS, (
+            "the set of MCP tools the dispatch-path analyzer cannot see has "
+            "changed — place each new one by hand, then record it here: "
+            f"new={sorted(unanalyzable - UNANALYZABLE_TOOLS)} "
+            f"gone={sorted(UNANALYZABLE_TOOLS - unanalyzable)}"
+        )
+
+    def test_the_analyzer_admits_what_it_cannot_see(self):
+        """Must-fail control for the leg above: a dynamically-built argv must
+        register as unanalyzable, not as 'no argv, therefore harmless'."""
+        source = (
+            "@mcp.tool()\n"
+            "def sneaky_verb(name: str) -> str:\n"
+            "    argv = build_the_argv(name)\n"
+            "    return run_agentwire_cmd(argv)\n"
+        )
+        assert mcp_tool_argvs([source]) == {"sneaky_verb": []}
+
+    def test_an_in_process_creator_would_be_seen(self):
+        """Must-fail control for the in-process leg: the fixture-shaped trap is
+        a detector exercised only on the shape it already handles."""
+        source = (
+            "@mcp.tool()\n"
+            "def helpful_verb(name: str) -> str:\n"
+            "    cmd = build_agent_command(name)\n"
+            "    return run(cmd)\n"
+        )
+        assert in_process_creating_tools([source]) == {
+            "helpful_verb": "build_agent_command"
+        }
+
+    def test_no_tiered_in_tool_creates_a_session_in_process(self):
+        """Clause (a) again, for the path with no argv at all."""
+        offenders = {
+            tool: fn for tool, fn in in_process_creating_tools().items()
+            if tool not in surface.TIER_EXCLUDED
+        }
+        assert offenders == {}, (
+            f"MCP tools calling session creation in process while tiered in: "
+            f"{offenders}"
+        )
 
     def test_every_session_creating_dispatch_path_is_excluded(self):
         """Clause (a) by dispatch path: any MCP tool whose argv reaches a
@@ -477,6 +676,43 @@ class TestDeclaredWriteMechanism:
         nonce_word = result["confirm_phrase"].split()[1]
         assert nonce_word not in result["fallback_say"]
 
+    def test_a_proposal_carries_the_buddy_identity_whatever_its_argv(self):
+        """#979/1, the same assumption one field over: the outbox reads the
+        writer from ``--from``, which only the msg shape has. An argv-only
+        write recorded under 'unknown' is invisible to the buddy's own
+        buddy_sent — the instrument cannot answer about a write it filed under
+        someone else. propose carries the identity in params, so attribution
+        does not depend on the argv having a --from."""
+        convo, _runner = _spine()
+        propose = gated_triple(probe_spec())[0][3]
+        propose({"_buddy": "buddy"}, convo.spine)
+        (proposal,) = list(convo.spine._proposals.values())
+        assert proposal.params.get("_buddy") == "buddy"
+
+    def test_a_write_to_a_remote_target_is_refused_at_the_pattern(self, monkeypatch):
+        """The write side of the same ruling. `_require_live` used to compare
+        `session.split("@")[0]` against LOCAL tmux, so a remote name that was
+        genuinely live locally under its bare half could pass liveness and then
+        address the wrong machine. With `@` gone from the pattern the refusal
+        happens before liveness is ever consulted — asserted with tmux SAYING
+        the bare half is live, which is the shape that used to slip."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: {"web"})
+        # The liveness check itself, called directly — the pattern refuses
+        # before it is ever reached, so nothing else in the suite can tell a
+        # whole-name comparison from a split one, and an unpinned split grows
+        # back the moment remotes are revisited.
+        with pytest.raises(tools.ToolError, match="Nothing is listening"):
+            write_tools._require_live("web@laptop", cannot="")
+
+        propose = write_tools.WRITE_TOOL_FNS["propose_session_message"]
+        convo, runner = _spine()
+        with pytest.raises(tools.ToolError, match="(?i)remote"):
+            propose(
+                {"session": "web@laptop", "message": "ship it", "_buddy": "buddy"},
+                convo.spine,
+            )
+        assert runner.calls == []
+
     def test_shipped_specs_pass_the_same_declaration_guards(self):
         for spec in write_tools.WRITE_SPECS:
             assert "{phrase}" not in spec.fallback_template
@@ -576,6 +812,80 @@ class TestExpandedReads:
         value = seen[0][2]
         assert "\x1b" not in value
         assert len(value) <= tools._MAX_QUERY_CHARS
+
+    @pytest.mark.parametrize(
+        "name", ["fleet_session_info", "fleet_session_inbox", "fleet_session_output"]
+    )
+    def test_a_remote_target_is_refused_and_says_why(self, seen, name):
+        """#979/2, owner ruling 2026-08-09: remote `name@machine` targets are
+        out of scope. The voice layer no longer ACCEPTS the syntax at all —
+        half-accepting it is what produced three wrong answers at once (the
+        wrong inbox interrogated, a live remote session called dead, an inbox
+        dir keyed on the raw string).
+
+        The false-reject half is priced by the wording, not by admitting the
+        name: a refusal that just says 'not a valid session name' sends the
+        owner round the loop re-pronouncing a name that was heard correctly.
+        This one names the actual limit, so the owner can stop asking."""
+        result = tools.dispatch(name, {"session": "web@laptop"}, "buddy")
+        assert result["success"] is False
+        assert result["must_speak"] is True
+        assert "remote" in result["error"].lower()
+        assert seen == []
+
+    def test_the_pattern_itself_no_longer_admits_the_syntax(self):
+        """Both layers, asserted separately. The spoken refusal fires first, so
+        every behavioural test above passes with `@` still in the pattern —
+        which is how the pattern quietly stays permissive and the next reader,
+        seeing it accept `name@machine`, decides the message check is
+        redundant. The ruling is that NO layer here accepts the syntax."""
+        assert tools._SESSION_RE.match("web@laptop") is None
+        assert tools._SESSION_RE.match("web") is not None
+
+    def test_a_bare_local_name_is_still_accepted(self, seen):
+        """The other half of the same gate: dropping @ must not narrow the
+        ordinary local name, which is every name the buddy can reach."""
+        result = tools.dispatch(
+            "fleet_session_info", {"session": "agentwire-dev"}, "buddy"
+        )
+        assert result.get("success") is not False, result
+        assert seen == [["info", "-s", "agentwire-dev"]]
+
+    @pytest.mark.parametrize("bad", ["-x/y", "x/-y", "-/-"])
+    def test_a_leading_dash_repo_is_refused_by_the_pattern(self, monkeypatch, bad):
+        """#979/6: `_REPO_RE` admitted `-x/y`, which violates the
+        leading-alphanumeric rule `_SESSION_RE` states two paragraphs earlier.
+        A value-position flag is not exploitable today; an inconsistent stated
+        discipline is how the next copy of the pattern gets it wrong.
+
+        Asserted at the pattern, with `gh` monkeypatched out — letting the real
+        subprocess run makes 'gh said no' indistinguishable from 'the pattern
+        said no', which is exactly how this test passes without the fix."""
+        ran: list = []
+        monkeypatch.setattr(
+            "agentwire.voice_layer.tools.subprocess.run",
+            lambda *a, **kw: ran.append(a) or (_ for _ in ()).throw(AssertionError),
+        )
+        result = tools.dispatch("fleet_pull_requests", {"repo": bad}, "buddy")
+        assert result["success"] is False
+        assert "owner/name" in result["error"]
+        assert ran == []
+
+    def test_an_ordinary_repo_still_reaches_gh(self, monkeypatch):
+        """The false-reject half of the same tightening."""
+        seen_cmd: list = []
+        monkeypatch.setattr(
+            "agentwire.voice_layer.tools.subprocess.run",
+            lambda cmd, **kw: seen_cmd.append(cmd)
+            or SimpleNamespace(returncode=0, stdout="[]", stderr=""),
+        )
+        result = tools.dispatch(
+            "fleet_pull_requests", {"repo": "dotdevdotdev/agentwire-dev"}, "buddy"
+        )
+        assert result["success"] is True
+        assert seen_cmd[0][:5] == [
+            "gh", "pr", "list", "--repo", "dotdevdotdev/agentwire-dev",
+        ]
 
     def test_an_empty_query_is_refused_with_speech(self, seen):
         result = tools.dispatch("fleet_wiki_search", {"query": "  ---  "}, "b")

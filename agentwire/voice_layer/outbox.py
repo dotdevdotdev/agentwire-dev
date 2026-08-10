@@ -8,21 +8,41 @@ is the instrument.
 
 **Recorded, not reconstructed.** :func:`record_write` is called from the one
 place a buddy write executes — ``ConfirmSpine.confirm``, right after the
-runner returns — and what it records is the executed argv itself. The body is
-``argv[-1]``, the exact rendered string the CLI received, never a re-render
-from the proposal: ``render_body`` is under active change (#953), and a
-reconstruction would quietly diverge from what actually went out, which is the
-precise failure this exists to end. Where the argv and the proposal disagree,
-the record sides with the argv.
+runner returns — and what it records is the executed argv itself. For a write
+that carries a body, the body is ``argv[-1]``: the exact rendered string the
+CLI received, never a re-render from the proposal, because ``render_body`` is
+under active change (#953) and a reconstruction would quietly diverge from
+what actually went out. Where the argv and the proposal disagree, the record
+sides with the argv.
+
+**Which writes have a body is the SPEC's answer, not the argv's** (#979).
+``argv[-1]`` is the body of a ``msg send``; for an ``append_body=False``
+write it is a session name or a flag value, and recording that as "the body"
+would be a confident, specific lie — the instructions tell the model to quote
+this field verbatim as the authoritative answer to "what did I send". So
+:func:`record_write` reads ``proposal.append_body`` and records no body at all
+where there is none, plus the flag itself so a reader can tell "no body" from
+"body not recorded".
 
 **Delivery state is computed at read time, never stored.** A message's state
 changes after the write returns — queued now, delivered or dead-lettered
 later — so a stored state is a lie with a timestamp. :func:`delivery_state`
 asks the recipient's real inbox (the same store ``agentwire msg inbox`` and
 ``msg dead`` read): still pending → ``queued``; in the graveyard →
-``dead_lettered`` with the drop reason; neither → ``delivered``, because the
-drain removes a message from pending only by delivering it or dead-lettering
-it. A write whose dispatch failed short-circuits to ``dispatch_failed``.
+``dead_lettered`` with the drop reason.
+
+**Neither store matching is NOT proof of delivery** (#979). This module used
+to answer ``delivered`` there, reasoning that the drain removes a message from
+pending only by delivering or dead-lettering it. That is false: ``msg purge``
+drops the pending queue outright and ``msg dead --purge`` clears the
+graveyard — both documented escape hatches, both leaving exactly this trace.
+A purged message and a delivered one are indistinguishable from here, so the
+state is ``no_longer_queued`` and its detail says both halves. The narrower
+claim is not a hedge on the same sentence: the two stores establish that it
+left the queue, and nothing about who read it. Nothing in the inbox records
+per-message delivery (the ``delivered`` event carries a count and kinds, no
+ids), so a positive answer would need a new mechanism, not a bolder reading of
+this one. A write whose dispatch failed short-circuits to ``dispatch_failed``.
 
 **Recording never raises.** It runs after the write has executed. An exception
 here would propagate to the dispatcher's catch-all, which tells the owner
@@ -57,6 +77,10 @@ def record_write(proposal, argv: list, result: dict) -> None:
     try:
         argv = [str(a) for a in argv]
         dispatched = bool((result or {}).get("success", False))
+        # The spec decides, not the argv shape. Absent (a caller with no such
+        # attribute) means the body-carrying default, which is what every
+        # shipped spec is and what ``Proposal`` itself defaults to.
+        append_body = bool(getattr(proposal, "append_body", True))
         entry = {
             "proposal_id": getattr(proposal, "id", "") or "",
             "session": _flag_value(argv, "--to") or getattr(proposal, "session", ""),
@@ -64,7 +88,8 @@ def record_write(proposal, argv: list, result: dict) -> None:
             or str(getattr(proposal, "params", {}).get("_buddy") or ""),
             "kind": _flag_value(argv, "--kind"),
             "instruction": getattr(proposal, "instruction", "") or "",
-            "body": argv[-1] if argv else "",
+            "append_body": append_body,
+            "body": (argv[-1] if argv else "") if append_body else "",
             "argv": argv,
             "ts": time.time(),
             "dispatched": dispatched,
@@ -110,20 +135,27 @@ def delivery_state(entry: dict) -> dict:
     Matches by exact body first, then by the ``#<proposal-id>`` tag — the tag
     survives a change in body shape (#953), so a divergence between the
     recorded body and the enqueued text degrades to a looser match rather than
-    silently reading as ``delivered``.
+    silently reading as having left the queue.
     """
     if not entry.get("dispatched", False):
         return {"state": "dispatch_failed", "detail": str(entry.get("error", ""))}
 
-    if not str(entry.get("kind") or ""):
-        # Not a message handoff (no --kind in the argv): the write completed
-        # when the CLI returned, so there is no queue to interrogate and
-        # "delivered" would be a category error. "executed" is the whole truth.
+    # No body means no message, and therefore no queue to interrogate: the
+    # write completed when the CLI returned. ``append_body`` is the property
+    # that decides it; the empty-``kind`` test is the older proxy for the same
+    # thing, kept for records written before the flag existed and for a
+    # body-carrying argv that never named a kind.
+    if entry.get("append_body") is False or not str(entry.get("kind") or ""):
         return {"state": "executed"}
 
     from .. import inbox  # deferred, matching write_tools — keeps import light
 
-    session = str(entry.get("session") or "").split("@")[0]
+    # The WHOLE name. Stripping `@machine` here read a different session's
+    # local inbox and reported its state as this message's; `inbox` keys on
+    # the whole string, so this is the only question that can answer about
+    # this message. Remote targets are refused upstream now (#979) — this
+    # matters for records written before that ruling.
+    session = str(entry.get("session") or "")
     body = str(entry.get("body") or "")
     proposal_id = str(entry.get("proposal_id") or "")
     tag = f"#{proposal_id}" if proposal_id else ""
@@ -143,6 +175,14 @@ def delivery_state(entry: dict) -> dict:
                 }
     except Exception as exc:
         # An unreadable inbox is not knowledge. "unknown" is the honest state;
-        # guessing "delivered" here would be the confabulation with extra steps.
+        # guessing here would be the confabulation with extra steps.
         return {"state": "unknown", "detail": f"could not check the inbox: {exc}"}
-    return {"state": "delivered"}
+    return {
+        "state": "no_longer_queued",
+        "detail": (
+            f"not waiting in {session}'s inbox and not in its dead-letter store. "
+            "That is what a delivered message looks like, and also what one looks "
+            "like after a purge — so it is no longer queued, and whether it was "
+            "read is not something this can tell you."
+        ),
+    }

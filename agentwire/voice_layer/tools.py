@@ -40,9 +40,8 @@ from ..mcp_core import run_agentwire_cmd
 from . import delivery, outbox
 from .confirm import strip_controls
 
-# Session names as the inbox defines them, plus the optional `@machine` suffix
-# a remote session carries. Anchored: a partial match is how a fuzzy
-# transcription would slip through.
+# Session names as the inbox defines them — LOCAL names only. Anchored: a
+# partial match is how a fuzzy transcription would slip through.
 #
 # Every segment must START alphanumeric, which is doing two jobs the obvious
 # character class misses (both caught by tests, both real):
@@ -51,13 +50,23 @@ from .confirm import strip_controls
 #   - `.` is a legal name character, so it accepts `../etc/passwd`.
 # A leading separator is never a real session name, so requiring alphanumeric
 # first closes both without narrowing anything legitimate.
-_SESSION_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*"
-    r"(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?$"
-)
+#
+# The `@machine` suffix a remote session carries used to be admitted here, and
+# the owner ruled it out of scope on 2026-08-09 (see `surface`'s docstring for
+# the ruling and the three wrong answers half-support produced). Removing it
+# from the pattern is what makes the refusal complete: no path in this layer
+# accepts the syntax, so nothing downstream has to decide what a suffix it
+# cannot honor means. `REMOTE_REFUSAL` gives that refusal its own words —
+# "not a valid session name" would send the owner round the loop
+# re-pronouncing a name that was transcribed perfectly.
+_SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
 
 #: `owner/name`, the only form `gh --repo` should ever receive from a model.
-_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+#: Both segments start alphanumeric, for the same reason `_SESSION_RE`'s do —
+#: `-x/y` is not a repository, and a pattern that admits a leading dash while
+#: the file two paragraphs up calls that rule load-bearing is the kind of
+#: inconsistency the next copy of the pattern inherits (#979).
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 _MAX_OUTPUT_LINES = 200
 _MAX_PR_LIMIT = 50
@@ -76,8 +85,20 @@ class ToolError(Exception):
     """
 
 
+#: Spoken when the owner names a remote target. Its own message, not the
+#: generic one: the transcription was RIGHT and repeating it cannot help, so a
+#: refusal that says "invalid name" is a silent loop with extra steps.
+REMOTE_REFUSAL = (
+    "I can only reach sessions on this machine — remote sessions like '{value}' "
+    "aren't reachable by voice yet. Name a local session, or ask a session on "
+    "this machine to do it."
+)
+
+
 def _session_arg(args: dict, key: str = "session") -> str:
     value = args.get(key)
+    if isinstance(value, str) and "@" in value:
+        raise ToolError(REMOTE_REFUSAL.format(value=strip_controls(value)[:60]))
     if (
         not isinstance(value, str)
         or not _SESSION_RE.match(value.strip())
@@ -475,11 +496,18 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
         name="buddy_sent",
         description=(
             "Messages YOU have sent, newest first: the exact body that went out, "
-            "who it went to, and its current delivery state (queued, delivered, "
-            "dead_lettered, or dispatch_failed). This is the answer to any "
-            "question about a message you sent — what it said, whether something "
-            "was in it, what happened to it. Quote the body from here; never "
-            "answer from memory or by reading the recipient's terminal."
+            "who it went to, and its current delivery state. Quote the body from "
+            "here; never answer from memory or by reading the recipient's "
+            "terminal. The states, and exactly what each one licenses you to "
+            "say: 'queued' — still waiting in their inbox, not read yet; "
+            "'dead_lettered' — it failed and was dropped, say so and say why "
+            "(the reason is in detail); 'dispatch_failed' — it never went out "
+            "at all; 'executed' — the command ran and carried no message body; "
+            "'no_longer_queued' — it has left their queue, which is what "
+            "delivery looks like AND what a purge looks like, so say it is no "
+            "longer waiting and that you cannot confirm they read it; "
+            "'unknown' — you could not check. Never upgrade one of these to "
+            "'delivered'; that word claims more than anything here establishes."
         ),
         run=_buddy_sent,
         parameters={

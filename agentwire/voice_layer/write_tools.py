@@ -72,13 +72,22 @@ def _require_live(session: str, cannot: str) -> None:
     POSITIVE knowledge (tmux answered, the target is not in the list) refuses.
 
     *cannot* names what the buddy cannot do instead, spoken verbatim.
+
+    The name is compared WHOLE. It used to be compared as ``split("@")[0]``,
+    from when the voice pattern admitted ``name@machine``: the bare half of a
+    remote name was checked against LOCAL tmux, so a remote session got either
+    a false "nothing is listening" or — worse — a pass, on the strength of a
+    local session that happens to share its name. Remote targets are out of
+    scope (owner ruling, 2026-08-09) and ``_session_arg`` now refuses the
+    syntax outright, so by the time a name reaches here it is local by
+    construction and splitting it could only re-open that gap.
     """
     from .. import inbox
 
     live = inbox.live_sessions()
     if live is None:
         return
-    if session.split("@")[0] not in live:
+    if session not in live:
         raise ToolError(
             f"Nothing is listening — there's no live session called '{session}'. "
             f"Check what's actually running and say the name again. {cannot}"
@@ -176,7 +185,17 @@ def gated_triple(spec: WriteSpec) -> tuple:
             session=frozen.session,
             instruction=frozen.instruction,
             argv_prefix=list(frozen.argv_prefix),
-            params={"session": frozen.session, **frozen.params},
+            # ``_buddy`` rides on EVERY proposal, not just the specs whose argv
+            # happens to carry ``--from``. It is how the outbox attributes an
+            # executed write (#979): a write filed under "unknown" is one the
+            # buddy's own ``buddy_sent`` cannot see, which is the instrument
+            # failing at exactly the question it was built for. A spec's own
+            # params win — freeze is the authority on what it validated.
+            params={
+                "session": frozen.session,
+                "_buddy": args.get("_buddy") or "",
+                **frozen.params,
+            },
             append_body=frozen.append_body,
             success_say=_spec.success_say,
         )

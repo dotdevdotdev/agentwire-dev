@@ -46,8 +46,12 @@ def _argv(session="orchestrator", buddy="buddy", body="<voice> hello ┃ #abc123
     ]
 
 
-def _proposal(id="abc123", session="orchestrator", instruction="hello"):
-    return SimpleNamespace(id=id, session=session, instruction=instruction)
+def _proposal(id="abc123", session="orchestrator", instruction="hello",
+              append_body=True, buddy="buddy"):
+    return SimpleNamespace(
+        id=id, session=session, instruction=instruction, append_body=append_body,
+        params={"_buddy": buddy},
+    )
 
 
 # =============================================================================
@@ -107,6 +111,31 @@ class TestRecordWrite:
         entries = outbox.read_outbox("buddy", limit=2)
         assert [e["proposal_id"] for e in entries] == ["id0004", "id0003"]
 
+    def test_an_argv_only_write_records_no_body(self, isolate):
+        """#979/1: `body = argv[-1]` is the msg shape, not the write shape. For
+        an ``append_body=False`` spec the last argv element is a session name
+        or a flag value — and the instructions order the model to quote the
+        recorded body word for word as the authoritative answer to 'what did I
+        send'. The instrument built to end confabulation would have handed it a
+        confidently wrong exact body. There IS no body here, and the record
+        must say so rather than name one."""
+        proposal = _proposal(append_body=False)
+        outbox.record_write(proposal, ["info", "-s", "orchestrator"], {"success": True})
+        (entry,) = outbox.read_outbox("buddy")
+        assert entry["body"] == ""
+        assert entry["append_body"] is False
+        assert entry["argv"] == ["info", "-s", "orchestrator"]
+        assert entry["session"] == "orchestrator"
+
+    def test_a_body_carrying_write_still_records_the_executed_string(self, isolate):
+        """The other half: the fix must not cost the msg shape its verbatim
+        body, which is the whole point of the outbox."""
+        argv = _argv(body="<voice> hello ┃ #abc123")
+        outbox.record_write(_proposal(), argv, {"success": True})
+        (entry,) = outbox.read_outbox("buddy")
+        assert entry["body"] == argv[-1]
+        assert entry["append_body"] is True
+
     def test_corrupt_lines_are_skipped_not_fatal(self, isolate):
         outbox.record_write(_proposal(), _argv(), {"success": True})
         with open(outbox.outbox_path("buddy"), "a", encoding="utf-8") as fh:
@@ -151,8 +180,55 @@ class TestDeliveryState:
         assert state["state"] == "dead_lettered"
         assert "target_gone" in state.get("detail", "")
 
-    def test_neither_pending_nor_dead_reads_as_delivered(self, isolate):
-        assert outbox.delivery_state(self._entry())["state"] == "delivered"
+    def test_neither_store_matches_does_not_assert_delivery(self, isolate):
+        """#979/2. The old claim: 'neither → delivered, because the drain
+        removes a message from pending only by delivering or dead-lettering
+        it.' False — ``msg purge`` drops pending and ``msg dead --purge``
+        clears the graveyard, both documented escape hatches, and both leave
+        exactly this trace. The state now names what the two stores actually
+        establish, and nothing past it."""
+        state = outbox.delivery_state(self._entry())
+        assert state["state"] == "no_longer_queued"
+        assert "delivered" != state["state"]
+        assert state.get("detail", "")
+
+    def test_a_purged_queue_does_not_read_as_delivered(self, isolate):
+        """The concrete failure: the owner purges a wedged queue, asks 'did it
+        get my message?', and hears 'delivered' about a message that was
+        dropped. Same trace as delivery, so the honest answer is the one that
+        does not pick between them."""
+        inbox.enqueue(
+            "orchestrator", "<voice> hello ┃ #abc123", kind="request", sender="buddy"
+        )
+        assert outbox.delivery_state(self._entry())["state"] == "queued"
+        assert inbox.purge_pending("orchestrator") == 1
+        assert outbox.delivery_state(self._entry())["state"] == "no_longer_queued"
+
+    def test_a_recorded_remote_name_interrogates_the_inbox_that_holds_it(self, isolate):
+        """#979/2. The voice surface no longer accepts `name@machine`, but an
+        outbox line written before that ruling still carries one. This used to
+        strip the suffix and read a DIFFERENT session's local inbox — the same
+        recipient name minus the machine — and report its state as this
+        message's. `inbox` keys on the whole string (its own pattern admits
+        `@`), so asking for the whole string is the only question that can
+        return an answer about this message."""
+        inbox.enqueue(
+            "orchestrator@laptop", "<voice> hello ┃ #abc123",
+            kind="request", sender="buddy",
+        )
+        # The local same-named session holds nothing; a strip would read it and
+        # report "left the queue" about a message still sitting in the remote's.
+        assert inbox.list_messages("orchestrator") == []
+        state = outbox.delivery_state(self._entry(session="orchestrator@laptop"))
+        assert state["state"] == "queued"
+
+    def test_an_argv_only_write_reads_as_executed_whatever_its_kind(self, isolate):
+        """``append_body`` is the property that decides whether there is a
+        queue to interrogate; an empty --kind was only a proxy for it. An
+        argv-only write that happens to carry --kind must not be looked up in
+        an inbox it never enqueued into."""
+        entry = self._entry(kind="request", append_body=False)
+        assert outbox.delivery_state(entry)["state"] == "executed"
 
     def test_failed_dispatch_short_circuits(self, isolate):
         state = outbox.delivery_state(self._entry(dispatched=False))
