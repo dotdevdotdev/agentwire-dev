@@ -447,6 +447,55 @@ class SessionConfig:
 
 
 @dataclass
+class BetaConfig:
+    """Opt-in gates for features that SHIP on main but stay off until asked for.
+
+    A beta feature is in the tree, tested, and reachable — it is simply not
+    anyone's default. Each flag names the feature it gates, and every flag here
+    defaults to ``False``: a user who has never heard of the feature must be
+    able to install agentwire and see no trace of it, including in the tokens
+    their sessions pay for.
+    """
+
+    #: The realtime voice buddy (``agentwire buddy``, docs/wiki/voice-layer.md).
+    #: Off: the buddy CLI refuses, and the voice-buddy etiquette is stripped
+    #: from every shipped role prompt and from the ``msg_send`` MCP tool
+    #: description — see :mod:`agentwire.beta`.
+    voice_layer: bool = False
+
+
+#: Flag names ``BetaConfig`` knows about. The SSOT for what a ``<!-- beta:x -->``
+#: marker in a role file may name; anything else fails closed (block removed).
+BETA_FLAG_NAMES: frozenset[str] = frozenset({"voice_layer"})
+
+
+def default_config_path() -> Path:
+    """``~/.agentwire/config.yaml`` — the one spelling of the default path."""
+    return Path.home() / ".agentwire" / "config.yaml"
+
+
+def _beta_from_data(data: dict) -> BetaConfig:
+    """Build :class:`BetaConfig` from a raw config dict. The ONE parse.
+
+    Shared by ``_dict_to_config`` and the narrow read in
+    :func:`enabled_beta_flags`, so the two cannot disagree about what "on"
+    means — which matters because they disagreeing is a gate that opens.
+
+    ``is True``, not ``bool()``: a gate whose failure direction is ON is the
+    wrong shape however unlikely the input. ``bool("false")`` is True, so a
+    user who wrote ``voice_layer: "false"`` — quoting the value they meant to
+    DISABLE — would have enabled the feature. Only a real YAML boolean opens a
+    gate, so there is exactly one spelling to reason about.
+    """
+    beta_data = data.get("beta", {}) or {}
+    if not isinstance(beta_data, dict):
+        beta_data = {}
+    return BetaConfig(
+        voice_layer=beta_data.get("voice_layer", False) is True,
+    )
+
+
+@dataclass
 class SchedulerConfig:
     """Scheduler daemon configuration."""
 
@@ -550,6 +599,7 @@ class Config:
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
     session_context: SessionContextConfig = field(default_factory=SessionContextConfig)
+    beta: BetaConfig = field(default_factory=BetaConfig)
     channels: dict = field(default_factory=dict)
 
 
@@ -901,6 +951,11 @@ def _dict_to_config(data: dict) -> Config:
         inject_soul=bool(session_data.get("inject_soul", True)),
     )
 
+    # Beta opt-ins. Absent section, absent key, or a non-dict `beta:` all mean
+    # OFF — the default has to survive a malformed config, because the whole
+    # point is that a user who never asked for the feature never gets it.
+    beta = _beta_from_data(data)
+
     return Config(
         server=server,
         session=session,
@@ -920,6 +975,7 @@ def _dict_to_config(data: dict) -> Config:
         usage_limit=usage_limit,
         prompt_router=prompt_router,
         session_context=session_context,
+        beta=beta,
     )
 
 
@@ -980,3 +1036,33 @@ def reload_config(config_path: Optional[Path] = None) -> Config:
     global _config
     _config = load_config(config_path)
     return _config
+
+
+def enabled_beta_flags() -> set[str]:
+    """Which beta features this install has opted into. The one accessor.
+
+    A NARROW read — the YAML file plus env overrides, straight into
+    :func:`_beta_from_data` — rather than a full :func:`load_config`, and the
+    reason is measured rather than stylistic: ``_dict_to_config`` imports the
+    channel registry, so resolving one docstring at import time took
+    ``import agentwire.mcp_msg`` from 4.8ms to 83ms. The gate sits on hot paths
+    (every role file at session launch, an MCP tool description at import) and
+    must cost about what reading one small YAML file costs.
+
+    It is not a second source of truth: the parse is the same function
+    ``_dict_to_config`` calls, and env overrides run through the same
+    ``_apply_env_overrides``, so ``AGENTWIRE_BETA__VOICE_LAYER=true`` behaves
+    identically on both paths.
+
+    Any failure — unreadable file, malformed YAML — returns the empty set. A
+    beta gate that opens because the config broke is not a gate.
+    """
+    try:
+        path = default_config_path()
+        data = yaml.safe_load(path.read_text()) if path.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+        beta = _beta_from_data(_apply_env_overrides(data))
+    except Exception:
+        return set()
+    return {name for name in BETA_FLAG_NAMES if getattr(beta, name, False) is True}

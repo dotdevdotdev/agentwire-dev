@@ -192,27 +192,60 @@ class TestLoadBearingIsDerivedOnce:
 
         Prose cannot derive from the enum, so it gets the next best thing: any
         pipe-separated run naming two or more kinds must name them ALL.
+
+        **The rule splits by surface, and the beta gate is why.** A ROLE FILE is
+        now two documents: with ``beta.voice_layer`` off its text is pinned
+        byte-for-byte to ``origin/main`` (``tests/unit/test_beta_flag.py``), so
+        its four-kind line cannot be edited at all — per-run strictness there
+        would force a choice between this pin and the acceptance bar. What is
+        still enforceable, and is what a reader with the feature actually gets,
+        is that the ENABLED render carries a complete enumeration somewhere:
+        the gated block restates ``kind`` in full, so a new kind that lands
+        without touching it still turns this red.
+
+        The residual, stated rather than papered over: with the gate off the
+        line names four kinds and omits ``ingest`` — exactly what main ships
+        today. A pre-existing gap the byte-identity bar freezes, not one this
+        gate introduced, and the fix for it is a change to main.
+
+        ``SKILL.md`` files are not gated and not part of any shipped system
+        prompt, so they keep the strict per-run rule.
         """
         import re
         from pathlib import Path
+
+        from agentwire.beta import apply_beta_blocks, flag_names
 
         root = Path(__file__).resolve().parents[2]
         kinds = set(inbox.KINDS)
         runs = re.compile(r"[A-Za-z*`]+(?:\|[A-Za-z*`]+)+")
 
+        def _named(text: str) -> list[tuple[str, set[str]]]:
+            out = []
+            for run in runs.findall(text):
+                named = {tok.strip("*`") for tok in run.split("|")} & kinds
+                if len(named) >= 2:
+                    out.append((run, named))
+            return out
+
         checked = 0
-        for path in [*(root / "agentwire" / "roles").glob("*.md"),
-                     *(root / ".claude" / "skills").rglob("SKILL.md")]:
-            for run in runs.findall(path.read_text()):
-                tokens = {tok.strip("*`") for tok in run.split("|")}
-                named = tokens & kinds
-                if len(named) < 2:
-                    continue
+        for path in (root / ".claude" / "skills").rglob("SKILL.md"):
+            for run, named in _named(path.read_text()):
                 checked += 1
                 assert named == kinds, (
                     f"{path.relative_to(root)} enumerates kinds but is missing "
                     f"{sorted(kinds - named)}: {run}"
                 )
+
+        for path in (root / "agentwire" / "roles").glob("*.md"):
+            found = _named(apply_beta_blocks(path.read_text(), set(flag_names())))
+            if not found:
+                continue
+            checked += 1
+            assert any(named == kinds for _run, named in found), (
+                f"{path.relative_to(root)} enumerates kinds but no run names them "
+                f"all — missing {sorted(kinds - set().union(*(n for _r, n in found)))}"
+            )
         assert checked, "found no kind enumeration to check — regex went stale"
 
     def test_doctor_reports_a_dead_lettered_voice_message(self, isolate, capsys):

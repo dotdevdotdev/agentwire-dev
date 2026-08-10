@@ -1,15 +1,118 @@
-# Voice Layer (EXPERIMENTAL — spike, branch-only)
+# Voice Layer (BETA — ships on main, default OFF)
 
-> **Status: spike.** Branch `spike-voice-layer`, personal project, **not for
-> merge**. It runs on the owner's own install with the owner's own API key.
-> Nothing here is wired into the portal, the scheduler, or any shipped command
-> path. The one hook into existing code is inert for every session that exists
-> today (see [The one seam](#the-one-seam)).
+> **Status: beta, opt-in** (owner ruling 2026-08-10, reversing "never merges").
+> The code ships on `main`; the feature is off until you set
+> **`beta.voice_layer: true`** in `~/.agentwire/config.yaml` and put
+> `OPENAI_API_KEY` in `~/.agentwire/.env`. It runs on **your own** API key.
+> Nothing here is wired into the portal or the scheduler. The one hook into
+> existing code is inert for every session that has not opted in (see
+> [The one seam](#the-one-seam)).
 
 A realtime voice model the owner talks to like a person — "what's the fleet
 doing", "what needs me" — that is **not** a coding session. It observes and
 delegates. A buddy overseeing the agents *with* the owner, not another agent in
 the topology.
+
+---
+
+## 0. Opting in
+
+Two steps, and it needs both. The buddy CLI refuses until the first is done and
+cannot mint a realtime session without the second, so a half-done setup fails
+loudly at the step it is missing rather than at the microphone.
+
+**1. Turn the flag on** — `~/.agentwire/config.yaml`:
+
+```yaml
+beta:
+  voice_layer: true
+```
+
+**2. Provide the key** — `~/.agentwire/.env`, `chmod 600`, the one blessed spot
+for secrets ([security/secrets.md](security/secrets.md)):
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+Then:
+
+```bash
+agentwire doctor                # reports the flag, and whether the key is present
+agentwire buddy register buddy  # the session identity (no tmux session)
+agentwire buddy serve buddy     # the bridge, on 127.0.0.1:8788
+```
+
+`agentwire doctor` reports the flag's state either way — including "off",
+because "is this costing me anything?" is a question a doctor run should
+answer without you first enabling the thing. It reports only whether the key is
+**present**; it never prints the key or any prefix of it.
+
+### What "off" costs you: nothing, and that is tested
+
+With the flag off, this feature is not merely dormant — it is **absent from the
+tokens every session pays for**. There are **two** model-facing surfaces, and
+the count is the interesting part: the first review of the gate found the
+second one.
+
+1. **Role prompts** — ~10 lines of voice-buddy etiquette in `agentwire.md`,
+   `orchestrator.md`, `worker.md`, `worker-worktree.md`.
+2. **The `msg_send` MCP tool description** — ~316 characters documenting the
+   `voice` kind, which loads into **every agent session in every install**, and
+   which the first pass missed while stating in its commit message that the
+   role prompts were the only such surface. That claim was inherited from the
+   brief rather than measured, which is exactly how a gate ends up with a hole
+   in it. The blast radius was one docstring (no new MCP tools, no other
+   description changed) — established by diffing the whole schema, not by
+   reading the diff of the file we already knew about.
+
+Both go through one mechanism, `agentwire/beta.py`: `<!-- beta:voice_layer -->`
+markers resolved by `beta.render`, called from `roles.parse_role_file` (the one
+funnel every role reader goes through, so `agentwire roles show` and a live
+session launch agree) and from the `beta.gated_doc` decorator, applied *below*
+`@mcp.tool()` so FastMCP registers the resolved text.
+
+The bar is **byte-identical to `origin/main`**, and it is proved per surface
+rather than per file — `tests/unit/test_beta_flag.py` diffs against snapshots of
+main (`tests/fixtures/main_roles/`, `tests/fixtures/main_mcp_tools.json`), each
+snapshot itself checked against `origin/main` so it cannot drift into agreeing
+with the branch, with must-fail controls that go red if the gate ever stops
+stripping. The MCP proof covers **all 108 tool descriptions by name**, so the
+next ungated docstring trips it rather than shipping. Measured live with the
+gate off, `msg_send`'s published description is 1800 characters — the same
+number `origin/main` publishes.
+
+A marker naming an unknown flag **fails closed** (the block is removed): text
+that no gate can turn off is the failure this mechanism exists to prevent. What
+makes that safe rather than silent is the paired audit — a test resolves every
+shipped role file with all flags on and fails on any marker-shaped text left
+over, which catches an unknown flag, a mistyped close tag, and the two shapes
+that used to fail open (indented markers, a close tag at EOF with no trailing
+newline). Only a real YAML boolean opens a gate, too: `voice_layer: "false"`
+leaves it **off**, because `bool("false")` is `True` and a gate whose failure
+direction is ON is the wrong shape however unlikely the input.
+
+The gate is also cheap, which matters because it sits on paths every session
+touches whether or not anyone enabled the feature: text containing no marker
+never consults the config at all, and the flag set is read once per process
+through a narrow read of `config.yaml` rather than a full `load_config` (which
+imports the channel registry). Parsing all 24 role files costs 13.8ms against
+main's 11ms — it was 242ms and 24 stderr log lines before those two fixes.
+
+### The one thing the flag does not gate, and why
+
+The `services.custom` entry in [§6 Lifecycle host](#6-lifecycle-host) needs no
+gating: **nothing ships it.** The registry has no built-in buddy entry
+(`services.registry()` adds only the notifications bridge), and `config.yaml`
+is protected control plane that this feature never writes. The entry exists
+only if you paste it yourself.
+
+The ordering is worth stating, though, because the failure is confusing rather
+than loud: paste that entry while the flag is off and the supervised process is
+`agentwire buddy serve`, which now **refuses and exits** — so the watchdog sees
+a dead tmux session and `doctor` reports the service unhealthy on every run.
+Turn the flag on first. (The pasted block ships `autostart: false`, so it does
+not boot on portal launch until you flip that too.)
 
 ---
 
@@ -2212,8 +2315,12 @@ defect whose diagnosis is obvious can still have a fix that is not.)
 
 ### Standing constraints for whoever picks this up
 
-- **This branch is not for merge.** Personal project, owner's own install,
-  owner's own API key. Draft PR only; never mark ready, never merge to `main`.
+- **It ships to `main` behind `beta.voice_layer`, default OFF** (owner ruling
+  2026-08-10, reversing the earlier never-merge constraint). It still runs on
+  the user's own API key. Anything you add that would reach a user who has not
+  opted in — a shipped role-prompt line, a registry entry, a portal route —
+  goes inside the gate, and the byte-identity bar in §0 is what says whether
+  you got it right.
 - **The boundary in §2 is not negotiable.** The buddy starts and directs Claude
   sessions. It never does the work itself. Anything that reads as "it could just
   fix that typo itself" reintroduces what #730 removed.

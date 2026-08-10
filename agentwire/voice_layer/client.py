@@ -1,9 +1,9 @@
 """The buddy's browser client — WebRTC to OpenAI Realtime (spike).
 
-Embedded as a string rather than shipped as a static file on purpose: this is
-branch-only, and adding it to ``agentwire/static/`` would put it one import
-away from the portal, which is exactly the coupling this spike must not create.
-No packaging change, no portal change.
+Embedded as a string rather than shipped as a static file on purpose: adding it
+to ``agentwire/static/`` would put it one import away from the portal, which is
+exactly the coupling a beta-gated feature must not create — a gate the portal
+reaches around is not a gate. No packaging change, no portal change.
 
 The flow, per the current Realtime docs:
 
