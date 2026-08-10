@@ -2831,6 +2831,44 @@ class TestTheSpeakingWatchdogReleasesTheNotice:
         # be treated as stated.
         assert report["anchored"] == []
 
+    def test_the_false_reject_leg_is_priced_as_what_it_actually_does(self):
+        """"The owner hears it twice" was the cheap phrasing and it hid the
+        cost. ``stopSpeaking`` empties ``speaking`` but cannot cancel the
+        browser's audio — there is no ``cancel()`` on this path, deliberately
+        (#950 defect 3) — so the re-announcement pumps while the first
+        utterance is still playing: twice SIMULTANEOUSLY, which reopens #997
+        for that window. Still the right trade, and now stated as the trade it
+        is rather than a milder one."""
+        prose = _page_prose()
+        assert "The owner hears it twice SIMULTANEOUSLY" in prose
+        assert "CANNOT cancel the browser's audio" in prose
+        assert "reopens #997 for exactly that window" in prose
+
+    def test_the_page_really_does_not_cancel_the_browser_voice(self):
+        """The behavioural half of that claim, and the reason the sentence is
+        true rather than pessimistic: nothing on the fallback path calls
+        ``speechSynthesis.cancel()``. If that ever changes, the paragraph above
+        is over-stating the cost and this fails alongside it."""
+        page = client.page("buddy", "tok")
+        speak_dep = page.split("speak: (text, onSpokenAloud, onSpeakFailed) =>", 1)[1]
+        speak_dep = speak_dep.split("window.speechSynthesis.speak(utterance);", 1)[0]
+        assert "speechSynthesis.cancel" not in speak_dep
+
+    def test_the_handler_no_longer_calls_itself_never_a_guess(self):
+        """``onNotSpoken``'s own header said "reached only from the browser
+        voice's own onerror — a positive report that the utterance failed,
+        never a guess". This change makes the WATCHDOG a second caller, and the
+        watchdog IS a guess: it infers failure from the ABSENCE of an end
+        event. Same class as the ``speakingBaseMs`` paragraph corrected
+        alongside it — a guarantee written broader than the code, which gets
+        rounded back up by the next reader — so it is REWRITTEN, not qualified.
+        """
+        prose = _page_prose()
+        assert "never a guess" not in prose
+        assert "an INFERENCE from the ABSENCE of any end event" in prose
+        # And the third state stays out of it: a throw is "we cannot know".
+        assert "deliberately NOT routed here" in prose
+
     def test_a_torn_down_utterance_reports_nothing_at_all(self):
         """teardown()'s own statement, extended to the leg it did not reach.
 
@@ -2856,6 +2894,20 @@ class TestTheSpeakingWatchdogReleasesTheNotice:
 # =============================================================================
 # Wave-2 prose: two guarantees stated broader than the code
 # =============================================================================
+
+
+def _page_prose() -> str:
+    """The served page's JS comments as flat prose.
+
+    Flattened so an assertion survives a re-wrap: these sentences are 80 columns
+    wide and every one of them spans a line break. One implementation, because a
+    second copy is one more thing that can quietly stop matching what it reads.
+    """
+    lines = [
+        line.strip().removeprefix("//").strip()
+        for line in client.page("buddy", "tok").splitlines()
+    ]
+    return " ".join(" ".join(lines).split())
 
 
 def _source_prose(path: str) -> str:
@@ -3028,16 +3080,6 @@ class TestThePumpDefersToTheBrowserVoice:
       makes "bounded" true even if the watchdog never empties ``speaking``.
     """
 
-    def _prose(self) -> str:
-        """The page's JS comments as flat prose, so an assertion survives a
-        re-wrap — these sentences are 80 columns wide and every one of them
-        spans a line break."""
-        lines = [
-            line.strip().removeprefix("//").strip()
-            for line in client.page("buddy", "tok").splitlines()
-        ]
-        return " ".join(" ".join(lines).split())
-
     def _budget(self, text: str) -> int:
         """The bound, derived from ``client.py``'s own constants rather than
         transcribed — the deferral must never acquire a number of its own, and
@@ -3049,7 +3091,7 @@ class TestThePumpDefersToTheBrowserVoice:
         return 6000 * int(base.group(1)) + len(text) * int(per_char.group(1))
 
     def test_the_comment_no_longer_claims_the_defect_is_ruled_out(self):
-        prose = self._prose()
+        prose = _page_prose()
         assert "which reopens both gates and lets the MODEL start a response" not in prose
         # And no longer calls the pump path live, either — the sentence that
         # class existed to keep honest is now a sentence about a closed defect.
@@ -3057,14 +3099,14 @@ class TestThePumpDefersToTheBrowserVoice:
         assert "pump() now defers while `speaking` is non-empty" in prose
 
     def test_the_comment_names_the_gates_the_budget_actually_covers(self):
-        prose = self._prose()
+        prose = _page_prose()
         assert "reopens the NOTIFIER's gates — canSpeak and canInterrupt" in prose
 
     def test_the_comment_states_the_bound_and_prices_both_halves(self):
         """The trap #997 names, kept stated in the code that implements it: an
         unbounded defer is a suppression defect, which is worse than the audio
         defect it fixes."""
-        prose = self._prose()
+        prose = _page_prose()
         assert "BOUNDED, and the bound is the whole design" in prose
         assert "false-accept (waiting too long)" in prose
         assert "false-reject (promoting too early)" in prose
@@ -3078,9 +3120,13 @@ class TestThePumpDefersToTheBrowserVoice:
         own worst case. A behaviour change that silently falsifies a sentence
         elsewhere is the defect class this whole layer keeps finding; naming it
         in the file that caused it is the cheapest place it survives."""
-        prose = self._prose()
+        prose = _page_prose()
         assert "confirm.py's not_announced note" in prose
         assert "under-states the worst case by up to one speaking budget" in prose
+        # And it is FILED, not merely commented. A caveat that lives only in a
+        # comment is invisible to the board the owner reads, and the ruling for
+        # this beta is that nothing known-open ships unfiled.
+        assert "Filed as #1009" in prose
 
     def test_a_queued_item_is_not_pumped_into_the_starting_browser_voice(self):
         """The reproduction from #997, inverted.
@@ -3197,6 +3243,36 @@ class TestThePumpDefersToTheBrowserVoice:
         # utterance not spoken.
         assert "after=205000,6000" in report["logs"]
         assert "notSpoken=0" in report["logs"]
+
+    def test_a_cleared_deferral_that_fires_anyway_does_nothing(self):
+        """The stale-handle guard, pinned — it survived removal until this.
+
+        The state is reachable in one batch: the speaking watchdog and the
+        deferral come due together, the watchdog runs first, settleSpeech pumps
+        and the promotion CLEARS the deferral — and the batch then calls the
+        cleared callback anyway. A real ``clearTimeout`` would not, which is
+        why nothing saw this; a fake clock does, and so does a browser running
+        a just-cancelled callback.
+
+        What the guard is worth is narrow and worth saying: ``pump(true)``
+        would return immediately anyway, since the promotion set ``current``.
+        The observable cost is the LOG — "promoting anyway" written after
+        nothing was promoted over anything, in the one log a reader consults to
+        find out whether the buddy talked over itself. A misleading record of a
+        deferral decision is the thing this whole class exists to prevent.
+        """
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps("x" * 1250)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();      // the fallback fires; the deferral arms
+            fireTimers();      // watchdog + deferral together, watchdog first
+        """)
+        # The watchdog resolved it, so the queued item did go out...
+        assert len(creates(report)) == 2
+        assert len(report["notSpoken"]) == 1
+        # ...and the cleared deferral said nothing about having done it.
+        assert not any("deferral bound reached" in line for line in report["logs"])
 
     def test_the_deferral_does_not_leak_a_timer_once_it_resolves(self):
         """The deferral timer is cleared when the pump promotes, so a resolved

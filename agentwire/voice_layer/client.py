@@ -353,13 +353,23 @@ function createAnnouncer(deps) {
         // REPEATS it. Suppression until reload, then duplicates.
         //
         // Both halves, since this is the announcer deciding the owner did not
-        // hear something. False-reject (a slow but LIVE utterance declared
-        // dropped) costs a re-announcement — the owner hears it twice — and
-        // the margin against it is the #993 budget, measured conservative by
-        // 2.6-4.5x against every plausible macOS system voice. False-accept
-        // (staying silent) costs the notice until a reload the owner has no
-        // way to know they need. Double-speak is the cheap failure here, which
-        // is the same trade carriedTheReason already makes.
+        // hear something.
+        //
+        // FALSE-REJECT — a slow but LIVE utterance declared dropped — costs
+        // more than "the owner hears it twice", and the cheap phrasing hid it:
+        // stopSpeaking empties `speaking` but CANNOT cancel the browser's
+        // audio (there is no cancel() on this path, deliberately — #950 defect
+        // 3), so the re-announcement pumps while the first utterance is still
+        // playing. The owner hears it twice SIMULTANEOUSLY, for whatever is
+        // left of the utterance. That reopens #997 for exactly that window, on
+        // purpose: overlapping speech the owner can still parse beats a notice
+        // they never get. What keeps the window rare rather than routine is
+        // the #993 budget, measured conservative by 2.6-4.5x against every
+        // plausible macOS system voice.
+        //
+        // FALSE-ACCEPT — staying silent — costs the notice until a reload the
+        // owner has no way to know they need. Double-speak is still the cheap
+        // failure here, which is the same trade carriedTheReason makes.
         settleSpeech(item, false);
       }, budget);
       try {
@@ -466,7 +476,9 @@ function createAnnouncer(deps) {
     // up to one speaking budget in exactly that state. The trade is still the
     // right one — the owner is listening to the buddy for the whole wait
     // rather than sitting in silence — but the number over there is no longer
-    // the whole story, and confirm.py is owned elsewhere this wave.
+    // the whole story. Filed as #1009 rather than left living here as a
+    // comment: confirm.py was owned elsewhere the wave this landed in, and an
+    // unfiled residual is worse than a filed one.
     if (speaking.length && !force) {
       if (!pumpDeferTimer) {
         var bound = pumpBound();
@@ -1352,11 +1364,23 @@ function onSpoken(meta, how) {
   forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
 }
 
-// The evidence-of-NOT-spoken counterpart to onSpoken (#978 item 5). Reached
-// only from the browser voice's own `onerror` — a positive report that the
-// utterance failed, never a guess. Everything keyed on "was this heard" has to
-// be told, or the announcement is neither delivered nor retried: the state it
-// leaves behind is indistinguishable from success.
+// The not-spoken counterpart to onSpoken (#978 item 5, #996). TWO callers, and
+// they are not the same kind of evidence:
+//
+//   - `utterance.onerror` — a POSITIVE report from speechSynthesis that this
+//     utterance failed;
+//   - the speaking watchdog — an INFERENCE from the ABSENCE of any end event
+//     past a budget deliberately slower than any real voice. It is a guess,
+//     and it is a guess made in one direction on purpose: the utterance it
+//     describes has already outlived the longest time this page will believe
+//     a voice is talking (#996).
+//
+// What they share is the only thing this handler needs — a state that is
+// indistinguishable from success downstream unless something says otherwise,
+// leaving the announcement neither delivered nor retried. A *throw* from
+// speak() is the third state and is deliberately NOT routed here: it means we
+// cannot know, and "assume heard" is the safe reading, because claiming
+// not-spoken would replay a notice the owner may well have heard.
 function onNotSpoken(meta) {
   if (!meta) return;
   if (meta.errorNotice) {

@@ -70,18 +70,34 @@ def _run(program: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 
-def _status_program(*, fire: str) -> str:
-    page = _page()
+#: The shape each dc status wire must still have, and it is doing more work
+#: than it looks. The end anchor is "the first ``;`` at end of line", which a
+#: reflowed handler — formatting only, wire intact — satisfies at the FIRST
+#: statement of the body, yielding a syntactically broken fragment. A loose
+#: shape (``=>[\s\S]*\);``) matches that fragment, because the ``);`` of the
+#: truncated call inside it stands in for the listener's own. The reader then
+#: gets an opaque node ``SyntaxError`` instead of "the anchor moved" — which is
+#: the exact degradation #995 names by name, reproduced by the test written to
+#: close it.
+#:
+#: So the shape demands the arrow function's own terminator: either a BALANCED
+#: brace body with nothing nested (``{[^{}]*}``) or a single expression with no
+#: statement break in it, and then the call's ``);``. A truncated fragment has
+#: neither. Still invariant under the mutations these tests exist to catch — an
+#: emptied body is ``{}``, which matches — so a cut wire fails as a behaviour
+#: failure and never as a stale-anchor one.
+_ARROW_BODY = r"(?:\{[^{}]*\}|[^;{}]*)"
+
+
+def _status_program(*, fire: str, page: str | None = None) -> str:
+    page = _page() if page is None else page
     open_wire = page_slice(
         page, r'dc\.addEventListener\("open"', r";\s*\n", "the dc open wire",
-        # Shape, not behaviour: a listener registration ending in a statement.
-        # True with or without the setStatus/$stop lines inside it, which is
-        # what keeps a cut wire failing as a behaviour failure.
-        shape=r'^dc\.addEventListener\("open",\s*\([\s\S]*=>[\s\S]*\);\s*$',
+        shape=r'^dc\.addEventListener\("open",\s*\(\)\s*=>\s*' + _ARROW_BODY + r"\s*\);\s*$",
     )
     close_wire = page_slice(
         page, r'dc\.addEventListener\("close"', r";\s*\n", "the dc close wire",
-        shape=r'^dc\.addEventListener\("close",\s*\([\s\S]*=>[\s\S]*\);\s*$',
+        shape=r'^dc\.addEventListener\("close",\s*\(\)\s*=>\s*' + _ARROW_BODY + r"\s*\);\s*$",
     )
     return "\n".join([
         "const statuses = [];",
@@ -192,6 +208,78 @@ class TestTheStartAndStopButtons:
     def test_a_full_session_is_start_then_stop(self):
         report = _run(_click_program(fire="clickStart(); clickStop();"))
         assert report["fired"] == ["start", "stop"]
+
+
+@needs_node
+class TestAMovedAnchorSaysSoInsteadOfCrashingNode:
+    """The partial-anchor guard, MEASURED rather than claimed.
+
+    ``page_slice``'s guarantee is that a drifted anchor reads as "the page
+    moved" and never as an opaque node ``SyntaxError`` — and the guarantee is
+    only as good as the shape each call site declares. It was NOT good enough
+    here on first submission: reflowing either dc status wire across several
+    lines (formatting only, the wire fully intact) truncated the region at the
+    first statement and the loose shape accepted the wreckage, so node blew up.
+    That is the exact degradation #995 names, reproduced by the tests written
+    to close it — and the PR body claimed coverage that did not exist, which is
+    worse than the gap.
+
+    So the claim is a test now. The reflow below changes nothing but whitespace:
+    every one of these pages still WIRES the handler, and a reader looking at
+    the failure has to be told that.
+    """
+
+    #: ONE STATEMENT PER LINE, which is what a formatter actually produces and
+    #: is also the strictly stronger control: it puts a line-ending ``;`` after
+    #: a statement that closes a paren, so the truncated region ends in ``);``
+    #: and a loose shape is fooled by it. A reflow that packs the body onto one
+    #: line does not reproduce the defect at all — the region ends in
+    #: ``false;`` — and a fixture that cannot reproduce the failure is the
+    #: fixture-shaped blind spot this whole file exists to avoid.
+    BODIES = {
+        "open": ['setStatus("listening");', "$stop.disabled = false;"],
+        "close": ['setStatus("closed");'],
+    }
+
+    def _reflowed(self, event: str) -> str:
+        page = _page()
+        original = [ln for ln in page.splitlines()
+                    if f'dc.addEventListener("{event}"' in ln]
+        assert len(original) == 1, "the wire this test reflows is not where it was"
+        body = "\n".join(f"      {line}" for line in self.BODIES[event])
+        return page.replace(
+            original[0],
+            f'    dc.addEventListener("{event}", () => {{\n{body}\n    }});',
+        )
+
+    @pytest.mark.parametrize("event", ["open", "close"])
+    def test_a_reflowed_wire_reports_a_moved_anchor(self, event):
+        with pytest.raises(AssertionError) as excinfo:
+            _status_program(fire="", page=self._reflowed(event))
+        message = str(excinfo.value)
+        assert "does not have the shape this test assumes" in message
+        assert "NOT a behaviour failure" in message
+
+    @pytest.mark.parametrize("event", ["open", "close"])
+    def test_the_reflow_really_did_leave_the_wire_intact(self, event):
+        """The control. If the reflow broke the wire, the assertion above would
+        be reporting a genuine defect and would prove nothing about anchors."""
+        reflowed = self._reflowed(event)
+        assert f'dc.addEventListener("{event}"' in reflowed
+        for statement in self.BODIES[event]:
+            assert statement in reflowed
+
+    @pytest.mark.parametrize("event", ["open", "close"])
+    def test_the_reflow_is_what_a_loose_shape_would_have_swallowed(self, event):
+        """And the discriminator: the truncated region a loose shape accepted
+        ends in ``);``, which is why it passed for the listener's own
+        terminator. Asserted directly, so a future reflow that stops producing
+        that ending cannot silently turn the two tests above into no-ops."""
+        page = self._reflowed(event)
+        start = page.index(f'dc.addEventListener("{event}"')
+        truncated = page[start:page.index(";\n", start) + 1]
+        assert truncated.endswith(");")
+        assert truncated.count("{") > truncated.count("}")
 
 
 class TestTheWiresArePresentAtAll:

@@ -905,9 +905,15 @@ closed — read them as what the mechanism does, not as what it used to miss:
   reload *repeats* it: suppression until reload, then duplicates. It now fires
   `onNotSpoken`, which is the same path a `speechSynthesis` `onerror` takes, so
   the next gated tick says it again. The false-reject half — a slow but LIVE
-  utterance declared dropped — costs a second telling, against a budget measured
-  2.6-4.5x conservative; double-speak is the cheap failure here, as it is for
-  `carriedTheReason`. And exactly one outcome per utterance: `onend`, `onerror`
+  utterance declared dropped — costs more than "a second telling":
+  `stopSpeaking` empties `speaking` but cannot cancel the browser's audio, so
+  the re-announcement pumps while the first utterance is still playing and the
+  owner hears it **twice, simultaneously**, for whatever is left of it. That
+  reopens #997 for exactly that window, deliberately — overlapping speech the
+  owner can still parse beats a notice they never get — and what keeps the
+  window rare is the budget measured 2.6-4.5x conservative. Double-speak is
+  still the cheap failure here, as it is for `carriedTheReason`.
+  And exactly one outcome per utterance: `onend`, `onerror`
   and the watchdog all route through one latch, or the watchdog's release and a
   late `onend`'s ack would both land and the notice would be said twice and
   acked once.
@@ -927,13 +933,20 @@ closed — read them as what the mechanism does, not as what it used to miss:
   half is a wait behind audio the owner is currently hearing, and the false-reject
   half is the two voices this closes.
 
-The other half of the timer is `onNotSpoken` — positive evidence an utterance was
-NOT spoken, reached only from `speechSynthesis`'s own `onerror`. Before it, the
-page merely logged that error, so an announcement demonstrably not spoken was
-also never released: its id sat in the notifier's map and suppressed every later
-tick for the rest of the session. A *throw* from `speak()` is different — it
-means we cannot know, and "assume heard" is the safe reading there, because
-claiming not-spoken would replay a notice the owner may well have heard.
+The other half of the timer is `onNotSpoken`, and since #996 it has **two callers
+carrying different kinds of evidence**. `speechSynthesis`'s own `onerror` is a
+*positive report* that the utterance failed — before it existed the page merely
+logged that error, so an announcement demonstrably not spoken was also never
+released: its id sat in the notifier's map and suppressed every later tick for
+the rest of the session. The speaking watchdog is an *inference* from the
+absence of any end event past a budget deliberately slower than any real voice —
+a guess, made in one direction on purpose, about an utterance that has already
+outlived the longest time this page will believe a voice is talking. Both leave
+a state indistinguishable from success unless something says otherwise, which is
+all this handler needs. A *throw* from `speak()` is the third state and is
+deliberately not routed here — it means we cannot know, and "assume heard" is
+the safe reading, because claiming not-spoken would replay a notice the owner
+may well have heard.
 
 ### Success must not over-claim either
 
@@ -2002,6 +2015,7 @@ exist**, so these are listed here as well as inline.
 | #989 | `transcript.unheard_between` | no staleness bound: one never-completing `speech_started` (a cough, a VAD blip, TTS bleed) refuses every confirm as a WAIT outcome — no attempt burned, so the proposal loops on "give me a second" for the whole 120s TTL and then expires |
 | #990 | `confirm.cancel()` | bypasses `_claim()`, so a cancel racing a dispatching confirm says "I haven't sent it" while the runner is sending — the exact over-claim `in_flight`'s wording exists to avoid, on the sibling path |
 | #992 | `_judge`'s post-approval scan | `carries_denial` is not nonce-gated, and the fallback voice speaks message BODIES any session can send — so an echoed "no, stop, don't" retroactively denies a legitimate approval. Remotely triggerable; invisible to the owner |
+| #1009 | `confirm.py`'s `not_announced` note | its 30s/12s deferral bound is counted from the moment an item becomes `current`, and #997's `pump()` deferral sits UPSTREAM of that — so while a fallback utterance is live the stated bound under-states its own worst case by up to one speaking budget. A stated-guarantee defect, not a runtime one: the refusal is delivered either way |
 
 **Closed, and named here because arguing from a residual that no longer exists
 is the same failure in the other direction:** **#995** (the four remaining

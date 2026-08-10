@@ -222,9 +222,18 @@ def _greet_program(*, fire: str) -> str:
     )
     ontrack = _slice(
         page, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
-        # An assignment of an arrow function, ending in a statement. True with
-        # or without the maybeGreet() call inside it.
-        shape=r"^pc\.ontrack\s*=\s*\([\s\S]*=>[\s\S]*;\s*$",
+        # An assignment of an arrow function with a BALANCED brace body. True
+        # with or without the maybeGreet() call inside it, which is what keeps
+        # a cut wire failing as a behaviour failure.
+        #
+        # Tightened from `=>[\s\S]*;` while closing #995's other four wires:
+        # the end anchor is "the first `;` at end of line", so a REFLOWED
+        # handler — formatting only, wire intact — truncates at its first
+        # statement, and the old shape accepted that fragment because it too
+        # ends in `;`. The reader then got an opaque node SyntaxError instead
+        # of "the anchor moved", which is the degradation this guard exists to
+        # prevent. Demanding the closing brace is what a fragment cannot fake.
+        shape=r"^pc\.ontrack\s*=\s*\([^()]*\)\s*=>\s*\{[^{}]*\}\s*;\s*$",
     )
     session_created = _slice(
         page, r'case "session\.created":', r"break;", "the session.created wire",
@@ -316,6 +325,32 @@ class TestBothGreetWiresAreLoadBearing:
         )
         assert len(report["announced"]) == 1
         assert report["notifierStarts"] == 2  # the notifier wire ran both times
+
+    def test_a_reflowed_ontrack_says_the_anchor_moved(self):
+        """The guard, measured on this slice too.
+
+        Reflowing the wire one statement per line changes nothing but
+        whitespace — the greet is still armed — and before the shape was
+        tightened the truncated fragment was accepted and node died on it. A
+        reader debugging that sees a SyntaxError and no clue which line moved.
+        """
+        page = _page()
+        original = [ln for ln in page.splitlines() if "pc.ontrack =" in ln]
+        assert len(original) == 1, "the wire this test reflows is not where it was"
+        reflowed = page.replace(original[0], "\n".join([
+            "    pc.ontrack = (e) => {",
+            "      audioEl.srcObject = e.streams[0];",
+            "      audioAttached = true;",
+            "      maybeGreet();",
+            "    };",
+        ]))
+        assert "maybeGreet();" in reflowed, "the reflow broke the wire it reflows"
+        with pytest.raises(AssertionError) as excinfo:
+            _slice(
+                reflowed, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
+                shape=r"^pc\.ontrack\s*=\s*\([^()]*\)\s*=>\s*\{[^{}]*\}\s*;\s*$",
+            )
+        assert "does not have the shape this test assumes" in str(excinfo.value)
 
     def test_the_session_created_wire_also_starts_the_inbox_notifier(self):
         """Ordering that the wire encodes: the notifier starts AFTER the greeting
