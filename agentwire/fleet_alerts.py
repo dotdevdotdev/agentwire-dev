@@ -25,20 +25,23 @@ an inherit rule, and one is not wired at all. That is the whole design.
 **Subscription is a LEASE, not a flag.** A subscriber records
 :data:`SUBSCRIBE_KEY` in its ``metadata.json`` (the #871 SSOT store, so there
 is no second registry to drift) carrying an expiry it must renew. The reason is
-the dormancy failure: a recipient whose mail is spooled rather than pasted does
-not "go gone" the way a dead tmux session does, so a permanent flag would keep
-producing into a spool that nobody reads and then replay hours of stale
-escalations the next time it starts. An expired lease fails QUIET, which is the
-correct direction for a producer whose expensive failure is over-production.
+the dormancy failure: the inbox's own liveness gates are about *pasting into a
+pane*, so a recipient that reads its mail some other way never reads as gone
+the way a dead tmux session does. A permanent flag would keep producing into a
+queue nobody is draining, and hand the whole backlog over at once whenever that
+recipient next came up — every message arriving with the priority it was sent
+with, long after any of it was actionable. An expired lease fails QUIET, which
+is the correct direction for a producer whose expensive failure is
+over-production.
 
-Nothing here knows what a subscriber is. A voice buddy, a durable orchestrator,
-a future dashboard process — anything with a session record and an inbox can
-lease one, and no detector below gains a dependency on any of them.
+Nothing here knows what a subscriber is. Anything with a session record and an
+inbox can lease one, and no detector below gains a dependency on any of them.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
@@ -150,6 +153,7 @@ def subscribe(session: str, lease: timedelta = DEFAULT_LEASE) -> dict:
         "expires_at": (now + lease).isoformat(),
     }
     core.store_session_metadata(session, meta)
+    _write_index([*_read_index(), session])
     log_event("subscribed", session=session, expires_at=meta[SUBSCRIBE_KEY]["expires_at"])
     return meta[SUBSCRIBE_KEY]
 
@@ -163,6 +167,7 @@ def unsubscribe(session: str) -> bool:
         return False
     meta.pop(SUBSCRIBE_KEY)
     core.store_session_metadata(session, meta)
+    _write_index([n for n in _read_index() if n != session])
     log_event("unsubscribed", session=session)
     return True
 
@@ -188,14 +193,56 @@ def subscription(session: str, now: "datetime | None" = None) -> "dict | None":
     return record if expires > (now or _now()) else None
 
 
+def subscribers_index_path() -> Path:
+    """Candidate list of subscribers — who to ASK, never who IS subscribed."""
+    return _config_dir() / "fleet-alerts" / "subscribers.json"
+
+
+def _read_index() -> list[str]:
+    try:
+        names = json.loads(subscribers_index_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
+def _write_index(names: list[str]) -> None:
+    path = subscribers_index_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(set(names)), indent=2))
+    os.replace(tmp, path)
+
+
 def subscribers(now: "datetime | None" = None) -> list[str]:
     """Every session holding a live lease, sorted. ``[]`` on any failure.
 
-    Walks the session-record store (``core.recorded_sessions``) rather than
-    keeping an index, so there is nothing to fall out of sync with a record
-    that was deleted by ``agentwire kill``. That costs one small read per
-    record; alerts are throttled to a handful an hour, so it is not on any hot
-    path.
+    **Two-level, and the levels are not equal.** The index names CANDIDATES;
+    each candidate's own record decides. That ordering is what keeps a cache
+    from becoming a second source of truth — a stale index entry (unregistered,
+    killed, expired) is verified away on read, so the index can only ever cause
+    us to ask a question, never to answer one.
+
+    The reason it exists is cost, measured rather than assumed: walking the
+    record store took ~326ms against 1155 records on this machine, and one
+    caller of this function sits on the SYNCHRONOUS permission-hook path. A
+    feature that taxes the product's hot path to discover nobody is listening
+    is not "inert". With no index file the answer is one failed ``stat``.
+
+    The failure direction is the same one the lease chose: a lost or truncated
+    index means fewer alerts, never more, and ``agentwire alerts reindex``
+    rebuilds it from the records that are authoritative anyway.
+    """
+    at = now or _now()
+    return sorted(name for name in _read_index() if subscription(name, at) is not None)
+
+
+def reindex() -> list[str]:
+    """Rebuild the index by walking the record store. Returns live subscribers.
+
+    The expensive path, on purpose and on demand only: this is what
+    ``agentwire alerts reindex`` runs after a lost index, not something an
+    alert path ever reaches.
     """
     from . import core
 
@@ -203,8 +250,12 @@ def subscribers(now: "datetime | None" = None) -> list[str]:
         names = core.recorded_sessions()
     except Exception:
         return []
-    at = now or _now()
-    return sorted(name for name in names if subscription(name, at) is not None)
+    live = sorted(name for name in names if subscription(name) is not None)
+    try:
+        _write_index(live)
+    except OSError as exc:
+        log_event("reindex_write_failed", error=str(exc))
+    return live
 
 
 # ---------------------------------------------------------------------------

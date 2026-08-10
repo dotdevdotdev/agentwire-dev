@@ -276,18 +276,21 @@ it. Nothing about the email path changed; this rides alongside it.
 **Subscription is a lease, not a flag.** A session opts in with
 `fleet_alerts.subscribe(name)`, which records an expiry in that session's
 `metadata.json` (the #871 store — no second registry to drift) and must be
-renewed. That is not ceremony: a recipient whose mail is *spooled* rather than
-pasted never reads as "gone" the way a dead tmux session does, so a permanent
-flag would keep producing into a spool nobody reads and then replay hours of
-stale alerts at its next start. An expired lease fails **quiet**, which is the
-correct direction for a producer whose expensive failure is over-production.
+renewed. That is not ceremony: the drain's liveness gates are about *pasting
+into a pane*, so a recipient that collects its mail some other way never reads
+as "gone" the way a dead tmux session does. A permanent flag would keep
+producing into a queue nobody is draining and then hand over the whole backlog
+at once whenever that recipient came back — every message still carrying the
+priority it was sent with, long after any of it was actionable. An expired lease
+fails **quiet**, the correct direction for a producer whose expensive failure is
+over-production.
 With no subscriber, `emit` walks the store, finds nothing, and returns — every
 detector behaves exactly as it did before.
 
 ### The ruling: which detector earns which kind
 
-`escalation` is the only kind a consumer may act on out of turn (the voice
-buddy's interrupt tier is the first consumer). So the bar is **not** "is this
+`escalation` is the only kind a consumer may act on out of turn — every other
+kind waits for the recipient to be free. So the bar is **not** "is this
 event real?" — all five candidates are real when they fire. It is: *can this
 clear without a human, and is something burning while it waits?*
 
@@ -305,19 +308,44 @@ named as a *recipient* of the lost batch is excluded. Either alone is
 insufficient — with two subscribers, an alert stranded en route to one would
 otherwise be reported to the other, once per drain, forever.
 
-### What an escalation actually buys
+### What an escalation does NOT buy: speed
 
-Less than the word suggests, and the wiring was designed against the measured
-number rather than the intuition. For the voice buddy, pre-emption is real only
-against a VAD response; against an announcer item an escalation **queues behind
-it**, plus up to one 6s in-flight deferral and up to three owner-speaking ones —
-roughly 30s worst case. So `escalation` means "worth cutting the buddy off
-within about half a minute", never "immediately". A detector whose event does
-not clear the *30-second* bar has no business in the tier.
+`escalation` is a **priority** statement, not a latency one, and the difference
+is worth stating because the word invites the other reading. An alert is
+ordinary inbox mail: it is written to the recipient's inbox immediately and then
+waits for the drain, which rides the watchdog at `TICK_INTERVAL = 60`s. So
+**up to ~60s passes before a subscriber sees an escalation at all**, before that
+consumer applies whatever gating of its own it has. What the kind buys is what
+happens *after* it arrives — a consumer may act on an escalation out of turn,
+where it would make anything else wait for a gap.
+
+The practical bar for the table above is therefore: *would this still be worth
+someone's interruption a minute or two after it fired?* An event that is only
+urgent in its first few seconds is not served by this channel at all, and an
+event that will still matter in an hour belongs in `note`.
 
 Rulings live as data in `fleet_alerts.DETECTOR_KINDS` and are pinned by
 `tests/unit/test_fleet_alerts.py`, so changing what may interrupt is a
 deliberate edit to a test that says why.
+
+### CLI
+
+```bash
+agentwire alerts subscribe <session>     # lease alerts for a session
+agentwire alerts unsubscribe <session>
+agentwire alerts list [--json]           # live leases, with their expiry
+agentwire alerts reindex [--json]        # rebuild the candidate index
+```
+
+`list` reports the **expiry**, not a boolean, because a lease that stopped being
+renewed stops delivering silently — that is the designed failure direction, and
+it is one an operator has to be able to see.
+
+`reindex` exists because the emit path deliberately never walks the session
+record store: that walk measured ~326ms against 1155 records, and one caller
+sits on the synchronous permission-hook path. The index names *candidates* and
+each candidate's own record decides, so a stale entry is verified away and a
+lost index costs alerts (never spurious ones) until this rebuilds it.
 
 ## Broadcast
 
