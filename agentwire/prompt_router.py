@@ -654,6 +654,70 @@ def build_message(session: str, pane_index: int, info: PromptInfo) -> str:
     )
 
 
+def _alert_no_parent(
+    session: str, pane_index: int, info: PromptInfo, prior: "dict | None"
+) -> "str | None":
+    """Mirror a no-parent prompt to subscribed sessions (#982). Escalation kind.
+
+    Earns the interrupt on both halves of the test: nothing but a human can
+    answer a prompt with no parent to route to, and the session is stalled —
+    burning wall-clock, and in the plan/permission cases holding a tool call
+    open — for as long as it waits.
+
+    **Its own stamp, and this is the whole bug.** The first version rode
+    ``escalated_at``, described as "inheriting" the email's throttle. It does
+    not inherit it, because that gate never closes on a machine without
+    ``RESEND_API_KEY``: ``send_email`` RAISES ``EmailConfigError`` rather than
+    returning a failed result, and :func:`_escalate_no_parent`'s handler returns
+    the previous (absent) stamp. So the marker was rewritten every 60s sweep
+    with ``escalated_at=None`` and the alert re-fired every tick — measured at
+    5 escalations for 5 sweeps of ONE prompt, which over a 12h lease is ~720.
+    That is precisely the failure mode this tier cannot survive: the
+    over-production does not merely annoy, it retires the tier.
+
+    ``alerted_at`` therefore stamps on successful ENQUEUE, which is a local
+    write and cannot fail for the reason the email does. Same marker, same
+    ``NO_PARENT_ESCALATE_TTL`` window, keyed on the same prompt hash (the
+    caller only passes a *prior* whose hash matches), so a redraw is suppressed
+    while a genuinely different question still alerts.
+
+    Sent before the email for the same reason it needed its own stamp: on the
+    common keyless machine the email is not a channel at all.
+    """
+    previous = (prior or {}).get("alerted_at")
+    if previous:
+        try:
+            if _now() - datetime.fromisoformat(previous) < NO_PARENT_ESCALATE_TTL:
+                return previous
+        except (TypeError, ValueError):
+            pass
+    try:
+        from . import fleet_alerts
+
+        waiting = _marker_age(prior, "detected_at") if prior else None
+        waited = (
+            f" It has been waiting {int(waiting.total_seconds() // 60)} minutes."
+            if waiting else ""
+        )
+        reached = fleet_alerts.emit_for(
+            "blocked_pane_no_parent",
+            f"{session} (pane {pane_index}) is blocked on a {info.kind} prompt "
+            f"and is a root session — there is no parent to route it to, so "
+            f"nothing will answer it automatically.{waited} Question: "
+            f"{info.question} Answer with: agentwire prompts answer -s "
+            f"'{session}' --pane {pane_index} --expect {info.content_hash()} <key>",
+        )
+    except Exception as exc:  # best-effort; never break the sweep
+        _log_event(
+            "no_parent_alert_failed", session=session, pane=pane_index, error=str(exc)
+        )
+        return previous
+    if not reached:
+        return previous
+    _log_event("no_parent_alerted", session=session, pane=pane_index, to=reached)
+    return _now().isoformat()
+
+
 def _escalate_no_parent(
     session: str, pane_index: int, info: PromptInfo, prior: "dict | None"
 ) -> "str | None":
@@ -751,6 +815,11 @@ def route_prompt(
             if not prior or prior.get("hash") != content_hash:
                 prior = None
             escalated_at = _escalate_no_parent(session, pane_index, info, prior)
+            # Two channels, two stamps, deliberately (#982). They cannot share
+            # one: the email's gate only closes on a SUCCESSFUL send, and on a
+            # machine with no RESEND_API_KEY there is never one — which left the
+            # fleet alert re-firing every 60s sweep when it rode that stamp.
+            alerted_at = _alert_no_parent(session, pane_index, info, prior)
             write_marker(
                 session, pane_index,
                 kind=info.kind, question=info.question,
@@ -759,6 +828,7 @@ def route_prompt(
                 detected_at=(prior or {}).get("detected_at") or _now().isoformat(),
                 notified_at=None,
                 escalated_at=escalated_at,
+                alerted_at=alerted_at,
             )
             _log_event("no_parent", session=session, pane=pane_index, kind=info.kind)
             return None

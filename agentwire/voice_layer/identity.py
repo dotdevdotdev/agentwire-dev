@@ -30,7 +30,7 @@ import datetime
 import json
 import re
 
-from .. import core
+from .. import core, fleet_alerts
 from . import delivery
 
 #: Session-record marker. Anything reading the session store can use this to
@@ -99,6 +99,24 @@ def register(name: str = DEFAULT_NAME, *, model: str = "", voice: str = "") -> d
     metadata.setdefault("created_at", _now())
 
     core.store_session_metadata(name, metadata)
+    # Lease fleet alerts (#982). The buddy is the interrupt tier's consumer, so
+    # it is the one recipient that wants a detector's escalation the moment it
+    # fires. The lease EXPIRES on purpose: the buddy's mail is spooled rather
+    # than pasted, so it never reads as "gone" the way a dead tmux session
+    # does, and a permanent flag would keep filling a spool nobody reads and
+    # then replay a fortnight of escalations at the next start. Renewed at
+    # `buddy serve`; a bridge left running past the lease goes quiet until it
+    # is restarted, which is the direction that fails safe.
+    #
+    # Guarded like every detector call site, and for a sharper reason here:
+    # `store_session_metadata` RAISES by design (#885), so an unwritable store
+    # would turn an optional extra into a failed registration — with the record
+    # already written and the inbox/spool dirs below never created. The
+    # alerting subsystem must not be able to break the thing it alerts about.
+    try:
+        fleet_alerts.subscribe(name)
+    except Exception as exc:  # noqa: BLE001  # optional extra, never fatal
+        fleet_alerts.log_event("subscribe_failed", session=name, error=str(exc))
     inbox_dir(name).mkdir(parents=True, exist_ok=True)
     delivery.session_state_dir(name).mkdir(parents=True, exist_ok=True)
     return metadata

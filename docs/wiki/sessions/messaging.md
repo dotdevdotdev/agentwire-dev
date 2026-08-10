@@ -264,6 +264,121 @@ pointers and reads the files. The durable content lives in the referenced file,
 not the message — so `pull` (consume-on-read) is the only way these leave the
 inbox; they are never dead-lettered.
 
+## Fleet alerts — detectors as senders (#982)
+
+Until #982 every kind above had exactly one class of sender: an agent typing
+`msg send`. The machine's own detectors — expired login, usage-limit park,
+dead-lettered report-backs, a root session blocked with nowhere to route — could
+only reach the **owner**, by email. `agentwire/fleet_alerts.py` is the other
+half: the same detectors, addressed as typed mail to any session that asks for
+it. Nothing about the email path changed; this rides alongside it.
+
+**Subscription is a lease, not a flag.** A session opts in with
+`fleet_alerts.subscribe(name)`, which records an expiry in that session's
+`metadata.json` (the #871 store — no second registry to drift) and must be
+renewed. That is not ceremony: the drain's liveness gates are about *pasting
+into a pane*, so a recipient that collects its mail some other way never reads
+as "gone" the way a dead tmux session does. A permanent flag would keep
+producing into a queue nobody is draining and then hand over the whole backlog
+at once whenever that recipient came back — every message still carrying the
+priority it was sent with, long after any of it was actionable. An expired lease
+fails **quiet**, the correct direction for a producer whose expensive failure is
+over-production.
+With no subscriber, `emit` walks the store, finds nothing, and returns — every
+detector behaves exactly as it did before.
+
+### The ruling: which detector earns which kind
+
+`escalation` is the only kind a consumer may act on out of turn — every other
+kind waits for the recipient to be free. So the bar is **not** "is this
+event real?" — all five candidates are real when they fire. It is: *can this
+clear without a human, and is something burning while it waits?*
+
+| Detector | Kind | Why, and what bounds it |
+|---|---|---|
+| expired login (`auth_expired`) | `escalation` | Machine-wide; every subsequent turn is refused and only `/login` clears it. Once per `ESCALATE_TTL` (1h) **per outage, per machine** — not per session, not per dispatch — stamped in the outage record next to the email's own stamp. |
+| root session blocked, no parent (`prompt_router`) | `escalation` | By design nothing can route it; the session is stalled until a human answers. Once per hour **per distinct prompt** (keyed on the prompt hash, so a redraw doesn't re-fire). |
+| usage-limit park | `note` | **Demoted on purpose.** Self-healing: reset time parsed, resume nudge armed, the owner's email literally ends "no action needed". Real news, nothing to act on inside thirty seconds. One per park (`is_parked` is the throttle). |
+| dead-lettered load-bearing mail | `request`, promoted to `escalation` iff the lost message *was* an escalation | Someone must go look at `agentwire msg dead`. The floor is `request` because the realistic bad case is one stuck recipient — 147 dead letters in ~2s, observed — and that shape must not buy 147 interrupts. One alert per **batch**, matching the digest email's coalescing. |
+| dangling PR (`worktree --dangling`) | **not wired** | No autonomous trigger (only `doctor` and the explicit flag, both run by a human already reading the output) and no per-finding throttle state to reuse, so a producer would re-announce the same durable, passive condition every invocation. Nothing is burning while a dangling PR waits. |
+
+**No alert rides an email-shaped throttle.** Each producer stamps its own state
+on a successful *enqueue* — a local write — rather than reusing the stamp that
+gates its owner email. That distinction is load-bearing rather than fussy:
+`channels/email.py` **raises** `EmailConfigError` when `RESEND_API_KEY` is
+absent, so on a keyless machine (the ordinary state of a fresh install) the
+email-shaped gates never close at all, and anything riding one re-fires on every
+60s watchdog tick. Note what this claim does *not* say: three email callers
+(`auth_expired._escalate`, `prompt_router._escalate_no_parent`,
+`usage_limit._send_notification`) still gate persistent state on a successful
+send. That is untouched and out of scope here — but it is why a future producer
+must not be wired to `notified`, `escalated_at` or their siblings.
+
+A stamp also records that somebody **was told**, never that we tried: when an
+alert reaches no subscriber, no stamp is written. Otherwise an operator who
+subscribes during a live incident would hear nothing until the TTL expired,
+which is the failure that is hardest to notice — it looks exactly like a quiet
+fleet.
+
+Two guards keep the dead-letter mirror from feeding itself: alerts carry a
+distinct sender (`fleet-alerts`) and are never mirrored, and any subscriber
+named as a *recipient* of the lost batch is excluded. Either alone is
+insufficient — with two subscribers, an alert stranded en route to one would
+otherwise be reported to the other, once per drain, forever.
+
+### What an escalation does NOT buy: speed
+
+`escalation` is a **priority** statement, not a latency one, and the difference
+is worth stating because the word invites the other reading. An alert is
+ordinary inbox mail: it is written to the recipient's inbox immediately and then
+waits for the drain, which rides the watchdog at `TICK_INTERVAL = 60`s. So
+**up to ~60s passes before a subscriber sees an escalation at all**, before that
+consumer applies whatever gating of its own it has. What the kind buys is what
+happens *after* it arrives — a consumer may act on an escalation out of turn,
+where it would make anything else wait for a gap.
+
+The practical bar for the table above is therefore: *would this still be worth
+someone's interruption a minute or two after it fired?* An event that is only
+urgent in its first few seconds is not served by this channel at all, and an
+event that will still matter in an hour belongs in `note`.
+
+Rulings live as data in `fleet_alerts.DETECTOR_KINDS` and are pinned by
+`tests/unit/test_fleet_alerts.py`, so changing what may interrupt is a
+deliberate edit to a test that says why.
+
+### CLI
+
+```bash
+agentwire alerts subscribe <session>     # lease alerts for a session
+agentwire alerts unsubscribe <session>
+agentwire alerts list [--json]           # live leases, with their expiry
+agentwire alerts reindex [--json]        # rebuild the candidate index
+```
+
+`list` reports the **expiry**, not a boolean, because a lease that stopped being
+renewed stops delivering silently — that is the designed failure direction, and
+it is one an operator has to be able to see.
+
+`reindex` exists because the emit path deliberately never walks the session
+record store: that walk measured ~326ms against 1155 records, and one caller
+sits on the synchronous permission-hook path. The index names *candidates* and
+each candidate's own record decides, so a stale entry is verified away and a
+lost index costs alerts (never spurious ones) until this rebuilds it.
+
+**The residual, stated because it is the one silent stop left:** a lost index
+zeroes alerts quietly, and `list` reads that same index — so the surface meant
+to reveal the stop would otherwise agree with it. `list` therefore reports
+`index_present` and refuses to render a missing index as a confident zero. It
+cannot do better than that: a machine where nobody ever subscribed also has no
+index, and from the outside those two states are identical. `reindex` settles
+it, cheaply, in both directions.
+
+`subscribe` requires the session to already have a record. It used to create one
+— a `{}` entry in the store that is the SSOT for conversation identity (#871),
+counted by `core.recorded_sessions()` and indistinguishable from a real session.
+A subscription is a property *of* a session, so one it can invent is not a
+subscription.
+
 ## Broadcast
 
 `--to @all` fans out to every **live agent session except the sender** — useful
@@ -355,6 +470,8 @@ session right now.
 | `~/.agentwire/inbox/<session>/.lock/` | mkdir-based per-session drain lock |
 | `~/.agentwire/inbox/.tick.lock` | global flock guarding `tick()` |
 | `~/.agentwire/inbox-events.jsonl` | audit log (enqueued/delivered/deferred/dead_letter) |
+| `~/.agentwire/sessions/<session>/metadata.json` → `fleet_alerts` | the subscription lease (see Fleet alerts) |
+| `~/.agentwire/fleet-alerts-events.jsonl` | audit log (subscribed/emitted/emit_failed) |
 
 ## Scope (v1)
 

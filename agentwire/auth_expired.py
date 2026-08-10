@@ -360,8 +360,10 @@ def record_outage(detail: dict, source: str = "ensure") -> dict:
         "source": source,
         "host": socket.gethostname(),
         "escalated_at": prior.get("escalated_at"),
+        "alerted_at": prior.get("alerted_at"),
     }
     state["escalated_at"] = _escalate(state, prior)
+    state["alerted_at"] = _alert_fleet(state, prior)
     write_state(state)
     log_event("outage_detected", session=detail.get("session"),
               transcript=detail.get("transcript"), source=source)
@@ -419,6 +421,50 @@ def _escalate(state: dict, prior: dict) -> str | None:
     except Exception as exc:  # never break the caller
         log_event("escalate_failed", error=str(exc))
     return previous
+
+
+def _alert_fleet(state: dict, prior: dict) -> "str | None":
+    """Tell subscribed sessions, on the same clock the owner email rides (#982).
+
+    Escalation kind, and this is the clearest case for it in the fleet: the
+    outage is machine-wide, every subsequent turn is refused, and nothing but a
+    human running ``/login`` can clear it. It is bounded to once per
+    :data:`ESCALATE_TTL` per outage — machine-wide, not per session and not per
+    dispatch — which is what makes an interrupt affordable here.
+
+    Stamped separately from ``escalated_at`` while sharing that field's state
+    record and its TTL. Not a parallel throttle store — the same file, the same
+    window — but a separate stamp, because the two channels fail differently:
+    the email deliberately retries per detection when the provider is down
+    (only a successful send stamps), and an alert inheriting that retry would
+    turn a broken Resend key into one interrupt per dispatch. Enqueueing is a
+    local write, so this stamp lands whenever the alert actually did.
+    """
+    previous = prior.get("alerted_at")
+    if previous:
+        try:
+            if _now() - datetime.fromisoformat(previous) < ESCALATE_TTL:
+                return previous
+        except (TypeError, ValueError):
+            pass
+    try:
+        from . import fleet_alerts
+
+        sessions = ", ".join(state.get("sessions") or []) or "(none recorded)"
+        reached = fleet_alerts.emit_for(
+            "auth_expired",
+            f"Claude login expired on {state.get('host')} — every turn is being "
+            f"refused ({RENDERED}). Sessions hit so far: {sessions}. Scheduled "
+            f"dispatch is gated until someone runs /login; nothing recovers on "
+            f"its own. First seen {state.get('detected_at')}.",
+        )
+    except Exception as exc:  # alerting is best-effort; never break the gate
+        log_event("alert_failed", error=str(exc))
+        return previous
+    if not reached:
+        return previous
+    log_event("alerted", sessions=state.get("sessions"), to=reached)
+    return _now().isoformat()
 
 
 def check_and_flag(

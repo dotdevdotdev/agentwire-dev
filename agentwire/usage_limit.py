@@ -413,7 +413,12 @@ def _fmt_local(iso: str) -> str:
 
 
 def _notify_parked(state: dict) -> bool:
-    """Email the owner that a session is parked. Plain Resend call, no agent."""
+    """Email the owner that a session is parked. Plain Resend call, no agent.
+
+    Called from ``park`` AND from :func:`resume_due` — the latter on every tick
+    until ``notified`` sticks, which on a keyless machine is never. Anything
+    added here must carry its own idempotence rather than assuming one call.
+    """
     session = state["session"]
     lines = [
         f"Session **{session}** on `{socket.gethostname()}` hit a usage limit "
@@ -432,12 +437,55 @@ def _notify_parked(state: dict) -> bool:
         state.get("excerpt", ""),
         "```",
     ]
+    _alert_fleet(state)
     return _send_notification(
         state,
         subject=f"[agentwire] usage limit: {session} parked until {_fmt_local(state['reset_at'])}",
         body="\n".join(lines),
         mark_notified=True,
     )
+
+
+def _alert_fleet(state: dict) -> None:
+    """Tell subscribed sessions a session parked (#982). A NOTE, deliberately.
+
+    A park is self-healing: the reset time is parsed, the resume nudge is armed,
+    and the owner's own email ends "no action needed". There is nothing for
+    anyone to do with it in the next thirty seconds, so it does not earn the
+    kind that may be acted on out of turn — it is exactly the fleet news that
+    a gap. Demoting it is what keeps `escalation` worth acting on.
+
+    **Its own stamp, on the park record.** This originally claimed to inherit
+    ``park``'s once-per-park ``is_parked`` guard on the strength of
+    :func:`_notify_parked` having one caller. It has TWO: ``park`` and
+    :func:`resume_due`, which re-calls it on every watchdog tick for as long as
+    ``notified`` is False — and ``notified`` is only set on a SUCCESSFUL send,
+    so on a machine without ``RESEND_API_KEY`` (``send_email`` raises rather
+    than returning a failure) it is False for the entire park. Measured: 1 park
+    + 10 ticks produced 11 notes.
+
+    ``fleet_alerted`` is stamped on successful ENQUEUE — a local write, which
+    cannot fail the way the email does — and lives on the park state, so it
+    clears with the park: a session that parks again genuinely is new news.
+    """
+    if state.get("fleet_alerted"):
+        return
+    try:
+        from . import fleet_alerts
+
+        reached = fleet_alerts.emit_for(
+            "usage_limit_park",
+            f"Session {state['session']} hit a usage limit and was parked"
+            f"{' on task ' + state['task'] if state.get('task') else ''}. "
+            f"Limit resets {_fmt_local(state['reset_at'])}; it will be nudged to "
+            f"continue at {_fmt_local(state['resume_at'])}. No action needed.",
+        )
+        if reached:
+            state["fleet_alerted"] = True
+            if is_parked(state["session"]):
+                write_park_state(state)
+    except Exception as e:  # best-effort; the park is what matters
+        log_event("fleet_alert_failed", session=state.get("session"), error=str(e))
 
 
 def _notify_resumed(state: dict) -> None:
