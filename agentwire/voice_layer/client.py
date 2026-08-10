@@ -164,15 +164,17 @@ function createAnnouncer(deps) {
   // canInterrupt — letting a volunteered notice or an escalation be announced
   // over the browser voice.
   //
-  // What it does NOT rule out, stated because the previous version of this
-  // comment claimed the whole of #950: the budget never gates the announcer's
-  // own FIFO. armFallback nulls `current`, starts speak(), and calls pump() in
-  // the SAME tick, and pump() consults `current` and `queue` only — never
-  // `speaking`. So a second must_speak item queued behind a long notice is
-  // promoted and its response.create goes out while the browser voice is
-  // starting the first one's audio: two voices, at any watchdog length,
-  // reached without the watchdog firing at all. That path is a live residual
-  // and a separate decision, not something the scaling closes.
+  // What the scaling itself does not rule out — and what now does. The budget
+  // gates pending()/anchorPending(), which are the NOTIFIER's gates; it said
+  // nothing about the announcer's own FIFO. armFallback nulls `current`,
+  // starts speak(), and calls pump() in the SAME tick, so a second must_speak
+  // item queued behind a long notice was promoted and its response.create went
+  // out while the browser voice was starting the first one's audio: two
+  // voices, at any watchdog length, reached without the watchdog firing at all
+  // (#997). pump() now defers while `speaking` is non-empty — see the bound
+  // there, which is this same budget rather than a new number, because this is
+  // exactly how long the page is willing to BELIEVE the browser voice is
+  // talking.
   //
   // The per-character rate is deliberately SLOWER than any real voice (~7
   // characters a second against a typical 15). The two directions are not
@@ -335,17 +337,38 @@ function createAnnouncer(deps) {
       // dropped with no onend/onerror would leave the gates shut forever.
       speaking.push(item);
       var budget = speakingBudget(say);
+      // Kept on the item because pump()'s deferral bound reads it: the
+      // longest this page will believe this utterance is playing is the same
+      // number that decides when to stop believing it (#997).
+      item.speakBudget = budget;
       item.speakTimer = setTimer(function () {
         onLog("fallback", "no end event within " + budget + "ms");
-        stopSpeaking(item);
+        // NOT SPOKEN — and saying so is the fix for #996. The watchdog used to
+        // call stopSpeaking() alone: it reopened the gates (its stated scope,
+        // done correctly) but released nothing, so the ids stayed in the
+        // notifier's inFlight map for the life of the page. Since #970 that is
+        // no longer data loss — nothing announced is cursor-past, so a reload
+        // recovers it — but a permanently-inFlight id wedges the contiguity
+        // walk, so everything after it is spoken and never acked and a reload
+        // REPEATS it. Suppression until reload, then duplicates.
+        //
+        // Both halves, since this is the announcer deciding the owner did not
+        // hear something. False-reject (a slow but LIVE utterance declared
+        // dropped) costs a re-announcement — the owner hears it twice — and
+        // the margin against it is the #993 budget, measured conservative by
+        // 2.6-4.5x against every plausible macOS system voice. False-accept
+        // (staying silent) costs the notice until a reload the owner has no
+        // way to know they need. Double-speak is the cheap failure here, which
+        // is the same trade carriedTheReason already makes.
+        settleSpeech(item, false);
       }, budget);
       try {
         speak(
           say,
-          function () { stopSpeaking(item); onSpoken(item.meta, "fallback"); },
-          function () { stopSpeaking(item); onNotSpoken(item.meta); }
+          function () { settleSpeech(item, true); },
+          function () { settleSpeech(item, false); }
         );
-      } catch (e) { stopSpeaking(item); onSpoken(item.meta, "fallback"); }
+      } catch (e) { settleSpeech(item, true); }
       pump();
     }, fallbackMs);
   }
@@ -365,8 +388,104 @@ function createAnnouncer(deps) {
     speaking = speaking.filter(function (it) { return it !== item; });
   }
 
-  function pump() {
+  // The one place a fallback utterance gets an OUTCOME, and exactly once.
+  //
+  // Three callers can reach this for the same item — utterance.onend,
+  // utterance.onerror, and the watchdog — and until #996 only the first two
+  // reported anything, so the third was silent. Making the watchdog report
+  // makes the LATCH load-bearing rather than tidy: without it a watchdog
+  // firing at the budget and a late onend arriving afterwards would release
+  // the ids (re-announce) and then ack them (mark heard), in that order, which
+  // is a notice announced twice and acked once. First outcome wins; the rest
+  // are the same utterance being described again.
+  function settleSpeech(item, spoken) {
+    if (!item || item.speechSettled) return;
+    item.speechSettled = true;
+    stopSpeaking(item);
+    if (spoken) onSpoken(item.meta, "fallback");
+    else onNotSpoken(item.meta);
+    // The queue was waiting on this audio (#997) — promote now rather than on
+    // the deferral's backstop timer.
+    pump();
+  }
+
+  // #997's deferral. Cleared whenever the pump actually promotes, and on
+  // teardown.
+  var pumpDeferTimer = null;
+
+  function releasePump() {
+    if (pumpDeferTimer) { clearTimer(pumpDeferTimer); pumpDeferTimer = null; }
+  }
+
+  // How long the pump may wait for the browser voice: the budget of the
+  // utterance actually in flight, never a new constant. See pump().
+  function pumpBound() {
+    var bound = speakingBaseMs;
+    speaking.forEach(function (it) {
+      if (it.speakBudget > bound) bound = it.speakBudget;
+    });
+    return bound;
+  }
+
+  // `force` is the bound expiring, and nothing else sets it.
+  function pump(force) {
     if (current || !queue.length) return;
+    // NEVER OVER THE BUDDY'S OWN VOICE (#997). The budget above gates
+    // pending()/anchorPending() — the NOTIFIER's gates — and said nothing
+    // about this FIFO, so an item queued behind a long fallback utterance was
+    // promoted in the same tick that utterance started and its response.create
+    // went out over it: the two-voices defect (#950), reached with no watchdog
+    // fire and no gate violated.
+    //
+    // BOUNDED, and the bound is the whole design: an unbounded defer converts
+    // an audio-quality defect into a SUPPRESSION defect, which is strictly
+    // worse in a screenless channel. Both halves priced:
+    //
+    //   false-accept (waiting too long): the queued item is delayed behind
+    //     audio the owner IS CURRENTLY HEARING. Not silence — the buddy is
+    //     talking the whole time — and it ends when that audio does, because
+    //     settleSpeech pumps.
+    //   false-reject (promoting too early): two voices at once, which is the
+    //     defect this exists to stop.
+    //
+    // So the bound is the SPEAKING BUDGET of the utterance in flight (#993:
+    // 30s floor + 140ms/char), not a new number — that is precisely how long
+    // this page is willing to BELIEVE the browser voice is talking. Past it
+    // the watchdog has already declared the utterance dropped (#996), emptied
+    // `speaking` and pumped; this timer is the backstop for the case where it
+    // somehow has not, and it promotes rather than staying mute. The worst
+    // case is therefore one budget, and it is bounded even if the watchdog is
+    // broken.
+    //
+    // WHAT THIS DELAY IS UPSTREAM OF, said here because it falsifies a
+    // sentence in another file: the announcer's own two bounded deferrals are
+    // counted from the moment an item becomes `current`, and confirm.py's
+    // not_announced note bounds the wait for that refusal in units of
+    // fallbackMs on that basis. A refusal queued while a fallback utterance is
+    // live now waits HERE first, so that note under-states the worst case by
+    // up to one speaking budget in exactly that state. The trade is still the
+    // right one — the owner is listening to the buddy for the whole wait
+    // rather than sitting in silence — but the number over there is no longer
+    // the whole story, and confirm.py is owned elsewhere this wave.
+    if (speaking.length && !force) {
+      if (!pumpDeferTimer) {
+        var bound = pumpBound();
+        onLog("pump", "deferred — the browser voice is speaking (bound " +
+          bound + "ms)");
+        var handle = setTimer(function () {
+          // Only the LIVE deferral may force. A cleared timer that fires
+          // anyway — a fake-timer harness, a browser running a just-cancelled
+          // callback — must not promote over a voice nothing is waiting on.
+          if (pumpDeferTimer !== handle) return;
+          pumpDeferTimer = null;
+          onLog("pump", "deferral bound reached — promoting anyway");
+          pump(true);
+        }, bound);
+        pumpDeferTimer = handle;
+      }
+      return;
+    }
+    releasePump();
     current = queue.shift();
     var item = current;
 
@@ -420,7 +539,19 @@ function createAnnouncer(deps) {
       queue.forEach(disarm);
       queue = [];
       if (current) { disarm(current); current = null; }
-      speaking.slice().forEach(stopSpeaking);
+      releasePump();
+      // LATCHED, not merely removed from `speaking`. stopSpeaking cancels our
+      // watchdog but cannot cancel the utterance's own onend, which the
+      // browser fires whenever it fires — and that callback closes over the
+      // item and would have anchored a proposal on the bridge from a torn-down
+      // session, which is #978 item 4 in the one leg the reference-nulling fix
+      // did not reach. Settling here with no outcome is the same statement the
+      // rest of this function makes: a torn-down item was not heard, and
+      // nothing downstream may believe it was.
+      speaking.slice().forEach(function (it) {
+        it.speechSettled = true;
+        stopSpeaking(it);
+      });
     },
     // Withdraw announcements whose meta matches, queued or current (#963: the
     // owner speaking first CANCELS the greeting; queueing it behind them would

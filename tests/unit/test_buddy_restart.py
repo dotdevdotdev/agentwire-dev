@@ -31,6 +31,7 @@ import urllib.request
 import pytest
 
 from agentwire.voice_layer import client, server
+from tests.page_slice import page_slice
 
 # ─────────────────────────────────────────────────────────────
 # A real serve() → kill → serve() cycle
@@ -205,32 +206,9 @@ def _page() -> str:
     return client.page("buddy", "tok")
 
 
-def _slice(page: str, start_pat: str, end_pat: str, what: str, *, shape: str) -> str:
-    """Cut a region out of the served page, failing loudly if the anchor moved.
-
-    Extraction rather than a copy, for the reason ``announcer_source`` gives:
-    a test that re-derives its subject proves something about the copy. And a
-    silent miss here would be the worst outcome — the wire could be gone and
-    this file would still be green, which is the #995 failure repeated by the
-    test written to close it.
-
-    "Loudly" has to cover the PARTIAL match too. A start anchor that still hits
-    while the end anchor has drifted yields a syntactically broken fragment,
-    and what the reader then sees is an opaque node ``SyntaxError`` rather than
-    "the anchor moved". So each slice declares the *shape* it must still have —
-    chosen to be invariant under the mutations these tests exist to catch, so a
-    cut wire fails as a behaviour failure and never as a stale-anchor one.
-    """
-    start = re.search(start_pat, page)
-    assert start, f"anchor for {what} not found — the page moved, this test is stale"
-    end = re.search(end_pat, page[start.start():])
-    assert end, f"end anchor for {what} not found — the page moved, this test is stale"
-    region = page[start.start():start.start() + end.end()]
-    assert re.search(shape, region), (
-        f"extracted {what} does not have the shape this test assumes — the page "
-        f"moved and the extraction is stale, NOT a behaviour failure. Got:\n{region}"
-    )
-    return region
+#: The slicer moved to :mod:`tests.page_slice` when the rest of #995's wires
+#: got pinned in ``test_client_wires.py`` — one extractor, not two.
+_slice = page_slice
 
 
 def _greet_program(*, fire: str) -> str:

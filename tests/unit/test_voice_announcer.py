@@ -90,6 +90,19 @@ function fireTimers() {
   timers = [];
   due.forEach((t) => t.fn());
 }
+// Fire exactly ONE armed timer, by its position in the armed list.
+//
+// fireTimers() fires everything, which cannot express "this timer came due and
+// that one did not" — and #997's deferral backstop is precisely a timer whose
+// job is to cover the case where the speaking watchdog does NOT fire. Both are
+// armed at the same budget, so they are indistinguishable by `ms`; position is
+// the only handle a fake clock has on them.
+function fireTimerAt(i) {
+  const t = timers[i];
+  if (!t) throw new Error("no timer armed at index " + i);
+  timers = timers.filter((x) => x !== t);
+  t.fn();
+}
 // The browser voice reaches the end of its utterance.
 function finishSpeech() {
   const due = pendingSpeech.splice(0);
@@ -2704,6 +2717,142 @@ class TestTheSpeakingWatchdogScalesWithTheUtterance:
         assert self._watchdog_ms(json.dumps("Hi.")) >= 30_000
 
 
+class TestTheSpeakingWatchdogReleasesTheNotice:
+    """#996. The watchdog called ``stopSpeaking()`` and nothing else.
+
+    It reopened the gates — its stated scope, done correctly — but fired
+    neither ``onSpoken`` nor ``onNotSpoken``, so the ids of a dropped utterance
+    stayed in the notifier's ``inFlight`` map for the life of the page. Since
+    #970 that is no longer data loss (nothing announced is cursor-past, so a
+    reload recovers every dropped-utterance case) but a permanently-``inFlight``
+    id wedges the contiguity walk, so everything after it is spoken and never
+    acked and a reload REPEATS it. Suppression until reload, then duplicates.
+
+    The watchdog is the ONE case with no event at all: ``speechSynthesis`` can
+    drop an utterance firing neither ``onend`` nor ``onerror``, which is the
+    exact event this timer exists to recover from. Reporting it not-spoken is
+    the same "positive evidence" discipline as the rest — the evidence is the
+    absence of an end event past a budget measured 2.6-4.5x conservative
+    (#993), which is as positive as this channel gets.
+
+    Both halves, because this is the announcer deciding the owner heard
+    nothing: the false-reject (a slow but live utterance) costs a second
+    telling, and the false-accept costs the notice until a reload the owner has
+    no way to know they need. That asymmetry is what the whole file is built
+    on.
+    """
+
+    def _dropped_utterance(self, extra: str = "") -> dict:
+        """A notice whose fallback audio starts and then simply never ends.
+
+        `speakDefers` is what makes this reachable at all: a fixture whose
+        speak() calls back synchronously has no window between "started" and
+        "finished", so the watchdog could never be the thing that resolves an
+        utterance and this defect was structurally invisible.
+        """
+        return run_announcer(f"""
+            speakDefers = true;
+            announcer.announce("Two updates came in.", {{ inboxIds: ["m1", "m2"] }});
+            fireTimers();              // the fallback fires; the voice starts
+            logs.push("mid: notSpoken=" + notSpoken.length +
+                      " anchored=" + anchored.length);
+            fireTimers();              // ...and the utterance never ends
+            {extra}
+        """)
+
+    def test_the_watchdog_reports_the_notice_not_spoken(self):
+        report = self._dropped_utterance()
+        # Nothing was decided while the voice was believed to be talking.
+        assert "mid: notSpoken=0 anchored=0" in report["logs"]
+        # ...and the watchdog releases it, which is what makes the next gated
+        # tick say it again instead of the ids sitting in inFlight forever.
+        assert report["notSpoken"] == [{"inboxIds": ["m1", "m2"]}]
+        assert report["anchored"] == []
+
+    def test_it_still_reopens_the_gates(self):
+        """The watchdog's original job, unchanged — the release is additional,
+        not a replacement. A fix that released the ids but left the item in
+        `speaking` would trade one silence for another."""
+        report = self._dropped_utterance('logs.push("pending=" + announcer.pending());')
+        assert "pending=0" in report["logs"]
+
+    def test_a_late_end_event_cannot_ack_what_the_watchdog_released(self):
+        """The latch, and it is load-bearing rather than tidy.
+
+        Without it the watchdog releases the ids (so the next tick re-announces)
+        and a late `onend` then acks them (marking them heard) — a notice said
+        twice and acked once, from the same utterance described by two
+        different events.
+        """
+        report = self._dropped_utterance("finishSpeech();")
+        assert len(report["notSpoken"]) == 1
+        assert report["anchored"] == []
+
+    def test_an_end_event_that_arrives_first_still_acks_and_disarms(self):
+        """The ordinary path, unchanged: real speech ends, the item is spoken,
+        and the watchdog it disarmed cannot then contradict that."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("Two updates came in.", { inboxIds: ["m1"] });
+            fireTimers();
+            finishSpeech();
+            fireTimers();              // whatever is left must not re-decide
+        """)
+        assert report["anchored"] == [{"meta": {"inboxIds": ["m1"]}, "how": "fallback"}]
+        assert report["notSpoken"] == []
+
+    def test_a_reported_error_settles_it_once(self):
+        """The third caller. `onerror` already reported (#978 item 5); what is
+        new is that the watchdog cannot report it a second time."""
+        report = run_announcer("""
+            speakDefers = true;
+            speakFails = true;
+            announcer.announce("Two updates came in.", { inboxIds: ["m1"] });
+            fireTimers();
+            finishSpeech();            // onerror
+            fireTimers();
+        """)
+        assert report["notSpoken"] == [{"inboxIds": ["m1"]}]
+        assert report["anchored"] == []
+
+    def test_a_dropped_proposal_announcement_is_reported_too(self):
+        """The anchor case. Nothing to retry — a proposal is announced once and
+        the spine's TTL ends it — but the page logs "it cannot be approved"
+        from onNotSpoken, which is the difference between the owner hearing
+        `not_announced` for 120s with no explanation and being told."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("Say confirm tango to send it.", { anchor: "p1" });
+            fireTimers();
+            fireTimers();
+        """)
+        assert report["notSpoken"] == [{"anchor": "p1"}]
+        # And it is NOT anchored: a proposal the owner never heard must never
+        # be treated as stated.
+        assert report["anchored"] == []
+
+    def test_a_torn_down_utterance_reports_nothing_at_all(self):
+        """teardown()'s own statement, extended to the leg it did not reach.
+
+        stop() cannot cancel the utterance's `onend` — the browser fires it
+        whenever it fires — and that callback would have anchored a proposal on
+        the bridge from a dead session (#978 item 4). Settling with NO outcome
+        is deliberate: a torn-down item was neither heard nor demonstrably
+        unheard, and the anchor is the one thing that must never be guessed.
+        """
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("Say confirm tango to send it.", { anchor: "p1" });
+            fireTimers();
+            announcer.teardown();
+            finishSpeech();            // the browser gets round to it anyway
+            fireTimers();
+        """)
+        assert report["anchored"] == []
+        assert report["notSpoken"] == []
+        assert report["pending"] == 0
+
+
 # =============================================================================
 # Wave-2 prose: two guarantees stated broader than the code
 # =============================================================================
@@ -2853,16 +3002,30 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
         assert len(report["spoken"]) == 1
 
 
-class TestTheSpeakingBudgetCommentDoesNotClaimThePumpPath:
-    """``speakingBaseMs`` claimed the scaled budget kept the MODEL from
-    starting a response over the browser voice — the whole of #950. It does
-    not. The budget gates ``pending()``/``anchorPending()``, which are the
-    NOTIFIER's gates; the announcer's own FIFO never consults ``speaking``.
+class TestThePumpDefersToTheBrowserVoice:
+    """#997, and the class it replaces is the reason it reads this way.
 
-    Behaviour deliberately unchanged (a separate decision). This class pins the
-    COMMENT: the residual is reproduced, so if the pump path is ever fixed this
-    fails and whoever fixes it has to come back and delete the paragraph that
-    calls it live.
+    That class REPRODUCED this defect and pinned the comment naming it a live
+    residual — a canary, deliberately asserting the broken behaviour so that
+    fixing it would fail here and force the paragraph to be rewritten. It did
+    exactly that. Both of its behavioural assertions inverted the moment pump()
+    started deferring, which is the whole point of a canary and is also the
+    hazard: an expected-fail canary and a live guarantee are identical at the
+    moment of failure, and nothing re-labels the test. So it is re-labelled by
+    hand — every sentence below now asserts the FIX, and the residual paragraph
+    it used to protect is gone from ``client.py``.
+
+    What is pinned:
+
+    - the reproduction, inverted: the queued item does NOT reach the channel
+      while the browser voice is starting;
+    - it is promoted the moment that audio ends, so the defer is a delay and
+      never a suppression;
+    - the BOUND, derived from the same ``speakingBudget`` the watchdog uses
+      rather than from a new constant, and taken at its two ends (the 30s floor
+      and a long coalesced notice);
+    - the backstop firing promotes rather than staying mute — the half that
+      makes "bounded" true even if the watchdog never empties ``speaking``.
     """
 
     def _prose(self) -> str:
@@ -2875,22 +3038,58 @@ class TestTheSpeakingBudgetCommentDoesNotClaimThePumpPath:
         ]
         return " ".join(" ".join(lines).split())
 
+    def _budget(self, text: str) -> int:
+        """The bound, derived from ``client.py``'s own constants rather than
+        transcribed — the deferral must never acquire a number of its own, and
+        a test carrying a copy of 140 would not notice if it did."""
+        src = client.announcer_source()
+        base = re.search(r"deps\.speakingMaxMs \|\| fallbackMs \* (\d+)", src)
+        per_char = re.search(r"deps\.speakingMsPerChar === undefined \? (\d+)", src)
+        assert base and per_char, "the budget constants moved — this test is stale"
+        return 6000 * int(base.group(1)) + len(text) * int(per_char.group(1))
+
     def test_the_comment_no_longer_claims_the_defect_is_ruled_out(self):
         prose = self._prose()
         assert "which reopens both gates and lets the MODEL start a response" not in prose
-        assert "`current` and `queue` only — never `speaking`" in prose
-        assert "live residual" in prose
+        # And no longer calls the pump path live, either — the sentence that
+        # class existed to keep honest is now a sentence about a closed defect.
+        assert "That path is a live residual" not in prose
+        assert "pump() now defers while `speaking` is non-empty" in prose
 
     def test_the_comment_names_the_gates_the_budget_actually_covers(self):
         prose = self._prose()
         assert "reopens the NOTIFIER's gates — canSpeak and canInterrupt" in prose
 
-    def test_a_queued_item_is_pumped_into_the_starting_browser_voice(self):
-        """The reproduction. A long notice falls back to the browser voice; a
-        second must_speak item is queued behind it. armFallback nulls
-        `current`, starts speak(), and calls pump() in the same tick — so the
-        second item's response.create goes out while the first is still only
-        STARTING to be spoken aloud."""
+    def test_the_comment_states_the_bound_and_prices_both_halves(self):
+        """The trap #997 names, kept stated in the code that implements it: an
+        unbounded defer is a suppression defect, which is worse than the audio
+        defect it fixes."""
+        prose = self._prose()
+        assert "BOUNDED, and the bound is the whole design" in prose
+        assert "false-accept (waiting too long)" in prose
+        assert "false-reject (promoting too early)" in prose
+
+    def test_the_comment_names_the_bound_this_delay_pushes_out(self):
+        """The cross-file half, and the reason it is written down rather than
+        assumed obvious: ``confirm.py``'s not_announced note bounds the wait for
+        that refusal in units of ``fallbackMs``, counted from the moment the
+        item becomes ``current``. This deferral happens BEFORE that, so in the
+        one state where a fallback utterance is live the note under-states its
+        own worst case. A behaviour change that silently falsifies a sentence
+        elsewhere is the defect class this whole layer keeps finding; naming it
+        in the file that caused it is the cheapest place it survives."""
+        prose = self._prose()
+        assert "confirm.py's not_announced note" in prose
+        assert "under-states the worst case by up to one speaking budget" in prose
+
+    def test_a_queued_item_is_not_pumped_into_the_starting_browser_voice(self):
+        """The reproduction from #997, inverted.
+
+        A long notice falls back to the browser voice; a second must_speak item
+        is queued behind it. armFallback still nulls `current`, starts speak(),
+        and calls pump() in the same tick — but pump() now sees `speaking` and
+        holds, so only ONE response.create has gone out.
+        """
         report = run_announcer(f"""
             speakDefers = true;
             announcer.announce({json.dumps("x" * 1250)});
@@ -2900,21 +3099,115 @@ class TestTheSpeakingBudgetCommentDoesNotClaimThePumpPath:
         """)
         # The browser voice has started and has NOT ended.
         assert len(report["spoken"]) == 1
-        # ...and the queued item was promoted onto the channel anyway.
-        assert len(creates(report)) == 2
+        # ...and nothing was promoted over it.
+        assert len(creates(report)) == 1
+        # Still owed, not dropped: pending() counts it, so canSpeak stays shut.
         assert "speaking=1 pending=2" in report["logs"]
+        assert any("deferred — the browser voice is speaking" in line
+                   for line in report["logs"])
 
-    def test_the_watchdog_did_not_have_to_fire_for_that(self):
-        """The part that makes it a residual rather than a symptom of the flat
-        bound: the overlap above happens at the fallback fire, with the
-        speaking watchdog freshly armed and nowhere near due."""
+    def test_it_is_promoted_the_moment_that_audio_ends(self):
+        """Deferral, not suppression — and on the ORDINARY path it costs no
+        timer at all: the utterance's own end event pumps."""
         report = run_announcer(f"""
             speakDefers = true;
             announcer.announce({json.dumps("x" * 1250)});
             announcer.announce("Your worktree run failed.");
             fireTimers();
+            logs.push("mid: creates=" + events.filter(
+                (e) => e.type === "response.create").length);
+            finishSpeech();
         """)
-        # Two timers are armed: the promoted item's own 6s fallback, and the
-        # speaking watchdog for the utterance now being started. The watchdog
-        # is the one this claim is about, and it is nowhere near due.
-        assert max(report["armedMs"]) > 30_000
+        assert "mid: creates=1" in report["logs"]
+        assert len(creates(report)) == 2
+        assert "Your worktree run failed." in creates(report)[1]["response"]["instructions"]
+
+    def test_the_deferral_bound_is_the_speaking_budget_of_the_utterance(self):
+        """The bound is the #993 budget of the audio actually in flight — the
+        longest this page believes the browser voice is talking — not a new
+        constant. ~205s for the coalesced five-reply notice #997 reproduced."""
+        text = "x" * 1250
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps(text)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+        """)
+        budget = self._budget(text)
+        # Two timers: the speaking watchdog and the pump deferral, at the same
+        # budget by construction. The promoted item's own 6s fallback is NOT
+        # armed — nothing was promoted.
+        assert report["armedMs"] == [budget, budget]
+        assert budget > 200_000
+
+    def test_a_short_utterance_defers_only_for_the_floor(self):
+        """The other end of the same derivation: no per-char stretch, so the
+        wait is the 30s floor. A bound that did not scale would read the same
+        here and differently above."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("Done.");
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+        """)
+        assert report["armedMs"] == [self._budget("Done."), self._budget("Done.")]
+        assert self._budget("Done.") == 30_000 + 5 * 140
+
+    def test_the_backstop_promotes_rather_than_staying_mute(self):
+        """The half that makes "bounded" true rather than intended.
+
+        Fire ONLY the deferral timer, leaving the item in `speaking` — the
+        state where the watchdog has somehow not run. The queued item goes out
+        anyway. An unbounded defer would be a screenless mute, which is the
+        trade #997 forbids.
+        """
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps("x" * 1250)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+            fireTimerAt(1);            // the pump deferral, NOT the watchdog
+            logs.push("still speaking=" + announcer.pending());
+        """)
+        assert len(creates(report)) == 2
+        # The utterance is still believed to be playing — this is the backstop
+        # firing over it, deliberately, because the alternative is silence.
+        assert any("deferral bound reached" in line for line in report["logs"])
+        assert len(report["spoken"]) == 1
+
+    def test_fire_timer_at_fires_exactly_one(self):
+        """A control on the harness helper the test above depends on. If
+        ``fireTimerAt`` fired everything it would be ``fireTimers`` under
+        another name, and the backstop test would prove nothing about the
+        watchdog not running."""
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps("x" * 1250)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+            logs.push("before=" + timers.map((t) => t.ms).join(","));
+            fireTimerAt(1);
+            logs.push("after=" + timers.map((t) => t.ms).join(","));
+            logs.push("notSpoken=" + notSpoken.length);
+        """)
+        assert "before=205000,205000" in report["logs"]
+        # The deferral is consumed and the speaking WATCHDOG is still armed —
+        # the 6000 is the newly promoted item's own fallback. Had fireTimerAt
+        # fired everything, the watchdog would have run too and reported the
+        # utterance not spoken.
+        assert "after=205000,6000" in report["logs"]
+        assert "notSpoken=0" in report["logs"]
+
+    def test_the_deferral_does_not_leak_a_timer_once_it_resolves(self):
+        """The deferral timer is cleared when the pump promotes, so a resolved
+        wait leaves nothing armed to force a second promotion later."""
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps("x" * 1250)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+            finishSpeech();            // the audio ends; the queued item goes
+            logs.push("armed=" + timers.map((t) => t.ms).join(","));
+        """)
+        # Only the promoted item's own 6s fallback remains.
+        assert "armed=6000" in report["logs"]

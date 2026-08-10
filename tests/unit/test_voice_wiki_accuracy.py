@@ -516,7 +516,7 @@ class TestTheOpenResidualsAreNamed:
     """A wiki that describes what we meant is how the next contributor argues
     from a mechanism that does not exist."""
 
-    @pytest.mark.parametrize("issue", [989, 990, 992, 995, 996, 997])
+    @pytest.mark.parametrize("issue", [989, 990, 992])
     def test_residual_is_recorded(self, page, issue):
         assert f"#{issue}" in page
 
@@ -525,6 +525,17 @@ class TestTheOpenResidualsAreNamed:
 
     def test_the_echoed_denial_hole_is_described(self, page):
         assert "`carries_denial` is not nonce-gated" in page
+
+    @pytest.mark.parametrize("issue", [995, 996, 997])
+    def test_a_closed_one_is_not_still_listed_as_a_hole(self, page, issue):
+        """The other direction, and it is not symmetric with the assertion
+        above: a residual listed after it is closed sends the next contributor
+        to build around a hole that is not there, and this table is the one
+        place they would look. These three were closed together; the row is
+        gone and the closure is recorded instead."""
+        table = page.split("| # | Where | The hole |", 1)[1].split("**Closed", 1)[0]
+        assert f"#{issue}" not in table
+        assert f"#{issue}" in page
 
 
 class TestTheDeliverySeamNoLongerClaimsItNeverInterrupts:

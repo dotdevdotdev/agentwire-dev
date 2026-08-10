@@ -892,23 +892,40 @@ The browser voice is watchdogged too (`speakingBudget` = a 30s floor plus 140ms
 per character, deliberately slower than any real voice): `speechSynthesis` can
 drop an utterance without firing `onend` OR `onerror`, and `speaking` is what
 `pending()` and `anchorPending()` count, so without a bound the false-reject half
-is an **unbounded mute**. Two residuals on that watchdog, both open and both
-narrower than "the budget prevents two voices":
+is an **unbounded mute**. Two residuals sat on that watchdog and both are now
+closed — read them as what the mechanism does, not as what it used to miss:
 
-- **#996** — the watchdog calls `stopSpeaking()` only. It fires neither
-  `onSpoken` nor `onNotSpoken`, so on the exact event it exists to recover from
-  the notice's ids stay in `inFlight` for the life of the session: never acked,
-  never released, never re-announced. The cursor never advanced, so a page reload
-  does recover it — and the owner has no way to know a reload is what is needed.
-- **#997** — the budget gates the *notifier's* gates, never the announcer's own
-  FIFO. `armFallback` nulls `current`, starts `speak()`, and calls `pump()` in the
-  same tick, and `pump()` consults `current` and `queue` only. So a second
-  `must_speak` item queued behind a long notice is promoted and its
-  `response.create` goes out while the browser voice is starting the first one's
-  audio — **two voices, at any watchdog length, reached without the watchdog
-  firing at all.** Safety-neutral (nothing is suppressed or lost) and an
-  audio-quality defect, but it is the condition the budget's own comment used to
-  claim it ruled out.
+- **#996 — the watchdog RELEASES the notice.** It used to call `stopSpeaking()`
+  only: the gates reopened (its stated scope, done correctly) but nothing was
+  released, so on the exact event it exists to recover from the ids stayed in
+  `inFlight` for the life of the page — never acked, never released, never
+  re-announced. Since #970 that is not data loss (nothing announced is
+  cursor-past, so a reload recovers it) but a permanently-`inFlight` id wedges
+  the contiguity walk, so everything after it is spoken and never acked and a
+  reload *repeats* it: suppression until reload, then duplicates. It now fires
+  `onNotSpoken`, which is the same path a `speechSynthesis` `onerror` takes, so
+  the next gated tick says it again. The false-reject half — a slow but LIVE
+  utterance declared dropped — costs a second telling, against a budget measured
+  2.6-4.5x conservative; double-speak is the cheap failure here, as it is for
+  `carriedTheReason`. And exactly one outcome per utterance: `onend`, `onerror`
+  and the watchdog all route through one latch, or the watchdog's release and a
+  late `onend`'s ack would both land and the notice would be said twice and
+  acked once.
+- **#997 — `pump()` defers to the browser voice, BOUNDED.** The budget gates the
+  *notifier's* gates and never the announcer's own FIFO, so a second `must_speak`
+  item queued behind a long notice was promoted in the same tick `armFallback`
+  started the audio, and its `response.create` went out over it — two voices, at
+  any watchdog length, reached without the watchdog firing at all.
+  `pump()` now holds while `speaking` is non-empty and promotes the moment the
+  audio ends. **The bound is the trade**: an unbounded defer converts an
+  audio-quality defect into a suppression defect, which in a screenless channel
+  is strictly worse. It is the `speakingBudget` of the utterance in flight — not
+  a new constant — because that is exactly how long the page is willing to
+  believe the browser voice is talking; past it the #996 watchdog has already
+  declared the utterance dropped and pumped, and the timer is the backstop that
+  **promotes rather than staying mute** if it somehow has not. So the false-accept
+  half is a wait behind audio the owner is currently hearing, and the false-reject
+  half is the two voices this closes.
 
 The other half of the timer is `onNotSpoken` — positive evidence an utterance was
 NOT spoken, reached only from `speechSynthesis`'s own `onerror`. Before it, the
@@ -1716,12 +1733,14 @@ than "mid-handshake work is rolled back", and nothing here rolls anything back.
 restart invalidates the open tab — its POSTs 401 rather than half-working — so
 the acceptance path is *reload, then Start talking*, and the greeting is what
 says the whole approval path came back up (a heard greeting proves model audio,
-which #950 made the write path fail-closed on). #995 records that the wires
-arming that greet have no pin at all: cutting `maybeGreet()` out of
-`pc.ontrack` leaves the entire suite green — **measured, 5736 unit tests, zero
-failures**. `tests/unit/test_buddy_restart.py` executes both arming legs,
-extracted from the page the server actually serves, and each cut now turns it
-red.
+which #950 made the write path fail-closed on). #995 recorded that the wires
+arming that greet had no pin at all: cutting `maybeGreet()` out of `pc.ontrack`
+left the entire suite green — **measured, 5736 unit tests, zero failures**.
+`tests/unit/test_buddy_restart.py` executes both arming legs, extracted from the
+page the server actually serves, and each cut now turns it red. The four other
+wires #995 named — the data-channel `open`/`close` status wires and both button
+click handlers — are pinned the same way in `tests/unit/test_client_wires.py`,
+sharing one extractor (`tests/page_slice.py`) rather than a second idiom.
 
 ---
 
@@ -1983,25 +2002,33 @@ exist**, so these are listed here as well as inline.
 | #989 | `transcript.unheard_between` | no staleness bound: one never-completing `speech_started` (a cough, a VAD blip, TTS bleed) refuses every confirm as a WAIT outcome — no attempt burned, so the proposal loops on "give me a second" for the whole 120s TTL and then expires |
 | #990 | `confirm.cancel()` | bypasses `_claim()`, so a cancel racing a dispatching confirm says "I haven't sent it" while the runner is sending — the exact over-claim `in_flight`'s wording exists to avoid, on the sibling path |
 | #992 | `_judge`'s post-approval scan | `carries_denial` is not nonce-gated, and the fallback voice speaks message BODIES any session can send — so an echoed "no, stop, don't" retroactively denies a legitimate approval. Remotely triggerable; invisible to the owner |
-| #995 | `client.py` browser wires | five event→handler wires (`pc.ontrack`, which arms the greet-as-health-check; the data-channel `open`/`close` status wires; and both button click handlers) have no pin at all — cut any of them and all voice tests stay green |
-| #996 | the `speakingBudget` watchdog | fires neither `onSpoken` nor `onNotSpoken`, so on the exact dropped-utterance event it exists to recover from, the notice's ids stay in `inFlight` for the session: never acked, never released, never re-announced |
-| #997 | the announcer's `pump()` | the speaking budget gates the notifier's gates, never the announcer's own FIFO — so a queued `must_speak` item is promoted while the browser voice is starting the previous one. Two voices, at any watchdog length. Audio-quality, not safety |
+
+**Closed, and named here because arguing from a residual that no longer exists
+is the same failure in the other direction:** **#995** (the four remaining
+`client.py` browser wires — the data-channel `open`/`close` status wires and both
+button click handlers — now pinned in `tests/unit/test_client_wires.py`, the
+`pc.ontrack` greet wire having gone in #1001), **#996** (the `speakingBudget`
+watchdog now reports `onNotSpoken`) and **#997** (`pump()` now defers to the
+browser voice, bounded by that same budget). The last two are described in full
+under the watchdog above.
 
 What they have in common is where they were found: every one came out of a review
 of a MERGED wave rather than out of the wave itself. Defects that survive
 individual review live in the interaction between changes each correct alone.
 
-And three of the six carry a real trade rather than an obvious fix, which is why
-"just close it" is not the whole instruction. #989's staleness bound: too tight
-and a slow transcriber becomes a wrongful refusal, too loose and the loop
-survives. #992's suppression rule: barge-in over the robot voice is the NORMAL
-case here, so any rule of the form "utterances during fallback speech do not
-count as denials" drops a genuine take-back and the write goes out — the
-acting-twice direction, not a wait. #997's deferral: an unbounded "wait for the
-browser voice" turns an audio-quality defect into a suppression defect, which in
-a screenless channel is strictly worse than the thing being fixed. Price both
-halves before choosing. (#990, #995 and #996 have no such tension — they are
-plainly worth doing.)
+And several carry a real trade rather than an obvious fix, which is why "just
+close it" is not the whole instruction. #989's staleness bound: too tight and a
+slow transcriber becomes a wrongful refusal, too loose and the loop survives.
+#992's suppression rule: barge-in over the robot voice is the NORMAL case here,
+so any rule of the form "utterances during fallback speech do not count as
+denials" drops a genuine take-back and the write goes out — the acting-twice
+direction, not a wait. #997's deferral was the same shape and is the worked
+example of pricing it: an unbounded "wait for the browser voice" turns an
+audio-quality defect into a suppression defect, which in a screenless channel is
+strictly worse than the thing being fixed, so the wait is bounded by the budget
+that decides when the page stops believing the voice at all. Price both halves
+before choosing. (#990, #995 and #996 had no such tension — they were plainly
+worth doing.)
 
 ### Standing constraints for whoever picks this up
 
