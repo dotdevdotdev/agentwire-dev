@@ -57,6 +57,36 @@ _MAX_BODY = 64 * 1024
 #: set is exactly this and no larger.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
+#: How far ``/mint`` advances the logical clock before handing the page its
+#: origin (#978). One per page load, so this is what makes the base an EPOCH
+#: rather than a bump: two tabs minting against one bridge get non-overlapping
+#: numeric ranges — reserved atomically, see
+#: :meth:`~agentwire.voice_layer.transcript.TranscriptRing.reserve_epoch` — and
+#: a still-live first tab would have to emit a million data-channel events
+#: before it could count into the second's.
+MINT_SEQ_GAP = 1_000_000
+
+#: The largest sequence this bridge will accept or hand out.
+#:
+#: A gap does NOT cost nothing, and saying so was wrong in a way that only
+#: shows up after ``seq_base`` existed. Before it, ``high_seq`` was state the
+#: bridge kept for its own ordering — a Python int, compared, never sized. It
+#: now flows BACK into the page's counter across a JSON boundary, and on that
+#: side it is an IEEE-754 double: past ``2**53`` an increment silently stops
+#: advancing, so every event shares one sequence, ``after(anchor)`` is never
+#: strictly-after, and the buddy answers ``pending_transcript`` forever. Larger
+#: still parses as ``Infinity``, whose anchors serialize as ``null`` —
+#: ``not_announced`` forever. Both are silent, and both survive a reload,
+#: because ``high_seq`` is bridge-lifetime: one malformed local POST wedges the
+#: buddy for the rest of the run.
+#:
+#: ``2**45`` leaves 35 million mints of headroom and stays 256x clear of the
+#: page's safe-integer limit, so the false-reject half costs nothing real: no
+#: session reaches within many orders of magnitude of it. Loopback- and
+#: token-gated, so this is robustness rather than a remote attack — but #986
+#: hardened this same bridge against this same class.
+MAX_SEQ = 2**45
+
 
 def allowed_hosts(port: int) -> frozenset[str]:
     """Every ``Host`` value this bridge will answer on ``port``.
@@ -159,11 +189,23 @@ class BuddyBridge:
             return {"success": False, "error": "missing item_id"}
         item_id = item_id.strip()
 
-        def _seq(key: str) -> int:
+        def _seq(key: str) -> "int | None":
+            """The sequence under *key*, 0 if absent, ``None`` if out of range.
+
+            Out-of-range is REFUSED rather than clamped: clamping would still
+            raise ``high_seq`` toward the ceiling, and a silently-altered
+            sequence is a silently-altered ordering. See :data:`MAX_SEQ`.
+            """
             value = payload.get(key)
-            return value if isinstance(value, int) and value > 0 else 0
+            if not isinstance(value, int) or isinstance(value, bool):
+                return 0
+            if value <= 0:
+                return 0
+            return value if value <= MAX_SEQ else None
 
         speech_seq, commit_seq = _seq("speech_started_seq"), _seq("commit_seq")
+        if speech_seq is None or commit_seq is None:
+            return {"success": False, "error": f"sequence exceeds {MAX_SEQ}"}
         text = payload.get("transcript")
 
         if text is None:
@@ -208,20 +250,58 @@ class BuddyBridge:
         seq = payload.get("seq")
         if not isinstance(proposal_id, str) or not proposal_id.strip():
             return {"success": False, "error": "missing proposal_id"}
-        if not isinstance(seq, int) or seq <= 0:
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq <= 0:
             return {"success": False, "error": "anchor needs a positive seq"}
+        if seq > MAX_SEQ:
+            return {"success": False, "error": f"sequence exceeds {MAX_SEQ}"}
         self.ring.note_seq(seq)
         anchored = self.spine.announce(proposal_id.strip(), seq)
         return {"success": True, "anchored": anchored, "seq": seq}
 
     def mint(self) -> dict:
+        """Mint an ephemeral client secret — and the page's CLOCK ORIGIN (#978).
+
+        The logical clock the confirm gate orders on is assigned by the client,
+        because the client is the only place that sees data-channel event
+        order. Its ORIGIN cannot be: ``seqCounter`` is a page variable and
+        restarts at 0 on every reload, while the ring and the spine live for
+        the whole bridge run. A reloaded page therefore anchored its next
+        proposal BELOW last session's utterances, which are still in the ring,
+        complete and unspent — so they reached the judge as non-matching
+        (burning attempts on a question never asked) and, worse, an old "no,
+        hang on" sat strictly-after the new match in the post-approval denial
+        scan and retroactively denied every legitimate approval until 32 fresh
+        utterances evicted it.
+
+        ``/mint`` is the one event that happens exactly once per page load, so
+        the origin is handed out here, a whole :data:`MINT_SEQ_GAP` above every
+        sequence the bridge has ever seen, and RECORDED on the ring — a base
+        the ring has not seen is a base the next mint would reuse. Reserved
+        under ONE lock (``reserve_epoch``): read-then-write is two acquisitions
+        and two concurrent mints on this threading server can be handed the
+        same base, which is the very case the epoch exists to rule out.
+
+        Reserved BEFORE the client secret, so an exhausted sequence space
+        refuses without spending the owner's API key.
+
+        Nothing is rejected and nothing is deleted, deliberately. A rejecting
+        epoch guard pays its false-reject half by dropping an utterance from
+        the owner's LIVE tab, and a dropped utterance in a screenless channel
+        is a silent loop; ordering the epochs instead has no reject path at
+        all. What it does not close: a forward that FAILS leaves ``high_seq``
+        behind the client's counter, so the next base is that much less clear
+        of the last epoch — bounded by the gap, not by anything smaller.
+        """
+        seq_base = self.ring.reserve_epoch(MINT_SEQ_GAP, MAX_SEQ)
+        if not seq_base:
+            return {"success": False, "error": "sequence space exhausted"}
         session = realtime.mint_session(
             instructions=buddy_instructions.build_instructions(),
             tools=tools.realtime_tool_defs(),
             model=self.model,
             voice=self.voice,
         )
-        return {"success": True, **session}
+        return {"success": True, "seq_base": seq_base, **session}
 
     def tool_call(self, payload: dict) -> dict:
         name = payload.get("name")

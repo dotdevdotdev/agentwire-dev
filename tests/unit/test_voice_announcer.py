@@ -49,14 +49,34 @@ const events = [];
 const spoken = [];
 const logs = [];
 const anchored = [];
+const notSpoken = [];
 let timers = [];
 let nextHandle = 1;
 let channelOpen = true;
+// The two states the browser voice can be in that the announcer must react to
+// (#978 items 3 and 5): the owner talking when the timer comes due, and
+// speechSynthesis reporting the utterance failed.
+let ownerIsSpeaking = false;
+let speakFails = false;
+// THE REAL speak() IS ASYNC — onSpokenAloud runs from utterance.onend, an
+// event that fires when the browser voice has finished TALKING. A harness
+// whose speak() calls back synchronously has no window at all between "the
+// fallback started speaking" and "it finished", which is the window review
+// finding F4 lives in: this fixture's shape was the reason nothing saw it.
+let speakDefers = false;
+const pendingSpeech = [];
 
 const announcer = createAnnouncer({
   send: (e) => { if (!channelOpen) return false; events.push(e); return true; },
-  speak: (t, onDone) => { spoken.push(t); if (onDone) onDone(); },
+  speak: (t, onDone, onFail) => {
+    spoken.push(t);
+    if (speakDefers) { pendingSpeech.push({ onDone, onFail }); return; }
+    if (speakFails) { if (onFail) onFail(); return; }
+    if (onDone) onDone();
+  },
   onSpoken: (meta, how) => anchored.push({ meta: meta, how: how }),
+  onNotSpoken: (meta) => notSpoken.push(meta),
+  ownerSpeaking: () => ownerIsSpeaking,
   setTimer: (fn, ms) => { const h = nextHandle++; timers.push({ h, fn, ms }); return h; },
   clearTimer: (h) => { timers = timers.filter((t) => t.h !== h); },
   onLog: (kind, detail) => logs.push(kind + ": " + detail),
@@ -68,12 +88,22 @@ function fireTimers() {
   timers = [];
   due.forEach((t) => t.fn());
 }
+// The browser voice reaches the end of its utterance.
+function finishSpeech() {
+  const due = pendingSpeech.splice(0);
+  due.forEach((s) => {
+    if (speakFails) { if (s.onFail) s.onFail(); return; }
+    if (s.onDone) s.onDone();
+  });
+}
 function report() {
   return JSON.stringify({
-    events, spoken, logs, anchored,
+    events, spoken, logs, anchored, notSpoken,
     armedTimers: timers.length,
+    armedMs: timers.map((t) => t.ms),
     pending: announcer.pending(),
     armed: announcer.armed(),
+    anchorPending: announcer.anchorPending(),
   });
 }
 """
@@ -1533,12 +1563,25 @@ class TestThePersonaAndInterruptWiring:
     speaking-path count."""
 
     def test_the_page_wires_the_interrupt_gate_without_the_chatter_leg(self):
-        """canInterrupt keeps exactly the two unconditional legs of #962 —
-        owner not speaking, no confirm handshake — and drops responseActive /
+        """canInterrupt keeps the unconditional legs of #962 — owner not
+        speaking, no confirm handshake — and drops responseActive /
         announcer.pending, which is what lets an escalation pre-empt the
-        buddy's own speech via the announcer's existing cancel."""
+        buddy's own speech via the announcer's existing cancel.
+
+        Asserted as the legs it HAS and the legs it must NOT have, rather than
+        as the whole line: #978 item 2 adds a third leg to the handshake side
+        (a proposal still in the announcer's pipe is a handshake the gate's own
+        TTL cannot yet see), and pinning the literal made that indistinguishable
+        from reinstating the chatter leg.
+        """
         page = client.page("buddy", "tok")
-        assert "canInterrupt: () => !ownerSpeaking && !confirmGate.outstanding()," in page
+        wiring = page.split("canInterrupt: ", 1)[1].split("\n", 1)[0]
+        assert "!ownerSpeaking" in wiring
+        assert "!confirmGate.outstanding()" in wiring
+        # The chatter leg, still gone: an escalation does not wait for the
+        # buddy's own in-flight response or its queue depth.
+        assert "responseActive" not in wiring
+        assert "announcer.pending()" not in wiring
         # The FULL gate is unchanged — #962's rule survives verbatim.
         assert (
             "canSpeak: () => !ownerSpeaking && !responseActive"
@@ -1769,3 +1812,822 @@ class TestTheOutcomeRouter:
         """)
         assert report["resolved"] == 0
         assert report["actedOn"] == []
+
+
+# =============================================================================
+# #978 wave 2 — the announcer/timer races and the silent-failure retry holes
+# =============================================================================
+
+
+class TestAnEscalationCannotSpeakInsideTheHandshake:
+    """#978 item 2. The confirm gate closes at ``anchored()`` — i.e. once the
+    proposal has been SPOKEN. Between the tool result coming back and that
+    moment, the proposal announcement is queued or mid-flight and the gate is
+    still open, so an escalation ticking right then passed ``canInterrupt``,
+    queued behind the proposal, and ``pump()`` promoted it the instant
+    anchoring closed the gate. The buddy speaks an alarm exactly between "say
+    confirm tango" and the owner's answer.
+
+    The announcer is the only thing that knows a proposal is in the pipe, so
+    the missing leg is asked of it.
+    """
+
+    def test_a_queued_proposal_announcement_reports_an_anchor_pending(self):
+        report = run_announcer("""
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+        """)
+        assert report["anchorPending"] is True
+
+    def test_it_stays_pending_while_the_proposal_waits_behind_another_item(self):
+        """Queued, not merely current: an escalation promoted ahead of a
+        proposal still lands inside the window the guard exists to protect."""
+        report = run_announcer("""
+            announcer.announce("The voice service reported an error.", { errorNotice: true });
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+        """)
+        assert report["pending"] == 2
+        assert report["anchorPending"] is True
+
+    def test_it_clears_once_the_proposal_has_actually_been_spoken(self):
+        """The false-reject half. The leg must open again the moment the
+        anchor fires, or the gate's own TTL is no longer the bound on how long
+        the buddy can be muted — a second, unbounded mute would sit in front
+        of it."""
+        report = run_announcer("""
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            announcer.onResponseDone("To send it, say confirm tango.");
+        """)
+        assert report["anchorPending"] is False
+        assert [a["how"] for a in report["anchored"]] == ["model"]
+
+    def test_an_ordinary_announcement_never_reports_one(self):
+        report = run_announcer("""
+            announcer.announce("Two updates came in.", { inboxIds: ["m1"] });
+        """)
+        assert report["anchorPending"] is False
+
+    def test_the_page_wires_the_leg_into_can_interrupt(self):
+        page = client.page("buddy", "tok")
+        wiring = page.split("canInterrupt: ", 1)[1].split("\n", 1)[0]
+        assert "announcer.anchorPending()" in wiring
+        # The two legs #967 made unconditional must still be there — this is an
+        # addition, never a replacement.
+        assert "!ownerSpeaking" in wiring
+        assert "confirmGate.outstanding()" in wiring
+
+
+class TestTheFallbackDoesNotSpeakOverTheOwner:
+    """#978 item 3. "Never while the owner is speaking" held at GATE time and
+    nowhere else: the timer fires 6-12s later and spoke unconditionally.
+
+    Both halves are priced, and the false-reject half is why this is a bounded
+    deferral rather than a condition. A fallback that waits for silence
+    forever is a refusal the owner never hears — the exact failure the
+    default-on timer exists to make impossible. So: defer while they are
+    talking, up to a fixed count, then speak anyway. Talking over the owner
+    once beats never telling them.
+    """
+
+    def test_it_defers_while_the_owner_is_talking(self):
+        report = run_announcer("""
+            announcer.announce("I didn't hear the confirmation phrase.");
+            ownerIsSpeaking = true;
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert report["armed"] is True, "must re-arm, never simply drop"
+
+    def test_it_speaks_the_moment_they_stop(self):
+        report = run_announcer("""
+            announcer.announce("I didn't hear the confirmation phrase.");
+            ownerIsSpeaking = true;
+            fireTimers();
+            ownerIsSpeaking = false;
+            fireTimers();
+        """)
+        assert report["spoken"] == ["I didn't hear the confirmation phrase."]
+
+    def test_an_owner_who_never_stops_is_still_told(self):
+        """The bound. Without it a long monologue silently swallows a refusal
+        — and a refusal the owner never hears is the one outcome this whole
+        mechanism exists to rule out."""
+        report = run_announcer("""
+            announcer.announce("I didn't hear the confirmation phrase.");
+            ownerIsSpeaking = true;
+            for (let i = 0; i < 12; i++) fireTimers();
+        """)
+        assert report["spoken"] == ["I didn't hear the confirmation phrase."]
+
+    def test_the_owner_deferral_is_counted_separately_from_the_response_one(self):
+        """Two deferrals for two different reasons must not share a budget:
+        an announcement that already deferred once behind our own in-flight
+        audio still deserves its full owner-speaking grace, and vice versa."""
+        report = run_announcer("""
+            announcer.announce("I didn't hear the confirmation phrase.");
+            announcer.onResponseCreated();   // our audio may be mid-flight
+            fireTimers();                    // -> the sawCreate deferral
+            ownerIsSpeaking = true;
+            fireTimers();                    // -> an owner deferral, not a refusal to defer
+        """)
+        assert report["spoken"] == []
+        assert report["armed"] is True
+
+    def test_the_page_gives_the_announcer_the_owner_speaking_signal(self):
+        """The injected deps did not expose it, which is why the timer could
+        not check it at all."""
+        page = client.page("buddy", "tok")
+        deps = page.split("announcer = createAnnouncer({", 1)[1].split("});", 1)[0]
+        assert "ownerSpeaking:" in deps
+
+
+class TestStopTakesTheArmedTimerWithIt:
+    """#978 item 4. ``stop()`` nulled the announcer, but the armed
+    ``setTimeout`` closure survived it: 6s into "idle" the browser voice
+    speaks, and ``onSpoken(meta, "fallback")`` anchors the proposal on the
+    bridge — closing the NEXT session's volunteering gate for up to 120s over
+    a proposal nobody is answering. d45601b covered page-lifetime strays;
+    ``disarm`` was only ever reachable from ``onResponseDone``/``cancel``.
+    """
+
+    def test_teardown_disarms_the_current_item(self):
+        report = run_announcer("""
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            announcer.teardown();
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert report["armedTimers"] == 0
+
+    def test_teardown_never_reports_anything_as_spoken(self):
+        """A torn-down item was NOT heard, and the anchor is the one thing
+        that must never be told otherwise."""
+        report = run_announcer("""
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            announcer.teardown();
+            fireTimers();
+        """)
+        assert report["anchored"] == []
+
+    def test_teardown_drops_the_queue_too(self):
+        report = run_announcer("""
+            announcer.announce("first", { anchor: "p1" });
+            announcer.announce("second", { inboxIds: ["m1"] });
+            announcer.teardown();
+            fireTimers();
+        """)
+        assert report["pending"] == 0
+        assert report["spoken"] == []
+
+    def test_the_page_tears_the_announcer_down_before_dropping_it(self):
+        page = client.page("buddy", "tok")
+        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
+        assert "announcer.teardown()" in stop_body
+        assert stop_body.index("announcer.teardown()") < stop_body.index(
+            "announcer = null"
+        )
+
+
+class TestASilentlyFailedAnnouncementIsRetried:
+    """#978 item 5. ``speechSynthesis`` fails silently — the code says so
+    itself — and ``utterance.onerror`` logged to the DOM without firing
+    ``onSpokenAloud``. So an inbox notice was neither HEARD nor ACKED, yet its
+    id sat in ``inFlight`` for the rest of the session and suppressed every
+    later tick: the comment promising "the unheard notice is retried" was
+    describing a path the code did not have.
+    """
+
+    def test_a_failed_browser_voice_reports_not_spoken(self):
+        report = run_announcer("""
+            speakFails = true;
+            announcer.announce("Two updates came in.", { inboxIds: ["m1"] });
+            fireTimers();
+        """)
+        assert report["anchored"] == [], "a failed utterance was never heard"
+        assert [m["inboxIds"] for m in report["notSpoken"]] == [["m1"]]
+
+    def test_a_successful_one_still_reports_spoken_only(self):
+        """The must-fail control for the assertion above: if onNotSpoken fired
+        on the success path too, every test here would pass for the wrong
+        reason."""
+        report = run_announcer("""
+            announcer.announce("Two updates came in.", { inboxIds: ["m1"] });
+            fireTimers();
+        """)
+        assert report["notSpoken"] == []
+        assert [a["how"] for a in report["anchored"]] == ["fallback"]
+
+    def test_the_notice_is_volunteered_again_on_a_later_tick(self):
+        """The property the comment claimed. ``noticeFailed`` releases the
+        id, so the next gated tick says it again — the message is not lost
+        for the session over a browser-voice failure."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "docs", kind: "done", text: "draft ready" }];
+            await notifier.pollOnce();
+            const meta = announcedCalls[0].meta;
+            notifier.noticeFailed(meta);
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        assert report["cursor"] == 0, "never acked — it was never heard"
+
+    def test_without_the_release_it_is_suppressed_forever(self):
+        """The control. Same script, no ``noticeFailed`` — one announcement,
+        which is the defect."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "docs", kind: "done", text: "draft ready" }];
+            await notifier.pollOnce();
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+
+    def test_a_heard_notice_is_never_released_by_a_later_failure(self):
+        """``seen`` is what settles a notice, and it outranks this: releasing
+        an id the owner HAS heard would replay it."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "docs", kind: "done", text: "draft ready" }];
+            await notifier.pollOnce();
+            const meta = announcedCalls[0].meta;
+            await notifier.noticeSpoken(meta);
+            notifier.noticeFailed(meta);
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+
+    def test_the_page_routes_a_browser_voice_error_back(self):
+        page = client.page("buddy", "tok")
+        deps = page.split("announcer = createAnnouncer({", 1)[1].split("      onSpoken,", 1)[0]
+        assert "onSpeakFailed" in deps, "the speak dep must take a failure callback"
+        assert "onNotSpoken" in page
+        handler = page.split("function onNotSpoken(meta)", 1)[1].split("\n}", 1)[0]
+        assert "noticeFailed" in handler
+
+
+class TestTheStopTimeRaceCannotStrandAStray:
+    """#978 item 6. ``pollOnce`` is not cancellable mid-flight. After
+    ``stop()`` the full gate fails but ``canInterrupt`` could still pass, and
+    ``announce`` with a null announcer did a bare ``speechSynthesis.speak`` —
+    no meta, no ``onSpoken``, never acked, never seen. Being cursor-past, the
+    spool will never return those replies: the ``strays`` array is their only
+    way back to the owner's ear, and this path emptied it into nothing.
+    """
+
+    def test_a_poll_resolving_after_stop_announces_nothing(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "wedged" }];
+            const inFlight = notifier.pollOnce();
+            notifier.stop();
+            await inFlight;
+        """)
+        assert report["announced"] == []
+
+    def test_it_never_takes_a_stray_out_of_the_array(self):
+        """The invariant the array exists for. A stray dropped here is lost
+        for good — the cursor is already past it, so the spool will never
+        return it. The stopped check therefore runs BEFORE the pull, not after
+        it: putting them back would work too, but only if every later return
+        path remembered to."""
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "docs", kind: "escalation", text: "still open" });
+            const inFlight = notifier.pollOnce();
+            notifier.stop();
+            await inFlight;
+        """)
+        assert report["announced"] == []
+        assert report["strays"] == 1
+
+    def test_a_stray_survives_to_the_next_session(self):
+        """Whole-loop: the array is page-lifetime, so the notifier built after
+        a reconnect finds it and says it."""
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "docs", kind: "done", text: "still open" });
+            const inFlight = notifier.pollOnce();
+            notifier.stop();
+            await inFlight;
+            notifier = makeNotifier();
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 1
+        assert "still open" in report["announced"][0]["text"]
+
+    def test_the_page_will_not_announce_through_a_dead_announcer(self):
+        """The second half of the fix: even if a tick did get through, the
+        interrupt gate now requires a live announcer, so nothing reaches the
+        bare speechSynthesis path with inbox meta attached."""
+        page = client.page("buddy", "tok")
+        wiring = page.split("canInterrupt: ", 1)[1].split("\n", 1)[0]
+        assert "!!announcer" in wiring
+
+
+class TestCarriedTheReasonIsNotDecidedByStopwords:
+    """#978 item 7. Overlap ≥ 0.6 over raw tokens, with duplicates
+    double-counting. The greeting is ~7/9 stopwords, so an unrelated VAD reply
+    that happens to share them verdicts "the model said it" and DISARMS —
+    which in the greeting's case means the greet-as-health-check (b4446fb)
+    reports the scripted-speech path healthy when the greeting never happened,
+    and the browser voice that would have said MODEL_AUDIO_DEAD never fires.
+
+    The pricing runs the other way from most guards here: tightening this
+    moves errors from "silently believed spoken" to "said twice". A paraphrase
+    that drops content words now falls through to the fallback voice, so the
+    owner hears it in a robot voice — possibly after the model already said
+    something like it. Double-speak is the cheap failure; silence is not.
+    """
+
+    def test_the_greeting_is_not_disarmed_by_a_stopword_heavy_reply(self):
+        report = run_announcer("""
+            announcer.announce("Hey, I'm listening. What's on your mind?",
+                               { greeting: true }, "MODEL AUDIO DEAD");
+            announcer.onResponseDone("I'm not sure what's on your mind today");
+            fireTimers();
+        """)
+        assert report["spoken"] == ["MODEL AUDIO DEAD"]
+        assert [a["how"] for a in report["anchored"]] == ["fallback"]
+
+    def test_the_real_greeting_still_disarms_it(self):
+        """The false-reject half, and the reason this is a weighting and not a
+        stricter threshold: the greeting the model actually speaks must still
+        count, or every healthy session speaks MODEL_AUDIO_DEAD."""
+        report = run_announcer("""
+            announcer.announce("Hey, I'm listening. What's on your mind?",
+                               { greeting: true }, "MODEL AUDIO DEAD");
+            announcer.onResponseDone("Hey — I'm listening. What's on your mind?");
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert [a["how"] for a in report["anchored"]] == ["model"]
+
+    def test_a_proposal_is_not_anchored_by_a_stopword_echo(self):
+        """The same mechanism on the path that costs the most: a false disarm
+        here anchors a proposal on a response that never stated it, and the
+        owner's correct nonce is then judged against a proposal they were
+        never read."""
+        report = run_announcer("""
+            announcer.announce("To send it to the orchestrator, say confirm tango.",
+                               { anchor: "p1" }, "To send it, say the word I gave you.");
+            announcer.onResponseDone("Do you want me to send it to the orchestrator or not");
+        """)
+        assert report["anchored"] == []
+        assert report["armed"] is True
+
+    def test_repeated_words_cannot_pad_the_overlap(self):
+        """Duplicates double-counted, so a reply repeating one shared word
+        could carry the score on its own."""
+        report = run_announcer("""
+            announcer.announce("Send the report to the reviewer now",
+                               { anchor: "p1" });
+            announcer.onResponseDone("the the the the the the the the");
+        """)
+        assert report["anchored"] == []
+
+    def test_an_all_stopword_script_can_still_be_verified(self):
+        """The degenerate case the weighting must not break: if a scripted
+        line has NO content words, dropping them all would leave nothing to
+        compare and the announcement could never disarm — an unconditional
+        double-speak on every such line."""
+        report = run_announcer("""
+            announcer.announce("What is it about?");
+            announcer.onResponseDone("What is it about?");
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+
+    def test_every_spine_line_the_model_speaks_verbatim_still_disarms(self):
+        """The broad false-reject sweep. Whatever the weighting is, saying the
+        line EXACTLY must always count — otherwise the fallback doubles every
+        refusal the model gets right."""
+        from agentwire.voice_layer import confirm as confirm_mod
+
+        for reason, line in confirm_mod.SPOKEN.items():
+            report = run_announcer(f"""
+                announcer.announce({json.dumps(line)});
+                announcer.onResponseDone({json.dumps(line)});
+                fireTimers();
+            """)
+            assert report["spoken"] == [], reason
+
+
+class TestTheCommentsDescribeTheCodeTheySitOn:
+    """The nits, pinned. A false sentence at a use site is how the next
+    reviewer reads the wrong mechanism as the shipped one — this module's
+    recurring failure, and the reason each of these is asserted rather than
+    merely fixed.
+    """
+
+    def test_the_wait_outcomes_comment_names_all_three(self):
+        """``in_flight`` became a wait outcome in #987 and the enumeration at
+        the dispatch site still said two."""
+        page = client.page("buddy", "tok")
+        dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
+        dispatch = dispatch.split("function spokenText", 1)[0]
+        assert "pending_transcript / not_announced)" not in dispatch
+        for name in ("pending_transcript", "not_announced", "in_flight"):
+            assert name in dispatch, name
+
+    def test_nothing_in_the_client_branches_on_a_wait_outcome_by_name(self):
+        """Why the enumeration above is a comment fix and not a code fix: the
+        router keys on ``confirm_terminal``, which the spine sets for every
+        non-wait outcome, so a third wait outcome needed no dispatch change.
+        This is the assertion that made that safe to claim."""
+        page = client.page("buddy", "tok")
+        script = page.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        code = "\n".join(
+            line for line in script.splitlines() if not line.strip().startswith("//")
+        )
+        for name in ("pending_transcript", "not_announced", "in_flight",
+                     "owner_should_wait"):
+            assert name not in code, f"{name} is branched on, not just described"
+
+    def test_the_outcome_router_comment_does_not_claim_to_hold_state(self):
+        """It holds none — its own header says the opposite, and the guess it
+        replaced (remember the last proposal's session) is the bug #966 fixed."""
+        page = client.page("buddy", "tok")
+        preamble = page.split("const outcomeRouter = createOutcomeRouter", 1)[0]
+        assert "holds the most recent proposal's target session" not in preamble
+
+    def test_the_interrupt_comment_does_not_overstate_pre_emption(self):
+        page = client.page("buddy", "tok")
+        assert "an escalation may pre-empt the buddy's own\n      // speech" not in page
+
+    def test_the_module_docstring_stamps_utterances_at_speech_start(self):
+        """The docstring said ``input_audio_buffer.committed``, which is the
+        ordering the whole clock change exists to reject."""
+        doc = client.__doc__
+        assert "an utterance at ``input_audio_buffer.committed``" not in doc
+        assert "input_audio_buffer.speech_started" in doc
+
+    def test_the_ring_docstring_says_no_prior_speech_started(self):
+        from agentwire.voice_layer import transcript as transcript_mod
+
+        assert "a\ntranscript arriving with no prior commit" not in transcript_mod.__doc__
+        assert "no prior ``speech_started``" in transcript_mod.__doc__
+
+
+# =============================================================================
+# #993 review — F2 to F6
+# =============================================================================
+
+
+class TestTheBrowserVoiceErrorIsActuallyWired:
+    """Review F2. A MUTATION SURVIVED: deleting the call from
+    ``utterance.onerror`` left the whole suite green. That one line is the
+    only wire between the browser's error event and the entirety of item 5 —
+    the node tests exercise the announcer's failure leg with a fake ``speak``,
+    and the page pin asserted the parameter NAME in the signature and that
+    ``onNotSpoken`` reaches ``noticeFailed``, but nothing asserted the handler
+    in between invokes anything.
+
+    This is not the browser half that cannot be verified here. It is a
+    page-source pin, the same technique the clock origin uses.
+    """
+
+    def test_the_error_handler_invokes_the_failure_callback(self):
+        page = client.page("buddy", "tok")
+        handler = page.split("utterance.onerror = (event) => {", 1)[1]
+        handler = handler.split("};", 1)[0]
+        assert "onSpeakFailed()" in handler
+
+    def test_the_success_handler_still_invokes_the_spoken_one(self):
+        """The control: an assertion that only ever looked at onerror would
+        pass just as well with onend gutted."""
+        page = client.page("buddy", "tok")
+        handler = page.split("utterance.onend = () => {", 1)[1].split("};", 1)[0]
+        assert "onSpokenAloud()" in handler
+
+
+class TestAFailedStrayIsPutBack:
+    """Review F3. ``pollOnce`` SPLICES a stray out of the array when it pulls
+    one, and a stray is cursor-past: the spool will never return it. Releasing
+    only the id from ``inFlight`` therefore leaves the message gone from both
+    places, so "the next gated tick says it again" was FALSE for exactly the
+    class that becomes strays — escalations, the one kind that emails the
+    owner on dead-letter.
+
+    ``test_it_never_takes_a_stray_out_of_the_array`` forbids this loss, and
+    its own docstring named the trap: putting them back works "only if every
+    later return path remembered to". This is the return path that did not.
+    """
+
+    def test_a_failed_stray_is_volunteered_again(self):
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
+                          text: "a done report dead-lettered" });
+            await notifier.pollOnce();
+            notifier.noticeFailed(announcedCalls[0].meta);
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        assert "dead-lettered" in report["announced"][1]["text"]
+
+    def test_it_is_back_in_the_array_not_merely_re_announced(self):
+        """The array is the page-lifetime store that survives a reconnect. An
+        id released into nothing is announced once more and then gone."""
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
+                          text: "a done report dead-lettered" });
+            await notifier.pollOnce();
+            notifier.noticeFailed(announcedCalls[0].meta);
+        """)
+        assert report["strays"] == 1
+
+    def test_it_is_not_put_back_twice(self):
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
+                          text: "wedged" });
+            await notifier.pollOnce();
+            const meta = announcedCalls[0].meta;
+            notifier.noticeFailed(meta);
+            notifier.noticeFailed(meta);
+        """)
+        assert report["strays"] == 1
+
+    def test_a_heard_stray_is_never_put_back(self):
+        """``seen`` outranks the release, here as everywhere: re-queueing a
+        stray the owner HAS heard replays it with no cursor to suppress it.
+
+        The array is read BEFORE the next poll, and that is the whole test.
+        The first version ended with a trailing ``pollOnce()`` and passed
+        whether the guard was there or not: the poll pulls the wrongly-restored
+        stray, drops it for being ``seen``, and leaves the array at 0 either
+        way — laundering the very state under test. It was counted as a pin
+        and pinned nothing (mutation: removing ``if (seen[id]) return;``
+        survived all 625 voice tests).
+        """
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
+                          text: "wedged" });
+            await notifier.pollOnce();
+            const meta = announcedCalls[0].meta;
+            await notifier.noticeSpoken(meta);
+            notifier.noticeFailed(meta);
+            logs.push("strays after failing a HEARD stray: " + strays.length);
+        """)
+        assert "strays after failing a HEARD stray: 0" in report["logs"]
+        assert len(report["announced"]) == 1
+
+    def test_the_same_shape_unheard_DOES_come_back(self):
+        """The discriminator for the assertion above. Identical script minus
+        the ``noticeSpoken``, read at the same instant: the array must be 1,
+        or the test above would pass simply because nothing is ever restored.
+        """
+        report = run_notifier("""
+            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
+                          text: "wedged" });
+            await notifier.pollOnce();
+            notifier.noticeFailed(announcedCalls[0].meta);
+            logs.push("strays after failing an UNHEARD stray: " + strays.length);
+        """)
+        assert "strays after failing an UNHEARD stray: 1" in report["logs"]
+
+    def test_a_spool_message_is_not_pushed_into_the_strays_array(self):
+        """The other direction. A message still in the spool needs only the
+        inFlight release — the cursor never moved. Pushing it into strays too
+        would announce it twice once the cursor finally advances."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "docs", kind: "done", text: "draft ready" }];
+            await notifier.pollOnce();
+            notifier.noticeFailed(announcedCalls[0].meta);
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        assert report["strays"] == 0
+
+
+class TestTheHandshakeGateCoversTheFallbackSpeech:
+    """Review F4. ``armFallback`` nulls ``current`` BEFORE calling ``speak``,
+    and the real ``speak`` is asynchronous — ``onSpokenAloud`` runs from
+    ``utterance.onend``. In between, ``anchorPending()`` and
+    ``confirmGate.outstanding()`` are both false, so ``canInterrupt`` passes
+    and an alarm goes out while the browser voice is still saying "...say
+    confirm tango". The window is roughly an utterance long against a 5s poll.
+
+    The unit harness could not see it: its ``speak`` called back
+    synchronously, so the window had zero width. That is the fixture-shaped
+    blind spot, and it is closed here (``speakDefers``/``finishSpeech``)
+    before the behaviour is asserted — a pin written against the old fixture
+    would be theatre.
+    """
+
+    def test_the_proposal_is_still_pending_while_the_voice_is_speaking(self):
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            fireTimers();                    // the fallback starts speaking
+            logs.push("mid-speech: " + announcer.anchorPending());
+            finishSpeech();
+            logs.push("after-speech: " + announcer.anchorPending());
+        """)
+        assert "mid-speech: true" in report["logs"]
+        assert "after-speech: false" in report["logs"]
+
+    def test_the_control_that_the_old_fixture_could_not_have_caught(self):
+        """With a synchronous speak there is no window at all, so this shape
+        reads identical whether the fix is present or not. Stated so the pin
+        above cannot be quietly reverted to the cheaper fixture."""
+        report = run_announcer("""
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            fireTimers();
+            logs.push("mid-speech: " + announcer.anchorPending());
+        """)
+        assert "mid-speech: false" in report["logs"]
+
+    def test_the_buddy_counts_as_speaking_while_the_voice_runs(self):
+        """The same window on the FULL gate: canSpeak keys on pending(), and
+        a notice volunteered mid-fallback talks over the buddy's own voice."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("Two updates came in.", { inboxIds: ["m1"] });
+            fireTimers();
+            logs.push("mid-speech pending: " + announcer.pending());
+            finishSpeech();
+            logs.push("after-speech pending: " + announcer.pending());
+        """)
+        assert "mid-speech pending: 1" in report["logs"]
+        assert "after-speech pending: 0" in report["logs"]
+
+    def test_a_failed_utterance_also_ends_the_window(self):
+        """The false-reject half. If only the success path cleared it, a
+        browser voice that errored would leave the gate shut for the rest of
+        the session — an unbounded mute in front of the TTL."""
+        report = run_announcer("""
+            speakDefers = true;
+            speakFails = true;
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            fireTimers();
+            finishSpeech();
+            logs.push("after-failure: " + announcer.anchorPending());
+        """)
+        assert "after-failure: false" in report["logs"]
+        assert report["anchored"] == []
+
+    def test_an_utterance_that_never_ends_is_watchdogged(self):
+        """The false-reject half of F4's own fix, and it is the expensive one.
+
+        ``speechSynthesis`` can drop an utterance without firing ``onend`` OR
+        ``onerror``. Since this window gates volunteering, believing it
+        forever is an UNBOUNDED mute — strictly worse than the one
+        interjection the window exists to prevent. So the belief expires.
+        """
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            fireTimers();                    // the fallback speaks; nothing ends
+            logs.push("mid-speech: " + announcer.anchorPending());
+            fireTimers();                    // ...and the watchdog comes due
+            logs.push("after-watchdog: " + announcer.anchorPending());
+            logs.push("after-watchdog pending: " + announcer.pending());
+        """)
+        assert "mid-speech: true" in report["logs"]
+        assert "after-watchdog: false" in report["logs"]
+        assert "after-watchdog pending: 0" in report["logs"]
+        assert any("no end event within" in line for line in report["logs"])
+
+    def test_a_real_end_event_cancels_the_watchdog(self):
+        """The control: a watchdog left armed after a normal utterance would
+        fire into a cleared state and log a failure that did not happen."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            fireTimers();
+            finishSpeech();
+        """)
+        assert report["armedTimers"] == 0
+        assert not any("no end event" in line for line in report["logs"])
+
+    def test_a_torn_down_announcer_reports_nothing_pending(self):
+        """stop() during fallback speech must not leave the window latched."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("To send it, say confirm tango.", { anchor: "p1" });
+            fireTimers();
+            announcer.teardown();
+            logs.push("after-teardown: " + announcer.anchorPending());
+        """)
+        assert "after-teardown: false" in report["logs"]
+
+
+class TestTheDeferralBoundIsWhatItSays:
+    """Review F5. The two deferrals STACK — the owner-speaking one is checked
+    first and re-arms, and the in-flight one is still available on the
+    re-armed timer. So the worst case is 5 fires, not 4, and the stated
+    ``fallbackMs * (1 + maxOwnerDeferrals)`` was short by one whole interval.
+
+    Pinned rather than restructured: stacking is CORRECT — the two deferrals
+    answer different questions ("is the owner talking" and "is this our own
+    audio still playing"), and making them share a budget would let a
+    monologue consume the grace that stops the buddy speaking over itself.
+    The defect was the arithmetic in the comment, so the number is now the
+    thing under test.
+    """
+
+    def test_the_worst_case_is_five_intervals(self):
+        report = run_announcer("""
+            announcer.announce("I didn't hear the confirmation phrase.");
+            announcer.onResponseCreated();     // our own audio may be in flight
+            ownerIsSpeaking = true;
+            for (let i = 0; i < 4; i++) {
+                fireTimers();
+                logs.push("fire " + (i + 1) + " spoken=" + spoken.length);
+            }
+            fireTimers();
+            logs.push("fire 5 spoken=" + spoken.length);
+        """)
+        for n in range(1, 5):
+            assert f"fire {n} spoken=0" in report["logs"]
+        assert "fire 5 spoken=1" in report["logs"]
+
+    def test_the_stated_bound_matches(self):
+        page = client.page("buddy", "tok")
+        assert "fallbackMs * (1 + maxOwnerDeferrals)" not in page
+        assert "fallbackMs * (2 + maxOwnerDeferrals)" in page
+
+
+class TestTheDedupHalfOfTheWeightingIsPinned:
+    """Review F6. Dropping ``uniq`` from ``want`` survived the whole suite:
+    the only repetition test used a STOPWORD, which the weighting filters out
+    before the dedup can matter, so that half was never exercised.
+
+    It is not a redundant belt: a proposal announcement legitimately repeats
+    its nonce for clarity, and without the dedup a one-line model echo of just
+    the nonce scores 0.6 and ANCHORS the proposal — the announcer reporting
+    that a proposal the model never stated was spoken.
+    """
+
+    def test_a_nonce_echo_does_not_anchor_a_repeated_proposal(self):
+        report = run_announcer("""
+            announcer.announce(
+              "Say confirm tango. Again, that's confirm tango. " +
+              "To send it, say confirm tango.",
+              { anchor: "p1" });
+            announcer.onResponseDone("confirm tango");
+        """)
+        assert report["anchored"] == []
+        assert report["armed"] is True
+
+    def test_the_same_line_said_in_full_still_disarms(self):
+        """The false-reject half: repetition in the script must not make the
+        script harder for the model to satisfy honestly."""
+        report = run_announcer("""
+            const line = "Say confirm tango. Again, that's confirm tango. " +
+                         "To send it, say confirm tango.";
+            announcer.announce(line, { anchor: "p1" });
+            announcer.onResponseDone(line);
+            fireTimers();
+        """)
+        assert report["spoken"] == []
+        assert [a["how"] for a in report["anchored"]] == ["model"]
+
+
+class TestTheSpeakingWatchdogScalesWithTheUtterance:
+    """Review N3. ``speakingMaxMs`` was flat and its comment claimed it was
+    "long enough to cover any real utterance". That is false for exactly the
+    case the notifier is built to produce: ``composeNotice`` coalesces up to
+    240 characters PER MESSAGE, so three replies is around a minute of speech
+    and five is several — against a 30s watchdog, demonstrated firing
+    mid-utterance.
+
+    Mitigated rather than catastrophic (``speechSynthesis`` queues natively,
+    and the anchor still fires at the real ``onend``), but the fire reopens
+    both gates and lets the MODEL start a response over the browser voice —
+    the two-voices defect, reached through the mechanism added to bound a
+    mute. So the bound scales instead of the sentence being narrowed.
+    """
+
+    def _watchdog_ms(self, text_js: str) -> int:
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({text_js});
+            fireTimers();
+        """)
+        assert len(report["armedMs"]) == 1
+        return report["armedMs"][0]
+
+    def test_a_long_notice_gets_a_longer_budget(self):
+        short = self._watchdog_ms(json.dumps("Done."))
+        long_notice = self._watchdog_ms(json.dumps("x" * 1200))
+        assert long_notice > short
+
+    def test_the_budget_outlasts_a_five_message_batch(self):
+        """The concrete shape: five coalesced replies at the 240-char clip.
+        At a realistic 15 characters a second that is ~80s of speech, so a
+        watchdog that fires before then is firing mid-utterance."""
+        ms = self._watchdog_ms(json.dumps("y" * (5 * 240)))
+        assert ms > 80_000
+
+    def test_a_flat_thirty_seconds_would_not_have(self):
+        """The control that makes the number above mean something."""
+        ms = self._watchdog_ms(json.dumps("y" * (5 * 240)))
+        assert ms > 30_000
+
+    def test_the_rate_errs_slow(self):
+        """The asymmetry, pinned. Over-estimating only delays a backstop that
+        matters when the browser has already dropped the utterance;
+        under-estimating overlaps two voices on every ordinary long notice."""
+        chars = 1000
+        ms = self._watchdog_ms(json.dumps("z" * chars))
+        # Slower than 10 characters a second, i.e. slower than any real voice.
+        assert (ms / chars) > 100
+
+    def test_a_short_notice_still_gets_a_usable_floor(self):
+        """The other half: an empty or one-word utterance must not end up with
+        a near-zero watchdog that fires before it starts."""
+        assert self._watchdog_ms(json.dumps("Hi.")) >= 30_000

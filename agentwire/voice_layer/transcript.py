@@ -53,10 +53,14 @@ separate ``POST /utterance`` calls, and the confirm arrives as a third
 (``POST /tool``). The client awaits the transcript forward before dispatching
 any function call (Rv2c), but the bridge must not *depend* on that: a commit
 that has not arrived yet leaves the entry absent rather than mis-stamped, and a
-transcript arriving with no prior commit is recorded ``estimated`` and is never
-usable as an approval. Failing closed there is deliberate — if the commit
-events stopped arriving, confirms stop working loudly rather than silently
-losing their ordering guarantee.
+transcript arriving with no prior ``speech_started`` is recorded ``estimated``
+and is never usable as an approval. (The COMMIT is not what decides that, and
+saying so here described a gate this module deliberately does not have —
+:meth:`TranscriptRing.transcribe` flags ``estimated`` on a missing
+``speech_started_seq``, because that is the one the ordering predicate reads.)
+Failing closed there is deliberate — if the ``speech_started`` events stopped
+arriving, confirms stop working loudly rather than silently losing their
+ordering guarantee.
 
 Thread safety
 -------------
@@ -197,6 +201,42 @@ class TranscriptRing:
         with self._condition:
             self._high_seq = max(self._high_seq, seq)
             return self._high_seq
+
+    def reserve_epoch(self, gap: int, ceiling: int) -> int:
+        """Claim an exclusive block of *gap* sequences. ONE lock, atomically.
+
+        This is what ``/mint`` hands a new page as its clock origin, and the
+        atomicity is the whole point rather than a nicety. ``high_seq`` read
+        and then ``note_seq`` written is TWO acquisitions with a window
+        between them, and two concurrent mints on the bridge's
+        ``ThreadingHTTPServer`` can both read the same high and both be given
+        the same base — which is precisely the "second tab, two interleaved
+        counters" case the epoch exists to rule out, reintroduced inside the
+        fix for it. It does not reproduce under ordinary threading (the window
+        is a couple of bytecodes) and that is not the standard here: single-use
+        in :class:`~agentwire.voice_layer.confirm.ConfirmSpine` is a property
+        of its claim rather than of its timing for the same reason.
+
+        Returns 0 — never a usable base — when the reservation would cross
+        *ceiling*. The number leaves Python for the page's own counter, where
+        past 2**53 an increment silently stops advancing, so exhaustion has to
+        be an error the page refuses on rather than a number it counts from.
+
+        A BLOCK, and the ceiling test says so: the page counts UP from its
+        base, so what has to fit under *ceiling* is ``base + gap``, not
+        ``base``. Testing the base alone let the final reservation land exactly
+        on the ceiling — a page that mints successfully and then has zero
+        usable sequences, every forward silently refused. Unreachable in
+        practice (~35 million mints on one bridge process) and that is not the
+        point: the sentence above claims a block, so the code has to reserve
+        one.
+        """
+        with self._condition:
+            base = self._high_seq + gap
+            if base + gap > ceiling:
+                return 0
+            self._high_seq = base
+            return base
 
     @property
     def high_seq(self) -> int:

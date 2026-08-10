@@ -42,7 +42,11 @@ proposal but transcribed after it would stamp as postdating it, and the
 predicate silently inverts. So this page assigns a monotonic ``nextSeq()`` in
 event order and stamps both sides from it:
 
-- an utterance at ``input_audio_buffer.committed`` (the audio boundary);
+- an utterance at ``input_audio_buffer.speech_started`` (the INTENT time, not
+  the audio boundary — the commit fires at the END of an utterance, so ordering
+  on it approves the barge-in case the gate exists to refuse; see
+  :mod:`~agentwire.voice_layer.transcript`). The commit is recorded too, and
+  never compared;
 - a proposal at the ``response.done`` of the turn in which the buddy SPOKE it,
   which is when the owner actually heard what they would be approving. Barge-in
   is native here, so anchoring at tool-call time would let an interrupting
@@ -103,15 +107,90 @@ function createAnnouncer(deps) {
   // said it. This is what the proposal anchor is driven from: see the client's
   // onSpoken handler and BLOCKING 2 in the phase-2 review.
   var onSpoken = deps.onSpoken || function () {};
+  // The other half of onSpoken, and it did not exist: speechSynthesis reports
+  // failure through `onerror` and the client logged it without telling anyone,
+  // so an announcement that was neither heard NOR acked stayed suppressed for
+  // the rest of the session (#978 item 5). Called with the meta of an item
+  // there is positive evidence was NOT spoken. Never called speculatively —
+  // "we cannot know" is the timer's job, not this one's.
+  var onNotSpoken = deps.onNotSpoken || function () {};
+  // Whether the OWNER is speaking right now. The gate check happens when an
+  // announcement is queued; the fallback speaks 6-12s later, and until this
+  // dep existed the timer could not re-check (#978 item 3).
+  var ownerSpeaking = deps.ownerSpeaking || function () { return false; };
   // How long to wait for the model to actually say it before falling back to
   // the browser's own speech synthesis. Generous enough for a normal spoken
   // turn, short enough that the owner is not left in silence wondering.
   var fallbackMs = deps.fallbackMs || 6000;
+  // How many times the fallback may stand down for an owner who is still
+  // talking. BOTH halves priced: without a bound, a long monologue swallows a
+  // refusal entirely, which is the one outcome the default-on timer exists to
+  // rule out — talking over the owner once beats never telling them.
+  //
+  // The worst case is fallbackMs * (2 + maxOwnerDeferrals), not (1 + …): this
+  // deferral is checked FIRST and re-arms, so the one-shot in-flight deferral
+  // below is still available on the re-armed timer and the two STACK. That is
+  // correct — they answer different questions ("is the owner talking" and "is
+  // this our own audio still playing"), and sharing a budget would let a
+  // monologue consume the grace that stops the buddy speaking over itself —
+  // but it makes the bound 5 intervals, and the arithmetic is now pinned by a
+  // test rather than asserted here.
+  var maxOwnerDeferrals =
+    deps.maxOwnerDeferrals === undefined ? 3 : deps.maxOwnerDeferrals;
+  // How long the browser voice may be believed to still be talking with no
+  // end event. speechSynthesis can drop an utterance without firing `onend`
+  // OR `onerror`, and `speaking` below gates volunteering — so without this
+  // the false-reject half is an UNBOUNDED mute, which is strictly worse than
+  // the interjection it prevents.
+  //
+  // SCALED BY LENGTH, because a flat bound is not "long enough for any real
+  // utterance" and saying so was false: composeNotice coalesces up to 240
+  // characters PER MESSAGE, so a three-reply batch is around a minute of
+  // speech and a five-reply batch several. A flat 30s watchdog fires
+  // mid-utterance, which reopens both gates and lets the MODEL start a
+  // response over the browser voice — the two-voices defect (#950), reached
+  // through the mechanism added to bound a mute.
+  //
+  // The per-character rate is deliberately SLOWER than any real voice (~7
+  // characters a second against a typical 15). The two directions are not
+  // symmetric: over-estimating only delays a backstop that matters solely
+  // when the browser has already silently dropped the utterance, while
+  // under-estimating produces the overlap on every ordinary long notice.
+  var speakingBaseMs = deps.speakingMaxMs || fallbackMs * 5;
+  var speakingMsPerChar =
+    deps.speakingMsPerChar === undefined ? 140 : deps.speakingMsPerChar;
+  function speakingBudget(text) {
+    return speakingBaseMs + String(text || "").length * speakingMsPerChar;
+  }
 
   var queue = [];
-  // { text, fallbackText, meta, timer, sawCreate, deferred }
+  // { text, fallbackText, meta, timer, speakTimer, sawCreate, deferred,
+  //   ownerDeferrals }
   var current = null;
   var responseActive = false;
+  //: Items whose FALLBACK AUDIO has started and not yet ended (review F4).
+  //: The real speak() is asynchronous — onSpokenAloud runs from
+  //: utterance.onend — and armFallback nulls `current` before calling it, so
+  //: between those two moments the announcer reported nothing pending at all:
+  //: canInterrupt passed and an escalation went out while the browser voice
+  //: was still saying "...say confirm tango". The unit fixture called back
+  //: synchronously, so that window had zero width and nothing could see it.
+  var speaking = [];
+
+  // Function words. They carry nothing about WHETHER the reason was stated,
+  // and they dominate a short conversational line — the greeting is 7 of its
+  // 9 tokens — so an unrelated reply that happened to share them scored a
+  // disarm (#978 item 7). Closed and small on purpose: this is a weighting,
+  // not a language model, and every word added to it is one the model no
+  // longer has to say.
+  var STOPWORDS = {};
+  ("a about all am an and any are as at be been but by can could did do does " +
+   "for from had has have he her him his how i if in is it its just me my no " +
+   "not of on or our out over re s she so some t than that the their them " +
+   "then there these they this to up us ve was we were what when which who " +
+   "why will with would you your m ll d o").split(" ").forEach(function (w) {
+    STOPWORDS[w] = true;
+  });
 
   // The model is told to say it exactly, but "exactly" is prompt compliance and
   // prompt compliance is not a mechanism — so verification is a word-overlap
@@ -123,8 +202,33 @@ function createAnnouncer(deps) {
     var norm = function (s) {
       return String(s).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\\s+/).filter(Boolean);
     };
-    var want = norm(text);
-    if (!want.length) return true;
+    var uniq = function (list) {
+      var out = [], seenWord = {};
+      list.forEach(function (w) {
+        if (!seenWord[w]) { seenWord[w] = true; out.push(w); }
+      });
+      return out;
+    };
+    var all = norm(text);
+    if (!all.length) return true;
+    // What must be echoed back: UNIQUE CONTENT words. Two fixes, one defect
+    // each (#978 item 7). Stopwords out, because a stopword-heavy script is
+    // matched by almost any sentence — the greeting's disarm was decided by
+    // "what's on your mind" and nothing else, so the greet-as-health-check
+    // reported the model-audio path healthy when the greeting never happened.
+    // Deduplicated, because the overlap counted repeats, so a reply saying one
+    // shared word eight times could carry the score on its own.
+    //
+    // Which way this errs, deliberately: a paraphrase that drops content words
+    // now falls through to the browser voice, so the owner hears it TWICE.
+    // Double-speak is the cheap failure here and believed-spoken silence is
+    // the expensive one, so the threshold stays where it was and only the
+    // thing being counted changed.
+    var want = uniq(all.filter(function (w) { return !STOPWORDS[w]; }));
+    // A line that is nothing BUT stopwords ("What is it about?") would
+    // otherwise have nothing left to compare and could never disarm — an
+    // unconditional double-speak on every such line. Compare its own tokens.
+    if (!want.length) want = uniq(all);
     var got = {};
     norm(transcript).forEach(function (w) { got[w] = true; });
     var hits = want.filter(function (w) { return got[w]; }).length;
@@ -152,6 +256,19 @@ function createAnnouncer(deps) {
   // "on failure, speak".
   function armFallback(item) {
     item.timer = setTimer(function () {
+      // NEVER OVER THE OWNER — re-checked HERE, not only at gate time. The
+      // gate that promised this ran when the announcement was queued; this
+      // fires 6-12s later, and the injected deps did not expose the signal at
+      // all, so the promise held for exactly the moment nobody was speaking
+      // (#978 item 3). Bounded, and the bound is the point: a fallback that
+      // waits for silence forever is a refusal the owner never hears.
+      if (ownerSpeaking() && item.ownerDeferrals < maxOwnerDeferrals) {
+        item.ownerDeferrals += 1;
+        onLog("fallback", "deferred — the owner is speaking (" +
+          item.ownerDeferrals + "/" + maxOwnerDeferrals + ")");
+        armFallback(item);
+        return;
+      }
       // ONE bounded deferral, on one narrow signal: a response was CREATED
       // after our announce went out and has not finished. That response is
       // plausibly the model speaking this very announcement, still mid-audio
@@ -179,15 +296,50 @@ function createAnnouncer(deps) {
       // USER transcript. A payload whose spoken text must not be echoable
       // into an approval (a proposal carrying its nonce) supplies a
       // fallback-safe variant; everything else falls through to `text`.
+      //
+      // And the failure leg, which did not exist: speechSynthesis reports
+      // `onerror` and the page merely logged it, so an announcement that was
+      // demonstrably NOT spoken was also never released — its id sat in the
+      // notifier's inFlight map and suppressed every later tick for the rest
+      // of the session (#978 item 5). A throw from speak() is different: it
+      // means we cannot know, and the existing "assume heard" reading is the
+      // safe one there — claiming not-spoken would replay a notice the owner
+      // may well have heard.
       var say = item.fallbackText || item.text;
-      try { speak(say, function () { onSpoken(item.meta, "fallback"); }); }
-      catch (e) { onSpoken(item.meta, "fallback"); }
+      // The buddy is SPEAKING from here until an end event says otherwise —
+      // armed before speak(), because a synchronous callback would otherwise
+      // clear a flag that had not been set yet. Watchdogged: an utterance
+      // dropped with no onend/onerror would leave the gates shut forever.
+      speaking.push(item);
+      var budget = speakingBudget(say);
+      item.speakTimer = setTimer(function () {
+        onLog("fallback", "no end event within " + budget + "ms");
+        stopSpeaking(item);
+      }, budget);
+      try {
+        speak(
+          say,
+          function () { stopSpeaking(item); onSpoken(item.meta, "fallback"); },
+          function () { stopSpeaking(item); onNotSpoken(item.meta); }
+        );
+      } catch (e) { stopSpeaking(item); onSpoken(item.meta, "fallback"); }
       pump();
     }, fallbackMs);
   }
 
   function disarm(item) {
     if (item && item.timer) { clearTimer(item.timer); item.timer = null; }
+  }
+
+  // The browser voice for this item is over — by its own end event, by its
+  // error, or by the watchdog. Idempotent: all three can be reached, and only
+  // the first one that arrives means anything.
+  function stopSpeaking(item) {
+    if (item && item.speakTimer) {
+      clearTimer(item.speakTimer);
+      item.speakTimer = null;
+    }
+    speaking = speaking.filter(function (it) { return it !== item; });
   }
 
   function pump() {
@@ -229,8 +381,23 @@ function createAnnouncer(deps) {
         timer: null,
         sawCreate: false,
         deferred: false,
+        ownerDeferrals: 0,
       });
       pump();
+    },
+    // Everything this announcer holds dies HERE, not by the page dropping its
+    // reference (#978 item 4). stop() nulled `announcer` and the armed
+    // setTimeout closure survived it: 6s into "idle" the browser voice spoke,
+    // and onSpoken(meta, "fallback") anchored the proposal on the bridge —
+    // closing the NEXT session's volunteering gate for up to 120s over a
+    // proposal nobody is answering. Nothing here reports anything as spoken:
+    // a torn-down item was not heard, and the anchor is the one thing that
+    // must never be told otherwise.
+    teardown: function () {
+      queue.forEach(disarm);
+      queue = [];
+      if (current) { disarm(current); current = null; }
+      speaking.slice().forEach(stopSpeaking);
     },
     // Withdraw announcements whose meta matches, queued or current (#963: the
     // owner speaking first CANCELS the greeting; queueing it behind them would
@@ -292,8 +459,28 @@ function createAnnouncer(deps) {
       current.sawCreate = false;
       return false;
     },
-    // Test/inspection surface.
-    pending: function () { return (current ? 1 : 0) + queue.length; },
+    // Is a PROPOSAL announcement still in the pipe — queued or mid-flight?
+    //
+    // The confirm gate closes at anchored(), i.e. once the proposal has been
+    // SPOKEN. Between the write tool returning and that moment the gate is
+    // still open, so an escalation ticking right then passed canInterrupt,
+    // queued behind the proposal, and pump() promoted it the instant
+    // anchoring closed the gate — an alarm spoken exactly between "say confirm
+    // tango" and the owner's answer (#978 item 2). The announcer is the only
+    // thing that can see that window, so canInterrupt asks it.
+    anchorPending: function () {
+      if (current && current.meta && current.meta.anchor) return true;
+      var carriesAnchor = function (it) { return !!(it.meta && it.meta.anchor); };
+      // `speaking` too: the fallback voice mid-utterance is the buddy STATING
+      // the proposal, which is the middle of the handshake by any reading.
+      return queue.some(carriesAnchor) || speaking.some(carriesAnchor);
+    },
+    // Test/inspection surface — and load-bearing: canSpeak keys on this, so
+    // an item whose fallback audio is still playing has to count, or a notice
+    // is volunteered straight over the buddy's own voice.
+    pending: function () {
+      return (current ? 1 : 0) + queue.length + speaking.length;
+    },
     armed: function () { return !!(current && current.timer); },
   };
 }
@@ -389,6 +576,13 @@ function createInboxNotifier(deps) {
 
   function pollOnce() {
     return fetchInbox().then(function (res) {
+      // STOPPED MID-FLIGHT. This promise is not cancellable, so a poll begun
+      // before stop() resolves after it — and the interrupt tier could still
+      // pass, handing an escalation to a null announcer for a bare
+      // speechSynthesis.speak with no meta: never acked, never seen, and
+      // cursor-past, so the spool will never return it (#978 item 6). Checked
+      // BEFORE the strays are pulled, so nothing leaves the array either.
+      if (stopped) return;
       if (!res || !res.success) {
         onLog("inbox", "poll failed: " + ((res && res.error) || "no response"));
         return;
@@ -411,6 +605,11 @@ function createInboxNotifier(deps) {
         if (take(strays[i])) pulled.push(strays.splice(i, 1)[0]);
         else i++;
       }
+      // Which of the announced ids came OUT of the strays array. A stray is
+      // cursor-past, so releasing it on failure is not enough — it has to go
+      // back in, and only the poll that took it knows which ones those were.
+      var wasStray = {};
+      pulled.forEach(function (m) { if (m && m.id) wasStray[m.id] = true; });
       var claimed = {};
       var fresh = pulled.concat((res.messages || []).filter(take)).filter(function (m) {
         if (!m || !m.id || seen[m.id] || inFlight[m.id] || claimed[m.id]) return false;
@@ -440,6 +639,7 @@ function createInboxNotifier(deps) {
       // actually told.
       announce(composeNotice(fresh), {
         inboxIds: ids,
+        strayIds: ids.filter(function (id) { return wasStray[id]; }),
         inboxMsgs: fresh.map(function (m) {
           return { id: m.id, from: m.from, kind: m.kind, text: m.text };
         }),
@@ -476,6 +676,40 @@ function createInboxNotifier(deps) {
     });
   }
 
+  // The announcement demonstrably did NOT reach the owner — the browser voice
+  // reported an error. Release the ids so the next gated tick says it again.
+  //
+  // This is what made the comment on `inFlight` true. It promised "the unheard
+  // notice is retried", but ids entered the map at ANNOUNCE time and never
+  // left it: speechSynthesis fails silently, `utterance.onerror` only logged,
+  // and so a notice that was neither heard nor acked was suppressed for the
+  // rest of the session (#978 item 5). `seen` still outranks this — releasing
+  // an id the owner HAS heard would replay it.
+  function noticeFailed(meta) {
+    if (!meta || !meta.inboxIds) return;
+    var body = {};
+    (meta.inboxMsgs || []).forEach(function (m) { if (m && m.id) body[m.id] = m; });
+    var cameFromStrays = {};
+    (meta.strayIds || []).forEach(function (id) { cameFromStrays[id] = true; });
+    var alreadyBack = {};
+    strays.forEach(function (m) { if (m && m.id) alreadyBack[m.id] = true; });
+    meta.inboxIds.forEach(function (id) {
+      if (seen[id]) return;
+      delete inFlight[id];
+      // A SPOOL message needs nothing more: the cursor never advanced (only
+      // noticeSpoken moves it), so the next peek returns it. A STRAY was
+      // spliced out of the array to be announced and the cursor is already
+      // past it, so releasing the id alone dropped it from BOTH places —
+      // "the next tick says it again" was false for exactly the class that
+      // becomes strays, which is escalations. Putting it back is the whole
+      // reason the array exists.
+      if (cameFromStrays[id] && !alreadyBack[id] && body[id]) {
+        alreadyBack[id] = true;   // idempotent: a second call must not double it
+        strays.push(body[id]);
+      }
+    });
+  }
+
   function schedule() {
     if (stopped) return;
     timer = setTimer(function () {
@@ -494,6 +728,7 @@ function createInboxNotifier(deps) {
     },
     pollOnce: pollOnce,
     noticeSpoken: noticeSpoken,
+    noticeFailed: noticeFailed,
   };
 }
 """
@@ -748,6 +983,16 @@ let responseActive = false;
 // The confirm gate's ordering predicate lives on this counter, not on a clock.
 // See the module docstring: a wall-clock comparison is between a receipt time
 // and an intent time, and it silently inverts.
+//
+// THE ORIGIN IS NOT OURS (#978). This variable is page-scoped and a reload
+// restarts it, while the ring and the spine live for the whole bridge run — so
+// a reloaded page anchored its proposals BELOW last session's utterances,
+// which are still in the ring, complete and unspent. They then reached the
+// judge as non-matching (burning attempts toward retiring a proposal the owner
+// was never asked about) and, worse, an old "no, hang on" landed
+// strictly-after the new match in the post-approval denial scan and
+// retroactively denied every legitimate approval. So start() seeds this from
+// the mint's `seq_base`: the bridge owns the origin, this page owns the order.
 let seqCounter = 0;
 const speechSeq = {};        // item_id -> the seq at which the owner BEGAN speaking
 const commitSeq = {};        // item_id -> the seq at which its audio committed
@@ -804,10 +1049,12 @@ const confirmGate = createConfirmGate({
   ttlMs: 120000,
 });
 
-// Page-lifetime like the gate and the ledger it drives: it holds the most
-// recent proposal's target session (the mismatch window — confirming an older
-// proposal after a newer propose — costs at most one wrongly-suppressed or
-// one extra mention, never a lost message).
+// Page-lifetime like the gate and the ledger it drives, and STATELESS — its
+// own header says so. Remembering the most recent proposal's target session is
+// precisely the client-side guess #966 removed: it retired the wrong session's
+// reminders whenever two proposals interleaved. Both legs now read the
+// payload — confirm_terminal for the gate, acted_session (frozen at propose)
+// for the ledger.
 const outcomeRouter = createOutcomeRouter({
   gate: confirmGate,
   ledger: reRaiseLedger,
@@ -958,6 +1205,34 @@ function onSpoken(meta, how) {
   forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
 }
 
+// The evidence-of-NOT-spoken counterpart to onSpoken (#978 item 5). Reached
+// only from the browser voice's own `onerror` — a positive report that the
+// utterance failed, never a guess. Everything keyed on "was this heard" has to
+// be told, or the announcement is neither delivered nor retried: the state it
+// leaves behind is indistinguishable from success.
+function onNotSpoken(meta) {
+  if (!meta) return;
+  if (meta.errorNotice) {
+    // Let a later error announce again; this one never reached the owner.
+    errorNoticePending = false;
+    return;
+  }
+  if (meta.inboxIds) {
+    // Release the ids so the next gated tick volunteers them again. NOT acked
+    // — the cursor never moved, because it only moves from onSpoken.
+    if (inboxNotifier) inboxNotifier.noticeFailed(meta);
+    return;
+  }
+  if (meta.anchor) {
+    // Nothing to retry: a proposal is announced once, and the spine's TTL is
+    // what ends it. What is left is to say so on screen rather than let the
+    // owner hear nothing and then be told `not_announced` for 120s.
+    log("error",
+      "proposal " + meta.anchor + " was never spoken — it cannot be approved",
+      "err");
+  }
+}
+
 function send(event) {
   if (!dc || dc.readyState !== "open") return false;
   dc.send(JSON.stringify(event));
@@ -1032,9 +1307,15 @@ async function handleFunctionCall(item) {
   // A terminal outcome from the write tools (confirm_terminal — set by the
   // spine for every gated write, so a second declared write reopens the gate
   // too) ends the confirm handshake and reopens the volunteering gate. A wait
-  // outcome (pending_transcript / not_announced) keeps the proposal live, so
-  // it keeps the gate closed; the TTL covers an owner who never answers at
-  // all. A QUEUED send is also the observable "acted on it" (#967) that
+  // outcome — pending_transcript, not_announced, or in_flight (#987, a
+  // duplicate confirm on a token the runner is already processing) — keeps the
+  // proposal live, so it keeps the gate closed; the TTL covers an owner who
+  // never answers at all. NOTHING HERE ENUMERATES THEM: the router keys on
+  // confirm_terminal, which the spine sets False for exactly this set, so
+  // #987 added a third wait outcome without touching a line of dispatch. That
+  // is the property to preserve — a client-side list of wait outcomes is the
+  // same false-reject trap as a client-side list of tool names.
+  // A QUEUED send is also the observable "acted on it" (#967) that
   // retires the target session's reminders — a cancel is not acting, so the
   // reminder stands. The router holds both rules.
   outcomeRouter.route(item.name, result);
@@ -1065,6 +1346,22 @@ async function start() {
   try {
     const session = await post("/mint", {});
     if (!session.success) throw new Error(session.error || "mint failed");
+    // The clock's ORIGIN, from the bridge (#978). Seeded here — before the
+    // data channel exists, so nothing has emitted an event and nothing has
+    // called nextSeq() yet. No `|| 0` default: a bridge that did not answer
+    // with a base is broken, and silently restarting at zero is the exact
+    // defect this closes.
+    //
+    // SAFE integer, not merely a number: `typeof Infinity === "number"` is
+    // true, and a counter at Infinity never advances and serializes every
+    // anchor as `null` — not_announced forever, silently. Anything at or past
+    // 2**53 has the same shape without the tell, since ++ stops advancing
+    // there. The bridge caps what it hands out (server.MAX_SEQ); this is the
+    // half that refuses to run on a base that got past it anyway.
+    if (!Number.isSafeInteger(session.seq_base) || session.seq_base < 0) {
+      throw new Error("mint returned an unusable sequence base");
+    }
+    seqCounter = session.seq_base;
 
     setStatus("requesting microphone…");
     micStream = await navigator.mediaDevices.getUserMedia({
@@ -1089,7 +1386,7 @@ async function start() {
       // "we tried and cannot know". `onend`/`onerror` are the one piece of
       // evidence actually available, and for the mechanism whose entire job is
       // that silence is unacceptable, taking it is cheap.
-      speak: (text, onSpokenAloud) => {
+      speak: (text, onSpokenAloud, onSpeakFailed) => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.onend = () => {
           log("speak", "browser voice finished", "tool");
@@ -1097,8 +1394,12 @@ async function start() {
         };
         utterance.onerror = (event) => {
           // Nothing left to escalate to, but the owner must not be left
-          // believing they were told: say so on screen and in the log.
+          // believing they were told: say so on screen and in the log — AND
+          // tell the announcer, which is what makes the retry real. Logging
+          // alone left the announcement neither heard nor released (#978
+          // item 5).
           log("error", "browser voice FAILED: " + (event && event.error), "err");
+          if (onSpeakFailed) onSpeakFailed();
         };
         // No cancel() first: speechSynthesis queues natively, and cancelling
         // here killed the PREVIOUS announcement mid-utterance — under a burst
@@ -1107,6 +1408,11 @@ async function start() {
         window.speechSynthesis.speak(utterance);
       },
       onSpoken,
+      onNotSpoken,
+      // The timer's own "never over the owner" re-check (#978 item 3). The
+      // gate ran when the announcement was queued; this is read 6-12s later,
+      // when it actually speaks.
+      ownerSpeaking: () => ownerSpeaking,
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (handle) => window.clearTimeout(handle),
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
@@ -1119,11 +1425,21 @@ async function start() {
       ackInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: true } }),
       announce: announce,
       canSpeak: () => !ownerSpeaking && !responseActive && !!announcer && announcer.pending() === 0 && !confirmGate.outstanding(),
-      // The interrupt tier (#967): an escalation may pre-empt the buddy's own
-      // speech — announce() cancels an in-flight response, which is the
-      // existing mechanism, not a new voice — but the owner-speaking and
-      // confirm-handshake legs of #962 stay unconditional.
-      canInterrupt: () => !ownerSpeaking && !confirmGate.outstanding(),
+      // The interrupt tier (#967): an escalation need not wait for the buddy's
+      // own chatter to finish. What that buys is narrower than it sounds and
+      // the overstatement was in this comment: pre-emption is real only
+      // against a VAD response, because announce() cancels an in-flight
+      // response. Against an ANNOUNCER item the escalation still queues behind
+      // it, plus up to one 6s in-flight deferral and up to three owner-speaking
+      // ones. The owner-speaking and confirm-handshake legs of #962 stay
+      // unconditional, and the handshake leg gained the announcer half it was
+      // missing (#978 item 2): the gate closes at anchored(), so a proposal
+      // still queued or mid-flight is a handshake in progress that
+      // confirmGate.outstanding() cannot yet see. A live announcer is required
+      // too — after stop() this gate could still pass, and announce() with a
+      // null announcer speaks with no meta, so an escalation went out never
+      // acked and never seen (#978 item 6).
+      canInterrupt: () => !ownerSpeaking && !confirmGate.outstanding() && !!announcer && !announcer.anchorPending(),
       reRaise: reRaiseLedger,
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (handle) => window.clearTimeout(handle),
@@ -1296,6 +1612,13 @@ function stop() {
   if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
   audioEl = null;
   responseActive = false;
+  // TORN DOWN, not merely dropped (#978 item 4). Nulling the reference left
+  // the current item's armed setTimeout closure alive: 6s into "idle" the
+  // browser voice spoke and anchored a proposal on the bridge, closing the
+  // next session's volunteering gate for up to 120s. d45601b covered
+  // page-lifetime strays; `disarm` was reachable only from onResponseDone and
+  // cancel, neither of which stop() calls.
+  if (announcer) announcer.teardown();
   announcer = null;
   // Session-scoped readiness resets; `greeted` deliberately does NOT — a
   // reconnect must stay quiet (#963).
