@@ -15,9 +15,17 @@ as prose someone can soften in passing:
   explicitly located in code — prompt compliance is not a gate;
 - the support-layer boundary survives verbatim in spirit: never writes code,
   never owns a worktree, never creates a session.
+
+#980 adds the other half of that job: a sentence in this prompt is a guarantee
+the buddy speaks and acts on, so where the prose states something broader than
+the code enforces, the prose is wrong. Three of those are pinned below AGAINST
+THE CODE rather than against their own wording — the volunteering set (which
+the client drives, not the model), the limits sentence (which must derive from
+what is wired, not assert a negative the next wiring falsifies), and the reply
+nudge (which ``render_body`` drops whole whenever the body runs long).
 """
 
-from agentwire.voice_layer import instructions
+from agentwire.voice_layer import confirm, instructions, surface, write_tools
 
 
 def full() -> str:
@@ -121,6 +129,131 @@ class TestInsistenceAndTheBoundary:
         assert "never write code" in persona
         assert "never own a worktree" in persona
         assert "never create a session" in persona
+
+
+class TestVolunteeringMatchesTheCodeDrivenSet:
+    """#980 defect 1. VOICE_MODE said "exactly one thing is worth raising
+    unprompted … beyond that one case, do not volunteer" while the client
+    ships three unprompted paths and PERSONA instructs a second mention. Each
+    text was correct when written; the composition was not."""
+
+    def test_it_no_longer_claims_a_single_sanctioned_case(self):
+        text = full()
+        assert "Exactly one thing is worth raising unprompted" not in text
+        assert "Beyond that one case" not in text
+
+    def test_all_three_code_driven_paths_are_named(self):
+        """The client's unprompted speech: an inbox notice on a quiet
+        full-gate tick, a re-raise reminder on a quiet full-gate tick, and an
+        escalation through the relaxed interrupt gate."""
+        text = full()
+        # 1. mail arriving — and NOT narrowed to replies to what you sent:
+        #    buddy_inbox is "reports and requests other sessions have sent
+        #    YOU", whoever started the exchange.
+        assert "mail arriving" in text
+        # 2. the code-scheduled second mention.
+        assert "second mention" in instructions.VOICE_MODE
+        # 3. the one kind that may pre-empt the buddy's own speech.
+        assert "escalation" in instructions.VOICE_MODE
+
+    def test_the_set_is_closed_and_owned_by_code(self):
+        """The model must not read the list as examples it may extend."""
+        text = instructions.VOICE_MODE
+        assert "the list is closed" in text
+        assert "You do not add to that list" in text
+
+    def test_the_re_raise_leg_is_the_one_the_ledger_actually_schedules(self):
+        """The ledger registers ONLY request/escalation kinds (a done or a
+        note is news, and re-raising news is chatter), and it fires after the
+        item has stayed open — not on the model noticing."""
+        text = instructions.VOICE_MODE
+        assert "asked for action" in text
+        assert "still open" in text
+
+    def test_the_persona_does_not_put_the_second_mention_in_the_models_hands(self):
+        """PERSONA and VOICE_MODE must agree on WHO decides the re-raise; the
+        ledger does, the model only speaks it."""
+        persona = instructions.PERSONA
+        assert "you can see it is still true" not in persona
+        assert "handed to you" in persona
+        assert "scheduled for you rather than left to" in persona
+
+
+class TestLimitsDeriveFromWhatIsWired:
+    """#980 defect 2: "you cannot … stop one" is true of today's wiring and
+    false of the tier ruling, and nothing re-labels prose when a spec ships."""
+
+    def test_kill_is_wireable_so_the_prose_must_not_deny_it_categorically(self):
+        """The premise, asserted rather than assumed: session_kill is a graded
+        gated write, not an exclusion, so a sentence saying the buddy cannot
+        stop a session is a claim the next spec silently falsifies."""
+        assert "session_kill" in surface.TIER_WRITE_GATED
+        assert "session_kill" not in surface.TIER_EXCLUDED
+        assert "session_kill" not in {spec.name for spec in write_tools.WRITE_SPECS}
+        assert "stop one" not in instructions.VOICE_MODE
+
+    def test_capability_is_stated_positively_against_the_tool_list(self):
+        text = instructions.VOICE_MODE
+        assert "Your tools are the whole of what you can do" in text
+        assert "if none does, you cannot" in text
+
+    def test_the_permanent_exclusions_it_still_states_really_are_excluded(self):
+        """What survives as an absolute must be absolute IN THE TIER TABLE —
+        a design decision, not a wiring accident."""
+        for name in ("session_create", "worktree_create", "say", "email_send",
+                     "desktop_write_artifact"):
+            assert name in surface.TIER_EXCLUDED
+        text = instructions.VOICE_MODE
+        assert "never start" in text
+        assert "never write code" in text
+        assert "another channel" in text
+        assert "outside the fleet" in text
+
+
+class TestTheReplyPathIsConditional:
+    """#980 defect 3: the nudge is droppable, the sentence was not."""
+
+    def test_the_code_really_does_drop_the_nudge_on_a_long_body(self):
+        """The premise, demonstrated rather than cited — if render_body ever
+        makes the nudge unconditional, this test says so and the prose below
+        becomes the thing that needs changing."""
+        short = confirm.render_body("ship it", "", "abc123", reply_to="worker")
+        assert "reply: agentwire msg send" in short
+        long = confirm.render_body(
+            "x" * confirm.MAX_RENDERED_INSTRUCTION_CHARS,
+            "y" * confirm.MAX_UTTERANCE_CHARS,
+            "abc123",
+            reply_to="a-rather-long-worktree-session-name-here",
+        )
+        assert len(long) <= confirm.MAX_BODY_CHARS
+        assert "reply: agentwire msg send" not in long
+
+    def test_the_sentence_is_narrowed_not_qualified(self):
+        text = instructions.VOICE_MODE
+        assert "Your messages also carry the reply path" not in text
+        assert "When there is room for it" in text
+        assert "not a guarantee" in text
+
+    def test_it_points_at_the_record_that_can_settle_it(self):
+        """buddy_sent records the exact body that went out, so "was the
+        recipient told how to answer" is a lookup, not a belief."""
+        text = instructions.VOICE_MODE
+        nudge = text.split("When there is room for it")[1].split("\n\n")[0]
+        assert "buddy_sent" in nudge
+
+
+class TestTheWaitInstructionKeysOnTheFlagNotTheOutcomeNames:
+    """W1 added a THIRD wait outcome (in_flight). This prompt survived that
+    change unedited because it consumes the FLAG; the test pins the reason so
+    a future edit cannot quietly reintroduce an enumeration that goes stale."""
+
+    def test_the_flag_is_what_the_prose_names(self):
+        assert "owner_should_wait" in instructions.VOICE_MODE
+
+    def test_no_wait_outcome_is_named_in_the_prose(self):
+        for outcome in confirm.WAIT_OUTCOMES:
+            assert outcome not in instructions.VOICE_MODE
+        assert len(confirm.WAIT_OUTCOMES) == 3  # in_flight arrived in W1
 
 
 class TestSpeakability:
