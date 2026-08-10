@@ -147,9 +147,21 @@ function createAnnouncer(deps) {
   // utterance" and saying so was false: composeNotice coalesces up to 240
   // characters PER MESSAGE, so a three-reply batch is around a minute of
   // speech and a five-reply batch several. A flat 30s watchdog fires
-  // mid-utterance, which reopens both gates and lets the MODEL start a
-  // response over the browser voice — the two-voices defect (#950), reached
-  // through the mechanism added to bound a mute.
+  // mid-utterance, and what that costs names exactly what this budget rules
+  // out: `speaking` is what pending() and anchorPending() count, so an early
+  // fire empties it and reopens the NOTIFIER's gates — canSpeak and
+  // canInterrupt — letting a volunteered notice or an escalation be announced
+  // over the browser voice.
+  //
+  // What it does NOT rule out, stated because the previous version of this
+  // comment claimed the whole of #950: the budget never gates the announcer's
+  // own FIFO. armFallback nulls `current`, starts speak(), and calls pump() in
+  // the SAME tick, and pump() consults `current` and `queue` only — never
+  // `speaking`. So a second must_speak item queued behind a long notice is
+  // promoted and its response.create goes out while the browser voice is
+  // starting the first one's audio: two voices, at any watchdog length,
+  // reached without the watchdog firing at all. That path is a live residual
+  // and a separate decision, not something the scaling closes.
   //
   // The per-character rate is deliberately SLOWER than any real voice (~7
   // characters a second against a typical 15). The two directions are not
