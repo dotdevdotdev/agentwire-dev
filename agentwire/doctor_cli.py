@@ -1308,6 +1308,42 @@ def _render_custom_services_section() -> int:
     return issues
 
 
+def _render_beta_section() -> int:
+    """Doctor section: which beta features this install opted into.
+
+    Reported even when everything is off, because "off" is the state a user
+    checks doctor to confirm — a section that prints nothing until you enable
+    something cannot answer "is the voice layer costing me anything?".
+
+    An enabled feature is then checked for the prerequisite it cannot supply
+    itself. **The key's PRESENCE only** — never the value, never a prefix: a
+    doctor run is the output people paste into an issue.
+    """
+    import os
+
+    from .config import BETA_FLAG_NAMES, enabled_beta_flags
+    from .voice_layer.realtime import API_KEY_ENV
+
+    issues = 0
+    enabled = enabled_beta_flags()
+    for name in sorted(BETA_FLAG_NAMES):
+        if name not in enabled:
+            print(f"  [..] beta.{name}: off — set 'beta.{name}: true' in "
+                  "~/.agentwire/config.yaml to enable")
+            continue
+        if name == "voice_layer":
+            if os.environ.get(API_KEY_ENV, "").strip():
+                print(f"  [ok] beta.{name}: on — {API_KEY_ENV} is present")
+            else:
+                print(f"  [!!] beta.{name}: on but {API_KEY_ENV} is not set — "
+                      "the voice buddy cannot mint a session")
+                print(f"     Fix: add {API_KEY_ENV} to ~/.agentwire/.env (chmod 600)")
+                issues += 1
+        else:
+            print(f"  [ok] beta.{name}: on")
+    return issues
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -1498,6 +1534,10 @@ def cmd_doctor(args) -> int:
     # rebuild and the failure only ever shows up client-side (#874).
     print("\nChecking MCP server entrypoint (#874)...")
     issues_found += _render_mcp_import_section()
+
+    # Beta opt-ins (default OFF) — see _render_beta_section.
+    print("\nChecking beta features...")
+    issues_found += _render_beta_section()
 
     # Check custom services (registry-driven: built-in notifications bridge
     # + user-defined services from services.custom)

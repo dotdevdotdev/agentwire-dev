@@ -1,4 +1,7 @@
-"""``agentwire buddy`` — the EXPERIMENTAL voice buddy (spike, branch-only).
+"""``agentwire buddy`` — the voice buddy (BETA, gated on ``beta.voice_layer``).
+
+Every subcommand refuses while the flag is off, naming both prerequisites (the
+config key and the secret) — see :func:`_refuse_beta`.
 
 Every subcommand here except ``serve`` is read-only with respect to the fleet,
 and for ``call`` that is a property of the WIRING rather than of the buddy: it
@@ -14,11 +17,82 @@ See ``docs/wiki/voice-layer.md`` for the design and the harness boundary.
 
 from __future__ import annotations
 
+import functools
 import json
 import sys
 
 from . import fleet_alerts
 from .voice_layer import delivery, identity, realtime, tools
+
+#: The config key that turns this whole command group on. Named in every
+#: refusal — a refusal that does not carry the next move is the failure this
+#: project keeps closing, and here the owner is often not even at a screen.
+BETA_KEY = "beta.voice_layer"
+
+
+def _refuse_beta(json_mode: bool) -> int:
+    """Refuse a buddy command because the beta flag is off.
+
+    Names BOTH prerequisites, deliberately, even though only the flag was
+    checked: the flag alone gets you a bridge that mints nothing, and finding
+    that out one command later is a second dead end. The secret's location is
+    the one blessed spot (``docs/wiki/security/secrets.md``), never a value
+    this process reads or echoes.
+    """
+    if json_mode:
+        print(json.dumps({
+            "success": False,
+            "error": (
+                f"The voice buddy is a beta feature and is off by default. "
+                f"Set {BETA_KEY}: true in ~/.agentwire/config.yaml, and put "
+                f"{realtime.API_KEY_ENV} in ~/.agentwire/.env."
+            ),
+            "beta_flag": BETA_KEY,
+            "config_path": "~/.agentwire/config.yaml",
+            "secret": realtime.API_KEY_ENV,
+            "secrets_path": "~/.agentwire/.env",
+            "docs": "docs/wiki/voice-layer.md",
+        }, indent=2))
+        return 1
+    for line in [
+        "The voice buddy is a beta feature and is OFF by default.",
+        "",
+        "Two things turn it on, and it needs both:",
+        "",
+        "  1. Opt in — ~/.agentwire/config.yaml:",
+        "",
+        "       beta:",
+        "         voice_layer: true",
+        "",
+        "  2. Provide the key — ~/.agentwire/.env (chmod 600), the one",
+        "     blessed spot for secrets:",
+        "",
+        f"       {realtime.API_KEY_ENV}=sk-...",
+        "",
+        "Docs: docs/wiki/voice-layer.md",
+    ]:
+        print(line, file=sys.stderr)
+    return 1
+
+
+def beta_gated(fn):
+    """Wrap a buddy subcommand so it refuses while ``beta.voice_layer`` is off.
+
+    Applied per subcommand rather than once at the parser, because argparse
+    dispatches through ``args.func`` and a group-level check would be invisible
+    to anything calling a handler directly. The omission that shape invites is
+    pinned by a test walking every registered subcommand for ``_beta_gated``.
+    """
+    @functools.wraps(fn)
+    def wrapper(args):
+        from .config import enabled_beta_flags
+
+        if "voice_layer" not in enabled_beta_flags():
+            return _refuse_beta(getattr(args, "json", False))
+        return fn(args)
+
+    wrapper._beta_gated = True
+    return wrapper
 
 
 def _emit(payload: dict, json_mode: bool, lines: "list[str] | None" = None) -> int:
@@ -243,43 +317,43 @@ def register_buddy_parser(subparsers) -> None:
     reg = _common(sub.add_parser("register", help="Create the buddy's session identity"))
     reg.add_argument("--model", default="", help=f"Realtime model (default: {realtime.DEFAULT_MODEL})")
     reg.add_argument("--voice", default="", help=f"Realtime voice (default: {realtime.DEFAULT_VOICE})")
-    reg.set_defaults(func=cmd_buddy_register)
+    reg.set_defaults(func=beta_gated(cmd_buddy_register))
 
     _common(sub.add_parser("status", help="Show the buddy's identity and mail counts")).set_defaults(
-        func=cmd_buddy_status
+        func=beta_gated(cmd_buddy_status)
     )
 
     lst = sub.add_parser("list", help="List registered buddies")
     lst.add_argument("--json", action="store_true", help="Output JSON")
-    lst.set_defaults(func=cmd_buddy_list)
+    lst.set_defaults(func=beta_gated(cmd_buddy_list))
 
     unreg = _common(sub.add_parser("unregister", help="Remove the buddy's identity"))
     unreg.add_argument("--purge", action="store_true",
                        help="Also drop the spool, cursor and any pending mail")
-    unreg.set_defaults(func=cmd_buddy_unregister)
+    unreg.set_defaults(func=beta_gated(cmd_buddy_unregister))
 
     box = _common(sub.add_parser("inbox", help="Read mail other sessions sent the buddy"))
     box.add_argument("--all", action="store_true", help="Include already-read messages")
     box.add_argument("--ack", action="store_true", help="Mark the returned messages read")
-    box.set_defaults(func=cmd_buddy_inbox)
+    box.set_defaults(func=beta_gated(cmd_buddy_inbox))
 
     tl = sub.add_parser("tools", help="Show the tool surface handed to the model")
     tl.add_argument("--json", action="store_true", help="Output JSON")
-    tl.set_defaults(func=cmd_buddy_tools)
+    tl.set_defaults(func=beta_gated(cmd_buddy_tools))
 
     call = _common(sub.add_parser("call", help="Run one tool without a microphone"))
     call.add_argument("tool", help="Tool name (see `agentwire buddy tools`)")
     call.add_argument("--arg", action="append", help="Tool argument as key=value (repeatable)")
-    call.set_defaults(func=cmd_buddy_call)
+    call.set_defaults(func=beta_gated(cmd_buddy_call))
 
     mint = _common(sub.add_parser("mint", help="Mint an ephemeral Realtime session"))
     mint.add_argument("--model", default="")
     mint.add_argument("--voice", default="")
-    mint.set_defaults(func=cmd_buddy_mint)
+    mint.set_defaults(func=beta_gated(cmd_buddy_mint))
 
     srv = _common(sub.add_parser("serve", help="Serve the browser client on localhost"))
     srv.add_argument("--port", type=int, default=8788,
                      help="Port on 127.0.0.1 (default: 8788 — never a portal port)")
     srv.add_argument("--model", default="")
     srv.add_argument("--voice", default="")
-    srv.set_defaults(func=cmd_buddy_serve)
+    srv.set_defaults(func=beta_gated(cmd_buddy_serve))

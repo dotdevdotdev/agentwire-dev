@@ -191,7 +191,7 @@ Command Categories:
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
     from . import notify_cli, palette_cli, push_cli, repo_cli, system_cli, wiki_cli
     from . import restart_cli, tabs_cli, wait_cli, worktree_cli
-    from . import buddy_cli  # EXPERIMENTAL: voice-layer spike (branch-only)
+    from . import buddy_cli  # BETA: gated on beta.voice_layer (default off)
     from .council import cli as council_cli
 
     _REGISTRARS = [  # noqa: N806  # registry constant; Phase 1 of #495 appends here

@@ -2,9 +2,9 @@
 
 A realtime voice model the owner talks to about the fleet. It is **not a
 coding harness** and must never become one — see :doc:`docs/wiki/voice-layer`
-for the boundary and the reasoning behind it. This package is branch-only
-foundation work; nothing here is wired into the portal, the scheduler, or any
-shipped command path.
+for the boundary and the reasoning behind it. The package ships on ``main``
+but the feature is gated on ``beta.voice_layer`` (default off); nothing here is
+wired into the portal, the scheduler, or any ungated command path.
 
 Module map:
 

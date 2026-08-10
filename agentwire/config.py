@@ -447,6 +447,28 @@ class SessionConfig:
 
 
 @dataclass
+class BetaConfig:
+    """Opt-in gates for features that SHIP on main but stay off until asked for.
+
+    A beta feature is in the tree, tested, and reachable — it is simply not
+    anyone's default. Each flag names the feature it gates, and every flag here
+    defaults to ``False``: a user who has never heard of the feature must be
+    able to install agentwire and see no trace of it, including in the tokens
+    their sessions pay for.
+    """
+
+    #: The realtime voice buddy (``agentwire buddy``, docs/wiki/voice-layer.md).
+    #: Off: the buddy CLI refuses, and the voice-buddy etiquette is stripped
+    #: from every shipped role prompt — see ``roles.apply_beta_blocks``.
+    voice_layer: bool = False
+
+
+#: Flag names ``BetaConfig`` knows about. The SSOT for what a ``<!-- beta:x -->``
+#: marker in a role file may name; anything else fails closed (block removed).
+BETA_FLAG_NAMES: frozenset[str] = frozenset({"voice_layer"})
+
+
+@dataclass
 class SchedulerConfig:
     """Scheduler daemon configuration."""
 
@@ -550,6 +572,7 @@ class Config:
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
     session_context: SessionContextConfig = field(default_factory=SessionContextConfig)
+    beta: BetaConfig = field(default_factory=BetaConfig)
     channels: dict = field(default_factory=dict)
 
 
@@ -901,6 +924,16 @@ def _dict_to_config(data: dict) -> Config:
         inject_soul=bool(session_data.get("inject_soul", True)),
     )
 
+    # Beta opt-ins. Absent section, absent key, or a non-dict `beta:` all mean
+    # OFF — the default has to survive a malformed config, because the whole
+    # point is that a user who never asked for the feature never gets it.
+    beta_data = data.get("beta", {}) or {}
+    if not isinstance(beta_data, dict):
+        beta_data = {}
+    beta = BetaConfig(
+        voice_layer=bool(beta_data.get("voice_layer", False)),
+    )
+
     return Config(
         server=server,
         session=session,
@@ -920,6 +953,7 @@ def _dict_to_config(data: dict) -> Config:
         usage_limit=usage_limit,
         prompt_router=prompt_router,
         session_context=session_context,
+        beta=beta,
     )
 
 
@@ -980,3 +1014,21 @@ def reload_config(config_path: Optional[Path] = None) -> Config:
     global _config
     _config = load_config(config_path)
     return _config
+
+
+def enabled_beta_flags() -> set[str]:
+    """Which beta features this install has opted into. The one accessor.
+
+    Deliberately reads from disk rather than the cached :func:`get_config`
+    singleton: role prompts are rendered in short-lived CLI processes, and a
+    cache that outlives an edit to ``config.yaml`` would make "I turned it on"
+    and "it is on" two different questions.
+
+    Any failure — unreadable file, malformed YAML — returns the empty set. A
+    beta gate that opens because the config broke is not a gate.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return set()
+    return {name for name in BETA_FLAG_NAMES if getattr(cfg.beta, name, False)}

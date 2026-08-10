@@ -2986,8 +2986,10 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
         assert "a deferral is not a suppression" in note
         assert "not the owner's silence" in note
 
-    def test_the_ordinary_path_here_takes_BOTH_legs_and_speaks_on_fire_five(self):
-        """The behavioural half of the claim, and the correction to a first
+    def test_the_ordinary_path_here_takes_both_legs_and_speaks_on_fire_five(self):
+        """The ordinary path here takes BOTH legs and speaks on fire five.
+
+        The behavioural half of the claim, and the correction to a first
         version of this test that could not see it.
 
         The response already in flight cannot defer — ``sawCreate`` is only set

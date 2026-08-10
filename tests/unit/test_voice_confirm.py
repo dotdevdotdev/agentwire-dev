@@ -1189,8 +1189,10 @@ class TestBoundedAwait:
         assert convo.spine.confirm(proposal.token).approved is False
         assert runner.calls == []
 
-    def test_a_denial_that_STARTS_during_the_await_still_blocks(self, runner):
-        """The half of the ``unheard_between`` guarantee the ceiling excluded.
+    def test_a_denial_that_starts_during_the_await_still_blocks(self, runner):
+        """A denial that STARTS during the await — begun, not finished — still blocks.
+
+        The half of the ``unheard_between`` guarantee the ceiling excluded.
 
         ``ceiling`` was snapshotted BEFORE the ≤2.5s await and widened only by
         the sequences of entries that came back in ``found``. A denial the
@@ -1310,10 +1312,12 @@ class TestTheUnheardWindowIsBounded:
         assert convo.spine.confirm(proposal.token).approved is True
         assert len(runner.calls) == 1
 
-    def test_a_committed_utterance_with_no_transcript_ages_out_on_the_ASR_grace(
+    def test_a_committed_utterance_with_no_transcript_ages_out_on_the_asr_grace(
         self, convo, clock, runner
     ):
-        """Shape 2a. The buffer closed, so a missing transcript is overdue."""
+        """A committed utterance with no transcript ages out on the ASR grace.
+
+        Shape 2a. The buffer closed, so a missing transcript is overdue."""
         proposal = convo.announced_proposal()
         convo.approve(proposal)
         blip = convo.starts_speaking()
@@ -1352,10 +1356,12 @@ class TestTheUnheardWindowIsBounded:
         assert convo.spine.confirm(proposal.token).approved is True
         assert len(runner.calls) == 1
 
-    def test_the_committed_grace_is_measured_FROM_THE_COMMIT(
+    def test_the_committed_grace_is_measured_from_the_commit(
         self, convo, clock, runner
     ):
-        """``committed_at``, which the whole two-bound argument rests on.
+        """The committed grace is measured FROM THE COMMIT, not from speech-start.
+
+        ``committed_at``, which the whole two-bound argument rests on.
 
         The split is "the audio buffer closed, so ASR is overdue" — overdue
         *from the close*, not from the speech start. Measured from
@@ -1386,7 +1392,7 @@ class TestTheUnheardWindowIsBounded:
         assert convo.spine.confirm(proposal.token).approved is True
         assert len(runner.calls) == 1
 
-    def test_the_bound_lands_inside_the_TTL_or_it_closes_nothing(self):
+    def test_the_bound_lands_inside_the_ttl_or_it_closes_nothing(self):
         """Both bounds have to retire the entry while the proposal is still
         alive. A bound at or past ``PROPOSAL_TTL_S`` leaves the loop exactly as
         it was and merely renames it."""
@@ -1545,10 +1551,12 @@ class TestCancelTakesTheSameClaim:
     await WINS, and the confirm finds out before it dispatches).
     """
 
-    def test_a_cancel_during_the_AWAIT_wins_rather_than_being_told_it_is_too_late(
+    def test_a_cancel_during_the_await_wins_rather_than_being_told_it_is_too_late(
         self, runner
     ):
-        """The dominant window, and the one the first fix got wrong.
+        """A cancel arriving during the AWAIT wins rather than being told it is too late.
+
+        The dominant window, and the one the first fix got wrong.
 
         Nothing has been sent while the confirm sits in its bounded await, so
         "it's already going out" is a false statement AND the proposal it
@@ -1613,10 +1621,12 @@ class TestCancelTakesTheSameClaim:
         spent = [u for u in ring.snapshot() if u.spent]
         assert spent == []
 
-    def test_a_cancel_racing_a_DISPATCHING_confirm_does_not_claim_nothing_was_sent(
+    def test_a_cancel_racing_a_dispatching_confirm_does_not_claim_nothing_was_sent(
         self, convo, runner
     ):
-        """The one true "too late": the cancel arrives from inside the runner,
+        """Racing a DISPATCHING confirm, a cancel must not claim nothing was sent.
+
+        The one true "too late": the cancel arrives from inside the runner,
         i.e. strictly while the argv is being dispatched."""
         cancels: "list[confirm.Verdict]" = []
 
@@ -1643,8 +1653,10 @@ class TestCancelTakesTheSameClaim:
         assert payload["confirm_terminal"] is False
         assert payload["owner_should_wait"] is True
 
-    def test_only_a_DISPATCHING_confirm_produces_the_too_late_line(self, convo):
-        """The distinction stated as a property rather than inferred from the
+    def test_only_a_dispatching_confirm_produces_the_too_late_line(self, convo):
+        """Only a DISPATCHING confirm produces the too-late line.
+
+        The distinction stated as a property rather than inferred from the
         two tests above: a token that is merely claimed must never produce it."""
         proposal = convo.announced_proposal()
         with convo.spine._lock:
@@ -2010,8 +2022,10 @@ class TestTheCancelBarrierIsONELockHold:
         assert verdict.reason == expected, (recorded, marker, verdict.reason)
         assert verdict.reason not in ASSERTS_NOTHING_SENT
 
-    def test_the_barrier_read_and_mark_are_SYNTACTICALLY_inside_one_hold(self):
-        """The blind spot a boundary sweep has BY CONSTRUCTION.
+    def test_the_barrier_read_and_mark_are_syntactically_inside_one_hold(self):
+        """The barrier's read and mark are SYNTACTICALLY inside one lock hold.
+
+        The blind spot a boundary sweep has BY CONSTRUCTION.
 
         The sweep fires at lock RELEASES, so it can only see states that a
         release creates. Move the ``_cancelled`` read outside every lock and
@@ -2150,9 +2164,10 @@ class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
         for cue in self.RE_PROPOSE_CUES:
             assert cue not in spoken, cue
 
-    def test_a_cancel_after_the_TTL_does_not_ask_for_the_write_again(
+    def test_a_cancel_after_the_ttl_does_not_ask_for_the_write_again(
         self, convo, clock
     ):
+        """A cancel after the TTL does not ask for the write again."""
         proposal = convo.announced_proposal()
         clock.advance(confirm.PROPOSAL_TTL_S + 1)
         verdict = convo.spine.cancel(proposal.token)
@@ -2171,10 +2186,12 @@ class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
         assert "ask me again" in convo.spine.confirm(proposal.token).spoken.lower()
         assert "tell me again" in confirm.SPOKEN["no_proposal"].lower()
 
-    def test_the_HAPPY_PATH_cancel_does_not_name_a_move_that_cannot_work(
+    def test_the_happy_path_cancel_does_not_name_a_move_that_cannot_work(
         self, convo, runner
     ):
-        """The same defect on the outcome nobody looked at: the cancel that
+        """The HAPPY PATH cancel does not name a move that cannot work.
+
+        The same defect on the outcome nobody looked at: the cancel that
         SUCCEEDS.
 
         ``denied`` says "Say the phrase again when you're ready" — true of an
@@ -2197,8 +2214,10 @@ class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
         assert after.reason == "no_proposal"
         assert runner.calls == []
 
-    def test_the_in_band_denial_KEEPS_that_advice(self, convo, runner):
-        """The must-fail control, and the reason this is two outcomes rather
+    def test_the_in_band_denial_keeps_that_advice(self, convo, runner):
+        """The in-band denial KEEPS that advice — its proposal is still live.
+
+        The must-fail control, and the reason this is two outcomes rather
         than one reworded line: on the in-band path the proposal is still live,
         the phrase still works, and telling the owner so is correct."""
         proposal = convo.announced_proposal()
@@ -3483,8 +3502,10 @@ class TestTheBuddysOwnVoiceCannotDeny:
             assert verdict.reason == "denied", take_back
         assert runner.calls == []
 
-    def test_a_barge_in_captured_WITH_the_echo_still_denies(self, convo, runner):
-        """The whole utterance must be the echo, not merely contain one.
+    def test_a_barge_in_captured_with_the_echo_still_denies(self, convo, runner):
+        """A barge-in captured WITH the echo still denies.
+
+        The whole utterance must be the echo, not merely contain one.
 
         The realistic capture of a barge-in is the tail of the buddy's line and
         the owner's words in one transcript. That is not a contiguous run of any
@@ -3538,8 +3559,10 @@ class TestTheBuddysOwnVoiceCannotDeny:
         )
         assert confirm._ECHO_MIN_TOKENS > longest
 
-    def test_an_utterance_that_CONTAINS_a_whole_line_is_not_an_echo(self):
-        """"Whole-utterance" is named load-bearing in the module and the wiki,
+    def test_an_utterance_that_contains_a_whole_line_is_not_an_echo(self):
+        """An utterance that CONTAINS a whole line is not an echo.
+
+        "Whole-utterance" is named load-bearing in the module and the wiki,
         and containment has a direction.
 
         Reversed — "does the utterance contain a line" — an owner who talks
@@ -3550,8 +3573,10 @@ class TestTheBuddysOwnVoiceCannotDeny:
         assert confirm.is_buddy_echo(line) is True, "the line itself is an echo"
         assert confirm.is_buddy_echo(line + " no, stop, don't send it") is False
 
-    def test_a_NON_CONTIGUOUS_subset_of_a_line_is_not_an_echo(self):
-        """"Contiguous" is the other named property, and a subset test passes
+    def test_a_non_contiguous_subset_of_a_line_is_not_an_echo(self):
+        """A NON-CONTIGUOUS subset of a line is not an echo.
+
+        "Contiguous" is the other named property, and a subset test passes
         every assertion above while accepting word salad.
 
         These are the line's own words, in the line's own order, with words

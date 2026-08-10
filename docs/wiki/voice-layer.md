@@ -1,15 +1,90 @@
-# Voice Layer (EXPERIMENTAL — spike, branch-only)
+# Voice Layer (BETA — ships on main, default OFF)
 
-> **Status: spike.** Branch `spike-voice-layer`, personal project, **not for
-> merge**. It runs on the owner's own install with the owner's own API key.
-> Nothing here is wired into the portal, the scheduler, or any shipped command
-> path. The one hook into existing code is inert for every session that exists
-> today (see [The one seam](#the-one-seam)).
+> **Status: beta, opt-in** (owner ruling 2026-08-10, reversing "never merges").
+> The code ships on `main`; the feature is off until you set
+> **`beta.voice_layer: true`** in `~/.agentwire/config.yaml` and put
+> `OPENAI_API_KEY` in `~/.agentwire/.env`. It runs on **your own** API key.
+> Nothing here is wired into the portal or the scheduler. The one hook into
+> existing code is inert for every session that has not opted in (see
+> [The one seam](#the-one-seam)).
 
 A realtime voice model the owner talks to like a person — "what's the fleet
 doing", "what needs me" — that is **not** a coding session. It observes and
 delegates. A buddy overseeing the agents *with* the owner, not another agent in
 the topology.
+
+---
+
+## 0. Opting in
+
+Two steps, and it needs both. The buddy CLI refuses until the first is done and
+cannot mint a realtime session without the second, so a half-done setup fails
+loudly at the step it is missing rather than at the microphone.
+
+**1. Turn the flag on** — `~/.agentwire/config.yaml`:
+
+```yaml
+beta:
+  voice_layer: true
+```
+
+**2. Provide the key** — `~/.agentwire/.env`, `chmod 600`, the one blessed spot
+for secrets ([security/secrets.md](security/secrets.md)):
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+Then:
+
+```bash
+agentwire doctor                # reports the flag, and whether the key is present
+agentwire buddy register buddy  # the session identity (no tmux session)
+agentwire buddy serve buddy     # the bridge, on 127.0.0.1:8788
+```
+
+`agentwire doctor` reports the flag's state either way — including "off",
+because "is this costing me anything?" is a question a doctor run should
+answer without you first enabling the thing. It reports only whether the key is
+**present**; it never prints the key or any prefix of it.
+
+### What "off" costs you: nothing, and that is tested
+
+With the flag off, this feature is not merely dormant — it is **absent from the
+tokens every session pays for**. The only surface that ever reached a non-voice
+user was ~10 lines of voice-buddy etiquette in the shipped role prompts
+(`agentwire.md`, `orchestrator.md`, `worker.md`, `worker-worktree.md`). Those
+lines now sit inside `<!-- beta:voice_layer -->` markers that
+`roles.apply_beta_blocks` strips at parse time — the one funnel every role
+reader goes through, so `agentwire role show` and a live session launch agree.
+
+The bar is **byte-identical to `origin/main`**, and it is proved rather than
+asserted: `tests/unit/test_beta_flag.py` diffs the rendered prompt against a
+snapshot of main's role files in `tests/fixtures/main_roles/`, with the
+snapshot itself checked against `origin/main` so it cannot drift into agreeing
+with the branch, and a must-fail control that goes red if the gate ever stops
+stripping anything.
+
+A marker naming an unknown flag **fails closed** (the block is removed): text
+that no gate can turn off is the failure this mechanism exists to prevent. What
+makes that safe rather than silent is the paired audit — a test walks every
+shipped role file and fails on any marker whose flag `config.BETA_FLAG_NAMES`
+does not know, so a typo is caught at CI rather than deleting a section forever.
+
+### The one thing the flag does not gate, and why
+
+The `services.custom` entry in [§6 Lifecycle host](#6-lifecycle-host) needs no
+gating: **nothing ships it.** The registry has no built-in buddy entry
+(`services.registry()` adds only the notifications bridge), and `config.yaml`
+is protected control plane that this feature never writes. The entry exists
+only if you paste it yourself.
+
+The ordering is worth stating, though, because the failure is confusing rather
+than loud: paste that entry while the flag is off and the supervised process is
+`agentwire buddy serve`, which now **refuses and exits** — so the watchdog sees
+a dead tmux session and `doctor` reports the service unhealthy on every run.
+Turn the flag on first. (The pasted block ships `autostart: false`, so it does
+not boot on portal launch until you flip that too.)
 
 ---
 
@@ -2212,8 +2287,12 @@ defect whose diagnosis is obvious can still have a fix that is not.)
 
 ### Standing constraints for whoever picks this up
 
-- **This branch is not for merge.** Personal project, owner's own install,
-  owner's own API key. Draft PR only; never mark ready, never merge to `main`.
+- **It ships to `main` behind `beta.voice_layer`, default OFF** (owner ruling
+  2026-08-10, reversing the earlier never-merge constraint). It still runs on
+  the user's own API key. Anything you add that would reach a user who has not
+  opted in — a shipped role-prompt line, a registry entry, a portal route —
+  goes inside the gate, and the byte-identity bar in §0 is what says whether
+  you got it right.
 - **The boundary in §2 is not negotiable.** The buddy starts and directs Claude
   sessions. It never does the work itself. Anything that reads as "it could just
   fix that typo itself" reintroduces what #730 removed.

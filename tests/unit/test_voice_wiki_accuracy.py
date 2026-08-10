@@ -344,8 +344,10 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         return found
 
     @pytest.mark.parametrize("issue", CLOSED)
-    def test_no_PROSE_sentence_still_calls_them_open(self, issue):
-        """The pin the round-1 version structurally could not be.
+    def test_no_prose_sentence_still_calls_them_open(self, issue):
+        """No PROSE sentence still calls them open.
+
+        The pin the round-1 version structurally could not be.
 
         That one read residual-TABLE rows, so a paragraph 240 lines above the
         section that closes #992 could go on calling it open — and did, while
@@ -775,8 +777,10 @@ class TestTheOpenResidualsAreNamed:
         closed = set(TestTheResidualTableDoesNotAdvertiseClosedHoles.CLOSED)
         assert "#1009" not in closed
 
-    def test_the_page_does_not_call_onNotSpoken_a_positive_report_only(self, page):
-        """The wiki carried the same sentence ``client.py``'s handler did —
+    def test_the_page_does_not_call_on_not_spoken_a_positive_report_only(self, page):
+        """The page does not call ``onNotSpoken`` a positive report only.
+
+        The wiki carried the same sentence ``client.py``'s handler did —
         "positive evidence ... reached only from `speechSynthesis`'s own
         `onerror`" — and #996 made the watchdog a second caller whose evidence
         is an INFERENCE, not a report. Left alone it contradicted this page's
