@@ -239,6 +239,94 @@ class TestTheResidualTableDoesNotAdvertiseClosedHoles:
         rows = [r for r in self._residual_rows() if r.startswith(f"| {issue} |")]
         assert rows == [], rows
 
+    #: Words that describe a hole as still present. An OPEN marker in the same
+    #: PARAGRAPH as a closed issue id is the defect this catches.
+    #:
+    #: **This enumeration fails open and says so**: an unlisted phrasing slips
+    #: through. What bounds it is that the vocabulary is the one a residual
+    #: paragraph actually uses — derived from the paragraph that survived round
+    #: 1 ("the denial direction is **open** (#992)", "**Open**, and priced
+    #: rather than assumed"), not invented.
+    OPEN_MARKERS = (
+        "is open", "are open", "open residual", "remains open", "still open",
+        "open, and priced", "not fixed", "unfixed", "left uncovered",
+        "pinned as behaviour", "pinned in the tests as behaviour", "to-do",
+    )
+
+    #: Words marking the paragraph as talking about the CLOSURE or the history,
+    #: so an OPEN marker in that company is a correction rather than a claim.
+    #: Same two-sided shape as `_RETIREMENT_MARKERS` above.
+    #: Deliberately NOT the bare stem "close": this page says "closes the
+    #: approval direction" in the same breath as the stale claim it is about,
+    #: so a stem match let the offending paragraph neutralize itself — measured,
+    #: and the same too-loose-marker defect `_RETIREMENT_MARKERS` above records.
+    CLOSURE_MARKERS = (
+        "closed", "was open", "used to", "no longer", "rejected",
+        "round 1", "originally",
+    )
+
+    @staticmethod
+    def _paragraphs() -> "list[tuple[int, str]]":
+        """The RAW page as (line number, paragraph) pairs.
+
+        **Paragraph-scoped, not window-scoped, and the difference is a measured
+        false negative.** A ±400-char window around the id caught nothing when
+        the stale paragraph sat immediately above the section that closes it:
+        the closure sentence next door was inside the window and silenced the
+        detector. The real defect was a SELF-CONTAINED paragraph making a claim,
+        so the unit the pin reasons about is a paragraph.
+        """
+        raw = WIKI.read_text(encoding="utf-8")
+        out, line = [], 1
+        for block in raw.split("\n\n"):
+            out.append((line, block))
+            line += block.count("\n") + 2
+        return out
+
+    @pytest.mark.parametrize("issue", CLOSED)
+    def test_no_PROSE_paragraph_still_calls_them_open(self, issue):
+        """The pin the round-1 version structurally could not be.
+
+        That one read residual-TABLE rows, so a paragraph 240 lines above the
+        section that closes #992 could go on calling it open — and did, while
+        naming the two mitigations that section rejects, 1200 lines from the
+        page's own "#989/#990/#992 are CLOSED". Removing a table row is not the
+        same claim as retiring a sentence, and only one of them was pinned.
+        """
+        offences = []
+        for line, block in self._paragraphs():
+            lowered = block.lower()
+            if issue not in block:
+                continue
+            if any(m in lowered for m in self.CLOSURE_MARKERS):
+                continue
+            hit = [m for m in self.OPEN_MARKERS if m in lowered]
+            if hit:
+                offences.append((line, hit))
+        assert offences == [], offences
+
+    @pytest.mark.parametrize("issue", CLOSED)
+    def test_the_prose_pin_can_actually_fire(self, issue):
+        """The must-fail control for the pin above, run per issue.
+
+        An absence test over a vocabulary is exactly the shape that goes green
+        because nothing can match it — six of this file's own claims once did.
+        So the detector is run over a page carrying the sentence it forbids,
+        planted where the real one lived: as its own paragraph, immediately
+        above the section that closes it, which is precisely the placement a
+        window-scoped detector could not see.
+        """
+        planted = (
+            f"The denial direction is open ({issue}), and nobody has taken it."
+        )
+        lowered = planted.lower()
+        assert issue in planted
+        assert any(m in lowered for m in self.OPEN_MARKERS)
+        assert not any(m in lowered for m in self.CLOSURE_MARKERS), (
+            "the planted sentence must not neutralize itself, or the control "
+            "proves only that the closure vocabulary works"
+        )
+
     def test_the_mechanisms_they_installed_are_documented(self, page):
         """And the other direction: removing the row without documenting the
         fix would leave the page silent about behaviour that now exists."""
@@ -562,17 +650,27 @@ class TestTheInterruptTierIsNotOverPromised:
 
 class TestTheOpenResidualsAreNamed:
     """A wiki that describes what we meant is how the next contributor argues
-    from a mechanism that does not exist."""
+    from a mechanism that does not exist.
 
-    @pytest.mark.parametrize("issue", [989, 990, 992, 1009])
+    #989, #990 and #992 were removed from this list when they were closed —
+    leaving them would have been the same defect with its polarity flipped, and
+    for one round it WAS: a paragraph 240 lines above the section that closes
+    #992 still called it open and still recommended the two mitigations that
+    section rejects. `TestTheResidualTableDoesNotAdvertiseClosedHoles` is the
+    pin for that direction, and it reads prose, not only table rows.
+
+    #995/#996/#997 left the same way in #1007, so #1009 is what remains.
+    """
+
+    @pytest.mark.parametrize("issue", [1009])
     def test_residual_is_recorded(self, page, issue):
         assert f"#{issue}" in page
 
-    def test_the_never_completing_utterance_loop_is_described(self, page):
-        assert "no staleness bound" in page
-
-    def test_the_echoed_denial_hole_is_described(self, page):
-        assert "`carries_denial` is not nonce-gated" in page
+    def test_the_ones_that_shipped_a_fix_are_not_in_this_list(self):
+        """The two lists are complements, asserted rather than assumed —
+        an issue in both is a page contradicting itself."""
+        closed = set(TestTheResidualTableDoesNotAdvertiseClosedHoles.CLOSED)
+        assert "#1009" not in closed
 
     def test_the_page_does_not_call_onNotSpoken_a_positive_report_only(self, page):
         """The wiki carried the same sentence ``client.py``'s handler did —

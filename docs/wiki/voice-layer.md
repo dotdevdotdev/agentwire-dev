@@ -542,11 +542,34 @@ an affirmative "nothing was sent" the owner has no way to check.
 
 Three things make the shared claim correct rather than merely shared:
 
+- **"A confirm holds the claim" is not "the write is going out",** and the
+  first fix for this re-committed the original defect by conflating them. The
+  claim is taken at the TOP of `confirm()`, *before* the ≤2.5s await and the
+  judge, so its dominant occupant is a confirm still DECIDING — and telling a
+  cancel there "it's already going out" is false, while leaving the proposal
+  the owner asked to drop still pending. The race is therefore split on the
+  thing the sentence is about: `_dispatching` (inside the runner — the only
+  state in which the claim is true) versus `_cancelled` (a cancel during the
+  await WINS; it answers `denied`, and the confirm re-reads the marker under
+  the same lock immediately before dispatch, so the write does not go out
+  behind the retraction).
 - The losing cancel gets its **own** outcome, `cancel_in_flight`, not
   `in_flight`. They answer different questions — "should I confirm again?"
   (no, wait) versus "did you stop it?" (no, and here is why) — and its spoken
   line names the move that is still open, because the one thing the owner asked
   for is the one thing no longer available.
+- **A cancel is never answered with confirm-shaped advice.** The claim is
+  shared so the two paths cannot drift, but two of its lines argue for the very
+  write just retracted — `no_proposal` says *"Tell me again what you'd like
+  sent"* and `expired` says *"Ask me again and I'll set it up fresh"*. On the
+  cancel path both become `nothing_to_cancel`. Collapsing them is consistent
+  with the taxonomy rule rather than an exception to it: outcomes stay apart
+  when the owner's next move differs, and here both mean "there is nothing of
+  mine to take back", whose next move is none. `replayed` and `dispatch_failed`
+  pass through unchanged — both are true of a cancel and neither invites a
+  re-propose.
+- **No cancel outcome leaves a live proposal behind**, pinned as a property
+  over every reachable one rather than at the site that used to break it.
 - It is a **wait** outcome, so `confirm_terminal` stays False: closing the
   handshake here would close it out from under the confirm still running.
 - The announcement requirement is **dropped** (`require_announced=False`). "The
@@ -806,7 +829,8 @@ the set `SPOKEN` is checked against **both ways**:
 | `denied` | say the phrase again when you're ready |
 | `pending_transcript` | **wait** |
 | `in_flight` | **wait** — that confirm is already running |
-| `cancel_in_flight` | **wait** — the cancel lost the race; it is already going out |
+| `cancel_in_flight` | **wait** — the cancel lost the race *to the runner*; it is already going out |
+| `nothing_to_cancel` | nothing — there was nothing of ours left to take back |
 | `too_many_attempts` | ask again from the top; that proposal is gone |
 | `dispatch_failed` | check that session, *then* decide — it may have gone out |
 
@@ -868,18 +892,23 @@ nonce in it — an echo of the fallback cannot carry an approval, structurally.
 `WriteSpec.__post_init__` raises at import on a `fallback_template` containing
 `{phrase}` or `{nonce}`, so the property is enforced rather than remembered.
 
-**That closes the approval direction only, and the denial direction is open
-(#992).** `carries_denial` is not nonce-gated, and the fallback voice also speaks
-inbox notices, re-raises and error notices — whose text is a message BODY any
-session can send. So a delivered body containing "no, stop, don't", echoed during
-the approval→confirm window, lands in the post-approval scan and retroactively
-denies the owner's legitimate approval: remotely triggerable, and invisible to
-the owner, who hears "I heard you hold off" about a take-back they never spoke.
-The obvious fixes (mark ring entries transcribed during fallback speech, or
-suppress the scan window) both end in `_judge`, and both have an expensive
-false-reject half — barge-in over the robot voice is the normal case here, so
-"utterances during fallback speech do not count as denials" drops a genuine
-take-back and the write goes out. Open, and priced rather than assumed.
+**That closes the approval direction structurally. The denial direction needed
+its own answer, and it is now CLOSED (#992)** — see [The buddy's own voice
+cannot deny](#the-buddys-own-voice-cannot-deny-992) for the rule and its price.
+The failure: `carries_denial` is not nonce-gated, and several `SPOKEN` lines
+carry denial triggers, so one echoed into the approval→confirm window
+retroactively denied the owner's legitimate approval — invisible to them, who
+heard "I heard you hold off" about a take-back they never spoke.
+
+**Both mitigations originally proposed were REJECTED, and the reason is the
+transferable part.** Marking ring entries transcribed during fallback speech,
+and suppressing the scan window, are both TIMING rules — and barge-in over the
+robot voice is the normal way to retract in this channel, so "utterances during
+fallback speech do not count as denials" drops a genuine take-back and the write
+goes out. That is the acting-twice direction, strictly worse than the wrongful
+refusal being fixed. The shipped rule is CONTENT (`confirm.is_buddy_echo`): it
+cannot fire on words the buddy never said, so it has no such half. Do not
+reintroduce a timing rule here without pricing that.
 
 **The `speechSynthesis` fallback is armed by a timer, not triggered by a
 detected failure**, and that is the part that decides whether this property is
