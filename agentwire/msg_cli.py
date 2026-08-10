@@ -6,7 +6,7 @@ the recipient's file inbox and the watchdog injects it only when the input box
 is empty and the pane is a safe target — so a worker reporting back never
 clobbers a half-typed human draft.
 
-    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest] <text>
+    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] <text>
     agentwire msg inbox [-s <session>]      # peek pending + passive (does not drain/consume)
     agentwire msg pull  [-s <session>]      # read + REMOVE passive (ingest) messages
     agentwire msg dead  [-s <session>]      # list dropped (dead-lettered) msgs

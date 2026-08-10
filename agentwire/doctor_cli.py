@@ -795,6 +795,52 @@ def _render_orphaned_history_section() -> int:
     return len(orphaned)
 
 
+def _render_dead_letter_section() -> int:
+    """Doctor section: load-bearing messages that burned out into ``dead/``.
+
+    The kinds it reports come from :func:`inbox.load_bearing`, never from a
+    literal here. This site used to hand-write a two-kind tuple, one of three
+    such copies (#985): it already disagreed with ``inbox.ESCALATE_KINDS`` about
+    ``request`` — a dead-lettered request emailed the owner but was absent from
+    this section — and adding ``voice`` would have split them again, this time
+    on the kind whose recipient is screenless.
+
+    Returns 1 per session holding load-bearing corpses. Never raises: an
+    unreadable inbox degrades to a ``[..]`` note rather than failing ``doctor``.
+    """
+    from . import inbox
+
+    try:
+        dead_sess = inbox.dead_sessions()
+    except Exception as e:
+        print(f"  [..] Could not check dead-lettered messages: {e}")
+        return 0
+    if not dead_sess:
+        print("  [ok] No dead-lettered messages found")
+        return 0
+
+    issues = 0
+    for ds in dead_sess:
+        try:
+            corpses = inbox.load_bearing(inbox.list_dead(ds))
+        except Exception as e:
+            print(f"  [..] Could not read dead-lettered messages for '{ds}': {e}")
+            continue
+        if not corpses:
+            continue
+        issues += 1
+        print(f"  [!!] Session '{ds}' has {len(corpses)} dead-lettered "
+              f"load-bearing message(s):")
+        for m in corpses:
+            print(f"       - Kind: {m.kind}, Sender: {m.sender}, "
+                  f"Text: {m.text}, Reason: {m.reason}")
+    if not issues:
+        kinds = "/".join(inbox.ESCALATE_KINDS)
+        print(f"  [ok] No dead-lettered {kinds} messages found "
+              "(any dead-letters are informational)")
+    return issues
+
+
 def _render_pending_messages_section() -> int:
     """Doctor section: load-bearing messages queued too long (#879).
 
@@ -1737,26 +1783,7 @@ def cmd_doctor(args) -> int:
 
     # 10. Check for dead-lettered messages
     print("\nChecking for dead-lettered messages...")
-    from agentwire import inbox
-    try:
-        dead_sess = inbox.dead_sessions()
-        done_or_esc_found = False
-        if not dead_sess:
-            print("  [ok] No dead-lettered messages found")
-        else:
-            for ds in dead_sess:
-                dead_msgs = inbox.list_dead(ds)
-                done_or_esc = [m for m in dead_msgs if m.kind in ("done", "escalation")]
-                if done_or_esc:
-                    done_or_esc_found = True
-                    print(f"  [!!] Session '{ds}' has {len(done_or_esc)} dead-lettered report-back/escalation message(s):")
-                    for m in done_or_esc:
-                        print(f"       - Kind: {m.kind}, Sender: {m.sender}, Text: {m.text}, Reason: {m.reason}")
-                    issues_found += 1
-            if not done_or_esc_found:
-                print("  [ok] No dead-lettered done/escalation messages found (any dead-letters are informational)")
-    except Exception as e:
-        print(f"  [..] Could not check dead-lettered messages: {e}")
+    issues_found += _render_dead_letter_section()
 
     # 10b. Long-pending report-backs (#879) — see _render_pending_messages_section.
     print("\nChecking for long-pending report-backs...")

@@ -919,11 +919,6 @@ class Proposal:
 # Attribution rendering (spec §4b)
 # =============================================================================
 
-#: The at-a-glance attribution marker, and it goes FIRST in the body. See
-#: :func:`render_body` for why the front position is load-bearing rather than
-#: decorative.
-VOICE_MARKER = "<voice>"
-
 #: Hard cap on the rendered body. **Measured in a real Claude Code pane**, not
 #: reasoned about — reproduce with ``tools/voice_heal_probe.py``.
 #:
@@ -946,12 +941,22 @@ VOICE_MARKER = "<voice>"
 #: later collapses to the chip.
 #:
 #: 300 is the BODY cap, and the rendered line adds the ``[MSG from <sender> ·
-#: <kind>] `` prefix and the ``  ⟨#id6⟩`` tail — 33 chars plus the sender name,
-#: so 65 for a 32-character worktree sender. That lands the worst case at 365
-#: against a measured 520, keeping ~30% margin. (Derived from
+#: <kind>] `` prefix and the ``  ⟨#id6⟩`` tail — 31 chars plus the sender name
+#: with ``kind=voice``, so 63 for a 32-character worktree sender. That lands the
+#: worst case at 363 against a measured 520, keeping ~30% margin. (Derived from
 #: ``inbox.Message.render``'s format, not from a probe reading: the probe's
 #: numbers describe synthetic bodies at chosen lengths, and quoting one of those
 #: as "the worst case" is how this comment previously arrived at ~57 and ~385.)
+#:
+#: **Re-measured for #985, and the number deliberately did not move.** Slice 1b
+#: changed both halves of the arithmetic: the ``<voice> `` prefix left the body
+#: (8 chars back to the instruction/utterance/nudge budget) and the kind slot
+#: went ``request`` → ``voice`` (2 chars off the rendered prefix). Both point
+#: the same way — the worst rendered line fell 365 → 363 — so the headroom the
+#: pane measurement bought grew slightly rather than shrinking, and no new
+#: measurement is owed. The freed 8 body chars are spent where #981 finding 6
+#: says they compete: the droppable reply nudge now fits in more cases. Raising
+#: MAX_BODY_CHARS to consume the headroom would still need a fresh pane probe.
 #:
 #: **The margin is deliberate and the measurement is pane-dependent.** The box
 #: shows a bounded number of ROWS, so a shorter pane windows sooner than 80x24
@@ -966,6 +971,20 @@ MAX_BODY_CHARS = 300
 #: The measured rendered-line boundary above, so tests can assert against the
 #: measurement rather than against a number retyped from a comment.
 MEASURED_STUCK_LIMIT_CHARS = 520
+
+#: The longest line a buddy write can put in a recipient's box, as arithmetic
+#: rather than prose — ``MAX_BODY_CHARS`` plus what ``inbox.Message.render``
+#: wraps around it. Pinned in the tests against a REAL rendered ``Message``, so
+#: a change to that format fails here instead of quietly eating the margin the
+#: pane measurement bought.
+#:
+#: The overhead: ``"[MSG from "`` (10) + sender + ``" · "`` (3) +
+#: ``"voice"`` (5) + ``"] "`` (2) + ``"  ⟨#"`` (4) + 6-char id + ``"⟩"`` (1).
+WORST_SENDER_CHARS = 32
+_RENDER_OVERHEAD_CHARS = 31
+WORST_RENDERED_LINE_CHARS = (
+    MAX_BODY_CHARS + _RENDER_OVERHEAD_CHARS + WORST_SENDER_CHARS
+)
 
 #: How much of the verbatim utterance survives into the rendered line.
 MAX_UTTERANCE_CHARS = 90
@@ -1006,15 +1025,34 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _lead_safe(text: str) -> str:
+    """Strip leading dashes so *text* can never open the rendered body.
+
+    Until #985 this was free: the body opened with the ``<voice>`` marker, so
+    the model-supplied instruction was never in first position. Moving
+    attribution to the kind slot put it there, and the body is passed to the
+    CLI as a POSITIONAL — a leading ``-`` is parsed as a flag, a bug this repo
+    has shipped twice (see ``tools._SESSION_RE``'s comment, which records both).
+
+    So the guarantee that used to be a side effect of layout is now explicit
+    and owned here, which is what makes ``render_body``'s assertion a check on
+    one deliberate mechanism rather than on an accident. Stripping rather than
+    escaping because nothing real is lost: a spoken instruction does not begin
+    with a hyphen, and one that does is a mis-transcription.
+    """
+    return _one_line(text).lstrip("-").strip()
+
+
 def reply_nudge(reply_to: str) -> str:
     """The body's reply-path slot: the literal command that reaches the buddy.
 
     #962's live failure: the recipient answered a buddy request IN ITS OWN
     TERMINAL, and the reply never came back — the owner is listening, not
     watching that pane, so an on-screen answer is a lost one. ``--from buddy``
-    and the ``<voice>`` marker say who asked; neither says how to answer. This
-    slot does, as a runnable command rather than prose, because the recipient
-    is an agent and the one thing it reliably does with a command is run it.
+    and the ``· voice`` kind slot say who asked; neither says how to answer.
+    This slot does, as a runnable command rather than prose, because the
+    recipient is an agent and the one thing it reliably does with a command is
+    run it.
 
     The role text (worker/orchestrator) states the same etiquette; the slot is
     what covers recipients running with no agentwire role text at all.
@@ -1039,29 +1077,28 @@ def render_body(
     OMITTED: a slot whose expected content is empty must not survive.
 
     **The body never begins with a dash, and that is a safety property, not an
-    accident of layout.** ``instruction`` is model-supplied and ``_clip`` does
-    not strip leading dashes, so a body starting with the instruction could
-    reach the CLI as a FLAG rather than a value — this repo has shipped exactly
-    that bug twice (see ``tools._SESSION_RE``'s comment, which records both).
-    :data:`VOICE_MARKER` leads for attribution reasons, which happens to also
-    guarantee this; the assertion below makes the guarantee explicit rather
-    than incidental, so moving the marker fails loudly instead of silently
-    re-opening the hole.
+    accident of layout.** ``instruction`` is model-supplied and now leads the
+    body, so it could reach the CLI as a FLAG rather than a value — this repo
+    has shipped exactly that bug twice. Until #985 the ``<voice>`` marker
+    guaranteed this for free by occupying first position; :func:`_lead_safe`
+    now owns it deliberately, and the assertion below is the check on that one
+    mechanism.
 
     Visible separators rather than newlines: scannable without being a wall,
     and without the wedging failure newlines cause.
 
-    **The ``<voice>`` marker goes FIRST, and that placement is the whole of
-    Slice 1's attribution.** §4 rules that ``--from buddy`` alone is not enough
-    — a recipient must tell a buddy-originated request from a human-typed one
-    without reading carefully. With ``--kind request`` (see write_tools for why
-    the ``voice`` kind is deferred) the kind slot distinguishes nothing, so the
-    only prefix-level distinguisher left would be exactly the sender string §4
-    rejected. Putting the marker at the front of the BODY puts it in the same
-    position on screen the kind slot would have occupied, and touches no shared
-    code. Slice 1 does not claim kind-slot attribution; that arrives with 1b.
+    **Attribution is NOT in the body — it is the ``voice`` kind (#985).** §4
+    rules that ``--from buddy`` alone is not enough: a recipient must tell a
+    buddy-originated message from a human-typed one without reading carefully.
+    Slice 1 satisfied that with a ``<voice>`` marker at the front of the body,
+    explicitly as a stand-in, because the kind slot then said ``request`` and
+    distinguished nothing. Slice 1b puts it in the slot that actually drives
+    behaviour: ``inbox.Message.render`` prints ``[MSG from buddy · voice]``, so
+    the distinguisher sits in the same on-screen position the marker held while
+    also being the thing ``ESCALATE_KINDS`` and the drain read. No marker
+    remains; a body that still carries one is stale text, not attribution.
     """
-    parts = [f"{VOICE_MARKER} {_clip(instruction, MAX_RENDERED_INSTRUCTION_CHARS)}"]
+    parts = [_lead_safe(_clip(instruction, MAX_RENDERED_INSTRUCTION_CHARS))]
     if request_utterance.strip():
         parts.append(f"said: \"{_clip(request_utterance, MAX_UTTERANCE_CHARS)}\"")
     parts.append(f"#{proposal_id}")
@@ -1720,7 +1757,7 @@ __all__ = [
     "NONCE_WORDS",
     "NO_MATCH",
     "QUOTED_FRAME",
-    "VOICE_MARKER",
+    "WORST_RENDERED_LINE_CHARS",
     "WRONG_NONCE",
     "carries_denial",
     "classify",

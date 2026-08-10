@@ -86,7 +86,7 @@ Make email better.
 
 ## Replying to the voice buddy
 
-A request whose body starts with `<voice>` was relayed from the owner **by voice**, via their voice buddy (the sender in the `[MSG from <sender> · …]` prefix, usually `buddy`). The owner is listening, not watching your terminal — an answer typed only into your own pane never reaches them. When you have the answer, reply by message to that sender:
+A message whose kind is `voice` — it renders as `[MSG from buddy · voice]` — was relayed from the owner **by voice**, via their voice buddy (the sender is usually `buddy`). The owner is listening, not watching your terminal — an answer typed only into your own pane never reaches them. When you have the answer, reply by message to that sender:
 
 ```
 agentwire msg send --to buddy --kind done "<one-or-two-sentence answer>"
