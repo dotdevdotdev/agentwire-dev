@@ -297,9 +297,14 @@ whose stated residual was that a page unload dropped them silently; that array
 is gone, and the property it was defending now rests on the cursor rather than
 on client state surviving a page.
 
-Two refusals, both failing toward re-reading: an id the spool no longer holds
-moves nothing (and reports so — a silently-refused ack is indistinguishable
-from a successful one, and re-announces forever), and the cursor never rewinds.
+Refusals fail toward re-reading, never toward sweeping: an id the spool no
+longer holds moves nothing (and reports so — a silently-refused ack is
+indistinguishable from a successful one, and re-announces forever), ids are
+matched exactly rather than trimmed into a match, and the cursor never rewinds.
+**The precedence keys on PRESENCE, not on the value** — collapsing "no
+`ack_through`" with "an `ack_through` that is blank" sends `{ack: true,
+ack_through: ""}` down the bool path and sweeps the tail from inside the guard
+against sweeping it.
 The notifier acks only through an unbroken run of messages it is speaking now
 or has already been heard: the interrupt tier speaks an escalation while an
 ordinary report sits *ahead* of it, and one id cannot cover the alarm without

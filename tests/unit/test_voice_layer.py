@@ -285,6 +285,37 @@ class TestAckThrough:
         assert delivery.advance_cursor("buddy", ids[0]) is True  # idempotent, not a move
         assert delivery.read_spool("buddy") == []
 
+    def test_read_spool_ack_through_outranks_the_bool(self, isolate):
+        """The precedence the docstring promises, at the FUNCTION layer.
+
+        Pinned separately from the tool layer on purpose: the tool never
+        forwards both, so a test there cannot see this rule, and making `ack`
+        win inside ``read_spool`` survived the entire voice suite. A documented
+        precedence nothing can falsify is the shape this PR names as its own
+        standard.
+        """
+        identity.register("buddy")
+        ids = self._spool(["one", "two"])
+        delivery.read_spool("buddy", ack=True, ack_through=ids[0])
+        assert [m["text"] for m in delivery.read_spool("buddy")] == ["two"]
+
+    def test_read_spool_never_sweeps_on_an_ack_through_that_acks_nothing(self, isolate):
+        """Same collapse as the tool layer, one floor down: an explicit empty
+        ack_through must not fall through to the bool path. Python cannot see
+        presence, so "not None" is what stands in for it."""
+        identity.register("buddy")
+        self._spool(["one", "two"])
+        delivery.read_spool("buddy", ack=True, ack_through="")
+        assert len(delivery.read_spool("buddy")) == 2
+
+    def test_read_spool_bool_ack_still_sweeps_when_ack_through_is_none(self, isolate):
+        """The discriminator: None (the default, meaning absent) leaves the
+        bool path exactly as it was."""
+        identity.register("buddy")
+        self._spool(["one", "two"])
+        delivery.read_spool("buddy", ack=True, ack_through=None)
+        assert delivery.read_spool("buddy") == []
+
     def test_acking_through_the_current_cursor_is_idempotent(self, isolate):
         identity.register("buddy")
         first = self._spool(["one"])[0]
@@ -338,6 +369,65 @@ class TestBuddyInboxAckThrough:
         assert [m["text"] for m in tools.dispatch("buddy_inbox", {}, "buddy")["messages"]] == [
             "second"
         ]
+
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    def test_a_blank_ack_through_never_falls_back_to_sweeping(self, isolate, blank):
+        """The precedence guard keys on PRESENCE, not on the stripped value.
+
+        Keying on the value collapses "no ack_through" and "ack_through that
+        stripped to nothing" into the same falsy thing, so ``{ack: true,
+        ack_through: ""}`` fell through to the bool path and swept the tail —
+        the exact loss this whole change exists to close, reachable from
+        inside its own guard. It is the only place here that could err toward
+        SILENT loss, which is the half that has no screen to surface it.
+        """
+        identity.register("buddy")
+        inbox.enqueue("buddy", "first", kind="note", sender="w")
+        inbox.flush_session("buddy")
+        tools.dispatch("buddy_inbox", {}, "buddy")
+        inbox.enqueue("buddy", "second", kind="note", sender="w")
+        inbox.flush_session("buddy")
+
+        result = tools.dispatch(
+            "buddy_inbox", {"ack": True, "ack_through": blank}, "buddy"
+        )
+        assert result["acked"] is False
+        # Neither message was acked — asking to ack through nothing acks
+        # nothing, and re-reading is the cheap failure.
+        assert [
+            m["text"] for m in tools.dispatch("buddy_inbox", {}, "buddy")["messages"]
+        ] == ["first", "second"]
+
+    def test_an_id_is_matched_exactly_never_trimmed_into_a_match(self, isolate):
+        """Ids are matched EXACTLY. A `.strip()` used to stand here, and once
+        presence became the precedence gate it had exactly one effect left:
+        turning `" m1 "` into an ack of m1 — guessing which message the caller
+        meant, on the one operation where guessing too generously loses mail.
+        Every other unrecognised id refuses; this one now refuses too.
+
+        Also the reviewer's surviving mutation M13, closed in the direction
+        that leaves nothing unfalsifiable: the leniency is gone rather than
+        pinned, and this test is what a re-added strip would fail.
+        """
+        identity.register("buddy")
+        inbox.enqueue("buddy", "first", kind="note", sender="w")
+        inbox.flush_session("buddy")
+        read = tools.dispatch("buddy_inbox", {}, "buddy")
+        padded = " " + read["messages"][0]["id"] + " "
+
+        result = tools.dispatch("buddy_inbox", {"ack_through": padded}, "buddy")
+        assert result["acked"] is False
+        assert len(tools.dispatch("buddy_inbox", {}, "buddy")["messages"]) == 1
+
+    def test_the_bool_path_still_works_when_ack_through_is_absent(self, isolate):
+        """The discriminator for the parametrized test above: presence is what
+        switches modes, so an ABSENT ack_through must leave `ack` alone."""
+        identity.register("buddy")
+        inbox.enqueue("buddy", "first", kind="note", sender="w")
+        inbox.flush_session("buddy")
+        result = tools.dispatch("buddy_inbox", {"ack": True}, "buddy")
+        assert result["acked"] is True
+        assert tools.dispatch("buddy_inbox", {}, "buddy")["messages"] == []
 
     def test_a_non_string_id_fails_loudly(self, isolate):
         identity.register("buddy")

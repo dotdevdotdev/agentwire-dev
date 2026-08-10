@@ -361,19 +361,31 @@ def _buddy_inbox(args: dict) -> dict:
     name = args.get("_buddy") or ""
     if not name:
         raise ToolError("buddy identity missing from tool context")
+    # PRESENCE, not truth. Keying the precedence on the stripped value collapses
+    # "no ack_through" with "an ack_through that stripped to nothing", so
+    # {ack: true, ack_through: ""} — or null, or whitespace — fell through to the
+    # bool path and swept the tail: the exact loss this parameter exists to
+    # close, reachable from inside its own guard. Asking to ack through nothing
+    # acks nothing and says so; re-reading is the cheap failure, and a sweep is
+    # the one that has no screen to surface it.
+    asked_through = "ack_through" in args
     through = args.get("ack_through")
     if through is not None and not isinstance(through, str):
         raise ToolError("ack_through must be a message id")
-    through = (through or "").strip()
+    # Not stripped: an id comes from a prior read of this same spool, never a
+    # human's fingers, so " m1 " is a caller that has already lost track of what
+    # it read. Refusing is the loud failure; trimming it into a match is a guess
+    # on the one operation where guessing generously loses mail.
+    through = through or ""
     ack = bool(args.get("ack", False))
     unread_only = bool(args.get("unread_only", True))
-    # ack_through OUTRANKS ack: honouring both would sweep the tail, which is
-    # exactly what the specific ack exists to avoid.
     messages = delivery.read_spool(
-        name, unread_only=unread_only, ack=ack and not through
+        name, unread_only=unread_only, ack=ack and not asked_through
     )
     acked = (
-        delivery.advance_cursor(name, through) if through else bool(ack and messages)
+        delivery.advance_cursor(name, through)
+        if asked_through
+        else bool(ack and messages)
     )
     return {
         "success": True,

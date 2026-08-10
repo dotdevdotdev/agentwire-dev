@@ -194,10 +194,12 @@ def advance_cursor(session: str, message_id: "str | None") -> bool:
     ever having been read. The cursor was already id-based; this is the missing
     parameter, not a missing mechanism.
 
-    Returns whether the cursor is now at or past *message_id*. The one False is
-    an id the spool no longer holds, and it is returned rather than swallowed:
-    a silently-refused ack is indistinguishable from a successful one, and the
-    caller re-announces forever with nothing on screen to say why.
+    Returns whether the cursor is now at or past *message_id*. False means it is
+    not, and there are exactly two ways to get one: an id the spool no longer
+    holds, and an empty/None id (a caller asking to ack through nothing). Both
+    are returned rather than swallowed — a silently-refused ack is
+    indistinguishable from a successful one, and the caller re-announces forever
+    with nothing on screen to say why.
 
     Both halves are priced. Acking too little re-reads a message the owner
     already heard (an annoyance). Acking too much loses one silently — no
@@ -243,8 +245,14 @@ def read_spool(
             start = found + 1
 
     selected = entries[start:] if unread_only else entries
-    if ack_through:
-        _advance(entries, session, str(ack_through))
+    if ack_through is not None:
+        # NOT `if ack_through:` — an empty string is a caller asking to ack
+        # through nothing, which acks nothing. Falling through to the bool path
+        # there would sweep the tail from inside the guard against sweeping it.
+        # None is the default and means "absent", the closest Python has to the
+        # tool layer's presence check.
+        if ack_through:
+            _advance(entries, session, str(ack_through))
     elif ack:
         _write_cursor(session, str(entries[-1].get("id") or ""))
     return selected
