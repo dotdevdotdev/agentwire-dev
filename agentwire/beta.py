@@ -72,11 +72,27 @@ def enabled_flags() -> set[str]:
     list`` from 11ms to 242ms and printing 24 log lines, for a feature almost
     nobody has enabled.
 
-    The consequence is stated rather than hidden: a long-lived process (the
-    portal) observes the flag state it started with, so turning a beta feature
-    on takes the restart that ``config.yaml`` changes already take. An
-    import-time surface like an MCP tool description is process-lifetime by
-    construction anyway. :func:`reset_cache` exists for tests.
+    The consequence is stated rather than hidden: a long-lived process
+    observes the flag state it started with, so turning a beta feature on takes
+    the restart that ``config.yaml`` changes already take. An import-time
+    surface like an MCP tool description is process-lifetime by construction
+    anyway. :func:`reset_cache` exists for tests.
+
+    **The precondition that makes the ON direction safe, written down because
+    it is not visible from here.** A cached ``{"voice_layer"}`` outlives a
+    config that has since said off — verified: gated prose keeps rendering
+    until :func:`reset_cache`. That is unreachable today only because every
+    in-process caller of ``load_roles``/``parse_role_file`` is a short-lived
+    CLI module, and the surfaces that look long-lived are not: ``role show``
+    and ``roles list`` shell out through ``run_agentwire_cmd``, so each render
+    happens in a fresh process that re-reads the flag.
+
+    **A long-lived in-process caller would violate that**, and would do it
+    silently — the gate would keep a feature ON for a user who turned it off,
+    with no error anywhere. If you add one (a portal route rendering role text
+    in-process, a daemon calling ``parse_role_file``), either call
+    :func:`reset_cache` at the top of each request or give that caller an
+    explicit ``enabled`` set. Do not discover this precondition by tripping it.
     """
     global _CACHE
     if _CACHE is None:
@@ -150,8 +166,16 @@ def gated_doc(fn):
             \"\"\"...\"\"\"
 
     Decorators apply bottom-up, so the docstring is already resolved by the time
-    the tool is registered — and FastMCP publishes the docstring verbatim as the
-    tool description, which is what makes this the whole fix.
+    the tool is registered — and FastMCP snapshots the docstring AT
+    registration, publishing it as the tool description, which is what makes
+    this the whole fix.
+
+    **Inverting the two silently un-gates the tool**, measured rather than
+    feared: with ``@gated_doc`` above ``@mcp.tool()`` the raw text publishes,
+    markers and all (2165 chars vs 1800). Nothing about the wrong order looks
+    wrong, so the property is pinned over the WHOLE registry —
+    ``test_no_published_description_carries_a_marker`` fails on any published
+    description containing a marker, whatever put it there.
     """
     if fn.__doc__:
         fn.__doc__ = render(fn.__doc__)

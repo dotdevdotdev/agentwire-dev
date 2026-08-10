@@ -428,6 +428,36 @@ class TestMcpSchemaIsByteIdenticalToMain:
             beta_mod.render(_branch_tool_docstrings()["msg_send"])
         ) + "\n"
 
+    def test_no_published_description_carries_a_marker(self):
+        """Every tool in the LIVE registry, not just the one we know about.
+
+        Decorator ORDER is load-bearing and silently so: ``@gated_doc`` must
+        sit BELOW ``@mcp.tool()``, because decorators apply bottom-up and
+        FastMCP snapshots the docstring when it registers. Inverted, the raw
+        text publishes — markers and all (2165 chars, verified by building both
+        orders and reading the registry) — and the only thing that noticed was
+        a check naming ``msg_send`` explicitly. A SECOND gated tool with
+        inverted decorators would ship its gated prose to every session with
+        nothing red.
+
+        So the property is asserted over the whole registry rather than per
+        tool: a marker in a published description means the gate did not run,
+        whatever the reason. This would also have caught the original B1, since
+        gating the prose is the only way it leaves the description at all.
+        """
+        import asyncio
+
+        from agentwire import mcp_server  # noqa: F401  (registers every domain)
+        from agentwire.mcp_core import mcp
+
+        published = {t.name: t.description or "" for t in asyncio.run(mcp.list_tools())}
+        assert len(published) > 100, "registry looks unpopulated — the sweep is not real"
+        leaking = sorted(n for n, d in published.items() if "beta:" in d)
+        assert leaking == [], (
+            f"these published MCP descriptions carry an unresolved beta marker "
+            f"— check that @gated_doc sits BELOW @mcp.tool(): {leaking}"
+        )
+
     def test_no_tool_was_added_or_removed(self):
         assert sorted(_branch_tool_docstrings()) == sorted(_main_tool_docstrings())
 
@@ -598,19 +628,52 @@ class TestMarkerShapesThatUsedToFailOpen:
 class TestConfigIsReadOncePerProcess:
     def test_parsing_every_role_loads_the_config_at_most_once(self, monkeypatch):
         """22x on a hot path every session touches, plus a stderr INFO line per
-        role file, for a feature almost nobody has enabled."""
+        role file, for a feature almost nobody has enabled.
+
+        Counts calls to ``enabled_beta_flags`` — the function the cache
+        actually wraps — and NOT ``load_config``, which is what this test
+        counted when it was written. The narrow-read refactor in the same
+        commit stopped routing through ``load_config``, so deleting the cache
+        outright left this test, the one named after the cache, GREEN: the
+        83ms fix silently disarmed the pin guarding the 242ms fix. A pin whose
+        subject moved out from under it is worse than no pin, because its name
+        still claims the coverage.
+        """
         from agentwire import beta as beta_live
 
         beta_live.reset_cache()
         calls = []
-        real = config_mod.load_config
+        real = config_mod.enabled_beta_flags
         monkeypatch.setattr(
-            config_mod, "load_config",
+            config_mod, "enabled_beta_flags",
             lambda *a, **k: (calls.append(1), real(*a, **k))[1],
         )
         for path in sorted(ROLES_DIR.glob("*.md")):
             roles_mod.parse_role_file(path)
-        assert len(calls) <= 1, f"config re-read {len(calls)}x while parsing roles"
+        assert len(calls) <= 1, f"flags re-read {len(calls)}x while parsing roles"
+
+    def test_the_pin_above_can_see_a_deleted_cache(self, monkeypatch):
+        """The control the original lacked. Simulates exactly what the review
+        did — resolve every marker-bearing role file with no cache in the way —
+        and asserts the count it would produce is one the pin REJECTS. Without
+        this, "at most once" can silently become "at most once because nothing
+        asks more than once"."""
+        from agentwire import beta as beta_live
+
+        beta_live.reset_cache()
+        calls = []
+        real = config_mod.enabled_beta_flags
+        monkeypatch.setattr(
+            config_mod, "enabled_beta_flags",
+            lambda *a, **k: (calls.append(1), real(*a, **k))[1],
+        )
+        for path in sorted(ROLES_DIR.glob("*.md")):
+            beta_live.reset_cache()  # stand in for "there is no cache"
+            roles_mod.parse_role_file(path)
+        assert len(calls) > 1, (
+            "an uncached gate consulted the flags at most once — the pin above "
+            "cannot distinguish a working cache from a gate nothing calls"
+        )
 
     def test_the_cache_can_be_reset(self, monkeypatch):
         """The escape hatch the tests themselves depend on — without it, the

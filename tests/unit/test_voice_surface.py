@@ -84,6 +84,17 @@ def mcp_tool_names(sources: "list[str] | None" = None) -> set[str]:
     beta gate did (``@mcp.tool()`` / ``@gated_doc`` / ``def msg_send``), and
     the direction that hid it is the dangerous one: a tool the audit cannot
     see is a tool nobody is required to place in a tier.
+
+    **Scope of the regex era, measured, so nobody re-opens it as a shipped
+    gap:** it missed ZERO tools on ``origin/main``, zero on the spine base and
+    zero before a stacked decorator existed — one tool (``msg_send``), in one
+    tree, introduced and fixed in the same change.
+
+    **Recorded limitation, deliberately not fixed:** this walks the parsed
+    module's TOP-LEVEL body, so a tool defined inside a function or an ``if``
+    block is invisible to it. Neither shape exists in the package today, and
+    both are worth catching if one ever lands — a conditionally-defined tool is
+    exactly the kind that would want a tier ruling most.
     """
     names = set(mcp_tool_defs(sources))
     assert names, "found no @mcp.tool definitions — the parse itself broke"
