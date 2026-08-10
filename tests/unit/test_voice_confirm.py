@@ -1563,8 +1563,11 @@ class TestTranscriptRing:
 
     def test_a_transcript_with_no_speech_start_is_flagged_estimated(self, ring):
         entry = ring.transcribe("orphan", "confirm tango")
+        # `.estimated` is what `_judge` filters on, so it is what this asserts.
+        # The old `.ordered` property asserted here was a second, subtly
+        # different spelling of the same question that the gate never consulted.
         assert entry.estimated is True
-        assert entry.ordered is False
+        assert entry.speech_started_seq == 0
         assert ring.after(0) == []
 
     def test_an_estimated_entry_never_approves(self, convo, runner):
@@ -2551,6 +2554,12 @@ class TestHonestLimit:
         "narrows but does not eliminate",
         "A spoken retraction is caught only when it uses a word or phrase the "
         "grammar knows",
+        # The fourth caveat. confirm.py's own docstring claims "the wiki and the
+        # docstring both carry" this paragraph — which was false for the whole
+        # time the wiki carried three clauses and the module carried four (#981).
+        # Listing it here is what makes that sentence true rather than aspirational.
+        "evidence of what was **heard**, not proof of what was **said**",
+        "as trustworthy as the local browser page",
         "**not** a security boundary against an adversary",
     )
 

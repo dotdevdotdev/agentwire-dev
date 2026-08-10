@@ -25,8 +25,13 @@ Two of the routes exist for the confirm gate's ordering:
 - ``/utterance`` — the audio-commit boundary and the transcription model's
   output, both carrying the client's conversation-item sequence. See
   :mod:`~agentwire.voice_layer.transcript` for why the sequence and not a clock.
-- ``/anchor`` — the ``response.done`` of the turn in which the buddy SPOKE a
-  proposal, which is when the owner heard what they would be approving.
+- ``/anchor`` — POSITIVE EVIDENCE that a proposal's announcement was spoken,
+  which is when the owner heard what they would be approving. POSTed from the
+  client's ``onSpoken`` for BOTH of its paths: a ``response.done`` whose
+  transcript carried the text, and the ``speechSynthesis`` fallback, which
+  produces no model turn at all. An earlier wording tied this to "the
+  ``response.done`` of the turn in which the buddy spoke it"; #951 retired it
+  precisely because the fallback path has no such turn.
 
 ``ThreadingHTTPServer`` is load-bearing, not incidental, and in two directions:
 a ``/tool`` request evaluating a confirm blocks briefly on the ring's condition
@@ -240,11 +245,17 @@ class BuddyBridge:
         }
 
     def anchor(self, payload: dict) -> dict:
-        """Anchor a proposal to the ``response.done`` in which it was SPOKEN.
+        """Record positive evidence that a proposal's announcement was SPOKEN.
 
         Until this lands the proposal is not confirmable — at propose time the
         owner has not yet heard what they would be approving, and barge-in is
         native on WebRTC.
+
+        The client sends this from ``onSpoken``, for the model path AND the
+        ``speechSynthesis`` fallback. An earlier docstring said "the
+        ``response.done`` in which it was spoken", which is false for the
+        fallback: it produces no model turn, so a fallback-announced proposal
+        would never be anchored and a correct nonce would be refused to the TTL.
         """
         proposal_id = payload.get("proposal_id")
         seq = payload.get("seq")

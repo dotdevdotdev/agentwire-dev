@@ -47,10 +47,21 @@ event order and stamps both sides from it:
   on it approves the barge-in case the gate exists to refuse; see
   :mod:`~agentwire.voice_layer.transcript`). The commit is recorded too, and
   never compared;
-- a proposal at the ``response.done`` of the turn in which the buddy SPOKE it,
-  which is when the owner actually heard what they would be approving. Barge-in
+- a proposal at the moment there is POSITIVE EVIDENCE its announcement was
+  spoken — ``onSpoken``, whose ``how`` is ``"model"`` (a ``response.done`` whose
+  transcript carried the text) or ``"fallback"`` (the browser voice said it).
+  Either way the owner heard it, which is the quantity being stamped. Barge-in
   is native here, so anchoring at tool-call time would let an interrupting
   approval land on a proposal that was never stated.
+
+  **#951 retired an earlier wording here, and the implementation under it:**
+  "the ``response.done`` of the turn in which the buddy spoke it". Read as *the
+  next ``response.done`` carrying any text* it let the announcer's
+  own cancel steal the anchor, and it has no reading at all for the fallback
+  path, which produces no model turn. A fallback-spoken proposal was then
+  anchored by nothing and the owner's correct nonce got ``not_announced`` until
+  the TTL — the fallback that GUARANTEES speech becoming the reason nothing
+  could be approved.
 
 The transcript forward is **awaited before any function call dispatches**
 (``forwardChain``). Without that the two are independent ``fetch`` calls racing

@@ -1,8 +1,13 @@
 """``agentwire buddy`` — the EXPERIMENTAL voice buddy (spike, branch-only).
 
-Every subcommand here is read-only with respect to the fleet. The only things
-this writes are the buddy's own identity record, its inbox spool cursor, and
-(for ``serve``) a localhost socket.
+Every subcommand here except ``serve`` is read-only with respect to the fleet,
+and for ``call`` that is a property of the WIRING rather than of the buddy: it
+dispatches with no confirm spine, so a write tool is refused outright instead of
+degrading to an ungated write. ``serve`` starts the bridge, and the bridge HOLDS
+a spine — so the browser client it serves can reach the one gated write (``msg
+send`` to a live session). The only things this module itself writes are the
+buddy's identity record, its inbox spool cursor, and (for ``serve``) a localhost
+socket.
 
 See ``docs/wiki/voice-layer.md`` for the design and the harness boundary.
 """
@@ -214,8 +219,9 @@ def register_buddy_parser(subparsers) -> None:
         description=(
             "A realtime voice layer the owner talks to about the fleet. It is not a "
             "coding harness: it never writes code, never owns a worktree, and never "
-            "appears in the topology. This slice is READ-ONLY — it can look at the "
-            "fleet and read its own mail, and nothing else."
+            "appears in the topology. It reads the fleet and its own mail, and has "
+            "exactly one write: passing a message to a session that is already "
+            "running, gated by a spoken confirm phrase."
         ),
     )
     sub = parser.add_subparsers(dest="buddy_command", required=True)
@@ -248,7 +254,7 @@ def register_buddy_parser(subparsers) -> None:
     box.add_argument("--ack", action="store_true", help="Mark the returned messages read")
     box.set_defaults(func=cmd_buddy_inbox)
 
-    tl = sub.add_parser("tools", help="Show the read-only tool surface")
+    tl = sub.add_parser("tools", help="Show the tool surface handed to the model")
     tl.add_argument("--json", action="store_true", help="Output JSON")
     tl.set_defaults(func=cmd_buddy_tools)
 

@@ -486,8 +486,18 @@ _DENIAL_BIGRAM_EXCEPTIONS = frozenset({("do", "not", "forget")})
 #: The problem was never enumeration as such. It was that this enumeration sat
 #: on the side where being wrong WRITES.
 #:
-#: So ``wait`` denies unconditionally — and that is **correct behaviour, not a
-#: tolerated false reject.** The reason is semantic rather than budgetary: the
+#: So there is no CONDITIONAL exception, and ``wait`` denies wherever the closed
+#: ``("cant", "wait")`` idiom above does not mask it — and that is **correct
+#: behaviour, not a tolerated false reject.**
+#:
+#: (This entry used to say "``wait`` denies unconditionally"; #987 added that
+#: idiom, and the absolute survived here for a round after the code stopped
+#: honouring it.
+#: The wiki's copy was corrected first and this one was not, which is the same
+#: drift with its polarity reversed: a claim pinned on one surface only is
+#: proved on one surface only.)
+#:
+#: The reason is semantic rather than budgetary: the
 #: write is ``msg send`` and it fires IMMEDIATELY. The buddy has no defer
 #: mechanism at all. So approving "confirm tango, wait until you hear back from
 #: the reviewer" would SEND NOW while the owner believes it is being held — a
@@ -816,12 +826,18 @@ class Proposal:
     and it takes no caller-supplied parameters.
 
     ``anchor_seq`` is the logical time at which the buddy finished SPEAKING this
-    proposal, supplied by the client's ``response.done`` for that turn. It is
+    proposal, supplied by the client's ``onSpoken`` — evidence the announcement
+    was uttered, by the model OR by the ``speechSynthesis`` fallback. It is
     ``None`` until then, and an unanchored proposal is not confirmable: at
     propose time the owner has not yet heard what they would be approving, and
-    barge-in is native on WebRTC. Anchoring to the spoken turn rather than to
-    the tool call is what makes "postdates the proposal" mean "after the owner
-    heard it".
+    barge-in is native on WebRTC. Anchoring to the moment it was HEARD rather
+    than to the tool call is what makes "postdates the proposal" mean "after the
+    owner heard it".
+
+    An earlier version of this sentence sourced the stamp from "the client's
+    ``response.done`` for that turn". The fallback path has no such turn, so
+    that reading anchored nothing whenever the browser voice was what spoke —
+    #951.
 
     **Everything is frozen at propose time — including the body.** It used to
     be that the body carried the confirm-time approving utterance; #953 killed
@@ -930,10 +946,12 @@ VOICE_MARKER = "<voice>"
 #: later collapses to the chip.
 #:
 #: 300 is the BODY cap, and the rendered line adds the ``[MSG from <sender> ·
-#: request] `` prefix and the ``⟨#id6⟩`` tail — ~57 chars for a long worktree
-#: sender name (verified at 498 rendered with a 33-char sender, still hitting).
-#: That lands a worst case near 385 against a measured 520, keeping ~35%
-#: margin.
+#: <kind>] `` prefix and the ``  ⟨#id6⟩`` tail — 33 chars plus the sender name,
+#: so 65 for a 32-character worktree sender. That lands the worst case at 365
+#: against a measured 520, keeping ~30% margin. (Derived from
+#: ``inbox.Message.render``'s format, not from a probe reading: the probe's
+#: numbers describe synthetic bodies at chosen lengths, and quoting one of those
+#: as "the worst case" is how this comment previously arrived at ~57 and ~385.)
 #:
 #: **The margin is deliberate and the measurement is pane-dependent.** The box
 #: shows a bounded number of ROWS, so a shorter pane windows sooner than 80x24
@@ -1376,11 +1394,17 @@ class ConfirmSpine:
         return proposal
 
     def announce(self, proposal_id: str, seq: int) -> bool:
-        """Anchor a proposal to the ``response.done`` in which it was SPOKEN.
+        """Anchor a proposal on evidence its announcement was SPOKEN.
 
-        Called from the client once the buddy's spoken turn completes. Until
-        this lands the proposal is not confirmable — see
-        :attr:`Proposal.anchor_seq`.
+        Called from the client's ``onSpoken`` — for the model path (a
+        ``response.done`` whose transcript carried the text) and equally for the
+        ``speechSynthesis`` fallback, which produces no model turn. Until this
+        lands the proposal is not confirmable — see :attr:`Proposal.anchor_seq`.
+
+        An earlier docstring said "the ``response.done`` in which it was
+        spoken". #951 retired that reading: it has no meaning on the fallback
+        path, so the mechanism added to GUARANTEE speech became the reason a
+        proposal could never be anchored.
         """
         with self._lock:
             for proposal in self._proposals.values():

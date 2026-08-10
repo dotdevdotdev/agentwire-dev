@@ -24,8 +24,11 @@ sequence the client assigns in data-channel event order (see
 ordered stream:
 
 - an utterance is stamped at its ``input_audio_buffer.speech_started``;
-- a proposal is anchored at the ``response.done`` of the turn in which the buddy
-  SPOKE it (see ``confirm.Proposal.anchor_seq``).
+- a proposal is anchored on positive evidence that its announcement was SPOKEN —
+  the client's ``onSpoken``, which fires for the model path and for the
+  ``speechSynthesis`` fallback alike (see ``confirm.Proposal.anchor_seq``). An
+  earlier wording here said "the ``response.done`` of the turn in which the
+  buddy spoke it"; the fallback produces no model turn, so #951 retired it.
 
 "The approval postdates the proposal" then means
 ``speech_started_seq > anchor_seq``: one integer comparison, on one clock, in
@@ -113,15 +116,13 @@ class Utterance:
     def complete(self) -> bool:
         return bool(self.text.strip())
 
-    @property
-    def ordered(self) -> bool:
-        """Can this entry be placed in conversation order at all?
-
-        False when no ``speech_started`` was seen. Such an entry is refused as
-        an approval: guessing its position is what the whole clock change
-        exists to stop.
-        """
-        return self.speech_started_seq > 0 and not self.estimated
+    # There is deliberately NO ``ordered`` property here, and its absence is
+    # worth one comment because it existed for a while and was read by nothing.
+    # It answered "can this entry be placed in conversation order at all" as
+    # ``speech_started_seq > 0 and not estimated`` — a reasonable predicate that
+    # was NOT the gate's predicate: ``ConfirmSpine._judge`` filters on
+    # ``.estimated`` directly. A property that documents a rule nothing enforces
+    # is worse than no property, because the next reader takes it for the rule.
 
 
 class TranscriptRing:
