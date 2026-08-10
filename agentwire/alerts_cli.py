@@ -64,16 +64,43 @@ def cmd_alerts_unsubscribe(args) -> int:
 
 
 def cmd_alerts_list(args) -> int:
+    """Who is subscribed — and whether this answer can be trusted.
+
+    ``list`` reads the same candidate index the emit path does, so a lost index
+    makes both of them say "nobody". That would be the worst property this
+    command could have: the one surface built to make a silent stop VISIBLE
+    would agree with the silent stop. So the index's presence is reported
+    alongside the answer, and its absence is not rendered as a confident zero.
+    """
     json_mode = getattr(args, "json", False)
     names = fleet_alerts.subscribers()
+    index_present = fleet_alerts.subscribers_index_path().exists()
     rows = [{"session": n, "lease": fleet_alerts.subscription(n)} for n in names]
-    lines = ["No session is subscribed to fleet alerts."] if not names else [
-        "Sessions receiving fleet alerts:",
-        *(f"  {r['session']}  (lease expires {(r['lease'] or {}).get('expires_at')})"
-          for r in rows),
-    ]
+    if names:
+        lines = [
+            "Sessions receiving fleet alerts:",
+            *(f"  {r['session']}  (lease expires {(r['lease'] or {}).get('expires_at')})"
+              for r in rows),
+        ]
+    elif index_present:
+        lines = ["No session is subscribed to fleet alerts."]
+    else:
+        lines = [
+            "No subscriber index — so this is NOT a confident 'nobody subscribed'.",
+            "Either nobody ever subscribed, or the index was lost; from here those "
+            "look identical, and while it is missing every alert reaches nobody.",
+            "Settle it (cheap, and it rebuilds the index either way):",
+            "  agentwire alerts reindex",
+        ]
     return _emit(
-        {"success": True, "subscribers": names, "leases": rows}, json_mode, lines
+        {
+            "success": True,
+            "subscribers": names,
+            "leases": rows,
+            "index_present": index_present,
+        },
+        json_mode,
+        lines,
     )
 
 

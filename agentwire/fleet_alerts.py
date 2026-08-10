@@ -143,9 +143,23 @@ def subscribe(session: str, lease: timedelta = DEFAULT_LEASE) -> dict:
     Writes into the session's existing record rather than replacing it — the
     store holds conversation identity (#871), and clobbering that to register
     for mail would be a data-destruction bug wearing a feature's clothes.
+
+    **Requires a record to already exist**, and that is about the store rather
+    than about typos. ``load_session_metadata`` returns ``{}`` for a name it has
+    never seen, so writing the lease back created a record for a session that
+    does not exist — a ``{}`` entry that ``core.recorded_sessions()`` counts and
+    nothing distinguishes from a real one. A verb that can mint junk into the
+    SSOT for conversation identity is the wrong shape however it is reached; a
+    subscription is a property OF a session, so a session it can invent is not
+    a subscription at all.
     """
     from . import core
 
+    if not core.session_metadata_path(session).exists():
+        raise ValueError(
+            f"no session record for {session!r} — subscribe an existing session "
+            f"(see `agentwire list`), or register it first"
+        )
     meta = core.load_session_metadata(session)
     now = _now()
     meta[SUBSCRIBE_KEY] = {
