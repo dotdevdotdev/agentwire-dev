@@ -53,10 +53,14 @@ separate ``POST /utterance`` calls, and the confirm arrives as a third
 (``POST /tool``). The client awaits the transcript forward before dispatching
 any function call (Rv2c), but the bridge must not *depend* on that: a commit
 that has not arrived yet leaves the entry absent rather than mis-stamped, and a
-transcript arriving with no prior commit is recorded ``estimated`` and is never
-usable as an approval. Failing closed there is deliberate — if the commit
-events stopped arriving, confirms stop working loudly rather than silently
-losing their ordering guarantee.
+transcript arriving with no prior ``speech_started`` is recorded ``estimated``
+and is never usable as an approval. (The COMMIT is not what decides that, and
+saying so here described a gate this module deliberately does not have —
+:meth:`TranscriptRing.transcribe` flags ``estimated`` on a missing
+``speech_started_seq``, because that is the one the ordering predicate reads.)
+Failing closed there is deliberate — if the ``speech_started`` events stopped
+arriving, confirms stop working loudly rather than silently losing their
+ordering guarantee.
 
 Thread safety
 -------------
