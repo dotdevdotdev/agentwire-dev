@@ -622,8 +622,9 @@ waiting for the transcript it needs.
 
 #### The anchor is EVIDENCE, not the next `response.done` (#951)
 
-"Anchored at the `response.done` of the turn in which the buddy spoke it"
-describes the intent, and it was also the implementation until it broke. Read
+The wording this section retired — "anchored at the `response.done` of the turn
+in which the buddy spoke it" — described the intent, and was also the
+implementation until it broke. Read
 literally as *the next `response.done` carrying any text*, the announcer's own
 cancel could steal the anchor, and a proposal spoken by the **fallback voice** —
 which produces no model turn at all — was anchored by nothing: the owner hears
@@ -716,6 +717,17 @@ spoken loop, which in a screenless channel is the expensive failure. The bound
 belongs in `transcript.py` — `_judge` cannot tell a never-completing entry from a
 slow one — so it is **pinned in the tests as behaviour, not as a design**.
 
+**Scope it precisely, because the epoch section two above will mislead you into
+scoping it wrongly.** The blocking entry has to be one whose sequence lands
+inside `(match.speech_started_seq, ceiling]`, so what it takes is a proposal
+anchored **in the SAME PAGE LOAD as the entry** — not "only within one page
+load". Having just read that `/mint` hands each load a base a whole
+`MINT_SEQ_GAP` above everything before it, a reader is primed to derive the
+narrower claim and conclude a reload clears it. It does not: the ring is
+bridge-lifetime and outlives the page, so a stale never-completing entry from an
+earlier epoch is simply below the new window rather than gone, and a fresh load
+starts blocking again the moment it produces one of its own.
+
 Outcomes are keyed on **what the owner should do next**, and are never
 collapsed. This is `confirm.REASONS` in full — the SSOT for the taxonomy, and
 the set `SPOKEN` is checked against **both ways**:
@@ -748,8 +760,9 @@ gate on a duplicate would close it out from under the confirm that is running.
 **`denied` does not say "you said no".** It covers "wait"/"hold on" as well, and
 those are not a refusal of the write — the spoken line is *"I heard you hold off,
 so I haven't sent it. Say the phrase again when you're ready."* A reason that
-misinforms is the defect the taxonomy exists to prevent, and this row said
-"nothing — you said no" for one round after the behaviour underneath it changed.
+misinforms is the defect the taxonomy exists to prevent, and for one round after
+the behaviour underneath it changed this row still said
+"nothing — you said no".
 
 Two guard properties worth keeping straight, because only one of them is
 obvious. Checking "every outcome has a line" catches a mute refusal; it lets **a
@@ -1117,8 +1130,8 @@ masks an open-ended class of utterances.
 > both APPROVED, and `carries_denial("don't forget, wait")` was False, so the
 > post-approval scan was blind to it too. **An exception's mask is only ever as
 > safe as its length**, which is why the span is now taken from the rule that
-> actually matched and why "exactly one token" is the wrong thing to argue a new
-> exception against.
+> actually matched — and why the wording this paragraph retired,
+> "exactly one token", is the wrong thing to argue a new exception against.
 
 The uncontracted twin is listed separately as a trigram — `("do","not","forget")`
 — because normalization does not merge the two forms. That is the same
@@ -1742,6 +1755,30 @@ undecided. A next session that picks an answer silently is the failure mode.
       recipient pulled it, which defeats the handoff), but that is a ruling to
       make out loud rather than to inherit from the enum's shape.
 
+### Drift has two directions, and the second one is easy to miss
+
+This page was reconciled against the code once and the reconciliation itself
+created the reverse defect: the page became right and **six code sites stayed
+wrong**, each still carrying the anchor wording #951 retired — "the
+`response.done` of the turn in which the buddy SPOKE it" — in `client.py`'s
+module docstring, `server.py`'s (twice), `confirm.py`'s (twice) and
+`transcript.py`'s. Alongside them, the absolute #987 retired,
+"`wait` denies unconditionally", still asserted in `confirm.py`; and
+`voice_layer/__init__.py` still calling the surface read-only.
+
+Two lessons, both cheap:
+
+- **A claim that lives on two surfaces must be pinned on both.** Round one
+  retired "`wait` denies unconditionally" on this page only, so the identical
+  false sentence survived one file away, unpinned and unread. `confirm.py`
+  records the same failure one level down: testing a table's entries against
+  themselves proves the table, not the path into it.
+- **A pin has to look where the defect lives.** The route pins were page-wide
+  substring checks, and both routes appear in prose elsewhere — so deleting them
+  from the architecture diagram, the exact thing those pins existed to catch,
+  left every one of them green. They are anchored inside the fence now, and the
+  route list is derived from `server.py`'s dispatch rather than typed.
+
 ### Known residuals — open, and named so nobody argues from a mechanism that isn't there
 
 Each of these is a real hole in shipped code, filed rather than fixed, with the
@@ -1754,7 +1791,7 @@ exist**, so these are listed here as well as inline.
 | #989 | `transcript.unheard_between` | no staleness bound: one never-completing `speech_started` (a cough, a VAD blip, TTS bleed) refuses every confirm as a WAIT outcome — no attempt burned, so the proposal loops on "give me a second" for the whole 120s TTL and then expires |
 | #990 | `confirm.cancel()` | bypasses `_claim()`, so a cancel racing a dispatching confirm says "I haven't sent it" while the runner is sending — the exact over-claim `in_flight`'s wording exists to avoid, on the sibling path |
 | #992 | `_judge`'s post-approval scan | `carries_denial` is not nonce-gated, and the fallback voice speaks message BODIES any session can send — so an echoed "no, stop, don't" retroactively denies a legitimate approval. Remotely triggerable; invisible to the owner |
-| #995 | `client.py` browser wires | four event→handler wires (including `pc.ontrack`, which arms the greet-as-health-check) have no pin at all — cut any of them and all voice tests stay green |
+| #995 | `client.py` browser wires | five event→handler wires (`pc.ontrack`, which arms the greet-as-health-check; the data-channel `open`/`close` status wires; and both button click handlers) have no pin at all — cut any of them and all voice tests stay green |
 | #996 | the `speakingBudget` watchdog | fires neither `onSpoken` nor `onNotSpoken`, so on the exact dropped-utterance event it exists to recover from, the notice's ids stay in `inFlight` for the session: never acked, never released, never re-announced |
 | #997 | the announcer's `pump()` | the speaking budget gates the notifier's gates, never the announcer's own FIFO — so a queued `must_speak` item is promoted while the browser voice is starting the previous one. Two voices, at any watchdog length. Audio-quality, not safety |
 

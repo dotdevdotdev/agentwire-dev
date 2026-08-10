@@ -24,8 +24,11 @@ sequence the client assigns in data-channel event order (see
 ordered stream:
 
 - an utterance is stamped at its ``input_audio_buffer.speech_started``;
-- a proposal is anchored at the ``response.done`` of the turn in which the buddy
-  SPOKE it (see ``confirm.Proposal.anchor_seq``).
+- a proposal is anchored on positive evidence that its announcement was SPOKEN —
+  the client's ``onSpoken``, which fires for the model path and for the
+  ``speechSynthesis`` fallback alike (see ``confirm.Proposal.anchor_seq``). An
+  earlier wording here said "the ``response.done`` of the turn in which the
+  buddy spoke it"; the fallback produces no model turn, so #951 retired it.
 
 "The approval postdates the proposal" then means
 ``speech_started_seq > anchor_seq``: one integer comparison, on one clock, in

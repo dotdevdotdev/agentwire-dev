@@ -14,6 +14,14 @@ token wide — and there is nothing in the code to derive that from.
 
 Every test in this module was watched RED against the pre-#981 wording. A pin
 that passes against the sentence it was written to forbid is not a pin.
+
+**The drift can flip polarity, so the pins are two-sided.** The first round of
+this sweep fixed the page and left the identical false claims in the module
+docstrings one file away — six of them describing the pre-#951 anchor, and one
+saying `wait` denies unconditionally. A pin scoped to the page proves the page,
+which is exactly the "testing a table's entries against themselves" trap
+`confirm.py` records one level down. So the claims that exist on both sides are
+asserted on both sides, over `SOURCES` below.
 """
 
 from __future__ import annotations
@@ -26,28 +34,48 @@ from agentwire import inbox
 from agentwire.voice_layer import confirm, server, tools, write_tools
 
 WIKI = Path(__file__).resolve().parents[2] / "docs" / "wiki" / "voice-layer.md"
+VOICE_LAYER = Path(confirm.__file__).parent
+
+#: Every prose surface a voice-layer claim can live on. The page is one of
+#: them, not the only one.
+SOURCES = tuple(sorted(VOICE_LAYER.glob("*.py"))) + (WIKI,)
 
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-#: Words that mark a claim as being QUOTED to correct it rather than asserted.
-#: The page legitimately repeats a sentence it is retiring — that is how the
-#: next reader learns not to restore it — so an absence test has to be
-#: context-aware or it forbids the correction along with the defect. Same
-#: technique as `test_nothing_rounds_the_guarantee_up`.
-_CORRECTION_MARKERS = (
-    "wrong", "was false", "used to", "no longer", "for one round", "not ",
-    "never", "old", "stale", "instead of",
+#: Phrases that mark a claim as being QUOTED to retire it rather than asserted.
+#: A page legitimately repeats a sentence it is retiring — that is how the next
+#: reader learns not to restore it — so an absence test has to be context-aware
+#: or it forbids the correction along with the defect.
+#:
+#: **Deliberately UNAMBIGUOUS and deliberately not the obvious list.** The first
+#: version accepted bare `not `, `never`, `wrong` and `old` inside a 220-char
+#: window, which in a prose-dense module is always satisfied by something
+#: unrelated: `confirm.py`'s "The problem was never enumeration as such" sat two
+#: sentences above "So ``wait`` denies unconditionally" and silenced the pin
+#: that existed to catch it. Six of the nine claims this module forbids went
+#: green that way — the absence tests could not fail, which is the same
+#: not-really-coverage defect they were written to catch one level up.
+_RETIREMENT_MARKERS = (
+    "used to", "no longer", "was false", "was wrong", "is wrong",
+    "for one round", "previously", "before the fix", "retired", "stopped being",
+    "described the old", "an earlier", "the first version",
 )
+
+#: How far back a marker may sit. One sentence, not a paragraph: a retirement
+#: marker that is not in the same breath as the claim is not qualifying it.
+_MARKER_WINDOW = 140
 
 
 def _every_occurrence_is_a_correction(page: str, claim: str) -> bool:
     start = 0
-    while (index := page.lower().find(claim.lower(), start)) != -1:
-        context = page.lower()[max(0, index - 220) : index]
-        if not any(marker in context for marker in _CORRECTION_MARKERS):
+    lowered = page.lower()
+    needle = claim.lower()
+    while (index := lowered.find(needle, start)) != -1:
+        context = lowered[max(0, index - _MARKER_WINDOW) : index]
+        if not any(marker in context for marker in _RETIREMENT_MARKERS):
             return False
         start = index + len(claim)
     return True
@@ -57,6 +85,29 @@ def _table_row(page: str, cell: str) -> str:
     """The one markdown row whose first cell is *cell*."""
     start = page.index(f"| {cell} |")
     return page[start : page.index("|", start + len(cell) + 4) + 120]
+
+
+def _fenced_blocks(raw: str) -> list[str]:
+    """Every ``` fenced block in the RAW page, unflattened.
+
+    The route pins used to be page-wide substring checks, and `/utterance` and
+    `/anchor` also appear in four prose paragraphs — so deleting them from the
+    architecture DIAGRAM, which is the defect those pins exist to catch, left
+    every one of them green. A pin has to look where the defect lives.
+    """
+    parts = raw.split("```")
+    return parts[1::2]
+
+
+def _offenders(claim: str) -> list[str]:
+    """Sources asserting *claim* outside a correction context."""
+    bad = []
+    for path in SOURCES:
+        if not _every_occurrence_is_a_correction(
+            _flat(path.read_text(encoding="utf-8")), claim
+        ):
+            bad.append(path.name)
+    return bad
 
 
 @pytest.fixture(scope="module")
@@ -89,14 +140,25 @@ class TestWhatActuallyGuardsTheBridge:
         assert "rebinds its own name to `127.0.0.1`" in page
 
     def test_the_page_and_the_module_agree(self, page):
-        """The defect was DISAGREEMENT, so the pin is on agreement."""
-        doc = _flat(server.__doc__ or "") + _flat(server.allowed_hosts.__doc__ or "")
+        """The defect was DISAGREEMENT, so the pin is on agreement.
+
+        The bare token "the owner" used to be the second claim here. It appears
+        dozens of times on both sides and so could never fail — the test went
+        red only on its sibling, while counting as two assertions' worth of
+        coverage. An assertion that cannot fail is not coverage.
+        """
+        doc = (_flat(server.__doc__ or "") + _flat(server.allowed_hosts.__doc__ or "")).lower()
         for claim in (
             "the attacker never sends the packet",
-            "the owner",  # "the owner's browser does" / "the OWNER'S BROWSER is"
+            # Who DOES send it — the half that makes the first claim actionable.
+            "browser",
         ):
-            assert claim in doc.lower(), claim
+            assert claim in doc, claim
             assert claim in page.lower(), claim
+        # And the agreement is about the BIND specifically: both sides must say
+        # loopback is not what keeps the remote page out.
+        for text in (doc, page.lower()):
+            assert "loopback bind is" in text and "not" in text
 
     def test_the_page_states_the_multi_user_residual(self, page):
         """`allowed_hosts` names one thing it does not close. Pages that keep
@@ -178,11 +240,129 @@ class TestTheToolSurfaceIsNotEnumeratedStale:
 
 class TestTheBridgeRoutesAreDocumented:
     """`/utterance` and `/anchor` are the confirm gate's ordering, and the
-    architecture diagram showed neither."""
+    architecture diagram showed neither.
+
+    Anchored INSIDE the fences. As page-wide substring checks these four could
+    not fail: both routes appear in four prose paragraphs elsewhere, so gutting
+    the diagram — the actual defect — left all four green.
+    """
 
     @pytest.mark.parametrize("route", ["/mint", "/tool", "/utterance", "/anchor"])
-    def test_route_appears(self, page, route):
-        assert route in page
+    def test_route_appears_in_the_architecture_diagram(self, route):
+        raw = WIKI.read_text(encoding="utf-8")
+        diagrams = [b for b in _fenced_blocks(raw) if "browser client" in b]
+        assert len(diagrams) == 1, "the architecture diagram moved or split"
+        assert route in diagrams[0]
+
+    def test_every_post_route_the_bridge_serves_is_in_the_diagram(self):
+        """Derived: the routes come out of `server.py`'s dispatch, so a fifth
+        route cannot ship undocumented."""
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        served = {
+            line.split('"')[1]
+            for line in source.splitlines()
+            if line.strip().startswith('if path == "/')
+        }
+        diagram = [b for b in _fenced_blocks(WIKI.read_text(encoding="utf-8"))
+                   if "browser client" in b][0]
+        assert served, "no routes extracted — the dispatch shape changed"
+        assert {r for r in served if r not in diagram} == set()
+
+
+class TestTheAnchorClaimIsCorrectedEVERYWHERE:
+    """The polarity flip: round one fixed the page and left six code sites.
+
+    `/anchor` is POSTed from `onSpoken` for BOTH values of `how`, and the
+    fallback case produces no model turn at all — so "the `response.done` of the
+    turn in which the buddy SPOKE it" is false for the browser-voice path. It
+    survived in `client.py`, `server.py` (x2), `confirm.py` (x2) and
+    `transcript.py` while the page said the right thing.
+    """
+
+    #: The exact pre-#951 formulations. Each may be QUOTED to retire it.
+    RETIRED = (
+        "of the turn in which the buddy SPOKE",
+        "``response.done`` in which it was SPOKEN",
+        "supplied by the client's ``response.done`` for that turn",
+    )
+
+    @pytest.mark.parametrize("claim", RETIRED)
+    def test_no_source_asserts_the_retired_formulation(self, claim):
+        assert _offenders(claim) == []
+
+    #: The SIX sites, named individually rather than swept.
+    #:
+    #: A whole-file `"evidence" in source` check is not a pin here: `client.py`
+    #: and `confirm.py` both use that word many times for unrelated reasons, so
+    #: two of the six would have passed without being touched. Each docstring is
+    #: addressed by the symbol that owns it.
+    ANCHOR_DOCS = (
+        ("client module", lambda: __import__(
+            "agentwire.voice_layer.client", fromlist=["x"]).__doc__),
+        ("server module", lambda: server.__doc__),
+        ("transcript module", lambda: __import__(
+            "agentwire.voice_layer.transcript", fromlist=["x"]).__doc__),
+        ("server.BuddyBridge.anchor", lambda: server.BuddyBridge.anchor.__doc__),
+        ("confirm.ConfirmSpine.announce", lambda: confirm.ConfirmSpine.announce.__doc__),
+        ("confirm.Proposal", lambda: confirm.Proposal.__doc__),
+    )
+
+    @pytest.mark.parametrize("name,getter", ANCHOR_DOCS, ids=[n for n, _ in ANCHOR_DOCS])
+    def test_the_anchor_docstring_names_the_mechanism_it_is_driven_from(self, name, getter):
+        """`onSpoken`, not "fallback".
+
+        The first version of this asserted the word "fallback" — and
+        `client.py`'s docstring already contained it, for an unrelated reason
+        (the REFUSAL fallback), so that one param was green before the fix and
+        counted as coverage anyway. `onSpoken` is the thing that actually
+        distinguishes the corrected claim from the retired one: it is what
+        `/anchor` is POSTed from, and it fires for both `how` values. Verified
+        absent from all six docstrings before the fix.
+        """
+        doc = _flat(getter() or "")
+        assert "onSpoken" in doc, name
+
+
+class TestWaitIsNotUnconditionalOnEitherSide:
+    """#987 added `("cant","wait")`, so the absolute is false — and the first
+    round of pins forbade it on the PAGE only, leaving the identical claim in
+    `confirm.py` one file away."""
+
+    def test_no_source_says_wait_denies_unconditionally(self):
+        assert _offenders("wait`` denies unconditionally") == []
+        assert _offenders("`wait` denies unconditionally") == []
+
+
+class TestNothingCallsTheSurfaceReadOnly:
+    """The write path has shipped. `buddy_cli` and `INDEX.md` were fixed in
+    round one; `voice_layer/__init__.py` was not."""
+
+    #: The exact retired strings, per surface. NOT a blanket ban on the words
+    #: "read-only tool surface": the page uses that phrase correctly in the past
+    #: tense ("Until it landed, … WAS a theoretical statement about a read-only
+    #: tool surface"), and a pin that forbids the accurate history along with
+    #: the stale claim gets deleted by the next person rather than obeyed.
+    RETIRED_BY_FILE = (
+        ("agentwire/voice_layer/__init__.py", "read-only fleet-awareness tool surface"),
+        ("agentwire/buddy_cli.py", "This slice is READ-ONLY"),
+        ("agentwire/buddy_cli.py", "Show the read-only tool surface"),
+        ("docs/wiki/INDEX.md", "read-only fleet awareness"),
+    )
+
+    @pytest.mark.parametrize(
+        "relative,claim", RETIRED_BY_FILE, ids=[f"{f}:{c[:24]}" for f, c in RETIRED_BY_FILE]
+    )
+    def test_the_retired_read_only_claim_is_gone(self, relative, claim):
+        root = Path(__file__).resolve().parents[2]
+        text = _flat((root / relative).read_text(encoding="utf-8"))
+        assert _every_occurrence_is_a_correction(text, claim), relative
+
+    def test_the_package_docstring_names_the_gated_write(self):
+        import agentwire.voice_layer as package
+
+        doc = _flat(package.__doc__ or "")
+        assert "write_tools" in doc
+        assert "confirm" in doc
 
 
 class TestTheBodyCapIsStatedNotMeasured:
@@ -266,7 +446,10 @@ class TestTheDenialGrammarMatchesTheCode:
         assert "sits on the fail-open side and cannot be moved off it" in page
 
     def test_wait_is_no_longer_described_as_unconditional(self, page):
-        assert "`wait` denies unconditionally" not in page
+        # Context-aware like its siblings: a page that RETIRES this sentence has
+        # to be able to quote it. The plain `not in` version forbade the
+        # correction along with the defect.
+        assert _every_occurrence_is_a_correction(page, "`wait` denies unconditionally")
 
     def test_the_measured_false_reject_is_the_live_behaviour(self):
         """The page's claim about `("cant","wait")` is that it fixed a measured
@@ -313,14 +496,20 @@ class TestTheInterruptTierIsNotOverPromised:
         and escalation is the tier a promise would be designed against."""
         assert "roughly 30s in the worst case" in page
 
-    def test_the_page_matches_the_shipped_gate(self):
-        """Derived: the page's claim is about `canInterrupt`'s legs, so read
-        them out of the page source the browser actually gets."""
+    def test_the_shipped_browser_page_has_both_legs(self):
+        """Derived from the BROWSER page, not the wiki.
+
+        Renamed: this used to be `test_the_page_matches_the_shipped_gate` with a
+        local named `page`, which is also the wiki fixture's name one class up —
+        so it read as a doc-agreement pin and was counted as one. It is not: it
+        asserts `canInterrupt`'s two legs exist in the page source the browser
+        actually gets, and it would pass with no wiki at all.
+        """
         from agentwire.voice_layer import client
 
-        source = client.page("buddy", "token")
-        assert "!announcer.anchorPending()" in source
-        assert "!confirmGate.outstanding()" in source
+        browser_page = client.page("buddy", "token")
+        assert "!announcer.anchorPending()" in browser_page
+        assert "!confirmGate.outstanding()" in browser_page
 
 
 class TestTheOpenResidualsAreNamed:
