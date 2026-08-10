@@ -209,6 +209,54 @@ class TestTheOutcomeTableIsComplete:
         assert "I heard you hold off" in confirm.SPOKEN["denied"]
 
 
+class TestTheResidualTableDoesNotAdvertiseClosedHoles:
+    """The residual table's own header says why this matters: *"a wiki that
+    describes what we meant is how the next contributor designs against
+    something that does not exist"*. That cuts both ways, and the second
+    direction is the one that rots silently — a CLOSED hole left listed as open
+    is a mechanism the next reader believes is missing, so they either rebuild
+    it or route around it. #989, #990 and #992 were the beta gate; each is now
+    described where it lives instead.
+    """
+
+    CLOSED = ("#989", "#990", "#992")
+
+    @staticmethod
+    def _residual_rows() -> "list[str]":
+        """The residual table's rows, from the RAW page.
+
+        Read raw rather than through the flattened ``page`` fixture: this is a
+        LINE-shaped claim, and flattening collapses the whole table onto one
+        line, which is how a line-based assertion here passes (or fails) for a
+        reason that has nothing to do with the table.
+        """
+        raw = WIKI.read_text(encoding="utf-8")
+        table = raw.split("### Known residuals")[1].split("### Standing constraints")[0]
+        return [line for line in table.splitlines() if line.startswith("| #")]
+
+    @pytest.mark.parametrize("issue", CLOSED)
+    def test_the_closed_ones_are_not_listed_as_residuals(self, issue):
+        rows = [r for r in self._residual_rows() if r.startswith(f"| {issue} |")]
+        assert rows == [], rows
+
+    def test_the_mechanisms_they_installed_are_documented(self, page):
+        """And the other direction: removing the row without documenting the
+        fix would leave the page silent about behaviour that now exists."""
+        for claim in (
+            "UNHEARD_COMMITTED_GRACE_S",
+            "UNHEARD_OPEN_UTTERANCE_S",
+            "`cancel()` takes the SAME claim",
+            "The buddy's own voice cannot deny",
+        ):
+            assert claim in page, claim
+
+    def test_the_residual_section_still_has_open_entries(self):
+        """The must-fail control. If the table is ever empty — or the split
+        above stops finding it — the parametrized test passes for the wrong
+        reason."""
+        assert self._residual_rows()
+
+
 class TestTheToolSurfaceIsNotEnumeratedStale:
     """The page listed 9 tools against a live surface many times that size.
 
