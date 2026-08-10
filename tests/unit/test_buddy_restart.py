@@ -211,16 +211,17 @@ def _page() -> str:
 _slice = page_slice
 
 
-def _greet_program(*, fire: str) -> str:
-    page = _page()
-    greet_block = _slice(
-        page, r"const GREETING\s*=", r"function maybeGreet\(\)\s*\{[\s\S]*?\n\}",
-        "the greeting block",
-        # Shape, not behaviour: the declarations and the function's existence.
-        # Whether maybeGreet's BODY still greets is what the tests decide.
-        shape=r"let greeted[\s\S]*function maybeGreet\(\)\s*\{[\s\S]*\}\s*$",
-    )
-    ontrack = _slice(
+def _ontrack_slice(page: str) -> str:
+    """The ``pc.ontrack`` wire, cut out of *page*.
+
+    A FUNCTION rather than an inline call, so the reflow test below exercises
+    the anchors and the shape THIS program uses instead of a copy of them. The
+    first version hardcoded its own copy of the regex, which made the tightening
+    unpinned: reverting the shape here left every file green while the test
+    still claimed to prove the diagnostic. Same fix as ``test_client_wires.py``,
+    which is where it was got right first.
+    """
+    return _slice(
         page, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
         # An assignment of an arrow function with a BALANCED brace body. True
         # with or without the maybeGreet() call inside it, which is what keeps
@@ -235,6 +236,18 @@ def _greet_program(*, fire: str) -> str:
         # prevent. Demanding the closing brace is what a fragment cannot fake.
         shape=r"^pc\.ontrack\s*=\s*\([^()]*\)\s*=>\s*\{[^{}]*\}\s*;\s*$",
     )
+
+
+def _greet_program(*, fire: str) -> str:
+    page = _page()
+    greet_block = _slice(
+        page, r"const GREETING\s*=", r"function maybeGreet\(\)\s*\{[\s\S]*?\n\}",
+        "the greeting block",
+        # Shape, not behaviour: the declarations and the function's existence.
+        # Whether maybeGreet's BODY still greets is what the tests decide.
+        shape=r"let greeted[\s\S]*function maybeGreet\(\)\s*\{[\s\S]*\}\s*$",
+    )
+    ontrack = _ontrack_slice(page)
     session_created = _slice(
         page, r'case "session\.created":', r"break;", "the session.created wire",
         shape=r'^case "session\.created":[\s\S]*break;$',
@@ -346,10 +359,7 @@ class TestBothGreetWiresAreLoadBearing:
         ]))
         assert "maybeGreet();" in reflowed, "the reflow broke the wire it reflows"
         with pytest.raises(AssertionError) as excinfo:
-            _slice(
-                reflowed, r"pc\.ontrack\s*=", r";\s*\n", "the pc.ontrack wire",
-                shape=r"^pc\.ontrack\s*=\s*\([^()]*\)\s*=>\s*\{[^{}]*\}\s*;\s*$",
-            )
+            _ontrack_slice(reflowed)
         assert "does not have the shape this test assumes" in str(excinfo.value)
 
     def test_the_session_created_wire_also_starts_the_inbox_notifier(self):
