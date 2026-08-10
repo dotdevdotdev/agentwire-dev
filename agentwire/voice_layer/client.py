@@ -524,7 +524,13 @@ INBOX_NOTIFIER_JS = """
 //
 // Injected dependencies:
 //   fetchInbox() -> Promise<{success, messages}>  PEEK — never advances the cursor
-//   ackInbox()   -> Promise<{success, messages}>  read + advance the cursor
+//   ackInbox(id) -> Promise<{success, acked}>  advance the cursor to EXACTLY id
+//              (#970). The old bool ack advanced to the spool TAIL as it stood
+//              at ack time, and the buddy acks only after SPEAKING — so mail
+//              landing in that window was cursor-advanced past unread, with no
+//              dead-letter and no screen to notice it on. #969 caught those in
+//              a page-lifetime array and a page unload dropped them silently;
+//              acking by id means there is nothing to catch.
 //   announce(text, meta)   the page's announce() — no other voice exists here
 //   canSpeak() -> bool     owner not speaking, no active response, nothing queued
 //   canInterrupt() -> bool the RELAXED gate for escalation-kind messages
@@ -545,12 +551,6 @@ INBOX_NOTIFIER_JS = """
 //              builds a fresh notifier over the same map and cannot replay a
 //              spoken notice — while a notice announced but never SPOKEN is
 //              not in it, and is correctly said again.
-//   strays: [] page-lifetime array of acked-but-never-spoken replies (the
-//              peek/ack race — see noticeSpoken). The cursor is already past
-//              them, so the spool will NEVER return them again: this array is
-//              their only way back to the owner's ear, and giving it to the
-//              notifier to own meant a stop() before the next gated tick took
-//              it to the grave. Passed in for the same reason `seen` is.
 function createInboxNotifier(deps) {
   var fetchInbox = deps.fetchInbox;
   var ackInbox = deps.ackInbox;
@@ -561,7 +561,6 @@ function createInboxNotifier(deps) {
   var onLog = deps.onLog || function () {};
   var pollMs = deps.pollMs;
   var seen = deps.seen;
-  var strays = deps.strays;
   var canInterrupt = deps.canInterrupt || function () { return false; };
   var reRaise = deps.reRaise || null;
 
@@ -602,9 +601,9 @@ function createInboxNotifier(deps) {
       // STOPPED MID-FLIGHT. This promise is not cancellable, so a poll begun
       // before stop() resolves after it — and the interrupt tier could still
       // pass, handing an escalation to a null announcer for a bare
-      // speechSynthesis.speak with no meta: never acked, never seen, and
-      // cursor-past, so the spool will never return it (#978 item 6). Checked
-      // BEFORE the strays are pulled, so nothing leaves the array either.
+      // speechSynthesis.speak with no meta: never acked, never seen (#978
+      // item 6). Since #970 it is at least not cursor-past — only a SPOKEN
+      // notice acks — so the next session re-reads it.
       if (stopped) return;
       if (!res || !res.success) {
         onLog("inbox", "poll failed: " + ((res && res.error) || "no response"));
@@ -621,20 +620,9 @@ function createInboxNotifier(deps) {
       var full = canSpeak();
       if (!full && !canInterrupt()) return;
       var take = function (m) { return full || isUrgent(m); };
-      // Strays: pull only what this tick may speak; the rest STAY in the
-      // array — a stray is cursor-past, so dropping one here loses it.
-      var pulled = [];
-      for (var i = 0; i < strays.length; ) {
-        if (take(strays[i])) pulled.push(strays.splice(i, 1)[0]);
-        else i++;
-      }
-      // Which of the announced ids came OUT of the strays array. A stray is
-      // cursor-past, so releasing it on failure is not enough — it has to go
-      // back in, and only the poll that took it knows which ones those were.
-      var wasStray = {};
-      pulled.forEach(function (m) { if (m && m.id) wasStray[m.id] = true; });
+      var unread = res.messages || [];
       var claimed = {};
-      var fresh = pulled.concat((res.messages || []).filter(take)).filter(function (m) {
+      var fresh = unread.filter(take).filter(function (m) {
         if (!m || !m.id || seen[m.id] || inFlight[m.id] || claimed[m.id]) return false;
         claimed[m.id] = true;
         return true;
@@ -655,6 +643,24 @@ function createInboxNotifier(deps) {
       }
       var ids = fresh.map(function (m) { return m.id; });
       ids.forEach(function (id) { inFlight[id] = true; });
+      // HOW FAR THIS NOTICE MAY ACK (#970). The cursor is ONE id, so acking
+      // through id X marks everything before X read too. The only safe target
+      // is the end of the longest UNBROKEN run of unread messages that are
+      // either being said now or were already heard — walked over the peek's
+      // own list, so nothing the spool grows afterwards can widen it.
+      //
+      // Stopping at the first message this tick skipped is what keeps the
+      // interrupt tier honest: it speaks an escalation and leaves an ordinary
+      // report unread AHEAD of it, and there is no ack that covers the alarm
+      // without also burying the report. So that tick acks nothing, and the
+      // full tick that finally speaks the report clears both — the skipped
+      // message is announced late, never lost.
+      var ackThrough = "";
+      for (var i = 0; i < unread.length; i++) {
+        var m = unread[i];
+        if (!m || !m.id || !(seen[m.id] || claimed[m.id])) break;
+        ackThrough = m.id;
+      }
       onLog("inbox", "volunteering " + fresh.length + " message(s)");
       // inboxMsgs rides along so the page can register request/escalation
       // notices in the re-raise ledger AT THE MOMENT THEY ARE HEARD (its
@@ -662,7 +668,7 @@ function createInboxNotifier(deps) {
       // actually told.
       announce(composeNotice(fresh), {
         inboxIds: ids,
-        strayIds: ids.filter(function (id) { return wasStray[id]; }),
+        ackThrough: ackThrough,
         inboxMsgs: fresh.map(function (m) {
           return { id: m.id, from: m.from, kind: m.kind, text: m.text };
         }),
@@ -679,23 +685,22 @@ function createInboxNotifier(deps) {
   function noticeSpoken(meta) {
     if (!meta || !meta.inboxIds) return Promise.resolve();
     meta.inboxIds.forEach(function (id) { seen[id] = true; });
-    return ackInbox().then(function (res) {
-      if (!res || !res.success) {
+    // Nothing contiguous to ack — this tick spoke past an unread message and
+    // the cursor cannot express that. Marking `seen` is the whole receipt; the
+    // ack rides the later tick that says the skipped one.
+    if (!meta.ackThrough) return Promise.resolve();
+    return ackInbox(meta.ackThrough).then(function (res) {
+      if (!res || !res.success || res.acked === false) {
         // Cursor not advanced: a page reload will re-read these. `seen`
         // suppresses a replay for THIS page's lifetime, which is the right
         // half to keep — re-reading is an annoyance, losing one is the bug.
-        onLog("inbox", "ack failed: " + ((res && res.error) || "no response"));
-        return;
+        // Said out loud on screen: a refused ack that reads as success
+        // re-announces every session with nothing to explain why.
+        onLog("inbox", "ack through " + meta.ackThrough + " failed: "
+          + ((res && res.error) || "cursor not advanced"));
       }
-      // The ack read everything unread — including anything that landed
-      // between our peek and now. Those were acked but never spoken; queue
-      // them for the next tick's gate check rather than announcing here
-      // (announcing outside the gate is barging in by another door).
-      (res.messages || []).forEach(function (m) {
-        if (m && m.id && !seen[m.id] && !inFlight[m.id]) strays.push(m);
-      });
     }).catch(function (err) {
-      onLog("inbox", "ack failed: " + err);
+      onLog("inbox", "ack through " + meta.ackThrough + " failed: " + err);
     });
   }
 
@@ -706,31 +711,26 @@ function createInboxNotifier(deps) {
   // notice is retried", but ids entered the map at ANNOUNCE time and never
   // left it: speechSynthesis fails silently, `utterance.onerror` only logged,
   // and so a notice that was neither heard nor acked was suppressed for the
-  // rest of the session (#978 item 5). `seen` still outranks this — releasing
-  // an id the owner HAS heard would replay it.
+  // rest of the session (#978 item 5).
+  //
+  // Releasing the id is now the WHOLE job (#970). It was not, while the ack
+  // swept to the tail: a message pulled from the strays array was already
+  // cursor-past, so releasing its id dropped it from both places and "the next
+  // tick says it again" was false for exactly the class that became strays.
+  // Since only a SPOKEN notice acks, and only through what it spoke, a failed
+  // announcement leaves the message untouched in the spool — the next peek
+  // returns it, and so does the next page.
+  //
+  // `seen` still outranks a release, but structurally rather than by a guard
+  // here: pollOnce drops a `seen` message BEFORE it consults `inFlight`, so a
+  // heard notice cannot be re-announced by a late failure whatever this map
+  // says. The guard that used to stand here was load-bearing only while a
+  // release could push a body back into the strays array; with the array gone
+  // it could be cut with the whole suite green, which makes it a line claiming
+  // a guarantee it no longer holds.
   function noticeFailed(meta) {
     if (!meta || !meta.inboxIds) return;
-    var body = {};
-    (meta.inboxMsgs || []).forEach(function (m) { if (m && m.id) body[m.id] = m; });
-    var cameFromStrays = {};
-    (meta.strayIds || []).forEach(function (id) { cameFromStrays[id] = true; });
-    var alreadyBack = {};
-    strays.forEach(function (m) { if (m && m.id) alreadyBack[m.id] = true; });
-    meta.inboxIds.forEach(function (id) {
-      if (seen[id]) return;
-      delete inFlight[id];
-      // A SPOOL message needs nothing more: the cursor never advanced (only
-      // noticeSpoken moves it), so the next peek returns it. A STRAY was
-      // spliced out of the array to be announced and the cursor is already
-      // past it, so releasing the id alone dropped it from BOTH places —
-      // "the next tick says it again" was false for exactly the class that
-      // becomes strays, which is escalations. Putting it back is the whole
-      // reason the array exists.
-      if (cameFromStrays[id] && !alreadyBack[id] && body[id]) {
-        alreadyBack[id] = true;   // idempotent: a second call must not double it
-        strays.push(body[id]);
-      }
-    });
+    meta.inboxIds.forEach(function (id) { delete inFlight[id]; });
   }
 
   function schedule() {
@@ -1038,13 +1038,6 @@ const INBOX_POLL_MS = 5000;
 // Page-lifetime: ids the owner has actually HEARD. Never reset by stop() — a
 // reconnect must not replay every notice.
 const heardReplies = {};
-// Page-lifetime, like heardReplies: acked-but-never-spoken replies (the
-// peek/ack race). The cursor is already past them and the spool has no
-// ack-by-id, so this array is their only way back to the owner's ear — a
-// stop() or reconnect must not take it down with the notifier. A full page
-// unload still loses whatever is here; closing that residual needs an
-// ack-by-id the inbox does not offer.
-const strayReplies = [];
 let inboxNotifier = null;
 let ownerSpeaking = false;
 
@@ -1445,7 +1438,7 @@ async function start() {
     // flight, nothing already queued to be said.
     inboxNotifier = createInboxNotifier({
       fetchInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: false } }),
-      ackInbox: () => post("/tool", { name: "buddy_inbox", arguments: { ack: true } }),
+      ackInbox: (through) => post("/tool", { name: "buddy_inbox", arguments: { ack_through: through } }),
       announce: announce,
       canSpeak: () => !ownerSpeaking && !responseActive && !!announcer && announcer.pending() === 0 && !confirmGate.outstanding(),
       // The interrupt tier (#967): an escalation need not wait for the buddy's
@@ -1469,7 +1462,6 @@ async function start() {
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
       pollMs: INBOX_POLL_MS,
       seen: heardReplies,
-      strays: strayReplies,
     });
     dc.addEventListener("open", () => { setStatus("listening"); $stop.disabled = false; });
     dc.addEventListener("close", () => setStatus("closed"));
@@ -1638,9 +1630,10 @@ function stop() {
   // TORN DOWN, not merely dropped (#978 item 4). Nulling the reference left
   // the current item's armed setTimeout closure alive: 6s into "idle" the
   // browser voice spoke and anchored a proposal on the bridge, closing the
-  // next session's volunteering gate for up to 120s. d45601b covered
-  // page-lifetime strays; `disarm` was reachable only from onResponseDone and
-  // cancel, neither of which stop() calls.
+  // next session's volunteering gate for up to 120s. d45601b covered the
+  // page-lifetime strays array (itself deleted in #970); `disarm` was
+  // reachable only from onResponseDone and cancel, neither of which stop()
+  // calls.
   if (announcer) announcer.teardown();
   announcer = null;
   // Session-scoped readiness resets; `greeted` deliberately does NOT — a
@@ -1648,11 +1641,9 @@ function stop() {
   sessionReady = false;
   audioAttached = false;
   ownerSpeaking = false;
-  // The clock dies with the session; `heardReplies` and `strayReplies`
-  // deliberately survive (a stray is cursor-past — losing the array loses the
-  // message for good), and `confirmGate` survives too: the spine lives in the
-  // bridge, so a proposal outlasts a stop() and its TTL is what reopens the
-  // gate. `heardReplies` survives so
+  // The clock dies with the session; `confirmGate` deliberately survives — the
+  // spine lives in the bridge, so a proposal outlasts a stop() and its TTL is
+  // what reopens the gate. `heardReplies` survives so
   // the fresh notifier after a reconnect cannot replay a spoken notice (#962),
   // and the re-raise ledger survives with it (#967): what the owner was told
   // is page-lifetime state, or a reconnect wipes the peer's memory of its own

@@ -285,6 +285,32 @@ as already-seen and is never spoken. An id that is no longer present means the
 spool rotated, and the safe answer is "treat everything as unread". Re-reading a
 message is an annoyance; losing one is the bug.
 
+**The ack names an id, not "everything" (#970).** `ack=true` advances to the
+spool TAIL as it stands *at ack time* — and every consumer here reads, then
+processes, then acks (the notifier deliberately acks only after SPEAKING), so
+mail lands in that window and is cursor-advanced past having been read by
+nobody. In a screenless channel that loss surfaces nowhere: no dead-letter, no
+email, no screen. `ack_through=<id>` acks exactly through what the caller
+consumed, so a later arrival is still pending **by construction**. PR #969
+narrowed the window instead, catching swept messages in a page-lifetime array
+whose stated residual was that a page unload dropped them silently; that array
+is gone, and the property it was defending now rests on the cursor rather than
+on client state surviving a page.
+
+Refusals fail toward re-reading, never toward sweeping: an id the spool no
+longer holds moves nothing (and reports so — a silently-refused ack is
+indistinguishable from a successful one, and re-announces forever), ids are
+matched exactly rather than trimmed into a match, and the cursor never rewinds.
+**The precedence keys on PRESENCE, not on the value** — collapsing "no
+`ack_through`" with "an `ack_through` that is blank" sends `{ack: true,
+ack_through: ""}` down the bool path and sweeps the tail from inside the guard
+against sweeping it.
+The notifier acks only through an unbroken run of messages it is speaking now
+or has already been heard: the interrupt tier speaks an escalation while an
+ordinary report sits *ahead* of it, and one id cannot cover the alarm without
+burying the report — so that tick acks nothing, and the full tick that finally
+speaks the report clears both.
+
 ### The tool surface is an allowlist, not a passthrough
 
 The model chooses *which* tool. It never chooses *what runs*. Every tool builds
