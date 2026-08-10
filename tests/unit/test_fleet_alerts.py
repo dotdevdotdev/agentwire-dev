@@ -398,27 +398,260 @@ def _prompt_info() -> prompt_router.PromptInfo:
     )
 
 
-class TestBlockedRootPane:
-    def test_no_parent_escalation_reaches_the_buddy(self, isolate, monkeypatch):
+class TestKeylessMachine:
+    """The shape the first round of throttle tests could not build.
+
+    Every throttle test above patches ``send_email`` to RETURN a result — and a
+    machine with no ``RESEND_API_KEY`` does not return, it RAISES
+    ``EmailConfigError`` before any send is attempted. That is the ordinary
+    state of a fresh install and of every machine in this fleet without the key.
+    The email-shaped throttles (``escalated_at`` on an exception path,
+    ``notified`` on a successful send) never close there, so anything riding
+    them re-fires every 60s watchdog tick — 720 escalations over a 12h lease.
+
+    The alert therefore may NEVER ride an email-shaped throttle. Each producer
+    stamps its own state on successful ENQUEUE, which is a local write.
+    """
+
+    @pytest.fixture(autouse=True)
+    def keyless(self, monkeypatch):
+        from agentwire.channels.email import EmailConfigError
+
+        def raises(**kwargs):
+            raise EmailConfigError("Email API key not configured.")
+
+        monkeypatch.setattr("agentwire.channels.email.send_email", raises)
+
+    def test_no_parent_sweep_alerts_once_not_once_per_tick(
+        self, isolate, monkeypatch, tmp_path
+    ):
+        """The reproduction: 5 sweeps of ONE prompt must be 1 escalation."""
         _subscribe("buddy")
+        monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
+        monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "pr-events.jsonl")
+        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
+
+        for _ in range(5):
+            prompt_router.route_prompt("root-1", 0, _prompt_info(), source="sweep")
+
+        assert len(_inbox_messages("buddy")) == 1
+
+    def test_a_genuinely_new_prompt_still_alerts(self, isolate, monkeypatch, tmp_path):
+        """The false-reject half: the throttle is per PROMPT, not per pane.
+
+        A session that answers one blocking question and immediately hits a
+        different one is still stalled, and the second question is new
+        information. Only a redraw of the SAME prompt is suppressed.
+        """
+        _subscribe("buddy")
+        monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
+        monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "pr-events.jsonl")
+        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
+
+        prompt_router.route_prompt("root-1", 0, _prompt_info(), source="sweep")
+        other = prompt_router.PromptInfo(
+            kind="plan", question="Proceed with the migration plan?", options=[]
+        )
+        prompt_router.route_prompt("root-1", 0, other, source="sweep")
+
+        assert len(_inbox_messages("buddy")) == 2
+
+    def test_auth_outage_alerts_once_across_repeated_detections(self, isolate):
+        _subscribe("buddy")
+        for _ in range(5):
+            auth_expired.record_outage({"session": "a", "transcript": "/t.jsonl"})
+        assert len(_inbox_messages("buddy")) == 1
+
+    def test_park_note_fires_once_across_the_whole_park(
+        self, isolate, monkeypatch, tmp_path
+    ):
+        """The multi-caller reproduction: 1 park + 10 watchdog ticks = 1 note.
+
+        ``_notify_parked`` has TWO callers, not one: ``park`` and — for as long
+        as ``notified`` stays False, which on a keyless machine is forever —
+        ``resume_due``, on every tick.
+        """
+        _subscribe("buddy")
+        monkeypatch.setattr(usage_limit, "STATE_DIR", tmp_path / "usage-limit")
+        now = datetime.now(timezone.utc)
+        state = {
+            "session": "worker-1",
+            "task": "nightly",
+            "detected_at": now.isoformat(),
+            "parked_at": now.isoformat(),
+            "reset_at": (now + timedelta(hours=2)).isoformat(),
+            "resume_at": (now + timedelta(hours=2, minutes=5)).isoformat(),
+            "excerpt": "",
+            "notified": False,
+        }
+        usage_limit.write_park_state(state)
+
+        usage_limit._notify_parked(state)  # park()
+        for _ in range(10):  # resume_due(), once per tick, notified still False
+            usage_limit._notify_parked(usage_limit.read_park_state("worker-1"))
+
+        assert len(_inbox_messages("buddy")) == 1
+
+    def test_a_new_park_of_the_same_session_alerts_again(
+        self, isolate, monkeypatch, tmp_path
+    ):
+        """The false-reject half: the stamp lives on the PARK, not the session."""
+        _subscribe("buddy")
+        monkeypatch.setattr(usage_limit, "STATE_DIR", tmp_path / "usage-limit")
+        now = datetime.now(timezone.utc)
+
+        for _ in range(2):
+            state = {
+                "session": "worker-1",
+                "detected_at": now.isoformat(),
+                "parked_at": now.isoformat(),
+                "reset_at": (now + timedelta(hours=2)).isoformat(),
+                "resume_at": (now + timedelta(hours=2)).isoformat(),
+                "excerpt": "",
+                "notified": False,
+            }
+            usage_limit.write_park_state(state)
+            usage_limit._notify_parked(state)
+            usage_limit.state_path("worker-1").unlink()  # the park cleared
+
+        assert len(_inbox_messages("buddy")) == 2
+
+
+class TestCostWhenNobodyListens:
+    """"Zero behavior change with no subscriber" has to mean zero WORK, too.
+
+    ``subscribers()`` originally walked every session record — 1155 of them on
+    this machine, ~326ms — and one of its callers sits on the SYNCHRONOUS
+    permission-hook path. A detector that taxes the product's hot path to
+    discover that nobody is listening is a regression, not an inert feature.
+    """
+
+    @staticmethod
+    def _count_walks(monkeypatch) -> list:
+        """Count store walks. A RAISING stub cannot be used here: ``subscribers``
+        swallows exceptions by design, so a raise would be caught and the test
+        would pass whether or not the walk happened — a pin that cannot fail."""
+        calls: list = []
+        real = core.recorded_sessions
+
+        def counted():
+            calls.append(1)
+            return real()
+
+        monkeypatch.setattr(core, "recorded_sessions", counted)
+        return calls
+
+    def test_no_index_means_the_record_store_is_never_walked(self, isolate, monkeypatch):
+        calls = self._count_walks(monkeypatch)
+        assert fleet_alerts.subscribers() == []
+        assert fleet_alerts.emit("x", kind="escalation") == []
+        assert calls == []
+
+    def test_one_subscriber_reads_only_that_subscribers_record(
+        self, isolate, monkeypatch
+    ):
+        _subscribe("buddy")
+        for name in ("other-1", "other-2", "other-3"):
+            core.store_session_metadata(name, {"role": "worker"})
+
+        calls = self._count_walks(monkeypatch)
+        assert fleet_alerts.subscribers() == ["buddy"]
+        assert calls == []
+
+    def test_the_index_is_a_candidate_list_not_the_truth(self, isolate):
+        """A stale index entry must not resurrect a dropped subscription.
+
+        The record is authoritative; the index only says who to ask. A name
+        whose lease is gone (unregistered, killed, expired) is verified away.
+        """
+        _subscribe("buddy")
+        core.session_metadata_path("buddy").unlink()
+        assert fleet_alerts.subscribers() == []
+
+    def test_reindex_rebuilds_a_lost_index_from_the_records(self, isolate):
+        _subscribe("buddy")
+        fleet_alerts.subscribers_index_path().unlink()
+        assert fleet_alerts.subscribers() == []  # fails quiet, as designed
+        assert fleet_alerts.reindex() == ["buddy"]
+        assert fleet_alerts.subscribers() == ["buddy"]
+
+
+class TestCliSurface:
+    """CLI is the SSOT: an API only a branch can reach is not shipped."""
+
+    def _run(self, argv: list[str]) -> int:
+        from agentwire.__main__ import build_parser
+
+        args = build_parser().parse_args(argv)
+        return args.func(args)
+
+    def test_subscribe_list_unsubscribe_round_trip(self, isolate, capsys):
+        assert self._run(["alerts", "subscribe", "buddy"]) == 0
+        capsys.readouterr()
+        assert self._run(["alerts", "list", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["subscribers"] == ["buddy"]
+        assert self._run(["alerts", "unsubscribe", "buddy"]) == 0
+        capsys.readouterr()
+        self._run(["alerts", "list", "--json"])
+        assert json.loads(capsys.readouterr().out)["subscribers"] == []
+
+    def test_unsubscribing_something_that_never_subscribed_fails_loudly(
+        self, isolate, capsys
+    ):
+        assert self._run(["alerts", "unsubscribe", "nobody"]) == 1
+
+    def test_reindex_is_reachable_from_the_cli(self, isolate, capsys):
+        self._run(["alerts", "subscribe", "buddy"])
+        fleet_alerts.subscribers_index_path().unlink()
+        capsys.readouterr()
+        assert self._run(["alerts", "reindex", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["subscribers"] == ["buddy"]
+
+
+class TestBlockedRootPane:
+    @pytest.fixture
+    def sweep(self, monkeypatch, tmp_path):
+        """The REAL entry point. The alert is throttled by a stamp the caller
+        persists, so exercising the inner function alone cannot see the loop
+        that shipped — the marker round-trip is where the throttle lives."""
+        monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
+        monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "pr-events.jsonl")
+        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
-        prompt_router._escalate_no_parent("root-1", 0, _prompt_info(), None)
+        return lambda info=None: prompt_router.route_prompt(
+            "root-1", 0, info or _prompt_info(), source="sweep"
+        )
 
+    def test_no_parent_escalation_reaches_the_buddy(self, isolate, sweep):
+        _subscribe("buddy")
+        sweep()
         msgs = _inbox_messages("buddy")
         assert len(msgs) == 1
         assert msgs[0].kind == "escalation"
         assert "root-1" in msgs[0].text
 
-    def test_throttled_by_the_markers_own_stamp(self, isolate, monkeypatch):
+    def test_throttled_by_its_own_stamp_on_the_marker(self, isolate, sweep):
         _subscribe("buddy")
-        monkeypatch.setattr(
-            "agentwire.channels.email.send_email",
-            lambda **k: SimpleNamespace(success=True, error=None),
-        )
-        info = _prompt_info()
-        stamp = prompt_router._escalate_no_parent("root-1", 0, info, None)
-        prompt_router._escalate_no_parent("root-1", 0, info, {"escalated_at": stamp})
+        sweep()
+        sweep()
         assert len(_inbox_messages("buddy")) == 1
+        marker = prompt_router.read_marker("root-1", 0)
+        assert marker["alerted_at"]
+
+    def test_the_stamp_expires_with_its_own_ttl(self, isolate, sweep, monkeypatch):
+        _subscribe("buddy")
+        sweep()
+        marker = prompt_router.read_marker("root-1", 0)
+        marker["alerted_at"] = (
+            datetime.now(timezone.utc)
+            - prompt_router.NO_PARENT_ESCALATE_TTL
+            - timedelta(minutes=1)
+        ).isoformat()
+        prompt_router.write_marker("root-1", 0, **{
+            k: v for k, v in marker.items() if k not in ("session", "pane")
+        })
+        sweep()
+        assert len(_inbox_messages("buddy")) == 2
