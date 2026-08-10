@@ -68,18 +68,34 @@ with no reason is re-argued at the next reading:
   this entry is the only guard, and a nonce is the wrong guard: the harness
   boundary is not a thing the owner should be able to approve their way past.
 
-**Remote targets are out of scope (owner ruling, 2026-08-09).** A ``@machine``
-suffix is not accepted anywhere on the voice surface: ``tools._SESSION_RE`` no
-longer matches it and ``tools._session_arg`` refuses it in its own words, out
-loud (``REMOTE_REFUSAL``). The syntax was half-supported and wrong in
-three directions at once: ``inbox.enqueue`` keyed an inbox dir on the raw
-string, ``outbox.delivery_state`` stripped the suffix and interrogated the
+**Remote ``name@machine`` targets are out of scope (owner ruling, 2026-08-09),
+and the gate is LIVENESS, not the ``@`` character.** The syntax was
+half-supported and
+wrong in three directions at once: ``inbox.enqueue`` keyed an inbox dir on the
+raw string, ``outbox.delivery_state`` stripped the suffix and interrogated the
 LOCAL inbox, and ``write_tools._require_live`` checked the bare half against
-LOCAL tmux and so refused a live remote session with a confidently false
-"nothing is listening". ``core.session_metadata_path`` still strips ``@`` —
-that is the store's own keying rule (#899/#988) and is unrelated to what this
-layer admits. Re-adding remotes is its own reviewed slice: a remote liveness
-probe, remote inbox interrogation, and tests for both.
+LOCAL tmux — refusing a live remote session with a confidently false "nothing
+is listening". Every layer now asks about the WHOLE name.
+
+The first attempt at enforcing the ruling refused any name containing ``@``,
+and that was itself a false statement: ``@`` does not mean remote. tmux accepts
+it verbatim (only ``.`` and ``:`` are rewritten, #878) and ``inbox._SESSION_RE``
+admits it, so ``ops@edge`` is a creatable, addressable LOCAL session that the
+buddy told the owner was unreachable — a confident falsehood with no move from
+it, which is the expensive failure in a channel with no screen. So
+``tools._session_arg`` validates the SHAPE first (a garbled name containing an
+``@`` is a mis-transcription and gets the mis-transcription answer), then
+consults ``inbox.live_sessions()``: a whole name local tmux reports live is
+local by demonstration and is allowed. What that refuses is exactly a name
+nothing local answers to — every genuinely remote target — stated as the one
+thing measured ("no live session called X on this machine") rather than as a
+diagnosis of where it lives. An unreachable tmux proves nothing and so refuses
+nothing (spec §5).
+
+``core.session_metadata_path`` still strips ``@`` — that is the store's own
+keying rule (#899/#988) and is unrelated to what this layer admits. Reaching a
+remote session remains its own reviewed slice: a remote liveness probe, remote
+inbox interrogation, and tests for both.
 
 **Reads (tier 1)** — anything that only observes. Expand freely: a read the
 buddy lacks is just a question it has to deflect.
@@ -117,6 +133,18 @@ tool appears in exactly one tier" was true of tools nobody had graded.
 :data:`VOICE_NATIVE` carries a written grade for the ones that map to none;
 :func:`unruled_tools` is what the audit calls, so a new voice-native tool is
 red until someone rules on it.
+
+**That map is checked against reality, not just against itself.** Every leg
+that reads :data:`TOOL_CAPABILITY` believes it, so a wrong entry —
+``fleet_session_output`` pointed at ``sessions_list`` — left the whole suite
+green and made "a wired tool's tier is derivable" mean "a hand-written map
+nothing checks", which is the same over-claim this module polices one level
+up. The audit now runs each read tool with the CLI stubbed and compares the
+argv it really builds against the argv the mapped MCP capability builds. One
+entry cannot be corroborated that way: ``wiki_query`` builds no extractable
+argv, so ``fleet_wiki_search``'s mapping rests on reading it. That exemption is
+allowed only for capabilities the analyzer already records as unanalyzable, and
+it is stated here rather than left as a silent pass.
 
 One light write IS wired: ``buddy_inbox(ack=true)`` advances the buddy's own
 read cursor. Light because the message itself is untouched — the same tool with

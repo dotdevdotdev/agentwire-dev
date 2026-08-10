@@ -189,6 +189,71 @@ class TestTierThreeIsUnreachableByName:
                 )
 
 
+#: Arguments that satisfy every read tool's schema, so one sweep can capture
+#: what each one actually dispatches. Extra keys are ignored by tools that do
+#: not take them.
+_SWEEP_ARGS = {"session": "sess", "repo": "owner/name", "query": "q"}
+
+
+def _argv_compatible(voice_argv: list, mcp_argv: list) -> bool:
+    """Does *mcp_argv* describe the same CLI call as *voice_argv*?
+
+    Compared as a prefix with ``None`` (a non-constant element in the MCP
+    source) as a wildcard: the MCP tool interpolates its parameters where the
+    voice tool interpolates validated ones, and the leading verbs are what
+    identify the capability.
+    """
+    if not mcp_argv or not voice_argv:
+        return False
+    width = min(len(mcp_argv), len(voice_argv))
+    return all(
+        mcp_argv[i] is None or mcp_argv[i] == voice_argv[i] for i in range(width)
+    )
+
+
+def capability_argv_mismatches(mapping: dict) -> dict[str, str]:
+    """Wired read tools whose dispatched argv contradicts their mapped capability.
+
+    A capability with no extractable argv cannot corroborate anything; that is
+    tolerated ONLY for capabilities already recorded in ``UNANALYZABLE_TOOLS``,
+    so the exemption is a named one rather than a silent pass.
+    """
+    from unittest import mock
+
+    mcp_argvs = mcp_tool_argvs()
+    mismatches: dict[str, str] = {}
+    for tool in tools.READ_ONLY_TOOLS:
+        capabilities = mapping.get(tool.name)
+        if not capabilities:
+            continue
+        seen: list[list] = []
+        with mock.patch(
+            "agentwire.voice_layer.tools.run_agentwire_cmd",
+            lambda argv, **kw: seen.append(list(argv)) or {"success": True},
+        ):
+            tools.dispatch(tool.name, dict(_SWEEP_ARGS), "buddy")
+        if not seen:
+            continue  # voice-native (gh, spool) — ruled in VOICE_NATIVE
+        for capability in capabilities:
+            candidates = mcp_argvs.get(capability, [])
+            if not candidates:
+                if capability in UNANALYZABLE_TOOLS:
+                    continue
+                mismatches[tool.name] = (
+                    f"{capability} builds no extractable argv and is not "
+                    "recorded as unanalyzable"
+                )
+                continue
+            if not any(
+                _argv_compatible(voice, mcp)
+                for voice in seen for mcp in candidates
+            ):
+                mismatches[tool.name] = (
+                    f"dispatches {seen} but {capability} builds {candidates}"
+                )
+    return mismatches
+
+
 class TestEveryWiredToolIsRuled:
     """#979/5: the tier audit swept ``@mcp.tool`` names — a namespace that is
     not the exposed surface. ``buddy_inbox``, ``buddy_sent`` and
@@ -220,6 +285,48 @@ class TestEveryWiredToolIsRuled:
                 assert capability not in surface.TIER_EXCLUDED, (
                     f"{name} wires excluded capability {capability}"
                 )
+
+    def test_each_mapping_matches_the_argv_the_tool_actually_dispatches(self):
+        """The map is asserted CORRECT, not merely consistent.
+
+        Every other leg here reads `TOOL_CAPABILITY` and believes it, so
+        `fleet_session_output: ('sessions_list',)` — simply wrong — kept the
+        whole suite green, and "a wired tool's tier is derivable" meant "a
+        hand-written map nothing checks": the same over-claim this PR fixes,
+        one level up. This runs each read tool with the CLI stubbed, captures
+        the argv it really builds, and demands the mapped MCP capability build
+        a compatible one."""
+        mismatches = capability_argv_mismatches(surface.TOOL_CAPABILITY)
+        assert mismatches == {}, (
+            f"TOOL_CAPABILITY entries whose argv does not match the capability "
+            f"they name: {mismatches}"
+        )
+
+    def test_a_wrong_mapping_turns_that_red(self):
+        """Must-fail control, using the reviewer's own mutation."""
+        mutated = dict(surface.TOOL_CAPABILITY)
+        mutated["fleet_session_output"] = ("sessions_list",)
+        assert "fleet_session_output" in capability_argv_mismatches(mutated)
+
+    def test_an_uncheckable_mapping_is_named_not_waved_through(self):
+        """`wiki_query` builds no extractable argv, so the cross-check cannot
+        corroborate it. That exemption is allowed only for a capability already
+        recorded as unanalyzable — otherwise 'no argv to compare' becomes a
+        silent pass, which is the shape being fixed."""
+        assert "wiki_query" in UNANALYZABLE_TOOLS
+        mutated = dict(surface.TOOL_CAPABILITY)
+        mutated["fleet_wiki_search"] = ("council_list",)
+        assert "fleet_wiki_search" in capability_argv_mismatches(mutated)
+
+    def test_the_remote_ruling_is_pinned_like_the_other_two(self):
+        """The constraint was that EVERY reclassification lands as a written
+        ruling. The `@machine` paragraph could be deleted whole with nothing
+        going red, while the other two rulings were pinned by name."""
+        doc = " ".join((surface.__doc__ or "").split())
+        assert "@machine" in doc
+        assert "2026-08-09" in doc
+        # The ruling as it now stands: LIVENESS decides, not the character.
+        assert "LIVENESS" in doc
 
     def test_a_new_unruled_tool_turns_this_red(self):
         """Mutation check: the leg above is worthless if it passes for a name
@@ -689,29 +796,42 @@ class TestDeclaredWriteMechanism:
         (proposal,) = list(convo.spine._proposals.values())
         assert proposal.params.get("_buddy") == "buddy"
 
-    def test_a_write_to_a_remote_target_is_refused_at_the_pattern(self, monkeypatch):
-        """The write side of the same ruling. `_require_live` used to compare
-        `session.split("@")[0]` against LOCAL tmux, so a remote name that was
-        genuinely live locally under its bare half could pass liveness and then
-        address the wrong machine. With `@` gone from the pattern the refusal
-        happens before liveness is ever consulted — asserted with tmux SAYING
-        the bare half is live, which is the shape that used to slip."""
+    def test_a_write_to_an_unreachable_at_name_is_refused_whole(self, monkeypatch):
+        """`_require_live` used to compare `session.split("@")[0]` against LOCAL
+        tmux, so `web@laptop` passed liveness on the strength of a local `web`
+        and then addressed something else. It compares the WHOLE name now — and
+        that is also what makes accepting a local `ops@edge` safe, since every
+        layer asks about the name it was given."""
         monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: {"web"})
-        # The liveness check itself, called directly — the pattern refuses
-        # before it is ever reached, so nothing else in the suite can tell a
-        # whole-name comparison from a split one, and an unpinned split grows
-        # back the moment remotes are revisited.
+        # Called directly: `_session_arg` refuses this name first, so nothing
+        # else in the suite can tell a whole-name comparison from a split one,
+        # and an unpinned split grows back the moment remotes are revisited.
         with pytest.raises(tools.ToolError, match="Nothing is listening"):
             write_tools._require_live("web@laptop", cannot="")
 
         propose = write_tools.WRITE_TOOL_FNS["propose_session_message"]
         convo, runner = _spine()
-        with pytest.raises(tools.ToolError, match="(?i)remote"):
+        with pytest.raises(tools.ToolError, match="(?i)no live session"):
             propose(
                 {"session": "web@laptop", "message": "ship it", "_buddy": "buddy"},
                 convo.spine,
             )
         assert runner.calls == []
+
+    def test_a_write_to_a_live_local_at_name_is_allowed(self, monkeypatch):
+        """The false-reject half on the write path: `ops@edge` is a creatable,
+        addressable LOCAL tmux session, and refusing to message one is the
+        buddy declining work it can do."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: {"ops@edge"})
+        propose = write_tools.WRITE_TOOL_FNS["propose_session_message"]
+        convo, _runner = _spine()
+        result = propose(
+            {"session": "ops@edge", "message": "ship it", "_buddy": "buddy"},
+            convo.spine,
+        )
+        assert result["session"] == "ops@edge"
+        (proposal,) = list(convo.spine._proposals.values())
+        assert "ops@edge" in proposal.argv_prefix
 
     def test_shipped_specs_pass_the_same_declaration_guards(self):
         for spec in write_tools.WRITE_SPECS:
@@ -816,47 +936,75 @@ class TestExpandedReads:
     @pytest.mark.parametrize(
         "name", ["fleet_session_info", "fleet_session_inbox", "fleet_session_output"]
     )
-    def test_a_remote_target_is_refused_and_says_why(self, seen, name):
-        """#979/2, owner ruling 2026-08-09: remote `name@machine` targets are
-        out of scope. The voice layer no longer ACCEPTS the syntax at all —
-        half-accepting it is what produced three wrong answers at once (the
-        wrong inbox interrogated, a live remote session called dead, an inbox
-        dir keyed on the raw string).
-
-        The false-reject half is priced by the wording, not by admitting the
-        name: a refusal that just says 'not a valid session name' sends the
-        owner round the loop re-pronouncing a name that was heard correctly.
-        This one names the actual limit, so the owner can stop asking."""
+    def test_an_at_name_tmux_does_not_know_is_refused(self, seen, monkeypatch, name):
+        """Owner ruling 2026-08-09: remote `name@machine` targets are out of
+        scope. Enforced by LIVENESS, not by the shape of the name — because the
+        shape does not say remote. tmux accepts `@` verbatim, so `ops@edge` is
+        a creatable local session, and a refusal keyed on the character alone
+        told the owner a true local name was remote: a confident falsehood with
+        no move from it, in a channel with no screen."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: {"ops@edge"})
         result = tools.dispatch(name, {"session": "web@laptop"}, "buddy")
         assert result["success"] is False
         assert result["must_speak"] is True
-        assert "remote" in result["error"].lower()
+        assert seen == []
+        # It must NOT assert remoteness — that is the claim it cannot make.
+        assert "web@laptop" in result["error"]
+        assert "no live session" in result["error"].lower()
+        assert "aren't reachable" not in result["error"]
+
+    def test_a_live_local_at_name_is_reachable(self, seen, monkeypatch):
+        """The false-reject half, measured against the base branch's behaviour:
+        base dispatched `['info', '-s', 'ops@edge']` and the first fix refused
+        it. `@` is legal in tmux (only `.` and `:` are rewritten, #878) and in
+        `inbox._SESSION_RE`, so this name is ordinary local work."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: {"ops@edge"})
+        result = tools.dispatch(
+            "fleet_session_info", {"session": "ops@edge"}, "buddy"
+        )
+        assert result.get("success") is not False, result
+        assert seen == [["info", "-s", "ops@edge"]]
+
+    def test_an_unprovable_liveness_does_not_refuse(self, seen, monkeypatch):
+        """`live_sessions()` returns None when tmux itself is unreachable. That
+        is an outage, not a verdict — refusing there would ground the buddy on
+        every local `@` name during a tmux blip, and the CLI reports what it
+        finds. Same doctrine as `_require_live` (spec §5): only POSITIVE
+        knowledge refuses."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: None)
+        result = tools.dispatch(
+            "fleet_session_info", {"session": "ops@edge"}, "buddy"
+        )
+        assert result.get("success") is not False, result
+        assert seen == [["info", "-s", "ops@edge"]]
+
+    @pytest.mark.parametrize("bad", ["we b@x", "@a", "--help@x", "../etc@passwd"])
+    def test_a_malformed_at_name_gets_the_shape_refusal(self, seen, monkeypatch, bad):
+        """Ordering, pinned. The `@` check used to run BEFORE shape validation,
+        so a garbled name that happened to contain one was told it was remote —
+        a wrong diagnosis of a mis-transcription, and nothing in the suite
+        noticed if the two moved past each other."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: set())
+        result = tools.dispatch("fleet_session_info", {"session": bad}, "buddy")
+        assert result["success"] is False
+        assert "valid session name" in result["error"]
+        assert "no live session" not in result["error"].lower()
         assert seen == []
 
-    def test_the_pattern_itself_no_longer_admits_the_syntax(self):
-        """Both layers, asserted separately. The spoken refusal fires first, so
-        every behavioural test above passes with `@` still in the pattern —
-        which is how the pattern quietly stays permissive and the next reader,
-        seeing it accept `name@machine`, decides the message check is
-        redundant. The ruling is that NO layer here accepts the syntax."""
-        assert tools._SESSION_RE.match("web@laptop") is None
-        assert tools._SESSION_RE.match("web") is not None
-
     def test_a_bare_local_name_is_still_accepted(self, seen):
-        """The other half of the same gate: dropping @ must not narrow the
-        ordinary local name, which is every name the buddy can reach."""
+        """A name with no `@` never consults liveness at all — reads must keep
+        working for a session that has since exited."""
         result = tools.dispatch(
             "fleet_session_info", {"session": "agentwire-dev"}, "buddy"
         )
         assert result.get("success") is not False, result
         assert seen == [["info", "-s", "agentwire-dev"]]
 
-    @pytest.mark.parametrize("bad", ["-x/y", "x/-y", "-/-"])
-    def test_a_leading_dash_repo_is_refused_by_the_pattern(self, monkeypatch, bad):
-        """#979/6: `_REPO_RE` admitted `-x/y`, which violates the
-        leading-alphanumeric rule `_SESSION_RE` states two paragraphs earlier.
-        A value-position flag is not exploitable today; an inconsistent stated
-        discipline is how the next copy of the pattern gets it wrong.
+    @pytest.mark.parametrize("bad", ["-x/y", "-/-", "own er/x", "a/b/c", "o.x/n"])
+    def test_a_bad_owner_segment_is_refused_by_the_pattern(self, monkeypatch, bad):
+        """#979/6: `_REPO_RE` admitted `-x/y`, a value-position flag. GitHub
+        constrains OWNERS to alphanumeric-and-hyphen starting alphanumeric, so
+        that is where the rule belongs.
 
         Asserted at the pattern, with `gh` monkeypatched out — letting the real
         subprocess run makes 'gh said no' indistinguishable from 'the pattern
@@ -871,21 +1019,24 @@ class TestExpandedReads:
         assert "owner/name" in result["error"]
         assert ran == []
 
-    def test_an_ordinary_repo_still_reaches_gh(self, monkeypatch):
-        """The false-reject half of the same tightening."""
+    @pytest.mark.parametrize(
+        "repo", ["dotdevdotdev/agentwire-dev", "github/.github", "owner/_name",
+                 "owner/-name"],
+    )
+    def test_real_repository_names_still_reach_gh(self, monkeypatch, repo):
+        """The false-reject half, and the reason the rule is owner-only:
+        `github/.github` is a real repository, and GitHub lets a REPO name
+        begin with `.`, `_` or `-`. Buying pattern symmetry with a refusal of
+        real repositories is a worse trade than the inconsistency it fixes."""
         seen_cmd: list = []
         monkeypatch.setattr(
             "agentwire.voice_layer.tools.subprocess.run",
             lambda cmd, **kw: seen_cmd.append(cmd)
             or SimpleNamespace(returncode=0, stdout="[]", stderr=""),
         )
-        result = tools.dispatch(
-            "fleet_pull_requests", {"repo": "dotdevdotdev/agentwire-dev"}, "buddy"
-        )
+        result = tools.dispatch("fleet_pull_requests", {"repo": repo}, "buddy")
         assert result["success"] is True
-        assert seen_cmd[0][:5] == [
-            "gh", "pr", "list", "--repo", "dotdevdotdev/agentwire-dev",
-        ]
+        assert seen_cmd[0][:5] == ["gh", "pr", "list", "--repo", repo]
 
     def test_an_empty_query_is_refused_with_speech(self, seen):
         result = tools.dispatch("fleet_wiki_search", {"query": "  ---  "}, "b")
