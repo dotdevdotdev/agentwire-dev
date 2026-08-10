@@ -1857,8 +1857,14 @@ undecided. A next session that picks an answer silently is the failure mode.
       applied to the sending side: this tier's expensive failure is
       over-production, and a *true* alert the owner learns to ignore costs more
       than a missed one, because it retires the tier for every other producer.
-      The 30s figure above is the bar an event has to clear to belong here at
-      all. **(b) The buddy's subscription is a lease, not a flag** — recorded in
+      **And the latency bar is bigger than the 30s figure above**, which
+      measures only the announcer legs: a detector's alert is ordinary inbox
+      mail, so it first waits for the DRAIN, which rides the watchdog at
+      `TICK_INTERVAL = 60`s. End to end an escalation from a detector is
+      **~90s worst case**, not 30 — the 30s number is what applies to a message
+      already in the spool. Nothing upstream of the drain is faster than a
+      minute, so an event that is only urgent in its first seconds is not
+      served by this channel at all, whatever kind it carries. **(b) The buddy's subscription is a lease, not a flag** — recorded in
       its identity record at `buddy register` and renewed at `buddy serve`.
       Because the buddy's mail is spooled rather than pasted, it never reads as
       "gone" to the drain, so a permanent subscription would keep filling a

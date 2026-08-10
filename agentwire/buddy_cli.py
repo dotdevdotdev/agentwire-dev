@@ -198,8 +198,13 @@ def cmd_buddy_serve(args) -> int:
     if not identity.is_registered(args.name):
         return _fail(f"No voice buddy named '{args.name}'.", getattr(args, "json", False))
     # Renew the fleet-alert lease (#982) — a buddy being started is a buddy that
-    # wants the fleet's escalations, however long ago it was registered.
-    fleet_alerts.subscribe(args.name)
+    # wants the fleet's escalations, however long ago it was registered. Guarded:
+    # a failure here costs alerts, and a bridge that refuses to serve because the
+    # ALERTING subsystem is unhappy is a strictly worse outcome than a quiet one.
+    try:
+        fleet_alerts.subscribe(args.name)
+    except Exception as exc:  # noqa: BLE001  # optional extra, never fatal
+        fleet_alerts.log_event("subscribe_failed", session=args.name, error=str(exc))
     httpd, url = server.serve(
         args.name, port=args.port, model=args.model, voice=args.voice
     )

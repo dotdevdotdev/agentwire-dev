@@ -73,6 +73,49 @@ class TestBuddyLease:
         assert fleet_alerts.subscribers() == ["buddy"]
 
 
+class TestAlertingCannotBreakTheBuddy:
+    """The alerting subsystem must never be able to stop the thing it alerts on.
+
+    Every detector call site is wrapped; these two were not, and they are the
+    two that can actually take something down. ``store_session_metadata`` raises
+    BY DESIGN (#885), so an unwritable store turned a subscription — a strictly
+    optional extra — into a failed registration and a bridge that refuses to
+    serve.
+    """
+
+    @pytest.fixture
+    def broken_subscribe(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("session store is read-only")
+
+        monkeypatch.setattr(fleet_alerts, "subscribe", boom)
+
+    def test_register_still_completes_and_stays_atomic(self, isolate, broken_subscribe):
+        identity.register("buddy")
+        assert identity.is_registered("buddy")
+        # The half that used to be skipped when the subscribe raised between
+        # the record write and the directory creation.
+        assert identity.inbox_dir("buddy").is_dir()
+        assert delivery.session_state_dir("buddy").is_dir()
+
+    def test_serve_still_serves(self, isolate, broken_subscribe, monkeypatch):
+        from agentwire import buddy_cli
+        from agentwire.voice_layer import server
+
+        identity.register("buddy")
+        served: list = []
+        monkeypatch.setattr(
+            server, "serve", lambda *a, **k: served.append(1) or (_ for _ in ()).throw(
+                KeyboardInterrupt()
+            ),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            buddy_cli.cmd_buddy_serve(
+                SimpleNamespace(name="buddy", port=1, model="", voice="", json=False)
+            )
+        assert served == [1]
+
+
 class TestReachesTheSpool:
     def test_an_outage_escalation_lands_in_the_spool_the_buddy_reads(
         self, isolate, monkeypatch
