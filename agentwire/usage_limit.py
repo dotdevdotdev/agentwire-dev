@@ -452,7 +452,7 @@ def _alert_fleet(state: dict) -> None:
     A park is self-healing: the reset time is parsed, the resume nudge is armed,
     and the owner's own email ends "no action needed". There is nothing for
     anyone to do with it in the next thirty seconds, so it does not earn the
-    interrupt tier — it is exactly the kind of fleet news that should wait for
+    kind that may be acted on out of turn — it is exactly the fleet news that
     a gap. Demoting it is what keeps `escalation` worth acting on.
 
     **Its own stamp, on the park record.** This originally claimed to inherit

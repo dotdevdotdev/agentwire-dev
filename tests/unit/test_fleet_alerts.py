@@ -1,22 +1,20 @@
-"""Fleet detectors produce typed-kind mail; the interrupt tier gets a producer (#982).
+"""Fleet detectors produce typed-kind mail; `escalation` gets a producer (#982).
 
 Two halves are tested here and they fail in opposite directions:
 
 * **The false-REJECT half** — a detector that fires and reaches nobody. That is
-  the state before this module existed: `kind: escalation` rode `canInterrupt`
-  and no fleet detector ever sent one, so the alarm bell was wired to nothing.
-* **The false-ACCEPT half, which is the expensive one.** `escalation` is the
-  only kind allowed to cut across the buddy's own speech. A detector that
+  the state before this module existed: the one kind a recipient may act on out
+  of turn had no fleet detector sending it, so the bell was wired to nothing.
+* **The false-ACCEPT half, which is the expensive one.** A detector that
   over-produces escalations does not merely add noise — it destroys the tier,
-  because the owner learns to ignore it. So the rulings in
-  :data:`fleet_alerts.DETECTOR_KINDS` are pinned here as DATA: changing what
-  earns an interrupt has to be a deliberate edit to a test that says why.
+  because a recipient who learns escalations are usually ignorable will ignore
+  the one that wasn't. So the rulings in :data:`fleet_alerts.DETECTOR_KINDS`
+  are pinned here as DATA: changing what may interrupt has to be a deliberate
+  edit to a test that says why.
 
-Nothing here asserts anything about *speed*. Against an announcer item an
-escalation still queues behind it plus up to one 6s in-flight deferral and up
-to three owner-speaking ones (~30s worst case); pre-emption is real only
-against a VAD response. "Escalation" means "worth cutting the buddy off within
-half a minute", never "immediately".
+Nothing here asserts anything about *speed*, and nothing should. An alert is
+ordinary inbox mail, so it waits for the drain (a 60s watchdog tick) before any
+recipient sees it: `escalation` is a statement of priority, not of latency.
 """
 
 from __future__ import annotations
@@ -42,7 +40,7 @@ def isolate(tmp_path, monkeypatch):
     return root
 
 
-def _subscribe(name: str = "buddy") -> str:
+def _subscribe(name: str = "listener") -> str:
     fleet_alerts.subscribe(name)
     return name
 
@@ -58,7 +56,7 @@ def _inbox_messages(session: str) -> list:
 
 class TestRuling:
     def test_only_two_detectors_may_interrupt(self):
-        """Escalation is the interrupt tier; exactly two producers hold it.
+        """Escalation is the act-out-of-turn kind; exactly two producers hold it.
 
         Both share one property: the condition cannot clear without a human,
         and it is burning something while it waits. auth-expired refuses every
@@ -118,38 +116,39 @@ class TestSubscription:
         assert not (isolate / "inbox").exists()
 
     def test_subscribe_records_a_lease_and_is_listed(self, isolate):
-        _subscribe("buddy")
-        assert fleet_alerts.subscribers() == ["buddy"]
-        record = core.load_session_metadata("buddy")[fleet_alerts.SUBSCRIBE_KEY]
+        _subscribe("listener")
+        assert fleet_alerts.subscribers() == ["listener"]
+        record = core.load_session_metadata("listener")[fleet_alerts.SUBSCRIBE_KEY]
         assert record["expires_at"] > record["since"]
 
     def test_subscribe_preserves_the_rest_of_the_record(self, isolate):
-        core.store_session_metadata("buddy", {"role": "buddy", "delivery": "voice"})
-        _subscribe("buddy")
-        meta = core.load_session_metadata("buddy")
-        assert meta["role"] == "buddy" and meta["delivery"] == "voice"
+        core.store_session_metadata("listener", {"role": "worker", "created_at": "x"})
+        _subscribe("listener")
+        meta = core.load_session_metadata("listener")
+        assert meta["role"] == "worker" and meta["created_at"] == "x"
 
     def test_an_expired_lease_stops_producing(self, isolate):
-        """The dormancy bound. A buddy that ran once in July must not collect
-        August's escalations in a spool it will replay at next start."""
-        _subscribe("buddy")
+        """The dormancy bound. A listener that ran once in July must not collect
+        August's escalations in a queue it hands over all at once at next
+        start."""
+        _subscribe("listener")
         stale = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-        meta = core.load_session_metadata("buddy")
+        meta = core.load_session_metadata("listener")
         meta[fleet_alerts.SUBSCRIBE_KEY]["expires_at"] = stale
-        core.store_session_metadata("buddy", meta)
+        core.store_session_metadata("listener", meta)
 
         assert fleet_alerts.subscribers() == []
         assert fleet_alerts.emit("x", kind="escalation") == []
 
     def test_a_malformed_subscription_is_ignored_not_honored(self, isolate):
-        core.store_session_metadata("buddy", {fleet_alerts.SUBSCRIBE_KEY: True})
+        core.store_session_metadata("listener", {fleet_alerts.SUBSCRIBE_KEY: True})
         assert fleet_alerts.subscribers() == []
 
     def test_unsubscribe(self, isolate):
-        _subscribe("buddy")
-        assert fleet_alerts.unsubscribe("buddy") is True
+        _subscribe("listener")
+        assert fleet_alerts.unsubscribe("listener") is True
         assert fleet_alerts.subscribers() == []
-        assert fleet_alerts.unsubscribe("buddy") is False
+        assert fleet_alerts.unsubscribe("listener") is False
 
 
 # =============================================================================
@@ -159,19 +158,19 @@ class TestSubscription:
 
 class TestEmit:
     def test_enqueues_to_every_subscriber(self, isolate):
-        _subscribe("buddy")
+        _subscribe("listener")
         _subscribe("second")
-        assert sorted(fleet_alerts.emit("hi", kind="note")) == ["buddy", "second"]
-        msg = _inbox_messages("buddy")[0]
+        assert sorted(fleet_alerts.emit("hi", kind="note")) == ["listener", "second"]
+        msg = _inbox_messages("listener")[0]
         assert msg.kind == "note" and msg.sender == fleet_alerts.SENDER
         assert msg.text == "hi"
 
     def test_exclude_skips_a_target(self, isolate):
-        _subscribe("buddy")
-        assert fleet_alerts.emit("hi", kind="note", exclude=["buddy"]) == []
+        _subscribe("listener")
+        assert fleet_alerts.emit("hi", kind="note", exclude=["listener"]) == []
 
     def test_never_raises_when_the_inbox_fails(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
 
         def boom(*a, **k):
             raise OSError("disk gone")
@@ -193,7 +192,7 @@ class TestEmit:
         assert fleet_alerts.emit("hi", kind="note") == ["zzz"]
 
     def test_a_bogus_kind_is_a_coding_bug_not_a_silent_drop(self, isolate):
-        _subscribe("buddy")
+        _subscribe("listener")
         with pytest.raises(ValueError):
             fleet_alerts.emit("hi", kind="urgent")
 
@@ -204,28 +203,28 @@ class TestEmit:
 
 
 class TestAuthExpired:
-    def test_records_outage_and_escalates_to_the_buddy(self, isolate, monkeypatch):
-        _subscribe("buddy")
+    def test_records_outage_and_escalates_to_the_listener(self, isolate, monkeypatch):
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=False, error="no key"),
         )
         auth_expired.record_outage({"session": "task-a", "transcript": "/t.jsonl"})
 
-        msgs = _inbox_messages("buddy")
+        msgs = _inbox_messages("listener")
         assert len(msgs) == 1
         assert msgs[0].kind == "escalation"
         assert "login" in msgs[0].text.lower()
 
     def test_throttled_by_the_same_state_record(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=False, error="no key"),
         )
         auth_expired.record_outage({"session": "a", "transcript": "/t.jsonl"})
         auth_expired.record_outage({"session": "b", "transcript": "/t.jsonl"})
-        assert len(_inbox_messages("buddy")) == 1
+        assert len(_inbox_messages("listener")) == 1
 
         state = json.loads(auth_expired.state_path().read_text())
         assert state["alerted_at"]
@@ -236,10 +235,10 @@ class TestAuthExpired:
         ).isoformat()
         auth_expired.write_state(state)
         auth_expired.record_outage({"session": "c", "transcript": "/t.jsonl"})
-        assert len(_inbox_messages("buddy")) == 2
+        assert len(_inbox_messages("listener")) == 2
 
     def test_a_broken_alert_never_breaks_the_gate(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=False, error="no key"),
@@ -270,27 +269,27 @@ class TestUsageLimitPark:
             "notified": False,
         }
 
-    def test_park_notice_reaches_the_buddy_as_a_note(self, isolate, monkeypatch):
-        _subscribe("buddy")
+    def test_park_notice_reaches_the_listener_as_a_note(self, isolate, monkeypatch):
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
         usage_limit._notify_parked(self._state())
 
-        msgs = _inbox_messages("buddy")
+        msgs = _inbox_messages("listener")
         assert len(msgs) == 1
         assert msgs[0].kind == "note"
         assert "worker-1" in msgs[0].text
 
     def test_the_notice_survives_a_dead_email_channel(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: (_ for _ in ()).throw(RuntimeError("no provider")),
         )
         usage_limit._notify_parked(self._state())
-        assert len(_inbox_messages("buddy")) == 1
+        assert len(_inbox_messages("listener")) == 1
 
 
 # =============================================================================
@@ -306,80 +305,80 @@ def _dead(kind: str, to: str = "someone", sender: str = "worker") -> inbox.Messa
 
 class TestDeadLetters:
     def test_a_lost_done_is_a_request(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
         inbox._escalate_dead_letters([_dead("done")], "target_gone")
-        msgs = _inbox_messages("buddy")
+        msgs = _inbox_messages("listener")
         assert len(msgs) == 1 and msgs[0].kind == "request"
 
     def test_a_lost_escalation_stays_an_escalation(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
         inbox._escalate_dead_letters([_dead("done"), _dead("escalation")], "target_gone")
-        assert _inbox_messages("buddy")[0].kind == "escalation"
+        assert _inbox_messages("listener")[0].kind == "escalation"
 
-    def test_the_buddys_own_undelivered_mail_does_not_loop(self, isolate, monkeypatch):
+    def test_the_listeners_own_undelivered_mail_does_not_loop(self, isolate, monkeypatch):
         """The recursion guard, in both directions.
 
-        Alerts addressed TO the buddy that dead-letter would otherwise alert
-        the buddy about the alert failing to reach the buddy — forever.
+        Alerts addressed TO the listener that dead-letter would otherwise alert
+        the listener about the alert failing to reach the listener — forever.
         """
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
         inbox._escalate_dead_letters(
-            [_dead("escalation", to="buddy", sender=fleet_alerts.SENDER)], "target_gone"
+            [_dead("escalation", to="listener", sender=fleet_alerts.SENDER)], "target_gone"
         )
-        assert _inbox_messages("buddy") == []
+        assert _inbox_messages("listener") == []
 
     def test_a_stranded_alert_is_not_reported_to_a_second_subscriber(
         self, isolate, monkeypatch
     ):
         """The half the recipient guard cannot cover.
 
-        With two subscribers, an alert stranded on the way to `buddy` is not
+        With two subscribers, an alert stranded on the way to `listener` is not
         addressed to `second` — so excluding recipients alone would let it be
         reported there, once per drain, about a delivery that is stuck for the
         same reason `second`'s own copy is. Only the SENDER guard stops it.
         """
-        _subscribe("buddy")
+        _subscribe("listener")
         _subscribe("second")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
         inbox._escalate_dead_letters(
-            [_dead("escalation", to="buddy", sender=fleet_alerts.SENDER)], "target_gone"
+            [_dead("escalation", to="listener", sender=fleet_alerts.SENDER)], "target_gone"
         )
         assert _inbox_messages("second") == []
 
-    def test_mail_lost_on_the_way_to_the_buddy_still_excludes_it(
+    def test_mail_lost_on_the_way_to_the_listener_still_excludes_it(
         self, isolate, monkeypatch
     ):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
-        inbox._escalate_dead_letters([_dead("done", to="buddy")], "target_gone")
-        assert _inbox_messages("buddy") == []
+        inbox._escalate_dead_letters([_dead("done", to="listener")], "target_gone")
+        assert _inbox_messages("listener") == []
 
     def test_one_alert_per_batch_not_per_message(self, isolate, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(
             "agentwire.channels.email.send_email",
             lambda **k: SimpleNamespace(success=True, error=None),
         )
         inbox._escalate_dead_letters([_dead("done") for _ in range(147)], "target_gone")
-        msgs = _inbox_messages("buddy")
+        msgs = _inbox_messages("listener")
         assert len(msgs) == 1
         assert "147" in msgs[0].text
 
@@ -426,7 +425,7 @@ class TestKeylessMachine:
         self, isolate, monkeypatch, tmp_path
     ):
         """The reproduction: 5 sweeps of ONE prompt must be 1 escalation."""
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
         monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "pr-events.jsonl")
         monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
@@ -434,7 +433,7 @@ class TestKeylessMachine:
         for _ in range(5):
             prompt_router.route_prompt("root-1", 0, _prompt_info(), source="sweep")
 
-        assert len(_inbox_messages("buddy")) == 1
+        assert len(_inbox_messages("listener")) == 1
 
     def test_a_genuinely_new_prompt_still_alerts(self, isolate, monkeypatch, tmp_path):
         """The false-reject half: the throttle is per PROMPT, not per pane.
@@ -443,7 +442,7 @@ class TestKeylessMachine:
         different one is still stalled, and the second question is new
         information. Only a redraw of the SAME prompt is suppressed.
         """
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(prompt_router, "STATE_DIR", tmp_path / "prompt-router")
         monkeypatch.setattr(prompt_router, "EVENTS_FILE", tmp_path / "pr-events.jsonl")
         monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
@@ -454,13 +453,13 @@ class TestKeylessMachine:
         )
         prompt_router.route_prompt("root-1", 0, other, source="sweep")
 
-        assert len(_inbox_messages("buddy")) == 2
+        assert len(_inbox_messages("listener")) == 2
 
     def test_auth_outage_alerts_once_across_repeated_detections(self, isolate):
-        _subscribe("buddy")
+        _subscribe("listener")
         for _ in range(5):
             auth_expired.record_outage({"session": "a", "transcript": "/t.jsonl"})
-        assert len(_inbox_messages("buddy")) == 1
+        assert len(_inbox_messages("listener")) == 1
 
     def test_park_note_fires_once_across_the_whole_park(
         self, isolate, monkeypatch, tmp_path
@@ -471,7 +470,7 @@ class TestKeylessMachine:
         as ``notified`` stays False, which on a keyless machine is forever —
         ``resume_due``, on every tick.
         """
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(usage_limit, "STATE_DIR", tmp_path / "usage-limit")
         now = datetime.now(timezone.utc)
         state = {
@@ -490,13 +489,13 @@ class TestKeylessMachine:
         for _ in range(10):  # resume_due(), once per tick, notified still False
             usage_limit._notify_parked(usage_limit.read_park_state("worker-1"))
 
-        assert len(_inbox_messages("buddy")) == 1
+        assert len(_inbox_messages("listener")) == 1
 
     def test_a_new_park_of_the_same_session_alerts_again(
         self, isolate, monkeypatch, tmp_path
     ):
         """The false-reject half: the stamp lives on the PARK, not the session."""
-        _subscribe("buddy")
+        _subscribe("listener")
         monkeypatch.setattr(usage_limit, "STATE_DIR", tmp_path / "usage-limit")
         now = datetime.now(timezone.utc)
 
@@ -514,7 +513,7 @@ class TestKeylessMachine:
             usage_limit._notify_parked(state)
             usage_limit.state_path("worker-1").unlink()  # the park cleared
 
-        assert len(_inbox_messages("buddy")) == 2
+        assert len(_inbox_messages("listener")) == 2
 
 
 class TestCostWhenNobodyListens:
@@ -550,12 +549,12 @@ class TestCostWhenNobodyListens:
     def test_one_subscriber_reads_only_that_subscribers_record(
         self, isolate, monkeypatch
     ):
-        _subscribe("buddy")
+        _subscribe("listener")
         for name in ("other-1", "other-2", "other-3"):
             core.store_session_metadata(name, {"role": "worker"})
 
         calls = self._count_walks(monkeypatch)
-        assert fleet_alerts.subscribers() == ["buddy"]
+        assert fleet_alerts.subscribers() == ["listener"]
         assert calls == []
 
     def test_the_index_is_a_candidate_list_not_the_truth(self, isolate):
@@ -564,16 +563,16 @@ class TestCostWhenNobodyListens:
         The record is authoritative; the index only says who to ask. A name
         whose lease is gone (unregistered, killed, expired) is verified away.
         """
-        _subscribe("buddy")
-        core.session_metadata_path("buddy").unlink()
+        _subscribe("listener")
+        core.session_metadata_path("listener").unlink()
         assert fleet_alerts.subscribers() == []
 
     def test_reindex_rebuilds_a_lost_index_from_the_records(self, isolate):
-        _subscribe("buddy")
+        _subscribe("listener")
         fleet_alerts.subscribers_index_path().unlink()
         assert fleet_alerts.subscribers() == []  # fails quiet, as designed
-        assert fleet_alerts.reindex() == ["buddy"]
-        assert fleet_alerts.subscribers() == ["buddy"]
+        assert fleet_alerts.reindex() == ["listener"]
+        assert fleet_alerts.subscribers() == ["listener"]
 
 
 class TestCliSurface:
@@ -586,11 +585,11 @@ class TestCliSurface:
         return args.func(args)
 
     def test_subscribe_list_unsubscribe_round_trip(self, isolate, capsys):
-        assert self._run(["alerts", "subscribe", "buddy"]) == 0
+        assert self._run(["alerts", "subscribe", "listener"]) == 0
         capsys.readouterr()
         assert self._run(["alerts", "list", "--json"]) == 0
-        assert json.loads(capsys.readouterr().out)["subscribers"] == ["buddy"]
-        assert self._run(["alerts", "unsubscribe", "buddy"]) == 0
+        assert json.loads(capsys.readouterr().out)["subscribers"] == ["listener"]
+        assert self._run(["alerts", "unsubscribe", "listener"]) == 0
         capsys.readouterr()
         self._run(["alerts", "list", "--json"])
         assert json.loads(capsys.readouterr().out)["subscribers"] == []
@@ -601,11 +600,11 @@ class TestCliSurface:
         assert self._run(["alerts", "unsubscribe", "nobody"]) == 1
 
     def test_reindex_is_reachable_from_the_cli(self, isolate, capsys):
-        self._run(["alerts", "subscribe", "buddy"])
+        self._run(["alerts", "subscribe", "listener"])
         fleet_alerts.subscribers_index_path().unlink()
         capsys.readouterr()
         assert self._run(["alerts", "reindex", "--json"]) == 0
-        assert json.loads(capsys.readouterr().out)["subscribers"] == ["buddy"]
+        assert json.loads(capsys.readouterr().out)["subscribers"] == ["listener"]
 
 
 class TestBlockedRootPane:
@@ -625,24 +624,24 @@ class TestBlockedRootPane:
             "root-1", 0, info or _prompt_info(), source="sweep"
         )
 
-    def test_no_parent_escalation_reaches_the_buddy(self, isolate, sweep):
-        _subscribe("buddy")
+    def test_no_parent_escalation_reaches_the_listener(self, isolate, sweep):
+        _subscribe("listener")
         sweep()
-        msgs = _inbox_messages("buddy")
+        msgs = _inbox_messages("listener")
         assert len(msgs) == 1
         assert msgs[0].kind == "escalation"
         assert "root-1" in msgs[0].text
 
     def test_throttled_by_its_own_stamp_on_the_marker(self, isolate, sweep):
-        _subscribe("buddy")
+        _subscribe("listener")
         sweep()
         sweep()
-        assert len(_inbox_messages("buddy")) == 1
+        assert len(_inbox_messages("listener")) == 1
         marker = prompt_router.read_marker("root-1", 0)
         assert marker["alerted_at"]
 
     def test_the_stamp_expires_with_its_own_ttl(self, isolate, sweep, monkeypatch):
-        _subscribe("buddy")
+        _subscribe("listener")
         sweep()
         marker = prompt_router.read_marker("root-1", 0)
         marker["alerted_at"] = (
@@ -654,4 +653,4 @@ class TestBlockedRootPane:
             k: v for k, v in marker.items() if k not in ("session", "pane")
         })
         sweep()
-        assert len(_inbox_messages("buddy")) == 2
+        assert len(_inbox_messages("listener")) == 2
