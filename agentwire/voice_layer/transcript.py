@@ -65,6 +65,40 @@ Failing closed there is deliberate — if the ``speech_started`` events stopped
 arriving, confirms stop working loudly rather than silently losing their
 ordering guarantee.
 
+Two shapes hide under "the transcript never came", and only one needs a clock
+---------------------------------------------------------------------------
+
+:meth:`TranscriptRing.unheard_between` is the denial half of the timing
+asymmetry: an utterance whose ``speech_started`` was recorded but whose
+transcript has not landed holds the gate at ``pending_transcript``. Left
+unbounded, one such entry refuses every confirm for a proposal's whole TTL
+(#989). The obvious repair — a flat wall-clock age — is wrong, because the name
+covers two failures with opposite prices:
+
+**1. Transcribed, but empty.** A cough that the transcription model renders as
+``""`` produced a transcript EVENT; ``complete`` is False only because the text
+is blank. This needs no clock at all. The gate's question is "did the owner say
+something we cannot yet read", and an empty transcript positively answers it:
+they said nothing readable, so there is no denial hiding in it. Hence
+:attr:`Utterance.transcribed` — a transcript ARRIVED — which is what this method
+filters on. ``complete`` still gates :meth:`TranscriptRing.after`, where the
+question is different (can this text approve), and an empty utterance answers
+that one no.
+
+**2. Never transcribed at all.** Here there genuinely is an unread utterance and
+only time can retire it — and the bound must key on whether the audio buffer
+CLOSED, not on age alone. With a ``commit_seq`` the utterance is over and the
+transcript is simply overdue: a few seconds of ASR latency is the whole budget
+(:data:`UNHEARD_COMMITTED_GRACE_S`). Without one the owner may still be
+speaking, and the bound has to exceed a plausible utterance
+(:data:`UNHEARD_OPEN_UTTERANCE_S`) or the gate stops waiting for a take-back the
+owner is in the middle of saying — the acting-twice direction, not a wait.
+
+**One flat age cannot price both.** Set to the committed grace it truncates a
+long spoken denial; set to the open bound it leaves a cough holding the gate for
+a minute. That is why there are two constants and why the split is on the commit
+rather than on the age.
+
 Thread safety
 -------------
 
@@ -87,6 +121,35 @@ from dataclasses import dataclass
 #: persisted, deliberately.
 DEFAULT_CAPACITY = 32
 
+#: How long a COMMITTED utterance with no transcript keeps holding the gate.
+#:
+#: The audio buffer closed, so the utterance is over and the only thing missing
+#: is the transcription pass. :data:`~agentwire.voice_layer.confirm.APPROVAL_WAIT_S`
+#: (2.5s) is what an ordinary short-utterance transcript costs, so this is that
+#: with room for a slow one — past it, the transcript is not late, it is not
+#: coming.
+#:
+#: **Both halves, and they are not symmetric.** Too tight: a genuinely slow
+#: transcriber's denial is dropped from the window and the write goes out with a
+#: take-back mid-transcription — acting twice. Too loose: the confirm loops on
+#: "give me a second" for that long, recoverable by waiting. So the false-accept
+#: half is the expensive one here and the number leans generous.
+UNHEARD_COMMITTED_GRACE_S = 10.0
+
+#: How long an OPEN utterance — ``speech_started`` with no commit — keeps
+#: holding the gate.
+#:
+#: No commit means the owner may still be talking, so this bound is not an ASR
+#: latency at all: it has to exceed a plausible spoken utterance, or the gate
+#: stops waiting for a retraction the owner is halfway through. It also covers
+#: the case where the commit event itself was lost.
+#:
+#: Deliberately well under
+#: :data:`~agentwire.voice_layer.confirm.PROPOSAL_TTL_S` (120s): the failure
+#: being closed is a proposal that loops for its whole TTL, so a bound that
+#: approaches the TTL closes nothing.
+UNHEARD_OPEN_UTTERANCE_S = 60.0
+
 
 @dataclass
 class Utterance:
@@ -102,6 +165,12 @@ class Utterance:
 
     ``spent`` marks an entry already used to approve something, so one approval
     cannot satisfy a second proposal — the "acting twice" failure §4 names.
+
+    ``transcribed`` and ``complete`` answer DIFFERENT questions and the
+    difference is the whole of #989's first shape: ``transcribed`` is "a
+    transcript event arrived", ``complete`` is "there are words in it". A cough
+    the model renders as ``""`` is transcribed and not complete, and treating
+    those as one thing is what left it holding the gate forever.
     """
 
     item_id: str
@@ -111,6 +180,14 @@ class Utterance:
     estimated: bool = False
     spent: bool = False
     received_at: float = 0.0
+    #: A transcript event ARRIVED for this item — even an empty one. Never
+    #: derived from ``text``: the empty rendering is exactly the case that has
+    #: to be distinguishable from "nothing came back yet".
+    transcribed: bool = False
+    #: When the audio buffer closed, on the ring's clock. 0 means it has not.
+    #: Read only by the staleness bound; the ORDERING still never touches the
+    #: commit (see the module docstring).
+    committed_at: float = 0.0
 
     @property
     def complete(self) -> bool:
@@ -172,6 +249,7 @@ class TranscriptRing:
                 self._append(entry)
             if not entry.commit_seq:
                 entry.commit_seq = seq
+                entry.committed_at = self._clock()
             return entry
 
     def transcribe(self, item_id: str, text: str, seq: int = 0) -> Utterance:
@@ -194,6 +272,11 @@ class TranscriptRing:
             if not entry.speech_started_seq:
                 entry.estimated = True
             entry.text = text
+            # Recorded even for ``""``. The transcription model rendering an
+            # utterance as empty is an ANSWER — "nothing readable was said" —
+            # and the gate's unheard window has to be able to tell it from
+            # silence on the wire (#989). See :attr:`Utterance.transcribed`.
+            entry.transcribed = True
             self._condition.notify_all()
             return entry
 
@@ -286,7 +369,7 @@ class TranscriptRing:
                 self._condition.wait(remaining)
 
     def unheard_between(self, after: int, ceiling: int) -> list[Utterance]:
-        """Ordered utterances in ``(after, ceiling]`` with NO transcript yet.
+        """Ordered utterances in ``(after, ceiling]`` still awaiting a transcript.
 
         The denial half of the timing asymmetry the bounded await fixes for
         approvals. An utterance whose ``speech_started`` was recorded but whose
@@ -295,15 +378,39 @@ class TranscriptRing:
         transcribed did not block the write. The system already KNOWS the owner
         spoke again (the sequence advanced); it just cannot yet say what they
         said. That is ``pending_transcript``, never approval.
+
+        **Bounded on two axes, because "no transcript" is two failures** — see
+        the module docstring. An entry whose transcript ARRIVED is out of this
+        window whatever it says, including ``""``; an entry whose transcript
+        never arrives ages out on :data:`UNHEARD_COMMITTED_GRACE_S` once the
+        audio buffer closed, and on :data:`UNHEARD_OPEN_UTTERANCE_S` while it
+        has not. Ageing out is not a ruling that nothing was said — it is this
+        method ceasing to be able to say otherwise, which is why the bounds sit
+        where a real utterance cannot plausibly still be arriving.
         """
         with self._condition:
+            now = self._clock()
             return [
                 u
                 for u in self._items
-                if not u.complete
+                if not u.transcribed
                 and u.speech_started_seq > after
                 and u.speech_started_seq <= ceiling
+                and not self._aged_out(u, now)
             ]
+
+    def _aged_out(self, entry: Utterance, now: float) -> bool:
+        """Has *entry*'s missing transcript stopped being worth waiting for?
+
+        The commit is what splits the two bounds, and it is the one read of
+        ``commit_seq`` in this module that is not purely for inspection — it
+        says the utterance is OVER, which is what makes a missing transcript
+        overdue rather than merely pending. It still never orders anything.
+        """
+        if entry.commit_seq:
+            started = entry.committed_at or entry.received_at
+            return now - started >= UNHEARD_COMMITTED_GRACE_S
+        return now - entry.received_at >= UNHEARD_OPEN_UTTERANCE_S
 
     def snapshot(self) -> list[Utterance]:
         with self._condition:

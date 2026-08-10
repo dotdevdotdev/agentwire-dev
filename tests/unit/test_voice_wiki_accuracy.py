@@ -26,6 +26,7 @@ asserted on both sides, over `SOURCES` below.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -207,6 +208,244 @@ class TestTheOutcomeTableIsComplete:
         # And the page quotes what the code actually says.
         assert "I heard you hold off" in page
         assert "I heard you hold off" in confirm.SPOKEN["denied"]
+
+
+class TestTheResidualTableDoesNotAdvertiseClosedHoles:
+    """The residual table's own header says why this matters: *"a wiki that
+    describes what we meant is how the next contributor designs against
+    something that does not exist"*. That cuts both ways, and the second
+    direction is the one that rots silently — a CLOSED hole left listed as open
+    is a mechanism the next reader believes is missing, so they either rebuild
+    it or route around it. #989, #990 and #992 were the beta gate; each is now
+    described where it lives instead.
+    """
+
+    #: Every residual this page has retired. **Not just the ones this wave
+    #: closed** — the defect is a stale sentence, and it does not care which
+    #: PR left it behind, so the pin covers #1007's three as well as the beta
+    #: gate's. Extending it was free here and would not have been later: a
+    #: closed hole only accumulates prose.
+    CLOSED = ("#989", "#990", "#992", "#995", "#996", "#997")
+
+    @staticmethod
+    def _residual_rows() -> "list[str]":
+        """The residual table's rows, from the RAW page.
+
+        Read raw rather than through the flattened ``page`` fixture: this is a
+        LINE-shaped claim, and flattening collapses the whole table onto one
+        line, which is how a line-based assertion here passes (or fails) for a
+        reason that has nothing to do with the table.
+        """
+        raw = WIKI.read_text(encoding="utf-8")
+        table = raw.split("### Known residuals")[1].split("### Standing constraints")[0]
+        return [line for line in table.splitlines() if line.startswith("| #")]
+
+    @pytest.mark.parametrize("issue", CLOSED)
+    def test_the_closed_ones_are_not_listed_as_residuals(self, issue):
+        rows = [r for r in self._residual_rows() if r.startswith(f"| {issue} |")]
+        assert rows == [], rows
+
+    #: Words that describe a hole as still present. An OPEN marker in the same
+    #: SENTENCE as a closed issue id is the defect this catches.
+    #:
+    #: **This enumeration fails open and says so**: an unlisted phrasing slips
+    #: through. What bounds it is that the vocabulary is the one a residual
+    #: paragraph actually uses — derived from the paragraph that survived round
+    #: 1 ("the denial direction is **open** (#992)", "**Open**, and priced
+    #: rather than assumed"), not invented.
+    OPEN_MARKERS = (
+        "is open", "are open", "open residual", "remains open", "still open",
+        "open, and priced", "not fixed", "unfixed", "left uncovered",
+        "pinned as behaviour", "pinned in the tests as behaviour", "to-do",
+    )
+
+    #: Words marking the claim as being about the CLOSURE or the history, so an
+    #: OPEN marker in that company is a correction rather than an assertion.
+    #: Same two-sided shape as `_RETIREMENT_MARKERS` above.
+    #:
+    #: Deliberately NOT the bare stem "close": this page says "closes the
+    #: approval direction" in the same breath as the stale claim it is about,
+    #: so a stem match let the offending sentence neutralize itself — measured,
+    #: and the same too-loose-marker defect `_RETIREMENT_MARKERS` records.
+    CLOSURE_MARKERS = (
+        "closed", "was open", "used to", "no longer", "rejected",
+        "round 1", "originally",
+    )
+
+    #: Lines that START A NEW CLAIM rather than continuing one: markdown
+    #: structure. Everything else is a SOFT wrap and gets joined back up.
+    #:
+    #: This file hand-wraps prose — 1351 of its 2345 source lines continue a
+    #: sentence — so splitting on every newline (which is what fixed the bullet
+    #: leak) chopped hand-wrapped sentences in half and put the id and the
+    #: marker in different units. That is not hypothetical: **the actual
+    #: round-1 stale paragraph, in its original wrapping, was not caught** —
+    #: only once unwrapped by hand. A pin that catches the defect that started
+    #: this only in a form it never had is "catches the placement it was built
+    #: from", one level up.
+    _STRUCTURAL_RE = re.compile(r"^\s*(?:[-*+]\s|\||#{1,6}\s|>|\[\^)")
+
+    #: Sentence boundaries WITHIN a joined block. `;` and `:` count, because
+    #: "#992 is open; the scan no longer matters much" puts the suppressor in
+    #: the next clause of one sentence.
+    _SENTENCE_RE = re.compile(r"(?<=[.!?;:])\s+")
+
+    @classmethod
+    def _units(cls, raw: str) -> "list[str]":
+        """*raw* as claims: soft wraps joined, structural lines kept apart."""
+        blocks: list[str] = []
+        for line in raw.splitlines():
+            if not line.strip():
+                blocks.append("")
+                continue
+            if not blocks or blocks[-1] == "" or cls._STRUCTURAL_RE.match(line):
+                blocks.append(line.strip())
+            else:
+                blocks[-1] = blocks[-1] + " " + line.strip()
+        units: list[str] = []
+        for block in blocks:
+            units.extend(cls._SENTENCE_RE.split(block))
+        return units
+
+    @classmethod
+    def _open_claims(cls, raw: str, issue: str) -> "list[str]":
+        """Claims in *raw* that call *issue* open without retiring the claim.
+
+        **Three scopes were measured leaking before this one.** A ±400-char
+        window let the closure sentence next door silence a stale paragraph.
+        Block scoping let a markdown LIST launder one, because a list is a
+        single block and a bullet saying "closed" suppressed a sibling bullet
+        saying "#992 still open". Splitting on every newline fixed that and
+        broke the opposite way: hand-wrapped prose got chopped mid-sentence, so
+        the id and the marker landed in different units — which is how the
+        ORIGINAL stale paragraph escaped a pin written to catch exactly it.
+
+        So: join soft wraps, split hard only before markdown structure, then
+        split the result into sentences. A claim is the unit, whatever the
+        line breaks are doing.
+
+        **Known misses, recorded rather than chased.** A claim split across two
+        sentences by a pronoun ("#992 is the echo hole. It is still open.")
+        carries no id in the sentence that carries the marker. And a table row
+        that mentions both the id and the word "closed" suppresses itself.
+        Both need the id resolved across sentences, which is a different
+        instrument; neither has occurred, and this one now catches every
+        placement that has.
+        """
+        found = []
+        for unit in cls._units(raw):
+            if issue not in unit:
+                continue
+            lowered = unit.lower()
+            if any(m in lowered for m in cls.CLOSURE_MARKERS):
+                continue
+            if any(m in lowered for m in cls.OPEN_MARKERS):
+                found.append(" ".join(unit.split())[:160])
+        return found
+
+    @pytest.mark.parametrize("issue", CLOSED)
+    def test_no_PROSE_sentence_still_calls_them_open(self, issue):
+        """The pin the round-1 version structurally could not be.
+
+        That one read residual-TABLE rows, so a paragraph 240 lines above the
+        section that closes #992 could go on calling it open — and did, while
+        naming the two mitigations that section rejects, 1200 lines from the
+        page's own "#989/#990/#992 are CLOSED". Removing a table row is not the
+        same claim as retiring a sentence, and only one of them was pinned.
+        """
+        offences = self._open_claims(WIKI.read_text(encoding="utf-8"), issue)
+        assert offences == [], offences
+
+    #: Placements a stale claim has actually taken, or was shown to be able to
+    #: take. Each is planted into the REAL page and run through the REAL
+    #: detector below — the round-2 control checked a planted sentence against
+    #: the two tuples and never invoked `_open_claims` at all, so it could not
+    #: have found the list-scoping leak it was supposed to guard.
+    PLACEMENTS = (
+        ("standalone paragraph", "The denial direction is open ({issue})."),
+        (
+            "bullet beside a closed sibling",
+            "- {issue} still open, nobody has taken it.\n"
+            "- The approval direction is closed.",
+        ),
+        (
+            "closure word in the NEXT sentence",
+            "{issue} remains open. See the table below for what is closed.",
+        ),
+        (
+            "closure word in the next CLAUSE",
+            "{issue} is open; the scan no longer matters much.",
+        ),
+        # THE ONE THE CONTROL WAS BLIND TO. Every template above is a single
+        # line, and this file hand-wraps prose — so the control could not
+        # exercise the wrapping, and the pin missed the ACTUAL round-1
+        # paragraph in its ACTUAL form while passing on the same words typed
+        # flat. Reproduced verbatim from the sentence that survived round 1,
+        # line breaks included, because the line breaks were the defect.
+        (
+            "hand-wrapped, as the real stale paragraph was",
+            "**That closes the approval direction only, and the denial "
+            "direction is\nopen ({issue}).** `carries_denial` is not "
+            "nonce-gated, and the fallback\nvoice also speaks inbox notices, "
+            "re-raises and error notices.",
+        ),
+        (
+            "wrapped so the id and the marker are on DIFFERENT lines",
+            "The scan still has the hole {issue}\ndescribes, and it is open.",
+        ),
+        ("heading", "### {issue} is still open"),
+        ("table row", "| {issue} | `_judge` | still open, nobody took it |"),
+        ("blockquote", "> {issue} remains open."),
+        ("nested list", "  - {issue} is open, see above."),
+        # THE ONE THAT MAKES THE STRUCTURAL SPLIT LOAD-BEARING. With terminal
+        # punctuation the sentence split alone separates sibling bullets, so
+        # the bullet placement above passes even with structural splitting
+        # removed — it proved the sentence rule, not the structure rule. A
+        # bullet list without full stops is the shape where only the structure
+        # rule keeps a "closed" sibling from laundering its neighbour, and this
+        # page writes lists both ways.
+        (
+            "bullets with NO terminal punctuation",
+            "- {issue} is open\n- the approval direction is closed",
+        ),
+    )
+
+    @pytest.mark.parametrize("issue", CLOSED)
+    @pytest.mark.parametrize("label,template", PLACEMENTS)
+    def test_the_prose_pin_can_actually_fire(self, issue, label, template):
+        """The must-fail control, and it RUNS THE DETECTOR.
+
+        An absence test over a vocabulary is exactly the shape that goes green
+        because nothing can match it — six of this file's own claims once did.
+        The round-2 version of this control only compared a planted string to
+        the two tuples, which is a test of the tuples, not of the detector: it
+        passed while the detector was blind to three of the four placements
+        below.
+        """
+        anchor = "### Denial words and denial EXCEPTIONS have opposite bars"
+        raw = WIKI.read_text(encoding="utf-8")
+        assert anchor in raw, "anchor for the planted claim moved"
+        planted = raw.replace(
+            anchor, template.format(issue=issue) + "\n\n" + anchor, 1
+        )
+        assert self._open_claims(planted, issue), label
+
+    def test_the_mechanisms_they_installed_are_documented(self, page):
+        """And the other direction: removing the row without documenting the
+        fix would leave the page silent about behaviour that now exists."""
+        for claim in (
+            "UNHEARD_COMMITTED_GRACE_S",
+            "UNHEARD_OPEN_UTTERANCE_S",
+            "`cancel()` takes the SAME claim",
+            "The buddy's own voice cannot deny",
+        ):
+            assert claim in page, claim
+
+    def test_the_residual_section_still_has_open_entries(self):
+        """The must-fail control. If the table is ever empty — or the split
+        above stops finding it — the parametrized test passes for the wrong
+        reason."""
+        assert self._residual_rows()
 
 
 class TestTheToolSurfaceIsNotEnumeratedStale:
@@ -514,17 +753,27 @@ class TestTheInterruptTierIsNotOverPromised:
 
 class TestTheOpenResidualsAreNamed:
     """A wiki that describes what we meant is how the next contributor argues
-    from a mechanism that does not exist."""
+    from a mechanism that does not exist.
 
-    @pytest.mark.parametrize("issue", [989, 990, 992, 1009])
+    #989, #990 and #992 were removed from this list when they were closed —
+    leaving them would have been the same defect with its polarity flipped, and
+    for one round it WAS: a paragraph 240 lines above the section that closes
+    #992 still called it open and still recommended the two mitigations that
+    section rejects. `TestTheResidualTableDoesNotAdvertiseClosedHoles` is the
+    pin for that direction, and it reads prose, not only table rows.
+
+    #995/#996/#997 left the same way in #1007, so #1009 is what remains.
+    """
+
+    @pytest.mark.parametrize("issue", [1009])
     def test_residual_is_recorded(self, page, issue):
         assert f"#{issue}" in page
 
-    def test_the_never_completing_utterance_loop_is_described(self, page):
-        assert "no staleness bound" in page
-
-    def test_the_echoed_denial_hole_is_described(self, page):
-        assert "`carries_denial` is not nonce-gated" in page
+    def test_the_ones_that_shipped_a_fix_are_not_in_this_list(self):
+        """The two lists are complements, asserted rather than assumed —
+        an issue in both is a page contradicting itself."""
+        closed = set(TestTheResidualTableDoesNotAdvertiseClosedHoles.CLOSED)
+        assert "#1009" not in closed
 
     def test_the_page_does_not_call_onNotSpoken_a_positive_report_only(self, page):
         """The wiki carried the same sentence ``client.py``'s handler did —

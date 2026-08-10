@@ -1232,10 +1232,29 @@ SPOKEN = {
     ),
     # Covers "no" AND "wait"/"hold on", so it must not assert the owner said
     # the word "no" — a reason that misinforms is the defect §3.4 is about.
+    #
+    # "Say the phrase again" is TRUE HERE and only here: an in-band denial
+    # leaves the proposal LIVE, so the nonce still works. It is false on the
+    # retraction paths, which pop — hence `cancelled` below rather than one
+    # line stretched over two different next moves.
     "denied": (
         "I heard you hold off, so I haven't sent it. "
         "Say the phrase again when you're ready."
     ),
+    # An explicit retraction that RETIRED the proposal: `cancel`, and the
+    # confirm barrier that finds a cancel already recorded.
+    #
+    # Split from `denied` for the reason the taxonomy exists — the owner's next
+    # move differs. `denied`'s advice is "say the phrase again", and following
+    # it here lands on `no_proposal` ("Tell me again what you'd like sent") one
+    # turn later: advice that cannot work, pointing at the exact line
+    # `_cancel_refusal` was built to keep off this path.
+    #
+    # A pure stand-down, and that is the whole content: the owner asked for
+    # this, so nothing further is required of them. It deliberately does NOT
+    # offer to set it up again — pressing for the write just retracted is the
+    # same defect from the other side.
+    "cancelled": "Okay — I've dropped that one, so I haven't sent anything.",
     "pending_transcript": (
         "Give me a second — I'm still catching up on what you said. Don't repeat it yet."
     ),
@@ -1246,6 +1265,35 @@ SPOKEN = {
     "in_flight": (
         "Hang on — I'm already working on that one. "
         "I'll tell you how it went in a moment; don't repeat it yet."
+    ),
+    # A CANCEL that lost the race to a confirm already INSIDE THE RUNNER
+    # (#990). It must not say "I haven't sent it" — that is the over-claim
+    # `in_flight` is worded to avoid, and here it would be worse, because the
+    # owner asked for exactly that outcome and would hear it granted.
+    #
+    # It must also not tell them to wait and stop there: the one thing they
+    # tried to do is the one thing that is no longer available, so the line
+    # names the uncertainty AND the move that is still open (undo it after the
+    # fact, from the recipient's side), which is what "wait" alone would hide.
+    #
+    # The condition is `_dispatching`, NOT `_in_flight`, and the difference is
+    # this line's whole truth value: the claim is held across the ≤2.5s await,
+    # where nothing has been sent and this sentence would be false. See
+    # ConfirmSpine.cancel.
+    "cancel_in_flight": (
+        "Too late to stop that one — it's already going out. Don't repeat it; "
+        "I'll tell you how it went in a moment and we can undo it from there."
+    ),
+    # A cancel with nothing of ours to retract — never proposed, already
+    # retired, or expired. It collapses `no_proposal` and `expired` for the
+    # cancel caller ONLY, and the reason is that both of their confirm-shaped
+    # lines argue for the write: "Tell me again what you'd like sent" and "Ask
+    # me again and I'll set it up fresh". Answering a retraction by pressing
+    # for the thing retracted is the taxonomy defect §3.4 names, reached
+    # through a reused line rather than a wrong one.
+    "nothing_to_cancel": (
+        "There's nothing waiting on my side, so there's nothing to take back — "
+        "I haven't sent anything."
     ),
     "too_many_attempts": (
         "I've got that wrong too many times, so I've dropped it. Ask me again from the top."
@@ -1269,13 +1317,106 @@ SPOKEN = {
     ),
 }
 
+#: How many tokens of the buddy's own line an utterance must reproduce, VERBATIM
+#: and CONTIGUOUSLY, before :func:`is_buddy_echo` will call it an echo.
+#:
+#: This number is the entire false-reject budget of that rule, so it is chosen
+#: against the collision rather than for tidiness. The denial triggers that
+#: appear in :data:`SPOKEN` are short and ordinary — ``hold off``, ``hang on``,
+#: ``dont`` — and they are exactly what a real owner says to retract. At two or
+#: three tokens the rule would suppress a genuine "hold off" spoken over the
+#: browser voice, and a suppressed retraction WRITES.
+#:
+#: Six tokens is past the point where a human utters a machine's sentence word
+#: for word by coincidence: it takes ``hang on im already working on`` rather
+#: than ``hang on``.
+#:
+#: **Guarded from BELOW only, and that asymmetry is deliberate.** Lowering this
+#: is what the tests forbid, because it suppresses a real retraction and a
+#: suppressed retraction WRITES. Raising it is the fail-closed direction — a
+#: genuine echo stops being recognised, denies, and costs one re-spoken
+#: approval — so nothing pins it from above. Do not read the pins as saying 6
+#: is optimal in both directions; they say it is a FLOOR.
+_ECHO_MIN_TOKENS = 6
+
+
+def is_buddy_echo(text: str) -> bool:
+    """Is *text* the buddy's own voice coming back through the microphone?
+
+    ``speechSynthesis`` is outside the WebRTC path, so ``echoCancellation`` does
+    not cover the fallback voice: what it says re-enters the mic and lands in
+    the USER transcript. Approval is safe from that by construction — the
+    fallback channel never carries a nonce (#953) — but :func:`carries_denial`
+    is not nonce-gated, and several :data:`SPOKEN` lines CONTAIN denial
+    triggers ("I heard you hold off…", "Hang on — I'm already working on that
+    one", "I don't have anything pending…"). Echoed inside the approval→confirm
+    window, one of those retroactively denies the owner's own approval and
+    reports a take-back they never spoke (#992).
+
+    **The discriminator is content, not timing, and that choice is the whole
+    decision.** The obvious rule — "utterances transcribed while the fallback
+    voice is speaking do not count as denials" — is unusable here: barge-in over
+    the robot voice is the NORMAL way to retract in this channel, so that rule
+    drops genuine take-backs and the write goes out. That is the acting-twice
+    direction, which is strictly worse than the wrongful refusal it fixes (one
+    utterance to recover, via the newest-first binding in
+    :meth:`ConfirmSpine._judge`). A content rule has no such cost: it cannot
+    fire on words the buddy never said.
+
+    Two properties keep it on the safe side:
+
+    - **The WHOLE utterance must be the echo.** A barge-in captured together
+      with the tail of the buddy's line ("hang on im already working on that one
+      no stop") is not a contiguous run of that line, so it denies. Only a clean
+      capture of the machine's own words is suppressed.
+    - **The enumeration fails CLOSED.** A short or garbled echo — the
+      transcriber catching three words of it — misses :data:`_ECHO_MIN_TOKENS`
+      and denies, costing one re-spoken approval. Nothing about being
+      incomplete here can make a write happen.
+
+    **What it does NOT cover, stated rather than implied.** :data:`SPOKEN` is
+    the buddy's own taxonomy, so this covers only what THIS module makes it
+    say. Attacker-influenceable text (a delivered message body, spoken verbatim
+    by ``composeNotice``) is not in it. That text cannot reach this window
+    today for a separate reason — ``client.py``'s ``canSpeak``/``canInterrupt``
+    both require ``!confirmGate.outstanding()``, and the gate is closed from the
+    moment a proposal is spoken until its terminal outcome or TTL, which is
+    exactly the approval→confirm window. If that gate is ever relaxed, this
+    function needs the spoken text fed to it rather than read from
+    :data:`SPOKEN`, and the ``said-during-fallback`` mark stays the wrong
+    instrument for the reason above.
+    """
+    tokens = normalize(text).split()
+    if len(tokens) < _ECHO_MIN_TOKENS:
+        return False
+    return any(_contains_run(normalize(line).split(), tokens) for line in SPOKEN.values())
+
+
+def _contains_run(haystack: "list[str]", needle: "list[str]") -> bool:
+    """Does *needle* appear in *haystack* as a contiguous run?"""
+    if not needle or len(needle) > len(haystack):
+        return False
+    first = needle[0]
+    span = len(needle)
+    for index, token in enumerate(haystack):
+        if token == first and haystack[index:index + span] == needle:
+            return True
+    return False
+
+
 #: Outcomes whose correct owner response is to WAIT rather than to speak again.
 #: Named so the persona and the tests can both reason about it.
 #: ``in_flight`` belongs here on both counts the flag drives: the owner's
 #: correct move is to wait, and ``confirm_terminal`` must stay False — closing
 #: the gate on a duplicate would close it out from under the confirm that is
 #: actually running.
-WAIT_OUTCOMES = frozenset({"pending_transcript", "not_announced", "in_flight"})
+#: ``cancel_in_flight`` belongs here for the same two reasons ``in_flight``
+#: does: the owner's correct move is to wait for the real outcome, and
+#: ``confirm_terminal`` must stay False — a cancel that lost the race must not
+#: close the handshake out from under the confirm that is still running.
+WAIT_OUTCOMES = frozenset(
+    {"pending_transcript", "not_announced", "in_flight", "cancel_in_flight"}
+)
 
 #: Every reason :class:`ConfirmSpine` can return. The SSOT for the taxonomy.
 #:
@@ -1291,6 +1432,7 @@ REASONS = frozenset(
         "no_proposal", "expired", "not_announced", "replayed", "refused",
         "wrong_nonce", "quoted_frame", "denied", "pending_transcript",
         "too_many_attempts", "dispatch_failed", "in_flight",
+        "cancel_in_flight", "nothing_to_cancel", "cancelled",
     }
 )
 
@@ -1413,7 +1555,20 @@ class ConfirmSpine:
         #: _succeeded so a retry is told the truth rather than "already sent".
         self._failed: set[str] = set()
         #: Tokens claimed by a confirm that has not returned yet. See _claim.
+        #: **Claimed is not dispatching.** The claim is taken at the TOP of
+        #: :meth:`confirm`, before the ≤2.5s await and before the judge, so for
+        #: most of its life this set means "a confirm is deciding", not "a write
+        #: is going out". Anything that speaks about the WRITE must read
+        #: ``_dispatching`` instead — see :meth:`cancel`.
         self._in_flight: set[str] = set()
+        #: Tokens whose argv has been handed to the runner and has not come
+        #: back. The ONLY state in which "it's already going out" is true.
+        self._dispatching: set[str] = set()
+        #: Tokens the owner retracted while a confirm held the claim. The
+        #: confirm re-reads this under the lock immediately before dispatch, so
+        #: a cancel that arrives during the await genuinely WINS rather than
+        #: being told it was too late (#990, review round 2).
+        self._cancelled: set[str] = set()
 
     # -- propose ------------------------------------------------------------
 
@@ -1524,18 +1679,23 @@ class ConfirmSpine:
         # verdict. The widened `found` seqs are subsumed, since high_seq
         # advances on every ring event.
         #
-        # THE PRICE, stated at its true size. It is not "one pending_transcript
-        # wait": `unheard_between` has no staleness bound, so an utterance that
-        # never completes — a cough, a VAD blip, TTS bleed, any speech_started
-        # with no transcript to follow — sits in this window and refuses every
-        # confirm until the TTL expires it. And it refuses as a WAIT outcome,
-        # so no attempt is burned, `too_many_attempts` never fires, and the
-        # owner hears "give me a second" for up to 120s and then "that one
-        # expired" — a spoken loop, which in a screenless channel is the
-        # expensive failure. The bound belongs in TranscriptRing (age the
-        # entry, or cap the wait), NOT here: this function cannot tell a
-        # never-completing entry from a slow one without reading the ring's
-        # own clock. Pinned in the tests as a residual, not as a design.
+        # THE PRICE, and it is now bounded rather than open-ended (#989). The
+        # widened window used to cost more than "one pending_transcript wait":
+        # any speech_started with no transcript to follow — a cough, a VAD blip,
+        # TTS bleed — sat here refusing every confirm as a WAIT outcome, so no
+        # attempt was burned, `too_many_attempts` never fired, and the owner
+        # heard "give me a second" for up to the whole TTL and then "that one
+        # expired". A spoken loop, which in a screenless channel is the
+        # expensive failure.
+        #
+        # The bound lives in TranscriptRing, not here, and that division is the
+        # same one as before: this function cannot tell a never-completing entry
+        # from a slow one without the ring's clock. What the ring adds is two
+        # bounds rather than one — `transcribed` retires the cough (an EMPTY
+        # transcript is an answer, not a wait) and the commit splits the rest
+        # into "the audio closed, so ASR is overdue" and "the owner may still be
+        # speaking". See transcript.unheard_between; the two-shape argument is
+        # in that module's docstring rather than duplicated here.
         ceiling = max(self._ring.high_seq, anchor)
         found = self._ring.await_utterance_after(anchor, self._wait_s)
         ceiling = max(ceiling, self._ring.high_seq)
@@ -1556,6 +1716,38 @@ class ConfirmSpine:
                 return Verdict(approved=False, reason="too_many_attempts")
             return verdict
 
+        # THE CANCEL BARRIER (#990, review round 2). The claim is taken at the
+        # top of `confirm`, so it has been held across the ≤2.5s await and the
+        # judge — during which nothing has been sent. A cancel arriving in that
+        # window is therefore not "too late": it WINS, and this is where the
+        # confirm finds out.
+        #
+        # Under the lock together with the `_dispatching` mark, because the two
+        # are one decision: reading `_cancelled` and then marking would leave a
+        # window in which a cancel lands after the check and is told, truthfully
+        # by then but wrongly at the time it spoke, that the write was going
+        # out. The approving utterance is deliberately NOT spent on this path —
+        # nothing was acted on, so nothing was consumed.
+        with self._lock:
+            if token in self._cancelled:
+                # No pop here, deliberately: every writer of `_cancelled` pops
+                # in the same lock hold, so this could never be the removing
+                # one — an unreachable write that reads as a guarantee on the
+                # next pass, which is what this module objects to two branches
+                # away in `cancel`.
+                return Verdict(
+                    approved=False, reason="cancelled", utterance=verdict.utterance
+                )
+            self._dispatching.add(token)
+
+        try:
+            return self._dispatch(proposal, token, verdict)
+        finally:
+            with self._lock:
+                self._dispatching.discard(token)
+
+    def _dispatch(self, proposal: Proposal, token: str, verdict: Verdict) -> Verdict:
+        """Run the frozen argv. Reached only past the cancel barrier."""
         self._ring.spend(verdict.utterance_item_id)
         with self._lock:
             self._proposals.pop(token, None)
@@ -1607,10 +1799,145 @@ class ConfirmSpine:
         return verdict
 
     def cancel(self, token: str) -> Verdict:
-        """Retire a proposal without writing. Never gated — refusing is free."""
+        """Retire a proposal without writing — through the SAME claim (#990).
+
+        "Never gated, because refusing is free" was true of the refusal and
+        false of the SENTENCE. This used to pop whatever it found and say *"I
+        heard you hold off, so I haven't sent it"* — including while a confirm
+        holding the same token was inside the runner. That is the over-claim
+        :data:`SPOKEN`'s ``in_flight`` line is deliberately worded to avoid, on
+        the sibling path: the owner hears an affirmative "nothing was sent",
+        with no screen to discover otherwise. #987 made confirm-vs-confirm safe
+        by construction and stopped there; cancel-vs-in-flight-confirm is the
+        same shape.
+
+        **"A confirm holds the claim" is NOT "the write is going out", and
+        conflating them re-committed the defect this issue is about** (review
+        round 2). :meth:`_claim` is taken at the TOP of :meth:`confirm`, before
+        the ≤2.5s await and before the judge, so the dominant occupant of
+        ``_in_flight`` is a confirm still DECIDING. Refusing a cancel there with
+        "it's already going out" is the same false statement, inverted: the
+        measured shape is a cancel during the await, a confirm that then returns
+        ``pending_transcript``, a runner never called, and a proposal the owner
+        asked to drop still sitting pending.
+
+        So the race is split on the thing the sentence is about:
+
+        - ``_dispatching`` — the argv is inside the runner. This, and only this,
+          is when ``cancel_in_flight`` is true.
+        - ``_cancelled`` — a cancel that arrives while a confirm merely holds the
+          claim WINS. It pops the proposal and answers ``denied``, honestly:
+          nothing has been sent. The confirm re-reads the marker under the same
+          lock immediately before dispatch and returns ``denied`` too, so the
+          write does not go out behind the retraction.
+
+        **The false-reject half, priced across all of it.** A cancel refused for
+        the wrong reason leaves a proposal the owner believes is dead:
+
+        - the announcement requirement is DROPPED (``require_announced=False``).
+          A cancel of a proposal the buddy has not finished speaking must
+          succeed — refusing it with ``not_announced`` would leave the proposal
+          live for its full TTL over a technicality about who was talking.
+        - **no cancel outcome leaves a live proposal behind.** The measured
+          failure was "refused cancel, then refused confirm, wedged to TTL with
+          no second word", and it came from refusing during the await; the split
+          above removes it at the source, because that cancel now wins. The
+          remaining refusals reach the owner only when the proposal is already
+          gone (dispatched, replayed, failed, expired). Pinned as a property
+          over every reachable cancel outcome rather than asserted here.
+        - ``cancel_in_flight`` is a WAIT outcome with its own spoken line, and
+          that line has to say what happens next, because the one thing the
+          owner cannot do is take it back: the write is already going out and
+          its real outcome is seconds away.
+        - the shared claim's other refusals are TRANSLATED, not passed through
+          (:meth:`_cancel_refusal`) — a cancel must never be answered with
+          confirm-shaped advice to re-propose the write just retracted.
+        """
         with self._lock:
-            self._proposals.pop(token, None)
-        return Verdict(approved=False, reason="denied")
+            # THE RECORDED OUTCOME OUTRANKS EVERY IN-PROGRESS MARKER, and the
+            # order of these three tests is the whole of it.
+            #
+            # `_succeeded`/`_failed` are facts about the WRITE; `_dispatching`
+            # and `_in_flight` are facts about the ATTEMPT, and only the first
+            # kind can contradict a spoken claim about sending. That rule was
+            # stated one round ago and applied against `_in_flight` alone,
+            # which left the identical hole on the other marker: a confirm adds
+            # `_failed` and only THEN clears `_dispatching`, so in between, a
+            # cancel testing the marker first was told "Too late to stop that
+            # one — it's already going out … we can undo it from there" about a
+            # dispatch already recorded as FAILED. Two definite claims, about
+            # the one outcome the system has established it CANNOT characterise
+            # (see `dispatch_failed`'s line: "I can't tell whether it took
+            # effect"). A rule enforced against one of two markers is not a
+            # rule; it is a fix at the site that happened to break.
+            #
+            # Hoisting costs nothing where `cancel_in_flight` is right: mid-
+            # runner NEITHER terminal fact is set, so it still wins there.
+            if token in self._succeeded:
+                return Verdict(approved=False, reason="replayed")
+            if token in self._failed:
+                return Verdict(approved=False, reason="dispatch_failed")
+            if token in self._dispatching:
+                # The ONE true "too late": the argv is inside the runner, and
+                # no outcome has been recorded for it yet.
+                #
+                # Nothing is popped or marked here, and that is deliberate
+                # rather than an omission: `_dispatch` popped the proposal
+                # before calling the runner, and the cancel barrier is already
+                # behind us, so both would be writes nothing can read. A line
+                # whose effect is unreachable reads as a guarantee on the next
+                # pass — the same objection this module makes to a property
+                # that documents a rule nothing enforces. The property they
+                # looked like they were buying — no cancel outcome leaves a
+                # live proposal — is real, and is pinned as a property.
+                return Verdict(approved=False, reason="cancel_in_flight")
+            if token in self._in_flight:
+                # A confirm holds the claim, has not reached the runner, and
+                # has not recorded a result. Nothing has been sent, so the
+                # cancel is simply honoured.
+                self._cancelled.add(token)
+                self._proposals.pop(token, None)
+                return Verdict(approved=False, reason="cancelled")
+
+        proposal, refusal = self._claim(token, require_announced=False)
+        if refusal is not None:
+            return self._cancel_refusal(refusal)
+        try:
+            with self._lock:
+                self._cancelled.add(token)
+                self._proposals.pop(token, None)
+            return Verdict(approved=False, reason="cancelled")
+        finally:
+            # Same discipline as confirm: released on every exit, or the token
+            # is wedged for its TTL answering every retry with "still working
+            # on that one" — a silent loop.
+            with self._lock:
+                self._in_flight.discard(token)
+
+    @staticmethod
+    def _cancel_refusal(refusal: Verdict) -> Verdict:
+        """Re-key a shared-claim refusal for the CANCEL caller.
+
+        The claim is shared so the two paths cannot drift, but its spoken lines
+        are written for a confirm, and two of them argue for exactly the thing
+        the owner just retracted: ``no_proposal`` says *"Tell me again what
+        you'd like sent"* and ``expired`` says *"Ask me again and I'll set it up
+        fresh"*. Answering a cancel with either is the system pressing for the
+        write — in a screenless channel, with no way to see that it is
+        answering the wrong question.
+
+        The two COLLAPSE into one outcome deliberately, and that is consistent
+        with the taxonomy rule rather than an exception to it: outcomes are kept
+        apart when the owner's next move differs, and here both mean "there is
+        nothing of mine to take back", whose next move is the same — none.
+
+        ``replayed`` and ``dispatch_failed`` pass through unchanged: both are
+        true of a cancel, and neither invites a re-propose ("I already did that
+        one" / "check that session before asking me again").
+        """
+        if refusal.reason in ("no_proposal", "expired"):
+            return Verdict(approved=False, reason="nothing_to_cancel")
+        return refusal
 
     # -- internals ----------------------------------------------------------
 
@@ -1644,6 +1971,13 @@ class ConfirmSpine:
         quoted = None
         for entry in reversed(usable):
             outcome = classify(entry.text, proposal.nonce)
+            if outcome == DENIED and is_buddy_echo(entry.text):
+                # Our own refusal line, back through the mic (#992). Skipped
+                # rather than treated as a denial — and skipped HERE as well as
+                # in the post-approval scan below, because an echo landing after
+                # the approval is the newest entry, so this loop would return
+                # `denied` before the scan was ever reached.
+                continue
             if outcome == DENIED:
                 # An explicit take-back wins immediately, and is a DIFFERENT
                 # refusal from "that wasn't the phrase" — the owner should stop,
@@ -1696,7 +2030,15 @@ class ConfirmSpine:
             )
             if entry.speech_started_seq <= ceiling
         ]
-        if any(carries_denial(entry.text) for entry in later):
+        # The echo guard, not `carries_denial` alone: the buddy's own spoken
+        # line echoing back through the un-echo-cancelled fallback channel is
+        # not the owner changing their mind (#992). See :func:`is_buddy_echo`
+        # for why the discriminator is content rather than "was the robot
+        # talking", and the judge loop above for the second site it needs.
+        if any(
+            carries_denial(entry.text) and not is_buddy_echo(entry.text)
+            for entry in later
+        ):
             return Verdict(approved=False, reason="denied", utterance=match.text)
 
         # And the same window may hold an utterance the owner has SPOKEN whose
@@ -1721,8 +2063,17 @@ class ConfirmSpine:
             acted_session=proposal.session,
         )
 
-    def _claim(self, token: str) -> "tuple[Proposal | None, Verdict | None]":
+    def _claim(
+        self, token: str, *, require_announced: bool = True
+    ) -> "tuple[Proposal | None, Verdict | None]":
         """Take exclusive ownership of *token*, or say why not.
+
+        ``require_announced=False`` is :meth:`cancel`'s (#990). Every other
+        check applies to both callers — one claim, so the cancel path cannot
+        drift away from the confirm path — but "the buddy has not finished
+        saying it yet" is a reason to refuse a CONFIRM (the owner cannot have
+        approved what they have not heard) and not a reason to refuse a
+        RETRACTION, which needs no announcement to be meant.
 
         **Single use is a property of this method, not of the timing.** The
         proposal used to be consumed at the far side of the await and the
@@ -1760,7 +2111,7 @@ class ConfirmSpine:
             self._expire_locked()
             if proposal is None:
                 return None, Verdict(approved=False, reason="no_proposal")
-            if not proposal.announced:
+            if require_announced and not proposal.announced:
                 return None, Verdict(approved=False, reason="not_announced")
             self._in_flight.add(token)
             return proposal, None
@@ -1804,6 +2155,7 @@ __all__ = [
     "WRONG_NONCE",
     "carries_denial",
     "classify",
+    "is_buddy_echo",
     "matches_nonce",
     "mint_nonce",
     "normalize",

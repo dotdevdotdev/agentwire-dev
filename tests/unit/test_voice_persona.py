@@ -317,7 +317,10 @@ class TestTheWaitInstructionKeysOnTheFlagNotTheOutcomeNames:
     def test_no_wait_outcome_is_named_in_the_prose(self):
         for outcome in confirm.WAIT_OUTCOMES:
             assert outcome not in instructions.VOICE_MODE
-        assert len(confirm.WAIT_OUTCOMES) == 3  # in_flight arrived in W1
+        # A COUNTER, not a cap: the assertion above is the guarantee, and this
+        # line only forces a reader to re-check it whenever the set grows.
+        # in_flight arrived in W1; cancel_in_flight with #990.
+        assert len(confirm.WAIT_OUTCOMES) == 4
 
 
 class TestSpeakability:

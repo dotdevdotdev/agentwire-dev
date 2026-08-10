@@ -533,11 +533,83 @@ each `response.done` spawns its own async IIFE and the bridge is a
 `ThreadingHTTPServer`, so the sequencing that made it safe was nowhere in the
 code.
 
-**`cancel()` does not go through `_claim()`, and that is an open residual**
-(#990): a cancel racing a dispatching confirm pops the proposal and says *"I
-heard you hold off, so I haven't sent it"* while the runner is sending. It is the
-same race `in_flight` was written to avoid making a false claim about, left
-uncovered on the sibling path.
+**`cancel()` takes the SAME claim** (#990). It used to bypass `_claim()`
+entirely, so a cancel racing a dispatching confirm popped the proposal and said
+*"I heard you hold off, so I haven't sent it"* while the runner was sending —
+the same race `in_flight`'s wording exists to avoid making a false claim about,
+left uncovered on the sibling path. Screenless, that is not a lost cancel: it is
+an affirmative "nothing was sent" the owner has no way to check.
+
+Three things make the shared claim correct rather than merely shared:
+
+- **"A confirm holds the claim" is not "the write is going out",** and the
+  first fix for this re-committed the original defect by conflating them. The
+  claim is taken at the TOP of `confirm()`, *before* the ≤2.5s await and the
+  judge, so its dominant occupant is a confirm still DECIDING — and telling a
+  cancel there "it's already going out" is false, while leaving the proposal
+  the owner asked to drop still pending. The race is therefore split on the
+  thing the sentence is about: `_dispatching` (inside the runner — the only
+  state in which the claim is true) versus `_cancelled` (a cancel during the
+  await WINS; it answers `denied`, and the confirm re-reads the marker under
+  the same lock immediately before dispatch, so the write does not go out
+  behind the retraction).
+- The losing cancel gets its **own** outcome, `cancel_in_flight`, not
+  `in_flight`. They answer different questions — "should I confirm again?"
+  (no, wait) versus "did you stop it?" (no, and here is why) — and its spoken
+  line names the move that is still open, because the one thing the owner asked
+  for is the one thing no longer available.
+- **The barrier is ONE lock hold**, and that is the claim the redesign rests
+  on: reading `_cancelled` and then marking `_dispatching` in two holds leaves a
+  gap in which a cancel is told, truthfully by then but wrongly at the moment it
+  spoke, that the write was going out — #990 in its original form, restored by a
+  refactor. Pinned by sweeping *every* observable lock boundary rather than the
+  one that happens to be the barrier today, so moving it does not silence the
+  test.
+- **The recorded outcome outranks EVERY in-progress marker**, and it took two
+  goes to get that right. A confirm records its result and only *then* unwinds,
+  so a token sits in `_succeeded`/`_failed` while still marked. Testing
+  `_in_flight` first answered a cancel there with "I haven't sent anything"
+  about a write that had gone out — the third window. The rule that fixed it —
+  `_succeeded`/`_failed` are facts about the WRITE, `_in_flight` and
+  `_dispatching` are facts about the ATTEMPT, and only the first kind can
+  contradict a spoken claim about sending — was then applied against
+  `_in_flight` **and not against `_dispatching`**, leaving the identical hole on
+  the other marker: between `_failed.add` and `_dispatching.discard`, a cancel
+  was told *"Too late to stop that one — it's already going out … we can undo it
+  from there"* about a dispatch already recorded as FAILED. Two definite claims,
+  about the one outcome `dispatch_failed` exists to say cannot be characterised.
+  Both terminal checks now sit above both markers, and the property is pinned as
+  the cross-product rather than at either site. **A rule enforced against one of
+  two markers is not a rule.**
+- **A cancel is never answered with confirm-shaped advice.** The claim is
+  shared so the two paths cannot drift, but two of its lines argue for the very
+  write just retracted — `no_proposal` says *"Tell me again what you'd like
+  sent"* and `expired` says *"Ask me again and I'll set it up fresh"*. On the
+  cancel path both become `nothing_to_cancel`. Collapsing them is consistent
+  with the taxonomy rule rather than an exception to it: outcomes stay apart
+  when the owner's next move differs, and here both mean "there is nothing of
+  mine to take back", whose next move is none. `replayed` and `dispatch_failed`
+  pass through unchanged — both are true of a cancel and neither invites a
+  re-propose.
+- **No cancel outcome leaves a live proposal behind**, pinned as a property
+  over every reachable one rather than at the site that used to break it.
+- **A successful cancel says `cancelled`, not `denied`.** `denied`'s advice —
+  *"Say the phrase again when you're ready"* — is true only of an in-band
+  denial, which leaves the proposal LIVE. A cancel pops it, so following that
+  advice lands on `no_proposal` (*"Tell me again what you'd like sent"*) one
+  turn later: the very line the translation above exists to keep off this path,
+  re-entering through another door. `cancelled` is a pure stand-down — the owner
+  asked for this, so nothing further is required of them, and it deliberately
+  does not offer to set the write up again.
+- It is a **wait** outcome, so `confirm_terminal` stays False: closing the
+  handshake here would close it out from under the confirm still running.
+- The announcement requirement is **dropped** (`require_announced=False`). "The
+  buddy hasn't finished saying it" is a reason to refuse a confirm — the owner
+  cannot have approved what they have not heard — and not a reason to refuse a
+  RETRACTION, which needs no announcement to be meant. Refusing one would leave
+  the proposal live for its full TTL over who was talking. Everything else in
+  the claim applies to both callers, so a cancel after the write really went out
+  now says `replayed` instead of asserting it did not.
 
 ### (b) The approval judgment: a spoken nonce
 
@@ -733,26 +805,44 @@ before the verdict. The denial half of the same asymmetry is covered too:
 transcript has not landed, and "cannot yet say what they said" is
 `pending_transcript`, never approval.
 
-**The price is stated at its true size, and it is an open residual (#989).**
-`unheard_between` has no staleness bound, so an utterance that never completes —
-a cough, a VAD blip, TTS bleed, any `speech_started` with no transcript to
-follow — sits in that window and refuses every confirm until the TTL. It refuses
-as a WAIT outcome, so no attempt is burned and `too_many_attempts` never fires:
-the owner hears "give me a second" for up to 120s and then "that one expired". A
-spoken loop, which in a screenless channel is the expensive failure. The bound
-belongs in `transcript.py` — `_judge` cannot tell a never-completing entry from a
-slow one — so it is **pinned in the tests as behaviour, not as a design**.
+**The price used to be open-ended, and closing it (#989) took TWO bounds rather
+than one.** `unheard_between` had no staleness bound at all, so any
+`speech_started` with no transcript to follow — a cough, a VAD blip, TTS bleed —
+sat in that window refusing every confirm as a WAIT outcome: no attempt burned,
+`too_many_attempts` never fired, and the owner heard "give me a second" for up
+to 120s and then "that one expired". A spoken loop, which in a screenless
+channel is the expensive failure.
 
-**Scope it precisely, because the epoch section two above will mislead you into
-scoping it wrongly.** The blocking entry has to be one whose sequence lands
-inside `(match.speech_started_seq, ceiling]`, so what it takes is a proposal
-anchored **in the SAME PAGE LOAD as the entry** — not "only within one page
-load". Having just read that `/mint` hands each load a base a whole
-`MINT_SEQ_GAP` above everything before it, a reader is primed to derive the
-narrower claim and conclude a reload clears it. It does not: the ring is
-bridge-lifetime and outlives the page, so a stale never-completing entry from an
-earlier epoch is simply below the new window rather than gone, and a fresh load
-starts blocking again the moment it produces one of its own.
+The obvious repair — one flat wall-clock age — is wrong, because two failures
+hide under "the transcript never came" and they price oppositely:
+
+- **Transcribed but empty.** A cough the model renders as `""` is
+  `complete == False`, which is what put it in the window; it needs *no clock at
+  all*. `Utterance.transcribed` records that a transcript EVENT arrived, and
+  `unheard_between` filters on that instead. An empty transcript positively
+  carries no denial, so the false-reject cost is zero. `complete` still gates
+  `after()`, where the question is "can this text approve" and the answer is no.
+- **Never transcribed.** Here a real bound is needed, and it keys on whether the
+  audio buffer **CLOSED**. With a `commit_seq` the utterance is over and the
+  transcript is merely overdue — `UNHEARD_COMMITTED_GRACE_S` (10s, comfortably
+  past the ~2.5s an ordinary short-utterance transcript costs). Without one the
+  owner may still be mid-utterance, so the bound has to exceed a plausible
+  utterance — `UNHEARD_OPEN_UTTERANCE_S` (60s), well under the 120s TTL or it
+  would close nothing. Ageing out on the committed grace instead would stop
+  waiting for a retraction that is halfway spoken: the acting-twice direction,
+  not a wait.
+
+The division of labour is unchanged: `_judge` still cannot tell a
+never-completing entry from a slow one without the ring's clock, so the bound
+lives in `transcript.py` and the caller says so.
+
+**Scope the residual precisely if you are reading an older account of it,
+because the epoch section two above misleads.** The blocking entry has to be one
+whose sequence lands inside `(match.speech_started_seq, ceiling]`, so what it
+took was a proposal anchored **in the SAME PAGE LOAD as the entry** — not "only
+within one page load". `/mint` hands each load a base a whole `MINT_SEQ_GAP`
+above everything before it, which primes a reader to conclude a reload cleared
+it. It did not: the ring is bridge-lifetime and outlives the page.
 
 Outcomes are keyed on **what the owner should do next**, and are never
 collapsed. This is `confirm.REASONS` in full — the SSOT for the taxonomy, and
@@ -767,21 +857,26 @@ the set `SPOKEN` is checked against **both ways**:
 | `refused` | say the phrase |
 | `wrong_nonce` | ask what the word was |
 | `quoted_frame` | say confirm and the word on its own — the word was right |
-| `denied` | say the phrase again when you're ready |
+| `denied` | say the phrase again when you're ready — the proposal is still live |
+| `cancelled` | nothing — you retracted it and it is gone |
 | `pending_transcript` | **wait** |
 | `in_flight` | **wait** — that confirm is already running |
+| `cancel_in_flight` | **wait** — the cancel lost the race *to the runner*; it is already going out |
+| `nothing_to_cancel` | nothing — there was nothing of ours left to take back |
 | `too_many_attempts` | ask again from the top; that proposal is gone |
 | `dispatch_failed` | check that session, *then* decide — it may have gone out |
 
 `refused` and `pending_transcript` demand *opposite* behaviour. Collapsing them
-trains the owner to repeat into a system that needed them to hold still. Three
+trains the owner to repeat into a system that needed them to hold still. Four
 outcomes carry that "hold still" property, and they are named once rather than
 inferred from the table: `WAIT_OUTCOMES = {pending_transcript, not_announced,
-in_flight}` drives two flags on the payload — `owner_should_wait`, which the
-persona consumes as a FLAG and never by outcome name, and `confirm_terminal`,
-which is the name-independent signal that this outcome ENDS the handshake.
-`in_flight` belongs there on both counts: the owner should wait, and closing the
-gate on a duplicate would close it out from under the confirm that is running.
+in_flight, cancel_in_flight}` drives two flags on the payload —
+`owner_should_wait`, which the persona consumes as a FLAG and never by outcome
+name, and `confirm_terminal`, which is the name-independent signal that this
+outcome ENDS the handshake. `in_flight` belongs there on both counts: the owner
+should wait, and closing the gate on a duplicate would close it out from under
+the confirm that is running. `cancel_in_flight` is the same two counts reached
+from the cancel side (#990).
 
 **`denied` does not say "you said no".** It covers "wait"/"hold on" as well, and
 those are not a refusal of the write — the spoken line is *"I heard you hold off,
@@ -829,18 +924,23 @@ nonce in it — an echo of the fallback cannot carry an approval, structurally.
 `WriteSpec.__post_init__` raises at import on a `fallback_template` containing
 `{phrase}` or `{nonce}`, so the property is enforced rather than remembered.
 
-**That closes the approval direction only, and the denial direction is open
-(#992).** `carries_denial` is not nonce-gated, and the fallback voice also speaks
-inbox notices, re-raises and error notices — whose text is a message BODY any
-session can send. So a delivered body containing "no, stop, don't", echoed during
-the approval→confirm window, lands in the post-approval scan and retroactively
-denies the owner's legitimate approval: remotely triggerable, and invisible to
-the owner, who hears "I heard you hold off" about a take-back they never spoke.
-The obvious fixes (mark ring entries transcribed during fallback speech, or
-suppress the scan window) both end in `_judge`, and both have an expensive
-false-reject half — barge-in over the robot voice is the normal case here, so
-"utterances during fallback speech do not count as denials" drops a genuine
-take-back and the write goes out. Open, and priced rather than assumed.
+**That closes the approval direction structurally. The denial direction needed
+its own answer, and it is now CLOSED (#992)** — see [The buddy's own voice
+cannot deny](#the-buddys-own-voice-cannot-deny-992) for the rule and its price.
+The failure: `carries_denial` is not nonce-gated, and several `SPOKEN` lines
+carry denial triggers, so one echoed into the approval→confirm window
+retroactively denied the owner's legitimate approval — invisible to them, who
+heard "I heard you hold off" about a take-back they never spoke.
+
+**Both mitigations originally proposed were REJECTED, and the reason is the
+transferable part.** Marking ring entries transcribed during fallback speech,
+and suppressing the scan window, are both TIMING rules — and barge-in over the
+robot voice is the normal way to retract in this channel, so "utterances during
+fallback speech do not count as denials" drops a genuine take-back and the write
+goes out. That is the acting-twice direction, strictly worse than the wrongful
+refusal being fixed. The shipped rule is CONTENT (`confirm.is_buddy_echo`): it
+cannot fire on words the buddy never said, so it has no such half. Do not
+reintroduce a timing rule here without pricing that.
 
 **The `speechSynthesis` fallback is armed by a timer, not triggered by a
 detected failure**, and that is the part that decides whether this property is
@@ -1098,6 +1198,60 @@ So the check runs in both directions: **after changing a spoken line, re-check
 its properties; after changing behaviour, re-read every line that describes
 it.** Neither edit looks like it touches the other, which is exactly why both
 need saying.
+
+### The buddy's own voice cannot deny (#992)
+
+`speechSynthesis` is outside the WebRTC path, so `echoCancellation` does not
+cover the fallback voice: what it says re-enters the microphone and lands in the
+**USER** transcript. Approval by echo is closed structurally — the fallback
+channel never carries a nonce (#953). `carries_denial` has no such gate, and
+several `SPOKEN` lines contain denial triggers: *"I heard you **hold off**…"*,
+*"**Hang on** — I'm already working on that one"*, *"I **don't** have anything
+pending…"*. Echoed inside the approval→confirm window, one of those retroactively
+denies the owner's own approval and reports a take-back they never spoke.
+
+**The rule is CONTENT, not timing, and that choice is the whole decision.** The
+obvious rule — "utterances transcribed while the fallback voice is speaking do
+not count as denials" — is unusable here: barge-in over the robot voice is the
+NORMAL way to retract in this channel, so that rule drops genuine take-backs and
+the write goes out. That is the acting-twice direction, strictly worse than the
+wrongful refusal it fixes, which costs one re-spoken approval (the newest-first
+binding in `_judge` makes recovery cheap). A content rule has no such half: it
+cannot fire on words the buddy never said.
+
+`confirm.is_buddy_echo` therefore asks whether the WHOLE normalized utterance is
+a contiguous run of tokens inside some `SPOKEN` line, at least
+`_ECHO_MIN_TOKENS` (6) long. Both properties are load-bearing:
+
+- **Whole-utterance.** A barge-in captured together with the tail of the buddy's
+  line (*"hang on im already working on that one no stop"*) is not a contiguous
+  run of any line, so it denies. Only a clean capture of the machine's own words
+  is suppressed.
+- **Six tokens.** That is the entire false-reject budget, chosen against the
+  collision rather than for tidiness: the triggers in those lines are exactly
+  what a real owner says (*"hold off"*, *"hang on"*), so a two- or three-token
+  floor would suppress a genuine retraction — and a suppressed retraction
+  WRITES. A short or garbled echo misses the floor and denies: the enumeration
+  **fails closed**, and nothing about being incomplete here can make a write
+  happen.
+
+It is applied at **two** sites, and the second is easy to miss: `_judge`'s own
+newest-first loop reaches an echo that landed after the approval *before* the
+post-approval scan does, so guarding only the scan leaves the loop returning
+`denied` first. (Only echoes containing a confirm word reach that branch —
+`classify` returns `NO_MATCH` before consulting the denial grammar otherwise —
+which is why a test built on the wrong line passes with the loop guard deleted.)
+
+**What it does not cover, stated rather than implied.** `SPOKEN` is this
+module's own taxonomy, so the rule covers only what the confirm spine makes the
+buddy say. Attacker-influenceable text — a delivered message body, spoken
+verbatim by `composeNotice` — is not in it. That text cannot reach this window
+today for a separate reason: `client.py`'s `canSpeak` **and** `canInterrupt`
+both require `!confirmGate.outstanding()`, and the gate is closed from the moment
+a proposal is spoken until its terminal outcome or TTL — which is exactly the
+approval→confirm window. **If that gate is ever relaxed, this rule needs the
+spoken text fed to it** rather than read from `SPOKEN`; the
+"said-during-fallback" mark stays the wrong instrument for the reason above.
 
 ### Denial words and denial EXCEPTIONS have opposite bars
 
@@ -2012,37 +2166,49 @@ exist**, so these are listed here as well as inline.
 
 | # | Where | The hole |
 |---|---|---|
-| #989 | `transcript.unheard_between` | no staleness bound: one never-completing `speech_started` (a cough, a VAD blip, TTS bleed) refuses every confirm as a WAIT outcome — no attempt burned, so the proposal loops on "give me a second" for the whole 120s TTL and then expires |
-| #990 | `confirm.cancel()` | bypasses `_claim()`, so a cancel racing a dispatching confirm says "I haven't sent it" while the runner is sending — the exact over-claim `in_flight`'s wording exists to avoid, on the sibling path |
-| #992 | `_judge`'s post-approval scan | `carries_denial` is not nonce-gated, and the fallback voice speaks message BODIES any session can send — so an echoed "no, stop, don't" retroactively denies a legitimate approval. Remotely triggerable; invisible to the owner |
 | #1009 | `confirm.py`'s `not_announced` note | its 30s/12s deferral bound is counted from the moment an item becomes `current`, and #997's `pump()` deferral sits UPSTREAM of that — so while a fallback utterance is live the stated bound under-states its own worst case by up to one speaking budget. A stated-guarantee defect, not a runtime one: the refusal is delivered either way |
 
 **Closed, and named here because arguing from a residual that no longer exists
-is the same failure in the other direction:** **#995** (the four remaining
-`client.py` browser wires — the data-channel `open`/`close` status wires and both
-button click handlers — now pinned in `tests/unit/test_client_wires.py`, the
-`pc.ontrack` greet wire having gone in #1001), **#996** (the `speakingBudget`
-watchdog now reports `onNotSpoken`) and **#997** (`pump()` now defers to the
-browser voice, bounded by that same budget). The last two are described in full
-under the watchdog above.
+is the same failure in the other direction:** **#989** (the unheard window is
+bounded on two axes — an arrived-but-empty transcript needs no clock, and a
+missing one ages out on whether the audio buffer closed; see "Bounded await, and
+outcomes that differ"), **#990** (`cancel()` takes the same claim, split on
+`_dispatching` versus `_cancelled` so the losing cancel cannot assert an outcome
+— see "(a) Proposal binding"), **#992** (the buddy's own voice cannot deny — its
+own section below), **#995** (the four remaining `client.py` browser wires — the
+data-channel `open`/`close` status wires and both button click handlers — now
+pinned in `tests/unit/test_client_wires.py`, the `pc.ontrack` greet wire having
+gone in #1001), **#996** (the `speakingBudget` watchdog now reports
+`onNotSpoken`) and **#997** (`pump()` now defers to the browser voice, bounded
+by that same budget). #996 and #997 are described in full under the watchdog
+above.
 
 What they have in common is where they were found: every one came out of a review
 of a MERGED wave rather than out of the wave itself. Defects that survive
 individual review live in the interaction between changes each correct alone.
 
-And several carry a real trade rather than an obvious fix, which is why "just
-close it" is not the whole instruction. #989's staleness bound: too tight and a
-slow transcriber becomes a wrongful refusal, too loose and the loop survives.
+And several carried a real trade rather than an obvious fix, which is why "just
+close it" was not the whole instruction. The rulings live with the mechanisms
+rather than here, but the trades are worth keeping together, because they are
+one argument. #989's staleness bound: too tight and a slow transcriber becomes a
+wrongful refusal, too loose and the loop survives — it took TWO bounds, split on
+whether the audio buffer closed, because one flat age is wrong at one end.
 #992's suppression rule: barge-in over the robot voice is the NORMAL case here,
 so any rule of the form "utterances during fallback speech do not count as
 denials" drops a genuine take-back and the write goes out — the acting-twice
-direction, not a wait. #997's deferral was the same shape and is the worked
-example of pricing it: an unbounded "wait for the browser voice" turns an
-audio-quality defect into a suppression defect, which in a screenless channel is
-strictly worse than the thing being fixed, so the wait is bounded by the budget
-that decides when the page stops believing the voice at all. Price both halves
-before choosing. (#990, #995 and #996 had no such tension — they were plainly
-worth doing.)
+direction, not a wait; the shipped rule is CONTENT, which cannot fire on words
+the buddy never said and so has no such half. #997's deferral was the same shape
+and is the worked example of pricing it: an unbounded "wait for the browser
+voice" turns an audio-quality defect into a suppression defect, which in a
+screenless channel is strictly worse than the thing being fixed, so the wait is
+bounded by the budget that decides when the page stops believing the voice at
+all. Price both halves before choosing.
+
+(#995 and #996 had no such tension. #990 looked like it had none either, and
+that reading was wrong twice: the first fix told a cancel racing the AWAIT that
+the write was already going out, and the second still let a cancel arriving
+between `_succeeded.add` and the claim's release say nothing had been sent. A
+defect whose diagnosis is obvious can still have a fix that is not.)
 
 ### Standing constraints for whoever picks this up
 

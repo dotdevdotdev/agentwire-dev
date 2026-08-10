@@ -30,6 +30,7 @@ a guard; the runner is injected rather than stubbed at the subprocess layer.
 
 import itertools
 import re
+import textwrap
 import threading
 import time
 
@@ -145,8 +146,17 @@ def clock():
 
 
 @pytest.fixture
-def ring():
-    return transcript.TranscriptRing()
+def ring(clock):
+    """ONE clock across the ring and the spine.
+
+    The ring grew a wall-clock of its own with #989's staleness bounds, and a
+    ring on ``time.monotonic`` under a spine on :class:`FakeClock` is a fixture
+    that CANNOT BUILD the shape those bounds are about: advancing the clock
+    expires the proposal while the never-completing entry sits at age zero
+    forever. That is a green test proving the fixture's shape rather than the
+    code's.
+    """
+    return transcript.TranscriptRing(clock=clock)
 
 
 @pytest.fixture
@@ -1252,62 +1262,161 @@ class TestBoundedAwait:
         assert rejected_verdict.to_dict()["owner_should_wait"] is False
 
 
-class TestTheUnheardWindowHasNoStalenessBound:
-    """The widened ceiling's real price, pinned as behaviour.
+class TestTheUnheardWindowIsBounded:
+    """#989, and it is TWO failures under one name — only one needs a clock.
 
-    Re-reading ``high_seq`` after the await is the intended safety gain — a
-    denial STARTED during the await now blocks. But ``unheard_between`` has no
-    staleness bound of its own, so the cost is not "one ``pending_transcript``
-    wait" as the first version of this PR claimed: **any** ``speech_started``
-    that never completes — a cough, a VAD blip, TTS bleed — sits in the window
-    and refuses every confirm until the TTL expires the proposal.
+    Re-reading ``high_seq`` after the await is the intended safety gain: a
+    denial STARTED during the await blocks. Its price was that any
+    ``speech_started`` with no transcript to follow sat in the window refusing
+    every confirm as a WAIT outcome — no attempt burned, so
+    ``too_many_attempts`` never fired and the owner heard "give me a second"
+    for the whole 120s TTL and then "that one expired". A spoken LOOP, which in
+    a screenless channel is the expensive failure.
 
-    It is a spoken LOOP, not a refusal: ``pending_transcript`` is a WAIT
-    outcome, so it burns no attempt, so ``too_many_attempts`` never fires and
-    the owner is never told the proposal died. They are told "give me a second"
-    for up to the 120s TTL and then, on the next try, "that one expired".
+    The two shapes, because a single flat wall-clock age is wrong at one end
+    whichever value it takes:
 
-    Pinned rather than fixed here: the bound belongs in
-    ``TranscriptRing.unheard_between`` (``transcript.py``), which another
-    worker owns this wave. Nothing in the suite saw this shape —
-    ``test_a_denial_that_lands_as_harmless_lets_the_approval_through`` asserts
-    only the case where the utterance DOES complete.
+    1. **Transcribed but empty** — a cough the model renders as ``""``. There is
+       nothing to wait for and no clock is involved: an empty transcript
+       positively carries no denial. Retired by ``Utterance.transcribed``, at
+       zero false-reject cost.
+    2. **Never transcribed** — a real bound, split on whether the audio buffer
+       CLOSED. Committed: the utterance is over and ASR is merely overdue
+       (``UNHEARD_COMMITTED_GRACE_S``). Not committed: the owner may still be
+       mid-utterance, so the bound must exceed a plausible utterance
+       (``UNHEARD_OPEN_UTTERANCE_S``), or the gate stops waiting for a
+       retraction that is halfway spoken — the acting-twice direction.
     """
 
-    def test_one_never_completing_utterance_refuses_every_confirm_until_ttl(
-        self, convo, clock, runner
+    def test_an_empty_transcript_does_not_hold_the_gate_at_all(
+        self, convo, runner
     ):
+        """Shape 1, and the clock never moves — that is the assertion.
+
+        A cough transcribed as ``""`` is ``complete == False``, which is what
+        put it in the window. It is ``transcribed == True``, which is what takes
+        it out, immediately and with no bound to tune.
+        """
         proposal = convo.announced_proposal()
         convo.approve(proposal)
-        convo.starts_speaking()  # cough / VAD blip: no commit, no transcript
+        cough = convo.starts_speaking()
+        convo.ring.commit(cough, convo._next())
+        convo.ring.transcribe(cough, "")
 
-        for _ in range(confirm.MAX_CONFIRM_ATTEMPTS + 1):
-            verdict = convo.spine.confirm(proposal.token)
-            assert verdict.reason == "pending_transcript"
+        entry = next(e for e in convo.ring.snapshot() if e.item_id == cough)
+        assert entry.complete is False, "fixture must build the empty rendering"
+        assert entry.transcribed is True
+
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+    def test_a_committed_utterance_with_no_transcript_ages_out_on_the_ASR_grace(
+        self, convo, clock, runner
+    ):
+        """Shape 2a. The buffer closed, so a missing transcript is overdue."""
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        blip = convo.starts_speaking()
+        convo.ring.commit(blip, convo._next())  # ...and no transcript, ever
+
+        # Inside the grace it still holds the gate: this is the half that must
+        # NOT be given up, or a slow transcriber's denial is dropped and the
+        # write goes out with a take-back mid-transcription.
+        clock.advance(transcript.UNHEARD_COMMITTED_GRACE_S - 0.5)
+        assert convo.spine.confirm(proposal.token).reason == "pending_transcript"
         assert runner.calls == []
 
-        # No attempt is burned, so the retirement path that would at least SAY
-        # something never fires. The proposal is alive and unusable.
-        live = {p.token: p for p in convo.spine.pending()}
-        assert live[proposal.token].attempts == 0
+        clock.advance(1.0)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
 
-        # It ends by expiring, up to PROPOSAL_TTL_S later, with nothing having
-        # told the owner anything but "give me a second".
-        clock.advance(confirm.PROPOSAL_TTL_S + 1)
-        assert convo.spine.confirm(proposal.token).reason == "expired"
+    def test_an_open_utterance_gets_the_longer_bound_because_it_may_still_be_spoken(
+        self, convo, clock, runner
+    ):
+        """Shape 2b, and the point is that it is NOT the ASR grace.
+
+        No commit means the owner may still be talking. Ageing this out on the
+        committed grace would stop waiting for a retraction they are in the
+        middle of saying — so the same wall-clock age that retires a committed
+        blip must leave this one holding the gate.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.starts_speaking()  # speech_started only: still mid-utterance
+
+        clock.advance(transcript.UNHEARD_COMMITTED_GRACE_S + 1)
+        assert convo.spine.confirm(proposal.token).reason == "pending_transcript"
         assert runner.calls == []
 
-    def test_the_module_states_this_residual_rather_than_the_cheaper_one(self):
-        """The prose half. A guarantee stated broader than the code gets
-        rounded back up — so the claim is NARROWED at the site, not qualified.
+        clock.advance(transcript.UNHEARD_OPEN_UTTERANCE_S)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+    def test_the_committed_grace_is_measured_FROM_THE_COMMIT(
+        self, convo, clock, runner
+    ):
+        """``committed_at``, which the whole two-bound argument rests on.
+
+        The split is "the audio buffer closed, so ASR is overdue" — overdue
+        *from the close*, not from the speech start. Measured from
+        ``received_at`` instead, a long utterance burns its entire grace before
+        the transcript could possibly arrive: a 9-second sentence would age out
+        1 second after committing rather than 10, which is the false-ACCEPT
+        direction (a real denial dropped, the write goes out).
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        long_one = convo.starts_speaking()
+        clock.advance(9.0)  # ...a long sentence
+        convo.ring.commit(long_one, convo._next())
+
+        entry = next(e for e in convo.ring.snapshot() if e.item_id == long_one)
+        assert entry.committed_at > entry.received_at, (
+            "fixture must separate the commit from the speech start, or this "
+            "test cannot tell the two clocks apart"
+        )
+
+        # 5s past the COMMIT — inside the grace. Past the SPEECH START it is
+        # 14s, well beyond it: the two answers differ, which is the point.
+        clock.advance(5.0)
+        assert convo.spine.confirm(proposal.token).reason == "pending_transcript"
+        assert runner.calls == []
+
+        clock.advance(transcript.UNHEARD_COMMITTED_GRACE_S)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+    def test_the_bound_lands_inside_the_TTL_or_it_closes_nothing(self):
+        """Both bounds have to retire the entry while the proposal is still
+        alive. A bound at or past ``PROPOSAL_TTL_S`` leaves the loop exactly as
+        it was and merely renames it."""
+        assert (
+            transcript.UNHEARD_COMMITTED_GRACE_S
+            < transcript.UNHEARD_OPEN_UTTERANCE_S
+            < confirm.PROPOSAL_TTL_S
+        )
+        # And the committed grace has to outlast an ordinary transcript, or the
+        # bound itself becomes the false reject it was chosen to avoid.
+        assert transcript.UNHEARD_COMMITTED_GRACE_S > confirm.APPROVAL_WAIT_S
+
+    def test_the_module_no_longer_states_the_residual_it_fixed(self):
+        """The prose half, in the direction that actually rots.
+
+        ``confirm.py`` stated this residual AT ITS OWN USE SITE — "has no
+        staleness bound", "never completes", "until the TTL expires it" — and
+        those three sentences are false the moment the bound exists. A fix that
+        leaves them ships a lie exactly where the next reader looks.
         """
         source = _flat(_confirm_source())
         for clause in (
             "has no staleness bound",
-            "never completes",
+            "sits in this window and refuses every",
             "until the TTL expires it",
         ):
-            assert clause in source, clause
+            assert clause not in source, clause
+        # And it names where the bound went, so the division of labour between
+        # the two modules is still legible from the caller.
+        assert "The bound lives in TranscriptRing" in source
 
     def test_no_stale_sentence_survives_at_the_use_site(self):
         """The comment at the scan and the comment at the read must describe
@@ -1356,6 +1465,7 @@ class TestSingleUseIsClaimedNotJudged:
         assert convo.spine.confirm(proposal.token).approved is True
         assert len(calls) == 1, "the duplicate must not reach the runner"
         assert nested == ["in_flight"], nested
+
 
     def test_a_confirm_while_another_is_awaiting_never_reaches_the_runner(
         self, runner
@@ -1411,6 +1521,716 @@ class TestSingleUseIsClaimedNotJudged:
         assert spine.confirm(proposal.token).reason == "dispatch_failed"
         # Not in_flight: the failure is reported honestly on the retry.
         assert spine.confirm(proposal.token).reason == "dispatch_failed"
+
+
+class TestCancelTakesTheSameClaim:
+    """#990 — ``cancel()`` bypassed ``_claim()``, so it could speak a FALSE
+    STATEMENT rather than merely lose a race.
+
+    #987 made confirm-vs-confirm safe by construction: the second confirm gets
+    ``in_flight``, a WAIT outcome whose line is worded — deliberately, §3.6 —
+    to avoid claiming nothing was sent, *because the first confirm may be inside
+    the runner*. ``cancel`` was the same shape left uncovered: it popped the
+    proposal and said "I heard you hold off, so I haven't sent it" while the
+    runner was sending. Screenless, the owner hears an affirmative "nothing was
+    sent" about a write that went out, and has no way to discover otherwise.
+
+    **And the first fix for it re-committed the same defect, inverted** (review
+    round 2). Routing cancel through the claim and calling every claimed token
+    "already going out" is false for most of the claim's life: it is taken at
+    the top of ``confirm``, before the ≤2.5s await and before the judge, so the
+    dominant occupant of ``_in_flight`` is a confirm still DECIDING. The race is
+    therefore split on the thing the sentence is about — ``_dispatching`` (in
+    the runner: the claim is true) versus ``_cancelled`` (a cancel during the
+    await WINS, and the confirm finds out before it dispatches).
+    """
+
+    def test_a_cancel_during_the_AWAIT_wins_rather_than_being_told_it_is_too_late(
+        self, runner
+    ):
+        """The dominant window, and the one the first fix got wrong.
+
+        Nothing has been sent while the confirm sits in its bounded await, so
+        "it's already going out" is a false statement AND the proposal it
+        refuses to drop stays pending. Real threads, because ``wait_s=0``
+        provably cannot construct a window for the cancel to land inside.
+        """
+        ring = transcript.TranscriptRing()
+        spine = confirm.ConfirmSpine(ring, wait_s=2.0, runner=runner)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+
+        verdicts: "list[confirm.Verdict]" = []
+        thread = threading.Thread(
+            target=lambda: verdicts.append(spine.confirm(proposal.token))
+        )
+        thread.start()
+        time.sleep(0.15)  # the confirm is inside its bounded await
+        cancelled = spine.cancel(proposal.token)
+        thread.join()
+
+        assert cancelled.reason == "cancelled", (
+            "nothing has been sent yet, so the cancel wins outright"
+        )
+        # ...and the confirm does not then write behind the retraction.
+        assert runner.calls == []
+        assert verdicts[0].approved is False
+        # The proposal is really gone — the measured failure was that it stayed
+        # pending after being refused a cancel.
+        assert spine.pending() == []
+        assert spine.confirm(proposal.token).reason == "no_proposal"
+        assert runner.calls == []
+
+    def test_a_cancel_during_the_await_that_then_approves_still_does_not_write(
+        self, runner
+    ):
+        """The barrier itself: the judge APPROVES and the dispatch is refused.
+
+        The previous test's confirm times out, so it would refuse anyway. Here
+        the approval is already in the ring, so only the cancel barrier stands
+        between the verdict and the runner.
+        """
+        ring = transcript.TranscriptRing()
+        spine = confirm.ConfirmSpine(ring, wait_s=2.0, runner=runner)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+        approval = convo.says("", transcribe=False)
+        phrase = f"confirm {confirm.spoken_nonce(proposal.nonce)}"
+
+        def cancel_then_let_the_approval_land():
+            time.sleep(0.15)              # the confirm is inside the await
+            spine.cancel(proposal.token)  # ...retracted before it wakes
+            ring.transcribe(approval, phrase)
+
+        thread = threading.Thread(target=cancel_then_let_the_approval_land)
+        thread.start()
+        verdict = spine.confirm(proposal.token)
+        thread.join()
+
+        assert verdict.reason == "cancelled"
+        assert runner.calls == [], "the write must not go out behind a retraction"
+        # The approving utterance is NOT spent: nothing was acted on.
+        spent = [u for u in ring.snapshot() if u.spent]
+        assert spent == []
+
+    def test_a_cancel_racing_a_DISPATCHING_confirm_does_not_claim_nothing_was_sent(
+        self, convo, runner
+    ):
+        """The one true "too late": the cancel arrives from inside the runner,
+        i.e. strictly while the argv is being dispatched."""
+        cancels: "list[confirm.Verdict]" = []
+
+        def reentrant_runner(argv):
+            runner(argv)
+            cancels.append(convo.spine.cancel(proposal.token))
+            return {"success": True}
+
+        convo.spine._runner = reentrant_runner
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1, "fixture must have the confirm dispatching"
+
+        (verdict,) = cancels
+        assert verdict.reason == "cancel_in_flight"
+        spoken = verdict.spoken.lower()
+        assert "haven't sent" not in spoken, spoken
+        assert "hold off" not in spoken, spoken
+        # It is not terminal: closing the handshake here would close it out
+        # from under the confirm that is still running.
+        payload = verdict.to_dict()
+        assert payload["confirm_terminal"] is False
+        assert payload["owner_should_wait"] is True
+
+    def test_only_a_DISPATCHING_confirm_produces_the_too_late_line(self, convo):
+        """The distinction stated as a property rather than inferred from the
+        two tests above: a token that is merely claimed must never produce it."""
+        proposal = convo.announced_proposal()
+        with convo.spine._lock:
+            convo.spine._in_flight.add(proposal.token)
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
+
+        second = convo.announced_proposal()
+        with convo.spine._lock:
+            convo.spine._dispatching.add(second.token)
+        assert convo.spine.cancel(second.token).reason == "cancel_in_flight"
+
+    def test_no_cancel_outcome_leaves_a_live_proposal(self, convo, runner):
+        """The false-reject half the review measured, stated as a PROPERTY.
+
+        The shape was "refused cancel, then refused confirm, and the proposal
+        sits to TTL with no second word". Its source was refusing during the
+        await, which the split removes — but the guarantee worth keeping is
+        broader than that one path, so it is asserted over every reachable
+        cancel outcome instead of at the site that used to break it. A cancel
+        the owner spoke must never leave the buddy holding the write.
+
+        Deliberately a sweep rather than a single scenario: the failure was
+        never in one branch, it was in the branch nobody enumerated.
+        """
+        outcomes: "dict[str, object]" = {}
+
+        # denied — the ordinary win.
+        plain = convo.announced_proposal()
+        outcomes[convo.spine.cancel(plain.token).reason] = plain
+
+        # cancel_in_flight — refused from inside the runner.
+        racing = convo.announced_proposal()
+
+        def reentrant(argv):
+            runner(argv)
+            outcomes[convo.spine.cancel(racing.token).reason] = racing
+            return {"success": True}
+
+        convo.spine._runner = reentrant
+        convo.approve(racing)
+        convo.spine.confirm(racing.token)
+        convo.spine._runner = runner
+
+        # replayed — the write really went out.
+        done = convo.announced_proposal()
+        convo.approve(done)
+        assert convo.spine.confirm(done.token).approved is True
+        outcomes[convo.spine.cancel(done.token).reason] = done
+
+        # nothing_to_cancel — a second cancel.
+        outcomes[convo.spine.cancel(plain.token).reason] = plain
+
+        assert set(outcomes) == {
+            "cancelled", "cancel_in_flight", "replayed", "nothing_to_cancel"
+        }, outcomes
+        live = {p.token for p in convo.spine.pending()}
+        for reason, proposal in outcomes.items():
+            assert proposal.token not in live, reason
+
+    def test_the_refused_cancel_still_tells_the_owner_what_happens_next(self):
+        """A cancel that cannot be honoured is the one moment the owner most
+        needs the next move named — the thing they asked for is the thing that
+        is no longer available."""
+        line = confirm.SPOKEN["cancel_in_flight"].lower()
+        assert "don't repeat" in line
+        assert "tell you how it went" in line
+
+    def test_an_unannounced_proposal_can_still_be_cancelled(self, convo, runner):
+        """The claim is shared, MINUS the announcement requirement.
+
+        "The buddy hasn't finished saying it" is a reason to refuse a confirm —
+        the owner cannot have approved what they have not heard. It is not a
+        reason to refuse a RETRACTION, and refusing one would leave the
+        proposal live for its whole TTL over who was talking.
+        """
+        proposal = convo.propose()  # never announced
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
+        assert convo.spine.confirm(proposal.token).reason == "no_proposal"
+        assert runner.calls == []
+
+    def test_cancelling_a_write_that_already_went_out_says_so(self, convo, runner):
+        """``denied`` here asserted "I haven't sent it" about a completed
+        write. The claim already knows better — it just was not consulted."""
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert convo.spine.cancel(proposal.token).reason == "replayed"
+        assert len(runner.calls) == 1
+
+    def test_a_cancel_that_wins_the_race_still_retires_the_proposal(
+        self, convo, runner
+    ):
+        """The ordinary path is unchanged, and the claim is RELEASED — a marker
+        left set would wedge the token for its whole TTL."""
+        proposal = convo.announced_proposal()
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
+        assert convo.spine.pending() == []
+        assert convo.spine._in_flight == set()
+        assert convo.spine._dispatching == set()
+        assert convo.spine.confirm(proposal.token).reason == "no_proposal"
+        assert runner.calls == []
+
+
+#: Cancel outcomes whose spoken line ASSERTS that nothing was sent. These are
+#: the ones that may never be spoken about a token whose write has run — the
+#: §3.6 over-claim, which is what #990 is.
+ASSERTS_NOTHING_SENT = frozenset({"cancelled", "nothing_to_cancel"})
+
+
+class _ObservableLock:
+    """A lock that lets an observer run at each RELEASE boundary.
+
+    The point is to make "these two operations happen under ONE hold" a
+    testable claim rather than a comment. Every moment the spine's lock is free
+    is a moment another caller can observe it, so firing the observer at each
+    release enumerates exactly the states the outside world can ever see —
+    without needing to know which release is the interesting one, which is what
+    makes the sweep survive a refactor that moves the boundary.
+
+    Single-threaded on purpose: the hook runs while the lock is genuinely free,
+    so there is no race to lose and no sleep to tune. A re-entrancy guard keeps
+    the observer's own lock traffic from re-triggering it.
+    """
+
+    def __init__(self, inner, observer):
+        self._inner = inner
+        self._observer = observer
+        self._firing = False
+        self.releases = 0
+
+    def acquire(self, *args, **kwargs):
+        return self._inner.acquire(*args, **kwargs)
+
+    def release(self):
+        self._inner.release()
+        if self._firing:
+            return
+        self.releases += 1
+        self._firing = True
+        try:
+            self._observer(self.releases)
+        finally:
+            self._firing = False
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
+class TestTheCancelBarrierIsONELockHold:
+    """The invariant the whole #990 redesign rests on, and it had no pin.
+
+    ``_confirm_claimed`` reads ``_cancelled`` and marks ``_dispatching`` in a
+    single hold, and the module comment says why: reading and then marking
+    leaves a window in which a cancel lands after the check and is told —
+    truthfully by then, but wrongly at the moment it spoke — that the write was
+    going out. Split into two holds, a cancel in the gap speaks *"I heard you
+    hold off, so I haven't sent it"* while the runner runs. That is #990 in its
+    ORIGINAL form, restored by a refactor the suite could not see.
+
+    A stated invariant with no test is the defect this run has found repeatedly.
+    So it is asserted the only way that survives the boundary moving: sweep
+    EVERY point at which the spine's lock is observable, and require that none
+    of them produces a cancel claiming nothing was sent while something was.
+    """
+
+    def _run(self, fire_at: int, *, dispatch_succeeds: bool = True):
+        """One confirm, with a cancel fired at the *fire_at*-th lock release.
+
+        **Parametrised over the dispatch OUTCOME, and that is not decoration.**
+        The first version built a bare ``RecordingRunner()``, so every sweep ran
+        a SUCCEEDING dispatch and half the state space simply did not exist
+        while it swept: nothing ever entered ``_failed``, so the window in which
+        a token is both "dispatch came back failed" and "dispatching" was
+        unreachable — and the sweep reported exhaustive coverage of it. A sweep
+        that is exhaustive over lock releases but not over outcomes is
+        exhaustive in ONE AXIS, which is the shape of a green test that proves
+        the fixture.
+        """
+        ring = transcript.TranscriptRing()
+        runner = RecordingRunner(
+            {"success": True} if dispatch_succeeds
+            else {"success": False, "error": "target gone"}
+        )
+        spine = confirm.ConfirmSpine(ring, wait_s=0.0, runner=runner)
+        convo = Conversation(ring, spine)
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+
+        seen: dict = {}
+
+        def observer(index: int) -> None:
+            if index != fire_at or "cancel" in seen:
+                return
+            # The spine's own record of the write, read at the moment the
+            # cancel speaks. This is what makes "the outcome is already
+            # recorded" a question the assertion can ask, rather than one
+            # inferred from which release index we happen to be at.
+            seen["recorded"] = (
+                proposal.token in spine._succeeded
+                or proposal.token in spine._failed
+            )
+            seen["cancel"] = spine.cancel(proposal.token).reason
+
+        lock = _ObservableLock(threading.Lock(), observer)
+        spine._lock = lock
+        seen["confirm"] = spine.confirm(proposal.token)
+        seen["writes"] = len(runner.calls)
+        seen["releases"] = lock.releases
+        return seen
+
+    @pytest.mark.parametrize("dispatch_succeeds", [True, False])
+    def test_no_observable_moment_lets_a_cancel_misreport_the_write(
+        self, dispatch_succeeds
+    ):
+        """The pin. At every lock boundary, the two stories must agree."""
+        probe = self._run(fire_at=0, dispatch_succeeds=dispatch_succeeds)
+        total = probe["releases"]
+        assert total >= 3, "the confirm must take the lock several times"
+
+        stories = set()
+        for index in range(1, total + 1):
+            seen = self._run(fire_at=index, dispatch_succeeds=dispatch_succeeds)
+            reason = seen.get("cancel")
+            if reason is None:
+                continue
+            stories.add((reason, seen["writes"] > 0))
+
+            # ONCE THE OUTCOME IS RECORDED, THE CANCEL MUST REPORT IT. The
+            # third and fourth windows are both this rule violated from
+            # different sides: a token sits in `_succeeded`/`_failed` while
+            # still marked claimed (third) or still marked dispatching
+            # (fourth), and cancel answered from the marker instead of from the
+            # record. `cancel_in_flight` is the sharpest case — "it's already
+            # going out ... we can undo it from there" is two definite claims
+            # about a dispatch the system has already recorded it CANNOT
+            # characterise (see `dispatch_failed`'s own line).
+            if seen.get("recorded"):
+                assert reason in ("replayed", "dispatch_failed"), (
+                    f"release {index}: the outcome was already recorded and "
+                    f"cancel said {reason!r}"
+                )
+
+            if seen["writes"]:
+                # Something was sent, so no cancel may CLAIM OTHERWISE. Stated
+                # as the property rather than as an allowed outcome: which
+                # outcome is correct here depends on how far the confirm got
+                # (`cancel_in_flight` mid-runner, `replayed` once recorded),
+                # and pinning one of them would fail on a correct answer — as
+                # this assertion did, on its first run, before it was rewritten
+                # to say what it actually means.
+                assert reason not in ASSERTS_NOTHING_SENT, (
+                    f"release {index}: cancel said {reason!r}, which claims "
+                    f"nothing was sent, while the runner had run"
+                )
+            else:
+                # Nothing was sent, so the confirm must not have written and
+                # the cancel must not have been told it was too late.
+                assert seen["confirm"].approved is False, index
+                assert reason != "cancel_in_flight", (
+                    f"release {index}: cancel said it was too late with nothing sent"
+                )
+
+        # The sweep must actually have exercised BOTH sides of the barrier, or
+        # it passes by never reaching the interesting states.
+        assert len(stories) >= 2, stories
+        assert any(sent for _, sent in stories), "no run reached the runner"
+        assert any(not sent for _, sent in stories), "no run stopped at the barrier"
+
+    def test_the_nothing_sent_set_really_says_nothing_was_sent(self):
+        """The control for the set the sweep is written in terms of.
+
+        A membership list is only as good as its membership: if ``cancelled``
+        ever stops claiming "I haven't sent anything", the sweep above goes on
+        passing while guarding nothing. Derived from the lines, not asserted
+        about them.
+        """
+        for reason in ASSERTS_NOTHING_SENT:
+            line = confirm.SPOKEN[reason].lower()
+            assert "haven't sent" in line, reason
+        # And the complement: the outcomes that may be spoken over a real write
+        # must NOT carry the claim.
+        for reason in ("cancel_in_flight", "replayed", "dispatch_failed"):
+            assert reason not in ASSERTS_NOTHING_SENT
+            assert "haven't sent" not in confirm.SPOKEN[reason].lower(), reason
+
+    def test_a_cancel_after_a_recorded_write_never_says_nothing_was_sent(
+        self, convo, runner
+    ):
+        """The third window the sweep found, kept as a named scenario.
+
+        A confirm records its result and only THEN unwinds the claim, so
+        between ``_succeeded.add`` and ``_in_flight.discard`` a token is both
+        written and claimed. Testing ``_in_flight`` first answered a cancel
+        there with "I haven't sent anything" about a write that had gone out —
+        the same over-claim, in a window nobody had enumerated.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+        # Reconstruct the window: the write is recorded, the claim not yet
+        # released.
+        with convo.spine._lock:
+            convo.spine._in_flight.add(proposal.token)
+        try:
+            verdict = convo.spine.cancel(proposal.token)
+        finally:
+            with convo.spine._lock:
+                convo.spine._in_flight.discard(proposal.token)
+
+        assert verdict.reason not in ASSERTS_NOTHING_SENT, verdict.reason
+        assert verdict.reason == "replayed"
+
+    @pytest.mark.parametrize(
+        "recorded,marker,expected",
+        [
+            # The THIRD window: outcome recorded, claim not yet released.
+            ("_succeeded", "_in_flight", "replayed"),
+            ("_failed", "_in_flight", "dispatch_failed"),
+            # The FOURTH: outcome recorded, the DISPATCHING marker not yet
+            # cleared. `_dispatching` was tested above both terminal facts, so
+            # a cancel here was told "it's already going out ... we can undo it
+            # from there" about a dispatch already recorded as failed — two
+            # definite claims about the one outcome `dispatch_failed` exists to
+            # say cannot be characterised.
+            ("_succeeded", "_dispatching", "replayed"),
+            ("_failed", "_dispatching", "dispatch_failed"),
+        ],
+    )
+    def test_a_recorded_outcome_outranks_every_in_progress_marker(
+        self, convo, runner, recorded, marker, expected
+    ):
+        """Both halves of the rule, on both markers, as a table.
+
+        The rule this branch introduced — *only facts about the WRITE can
+        contradict a spoken claim about sending* — was applied against
+        ``_in_flight`` and not against ``_dispatching``, and its ``_failed``
+        half was never exercised at all: deleting that check left the whole
+        suite green. A rule stated once and enforced against one of the two
+        markers is the shape both of those defects share, so it is asserted as
+        the cross-product rather than at the site that happened to break.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+
+        with convo.spine._lock:
+            convo.spine._succeeded.discard(proposal.token)
+            getattr(convo.spine, recorded).add(proposal.token)
+            getattr(convo.spine, marker).add(proposal.token)
+        try:
+            verdict = convo.spine.cancel(proposal.token)
+        finally:
+            with convo.spine._lock:
+                getattr(convo.spine, marker).discard(proposal.token)
+
+        assert verdict.reason == expected, (recorded, marker, verdict.reason)
+        assert verdict.reason not in ASSERTS_NOTHING_SENT
+
+    def test_the_barrier_read_and_mark_are_SYNTACTICALLY_inside_one_hold(self):
+        """The blind spot a boundary sweep has BY CONSTRUCTION.
+
+        The sweep fires at lock RELEASES, so it can only see states that a
+        release creates. Move the ``_cancelled`` read outside every lock and
+        there is no release between the read and the mark to fire at — the
+        sweep stays green while a cancel landing there is told "I haven't sent
+        anything" with the runner already called. That is the same bug, in the
+        one form the instrument cannot reach.
+
+        So this one is read off the SOURCE. A structural assertion is the right
+        tool exactly when the property is "these statements are in this scope",
+        which no amount of runtime observation can establish.
+
+        **This pin checks SCOPE. It does not check ORDER.** Marking
+        ``_dispatching`` before reading ``_cancelled``, both inside the one
+        hold, passes here — and returns without entering the ``try``/``finally``
+        that releases the marker, so the marker leaks and every later cancel is
+        told *"Too late to stop that one — it's already going out"* forever,
+        about a write that never happened. The current order is correct and
+        nothing on this branch does that; the point is that whoever moves these
+        two statements is not protected against it by this test.
+        """
+        import ast
+        import inspect
+
+        source = inspect.getsource(confirm.ConfirmSpine._confirm_claimed)
+        tree = ast.parse(textwrap.dedent(source))
+
+        def holds_the_lock(node) -> bool:
+            return isinstance(node, ast.With) and any(
+                isinstance(item.context_expr, ast.Attribute)
+                and item.context_expr.attr == "_lock"
+                for item in node.items
+            )
+
+        def mentions(node, name: str) -> bool:
+            return any(
+                isinstance(child, ast.Attribute) and child.attr == name
+                for child in ast.walk(node)
+            )
+
+        barriers = [
+            node
+            for node in ast.walk(tree)
+            if holds_the_lock(node)
+            and mentions(node, "_cancelled")
+            and mentions(node, "_dispatching")
+        ]
+        assert len(barriers) == 1, (
+            "the _cancelled read and the _dispatching mark must sit in exactly "
+            f"one `with self._lock` block; found {len(barriers)}"
+        )
+
+        # ...and the two halves of the decision happen nowhere else. Two holds,
+        # a mark placed after the block, or an unlocked read all fail here.
+        #
+        # Scoped to the READ and the MARK, not to every mention: the `finally`
+        # that DISCARDS `_dispatching` is a legitimate second touch, and a
+        # blanket "this name appears once" would forbid releasing the marker at
+        # all. What must be atomic is deciding, not unwinding.
+        barrier = barriers[0]
+        span = range(barrier.lineno, (barrier.end_lineno or barrier.lineno) + 1)
+
+        def is_mark(node) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_dispatching"
+            )
+
+        stray = [
+            child.lineno
+            for child in ast.walk(tree)
+            if (
+                (isinstance(child, ast.Attribute) and child.attr == "_cancelled")
+                or is_mark(child)
+            )
+            and child.lineno not in span
+        ]
+        assert stray == [], (
+            f"the _cancelled read or the _dispatching mark sits outside the "
+            f"barrier hold, at lines {stray} (relative to _confirm_claimed)"
+        )
+
+    def test_the_two_flags_are_never_both_observable(self, convo):
+        """The invariant stated directly as well as behaviourally.
+
+        ``_cancelled`` and ``_dispatching`` are set by the two sides of one
+        decision. If a token can ever be seen carrying both, the barrier was
+        not atomic — a cancel recorded a retraction for a confirm that had
+        already been cleared to dispatch.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        both: list = []
+
+        def observing_runner(argv):
+            with convo.spine._lock:
+                both.append(
+                    convo.spine._cancelled & convo.spine._dispatching
+                )
+            convo.spine.cancel(proposal.token)
+            with convo.spine._lock:
+                both.append(
+                    convo.spine._cancelled & convo.spine._dispatching
+                )
+            return {"success": True}
+
+        convo.spine._runner = observing_runner
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert both == [set(), set()], both
+
+
+class TestACancelIsNeverAnsweredWithConfirmShapedAdvice:
+    """The shared claim's lines are written for a CONFIRM, and two of them
+    argue for the very write the owner just retracted.
+
+    ``no_proposal`` says *"Tell me again what you'd like sent"* and ``expired``
+    says *"Ask me again and I'll set it up fresh"*. Answering a retraction with
+    either is the system pressing for the thing that was cancelled — in a
+    screenless channel, with nothing on screen to reveal that it is answering
+    the wrong question. Sharing the claim is right; sharing its vocabulary is
+    not.
+    """
+
+    #: The confirm lines that would invite a re-propose, as substrings.
+    RE_PROPOSE_CUES = ("tell me again", "ask me again", "set it up fresh")
+
+    def test_a_second_cancel_does_not_ask_for_the_write_again(self, convo):
+        proposal = convo.announced_proposal()
+        assert convo.spine.cancel(proposal.token).reason == "cancelled"
+        again = convo.spine.cancel(proposal.token)
+        assert again.reason == "nothing_to_cancel"
+        spoken = again.spoken.lower()
+        for cue in self.RE_PROPOSE_CUES:
+            assert cue not in spoken, cue
+
+    def test_a_cancel_after_the_TTL_does_not_ask_for_the_write_again(
+        self, convo, clock
+    ):
+        proposal = convo.announced_proposal()
+        clock.advance(confirm.PROPOSAL_TTL_S + 1)
+        verdict = convo.spine.cancel(proposal.token)
+        assert verdict.reason == "nothing_to_cancel"
+        spoken = verdict.spoken.lower()
+        for cue in self.RE_PROPOSE_CUES:
+            assert cue not in spoken, cue
+
+    def test_the_confirm_path_keeps_those_lines(self, convo, clock):
+        """The must-fail control. The cues are only wrong for a CANCEL — if a
+        well-meaning edit strips them from the confirm lines too, the tests
+        above would pass while the taxonomy quietly lost its next-move advice.
+        """
+        proposal = convo.announced_proposal()
+        clock.advance(confirm.PROPOSAL_TTL_S + 1)
+        assert "ask me again" in convo.spine.confirm(proposal.token).spoken.lower()
+        assert "tell me again" in confirm.SPOKEN["no_proposal"].lower()
+
+    def test_the_HAPPY_PATH_cancel_does_not_name_a_move_that_cannot_work(
+        self, convo, runner
+    ):
+        """The same defect on the outcome nobody looked at: the cancel that
+        SUCCEEDS.
+
+        ``denied`` says "Say the phrase again when you're ready" — true of an
+        in-band denial, which leaves the proposal live, and false of a cancel,
+        which pops it. Following that advice lands on ``no_proposal`` — *"Tell
+        me again what you'd like sent"* — one turn later, which is the exact
+        line ``_cancel_refusal`` exists to keep off this path. So the advice
+        was routed around at one door and re-entered through another.
+        """
+        proposal = convo.announced_proposal()
+        verdict = convo.spine.cancel(proposal.token)
+        assert verdict.reason == "cancelled"
+        assert "say the phrase" not in verdict.spoken.lower()
+
+        # The move it names must be one that WORKS. Following the retired
+        # advice is what this asserts about: saying the phrase now cannot.
+        convo.approve(proposal)
+        after = convo.spine.confirm(proposal.token)
+        assert after.approved is False
+        assert after.reason == "no_proposal"
+        assert runner.calls == []
+
+    def test_the_in_band_denial_KEEPS_that_advice(self, convo, runner):
+        """The must-fail control, and the reason this is two outcomes rather
+        than one reworded line: on the in-band path the proposal is still live,
+        the phrase still works, and telling the owner so is correct."""
+        proposal = convo.announced_proposal()
+        # A confirm word is required to reach the judge's DENIED branch at all
+        # — `classify` returns NO_MATCH before consulting the denial grammar
+        # otherwise, which is `refused`, not `denied`.
+        convo.says("no, don't confirm that")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.reason == "denied"
+        assert "say the phrase again" in verdict.spoken.lower()
+        # ...and it is true: the proposal survived, so the advice can be taken.
+        assert proposal.token in {p.token for p in convo.spine.pending()}
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
+
+    def test_no_cancel_outcome_argues_for_the_write(self):
+        """Swept over the whole cancel vocabulary rather than the two lines
+        that were wrong, because the failure was a line reached from a path
+        nobody enumerated."""
+        for reason in ("cancelled", "nothing_to_cancel", "cancel_in_flight"):
+            spoken = confirm.SPOKEN[reason].lower()
+            for cue in self.RE_PROPOSE_CUES + ("say the phrase", "say confirm"):
+                assert cue not in spoken, (reason, cue)
+
+    def test_the_honest_refusals_are_passed_through_unchanged(self, convo, runner):
+        """``replayed`` and ``dispatch_failed`` are TRUE of a cancel and invite
+        no re-propose, so translating them would lose information."""
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert convo.spine.cancel(proposal.token).reason == "replayed"
 
 
 # =============================================================================
@@ -1865,6 +2685,36 @@ class TestOutcomesAreDistinctAndSpoken:
         busy_convo.approve(busy)
         busy_spine.confirm(busy.token)
         seen |= set(nested)
+
+        # cancel_in_flight: a CANCEL arriving while a confirm is dispatching
+        # (#990). Same re-entrant construction as in_flight, different caller,
+        # and it must not report `denied` — that line asserts nothing was sent.
+        cancelled = []
+        race_spine = confirm.ConfirmSpine(
+            convo.ring,
+            wait_s=0.0,
+            runner=lambda argv: (
+                cancelled.append(race_spine.cancel(racing.token).reason),
+                {"success": True},
+            )[1],
+            clock=clock,
+        )
+        race_convo = Conversation(convo.ring, race_spine)
+        race_convo.seq = busy_convo.seq + 500
+        racing = race_convo.announced_proposal()
+        race_convo.approve(racing)
+        race_spine.confirm(racing.token)
+        seen |= set(cancelled)
+
+        # cancelled: the ordinary retraction. Split from `denied` because it
+        # POPS — "say the phrase again" cannot work once it has.
+        retracted = convo.announced_proposal()
+        seen.add(convo.spine.cancel(retracted.token).reason)
+
+        # nothing_to_cancel: a cancel with nothing of ours to retract. It must
+        # not reuse `no_proposal`/`expired`, whose lines argue for re-proposing
+        # the write the owner just took back.
+        seen.add(convo.spine.cancel("no-such-token").reason)
         return seen
 
     def test_the_attempt_that_retires_the_proposal_says_so(self, convo, runner):
@@ -2542,6 +3392,218 @@ class TestTheFallbackEchoCannotApprove:
         result, _, _ = self._mint()
         nonce = result["confirm_phrase"].split()[1]
         assert nonce not in confirm.normalize(self._fallback_speech(result))
+
+
+#: Every ``SPOKEN`` line that would deny if it came back through the mic.
+#: DERIVED from the map, never typed: a new refusal line carrying a denial
+#: trigger is covered the day it is written, and a rewording that removes the
+#: last one fails the control test below rather than silently emptying the
+#: parametrization.
+SPOKEN_DENYING_LINES = [
+    line for line in confirm.SPOKEN.values() if confirm.carries_denial(line)
+]
+
+
+def _is_run_of(utterance: str, line: str) -> bool:
+    """Is *utterance* a contiguous token run of *line*? Independently spelled.
+
+    Deliberately NOT ``confirm._contains_run``: this is the fixture's own check
+    that a clipped-barge-in case is really the shape it claims to be, and using
+    the function under test to validate the input makes the two fail together.
+    """
+    haystack = confirm.normalize(line).split()
+    needle = confirm.normalize(utterance).split()
+    joined = " ".join(haystack)
+    return f" {' '.join(needle)} " in f" {joined} "
+
+
+class TestTheBuddysOwnVoiceCannotDeny:
+    """#992 — the echo's OTHER direction, and the one nothing covered.
+
+    Approval by echo is closed structurally: the fallback channel never carries
+    a nonce (#953), which is what the class above proves. ``carries_denial`` has
+    no such gate, and several ``SPOKEN`` lines contain denial triggers — "I
+    heard you hold off…", "Hang on — I'm already working on that one", "I don't
+    have anything pending…". Echoed inside the approval→confirm window, one of
+    those retroactively DENIES the owner's own approval and reports a take-back
+    they never spoke, invisibly.
+
+    **The rule chosen is CONTENT, not timing, and that is the decision.** The
+    obvious rule — "utterances transcribed while the fallback voice is speaking
+    are not denials" — is unusable: barge-in over the robot voice is the normal
+    way to retract in this channel, so it drops genuine take-backs and the
+    write goes out. That is the acting-twice direction, strictly worse than the
+    wrongful refusal it fixes, which costs one re-spoken approval. A content
+    rule cannot fire on words the buddy never said, so it has no such half.
+    """
+
+    def test_the_map_really_does_contain_denial_carrying_lines(self):
+        """The must-fail control for the whole class: if this list is ever
+        empty, the parametrized test below passes vacuously."""
+        assert SPOKEN_DENYING_LINES, (
+            "SPOKEN has no denying line — the echo tests here prove nothing"
+        )
+        assert confirm.carries_denial(confirm.SPOKEN["denied"])
+
+    @pytest.mark.parametrize("echo", SPOKEN_DENYING_LINES)
+    def test_an_echoed_refusal_line_does_not_veto_the_approval(
+        self, echo, convo, runner
+    ):
+        """The whole line, echoed after the approval, must not deny."""
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says(echo)  # the browser voice, back through the mic
+
+        assert confirm.carries_denial(echo), echo
+        assert convo.spine.confirm(proposal.token).approved is True, echo
+        assert len(runner.calls) == 1
+
+    def test_a_real_take_back_over_the_robot_voice_still_denies(
+        self, convo, runner
+    ):
+        """The false-reject half, and the reason the timing rule was refused.
+
+        Every one of these is something an owner actually says while the buddy
+        is mid-sentence. A rule keyed on "was the fallback speaking" drops all
+        of them; the content rule keeps every one, because none is six
+        contiguous tokens of a line the buddy said.
+        """
+        for take_back in (
+            "no",
+            "hold off",
+            "hang on",
+            "no wait, don't send it",
+            "hold off — I heard you but hold off",
+            "stop",
+        ):
+            proposal = convo.announced_proposal()
+            convo.approve(proposal)
+            convo.says(take_back)
+            verdict = convo.spine.confirm(proposal.token)
+            assert verdict.reason == "denied", take_back
+        assert runner.calls == []
+
+    def test_a_barge_in_captured_WITH_the_echo_still_denies(self, convo, runner):
+        """The whole utterance must be the echo, not merely contain one.
+
+        The realistic capture of a barge-in is the tail of the buddy's line and
+        the owner's words in one transcript. That is not a contiguous run of any
+        line, so it denies — the enumeration fails CLOSED.
+        """
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says("hang on im already working on that one no stop")
+        assert convo.spine.confirm(proposal.token).reason == "denied"
+        assert runner.calls == []
+
+    #: Real barge-ins whose transcript is a CLIPPED prefix of a `SPOKEN` line —
+    #: the shape the token floor exists to keep on the denying side. Each is 3
+    #: to 5 tokens, which is exactly the range the module's own docstring says
+    #: would be suppressed at a lower floor.
+    CLIPPED_BARGE_INS = (
+        "hang on im",            # 3 tokens
+        "hang on i havent",      # 4
+        "i heard you hold off",  # 5
+    )
+
+    @pytest.mark.parametrize("clipped", CLIPPED_BARGE_INS)
+    def test_a_clipped_barge_in_below_the_floor_still_denies(
+        self, clipped, convo, runner
+    ):
+        """The floor is the entire false-reject budget of this rule, and only
+        the two-token case was pinned.
+
+        At a floor of 3, "hang on im" — a real retraction the transcriber
+        clipped — is read as the buddy's own voice, the denial is dropped and
+        THE WRITE GOES OUT. That is the acting-twice direction. Each of these
+        IS a contiguous run of a `SPOKEN` line, so nothing but the floor keeps
+        it denying.
+        """
+        assert confirm.carries_denial(clipped), clipped
+        assert any(
+            _is_run_of(clipped, line) for line in confirm.SPOKEN.values()
+        ), f"{clipped!r} must be a real run of a SPOKEN line or it proves nothing"
+
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says(clipped)
+        assert convo.spine.confirm(proposal.token).reason == "denied", clipped
+        assert runner.calls == []
+
+    def test_the_floor_exceeds_every_clipped_barge_in_we_priced(self):
+        """Stated as arithmetic, so lowering the constant fails here too rather
+        than only in the scenario above."""
+        longest = max(
+            len(confirm.normalize(c).split()) for c in self.CLIPPED_BARGE_INS
+        )
+        assert confirm._ECHO_MIN_TOKENS > longest
+
+    def test_an_utterance_that_CONTAINS_a_whole_line_is_not_an_echo(self):
+        """"Whole-utterance" is named load-bearing in the module and the wiki,
+        and containment has a direction.
+
+        Reversed — "does the utterance contain a line" — an owner who talks
+        over the tail of the buddy's sentence and is captured with all of it is
+        classified as an echo, and their retraction is dropped.
+        """
+        line = confirm.SPOKEN["denied"]
+        assert confirm.is_buddy_echo(line) is True, "the line itself is an echo"
+        assert confirm.is_buddy_echo(line + " no, stop, don't send it") is False
+
+    def test_a_NON_CONTIGUOUS_subset_of_a_line_is_not_an_echo(self):
+        """"Contiguous" is the other named property, and a subset test passes
+        every assertion above while accepting word salad.
+
+        These are the line's own words, in the line's own order, with words
+        dropped — which is what a human speaking loosely on the same subject
+        looks like, and is not the machine's sentence.
+        """
+        tokens = confirm.normalize(confirm.SPOKEN["denied"]).split()
+        gappy = " ".join(tokens[::2])
+        assert len(gappy.split()) >= confirm._ECHO_MIN_TOKENS, "must clear the floor"
+        assert set(gappy.split()) <= set(tokens), "must be a subset of the line"
+        assert confirm.is_buddy_echo(gappy) is False
+
+    def test_a_short_garbled_echo_fails_closed(self, convo, runner):
+        """Below the token floor it is treated as a denial: a wrongful refusal
+        costs one re-spoken approval, and nothing about being incomplete here
+        can make a write happen."""
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says("hold off")  # three words of the `denied` line
+        assert convo.spine.confirm(proposal.token).reason == "denied"
+        assert runner.calls == []
+
+    def test_the_echo_rule_never_makes_something_approvable(self):
+        """Suppression is only ever subtractive. No ``SPOKEN`` line carries a
+        nonce, so skipping one can never turn an echo into an approval."""
+        for line in confirm.SPOKEN.values():
+            for nonce in confirm.NONCE_WORDS:
+                assert confirm.classify(line, nonce) != confirm.APPROVED, line
+
+    def test_the_rule_is_applied_at_both_scan_sites(self, convo, runner):
+        """The judge's OWN loop, not the post-approval scan.
+
+        ``classify`` returns ``NO_MATCH`` before it ever consults the denial
+        grammar unless the utterance contains a confirm word — so most echoed
+        lines exercise only the scan, and a test built on one of those passes
+        with the loop guard deleted. The ``no_proposal`` line is the one that
+        reaches the loop's ``DENIED`` branch: it says "nothing to **confirm**"
+        and it says "**don't**". Echoed after the approval it is the newest
+        entry, so newest-first reaches it FIRST and returns ``denied`` before
+        the scan below is ever run.
+        """
+        echo = confirm.SPOKEN["no_proposal"]
+        assert confirm.classify(echo, "tango") == confirm.DENIED, (
+            "this echo must reach the judge loop's DENIED branch, or the test "
+            "proves only what the post-approval scan does"
+        )
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+        convo.says(echo)
+        assert convo.ring.snapshot()[-1].text == echo, "echo must be newest"
+        assert convo.spine.confirm(proposal.token).approved is True
+        assert len(runner.calls) == 1
 
 
 class TestHonestLimit:
