@@ -298,7 +298,8 @@ VOICE_NATIVE: dict[str, dict] = {
     "buddy_inbox": {
         "grade": "write_light",
         "ruling": (
-            "Reads the buddy's own spool, and with ack=true advances its read "
+            "Reads the buddy's own spool, and with ack_through=<id> (or the "
+            "blunter ack=true) advances its read "
             "cursor — a mutation, from the read-only allowlist. Light, not "
             "gated: the message is untouched, `unread_only=false` reads it "
             "straight back, and the worst wrong execution loses a read marker "

@@ -348,18 +348,37 @@ def _fleet_voice_health(args: dict) -> dict:
 def _buddy_inbox(args: dict) -> dict:
     """The buddy's OWN mail — what other sessions have reported to it.
 
-    Reads the spool the delivery adapter writes. ``ack`` advances the read
-    cursor, so the buddy only marks mail read once it has actually said it out
-    loud — an unacked read after a dropped call is re-read, not lost.
+    Reads the spool the delivery adapter writes. The cursor advances only on an
+    ack, so the buddy marks mail read once it has actually said it out loud — an
+    unacked read after a dropped call is re-read, not lost.
+
+    ``ack_through`` is the one to reach for (#970): it acks EXACTLY the message
+    named, so anything that landed between the read and the ack is still pending
+    by construction. ``ack`` sweeps to the tail as it stands at ack time, which
+    is not what the caller read. ``acked`` reports whether the cursor actually
+    moved — a refused ack that reads as success re-announces forever.
     """
     name = args.get("_buddy") or ""
     if not name:
         raise ToolError("buddy identity missing from tool context")
+    through = args.get("ack_through")
+    if through is not None and not isinstance(through, str):
+        raise ToolError("ack_through must be a message id")
+    through = (through or "").strip()
     ack = bool(args.get("ack", False))
     unread_only = bool(args.get("unread_only", True))
-    messages = delivery.read_spool(name, unread_only=unread_only, ack=ack)
+    # ack_through OUTRANKS ack: honouring both would sweep the tail, which is
+    # exactly what the specific ack exists to avoid.
+    messages = delivery.read_spool(
+        name, unread_only=unread_only, ack=ack and not through
+    )
+    acked = (
+        delivery.advance_cursor(name, through) if through else bool(ack and messages)
+    )
     return {
         "success": True,
+        "acked": acked,
+        "acked_through": through,
         "count": len(messages),
         "messages": [
             {k: m.get(k) for k in ("id", "from", "kind", "text", "ts", "ref")}
@@ -504,16 +523,29 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
         name="buddy_inbox",
         description=(
             "Your own mail — reports and requests other sessions have sent YOU. Read "
-            "this when asked what needs attention. Set ack to true only once you have "
-            "actually told the owner what it says."
+            "this when asked what needs attention. Mark mail read only once you have "
+            "actually told the owner what it says, and mark it with ack_through set to "
+            "the id of the last message you said out loud — ack sweeps past anything "
+            "that arrived while you were speaking, and that mail is then never read "
+            "by anyone."
         ),
         run=_buddy_inbox,
         parameters={
             "type": "object",
             "properties": {
+                "ack_through": {
+                    "type": "string",
+                    "description": (
+                        "Id of the last message you actually said out loud. Marks "
+                        "everything up to and including it read, and nothing after."
+                    ),
+                },
                 "ack": {
                     "type": "boolean",
-                    "description": "Mark the returned messages as read. Default false.",
+                    "description": (
+                        "Mark ALL unread messages read, including any that arrived "
+                        "since you read. Prefer ack_through. Default false."
+                    ),
                 },
                 "unread_only": {
                     "type": "boolean",

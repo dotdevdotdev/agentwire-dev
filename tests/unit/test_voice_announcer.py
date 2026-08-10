@@ -635,7 +635,7 @@ _NOTIFIER_HARNESS = """
 const announcedCalls = [];
 const logs = [];
 const seen = {};
-const strays = [];
+const ackCalls = [];
 let spool = [];
 let cursor = 0;
 let speakable = true;
@@ -647,10 +647,16 @@ let nextHandle = 1;
 function fetchInbox() {
   return Promise.resolve({ success: true, messages: spool.slice(cursor) });
 }
-function ackInbox() {
-  const msgs = spool.slice(cursor);
-  cursor = spool.length;
-  return Promise.resolve({ success: true, messages: msgs });
+// Mirrors delivery.advance_cursor exactly, including both refusals: an id the
+// spool no longer holds moves nothing, and the cursor never rewinds. A harness
+// that acked more freely than the real bridge would prove the wrong thing.
+function ackInbox(through) {
+  ackCalls.push(through === undefined ? "<undefined>" : String(through));
+  if (!through) return Promise.resolve({ success: true, acked: false });
+  const idx = spool.findIndex((m) => m.id === through);
+  if (idx < 0) return Promise.resolve({ success: true, acked: false });
+  if (idx + 1 > cursor) cursor = idx + 1;
+  return Promise.resolve({ success: true, acked: true, acked_through: through });
 }
 function makeNotifier(overrides) {
   return createInboxNotifier(Object.assign({
@@ -664,14 +670,13 @@ function makeNotifier(overrides) {
     onLog: (kind, detail) => logs.push(kind + ": " + detail),
     pollMs: 5000,
     seen,
-    strays,
   }, overrides || {}));
 }
 let notifier = makeNotifier();
 function report() {
   return JSON.stringify({
-    announced: announcedCalls, logs, cursor, seen, armedTimers: timers.length,
-    strays: strays.length,
+    announced: announcedCalls, logs, cursor, seen, ackCalls,
+    armedTimers: timers.length,
   });
 }
 """
@@ -746,6 +751,8 @@ class TestTheBuddyClock:
         assert "cursor after announce: 0" in report["logs"]
         assert report["cursor"] == 1
         assert report["seen"] == {"m1": True}
+        # …and the ack named the message, rather than sweeping to the tail.
+        assert report["ackCalls"] == ["m1"]
 
     def test_a_pending_notice_is_not_reannounced_by_the_next_tick(self):
         report = run_notifier("""
@@ -779,38 +786,96 @@ class TestTheBuddyClock:
         assert len(report["announced"]) == 2
 
     def test_a_reply_landing_between_speak_and_ack_is_not_silently_acked(self):
-        """ack advances the cursor past EVERYTHING unread, including a message
-        that arrived after the peek. That message was never spoken — it must
-        surface on a later tick, not vanish behind the cursor."""
+        """#970's acceptance case. The ack names the last message actually
+        SPOKEN, so a reply that arrived after the peek is behind no cursor at
+        all — it is still unread in the spool, by construction, with no
+        client-side bookkeeping between it and the owner's ear."""
         report = run_notifier("""
             spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
             await notifier.pollOnce();
             spool.push({ id: "m2", from: "billing", kind: "note", text: "late arrival" });
             await notifier.noticeSpoken(announcedCalls[0].meta);
+            logs.push("cursor after acking m1: " + cursor);
             await notifier.pollOnce();
         """)
+        assert "cursor after acking m1: 1" in report["logs"]
         assert len(report["announced"]) == 2
         assert "billing" in report["announced"][1]["text"]
         assert report["announced"][1]["meta"]["inboxIds"] == ["m2"]
 
-    def test_a_stray_reply_survives_stop_before_the_next_tick(self):
-        """The wave-2 D1 construction: a reply lands between the peek and the
-        ack, the cursor advances past it, and the owner clicks Stop before the
-        next gated tick. The stray's home must outlive the notifier — the
-        spool will never return that message again (there is no ack-by-id),
-        so a per-notifier array is its grave."""
+    def test_the_ack_names_the_last_message_announced(self):
+        """The mutation this class exists to forbid: an ack that walks past
+        what was announced. The id on the meta is decided at ANNOUNCE time,
+        from the peek's own list — nothing the spool grows afterwards can widen
+        it."""
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "docs", kind: "done", text: "one" },
+              { id: "m2", from: "billing", kind: "note", text: "two" },
+            ];
+            await notifier.pollOnce();
+            spool.push({ id: "m3", from: "late", kind: "note", text: "three" });
+            logs.push("ackThrough: " + announcedCalls[0].meta.ackThrough);
+        """)
+        assert "ackThrough: m2" in report["logs"]
+
+    def test_a_notice_with_nothing_to_ack_does_not_call_the_bridge(self):
+        """The empty ``ackThrough`` is a decision, not a missing value, so it
+        must not be posted. Acking through nothing is a no-op the bridge
+        correctly refuses — and that refusal is now a LOUD one, so posting it
+        would log a failure on the one path that has nothing wrong with it,
+        training the owner to ignore the line that means real loss.
+
+        Its own control is ``test_ack_happens_only_after_it_was_spoken``: the
+        ordinary path DOES call the bridge, with the id.
+        """
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "minecraft", kind: "done", text: "done" },
+              { id: "m2", from: "watchdog", kind: "escalation", text: "auth expired" },
+            ];
+            speakable = false;
+            interruptable = true;
+            await notifier.pollOnce();
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+        """)
+        assert report["ackCalls"] == []
+        assert not [line for line in report["logs"] if "failed" in line]
+
+    def test_the_race_survives_stop_before_the_next_tick(self):
+        """The wave-2 D1 construction, which is what #969 built the
+        page-lifetime strays array for: a reply lands between the peek and the
+        ack, and the owner clicks Stop before the next gated tick. With the ack
+        scoped to what was spoken there is nothing to carry across the
+        reconnect — the message never left the spool, so a page UNLOAD (which
+        the array could not survive at all) is covered by the same fact."""
         report = run_notifier("""
             spool = [{ id: "m1", from: "minecraft", kind: "done", text: "done" }];
             await notifier.pollOnce();
             spool.push({ id: "m2", from: "billing", kind: "note", text: "late arrival" });
             await notifier.noticeSpoken(announcedCalls[0].meta);
-            notifier.stop();             // owner clicks Stop with the stray pending
+            notifier.stop();             // owner clicks Stop with the reply pending
             notifier = makeNotifier();   // the reconnect
             await notifier.pollOnce();
         """)
         assert len(report["announced"]) == 2
         assert "billing" in report["announced"][1]["text"]
         assert report["announced"][1]["meta"]["inboxIds"] == ["m2"]
+
+    def test_a_refused_ack_is_logged_not_swallowed(self):
+        """The bridge can refuse (a rotated spool). Treating that as success
+        leaves the cursor where it was with nothing said about it — the notice
+        then re-announces every session, and the owner has no screen to see
+        why."""
+        report = run_notifier("""
+            notifier = makeNotifier({
+              ackInbox: () => Promise.resolve({ success: true, acked: false }),
+            });
+            spool = [{ id: "m1", from: "docs", kind: "done", text: "done" }];
+            await notifier.pollOnce();
+            await notifier.noticeSpoken(announcedCalls[0].meta);
+        """)
+        assert any("ack" in line and "m1" in line for line in report["logs"])
 
     def test_an_empty_inbox_is_silence(self):
         """The recipient never replying produces silence — no follow-up, no
@@ -872,9 +937,12 @@ class TestTheBuddyClock:
             " arguments: { ack: false } })," in page
         )
         assert (
-            'ackInbox: () => post("/tool", { name: "buddy_inbox",'
-            " arguments: { ack: true } })," in page
+            'ackInbox: (through) => post("/tool", { name: "buddy_inbox",'
+            " arguments: { ack_through: through } })," in page
         )
+        # The wire that matters: the id travels, so the bridge acks exactly
+        # what was spoken. `ack: true` would sweep the tail (#970).
+        assert '{ name: "buddy_inbox", arguments: { ack: true } }' not in page
         # onSpoken routes a spoken notice back to the notifier for the ack.
         onspoken_body = page.split("function onSpoken(meta, how)", 1)[1]
         assert "meta.inboxIds" in onspoken_body.split("function send", 1)[0]
@@ -886,19 +954,26 @@ class TestTheBuddyClock:
         assert "heardReplies =" not in stop_body
         assert "heardReplies[" not in stop_body
 
-    def test_strays_get_the_same_page_lifetime_home_as_heard_replies(self):
-        """D1: the page owns the strays array and passes it in like `seen`;
-        stop() must not touch it — a stray is cursor-past, so this array is
-        the only route left to the owner's ear."""
+    def test_the_page_carries_no_strays_array_at_all(self):
+        """#970 deletes #969's workaround rather than relocating it. The array
+        existed for one reason — the ack was all-or-nothing to the tail, so a
+        message swept past it had no route left but page-lifetime client state,
+        and a page unload lost it silently. With the ack scoped to what was
+        spoken, nothing is ever swept past unread: the spool IS the store.
+
+        Pinned as an absence because that is the claim. A surviving array would
+        mean the invariant still rests on client bookkeeping surviving a page.
+        """
         page = client.page("buddy", "tok")
-        assert "const strayReplies = [];" in page
-        wiring = page.split("createInboxNotifier({", 1)[1].split("});", 1)[0]
-        assert "strays: strayReplies," in wiring
-        # Pin the operations, not the mentions: stop() must not reassign or
-        # mutate the array (a comment naming it is fine).
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "strayReplies =" not in stop_body
-        assert "strayReplies." not in stop_body
+        assert "strayReplies" not in page
+        assert "strayIds" not in page
+        # Pin the operations, not the mentions — the comments still explain
+        # what the array was for and why it is gone, which is the record.
+        code = "\n".join(
+            line for line in client.notifier_source().splitlines()
+            if not line.strip().startswith("//")
+        )
+        assert "stray" not in code.lower()
 
 
 _CONFIRM_GATE_HARNESS = """
@@ -1248,10 +1323,18 @@ class TestTheInterruptTier:
             assert len(report["announced"]) == 1, f"kind {kind} was lost by waiting"
 
     def test_a_mixed_batch_under_interrupt_takes_only_the_escalation(self):
-        """And the skipped ordinary message is NOT buried by the ack: acking
-        the spoken escalation advances the cursor past everything, so the
-        done-report must come back through the strays path on the next full
-        tick — the same never-lose-one property the peek/ack race has."""
+        """And the skipped ordinary message is NOT buried by the ack. The
+        interrupt tier speaks m2 while m1 sits AHEAD of it in the spool, and
+        the cursor is a single id: there is no ack that covers m2 without also
+        covering m1. So this tick acks NOTHING (``ackThrough`` is empty), m1
+        stays unread, and the next full tick says it — after which the ack
+        walks over both, because m2 is `seen` by then.
+
+        This is the false-reject half priced in the loud direction: the
+        escalation stays unacked in the spool for a while, which costs a repeat
+        after a page reload. Acking m2 alone would cursor-advance past a report
+        no one ever read, with nothing on screen to notice it by.
+        """
         report = run_notifier("""
             spool = [
               { id: "m1", from: "minecraft", kind: "done", text: "done" },
@@ -1261,14 +1344,23 @@ class TestTheInterruptTier:
             interruptable = true;
             await notifier.pollOnce();
             logs.push("interrupt took: " + announcedCalls.length);
+            logs.push("ackThrough: '" + announcedCalls[0].meta.ackThrough + "'");
             await notifier.noticeSpoken(announcedCalls[0].meta);
+            logs.push("cursor after the escalation was spoken: " + cursor);
             speakable = true;
             await notifier.pollOnce();
+            await notifier.noticeSpoken(announcedCalls[1].meta);
+            logs.push("cursor once the skipped report was spoken too: " + cursor);
         """)
         assert "interrupt took: 1" in report["logs"]
+        assert "ackThrough: ''" in report["logs"]
+        assert "cursor after the escalation was spoken: 0" in report["logs"]
         assert len(report["announced"]) == 2
         assert report["announced"][0]["meta"]["inboxIds"] == ["m2"]
         assert report["announced"][1]["meta"]["inboxIds"] == ["m1"]
+        # It converges: the cursor clears BOTH once each has been heard, so a
+        # skipped message never wedges the spool open forever.
+        assert "cursor once the skipped report was spoken too: 2" in report["logs"]
 
     def test_the_owner_speaking_blocks_even_an_escalation(self):
         """The unconditional leg. Nothing — including the alarm — speaks over
@@ -1283,24 +1375,26 @@ class TestTheInterruptTier:
         """)
         assert len(report["announced"]) == 1
 
-    def test_an_escalation_stray_is_taken_and_an_ordinary_stray_stays(self):
-        """Strays are cursor-past — the array is their only route back. The
-        interrupt tick must pull only what it may speak and leave the rest
-        IN the array, not drop them on the floor."""
+    def test_an_escalation_behind_an_ordinary_message_is_still_taken(self):
+        """The interrupt tier reads the spool, not a side array: an escalation
+        sitting BEHIND an ordinary message is spoken while the owner is busy,
+        and the ordinary one waits for the full gate. Order of arrival does not
+        decide which alarms."""
         report = run_notifier("""
-            strays.push({ id: "s1", from: "minecraft", kind: "note", text: "fyi" });
-            strays.push({ id: "s2", from: "watchdog", kind: "escalation", text: "blocked pane" });
+            spool = [
+              { id: "m1", from: "minecraft", kind: "note", text: "fyi" },
+              { id: "m2", from: "watchdog", kind: "escalation", text: "blocked pane" },
+            ];
             speakable = false;
             interruptable = true;
             await notifier.pollOnce();
-            logs.push("strays left: " + strays.length);
+            await notifier.noticeSpoken(announcedCalls[0].meta);
             speakable = true;
             await notifier.pollOnce();
         """)
-        assert "strays left: 1" in report["logs"]
         assert len(report["announced"]) == 2
-        assert report["announced"][0]["meta"]["inboxIds"] == ["s2"]
-        assert report["announced"][1]["meta"]["inboxIds"] == ["s1"]
+        assert report["announced"][0]["meta"]["inboxIds"] == ["m2"]
+        assert report["announced"][1]["meta"]["inboxIds"] == ["m1"]
 
     def test_an_escalation_notice_names_itself_as_one(self):
         report = run_notifier("""
@@ -2043,7 +2137,14 @@ class TestASilentlyFailedAnnouncementIsRetried:
 
     def test_a_heard_notice_is_never_released_by_a_later_failure(self):
         """``seen`` is what settles a notice, and it outranks this: releasing
-        an id the owner HAS heard would replay it."""
+        an id the owner HAS heard would replay it.
+
+        Where that holds moved in #970. It was a guard inside ``noticeFailed``
+        while a release could push a body back into the strays array; with the
+        array gone the guarantee is structural — ``pollOnce`` drops a ``seen``
+        message before it ever consults ``inFlight``. This test passes either
+        way, which is the point: it pins the property, not the line.
+        """
         report = run_notifier("""
             spool = [{ id: "m1", from: "docs", kind: "done", text: "draft ready" }];
             await notifier.pollOnce();
@@ -2063,13 +2164,17 @@ class TestASilentlyFailedAnnouncementIsRetried:
         assert "noticeFailed" in handler
 
 
-class TestTheStopTimeRaceCannotStrandAStray:
+class TestTheStopTimeRaceAnnouncesNothing:
     """#978 item 6. ``pollOnce`` is not cancellable mid-flight. After
     ``stop()`` the full gate fails but ``canInterrupt`` could still pass, and
     ``announce`` with a null announcer did a bare ``speechSynthesis.speak`` —
-    no meta, no ``onSpoken``, never acked, never seen. Being cursor-past, the
-    spool will never return those replies: the ``strays`` array is their only
-    way back to the owner's ear, and this path emptied it into nothing.
+    no meta, no ``onSpoken``, never acked, never seen.
+
+    #970 downgrades the consequence without removing the defect: the reply is
+    no longer cursor-past when this happens (only a spoken notice acks now), so
+    the next session re-reads it. Speaking into a dead announcer is still an
+    utterance the owner may hear and the layer cannot account for, which is why
+    both guards stay.
     """
 
     def test_a_poll_resolving_after_stop_announces_nothing(self):
@@ -2081,26 +2186,11 @@ class TestTheStopTimeRaceCannotStrandAStray:
         """)
         assert report["announced"] == []
 
-    def test_it_never_takes_a_stray_out_of_the_array(self):
-        """The invariant the array exists for. A stray dropped here is lost
-        for good — the cursor is already past it, so the spool will never
-        return it. The stopped check therefore runs BEFORE the pull, not after
-        it: putting them back would work too, but only if every later return
-        path remembered to."""
+    def test_the_message_is_still_there_for_the_next_session(self):
+        """Whole-loop: nothing was acked, so the notifier built after a
+        reconnect finds it in the spool and says it."""
         report = run_notifier("""
-            strays.push({ id: "s1", from: "docs", kind: "escalation", text: "still open" });
-            const inFlight = notifier.pollOnce();
-            notifier.stop();
-            await inFlight;
-        """)
-        assert report["announced"] == []
-        assert report["strays"] == 1
-
-    def test_a_stray_survives_to_the_next_session(self):
-        """Whole-loop: the array is page-lifetime, so the notifier built after
-        a reconnect finds it and says it."""
-        report = run_notifier("""
-            strays.push({ id: "s1", from: "docs", kind: "done", text: "still open" });
+            spool = [{ id: "m1", from: "docs", kind: "done", text: "still open" }];
             const inFlight = notifier.pollOnce();
             notifier.stop();
             await inFlight;
@@ -2295,23 +2385,23 @@ class TestTheBrowserVoiceErrorIsActuallyWired:
         assert "onSpokenAloud()" in handler
 
 
-class TestAFailedStrayIsPutBack:
-    """Review F3. ``pollOnce`` SPLICES a stray out of the array when it pulls
-    one, and a stray is cursor-past: the spool will never return it. Releasing
-    only the id from ``inFlight`` therefore leaves the message gone from both
-    places, so "the next gated tick says it again" was FALSE for exactly the
-    class that becomes strays — escalations, the one kind that emails the
-    owner on dead-letter.
+class TestAFailedNoticeComesBackFromTheSpool:
+    """Review F3, re-based on #970. The old shape: ``pollOnce`` SPLICED a
+    stray out of the page-lifetime array, and a stray was cursor-past — so
+    releasing only the id from ``inFlight`` left the message gone from BOTH
+    places, and "the next gated tick says it again" was false for exactly the
+    class that became strays (escalations).
 
-    ``test_it_never_takes_a_stray_out_of_the_array`` forbids this loss, and
-    its own docstring named the trap: putting them back works "only if every
-    later return path remembered to". This is the return path that did not.
+    With the ack scoped to what was spoken, nothing announced is ever
+    cursor-past before it is heard. ``noticeFailed`` therefore has one job left
+    — release the ids — and the spool itself is what says the message again.
+    The class that was hardest to keep is now the one with no special case.
     """
 
-    def test_a_failed_stray_is_volunteered_again(self):
+    def test_a_failed_notice_is_volunteered_again(self):
         report = run_notifier("""
-            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
-                          text: "a done report dead-lettered" });
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation",
+                       text: "a done report dead-lettered" }];
             await notifier.pollOnce();
             notifier.noticeFailed(announcedCalls[0].meta);
             await notifier.pollOnce();
@@ -2319,78 +2409,50 @@ class TestAFailedStrayIsPutBack:
         assert len(report["announced"]) == 2
         assert "dead-lettered" in report["announced"][1]["text"]
 
-    def test_it_is_back_in_the_array_not_merely_re_announced(self):
-        """The array is the page-lifetime store that survives a reconnect. An
-        id released into nothing is announced once more and then gone."""
+    def test_a_failed_notice_was_never_acked_in_the_first_place(self):
+        """The property that replaces the array. The cursor only moves from
+        ``noticeSpoken``, so a failed announcement leaves the message exactly
+        where it was — including across a page unload, which the array could
+        never survive (#970's stated residual on #969)."""
         report = run_notifier("""
-            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
-                          text: "a done report dead-lettered" });
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "wedged" }];
             await notifier.pollOnce();
             notifier.noticeFailed(announcedCalls[0].meta);
+            logs.push("cursor after a failed notice: " + cursor);
+            notifier = makeNotifier();   // the reload: no client state carried
+            await notifier.pollOnce();
         """)
-        assert report["strays"] == 1
+        assert "cursor after a failed notice: 0" in report["logs"]
+        assert len(report["announced"]) == 2
 
-    def test_it_is_not_put_back_twice(self):
+    def test_releasing_twice_announces_once(self):
+        """Idempotent, and the discriminator for the test above: a double
+        release must not double the notice on the next tick."""
         report = run_notifier("""
-            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
-                          text: "wedged" });
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "wedged" }];
             await notifier.pollOnce();
             const meta = announcedCalls[0].meta;
             notifier.noticeFailed(meta);
             notifier.noticeFailed(meta);
+            await notifier.pollOnce();
         """)
-        assert report["strays"] == 1
+        assert len(report["announced"]) == 2
 
-    def test_a_heard_stray_is_never_put_back(self):
-        """``seen`` outranks the release, here as everywhere: re-queueing a
-        stray the owner HAS heard replays it with no cursor to suppress it.
-
-        The array is read BEFORE the next poll, and that is the whole test.
-        The first version ended with a trailing ``pollOnce()`` and passed
-        whether the guard was there or not: the poll pulls the wrongly-restored
-        stray, drops it for being ``seen``, and leaves the array at 0 either
-        way — laundering the very state under test. It was counted as a pin
-        and pinned nothing (mutation: removing ``if (seen[id]) return;``
-        survived all 625 voice tests).
-        """
+    def test_a_heard_notice_is_never_re_announced_by_a_late_failure(self):
+        """``seen`` outranks the release — structurally, since ``pollOnce``
+        drops a seen message before consulting ``inFlight``. A notice that was
+        HEARD and acked stays settled even if a failure callback arrives after
+        it, and even against a re-read of the whole spool."""
         report = run_notifier("""
-            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
-                          text: "wedged" });
+            spool = [{ id: "m1", from: "watchdog", kind: "escalation", text: "wedged" }];
             await notifier.pollOnce();
             const meta = announcedCalls[0].meta;
             await notifier.noticeSpoken(meta);
             notifier.noticeFailed(meta);
-            logs.push("strays after failing a HEARD stray: " + strays.length);
+            cursor = 0;                  // even against a re-read of the spool
+            await notifier.pollOnce();
         """)
-        assert "strays after failing a HEARD stray: 0" in report["logs"]
         assert len(report["announced"]) == 1
-
-    def test_the_same_shape_unheard_DOES_come_back(self):
-        """The discriminator for the assertion above. Identical script minus
-        the ``noticeSpoken``, read at the same instant: the array must be 1,
-        or the test above would pass simply because nothing is ever restored.
-        """
-        report = run_notifier("""
-            strays.push({ id: "s1", from: "watchdog", kind: "escalation",
-                          text: "wedged" });
-            await notifier.pollOnce();
-            notifier.noticeFailed(announcedCalls[0].meta);
-            logs.push("strays after failing an UNHEARD stray: " + strays.length);
-        """)
-        assert "strays after failing an UNHEARD stray: 1" in report["logs"]
-
-    def test_a_spool_message_is_not_pushed_into_the_strays_array(self):
-        """The other direction. A message still in the spool needs only the
-        inFlight release — the cursor never moved. Pushing it into strays too
-        would announce it twice once the cursor finally advances."""
-        report = run_notifier("""
-            spool = [{ id: "m1", from: "docs", kind: "done", text: "draft ready" }];
-            await notifier.pollOnce();
-            notifier.noticeFailed(announcedCalls[0].meta);
-            await notifier.pollOnce();
-        """)
-        assert len(report["announced"]) == 2
-        assert report["strays"] == 0
 
 
 class TestTheHandshakeGateCoversTheFallbackSpeech:

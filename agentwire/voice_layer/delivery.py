@@ -134,17 +134,8 @@ def _write_cursor(session: str, last_id: str) -> None:
         json.dump({"last_id": last_id}, fh)
 
 
-def read_spool(session: str, unread_only: bool = True, ack: bool = False) -> list[dict]:
-    """Read spooled messages. ``ack=True`` advances the read cursor past them.
-
-    The cursor stores the last-acked message ID, not a line count. A count looks
-    simpler and is wrong: rotating or truncating the spool leaves the count
-    pointing into a file that no longer has that shape, and the failure is
-    silent — new mail reads as already-seen and is never spoken. Message ids are
-    unique (``{epoch_ns}-{uuid6}``), so an id that is no longer present means
-    the spool was rotated, and the safe answer is "treat everything as unread".
-    Re-reading a message is a small annoyance; losing one is the bug.
-    """
+def _entries(session: str) -> list[dict]:
+    """Every message in the spool, in append order. Unparseable lines skipped."""
     path = spool_path(session)
     if not path.exists():
         return []
@@ -162,18 +153,99 @@ def read_spool(session: str, unread_only: bool = True, ack: bool = False) -> lis
             entries.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+    return entries
+
+
+def _index_of(entries: list[dict], message_id: str) -> int:
+    """Position of *message_id*, or -1 when it isn't in the spool at all.
+
+    -1 also stands for "nothing acked yet", which is what makes the comparison
+    in :func:`advance_cursor` work without a special case: an absent cursor and
+    a rotated-away cursor are the same thing — everything is unread.
+    """
+    if not message_id:
+        return -1
+    for index, entry in enumerate(entries):
+        if entry.get("id") == message_id:
+            return index
+    return -1
+
+
+def _advance(entries: list[dict], session: str, message_id: str) -> bool:
+    target = _index_of(entries, message_id)
+    if target < 0:
+        # Rotated away (or never ours). Writing it would strand the cursor on an
+        # id no read can ever match; sweeping to the tail would lose mail. Refuse
+        # and say so — the caller re-reads, which is the cheap failure.
+        return False
+    if target <= _index_of(entries, _read_cursor(session)):
+        return True  # already at or past it: idempotent, and NEVER a rewind
+    _write_cursor(session, message_id)
+    return True
+
+
+def advance_cursor(session: str, message_id: "str | None") -> bool:
+    """Ack EXACTLY through *message_id* — the fix for the read/ack race (#970).
+
+    ``read_spool(ack=True)`` advances to the spool tail *as it stands at ack
+    time*, which is not what the caller read. Every consumer of this spool reads,
+    then processes, then acks — the voice notifier deliberately acks only after
+    speaking — so mail lands in that window and is cursor-advanced past without
+    ever having been read. The cursor was already id-based; this is the missing
+    parameter, not a missing mechanism.
+
+    Returns whether the cursor is now at or past *message_id*. The one False is
+    an id the spool no longer holds, and it is returned rather than swallowed:
+    a silently-refused ack is indistinguishable from a successful one, and the
+    caller re-announces forever with nothing on screen to say why.
+
+    Both halves are priced. Acking too little re-reads a message the owner
+    already heard (an annoyance). Acking too much loses one silently — no
+    dead-letter, no email, and in a voice channel no screen to notice on. So
+    every refusal here fails toward re-reading, and the cursor never moves
+    backwards either: a rewind un-reads mail that WAS heard.
+    """
+    if not message_id:
+        return False
+    return _advance(_entries(session), session, str(message_id))
+
+
+def read_spool(
+    session: str,
+    unread_only: bool = True,
+    ack: bool = False,
+    ack_through: "str | None" = None,
+) -> list[dict]:
+    """Read spooled messages, optionally advancing the read cursor.
+
+    ``ack_through=<id>`` acks exactly through that message (see
+    :func:`advance_cursor`) and OUTRANKS ``ack``: honouring both would sweep the
+    tail, which is the behaviour ``ack_through`` exists to avoid. ``ack=True``
+    keeps its old meaning — advance past everything unread — for callers that
+    genuinely consume the whole spool in one breath.
+
+    The cursor stores the last-acked message ID, not a line count. A count looks
+    simpler and is wrong: rotating or truncating the spool leaves the count
+    pointing into a file that no longer has that shape, and the failure is
+    silent — new mail reads as already-seen and is never spoken. Message ids are
+    unique (``{epoch_ns}-{uuid6}``), so an id that is no longer present means
+    the spool was rotated, and the safe answer is "treat everything as unread".
+    Re-reading a message is a small annoyance; losing one is the bug.
+    """
+    entries = _entries(session)
+    if not entries:
+        return []
 
     start = 0
     if unread_only:
-        last_id = _read_cursor(session)
-        if last_id:
-            for index, entry in enumerate(entries):
-                if entry.get("id") == last_id:
-                    start = index + 1
-                    break
+        found = _index_of(entries, _read_cursor(session))
+        if found >= 0:
+            start = found + 1
 
     selected = entries[start:] if unread_only else entries
-    if ack and entries:
+    if ack_through:
+        _advance(entries, session, str(ack_through))
+    elif ack:
         _write_cursor(session, str(entries[-1].get("id") or ""))
     return selected
 
