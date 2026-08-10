@@ -30,6 +30,7 @@ observe:
 """
 
 import json
+import re
 import shutil
 import subprocess
 import textwrap
@@ -2631,3 +2632,219 @@ class TestTheSpeakingWatchdogScalesWithTheUtterance:
         """The other half: an empty or one-word utterance must not end up with
         a near-zero watchdog that fires before it starts."""
         assert self._watchdog_ms(json.dumps("Hi.")) >= 30_000
+
+
+# =============================================================================
+# Wave-2 prose: two guarantees stated broader than the code
+# =============================================================================
+
+
+def _source_prose(path: str) -> str:
+    """A module's source, comment markers stripped and whitespace-normalized.
+
+    A sentence written across several ``#`` lines is one sentence, and the
+    comment beside the code is exactly where the stale claim lived. Normalizing
+    lets an assertion survive a re-wrap of the prose.
+    """
+    from pathlib import Path
+
+    lines = [
+        line.lstrip().removeprefix("#:").removeprefix("#").strip()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+    ]
+    return " ".join(" ".join(lines).split())
+
+
+class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
+    """``confirm.py``'s ``not_announced`` note promised "the ONE bounded
+    deferral", and reasoned its deadlock argument against the ~12s that
+    implied. #993 added a SECOND deferral (``ownerSpeaking``,
+    ``maxOwnerDeferrals`` 3) which STACKS with the first, so the announcer's
+    worst case is 5 intervals — 30s — and 4 (24s) in this outcome's own state,
+    where the in-flight leg cannot be taken at all.
+
+    The count and the arithmetic are pinned against the CODE rather than
+    transcribed, because transcription is how the first number went stale: the
+    constants live in ``client.py`` and the sentence lives in ``confirm.py``,
+    and nothing connected them.
+    """
+
+    def _constants(self) -> tuple[int, int]:
+        src = client.ANNOUNCER_JS
+        fallback = int(
+            re.search(r"deps\.fallbackMs \|\| (\d+)", src).group(1)
+        )
+        owner = int(
+            re.search(r"deps\.maxOwnerDeferrals === undefined \? (\d+)", src).group(1)
+        )
+        return fallback, owner
+
+    def test_the_single_deferral_claim_is_gone(self):
+        note = _source_prose(confirm.__file__)
+        assert "the one bounded deferral keys only on a response created AFTER" not in note
+        assert "TWO bounded deferrals" in note
+
+    def test_the_note_states_the_bound_the_constants_produce(self):
+        """Every number in the paragraph, DERIVED — bumping either constant in
+        ``client.py`` fails the sentence in ``confirm.py`` that quotes it.
+        Transcription across two files with nothing connecting them is how the
+        first number went stale, and the second one after it."""
+        fallback, owner = self._constants()
+        both_legs = fallback * (2 + owner) // 1000       # the bound: 30s
+        unacked = fallback * (1 + owner) // 1000         # the sub-case: 24s
+        silence = fallback * 2 // 1000                   # the owner's: 12s
+        note = _source_prose(confirm.__file__)
+        assert f"{2 + owner} intervals — {both_legs}s" in note
+        assert f"{1 + owner} ({unacked}s)" in note
+        assert f"at {silence}s" in note
+
+    def test_the_note_does_not_present_the_sub_case_as_the_bound(self):
+        """The corrected error, pinned in the direction it actually went: 24s
+        was stated as this outcome's bound when it is the unacked sub-case, and
+        6s as the owner's silence when the in-flight leg is available here."""
+        note = _source_prose(confirm.__file__)
+        assert "the worst case in this outcome 4 intervals" not in note
+        assert "where the in-flight leg is unavailable" not in note
+        assert "BOTH are live in this state" in note
+
+    def test_the_reason_the_deadlock_argument_survives_is_stated(self):
+        """Not "30s is fine" — the argument has to name WHY, or the next bump
+        re-opens it. Both legs: a deferral is not a suppression, and the leg
+        that grew is bought by the owner's own voice."""
+        note = _source_prose(confirm.__file__)
+        assert "a deferral is not a suppression" in note
+        assert "not the owner's silence" in note
+
+    def test_the_ordinary_path_here_takes_BOTH_legs_and_speaks_on_fire_five(self):
+        """The behavioural half of the claim, and the correction to a first
+        version of this test that could not see it.
+
+        The response already in flight cannot defer — ``sawCreate`` is only set
+        while the item is current, and that one predates the announce. But it
+        is not the only response in play: this outcome fires with
+        ``responseActive`` true, so pump() CANCELS that response and creates
+        ours, and the server's ack of OUR create lands while the item is still
+        current (client.py ``onResponseCreated``). Both legs are therefore live
+        in this state on the ordinary path, and the fallback speaks on fire 5.
+
+        The fixture omitting that ack is what made "4 intervals" look pinned.
+        """
+        fallback, owner = self._constants()
+        report = run_announcer(f"""
+            announcer.onResponseCreated();     // in flight BEFORE the announce
+            announcer.announce("Hang on — I haven't finished telling you.");
+            announcer.onResponseCreated();     // the server ACKS our own create
+            ownerIsSpeaking = true;
+            for (let i = 0; i < {owner + 2}; i++) {{
+                fireTimers();
+                logs.push("fire " + (i + 1) + " spoken=" + spoken.length);
+            }}
+        """)
+        for n in range(1, owner + 2):
+            assert f"fire {n} spoken=0" in report["logs"]
+        assert f"fire {owner + 2} spoken=1" in report["logs"]
+
+    def test_only_an_unacked_create_leaves_the_in_flight_leg_untaken(self):
+        """The sub-case, named as one. With no ack for our own create nothing
+        ever sets ``sawCreate``, so the owner-speaking deferrals are the only
+        ones available and speech lands one interval earlier. This is the state
+        the paragraph calls out as the exception — not the bound."""
+        fallback, owner = self._constants()
+        report = run_announcer(f"""
+            announcer.onResponseCreated();     // in flight BEFORE the announce
+            announcer.announce("Hang on — I haven't finished telling you.");
+            ownerIsSpeaking = true;
+            for (let i = 0; i < {owner + 1}; i++) {{
+                fireTimers();
+                logs.push("fire " + (i + 1) + " spoken=" + spoken.length);
+            }}
+        """)
+        for n in range(1, owner + 1):
+            assert f"fire {n} spoken=0" in report["logs"]
+        assert f"fire {owner + 1} spoken=1" in report["logs"]
+
+    def test_an_owner_who_stops_talking_waits_at_most_one_more_deferral(self):
+        """What bounds the owner's SILENCE rather than the buddy's wait — two
+        intervals, not one. The owner-speaking leg stops deferring the moment
+        they go quiet, but the in-flight leg does not key on the owner at all,
+        so a single unspent in-flight deferral still lands between their
+        silence and the speech. That is the 12s the paragraph states."""
+        report = run_announcer("""
+            announcer.announce("Hang on — I haven't finished telling you.");
+            announcer.onResponseCreated();     // the server ACKS our own create
+            ownerIsSpeaking = true;
+            fireTimers();                      // owner-speaking deferral
+            ownerIsSpeaking = false;
+            fireTimers();                      // in-flight deferral, owner silent
+            logs.push("after one silent fire: spoken=" + spoken.length);
+            fireTimers();
+        """)
+        assert "after one silent fire: spoken=0" in report["logs"]
+        assert len(report["spoken"]) == 1
+
+
+class TestTheSpeakingBudgetCommentDoesNotClaimThePumpPath:
+    """``speakingBaseMs`` claimed the scaled budget kept the MODEL from
+    starting a response over the browser voice — the whole of #950. It does
+    not. The budget gates ``pending()``/``anchorPending()``, which are the
+    NOTIFIER's gates; the announcer's own FIFO never consults ``speaking``.
+
+    Behaviour deliberately unchanged (a separate decision). This class pins the
+    COMMENT: the residual is reproduced, so if the pump path is ever fixed this
+    fails and whoever fixes it has to come back and delete the paragraph that
+    calls it live.
+    """
+
+    def _prose(self) -> str:
+        """The page's JS comments as flat prose, so an assertion survives a
+        re-wrap — these sentences are 80 columns wide and every one of them
+        spans a line break."""
+        lines = [
+            line.strip().removeprefix("//").strip()
+            for line in client.page("buddy", "tok").splitlines()
+        ]
+        return " ".join(" ".join(lines).split())
+
+    def test_the_comment_no_longer_claims_the_defect_is_ruled_out(self):
+        prose = self._prose()
+        assert "which reopens both gates and lets the MODEL start a response" not in prose
+        assert "`current` and `queue` only — never `speaking`" in prose
+        assert "live residual" in prose
+
+    def test_the_comment_names_the_gates_the_budget_actually_covers(self):
+        prose = self._prose()
+        assert "reopens the NOTIFIER's gates — canSpeak and canInterrupt" in prose
+
+    def test_a_queued_item_is_pumped_into_the_starting_browser_voice(self):
+        """The reproduction. A long notice falls back to the browser voice; a
+        second must_speak item is queued behind it. armFallback nulls
+        `current`, starts speak(), and calls pump() in the same tick — so the
+        second item's response.create goes out while the first is still only
+        STARTING to be spoken aloud."""
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps("x" * 1250)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+            logs.push("speaking=" + spoken.length + " pending=" + announcer.pending());
+        """)
+        # The browser voice has started and has NOT ended.
+        assert len(report["spoken"]) == 1
+        # ...and the queued item was promoted onto the channel anyway.
+        assert len(creates(report)) == 2
+        assert "speaking=1 pending=2" in report["logs"]
+
+    def test_the_watchdog_did_not_have_to_fire_for_that(self):
+        """The part that makes it a residual rather than a symptom of the flat
+        bound: the overlap above happens at the fallback fire, with the
+        speaking watchdog freshly armed and nowhere near due."""
+        report = run_announcer(f"""
+            speakDefers = true;
+            announcer.announce({json.dumps("x" * 1250)});
+            announcer.announce("Your worktree run failed.");
+            fireTimers();
+        """)
+        # Two timers are armed: the promoted item's own 6s fallback, and the
+        # speaking watchdog for the utterance now being started. The watchdog
+        # is the one this claim is about, and it is nowhere near due.
+        assert max(report["armedMs"]) > 30_000

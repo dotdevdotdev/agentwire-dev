@@ -1097,3 +1097,59 @@ class TestExpandedReads:
         assert result["success"] is False
         assert result["must_speak"] is True
         assert seen == []
+
+
+# =============================================================================
+# Wave-2 prose: the premise a repair would argue from
+# =============================================================================
+
+
+def _flat(text: str) -> str:
+    """Whitespace-normalized, so an assertion survives a re-wrap of the prose."""
+    return " ".join((text or "").split())
+
+
+class TestRequireLiveNamesTheMechanismItActuallyHas:
+    """``_require_live``'s docstring justified its whole-name comparison from a
+    premise the shipped code does not have: that ``_session_arg`` "refuses the
+    syntax outright", making a name "local by construction".
+
+    #994's final shape refuses no syntax — surface.py records that the first
+    attempt did and that doing so was itself a false statement, because
+    ``ops@edge`` is a creatable local session. The gate is LIVENESS. The
+    conclusion survives; the premise did not, and a premise is what the next
+    person repairing this reasons from — they would look for a syntax refusal,
+    fail to find one, and "restore" it.
+
+    Pinned in both directions: the dead mechanism must not come back into the
+    prose, and the live one must be named.
+    """
+
+    def test_the_docstring_does_not_claim_a_syntax_refusal(self):
+        doc = _flat(write_tools._require_live.__doc__)
+        assert "refuses the syntax outright" not in doc
+        assert "local by construction" not in doc
+
+    def test_the_docstring_names_liveness_and_session_arg(self):
+        doc = _flat(write_tools._require_live.__doc__)
+        assert "LIVENESS" in doc
+        assert "_session_arg" in doc
+        assert "local by DEMONSTRATION" in doc
+
+    def test_the_named_mechanism_is_the_one_that_runs(self, monkeypatch):
+        """The control that keeps the sentence honest rather than merely
+        rewritten: ``_session_arg`` admits an ``@`` name local tmux reports
+        live and refuses one it does not — a liveness gate, not a syntax one.
+        If that ever becomes a syntax refusal again, this fails alongside the
+        prose that describes it."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: {"ops@edge"})
+        assert tools._session_arg({"session": "ops@edge"}) == "ops@edge"
+        with pytest.raises(tools.ToolError, match="no live session"):
+            tools._session_arg({"session": "web@laptop"})
+
+    def test_an_unreachable_tmux_makes_neither_layer_guess(self, monkeypatch):
+        """The one case the rewritten sentence carves out (spec §5): nothing is
+        demonstrated, so nothing is refused."""
+        monkeypatch.setattr("agentwire.inbox.live_sessions", lambda: None)
+        assert tools._session_arg({"session": "web@laptop"}) == "web@laptop"
+        write_tools._require_live("web@laptop", cannot="")

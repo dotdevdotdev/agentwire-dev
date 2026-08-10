@@ -78,9 +78,17 @@ def _require_live(session: str, cannot: str) -> None:
     remote name was checked against LOCAL tmux, so a remote session got either
     a false "nothing is listening" or — worse — a pass, on the strength of a
     local session that happens to share its name. Remote targets are out of
-    scope (owner ruling, 2026-08-09) and ``_session_arg`` now refuses the
-    syntax outright, so by the time a name reaches here it is local by
-    construction and splitting it could only re-open that gap.
+    scope (owner ruling, 2026-08-09), but nothing refuses the ``@`` SYNTAX —
+    that was the first attempt at the ruling and it was itself a false
+    statement, since ``ops@edge`` is a creatable, addressable LOCAL session
+    (see surface.py, "Remote ``name@machine`` targets are out of scope"). What
+    ships is a LIVENESS gate: ``tools._session_arg`` checks the shape, then
+    refuses any whole name containing ``@`` that local tmux does not report
+    live. So a name reaching here is local by DEMONSTRATION — and the bare half
+    before the ``@`` is exactly the string that was never the thing
+    demonstrated, which is why splitting it could only re-open that gap. The
+    one case that demonstrates nothing is an unreachable tmux, where both that
+    gate and this one refuse nothing (spec §5) rather than either guessing.
     """
     from .. import inbox
 
