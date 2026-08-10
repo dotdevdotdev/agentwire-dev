@@ -2023,6 +2023,15 @@ class TestTheCancelBarrierIsONELockHold:
         So this one is read off the SOURCE. A structural assertion is the right
         tool exactly when the property is "these statements are in this scope",
         which no amount of runtime observation can establish.
+
+        **This pin checks SCOPE. It does not check ORDER.** Marking
+        ``_dispatching`` before reading ``_cancelled``, both inside the one
+        hold, passes here — and returns without entering the ``try``/``finally``
+        that releases the marker, so the marker leaks and every later cancel is
+        told *"Too late to stop that one — it's already going out"* forever,
+        about a write that never happened. The current order is correct and
+        nothing on this branch does that; the point is that whoever moves these
+        two statements is not protected against it by this test.
         """
         import ast
         import inspect
