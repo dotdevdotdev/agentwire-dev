@@ -79,11 +79,17 @@ to review or merge it. It is the most common thing that actually needs the owner
 #:   by OWNERSHIP — an opinion is yours and said as yours; a fact belongs to a
 #:   tool or to the owner, and is looked up, not remembered.
 #: - "Insisting" is deliberately NOT a licence to interrupt. The prose here
-#:   describes re-raising — say it once, and if it is visibly still true later,
-#:   say it once more at a gap. The interrupt decision itself is made in CODE
-#:   (the notifier's two-tier gate in client.py, keyed on message kind), for
-#:   the same reason the confirm judgment is: prompt compliance is not a
-#:   mechanism, and "how urgent does the model feel this is" is not a gate.
+#:   describes re-raising — say it once, and say it once more when the second
+#:   mention is handed back to you. **The ledger decides when** (#980):
+#:   ``createReRaiseLedger`` in client.py holds the open item and offers it
+#:   again on a quiet full-gate tick, so the model speaks the second mention
+#:   rather than choosing it. This comment described the choosing for one
+#:   round after the paragraph stopped granting it, which is how a deleted
+#:   sentence gets restored by a reader trusting the comment above it. The
+#:   interrupt decision is in CODE for the same reason (the notifier's
+#:   two-tier gate, keyed on message kind), and so is the confirm judgment:
+#:   prompt compliance is not a mechanism, and "how urgent does the model feel
+#:   this is" is not a gate.
 PERSONA = """\
 <persona>
 You are a peer, not an assistant. Think of the register of a pair-programming \
@@ -157,11 +163,17 @@ gate, out loud.
 #:   write (:mod:`~agentwire.voice_layer.surface`); a kill spec would have
 #:   shipped with the prompt still denying it, and nothing re-labels prose.
 #:   What survives as an absolute is only what
-#:   :data:`~agentwire.voice_layer.surface.TIER_EXCLUDED` makes permanent. The
-#:   confirm-gate sentence is deliberately phrased as what a gated tool DOES
-#:   (hands back a phrase instead of acting) rather than as "every write is
-#:   gated" — the light grade is confirm-free by design, and none are wired
-#:   only because none has a CLI verb yet.
+#:   :data:`~agentwire.voice_layer.surface.TIER_EXCLUDED` makes permanent.
+#:   The confirm sentence says "SOME of them ask first", and the quantifier is
+#:   the point: the first repair of this paragraph shipped "a tool that
+#:   changes something hands back a confirm phrase", which quantifies over
+#:   every mutating tool and is true only while no
+#:   :data:`~agentwire.voice_layer.surface.TIER_WRITE_LIGHT` write is wired —
+#:   they are confirm-free BY DESIGN, and unwired only because none has a CLI
+#:   verb yet. Same defect as the sentence it replaced, one round later. Nor
+#:   can the prose be rescued by naming the grade: "gated" is a word this
+#:   prompt never defines to the model, so a sentence that turns on it says
+#:   nothing to its actual reader. Describe what the model observes.
 #: - **The reply nudge is conditional**, because ``confirm.render_body`` drops
 #:   it whole whenever the body would exceed ``MAX_BODY_CHARS``. Stated
 #:   unconditionally, the buddy could tell the owner a recipient was told how
@@ -197,9 +209,9 @@ closest match. Read back what you heard and ask, or list the candidates. Acting 
 the wrong session is worse than asking twice.
 
 LIMITS. Your tools are the whole of what you can do, and the list you were \
-given is the list. Most of them only observe. A tool that changes something \
-tells you so by handing back a confirm phrase instead of doing it; the owner \
-saying that phrase out loud is what runs it. Before you \
+given is the list. Most of them only observe. Some of them ask first: they \
+hand back a confirm phrase instead of doing it, and the owner saying that \
+phrase out loud is what runs them. Before you \
 say you can do something, ask which tool does it: if none does, you cannot, \
 and saying so is the answer — not a workaround. A few things stay out of your \
 hands however the tool list grows: you never start, restart or drive a session, \

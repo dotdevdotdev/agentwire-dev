@@ -25,7 +25,29 @@ what is wired, not assert a negative the next wiring falsifies), and the reply
 nudge (which ``render_body`` drops whole whenever the body runs long).
 """
 
+import inspect
+
 from agentwire.voice_layer import confirm, instructions, surface, write_tools
+
+
+def source() -> str:
+    """The module's own text, comments included.
+
+    The comments above PERSONA and VOICE_MODE describe what the prompt
+    strings say. They are prose about prose, and they drift the same way the
+    prompt does — twice already: one described the re-raise sentence it had
+    just been rewritten past, the other claimed a phrasing the shipped
+    sentence did not have. Nothing reads a comment at runtime, so pinning
+    them needs the source.
+    """
+    return inspect.getsource(instructions)
+
+
+def flowed_comments() -> str:
+    """:func:`source` with the ``#:`` markers and line wrapping flowed away,
+    so an assertion about what a comment SAYS does not also pin where the
+    72-column wrap happens to fall."""
+    return " ".join(source().replace("#:", " ").split())
 
 
 def full() -> str:
@@ -178,6 +200,15 @@ class TestVolunteeringMatchesTheCodeDrivenSet:
         assert "handed to you" in persona
         assert "scheduled for you rather than left to" in persona
 
+    def test_the_comment_above_persona_agrees_with_the_paragraph(self):
+        """#991 review. The comment still described the deleted sentence —
+        "say it once more at a gap" if "it is visibly still true later", which
+        is the model judgment the ledger took over. A comment that documents
+        the previous draft is how the next reader restores it."""
+        src = source()
+        assert "visibly still true later" not in src
+        assert "The ledger decides when" in flowed_comments()
+
 
 class TestLimitsDeriveFromWhatIsWired:
     """#980 defect 2: "you cannot … stop one" is true of today's wiring and
@@ -208,6 +239,39 @@ class TestLimitsDeriveFromWhatIsWired:
         assert "never write code" in text
         assert "another channel" in text
         assert "outside the fleet" in text
+
+
+class TestTheConfirmSentenceDoesNotQuantifyOverEveryWrite:
+    """#991 review. The repair for defect 2 shipped its own copy of the
+    defect: "A tool that changes something tells you so by handing back a
+    confirm phrase" quantifies over ALL mutating tools, and the light grade is
+    confirm-free BY DESIGN. True only while no light write is wired — which is
+    a wiring accident, exactly the thing this paragraph stopped relying on."""
+
+    def test_the_light_grade_is_confirm_free_and_unwired_by_accident(self):
+        """The premise. Light writes are graded, disjoint from gated, and
+        absent from WRITE_SPECS only because none has a CLI verb yet."""
+        assert surface.TIER_WRITE_LIGHT
+        assert not (surface.TIER_WRITE_LIGHT & surface.TIER_WRITE_GATED)
+        wired = {spec.name for spec in write_tools.WRITE_SPECS}
+        assert not (surface.TIER_WRITE_LIGHT & wired)
+
+    def test_the_prose_says_some_not_all(self):
+        text = instructions.VOICE_MODE
+        assert "A tool that changes something tells you so" not in text
+        assert "Some of them ask first" in text
+
+    def test_the_comment_describes_the_sentence_that_shipped(self):
+        """The second half of the same finding: the comment claimed a
+        phrasing ("what a gated tool DOES") the string did not have, and
+        "gated" is a word the prompt never defines to the model."""
+        src = source()
+        assert "deliberately phrased as what a gated tool DOES" not in src
+        comments = flowed_comments()
+        assert "the quantifier is the point" in comments
+        assert "confirm-free BY DESIGN" in comments
+        # And the reason naming the grade would not have rescued it.
+        assert "a word this prompt never defines to the model" in comments
 
 
 class TestTheReplyPathIsConditional:
