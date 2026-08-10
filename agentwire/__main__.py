@@ -183,7 +183,7 @@ Command Categories:
     #   - diff:   structured git diff for the mobile Review window
     #   - prompts: prompt routing (rides the limits watchdog)
     #   - msg:    polite agent-to-agent inbox (rides the watchdog)
-    from . import diff_cli, limits_cli, msg_cli, pane_cli, prompts_cli, send_cli  # noqa: I001  # session_cli kept on its own line below to minimize Phase 1 #495 merge conflicts
+    from . import alerts_cli, diff_cli, limits_cli, msg_cli, pane_cli, prompts_cli, send_cli  # noqa: I001  # session_cli kept on its own line below to minimize Phase 1 #495 merge conflicts
     from . import session_cli
     from . import channels_cli, config_cli, portal_cli, tts_cli
     from . import scheduler_cli, ensure_cli, tasks_cli
@@ -197,6 +197,7 @@ Command Categories:
         diff_cli.register_diff_parser,
         prompts_cli.register_prompts_parser,
         msg_cli.register_msg_parser,
+        alerts_cli.register_alerts_parser,
         limits_cli.register_limits_parser,
         pane_cli.register_pane_parser,
         send_cli.register_send_parser,
