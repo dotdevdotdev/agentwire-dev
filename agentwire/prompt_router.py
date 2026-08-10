@@ -654,6 +654,48 @@ def build_message(session: str, pane_index: int, info: PromptInfo) -> str:
     )
 
 
+def _alert_no_parent(
+    session: str, pane_index: int, info: PromptInfo, waiting
+) -> None:
+    """Mirror a no-parent prompt to subscribed sessions (#982). Escalation kind.
+
+    Earns the interrupt on both halves of the test: nothing but a human can
+    answer a prompt with no parent to route to, and the session is stalled —
+    burning wall-clock, and in the plan/permission cases holding a tool call
+    open — for as long as it waits.
+
+    Throttling is inherited rather than added: the only caller is
+    :func:`_escalate_no_parent`, past its ``escalated_at`` gate, so this rides
+    the same once-per-:data:`NO_PARENT_ESCALATE_TTL`-per-prompt window as the
+    email. The prompt HASH is what that marker keys on, so a redraw of the same
+    dialog does not re-alert while a genuinely new question does.
+
+    Deliberately sent before the email: the local enqueue cannot fail for the
+    reason the email usually does (no provider key), and a fleet with a live
+    subscriber is a fleet where somebody may answer this in seconds rather than
+    whenever the owner next reads mail.
+    """
+    try:
+        from . import fleet_alerts
+
+        waited = (
+            f" It has been waiting {int(waiting.total_seconds() // 60)} minutes."
+            if waiting else ""
+        )
+        fleet_alerts.emit_for(
+            "blocked_pane_no_parent",
+            f"{session} (pane {pane_index}) is blocked on a {info.kind} prompt "
+            f"and is a root session — there is no parent to route it to, so "
+            f"nothing will answer it automatically.{waited} Question: "
+            f"{info.question} Answer with: agentwire prompts answer -s "
+            f"'{session}' --pane {pane_index} --expect {info.content_hash()} <key>",
+        )
+    except Exception as exc:  # best-effort; never break the sweep
+        _log_event(
+            "no_parent_alert_failed", session=session, pane=pane_index, error=str(exc)
+        )
+
+
 def _escalate_no_parent(
     session: str, pane_index: int, info: PromptInfo, prior: "dict | None"
 ) -> "str | None":
@@ -681,6 +723,7 @@ def _escalate_no_parent(
             pass
 
     waiting = _marker_age(prior, "detected_at") if prior else None
+    _alert_no_parent(session, pane_index, info, waiting)
     try:
         import socket
 

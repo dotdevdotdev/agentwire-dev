@@ -264,6 +264,61 @@ pointers and reads the files. The durable content lives in the referenced file,
 not the message — so `pull` (consume-on-read) is the only way these leave the
 inbox; they are never dead-lettered.
 
+## Fleet alerts — detectors as senders (#982)
+
+Until #982 every kind above had exactly one class of sender: an agent typing
+`msg send`. The machine's own detectors — expired login, usage-limit park,
+dead-lettered report-backs, a root session blocked with nowhere to route — could
+only reach the **owner**, by email. `agentwire/fleet_alerts.py` is the other
+half: the same detectors, addressed as typed mail to any session that asks for
+it. Nothing about the email path changed; this rides alongside it.
+
+**Subscription is a lease, not a flag.** A session opts in with
+`fleet_alerts.subscribe(name)`, which records an expiry in that session's
+`metadata.json` (the #871 store — no second registry to drift) and must be
+renewed. That is not ceremony: a recipient whose mail is *spooled* rather than
+pasted never reads as "gone" the way a dead tmux session does, so a permanent
+flag would keep producing into a spool nobody reads and then replay hours of
+stale alerts at its next start. An expired lease fails **quiet**, which is the
+correct direction for a producer whose expensive failure is over-production.
+With no subscriber, `emit` walks the store, finds nothing, and returns — every
+detector behaves exactly as it did before.
+
+### The ruling: which detector earns which kind
+
+`escalation` is the only kind a consumer may act on out of turn (the voice
+buddy's interrupt tier is the first consumer). So the bar is **not** "is this
+event real?" — all five candidates are real when they fire. It is: *can this
+clear without a human, and is something burning while it waits?*
+
+| Detector | Kind | Why, and what bounds it |
+|---|---|---|
+| expired login (`auth_expired`) | `escalation` | Machine-wide; every subsequent turn is refused and only `/login` clears it. Once per `ESCALATE_TTL` (1h) **per outage, per machine** — not per session, not per dispatch — stamped in the outage record next to the email's own stamp. |
+| root session blocked, no parent (`prompt_router`) | `escalation` | By design nothing can route it; the session is stalled until a human answers. Once per hour **per distinct prompt** (keyed on the prompt hash, so a redraw doesn't re-fire). |
+| usage-limit park | `note` | **Demoted on purpose.** Self-healing: reset time parsed, resume nudge armed, the owner's email literally ends "no action needed". Real news, nothing to act on inside thirty seconds. One per park (`is_parked` is the throttle). |
+| dead-lettered load-bearing mail | `request`, promoted to `escalation` iff the lost message *was* an escalation | Someone must go look at `agentwire msg dead`. The floor is `request` because the realistic bad case is one stuck recipient — 147 dead letters in ~2s, observed — and that shape must not buy 147 interrupts. One alert per **batch**, matching the digest email's coalescing. |
+| dangling PR (`worktree --dangling`) | **not wired** | No autonomous trigger (only `doctor` and the explicit flag, both run by a human already reading the output) and no per-finding throttle state to reuse, so a producer would re-announce the same durable, passive condition every invocation. Nothing is burning while a dangling PR waits. |
+
+Two guards keep the dead-letter mirror from feeding itself: alerts carry a
+distinct sender (`fleet-alerts`) and are never mirrored, and any subscriber
+named as a *recipient* of the lost batch is excluded. Either alone is
+insufficient — with two subscribers, an alert stranded en route to one would
+otherwise be reported to the other, once per drain, forever.
+
+### What an escalation actually buys
+
+Less than the word suggests, and the wiring was designed against the measured
+number rather than the intuition. For the voice buddy, pre-emption is real only
+against a VAD response; against an announcer item an escalation **queues behind
+it**, plus up to one 6s in-flight deferral and up to three owner-speaking ones —
+roughly 30s worst case. So `escalation` means "worth cutting the buddy off
+within about half a minute", never "immediately". A detector whose event does
+not clear the *30-second* bar has no business in the tier.
+
+Rulings live as data in `fleet_alerts.DETECTOR_KINDS` and are pinned by
+`tests/unit/test_fleet_alerts.py`, so changing what may interrupt is a
+deliberate edit to a test that says why.
+
 ## Broadcast
 
 `--to @all` fans out to every **live agent session except the sender** — useful
@@ -355,6 +410,8 @@ session right now.
 | `~/.agentwire/inbox/<session>/.lock/` | mkdir-based per-session drain lock |
 | `~/.agentwire/inbox/.tick.lock` | global flock guarding `tick()` |
 | `~/.agentwire/inbox-events.jsonl` | audit log (enqueued/delivered/deferred/dead_letter) |
+| `~/.agentwire/sessions/<session>/metadata.json` → `fleet_alerts` | the subscription lease (see Fleet alerts) |
+| `~/.agentwire/fleet-alerts-events.jsonl` | audit log (subscribed/emitted/emit_failed) |
 
 ## Scope (v1)
 

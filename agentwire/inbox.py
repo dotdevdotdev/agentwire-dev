@@ -684,6 +684,51 @@ def _fmt_ts(ms: int) -> str:
 _ESCALATE_DIGEST_DETAIL_CAP = 10
 
 
+def _alert_dead_letters(batch: list[Message], reason: str) -> None:
+    """Mirror a dead-letter digest to subscribed sessions (#982).
+
+    ``request`` by default: a permanently lost report-back needs somebody to go
+    look at ``agentwire msg dead``, but it is not worth cutting across a
+    sentence — and the realistic bad case here is a single stuck recipient that
+    dead-lettered 147 messages in ~2s (2026-07-19). One alert per BATCH, the
+    same coalescing the digest email already does, so that shape buys one
+    message rather than 147.
+
+    The one promotion: if what was lost was itself an ``escalation``, the alert
+    is an escalation. That is not this module re-deriving urgency — the sender
+    already made the judgment, and a *lost interrupt* is precisely the failure
+    the tier exists for.
+
+    Two recursion guards, because an alert is ordinary mail and can dead-letter
+    like any other. The recipient guard alone is not enough once more than one
+    session subscribes: an alert stranded on the way to subscriber A would
+    otherwise be reported to subscriber B, whose own copy is stuck for the same
+    reason, once per drain forever. So our own undelivered alerts are dropped
+    by SENDER, and every subscriber named as a recipient is excluded.
+    """
+    from . import fleet_alerts
+
+    try:
+        mirrored = [m for m in batch if m.sender != fleet_alerts.SENDER]
+        if not mirrored:
+            return
+        recipients = sorted({m.to for m in mirrored})
+        kind = "escalation" if any(m.kind == "escalation" for m in mirrored) else None
+        noun = "message" if len(mirrored) == 1 else "messages"
+        kinds = ", ".join(sorted({m.kind for m in mirrored}))
+        fleet_alerts.emit_for(
+            "dead_letter",
+            f"{len(mirrored)} load-bearing {noun} ({kinds}) to "
+            f"{', '.join(recipients)} were never delivered and have been "
+            f"dead-lettered (last defer reason: {reason}). They are recoverable "
+            f"with `agentwire msg dead`, but nobody has seen them.",
+            kind=kind,
+            exclude=recipients,
+        )
+    except Exception as exc:  # best-effort; never break the drain
+        _log_event("dead_letter_alert_failed", count=len(batch), error=str(exc))
+
+
 def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
     """Email the owner once per batch when load-bearing report-backs dead-letter.
 
@@ -704,6 +749,7 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
     batch = [m for m in messages if m.kind in ESCALATE_KINDS]
     if not batch:
         return
+    _alert_dead_letters(batch, reason)
     try:
         import socket
 
