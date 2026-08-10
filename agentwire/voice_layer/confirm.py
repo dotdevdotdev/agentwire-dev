@@ -381,6 +381,15 @@ _NEVER_GAP_WORDS = frozenset(
 #: ONE rule, one place: the pair is deliberately NOT also in
 #: :data:`_DENIAL_BIGRAMS`. Two spellings of one rule drift apart, and the
 #: zero-gap case is just this rule with an empty run.
+#:
+#: **The second half is ``confirm`` alone, not :data:`_CONFIRM_WORDS`, and that
+#: is deliberate** — a reader will otherwise assume the pair tracks that tuple.
+#: "never confirmed tango" approves, and should: the past tense is a STATEMENT
+#: about what happened ("I never confirmed tango, did I?"), not an imperative
+#: retraction. Only the bare imperative retracts, which is the same
+#: exact-token reasoning that keeps ``waiting``/``waited`` out of the ``wait``
+#: rule. Adding ``confirmed`` here would buy no retraction anyone speaks and
+#: would deny ordinary speech about a past approval.
 _GAPPED_DENIAL_BIGRAMS = {("never", "confirm"): _NEVER_GAP_WORDS}
 
 #: Pairs that SUPPRESS a single-word denial.

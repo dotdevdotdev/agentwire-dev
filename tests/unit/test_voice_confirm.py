@@ -473,6 +473,26 @@ class TestNonceGrammar:
         # or the two spellings of it drift apart.
         assert ("never", "confirm") not in confirm._DENIAL_BIGRAMS
 
+    def test_an_exception_mask_ends_the_gap_run_rather_than_being_skipped(self):
+        """The one sentence in ``_gapped_bigram``'s docstring nothing pinned.
+
+        It claims the run ends at a masked-out ``""``, "so an exception's
+        suppression still stops this rule rather than being skipped through".
+        Making the run SKIP the ``""`` instead left the whole suite green —
+        a load-bearing docstring sentence with no test, which is the exact
+        shape of the round-1 blocker.
+
+        Direction matters and is stated: the skip variant is STRICTER, so this
+        pins the false-reject side. What it protects is the composition rule
+        the exceptions are built on — a suppressed span stays suppressed for
+        every downstream rule, not just for the ones that already ran.
+        """
+        for text in (
+            "never, don't forget, confirm tango",
+            "never, do not forget, confirm tango",
+        ):
+            assert confirm.classify(text, "tango") == confirm.APPROVED, text
+
     def test_never_apart_from_confirm_is_still_ordinary_speech(self):
         """The false-reject price of the bigram above, pinned.
 
