@@ -1994,9 +1994,19 @@ Four rulings hold it together:
   `--ref` can join the argv prefix while the file does not yet exist — "the whole
   argv is frozen at propose" (#966) stays literally true, and a proposal the
   owner cancels or lets expire leaves nothing on disk. `build_argv` matches the
-  frozen `--ref` against the path the id *derives* rather than just reading it
-  out of the argv, so a future spec freezing a `--ref` of its own can never turn
-  that line into "open the path in the argv".
+  frozen `--ref` against the path the id *derives*, **at the tail** — `propose`
+  appends its pair last, so the tail is the only position that identifies *our*
+  pair. Reading "the first `--ref`" would let a future spec's own frozen `--ref`
+  steer the write, and on the mismatch would leave our pair in place naming a
+  file nothing wrote (the dangling pointer this section calls worse than none)
+  while deleting the other spec's pair instead of ours. Tail-matching makes all
+  three unreachable.
+- **The file is written owner-only.** It holds the owner's verbatim speech, so it
+  goes through `core.write_owner_only` (0600, mode set on the descriptor before
+  any bytes land) — the ONE implementation #887 established after the third
+  hand-rolled temp-and-replace shipped a 0644 file. That also owns the temp
+  file's lifetime, where a fixed `.md.tmp` name would orphan a file the `*.md`
+  prune glob can never collect.
 - **Writing never raises.** `write_relay` is called from `build_argv()`, which
   `_dispatch` runs *after* `_proposals.pop()` and *outside* the runner's `try` —
   exactly the position where `_lead_safe`'s raise once destroyed approved
@@ -2012,11 +2022,19 @@ Four rulings hold it together:
   gives way first is the `said:` quote, because that quote is reproduced verbatim
   in the file the pointer names. Recoverable yields to unrecoverable. Only a path
   long enough that even that is not sufficient drops the pointer itself — a
-  preview nobody can scan buys recoverability nobody goes looking for.
-- **It rides exactly when something WAS clipped.** A body carrying the whole
-  utterance needs no pointer to it, and ~50 characters of a 300-character line is
-  the excerpt and the nudge paid for nothing. Short bodies are byte-identical to
-  before.
+  preview nobody can scan buys recoverability nobody goes looking for — and the
+  quote then **comes back**, because a body carrying neither would be strictly
+  worse than what shipped before this and buy nothing.
+- **It rides exactly when something WAS clipped — asked WITHOUT the pointer's own
+  cost.** That is the whole predicate, and getting it wrong is self-fulfilling:
+  deducting the pointer first moves the budget 160 → 133 (90-char quote, 47-char
+  path), so a 145-character instruction that rendered whole before #1015 would be
+  clipped to 133 and handed a pointer to the text the pointer's own arrival
+  clipped — a message made worse by the fix for messages being made worse. The
+  question is "does this body lose anything as it ships today?", so it is asked of
+  today's body. Anything that fits today is byte-identical to before, and the
+  134..160 boundary is pinned in both directions (with a must-fail control, since
+  a predicate that never fires would pass the first half alone).
 
 The caps did not move: the pointer is paid for out of the excerpt and the
 droppable nudge, so the worst rendered line is still 363 against the measured

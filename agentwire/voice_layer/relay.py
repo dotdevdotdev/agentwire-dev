@@ -97,12 +97,20 @@ def render_relay(
     request_utterance: str,
     when: float,
 ) -> str:
-    """The file's contents: the whole thing, verbatim, in both fields.
+    """The file's contents: both fields entire, neither clipped.
 
     Nothing here is clipped — that is the entire point of the file. It is
     Markdown because the reader is an agent with a Read tool, and it names the
     proposal id so a reader holding the delivered line can tell it is looking at
     the same write rather than at a neighbouring one.
+
+    **The quote is ONE transcript entry, and the heading says so.** *instruction*
+    is the whole request as the buddy understood it, but *request_utterance*
+    comes from ``request_utterance_from``, which returns a single ring entry —
+    so a spoken request delivered across several segments reproduces only the
+    segment that carried the request. Narrowed rather than qualified: calling
+    this "what the owner said" would be a broader claim than the ring can
+    support, and a broad claim is what gets rounded back up later.
     """
     stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(when))
     lines = [
@@ -119,7 +127,7 @@ def render_relay(
     if request_utterance.strip():
         lines += [
             "",
-            "## What the owner said, verbatim",
+            "## The request utterance, verbatim (one spoken segment)",
             "",
             f"> {request_utterance.strip()}",
         ]
@@ -151,7 +159,16 @@ def write_relay(
     somewhere impossible) degrades to today's behaviour rather than destroying
     a message the owner has already approved.
 
-    Written whole via a temp file and ``replace``: a partial relay read by the
+    Written through :func:`core.write_owner_only` — 0600, mode set on the
+    descriptor before any bytes land, ``os.replace`` for atomicity. Not a
+    hand-rolled temp-and-replace: this file holds the owner's verbatim speech,
+    which is exactly the content class #887 tightened, and that function is
+    documented as the ONE implementation *because* the third hand-rolled copy is
+    how a 0644 file carrying private content reached the wild. It also owns the
+    temp file's lifetime, where a fixed ``.md.tmp`` name would leave an orphan
+    that :func:`_prune`'s ``*.md`` glob can never collect.
+
+    Atomicity is load-bearing rather than tidy: a partial relay read by the
     recipient is a *silently* partial instruction, which is the defect this
     module exists to remove, not a variant of it worth shipping.
     """
@@ -165,10 +182,7 @@ def write_relay(
         when=now,
     )
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(".md.tmp")
-        temp.write_text(body, encoding="utf-8")
-        temp.replace(path)
+        core.write_owner_only(path, body)
     except Exception:
         return ""
     try:

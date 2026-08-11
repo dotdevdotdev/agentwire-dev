@@ -899,19 +899,24 @@ class Proposal:
         # ``_proposals.pop()`` and outside the runner's ``try``, where a throw
         # eats an approved message with no screen to report it on.
         written = ""
-        # Matched against the path this id DERIVES, not merely read out of the
-        # argv: a future spec that froze a ``--ref`` of its own would otherwise
-        # steer this write, and the one thing a frozen argv must never contain
-        # is a model-supplied path we then open. A mismatch (or an id that is
-        # not one, in a hand-built Proposal) simply means no relay.
+        # Matched against the path this id DERIVES, and matched at the TAIL:
+        # ``ConfirmSpine.propose`` appends its pair last, so the tail is the
+        # only position that identifies OUR pair rather than someone else's.
+        # Both halves of that matter. Reading "the first ``--ref``" would let a
+        # future spec's own frozen ``--ref`` steer this write — the one thing a
+        # frozen argv must never contain is a model-supplied path we then open
+        # — and it would ALSO leave our pair in place on the mismatch, shipping
+        # exactly the dangling pointer this code argues is worse than none,
+        # while the removal below deleted the other spec's pair instead of
+        # ours. Tail-matching makes both unreachable. An id that is not one (a
+        # hand-built Proposal) simply means no relay.
         try:
             expected = str(relay.relay_path(self.id))
         except ValueError:
             expected = ""
-        ref = self._flag_value("--ref")
-        if ref and ref == expected:
+        if expected and prefix[-2:] == ["--ref", expected]:
             written = relay.write_relay(
-                Path(ref),
+                Path(expected),
                 proposal_id=self.id,
                 session=self.session,
                 sender=self._reply_target(),
@@ -923,8 +928,7 @@ class Proposal:
                 # pointer: the recipient reads a missing path as "the real
                 # instruction is elsewhere" and stops, where an excerpt at
                 # least says something true. Drop the flag with the slot.
-                index = prefix.index("--ref")
-                del prefix[index : index + 2]
+                del prefix[-2:]
         return [
             *prefix,
             render_body(
@@ -1000,7 +1004,10 @@ class Proposal:
 #: **Re-measured for #1015, and again the number did not move.** The relay
 #: pointer adds a ``full: <path>`` slot INSIDE this cap, so the worst rendered
 #: line is unchanged at 363 — the pointer is paid for out of the excerpt and the
-#: droppable nudge, never out of the margin. The probe was re-run at 80x24 on
+#: droppable nudge, never out of the margin. (363 is this arithmetic, against
+#: ``WORST_SENDER_CHARS = 32``; a sweep over real bodies with the 33-character
+#: sender the tests use reports 364. Same margin, one character of sender.)
+#: The probe was re-run at 80x24 on
 #: 2026-08-11 with the pointer riding, and the cliff sits where it did::
 #:
 #:     476  ->  box 488   stuck hit    ✓        <- last passing probed
@@ -1212,9 +1219,11 @@ def render_body(
     other slots clip, so dropping it under budget pressure would be dropping
     the fix. The reply nudge stays droppable and the excerpt shrinks; both are
     losses the pointer makes recoverable. It rides exactly when something WAS
-    clipped: a body carrying the whole utterance already needs no pointer to
-    it, and paying ~50 characters of a 300-character line for a redundant one
-    would cost the excerpt and the nudge on every short message.
+    clipped — asked of the body as it ships TODAY, without the pointer's own
+    cost (see the predicate below, which is self-fulfilling if asked the other
+    way): a body carrying the whole utterance already needs no pointer to it,
+    and paying ~50 characters of a 300-character line for a redundant one would
+    cost the excerpt and the nudge on every short message.
     """
     instruction_line = _one_line(instruction)
     tail = f"#{proposal_id}"
@@ -1233,15 +1242,20 @@ def render_body(
                 cost += len(slot) + len(SEP)
         return min(MAX_RENDERED_INSTRUCTION_CHARS, MAX_BODY_CHARS - cost - len(SEP))
 
+    # **Asked WITHOUT the pointer's own cost, and that is the whole predicate.**
+    # Deducting it first makes the pointer manufacture the clipping it then
+    # claims to be recovering: with a 90-char quote and a 47-char path the
+    # budget falls 160 → 133, so a 145-character instruction that rendered
+    # WHOLE before #1015 would be clipped to 133 and handed a pointer — a
+    # message made worse by the fix for messages being made worse. The question
+    # is "does this body lose anything as it ships today?", so it is asked of
+    # today's body.
     lost = (
-        len(instruction_line) > excerpt_budget(said, pointer)
+        len(instruction_line) > excerpt_budget(said, "")
         or len(_one_line(request_utterance)) > MAX_UTTERANCE_CHARS
     )
     if not lost:
-        # Nothing was clipped, so there is nothing to recover. Dropping the
-        # pointer only RAISES the budget, so this cannot make the line that
-        # just fit stop fitting.
-        pointer = ""
+        pointer = ""  # nothing was clipped, so there is nothing to recover
     if pointer and excerpt_budget(said, pointer) < MIN_EXCERPT_CHARS:
         # A long ``$HOME`` can squeeze the preview below its floor. What gives
         # way FIRST is the ``said:`` quote, and the ordering is the whole
@@ -1249,9 +1263,13 @@ def render_body(
         # names, so dropping it costs a slot the recipient can still read,
         # while dropping the pointer costs the only copy of everything the
         # other slots clipped. Recoverable yields to unrecoverable.
-        said = ""
-    if pointer and excerpt_budget(said, pointer) < MIN_EXCERPT_CHARS:
-        pointer = ""  # see MIN_EXCERPT_CHARS — an unusably long path
+        dropped_said, said = said, ""
+        if excerpt_budget(said, pointer) < MIN_EXCERPT_CHARS:
+            # The path is long enough that even that was not enough, so the
+            # pointer goes after all — and the quote comes BACK. Dropping it
+            # bought room for a slot that is no longer there, and shipping
+            # neither would be strictly worse than shipping what main shipped.
+            pointer, said = "", dropped_said
 
     parts = [_lead_safe(_clip(instruction_line, excerpt_budget(said, pointer)))]
     if said:

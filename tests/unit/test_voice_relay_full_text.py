@@ -14,6 +14,7 @@ freezes into the argv, all leave the owner exactly where #1015 found them —
 with a session acting on half a sentence.
 """
 
+import inspect
 import os
 import time
 from pathlib import Path
@@ -89,19 +90,12 @@ class TestTheFullTextSurvives:
         assert body.split(confirm.SEP)[0].rstrip("…") != LONG_INSTRUCTION
         assert LONG_INSTRUCTION in Path(pointed).read_text(encoding="utf-8")
 
-    def test_the_relay_is_written_whole_or_not_at_all(self, monkeypatch):
-        """A partial relay is a silently partial instruction — the defect, not
-        a degraded version of the fix."""
-        import agentwire.voice_layer.relay as relay_module
-
-        seen = {}
-        real_replace = Path.replace
-
-        def spy(self, target):
-            seen["temp"] = self.read_text(encoding="utf-8")
-            return real_replace(self, target)
-
-        monkeypatch.setattr(Path, "replace", spy)
+    def test_the_relay_is_owner_only_and_leaves_no_temp_behind(self):
+        """It holds the owner's verbatim speech, so it goes through the ONE
+        owner-only writer (#887) rather than a fourth hand-rolled
+        temp-and-replace — which also owns the temp file's lifetime, where a
+        fixed ``.md.tmp`` name would orphan a file ``_prune``'s ``*.md`` glob
+        can never collect."""
         path = relay.relay_path("a1b2c3")
         relay.write_relay(
             path,
@@ -111,8 +105,9 @@ class TestTheFullTextSurvives:
             instruction=LONG_INSTRUCTION,
             request_utterance="",
         )
-        assert LONG_INSTRUCTION in seen["temp"]
-        assert relay_module.RETENTION_DAYS > 0
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert list(path.parent.iterdir()) == [path]
+        assert "write_owner_only" in inspect.getsource(relay.write_relay)
 
 
 class TestThePointerRidesExactlyWhenItIsNeeded:
@@ -144,6 +139,40 @@ class TestThePointerRidesExactlyWhenItIsNeeded:
         assert body == confirm.render_body(
             "restart the portal", "confirm tango", "a1b2c3"
         )
+
+    @pytest.mark.parametrize("length", [130, 134, 145, 159, 160])
+    def test_the_pointer_never_manufactures_the_clipping_it_recovers(self, length):
+        """The self-fulfilling predicate, pinned at the exact lengths where it
+        bit. Asking "would this clip?" with the pointer's own cost already
+        deducted moves the budget 160 → 133, so instructions of 134..160 chars
+        rendered WHOLE before #1015 and clipped-to-133-plus-a-pointer after —
+        a message made worse by the fix for messages being made worse.
+
+        Nothing pinned this in either direction: the review applied the
+        one-token fix to a copy of the branch and all 291 tests still passed.
+        """
+        path = "/Users/dotdev/.agentwire/voice/relays/a1b2c3.md"
+        instruction = "i" * length  # ≤ MAX_RENDERED_INSTRUCTION_CHARS: whole today
+        utterance = "u" * confirm.MAX_UTTERANCE_CHARS  # the 90-char quote that squeezes
+        body = confirm.render_body(
+            instruction, utterance, "a1b2c3", full_path=path
+        )
+        assert relay_of(body) == "", body
+        assert body.split(confirm.SEP)[0] == instruction, (
+            "the instruction fits today, so #1015 must not clip it to make room "
+            "for a pointer to the text it just clipped"
+        )
+
+    def test_one_character_past_the_budget_does_get_a_pointer(self):
+        """The must-fail control for the test above: a predicate that simply
+        never fires would pass it too."""
+        body = confirm.render_body(
+            "i" * (confirm.MAX_RENDERED_INSTRUCTION_CHARS + 1),
+            "u" * confirm.MAX_UTTERANCE_CHARS,
+            "a1b2c3",
+            full_path="/Users/dotdev/.agentwire/voice/relays/a1b2c3.md",
+        )
+        assert relay_of(body) == "/Users/dotdev/.agentwire/voice/relays/a1b2c3.md"
 
     def test_the_short_body_is_unchanged_from_before_the_fix(self):
         """The common case is byte-identical, so #1015 cannot have quietly
@@ -245,6 +274,10 @@ class TestThePointerIsNotDroppable:
         assert len(body) <= confirm.MAX_BODY_CHARS
         assert body.endswith("#a1b2c3")
         assert len(body.split(confirm.SEP)[0]) >= confirm.MIN_EXCERPT_CHARS
+        # And the quote comes BACK. The two-stage drop clears ``said`` to make
+        # room for the pointer; if the pointer then goes anyway, shipping
+        # neither is strictly worse than what main shipped, and buys nothing.
+        assert 'said: "' in body, body
 
 
 class TestFailureDegradesToTodaysBehaviour:
@@ -311,6 +344,35 @@ class TestFailureDegradesToTodaysBehaviour:
         argv = proposal.build_argv()
         assert not foreign.exists()
         assert relay_of(argv[-1]) == ""
+        # And the argv is CLEAN. Matching the first ``--ref`` instead of the
+        # tail would leave the spine's own pair in place naming a file nothing
+        # wrote — the dangling pointer this code argues is worse than none —
+        # and would delete the other spec's pair rather than ours.
+        assert str(relay.relay_path("a1b2c3")) not in argv
+
+    def test_a_prefix_that_already_carries_a_ref_still_gets_its_relay(self):
+        """The other side of tail-matching. The spine appends ITS pair last, so
+        a foreign ``--ref`` earlier in the prefix must not suppress the relay —
+        that would be the same dangling-vs-missing trade taken the other way."""
+        expected = str(relay.relay_path("a1b2c3"))
+        proposal = confirm.Proposal(
+            id="a1b2c3",
+            token="t",
+            nonce="tango",
+            tool="send_session_message",
+            session="orchestrator",
+            instruction=LONG_INSTRUCTION,
+            argv_prefix=(
+                "msg", "send", "--to", "orchestrator", "--from", "buddy",
+                "--kind", "voice", "--ref", "/tmp/foreign.md",
+                "--ref", expected,
+            ),
+            created_at=0.0,
+        )
+        argv = proposal.build_argv()
+        assert Path(expected).exists()
+        assert relay_of(argv[-1]) == expected
+        assert argv.count("--ref") == 2  # the foreign one is that spec's business
 
     def test_relay_path_refuses_anything_that_is_not_a_proposal_id(self):
         """The path is fixed-length and traversal-free by CONSTRUCTION (the id
