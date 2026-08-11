@@ -1754,6 +1754,13 @@ class ConfirmSpine:
             # minted, so it is knowable before the file exists — and it is
             # code-derived, never model-supplied. ``build_argv`` writes the file
             # and drops this pair again if the write fails.
+            #
+            # **This makes ``append_body=True`` imply "the target verb accepts
+            # ``--ref``"**, which is true of ``msg send`` and of every spec that
+            # exists. A future body-carrying spec pointed at a different verb
+            # inherits the flag and fails at the CLI — so the coupling is named
+            # here rather than left for whoever writes that spec to discover.
+            # ``append_body=False`` writes are unaffected: they get no pair.
             if append_body:
                 argv_prefix = (
                     *argv_prefix, "--ref", str(relay.relay_path(proposal_id)),
