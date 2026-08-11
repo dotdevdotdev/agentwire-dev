@@ -401,32 +401,76 @@ def _main_tool_docstrings() -> dict:
     )
 
 
+def _as_the_interpreter_stores_it(raw: str) -> str:
+    """*raw* put through THIS interpreter's docstring compilation.
+
+    The one step between the ``ast`` fixture above and a live ``fn.__doc__``,
+    and the only version-dependent thing in this whole class. From CPython
+    3.13 the compiler strips a docstring's common leading indentation when it
+    builds the function object (gh-81283); through 3.12 it stores the literal
+    verbatim. ``ast.get_docstring(..., clean=False)`` is unaffected on both, so
+    the fixture and every raw-text assertion here are version-neutral — this is
+    the sole place the difference can enter.
+
+    Modelled by APPLYING the transform rather than by naming one interpreter's
+    answer, which is what went wrong before: the dedent was attributed to
+    FastMCP's registration and pinned as ``inspect.cleandoc(doc) + "\\n"``, a
+    description of 3.13 that is simply false on 3.12. Pinning a hardcoded
+    answer to a question the interpreter answers is how a check passes on a
+    3.13 dev machine and fails on CI's 3.12 with no defect in between.
+
+    The dedent keys on the string VALUE, not on the source layout (verified on
+    3.12 and 3.13), so a one-line literal reproduces it exactly — no
+    normalisation, no ``strip()``, byte-for-byte.
+    """
+    ns: dict = {}
+    exec("def _f():\n    " + repr(raw) + "\n", ns)
+    return ns["_f"].__doc__ or ""
+
+
+def _as_shipped(name: str, enabled: "set[str] | None" = None) -> str:
+    """What ``@gated_doc`` leaves on ``<tool>.__doc__``, from the raw source.
+
+    The live path in the live ORDER: the compiler stores the docstring, and
+    ``gated_doc`` renders THAT. Composing the two the other way round would
+    agree today only by luck — ``render`` deletes whole lines, so resolving
+    before the dedent can change what the common leading indentation even is.
+    """
+    stored = _as_the_interpreter_stores_it(_branch_tool_docstrings()[name])
+    return beta_mod.render(stored, enabled=enabled)
+
+
 class TestMcpSchemaIsByteIdenticalToMain:
     def test_the_extraction_is_not_fiction(self):
         """The load-bearing check under every assertion in this class: what
         ``ast`` pulls out of the source is what FastMCP actually PUBLISHES.
 
-        Not verbatim, and the difference had to be measured rather than
-        assumed: registration rewrites ``fn.__doc__`` to
-        ``inspect.cleandoc(doc) + "\n"`` and publishes that string, so the
-        description is the DEDENTED form — 1912 raw → 1800 published for
-        ``msg_send`` with the gate off, which is the 1800 the review measured
-        on main. Since that transform is deterministic, equality of the RAW
-        docstrings implies equality of the published ones, which is what lets
-        the fixture store raw text; the implication is pinned here rather than
-        reasoned about.
+        Two steps, and the first one used to be misattributed. FastMCP
+        normalises NOTHING — ``Tool.from_function`` takes the attribute
+        verbatim (``func_doc = description or fn.__doc__ or ""``, mcp 1.27.2).
+        The dedent this test used to pin on *registration* is the CPython 3.13
+        compiler's, so ``inspect.cleandoc(doc) + "\\n"`` described one
+        interpreter and was false on CI's 3.12: the published description was
+        the raw indented form, and the check went red with nothing wrong in
+        the gate. See :func:`_as_the_interpreter_stores_it`.
+
+        The transform is still deterministic and still a pure function of the
+        raw docstring — which is all that licenses the fixture storing raw
+        text — so the implication is pinned by applying it, byte for byte,
+        with no ``cleandoc`` on either side to paper over a mismatch.
         """
         import asyncio
-        import inspect
 
         from agentwire import mcp_msg
         from agentwire.mcp_core import mcp
 
         registered = {t.name: t.description for t in asyncio.run(mcp.list_tools())}
+        # FastMCP publishes the attribute untouched...
         assert registered["msg_send"] == mcp_msg.msg_send.__doc__
-        assert registered["msg_send"] == inspect.cleandoc(
-            beta_mod.render(_branch_tool_docstrings()["msg_send"])
-        ) + "\n"
+        # ...and the attribute is the ast-extracted source text, compiled and
+        # then gate-resolved. Both links byte-exact ⇒ raw equality with main
+        # (asserted below) carries through to the published schema.
+        assert registered["msg_send"] == _as_shipped("msg_send")
 
     def test_no_published_description_carries_a_marker(self):
         """Every tool in the LIVE registry, not just the one we know about.
@@ -486,18 +530,19 @@ class TestMcpSchemaIsByteIdenticalToMain:
 
     def test_the_gate_is_actually_wired_into_the_shipped_docstring(self):
         """The regex being right proves nothing if nothing calls it. This is
-        the LIVE description, as imported, under this process's real flags."""
-        import inspect
+        the LIVE description, as imported, under this process's real flags.
 
+        Byte-exact, and deliberately so: the ``strip()`` this used to compare
+        under was doing nothing for the failure it hid — the 3.12/3.13 dedent
+        difference is INTERNAL to the string (every line after the first), so
+        stripping the ends could never have absorbed it, and would only ever
+        have absorbed a real leading/trailing-whitespace regression.
+        """
         from agentwire import beta as live_beta
         from agentwire import mcp_msg
 
-        expected = inspect.cleandoc(
-            beta_mod.render(
-                _branch_tool_docstrings()["msg_send"], enabled=live_beta.enabled_flags()
-            )
-        )
-        assert (mcp_msg.msg_send.__doc__ or "").strip() == expected.strip()
+        expected = _as_shipped("msg_send", enabled=live_beta.enabled_flags())
+        assert (mcp_msg.msg_send.__doc__ or "") == expected
 
     def test_the_voice_prose_is_present_when_enabled(self):
         on = beta_mod.render(
