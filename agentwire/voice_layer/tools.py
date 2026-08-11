@@ -337,6 +337,43 @@ def _fleet_network(args: dict) -> dict:
     return run_agentwire_cmd(["network", "status"], json_output=False, timeout=60)
 
 
+_MAX_ACTIVITY_LIMIT = 100
+_MAX_ACTIVITY_HOURS = 72
+
+
+def _fleet_activity(args: dict) -> dict:
+    """The fleet's activity ledger — awareness the buddy PULLS (#1016).
+
+    Deliberately a read and not a push: everything in the buddy's spool gets
+    spoken eventually, so routing ordinary lifecycle churn there would turn the
+    buddy into a narrator. The short list that DOES earn a spoken mention
+    arrives as ordinary mail through ``buddy_inbox``; this is everything else,
+    waiting to be asked about.
+    """
+    from .. import fleet_activity as _activity
+
+    argv = [
+        "activity", "list",
+        "--limit", str(_int_arg(args, "limit", 25, 1, _MAX_ACTIVITY_LIMIT)),
+        "--hours", str(_int_arg(args, "hours", 12, 1, _MAX_ACTIVITY_HOURS)),
+    ]
+    event = args.get("event")
+    if event is not None:
+        # Checked against the ledger's own vocabulary rather than passed
+        # through: `--event` is an argparse `choices` field, so a mis-heard
+        # value would exit(2) with a usage message the buddy would then read
+        # out as if it were an answer.
+        if not isinstance(event, str) or event not in _activity.EVENTS:
+            raise ToolError(
+                f"I don't track an activity kind called '{event}'. The kinds are: "
+                + ", ".join(_activity.EVENTS).replace("_", " ")
+            )
+        argv += ["--event", event]
+    if args.get("session") is not None:
+        argv += ["-s", _session_arg(args)]
+    return run_agentwire_cmd(argv)
+
+
 def _fleet_voice_health(args: dict) -> dict:
     return {
         "success": True,
@@ -720,6 +757,49 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
         name="fleet_network",
         description="Network reachability of the portal and registered machines.",
         run=_fleet_network,
+    ),
+    ReadOnlyTool(
+        name="fleet_activity",
+        description=(
+            "What the fleet has BEEN DOING recently, newest first: sessions going "
+            "idle, scheduled tasks finishing, toasts shown to the owner, sessions "
+            "starting and closing, and everything spoken aloud through the fleet's "
+            "own text-to-speech. Use it when asked what's been happening, what you "
+            "missed, or whether something already ran. Two rules about it. First, "
+            "an entry marked 'spoke' was ALREADY SAID OUT LOUD to the owner by a "
+            "session — they heard it, so never repeat one back as news; refer to it "
+            "("
+            "\"you already heard about the build\") or use it to avoid saying the "
+            "same thing twice. Second, nothing here was put in front of you — it is "
+            "a record you looked up, so it is only ever an answer to a question, "
+            "never something you volunteer."
+        ),
+        run=_fleet_activity,
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": f"How many entries (1-{_MAX_ACTIVITY_LIMIT}, default 25).",
+                },
+                "hours": {
+                    "type": "integer",
+                    "description": f"How far back to look (1-{_MAX_ACTIVITY_HOURS}, default 12).",
+                },
+                "event": {
+                    "type": "string",
+                    "description": (
+                        "Only one kind: session_idle, task_completed, toast_high, "
+                        "toast, spoke, session_created, session_closed, pane_died."
+                    ),
+                },
+                "session": {
+                    "type": "string",
+                    "description": "Only this session, exact name from fleet_sessions.",
+                },
+            },
+            "additionalProperties": False,
+        },
     ),
     ReadOnlyTool(
         name="fleet_voice_health",

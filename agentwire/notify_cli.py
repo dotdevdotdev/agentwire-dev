@@ -21,6 +21,10 @@ from .core import (
     _post_desktop_notification,
 )
 
+#: The ``notify-event`` vocabulary worth remembering (#1016). Deliberately not
+#: the whole vocabulary — see :func:`cmd_notify`.
+_LEDGER_EVENTS = ("session_created", "session_closed", "pane_died")
+
 
 def cmd_notify_parent(args) -> int:
     """Notify parent session (worker→orchestrator communication).
@@ -74,6 +78,24 @@ def cmd_notify_parent(args) -> int:
         resolved = prompt_router.resolve_parent(current_session, current_pane)
         if resolved:
             target_session = resolved[0]
+
+    # Fleet awareness (#1016). An idle is the fleet's own "I finished" signal,
+    # and until now the ONLY thing it reached was a parent — so a listener with
+    # no parent link (the voice buddy) could not know a delegated job had
+    # landed. Recorded here, ABOVE the no-target return, because a root session
+    # going idle is exactly the case that returned early and told nobody.
+    #
+    # `exclude=target_session`: the parent hears this by paste in the lines
+    # below, and the same news twice is how a channel earns being ignored.
+    # Best-effort — the notify is the job, awareness is the bonus.
+    if getattr(args, 'on_idle', False) and current_session and current_pane == 0:
+        from agentwire import fleet_activity
+
+        try:
+            fleet_activity.note_session_idle(
+                current_session, text, parent=target_session or "")
+        except Exception:  # noqa: BLE001  # never break the idle path
+            pass
 
     # Build notification message (--raw sends verbatim — queued messages
     # already carry their own [WORKER SUMMARY ...] / [PROMPT ...] headers)
@@ -215,10 +237,23 @@ def cmd_notify_user(args) -> int:
     json_mode = getattr(args, "json", False)
     if not text.strip():
         return _output_result(False, json_mode, "Usage: agentwire notify-user <text>")
+    priority = getattr(args, "priority", "normal")
     ok = _post_desktop_notification(
-        text, session=getattr(args, "session", None),
-        priority=getattr(args, "priority", "normal"),
+        text, session=getattr(args, "session", None), priority=priority,
     )
+    # Fleet awareness (#1016). A toast is a message to the OWNER on a screen
+    # they may not be looking at — the exact gap the voice channel exists to
+    # cover. Recorded whether or not the portal took it (a toast that failed to
+    # post is the case where the buddy knowing about it matters MOST), and only
+    # a --priority high one is ever spoken: the caller declared that urgency
+    # itself, and this layer neither invents it nor overrules it.
+    from agentwire import fleet_activity
+
+    try:
+        fleet_activity.note_toast(
+            text, session=getattr(args, "session", None) or "", priority=priority)
+    except Exception:  # noqa: BLE001  # never break the toast path
+        pass
     return _output_result(ok, json_mode,
                           "Toast posted." if ok else "Failed to post toast (portal not reachable?)")
 
@@ -241,6 +276,20 @@ def cmd_notify(args) -> int:
 
     if not event:
         return _output_result(False, json_mode, "Event is required")
+
+    # Fleet awareness (#1016) — LEDGER ONLY, and only for the three events that
+    # describe a session's existence. The rest of this verb's vocabulary
+    # (client_attached, pane_focused, window_activity) fires on every glance at
+    # a terminal; recording it would bury the events that mean something under
+    # events that mean somebody moved a mouse. None of the three is ever spoken:
+    # "a session started" is context for a question, not news to volunteer.
+    if event in _LEDGER_EVENTS and session:
+        from agentwire import fleet_activity
+
+        try:
+            fleet_activity.note_lifecycle(event, session)
+        except Exception:  # noqa: BLE001  # tmux hooks must never fail loudly
+            pass
 
     portal_url = _get_portal_url()
     if not portal_url:

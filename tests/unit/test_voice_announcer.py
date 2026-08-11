@@ -722,6 +722,43 @@ class TestTheBuddyClock:
     volunteers replies — through the injected announce(), never its own
     speaking path."""
 
+    def test_machine_mail_is_not_narrated_as_a_reply(self):
+        """#1016. The fleet's own senders are not colleagues, and the announcer
+        speaks composeNotice VERBATIM — the model never gets to rephrase it. So
+        "fleet-activity got back to you" would tell the owner a session with a
+        robot's name answered something they never sent."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "fleet-activity", kind: "done",
+                       text: "auth-fix is idle and done working" }];
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert text == "From the fleet: auth-fix is idle and done working"
+        assert "got back to you" not in text
+
+    def test_a_machine_escalation_still_sounds_like_an_alarm(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "fleet-alerts", kind: "escalation",
+                       text: "login expired; every turn is being refused" }];
+            speakable = false; interruptable = true;
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert text.startswith("Heads up")
+        assert "login expired" in text
+
+    def test_a_mixed_batch_names_the_session_and_the_fleet_differently(self):
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "minecraft", kind: "done", text: "PR is up" },
+              { id: "m2", from: "fleet-activity", kind: "done", text: "nightly task finished" },
+            ];
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert "From minecraft: PR is up" in text
+        assert "From the fleet: nightly task finished" in text
+
     def test_three_replies_are_one_utterance(self):
         report = run_notifier("""
             spool = [

@@ -307,7 +307,27 @@ def cmd_say(args) -> int:
     def _say_result(rc: int, sink: str, clients: int = 0) -> int:
         """Report which sink actually received the audio (#444): browser
         (played by N connected clients), local speakers / OS voice, or a
-        failed dispatch — instead of a blind "queued"."""
+        failed dispatch — instead of a blind "queued".
+
+        Also the one place fleet TTS is recorded for the voice layer (#1016).
+        Here rather than at the top of the command because the sink is part of
+        the record — "spoken to a browser" and "spoken to the room" are
+        different facts about whether the owner heard it — and because a failed
+        dispatch (rc != 0) is deliberately NOT recorded as spoken.
+
+        This entry is NEVER announced to the buddy, whatever it said. The owner
+        already heard it; a voice channel that reads the audio back is the
+        two-surfaces problem made worse. What the record buys is the opposite —
+        the buddy can see what the fleet has already said and decline to offer
+        it as news.
+        """
+        if rc == 0:
+            from agentwire import fleet_activity
+
+            try:
+                fleet_activity.note_spoke(text, session=session or "", sink=sink)
+            except Exception:  # noqa: BLE001  # speaking is the job; the record is not
+                pass
         if json_mode:
             _output_json({"success": rc == 0, "sink": sink if rc == 0 else None,
                           "clients": clients, "session": session, "toast": toast_ok,

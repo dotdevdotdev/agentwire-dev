@@ -307,6 +307,21 @@ VOICE_NATIVE: dict[str, dict] = {
             "reflex that makes the gated nonce worthless."
         ),
     },
+    "fleet_activity": {
+        "grade": "read",
+        "ruling": (
+            "Reads the fleet activity ledger through `agentwire activity list` "
+            "(#1016). No MCP capability exists for it — the producers record "
+            "from inside the surfaces that generate the events, and there is "
+            "deliberately no verb that WRITES an entry, so nothing an agent "
+            "could be talked into calling can forge fleet history. Read by the "
+            "tier-1 rule: it observes a file and no more. Note the tier "
+            "question it does NOT raise — the ledger records that `say` and "
+            "`notify_user` happened, which is observation; both remain "
+            "excluded (clause (b)) because the buddy still cannot USE either "
+            "channel."
+        ),
+    },
     "buddy_sent": {
         "grade": "read",
         "ruling": (

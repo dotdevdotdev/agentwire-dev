@@ -503,14 +503,103 @@ ordinary report sits *ahead* of it, and one id cannot cover the alarm without
 burying the report — so that tick acks nothing, and the full tick that finally
 speaks the report clears both.
 
+### Fleet awareness: two tiers, because everything in the spool gets spoken (#1016)
+
+The buddy could be *told* things — `msg send --to buddy` reaches the spool, and
+fleet detectors can address it (#982/#1002) — but nothing emitted the fleet's
+own ordinary signals. A session went idle, a scheduled task finished, a toast
+went up, a session spoke through fleet TTS, and the buddy knew none of it. So it
+could not check in on delegated work, and fleet TTS and voice mode were two
+disconnected audio surfaces in the same room.
+
+**The routing was never the hard part.** The judgment is, and it turns on one
+property of what already exists: *everything in the spool eventually gets
+spoken*. The notifier volunteers unread mail at a gap; an escalation cuts
+across the buddy's own voice. There is no quiet kind. A producer that pushed
+lifecycle events into the spool would not make the buddy aware — it would make
+it a narrator, and the owner's move against a narrator is to stop listening.
+
+Hence two tiers:
+
+| | Where | Who reads it | Spoken? |
+|---|---|---|---|
+| **Awareness** | `~/.agentwire/fleet-activity.jsonl` (`agentwire activity list`, tool `fleet_activity`) | pulled, on a question | never |
+| **News** | the buddy's spool, as ordinary typed mail | pushed, by `fleet_alerts.emit` | at a gap |
+
+The ledger is a **pull**, not a fourth push — which is what keeps the closed
+list of unprompted paths in `instructions.VOICE_MODE` closed. It is also what
+makes the two audio surfaces one: every `agentwire say` is recorded, and the
+instructions tell the buddy that a `spoke` entry was *already heard by the
+owner*, so it refers back to one rather than delivering it as news.
+
+**What earns the spool** is `fleet_activity.ANNOUNCE`, pinned as data next to
+its kind in `fleet_alerts.DETECTOR_KINDS`:
+
+- **`session_idle` → `done`, and only for DELEGATED work** — a recorded parent,
+  a worker/reviewer role, or a worktree checkout (#716's three axes; any one is
+  enough). A root orchestrator going idle is a conversational turn ending, and
+  announcing that fires once per exchange the owner has with their own session.
+  The event's own parent is excluded, since it already hears this by paste from
+  `notify-parent`; the same news twice is how a channel earns being ignored.
+- **`task_completed` → `done`, `request` when it ended badly** — the canonical
+  check-in event: the owner did not watch it start and cannot see it end. The
+  inherit rule is the dead-letter rule's shape — the fleet already judged it,
+  and flattening that to news throws the judgment away. `usage_limit` and
+  `auth_expired` are ledger-only: both conditions have a detector of their own
+  that says it once, machine-wide, where this would say it again per task.
+- **`toast_high` → `request`** — `notify-user --priority high` is the one
+  notify surface that declares its own urgency, about a screen the owner may
+  not be looking at. An ordinary toast is ledger-only.
+
+**Nothing lifecycle is ever an `escalation`.** The interrupt tier stays the two
+conditions nothing clears without a human. An idle session is not burning.
+
+**Throttled per subject, from the ledger itself** — 15m for an idle, 2m for a
+task, 5m for a high toast. A flapping session records every flap and buys one
+utterance. The check reads the ledger rather than a second state file: the
+record is written *before* the emit decision, so there is one thing to keep
+consistent, and a lost ledger costs a duplicate announcement rather than a lost
+one.
+
+**Producers, and why each sits where it does.** Every one is best-effort — a
+producer's job is its own job:
+
+| Surface | Seam | Recorded |
+|---|---|---|
+| idle hook | `cmd_notify_parent`, `--on-idle`, **above** the no-target return | `session_idle` |
+| `agentwire say` | `cmd_say`'s own result helper | `spoke` (+ the sink; a failed dispatch records nothing) |
+| `agentwire notify-user` | `cmd_notify_user`, whether or not the portal took it | `toast` / `toast_high` |
+| `agentwire notify-event` | `cmd_notify`, three events only | `session_created` / `session_closed` / `pane_died` |
+| scheduler | `report._log_event("task_completed")`, the one seam both dispatchers use | `task_completed` |
+
+Two of those placements are the whole point. The idle producer sits **above**
+the "no parent, nothing to do" return — that early exit is exactly the case
+(a root session finishing) that told nobody. And the scheduler hooks the shared
+event log rather than the two dispatch call sites, because a per-call-site copy
+is what drifts (the same ruling as the worktree-path and session-name SSOTs).
+
+**The fleet is not a colleague, and the notifier now says so.** `composeNotice`
+speaks its output verbatim — the model never rephrases it — so mail from
+`fleet-alerts` / `fleet-activity` rendered as "fleet-activity got back to you:
+…", telling the owner that a session with a robot's name had answered something
+they never sent. Machine senders now render as **"From the fleet: …"**, with no
+verb (the body is already a whole statement), and an escalation keeps its
+"Heads up —" alarm prefix. The JS list is kept in step with
+`fleet_alerts.MACHINE_SENDERS`, which is the same list on the producing side.
+
+`agentwire notify-event`'s other vocabulary — `client_attached`,
+`pane_focused`, `window_activity` — is deliberately absent: it fires on every
+glance at a terminal, and recording it would bury the events that mean
+something under events that mean somebody moved a mouse.
+
 ### The tool surface is an allowlist, not a passthrough
 
 The model chooses *which* tool. It never chooses *what runs*. Every tool builds
 its own argv from validated parameters.
 
-The live surface is **26 read tools plus one gated write spec**, and the spec
+The live surface is **27 read tools plus one gated write spec**, and the spec
 generates three tools (`propose_` / `send_` / `cancel_session_message`), so the
-model sees 29 names. **Do not maintain a list of them here** — an enumeration in
+model sees 30 names. **Do not maintain a list of them here** — an enumeration in
 prose is what went stale last time, and `agentwire buddy tools` prints the exact
 array handed to the model. What belongs in a wiki is the rule that decides what
 may ever appear.

@@ -16,7 +16,17 @@ from .schedule import _compute_next_eligible, _is_in_flight
 
 
 def _log_event(event: str, **fields) -> None:
-    """Append an event to the scheduler JSONL log."""
+    """Append an event to the scheduler JSONL log.
+
+    Also the seam where a finished run becomes fleet awareness (#1016). Here
+    rather than at the two dispatch call sites for the reason the CLAUDE.md
+    worktree-path and session-name rulings keep re-teaching: a per-call-site
+    copy is what drifts, and a third dispatch path would ship with no awareness
+    and nothing to say so. ``task_completed`` is logged exactly once per run by
+    both the in-place and worktree dispatchers, and it carries the whole story
+    (status, duration, the parsed summary), which is what makes it the right
+    event rather than the convenient one.
+    """
     from agentwire import scheduler as _sched
 
     entry = {
@@ -24,6 +34,22 @@ def _log_event(event: str, **fields) -> None:
         "event": event,
         **fields,
     }
+    if event == "task_completed":
+        # The owner did not watch this start and cannot see it end — this is the
+        # canonical "check in and offer a summary" event. Best-effort: a
+        # dispatch must finish recording its own run whatever this does.
+        from agentwire import fleet_activity
+
+        try:
+            fleet_activity.note_task_completed(
+                task=str(fields.get("task") or ""),
+                session=str(fields.get("session") or ""),
+                status=str(fields.get("status") or ""),
+                duration=int(fields.get("duration") or 0),
+                summary=str(fields.get("summary") or ""),
+            )
+        except Exception:  # noqa: BLE001
+            pass
     try:
         events_path = _sched._sched_config().events_file
     except Exception:

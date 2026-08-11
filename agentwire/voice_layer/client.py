@@ -726,17 +726,33 @@ function createInboxNotifier(deps) {
   // what happened, nothing about what will.
   function isUrgent(m) { return !!m && m.kind === "escalation"; }
 
+  // Mail from the MACHINE rather than from a session (#982, #1016). The
+  // wording matters because these are not replies: "fleet-activity got back to
+  // you" tells the owner a session with a robot's name answered something they
+  // never sent, and "fleet-alerts escalated" names an internal module out loud
+  // as if it were a colleague. Both are sentences the owner HEARS, and the
+  // announcer speaks composeNotice verbatim — the model does not get a chance
+  // to rephrase it. Kept in sync with `fleet_alerts.MACHINE_SENDERS`, which is
+  // the same list on the producing side.
+  var MACHINE_SENDERS = { "fleet-alerts": 1, "fleet-activity": 1 };
+  function isMachine(m) { return !!m && !!MACHINE_SENDERS[m.from]; }
+  function speaker(m) { return isMachine(m) ? "the fleet" : ((m && m.from) || "someone"); }
+
   function composeNotice(messages) {
     // An escalation in the batch names itself as one — the owner should be
     // able to hear the difference between news and an alarm.
     var prefix = messages.some(isUrgent) ? "Heads up \\u2014 " : "";
     if (messages.length === 1) {
       var m = messages[0];
+      // No verb for machine mail: the body is already a whole statement
+      // ("auth-fix is idle and done working"), so any verb here would be the
+      // notifier narrating a relationship that does not exist.
+      if (isMachine(m)) return prefix + "From the fleet: " + trimBody(m.text);
       var verb = isUrgent(m) ? " escalated: " : " got back to you: ";
       return prefix + (m.from || "someone") + verb + trimBody(m.text);
     }
     var parts = messages.map(function (msg) {
-      return "From " + (msg.from || "someone") + ": " + trimBody(msg.text);
+      return "From " + speaker(msg) + ": " + trimBody(msg.text);
     });
     return prefix + messages.length + " updates came in. " + parts.join(" ");
   }
