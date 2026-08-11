@@ -197,8 +197,9 @@ import re
 import secrets
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from . import outbox
+from . import outbox, relay
 from .transcript import TranscriptRing, Utterance
 
 #: How long a minted proposal stays confirmable, from the moment the buddy
@@ -891,15 +892,57 @@ class Proposal:
         # that structural rather than a calling convention.
         if not self.append_body:
             return list(self.argv_prefix)
+        prefix = list(self.argv_prefix)
+        # The full relay (#1015) is written HERE, at execution, not at propose:
+        # a proposal the owner cancels or lets expire must leave nothing on
+        # disk. ``write_relay`` never raises — this line sits after the
+        # ``_proposals.pop()`` and outside the runner's ``try``, where a throw
+        # eats an approved message with no screen to report it on.
+        written = ""
+        # Matched against the path this id DERIVES, not merely read out of the
+        # argv: a future spec that froze a ``--ref`` of its own would otherwise
+        # steer this write, and the one thing a frozen argv must never contain
+        # is a model-supplied path we then open. A mismatch (or an id that is
+        # not one, in a hand-built Proposal) simply means no relay.
+        try:
+            expected = str(relay.relay_path(self.id))
+        except ValueError:
+            expected = ""
+        ref = self._flag_value("--ref")
+        if ref and ref == expected:
+            written = relay.write_relay(
+                Path(ref),
+                proposal_id=self.id,
+                session=self.session,
+                sender=self._reply_target(),
+                instruction=self.instruction,
+                request_utterance=self.request_utterance,
+            )
+            if not written:
+                # A pointer to a file that is not there is worse than no
+                # pointer: the recipient reads a missing path as "the real
+                # instruction is elsewhere" and stops, where an excerpt at
+                # least says something true. Drop the flag with the slot.
+                index = prefix.index("--ref")
+                del prefix[index : index + 2]
         return [
-            *self.argv_prefix,
+            *prefix,
             render_body(
                 self.instruction,
                 self.request_utterance,
                 self.id,
                 reply_to=self._reply_target(),
+                full_path=written,
             ),
         ]
+
+    def _flag_value(self, flag: str) -> str:
+        """The value frozen after *flag* in the argv prefix, or ``""``."""
+        prefix = self.argv_prefix
+        for index, token in enumerate(prefix[:-1]):
+            if token == flag:
+                return prefix[index + 1]
+        return ""
 
     def _reply_target(self) -> str:
         """The sender name from the frozen argv — who a reply should address.
@@ -908,11 +951,7 @@ class Proposal:
         nudge can never name anyone other than the identity the message
         actually goes out under.
         """
-        prefix = self.argv_prefix
-        for index, token in enumerate(prefix[:-1]):
-            if token == "--from":
-                return prefix[index + 1]
-        return ""
+        return self._flag_value("--from")
 
 
 # =============================================================================
@@ -958,6 +997,20 @@ class Proposal:
 #: says they compete: the droppable reply nudge now fits in more cases. Raising
 #: MAX_BODY_CHARS to consume the headroom would still need a fresh pane probe.
 #:
+#: **Re-measured for #1015, and again the number did not move.** The relay
+#: pointer adds a ``full: <path>`` slot INSIDE this cap, so the worst rendered
+#: line is unchanged at 363 — the pointer is paid for out of the excerpt and the
+#: droppable nudge, never out of the margin. The probe was re-run at 80x24 on
+#: 2026-08-11 with the pointer riding, and the cliff sits where it did::
+#:
+#:     476  ->  box 488   stuck hit    ✓        <- last passing probed
+#:     546  ->  box 480   stuck MISS   ✗        <- box windows
+#:    1026  ->  box  16   stuck MISS   ✗        <- [Pasted text …] chip
+#:
+#: The recorded 520/540 boundary sits inside that 476–546 window, so it stands.
+#: The round trip closed on the real shipped worst case (336 chars rendered):
+#: pasted whole, ``stuck`` hit, ``finish_submit`` submitted, dedup found it.
+#:
 #: **The margin is deliberate and the measurement is pane-dependent.** The box
 #: shows a bounded number of ROWS, so a shorter pane windows sooner than 80x24
 #: did. Do not raise this cap to consume the measured headroom without
@@ -992,7 +1045,28 @@ MAX_UTTERANCE_CHARS = 90
 #: How much of the instruction survives INTO THE RENDERED LINE. Distinct from
 #: ``write_tools.MAX_INSTRUCTION_CHARS``, which bounds what the model may
 #: propose at all; this one bounds what the recipient's pane has to render.
+#:
+#: Since #1015 this is a PREVIEW budget rather than the message: anything it
+#: clips is still reachable in full through the ``full:`` pointer below. Before
+#: that it was the message, and a long spoken request simply lost its tail.
 MAX_RENDERED_INSTRUCTION_CHARS = 160
+
+#: The body's slot separator. One definition, because the budget arithmetic in
+#: :func:`render_body` counts it — a second spelling would make the cap
+#: arithmetic silently wrong rather than visibly different.
+SEP = " ┃ "
+
+#: The label on the pointer to the full relay file (#1015).
+POINTER_LABEL = "full: "
+
+#: The preview never shrinks below this. A pathologically long relay path (a
+#: deep ``$HOME``) would otherwise eat the excerpt entirely; below this floor
+#: the pointer is dropped instead. **Both halves priced:** dropping it costs a
+#: recoverable tail again (today's behaviour), while keeping it costs the
+#: recipient every scannable word of what the message is even about — and a
+#: message nobody reads the file for is not more recoverable than one nobody
+#: can read.
+MIN_EXCERPT_CHARS = 80
 
 
 def _one_line(text: str) -> str:
@@ -1084,7 +1158,12 @@ def reply_nudge(reply_to: str) -> str:
 
 
 def render_body(
-    instruction: str, request_utterance: str, proposal_id: str, *, reply_to: str = ""
+    instruction: str,
+    request_utterance: str,
+    proposal_id: str,
+    *,
+    reply_to: str = "",
+    full_path: str = "",
 ) -> str:
     """The fixed one-line shape every buddy write carries (§4b).
 
@@ -1120,12 +1199,67 @@ def render_body(
     the distinguisher sits in the same on-screen position the marker held while
     also being the thing ``ESCALATE_KINDS`` and the drain read. No marker
     remains; a body that still carries one is stale text, not attribution.
+
+    **The inline text is a PREVIEW, and the pointer is the message (#1015).**
+    The caps here cannot be raised — they are the measured boundary past which
+    the #689 heal stops firing — so a long spoken request had exactly two
+    fates, and the shipped one silently dropped its tail into the recipient's
+    lap ("Treat it as a running list for anyt…"). *full_path* names a file
+    holding the whole thing (:mod:`~agentwire.voice_layer.relay`), and the
+    ``full:`` slot puts it on the delivered line, where an agent can read it.
+
+    That slot is NOT droppable — it is the recoverability of everything the
+    other slots clip, so dropping it under budget pressure would be dropping
+    the fix. The reply nudge stays droppable and the excerpt shrinks; both are
+    losses the pointer makes recoverable. It rides exactly when something WAS
+    clipped: a body carrying the whole utterance already needs no pointer to
+    it, and paying ~50 characters of a 300-character line for a redundant one
+    would cost the excerpt and the nudge on every short message.
     """
-    parts = [_lead_safe(_clip(instruction, MAX_RENDERED_INSTRUCTION_CHARS))]
-    if request_utterance.strip():
-        parts.append(f"said: \"{_clip(request_utterance, MAX_UTTERANCE_CHARS)}\"")
-    parts.append(f"#{proposal_id}")
-    body = " ┃ ".join(parts)
+    instruction_line = _one_line(instruction)
+    tail = f"#{proposal_id}"
+    said = (
+        f'said: "{_clip(request_utterance, MAX_UTTERANCE_CHARS)}"'
+        if request_utterance.strip()
+        else ""
+    )
+    pointer = f"{POINTER_LABEL}{_one_line(full_path)}" if full_path.strip() else ""
+
+    def excerpt_budget(said_slot: str, pointer_slot: str) -> int:
+        """What is left for the preview once every other slot is paid for."""
+        cost = len(tail)
+        for slot in (said_slot, pointer_slot):
+            if slot:
+                cost += len(slot) + len(SEP)
+        return min(MAX_RENDERED_INSTRUCTION_CHARS, MAX_BODY_CHARS - cost - len(SEP))
+
+    lost = (
+        len(instruction_line) > excerpt_budget(said, pointer)
+        or len(_one_line(request_utterance)) > MAX_UTTERANCE_CHARS
+    )
+    if not lost:
+        # Nothing was clipped, so there is nothing to recover. Dropping the
+        # pointer only RAISES the budget, so this cannot make the line that
+        # just fit stop fitting.
+        pointer = ""
+    if pointer and excerpt_budget(said, pointer) < MIN_EXCERPT_CHARS:
+        # A long ``$HOME`` can squeeze the preview below its floor. What gives
+        # way FIRST is the ``said:`` quote, and the ordering is the whole
+        # ruling: the quote is reproduced verbatim in the file the pointer
+        # names, so dropping it costs a slot the recipient can still read,
+        # while dropping the pointer costs the only copy of everything the
+        # other slots clipped. Recoverable yields to unrecoverable.
+        said = ""
+    if pointer and excerpt_budget(said, pointer) < MIN_EXCERPT_CHARS:
+        pointer = ""  # see MIN_EXCERPT_CHARS — an unusably long path
+
+    parts = [_lead_safe(_clip(instruction_line, excerpt_budget(said, pointer)))]
+    if said:
+        parts.append(said)
+    if pointer:
+        parts.append(pointer)
+    parts.append(tail)
+    body = SEP.join(parts)
     # The reply-path slot (#962) is DROPPABLE, whole-or-not-at-all: it rides
     # only when the full body still fits MAX_BODY_CHARS, and it slots in
     # BEFORE the id so the id is never what pays for it. Both halves priced:
@@ -1135,7 +1269,7 @@ def render_body(
     # the pane re-measurement MAX_BODY_CHARS documents; a droppable slot does
     # not.
     if reply_to.strip():
-        with_nudge = " ┃ ".join([*parts[:-1], reply_nudge(reply_to), parts[-1]])
+        with_nudge = SEP.join([*parts[:-1], reply_nudge(reply_to), parts[-1]])
         if len(with_nudge) <= MAX_BODY_CHARS:
             body = with_nudge
     body = _clip(body, MAX_BODY_CHARS)
@@ -1595,8 +1729,19 @@ class ConfirmSpine:
             # different way to draw a nonce sitting next to the right one is
             # how the wrong one gets called later.
             nonce = mint_nonce({p.nonce for p in self._proposals.values()})
+            proposal_id = secrets.token_hex(3)
+            # The relay pointer is frozen HERE, with the rest of the argv, so
+            # "the whole argv is frozen at propose" stays literally true (#966).
+            # It can be: the path is a pure function of the id this line just
+            # minted, so it is knowable before the file exists — and it is
+            # code-derived, never model-supplied. ``build_argv`` writes the file
+            # and drops this pair again if the write fails.
+            if append_body:
+                argv_prefix = (
+                    *argv_prefix, "--ref", str(relay.relay_path(proposal_id)),
+                )
             proposal = Proposal(
-                id=secrets.token_hex(3),
+                id=proposal_id,
                 token=secrets.token_urlsafe(18),
                 nonce=nonce,
                 tool=tool,

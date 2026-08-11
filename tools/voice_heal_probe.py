@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["agentwire-dev @ file:///Users/dotdev/worktrees/agentwire-dev/voice-confirm-spine"]
+# dependencies = ["agentwire-dev @ file:///Users/dotdev/projects/agentwire-dev"]
 # ///
 """Live-pane round trip for the §4b body: does the #689 heal actually fire?
 
@@ -30,7 +30,12 @@ Isolation: creates its OWN throwaway tmux session in this worktree, at a fixed
 80x24 so the numbers are reproducible, and kills it at the end — including on
 failure. It never touches another session.
 
-Usage:  ./tools/voice_heal_probe.py [--keep]
+**Repoint the ``dependencies`` line above at the checkout you are measuring.**
+PEP 723 needs a literal path, and the probe measures whatever that install
+holds — running it from a worktree while it points at ``~/projects`` measures
+main's renderer under the worktree's name.
+
+Usage:  ./tools/voice_heal_probe.py [--keep] [--width N] [--height N]
 """
 
 from __future__ import annotations
@@ -38,16 +43,20 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from agentwire import inbox, pane_manager, prompt_router, session_ready
-from agentwire.voice_layer import confirm, write_tools
+from agentwire.voice_layer import confirm, relay, write_tools
 
 SESSION = "voice-heal-probe"
+#: Overridable so the pane-DEPENDENT half of the measurement can be re-taken at
+#: the smallest geometry you care about: the box shows a bounded number of ROWS,
+#: so a shorter pane windows sooner than 80x24 does.
 WIDTH, HEIGHT = 80, 24
-WORKTREE = "/Users/dotdev/worktrees/agentwire-dev/voice-confirm-spine"
+WORKTREE = str(Path(__file__).resolve().parents[1])
 
 #: Lengths to probe for the box-window boundary, coarse then fine.
-PROBE_LENGTHS = (150, 250, 350, 450, 600, 800, 1100, 1500)
+PROBE_LENGTHS = (350, 420, 460, 490, 510, 530, 560, 620, 900)
 
 
 def sh(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -89,10 +98,12 @@ def body_of_length(target: int) -> str:
     """A real rendered body padded to ~*target* chars, via the real renderer."""
     filler = "restart the portal and then report back on what the tests did "
     instruction = (filler * 40)[: max(10, target)]
-    return (
-        f"{confirm.VOICE_MARKER} {instruction} "
-        f'┃ said: "confirm tango" ┃ #a1b2c3'
-    )
+    return confirm.SEP.join([
+        instruction,
+        'said: "confirm tango"',
+        f"{confirm.POINTER_LABEL}{relay.relay_path('a1b2c3')}",
+        "#a1b2c3",
+    ])
 
 
 def rendered(body: str) -> str:
@@ -145,8 +156,17 @@ def paste_and_measure(line: str) -> dict:
     }
 
 
+def _int_arg(flag: str, default: int) -> int:
+    if flag in sys.argv:
+        return int(sys.argv[sys.argv.index(flag) + 1])
+    return default
+
+
 def main() -> int:
+    global WIDTH, HEIGHT
     keep = "--keep" in sys.argv
+    WIDTH = _int_arg("--width", WIDTH)
+    HEIGHT = _int_arg("--height", HEIGHT)
     print(f"Starting throwaway session {SESSION} at {WIDTH}x{HEIGHT} …")
     start_session()
     try:
@@ -156,11 +176,19 @@ def main() -> int:
         print("Input box ready.\n")
 
         # ---- 1. The round trip on the REAL shipped body ------------------
+        # The SHIPPED worst case, not a short one: a body long enough that
+        # every slot clips, so the #1015 relay pointer rides too.
         real_body = confirm.render_body(
-            "tell the reviewer the branch is ready and the tests were run twice",
-            "okay, confirm tango please",
+            "tell the reviewer the branch is ready and the tests were run twice "
+            "against a clean checkout, and then start on the follow-up list we "
+            "talked through this morning before anything else lands ",
+            "okay yeah go ahead and confirm tango please thats the right one and "
+            "then start on the follow up list we went through this morning",
             "a1b2c3",
+            reply_to="agentwire-dev-voice-confirm-spine",
+            full_path=str(relay.relay_path("a1b2c3")),
         )
+        assert confirm.POINTER_LABEL in real_body, "probe must exercise the pointer"
         line = rendered(real_body)
         print(f"[1] Round trip on the real rendered body ({len(line)} chars)")
         measured = paste_and_measure(line)
@@ -194,6 +222,14 @@ def main() -> int:
         print("    ROUND TRIP CLOSED.\n")
 
         # ---- 3. Where does the box-window boundary actually fall? --------
+        # The round trip SUBMITTED, so the pane is now processing a turn and
+        # its box is neither parseable nor empty. Measuring through that
+        # reports box=0 for every length and reads as "the cliff is below
+        # everything we probed" — a probe measuring its own sequencing.
+        print("Waiting for the pane to finish the submitted turn …")
+        if not wait_for_box(timeout=240.0):
+            print("FAIL: the box never came back after the round trip")
+            return 2
         print("[2] Measuring the stuck-test boundary in a real box")
         results = []
         for target in PROBE_LENGTHS:

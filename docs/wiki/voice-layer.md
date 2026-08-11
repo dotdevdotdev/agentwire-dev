@@ -1946,6 +1946,11 @@ evidence the heal will fire. `MAX_BODY_CHARS = 300` puts the worst case
 moved it down by 2, which is why re-measuring after that change was owed and why
 the cap itself did not need to move.
 
+Re-run at 80x24 on **2026-08-11** for #1015, with the relay pointer riding: 476
+hits, 546 misses (box 480), 1026 chips. The recorded 520/540 boundary sits inside
+that window, so it stands — and the shipped worst case (336 chars rendered) closed
+the round trip whole.
+
 The measurement is **pane-dependent**: the box shows a bounded number of rows,
 so a shorter pane windows sooner. Do not spend the headroom without
 re-measuring at the smallest pane you care about.
@@ -1965,6 +1970,64 @@ never emailed**, surfacing only via `doctor` after two hours. For a channel whos
 entire justification is "the owner is not watching a screen", that is the worst
 available failure. The same `stuck` test has no #851 window path, so an
 over-long single line fails identically — hence the cap.
+
+### The inline text is a preview; the file is the message (#1015)
+
+The cap above is not raisable, and for three live relays in the first voice
+session that meant the recipient got `"Treat it as a running list for anyt…"` and
+acted on the fragment. **A cap you cannot raise is not an argument for losing the
+text** — the pane is one channel, the filesystem is another, and the recipient is
+an agent that reads files.
+
+So every buddy write now persists the WHOLE request to
+`~/.agentwire/voice/relays/<proposal-id>.md`
+(`agentwire/voice_layer/relay.py`) — full instruction, full verbatim utterance,
+nothing clipped — and the delivered line carries a `full: <path>` slot pointing
+at it. The same `--ref` rides on the `msg send` argv, the way `ingest` messages
+already carry a report path. The inline text is demoted to what it always
+actually was: a preview.
+
+Four rulings hold it together:
+
+- **The pointer is frozen at propose time; the file is written at execution.**
+  The path is a pure function of the proposal id (`secrets.token_hex(3)`), so
+  `--ref` can join the argv prefix while the file does not yet exist — "the whole
+  argv is frozen at propose" (#966) stays literally true, and a proposal the
+  owner cancels or lets expire leaves nothing on disk. `build_argv` matches the
+  frozen `--ref` against the path the id *derives* rather than just reading it
+  out of the argv, so a future spec freezing a `--ref` of its own can never turn
+  that line into "open the path in the argv".
+- **Writing never raises.** `write_relay` is called from `build_argv()`, which
+  `_dispatch` runs *after* `_proposals.pop()` and *outside* the runner's `try` —
+  exactly the position where `_lead_safe`'s raise once destroyed approved
+  messages with no screen to report it on. A failed write returns `""`, and the
+  caller drops the `--ref` **with** the slot: a pointer to a file that is not
+  there is worse than no pointer, because the recipient reads a missing path as
+  "the real instruction is elsewhere" and stops.
+- **The pointer is not droppable, and the priority order is the ruling.** The
+  reply nudge is droppable; this is not — it is the recoverability of everything
+  the other slots clip, so dropping it under budget pressure would be dropping
+  the fix, silently, on exactly the longest messages. When a deep `$HOME` makes
+  the path long enough to squeeze the preview below `MIN_EXCERPT_CHARS`, what
+  gives way first is the `said:` quote, because that quote is reproduced verbatim
+  in the file the pointer names. Recoverable yields to unrecoverable. Only a path
+  long enough that even that is not sufficient drops the pointer itself — a
+  preview nobody can scan buys recoverability nobody goes looking for.
+- **It rides exactly when something WAS clipped.** A body carrying the whole
+  utterance needs no pointer to it, and ~50 characters of a 300-character line is
+  the excerpt and the nudge paid for nothing. Short bodies are byte-identical to
+  before.
+
+The caps did not move: the pointer is paid for out of the excerpt and the
+droppable nudge, so the worst rendered line is still 363 against the measured
+520. What changed is that the excerpt's clip is now recoverable instead of final.
+
+**Residual, stated.** `write_tools.MAX_INSTRUCTION_CHARS = 600` still refuses a
+proposal longer than that outright. That refusal is *spoken* — the buddy says so
+and the owner can restate — which is a different failure from silently handing a
+session half a sentence, and it is not what #1015 was about. If real spoken
+requests start hitting it, the fix is a bigger cap plus a bound on what the
+announce reads back aloud, not a wider excerpt.
 
 ### The `voice` kind, and what the substitution dragged in
 

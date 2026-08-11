@@ -37,7 +37,7 @@ import time
 import pytest
 
 from agentwire import core, inbox
-from agentwire.voice_layer import confirm, tools, transcript, write_tools
+from agentwire.voice_layer import confirm, relay, tools, transcript, write_tools
 
 
 class FakeClock:
@@ -3008,7 +3008,12 @@ class TestWriteToolSurface:
         assert argv[2:8] == [
             "--to", "orchestrator", "--from", "buddy", "--kind", "voice",
         ]
-        assert len(argv) == 9  # prefix + exactly one body
+        # The relay pointer (#1015) is frozen into the prefix at propose time,
+        # so the argv is still entirely code-derived: a flag pair whose value is
+        # a pure function of the proposal id, plus exactly one body.
+        assert argv[8] == "--ref"
+        assert argv[9] == str(relay.relay_path(proposal.id))
+        assert len(argv) == 11
 
     def test_cancel_never_writes(self, convo, runner, live):
         proposal = convo.announced_proposal()
