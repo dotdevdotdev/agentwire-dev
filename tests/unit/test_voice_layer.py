@@ -524,6 +524,37 @@ class TestToolAllowlist:
         assert result["count"] == 1
         assert result["messages"][0]["text"] == "PR is up"
 
+    def test_fleet_activity_builds_its_own_argv(self, monkeypatch):
+        """The awareness read (#1016) — clamped, and dispatched through the CLI."""
+        seen = {}
+        monkeypatch.setattr(
+            "agentwire.voice_layer.tools.run_agentwire_cmd",
+            lambda args, **kw: seen.setdefault("args", args) or {"success": True},
+        )
+        tools.dispatch("fleet_activity", {"limit": 10 ** 9, "hours": 3,
+                                          "event": "spoke", "session": "worker-1"}, "b")
+        assert seen["args"] == [
+            "activity", "list",
+            "--limit", str(tools._MAX_ACTIVITY_LIMIT),
+            "--hours", "3",
+            "--event", "spoke",
+            "-s", "worker-1",
+        ]
+
+    def test_fleet_activity_refuses_an_event_it_does_not_track(self):
+        """`--event` is an argparse `choices` field: a mis-heard value would exit
+        the CLI with a usage message, which the buddy would then read out as if
+        it were an answer. Refused HERE, with the real vocabulary spoken back."""
+        result = tools.dispatch("fleet_activity", {"event": "session_exploded"}, "b")
+        assert result["success"] is False
+        assert result["must_speak"] is True
+        assert "session idle" in result["error"]
+
+    def test_fleet_activity_validates_a_session_name_like_every_other_read(self):
+        result = tools.dispatch("fleet_activity", {"session": "--help"}, "b")
+        assert result["success"] is False
+        assert "valid session name" in result["error"]
+
     def test_tool_defs_are_valid_realtime_function_entries(self):
         for entry in tools.realtime_tool_defs():
             assert entry["type"] == "function"

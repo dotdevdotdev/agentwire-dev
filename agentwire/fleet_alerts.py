@@ -54,6 +54,22 @@ SUBSCRIBE_KEY = "fleet_alerts"
 #: alert about the alert (see ``inbox._escalate_dead_letters``).
 SENDER = "fleet-alerts"
 
+#: Sender stamped on the fleet's ordinary comings and goings
+#: (:mod:`~agentwire.fleet_activity`, #1016). Separate from :data:`SENDER` so a
+#: recipient can tell "the machine is broken" from "the machine did something",
+#: and defined HERE so the recursion guard below can name both without
+#: importing the producer.
+ACTIVITY_SENDER = "fleet-activity"
+
+#: Mail this machine sends itself. A dead-lettered one must not buy an alarm
+#: about the alarm — see ``inbox._alert_dead_letters``, which drops these by
+#: sender. Activity mail joins the set for the same reason plus one of its own:
+#: it is news by construction, so "a 'session went idle' notice was lost" does
+#: not earn a fleet-wide alert. It does still ride the dead-letter owner EMAIL
+#: (``_escalate_dead_letters``), which is deliberately left alone — that path is
+#: last-resort visibility, already coalesced to one message per batch.
+MACHINE_SENDERS = frozenset({SENDER, ACTIVITY_SENDER})
+
 #: How long a lease is good for without renewal. Long enough that a working
 #: session renewed at startup keeps hearing about the fleet for a full day of
 #: use; short enough that a subscriber which ran once last week is not still
@@ -93,11 +109,39 @@ DEFAULT_LEASE = timedelta(hours=12)
 #: looking at the output) and no per-finding throttle state to reuse, so a
 #: producer would re-announce the same durable, passive condition on every
 #: invocation. A dangling PR is not burning anything while it waits.
+#: The four below are DETECTORS — the machine reporting that something is
+#: wrong. The three after them are LIFECYCLE events (#1016): the fleet
+#: reporting that something happened. They share this table because the
+#: question is the same one — what may a producer put in front of a listener,
+#: and how loudly — and answering it in two places is how the two answers
+#: drift. What lifecycle events may NEVER be is ``escalation``: the interrupt
+#: tier stays the two conditions above that nothing clears without a human.
+#: Which lifecycle events reach the spool AT ALL, and how often, is the
+#: separate ruling in :data:`agentwire.fleet_activity.ANNOUNCE`.
+#:
+#: ``session_idle`` → **done**. Work somebody delegated has finished and is
+#:   waiting on a decision. Only ever emitted for a delegated session (a
+#:   recorded parent, a worker/reviewer role, or a worktree) — an interactive
+#:   orchestrator goes idle after every turn, and announcing that would fire
+#:   once per exchange the owner has with their own session.
+#:
+#: ``task_completed`` → **done**, with one inherit rule: a failed or timed-out
+#:   run is emitted as ``request``, because the fleet has already judged it as
+#:   needing a person and flattening that to news throws the judgment away.
+#:   Same shape as ``dead_letter``'s inherit rule above.
+#:
+#: ``toast_high`` → **request**. ``notify-user --priority high`` is the one
+#:   notify surface that declares its own urgency, and it declares it about a
+#:   screen the owner may not be looking at. An ordinary toast is not here at
+#:   all — it never reaches the spool.
 DETECTOR_KINDS: dict[str, str] = {
     "auth_expired": "escalation",
     "blocked_pane_no_parent": "escalation",
     "usage_limit_park": "note",
     "dead_letter": "request",
+    "session_idle": "done",
+    "task_completed": "done",
+    "toast_high": "request",
 }
 
 
@@ -284,6 +328,7 @@ def emit(
     ref: str = "",
     exclude: Iterable[str] = (),
     detector: str = "",
+    sender: str = SENDER,
 ) -> list[str]:
     """Enqueue one typed alert per live subscriber. Returns who was reached.
 
@@ -295,18 +340,26 @@ def emit(
 
     An unknown *kind* DOES raise: it can only be a coding bug at a call site,
     and silently dropping it would leave a detector that looks wired and is not.
+    An unknown *sender* raises for the same reason and one sharper: the
+    dead-letter guard drops our own stranded mail BY SENDER, so a producer that
+    stamped a name outside :data:`MACHINE_SENDERS` would quietly re-enter that
+    loop.
     """
     from . import inbox
 
     if kind not in inbox.KINDS:
         raise ValueError(f"invalid alert kind: {kind!r} (expected one of {inbox.KINDS})")
+    if sender not in MACHINE_SENDERS:
+        raise ValueError(
+            f"invalid alert sender: {sender!r} (expected one of {sorted(MACHINE_SENDERS)})"
+        )
 
     skip = set(exclude)
     targets = [name for name in subscribers() if name not in skip]
     reached: list[str] = []
     for target in targets:
         try:
-            inbox.enqueue(target, text, kind=kind, sender=SENDER, ref=ref)
+            inbox.enqueue(target, text, kind=kind, sender=sender, ref=ref)
         except Exception as exc:
             log_event("emit_failed", to=target, kind=kind, detector=detector, error=str(exc))
             continue

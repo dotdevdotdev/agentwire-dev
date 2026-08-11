@@ -722,6 +722,104 @@ class TestTheBuddyClock:
     volunteers replies — through the injected announce(), never its own
     speaking path."""
 
+    def test_a_fan_out_is_capped_into_utterances_not_a_monologue(self):
+        """#1016. Speech cannot be skimmed and the owner cannot predict when it
+        stops, so an unbounded coalesce is a monologue waiting for a fan-out —
+        ten workers landing in one 5s poll window was one ~2500-char utterance.
+        The overflow is HELD, not dropped: it stays unread and the next quiet
+        tick says it."""
+        report = run_notifier("""
+            spool = [];
+            for (var i = 1; i <= 5; i++) {
+              spool.push({ id: "m" + i, from: "w" + i, kind: "done", text: "body " + i });
+            }
+            await notifier.pollOnce();
+        """)
+        first = report["announced"][0]
+        assert "body 1" in first["text"] and "body 3" in first["text"]
+        assert "body 4" not in first["text"]
+        assert first["text"].endswith("And 2 more waiting.")
+        assert first["meta"]["inboxIds"] == ["m1", "m2", "m3"]
+        # And the ack stops at the spoken run — the held mail is not buried.
+        assert first["meta"]["ackThrough"] == "m3"
+
+    def test_the_held_overflow_is_spoken_on_the_next_gap(self):
+        report = run_notifier("""
+            spool = [];
+            for (var i = 1; i <= 5; i++) {
+              spool.push({ id: "m" + i, from: "w" + i, kind: "done", text: "body " + i });
+            }
+            await notifier.pollOnce();
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        second = report["announced"][1]["text"]
+        assert "body 4" in second and "body 5" in second
+        assert "more waiting" not in second
+
+    def test_an_escalation_behind_the_cap_waits_one_tick_no_longer(self):
+        """The cap's one real cost, bounded and pinned. An escalation sitting at
+        position 4+ of a full-gate batch is pushed to the next tick — and that
+        tick says it whether or not the gate is still full, because the
+        interrupt path filters to urgent messages only. Delay is one 5s poll;
+        the failure this rules out is the escalation waiting behind an ordinary
+        report indefinitely."""
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "w1", kind: "done", text: "one" },
+              { id: "m2", from: "w2", kind: "done", text: "two" },
+              { id: "m3", from: "w3", kind: "done", text: "three" },
+              { id: "m4", from: "fleet-alerts", kind: "escalation",
+                text: "login expired" },
+            ];
+            await notifier.pollOnce();
+            logs.push("first: " + announcedCalls[0].text);
+            speakable = false;          // the buddy is now mid-chatter
+            interruptable = true;       // …but the interrupt tier is open
+            await notifier.pollOnce();
+        """)
+        assert "login expired" not in report["announced"][0]["text"]
+        assert report["announced"][0]["text"].endswith("And 1 more waiting.")
+        assert len(report["announced"]) == 2
+        assert "login expired" in report["announced"][1]["text"]
+
+    def test_machine_mail_is_not_narrated_as_a_reply(self):
+        """#1016. The fleet's own senders are not colleagues, and the announcer
+        speaks composeNotice VERBATIM — the model never gets to rephrase it. So
+        "fleet-activity got back to you" would tell the owner a session with a
+        robot's name answered something they never sent."""
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "fleet-activity", kind: "done",
+                       text: "auth-fix is idle and done working" }];
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert text == "From the fleet: auth-fix is idle and done working"
+        assert "got back to you" not in text
+
+    def test_a_machine_escalation_still_sounds_like_an_alarm(self):
+        report = run_notifier("""
+            spool = [{ id: "m1", from: "fleet-alerts", kind: "escalation",
+                       text: "login expired; every turn is being refused" }];
+            speakable = false; interruptable = true;
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert text.startswith("Heads up")
+        assert "login expired" in text
+
+    def test_a_mixed_batch_names_the_session_and_the_fleet_differently(self):
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "minecraft", kind: "done", text: "PR is up" },
+              { id: "m2", from: "fleet-activity", kind: "done", text: "nightly task finished" },
+            ];
+            await notifier.pollOnce();
+        """)
+        text = report["announced"][0]["text"]
+        assert "From minecraft: PR is up" in text
+        assert "From the fleet: nightly task finished" in text
+
     def test_three_replies_are_one_utterance(self):
         report = run_notifier("""
             spool = [

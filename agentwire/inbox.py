@@ -748,11 +748,16 @@ def _alert_dead_letters(batch: list[Message], reason: str) -> None:
     otherwise be reported to subscriber B, whose own copy is stuck for the same
     reason, once per drain forever. So our own undelivered alerts are dropped
     by SENDER, and every subscriber named as a recipient is excluded.
+
+    ``MACHINE_SENDERS`` rather than ``SENDER`` alone (#1016): lifecycle activity
+    is emitted under its own sender and is news by construction. "A 'session
+    went idle' notice was lost" is not worth an alert, and it would arrive
+    exactly when the fleet is already noisy enough to be stranding mail.
     """
     from . import fleet_alerts
 
     try:
-        mirrored = [m for m in batch if m.sender != fleet_alerts.SENDER]
+        mirrored = [m for m in batch if m.sender not in fleet_alerts.MACHINE_SENDERS]
         if not mirrored:
             return
         recipients = sorted({m.to for m in mirrored})

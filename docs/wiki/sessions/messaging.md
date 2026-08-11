@@ -355,6 +355,37 @@ clear without a human, and is something burning while it waits?*
 | dead-lettered load-bearing mail | `request`, promoted to `escalation` iff the lost message *was* an escalation | Someone must go look at `agentwire msg dead`. The floor is `request` because the realistic bad case is one stuck recipient — 147 dead letters in ~2s, observed — and that shape must not buy 147 interrupts. One alert per **batch**, matching the digest email's coalescing. |
 | dangling PR (`worktree --dangling`) | **not wired** | No autonomous trigger (only `doctor` and the explicit flag, both run by a human already reading the output) and no per-finding throttle state to reuse, so a producer would re-announce the same durable, passive condition every invocation. Nothing is burning while a dangling PR waits. |
 
+### Lifecycle joins the same table (#1016)
+
+Detectors report that something is *wrong*. `agentwire/fleet_activity.py` adds
+the other producer — the fleet reporting that something *happened*: a session
+going idle, a scheduled task finishing, a toast, anything spoken through fleet
+TTS. It shares `DETECTOR_KINDS` because the question is identical (what may a
+producer put in front of a listener, and how loudly), and answering it in two
+places is how the two answers drift.
+
+| Event | Kind | Why, and what bounds it |
+|---|---|---|
+| session went idle | `done`, **only if delegated** | The event the owner wanted: work they handed off has finished. Authority is consulted first and can veto — an `orchestrator`/`anchor` role is never delegated whatever its location, because `agentwire orchestrator` is `worktree --kind orchestrator` and an OR over #716's axes let *location* overrule the role, announcing the owner's own durable window every 15 minutes. After that veto, a recorded parent, a worker/reviewer role, or a worktree checkout each suffice. Throttled 15m per session; the event's parent is excluded, since it hears this by paste from `notify-parent`. |
+| scheduled task completed | `done`, `request` if it ended badly | The owner did not watch it start and cannot see it end. The `request` promotion is the dead-letter inherit rule's shape: the fleet already judged it. `usage_limit` / `auth_expired` runs are **not** announced — those conditions have detectors of their own that say it once, machine-wide. Throttled 2m per task. |
+| `notify-user --priority high` | `request` | The one notify surface that declares its own urgency, about a screen the owner may not be looking at. Throttled 5m per **toast content**, not per sender: keyed on the session, a second, different high toast a minute later was silently never spoken. |
+| ordinary toast, portal lifecycle, **anything spoken** | **not wired** | Ledger-only. `spoke` most deliberately: the owner heard it in the room, and a voice channel that reads the audio back is worse than one that stays quiet. |
+
+**Do not `alerts subscribe` a DELEGATED session.** Subscription is for a
+listener, and a subscribed *worker* closes a loop: the alert is pasted into its
+prompt, which starts a turn, which ends in an idle, which is announced — a
+cycle that sustains itself at the 15m cadence with nobody asking for any of it.
+Nothing autonomous does this (the buddy subscribes itself, and it has no pane
+to paste into); it takes a human running `alerts subscribe` on a worker. The
+subscriber you want is the one that *reads* mail rather than acting on it.
+
+**No lifecycle event is ever an `escalation`.** The interrupt tier stays the two
+conditions nothing clears without a human. What everything else gets is the
+**ledger** — `~/.agentwire/fleet-activity.jsonl`, read with `agentwire activity
+list`, never pushed at anyone. That split is the design, and it exists because
+everything in a spool is eventually spoken; see
+[voice-layer.md](../voice-layer.md#fleet-awareness-two-tiers-because-everything-in-the-spool-gets-spoken-1016).
+
 **No alert rides an email-shaped throttle.** Each producer stamps its own state
 on a successful *enqueue* — a local write — rather than reusing the stamp that
 gates its owner email. That distinction is load-bearing rather than fussy:
@@ -374,8 +405,9 @@ which is the failure that is hardest to notice — it looks exactly like a quiet
 fleet.
 
 Two guards keep the dead-letter mirror from feeding itself: alerts carry a
-distinct sender (`fleet-alerts`) and are never mirrored, and any subscriber
-named as a *recipient* of the lost batch is excluded. Either alone is
+distinct sender (`fleet-alerts` — or `fleet-activity` for lifecycle; both live
+in `MACHINE_SENDERS`, and `emit` refuses any other) and are never mirrored, and
+any subscriber named as a *recipient* of the lost batch is excluded. Either alone is
 insufficient — with two subscribers, an alert stranded en route to one would
 otherwise be reported to the other, once per drain, forever.
 
@@ -406,7 +438,17 @@ agentwire alerts subscribe <session>     # lease alerts for a session
 agentwire alerts unsubscribe <session>
 agentwire alerts list [--json]           # live leases, with their expiry
 agentwire alerts reindex [--json]        # rebuild the candidate index
+
+agentwire activity list [--limit N] [--hours N] [--event E] [-s SESSION] [--json]
 ```
+
+`activity list` reads the ledger — the awareness tier, which nothing pushes.
+Entries marked `*` were *also* queued to subscribers; showing that flag is the
+point, since "recorded" and "said out loud" are different facts and an operator
+debugging a chatty or a silent buddy needs to tell them apart. There is
+deliberately **no verb that writes an entry**: producers record from inside the
+surfaces that generate the events, so nothing an agent can be talked into
+calling can forge fleet history.
 
 `list` reports the **expiry**, not a boolean, because a lease that stopped being
 renewed stops delivering silently — that is the designed failure direction, and

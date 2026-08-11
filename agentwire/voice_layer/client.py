@@ -726,19 +726,48 @@ function createInboxNotifier(deps) {
   // what happened, nothing about what will.
   function isUrgent(m) { return !!m && m.kind === "escalation"; }
 
-  function composeNotice(messages) {
+  // Mail from the MACHINE rather than from a session (#982, #1016). The
+  // wording matters because these are not replies: "fleet-activity got back to
+  // you" tells the owner a session with a robot's name answered something they
+  // never sent, and "fleet-alerts escalated" names an internal module out loud
+  // as if it were a colleague. Both are sentences the owner HEARS, and the
+  // announcer speaks composeNotice verbatim — the model does not get a chance
+  // to rephrase it. Kept in sync with `fleet_alerts.MACHINE_SENDERS`, which is
+  // the same list on the producing side.
+  var MACHINE_SENDERS = { "fleet-alerts": 1, "fleet-activity": 1 };
+  function isMachine(m) { return !!m && !!MACHINE_SENDERS[m.from]; }
+  function speaker(m) { return isMachine(m) ? "the fleet" : ((m && m.from) || "someone"); }
+
+  // HOW MANY BODIES ONE UTTERANCE MAY CARRY. Speech cannot be skimmed and the
+  // owner cannot predict when it stops, so an unbounded coalesce is a monologue
+  // waiting for a fan-out: ten workers landing in one 5s poll window produced
+  // one ~2500-character utterance, spoken over nothing the owner asked for. The
+  // overflow is NOT dropped and NOT acked — it stays unread and the next quiet
+  // tick says the next three, which is the same "announced late, never lost"
+  // property the interrupt tier already relies on.
+  var MAX_NOTICE_BODIES = 3;
+
+  function composeNotice(messages, waiting) {
     // An escalation in the batch names itself as one — the owner should be
     // able to hear the difference between news and an alarm.
     var prefix = messages.some(isUrgent) ? "Heads up \\u2014 " : "";
+    // Said out loud rather than left implicit: the owner has to be able to tell
+    // "that was everything" from "there is more coming", or a capped batch
+    // sounds exactly like a complete one.
+    var tail = waiting > 0 ? " And " + waiting + " more waiting." : "";
     if (messages.length === 1) {
       var m = messages[0];
+      // No verb for machine mail: the body is already a whole statement
+      // ("auth-fix is idle and done working"), so any verb here would be the
+      // notifier narrating a relationship that does not exist.
+      if (isMachine(m)) return prefix + "From the fleet: " + trimBody(m.text) + tail;
       var verb = isUrgent(m) ? " escalated: " : " got back to you: ";
-      return prefix + (m.from || "someone") + verb + trimBody(m.text);
+      return prefix + (m.from || "someone") + verb + trimBody(m.text) + tail;
     }
     var parts = messages.map(function (msg) {
-      return "From " + (msg.from || "someone") + ": " + trimBody(msg.text);
+      return "From " + speaker(msg) + ": " + trimBody(msg.text);
     });
-    return prefix + messages.length + " updates came in. " + parts.join(" ");
+    return prefix + messages.length + " updates came in. " + parts.join(" ") + tail;
   }
 
   function pollOnce() {
@@ -766,10 +795,10 @@ function createInboxNotifier(deps) {
       if (!full && !canInterrupt()) return;
       var take = function (m) { return full || isUrgent(m); };
       var unread = res.messages || [];
-      var claimed = {};
+      var picked = {};
       var fresh = unread.filter(take).filter(function (m) {
-        if (!m || !m.id || seen[m.id] || inFlight[m.id] || claimed[m.id]) return false;
-        claimed[m.id] = true;
+        if (!m || !m.id || seen[m.id] || inFlight[m.id] || picked[m.id]) return false;
+        picked[m.id] = true;
         return true;
       });
       if (!fresh.length) {
@@ -786,7 +815,13 @@ function createInboxNotifier(deps) {
         }
         return;
       }
-      var ids = fresh.map(function (m) { return m.id; });
+      // CAP THE UTTERANCE, not the mail. Only what this notice actually SAYS
+      // is claimed, marked in-flight and eligible to be acked; the rest is
+      // untouched in the spool and the next quiet tick picks it up.
+      var batch = fresh.slice(0, MAX_NOTICE_BODIES);
+      var waiting = fresh.length - batch.length;
+      var claimed = {};
+      var ids = batch.map(function (m) { claimed[m.id] = true; return m.id; });
       ids.forEach(function (id) { inFlight[id] = true; });
       // HOW FAR THIS NOTICE MAY ACK (#970). The cursor is ONE id, so acking
       // through id X marks everything before X read too. The only safe target
@@ -806,15 +841,16 @@ function createInboxNotifier(deps) {
         if (!m || !m.id || !(seen[m.id] || claimed[m.id])) break;
         ackThrough = m.id;
       }
-      onLog("inbox", "volunteering " + fresh.length + " message(s)");
+      onLog("inbox", "volunteering " + batch.length + " message(s)"
+        + (waiting ? " (" + waiting + " held for the next gap)" : ""));
       // inboxMsgs rides along so the page can register request/escalation
       // notices in the re-raise ledger AT THE MOMENT THEY ARE HEARD (its
       // onSpoken) — the ledger must never hold something the owner wasn't
       // actually told.
-      announce(composeNotice(fresh), {
+      announce(composeNotice(batch, waiting), {
         inboxIds: ids,
         ackThrough: ackThrough,
-        inboxMsgs: fresh.map(function (m) {
+        inboxMsgs: batch.map(function (m) {
           return { id: m.id, from: m.from, kind: m.kind, text: m.text };
         }),
       });
