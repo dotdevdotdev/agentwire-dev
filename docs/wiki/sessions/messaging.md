@@ -177,7 +177,7 @@ lands in a durable inbox and is injected only at a safe boundary.
      the only *unprompted* signal in the whole path. That was harmless while every
      no-penalty reason was a short-lived box state; admitting `target_parked`
      changed it, since a park can legitimately last hours. So `agentwire doctor`
-     reports load-bearing (`done` / `request` / `escalation`) messages still
+     reports load-bearing (`ESCALATE_KINDS`) messages still
      pending past `inbox.STALE_PENDING_MS` (2h), naming the recipient, the wait,
      and the defer reason — and flagging parked recipients as self-resolving so
      the section reads as FYI rather than failure. `agentwire msg inbox -s
@@ -201,8 +201,9 @@ lands in a durable inbox and is injected only at a safe boundary.
      Messages to remote (`name@machine`) recipients — which the local drain
      could never deliver anyway (see Scope) — now surface as `target_gone`
      within minutes instead of pending silently forever.
-   - **Out-of-band escalation.** When a **load-bearing** kind (`done` / `request`
-     / `escalation`) does dead-letter, the owner is emailed via the shared Resend
+   - **Out-of-band escalation.** When a **load-bearing** kind (`done` /
+     `request` / `escalation` / `voice`) does dead-letter, the owner is emailed
+     via the shared Resend
      wiring (the same channel usage-limit parking uses) so the loss is surfaced
      even if nobody runs `msg dead`. `note` is fire-and-forget and `ingest` never
      auto-delivers, so neither is escalated. Escalation is **batched per drain
@@ -241,12 +242,64 @@ collision detector simple and the no-clobber guarantee absolute.
 | `note` | default — informational |
 | `done` | a worker finished — also what idle report-backs ride: `agentwire notify-parent --queued` (used by `idle-handler.sh`, #667) enqueues here instead of direct-pasting |
 | `request` | asking for something |
-| `escalation` | needs attention |
+| `escalation` | needs attention — **the only kind a consumer may act on out of turn** |
 | `ingest` | **passive** — awareness only; never auto-delivered (see below) |
+| `voice` | the owner speaking through their [voice buddy](../voice-layer.md) — active and escalatable, but not an interrupt (see the ruling below) |
 
 An optional `--ref` carries a machine-readable pointer (e.g. a report path)
 alongside the text, surfaced as a typed field rather than parsed out of prose —
 ideal with `ingest`.
+
+Two attributes cut across the enum, and they are **different axes** that are
+easy to collapse into one:
+
+- **`PASSIVE_KINDS` = (`ingest`,)** — never auto-delivered, so it cannot drive
+  the recipient into a turn. Everything else is *active*.
+- **`ESCALATE_KINDS` = (`done`, `request`, `escalation`, `voice`)** —
+  load-bearing, so a dead-letter emails the owner, `doctor` reports it, and
+  `worktree --list` badges it. `note` is fire-and-forget; `ingest` is pull-only
+  by design.
+
+Neither is the **interrupt tier**. `escalation` alone pre-empts, and it is a
+one-member set that no other kind joins.
+
+### Ruling: `voice` is active and escalatable, and is not an interrupt (#985)
+
+Before #985 the buddy marked a message as voice-originated by prefixing the
+message **body** with a `<voice>` tag, riding `--kind request`. Attribution sat
+inside the text while the slot that actually drives behaviour said something
+else. `voice` moves it into the slot. **Owner ruling, 2026-08-10:**
+
+- **ACTIVE.** A `voice` message *is* the owner talking to a session through the
+  buddy, so it should drive that session exactly as typing at it would.
+  Delivered when the input box is empty, like `note`/`request`. Making it
+  passive would have been a behaviour *reduction* versus the body prefix it
+  replaces — this is a consistency/SSOT change and must not quietly remove a
+  capability.
+- **IN `ESCALATE_KINDS`.** The owner spoke it and walked away. Screenless, a
+  silently dead-lettered voice message is unrecoverable: there is no screen on
+  which to notice the graveyard entry.
+- **NOT an interrupt.** `ESCALATE_KINDS` governs *dead-letter escalation*; the
+  interrupt tier is a separate axis. `escalation` remains the only kind that
+  pre-empts — see `inbox._alert_dead_letters`' promotion (keyed on `escalation`
+  alone) and the buddy client's `isUrgent`. Widening either to `voice` would
+  make every routine spoken message an alarm, which is exactly the "retires the
+  tier" failure the fleet-alert ruling below exists to avoid.
+
+One consequence worth stating, because the two halves filter on different
+fields: `inbox._cohort_held` holds by **sender**, while `cohort.REPORT_KINDS`
+harvests by **kind** and deliberately excludes `voice` (the owner is not a child
+reporting on a task). A `voice` message from a session that *is* a pending
+cohort child is therefore held but not harvested — a deferral, not a loss: it
+stays pending and delivers once the cohort resolves, the same shape `ingest`
+already has.
+
+**One derivation, not four literals.** `ESCALATE_KINDS` is read through
+`inbox.load_bearing()`. Before #985, `doctor`'s dead-letter section and both
+`worktree --list` / `--watch` each hand-wrote `("done", "escalation")` — already
+disagreeing with `ESCALATE_KINDS` about `request`, and one merge away from
+disagreeing about `voice` on the one kind whose sender is screenless. Add a
+consumer by calling `load_bearing()`; never by retyping the tuple.
 
 ## Passive `ingest` — awareness without being driven
 
@@ -388,7 +441,7 @@ skipped automatically because their pane 0 doesn't run an agent.
 ## CLI
 
 ```bash
-agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest] [--ref <path>] <text>
+agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] [--ref <path>] <text>
 agentwire msg send --to agentwire-dev-fix-nav --kind done "PR #312 drafted"
 agentwire msg send --to anchor --kind ingest --ref /path/report.md "auth findings"  # passive
 agentwire msg inbox [-s <session>]   # peek pending + passive (does not drain/consume)

@@ -6,7 +6,7 @@ the recipient's file inbox and the watchdog injects it only when the input box
 is empty and the pane is a safe target — so a worker reporting back never
 clobbers a half-typed human draft.
 
-    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest] <text>
+    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] <text>
     agentwire msg inbox [-s <session>]      # peek pending + passive (does not drain/consume)
     agentwire msg pull  [-s <session>]      # read + REMOVE passive (ingest) messages
     agentwire msg dead  [-s <session>]      # list dropped (dead-lettered) msgs
@@ -71,11 +71,19 @@ def cmd_msg_send(args) -> int:
     # sender must learn the target is gone instead of reading a bare "Queued"
     # as delivery-in-progress. @all targets are live by construction, and with
     # tmux unreachable (live is None) we can't positively say gone — no warning.
+    # A recipient with a delivery adapter (voice-layer spike) is never in the
+    # tmux session list by design, so the gone warning would be a lie — and the
+    # dead-letter it predicts can't happen, since the drain spools it instead.
+    from .voice_layer import delivery as _delivery
+
     live = inbox.live_sessions()
     missing = (
         []
         if args.to == inbox.BROADCAST_TOKEN or live is None
-        else sorted({m.to for m in written} - live)
+        else sorted(
+            t for t in ({m.to for m in written} - live)
+            if _delivery.adapter_for(t) is None
+        )
     )
     warnings = [
         f"session '{t}' does not currently exist — message will dead-letter "

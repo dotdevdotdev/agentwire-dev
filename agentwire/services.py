@@ -12,8 +12,10 @@ the watchdog resurrects them.
 """
 
 import json
+import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,12 +161,117 @@ def registry(cfg: Config) -> list[CustomServiceConfig]:
 # ─────────────────────────────────────────────────────────────
 
 
+#: How long a freshly spawned process gets to prove it survived exec. Short
+#: enough that `services up` stays interactive, long enough to catch the class
+#: this exists for: a missing key, an unregistered name, a bad flag — failures
+#: that happen at startup, not later.
+STARTUP_GRACE_S = 0.6
+
+#: Lines of a dead pane's output carried into the failure message. Bounded on
+#: purpose: this is the process's OWN stderr being surfaced to the operator,
+#: and not only on a terminal — the detail built from it is toasted and SPOKEN
+#: by the portal watchdog. The trade is deliberate (a refusal that cannot say
+#: why is a fix-loop, and in a channel with no screen that is the expensive
+#: failure), which is why the content is redacted, not just clipped.
+_TAIL_LINES = 3
+
+#: ...and a separate cap, because ``_TAIL_LINES`` bounds LINES, not characters:
+#: three lines of a 5000-column traceback is one utterance nobody can listen to.
+_TAIL_CHARS = 300
+
+
+def _tmux_name(name: str) -> str:
+    """The name tmux will actually have chosen for *name*.
+
+    tmux rewrites its own address separators — ``.`` and ``:`` → ``_`` — so a
+    service called ``rev.dot:2`` becomes ``rev_dot_2`` the moment it is
+    created, and every later target built from the raw name misses. That is
+    #868/#878, and the mapping has exactly ONE implementation by rule: never
+    inline the substitution, call the helper.
+    """
+    from .worktree import tmux_safe_name
+
+    return tmux_safe_name(name)
+
+
 def _tmux_session_exists(name: str) -> bool:
     result = subprocess.run(
-        ["tmux", "has-session", "-t", f"={name}"],
+        ["tmux", "has-session", "-t", f"={_tmux_name(name)}"],
         capture_output=True,
     )
     return result.returncode == 0
+
+
+def _tmux_pane_dead(name: str) -> bool:
+    """Is *name*'s pane a corpse tmux is holding open?
+
+    Only ever true under ``remain-on-exit`` — which command services now set,
+    and which a user may have set globally for anything else. Measured, and the
+    reason this predicate has to exist: ``tmux has-session`` returns 0 for a
+    session whose pane is dead, so "the session exists" stopped being liveness
+    the moment anything kept a corpse around.
+    """
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", f"={_tmux_name(name)}:.0",
+         "#{pane_dead}"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
+#: What step 1 runs while step 2 sets ``remain-on-exit`` — see
+#: ``_start_command_service``. A module constant because it is also the
+#: discriminator: a session running THIS is a half-built spawn, never a service.
+_PLACEHOLDER_CMD = "sh -c 'while :; do sleep 3600; done'"
+
+
+def _tmux_pane_is_placeholder(name: str) -> bool:
+    """Is *name*'s pane still running the spawn placeholder?
+
+    ``respawn-pane`` REPLACES ``pane_start_command`` (measured, tmux 3.5a), so
+    a service that finished starting reports its own command here and can never
+    be mistaken for a placeholder. That direction is the one that matters: this
+    predicate gates a kill, and a false positive would tear down a live
+    service.
+    """
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", f"={_tmux_name(name)}:.0",
+         "#{pane_start_command}"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == _PLACEHOLDER_CMD
+
+
+def _tmux_pane_tail(name: str) -> str:
+    """The last few non-empty lines of *name*'s pane, redacted, or "".
+
+    Read from tmux's in-memory scrollback — no file is created, so the command
+    kind's secret property is unchanged. tmux's own "Pane is dead (status N)"
+    line is kept: the exit status is often the most actionable part.
+
+    Redacted HERE because this is the one choke point every consumer reads
+    through, and the consumers are not all a terminal: the healthcheck detail
+    built from this reaches the portal watchdog's ``_notify_service_event``,
+    which toasts it AND speaks it via ``agentwire say``. A crash line is
+    exactly where a secret shows up, and "it only goes where its own log would
+    have" was not true of a spoken utterance.
+    """
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-S", "-", "-t", f"={_tmux_name(name)}:.0"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+    # Redact BEFORE clipping, and the reason is legibility, not safety: clipping
+    # first is equally SAFE (a cut can only remove trailing material, and the
+    # key stays in front of whatever value survives, so the pattern still
+    # matches) — but a 400-character token would then eat the whole budget and
+    # push the actionable part of the message off the end. Redaction shortens
+    # `--token=<400 chars>` to `--token=***`, so doing it first spends the cap
+    # on the words the operator needs.
+    tail = redact_secrets(" | ".join(lines[-_TAIL_LINES:]))
+    return tail if len(tail) <= _TAIL_CHARS else tail[:_TAIL_CHARS] + "…"
 
 
 def run_healthcheck(svc: CustomServiceConfig) -> tuple[bool, str]:
@@ -190,10 +297,21 @@ def run_healthcheck(svc: CustomServiceConfig) -> tuple[bool, str]:
             return False, "healthcheck timed out (10s)"
         except Exception as e:
             return False, str(e)
-    # Default: tmux_session
-    if _tmux_session_exists(svc.name):
-        return True, "session exists"
-    return False, "session not found"
+    # Default: tmux_session — "the session exists AND its pane is not a corpse".
+    # The second clause is not belt-and-braces: `has-session` returns 0 for a
+    # dead pane, so without it a crashed service reads healthy forever, which
+    # is a worse failure than the one at start it would be masking.
+    if not _tmux_session_exists(svc.name):
+        return False, "session not found"
+    if _tmux_pane_dead(svc.name):
+        tail = _tmux_pane_tail(svc.name)
+        return False, f"process exited: {tail}" if tail else "process exited"
+    return True, "session exists"
+
+
+def service_kind(svc: CustomServiceConfig) -> str:
+    """"command" (a supervised process) or "agent" (an agentwire session)."""
+    return "command" if svc.command else "agent"
 
 
 def service_status(svc: CustomServiceConfig) -> dict:
@@ -201,7 +319,8 @@ def service_status(svc: CustomServiceConfig) -> dict:
     healthy, detail = run_healthcheck(svc)
     return {
         "name": svc.name,
-        "running": _tmux_session_exists(svc.name),
+        "kind": service_kind(svc),
+        "running": _tmux_session_exists(svc.name) and not _tmux_pane_dead(svc.name),
         "healthy": healthy,
         "detail": detail,
         "disabled": svc.name in load_disabled(),
@@ -217,8 +336,180 @@ def service_status(svc: CustomServiceConfig) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 
+def _start_command_service(svc: CustomServiceConfig) -> tuple[bool, str]:
+    """Run a plain process under tmux, detached. Idempotent.
+
+    tmux IS the supervisor here, and that choice is what keeps a process
+    service's output off any world-readable surface: tmux captures stdout and
+    stderr into the pane's scrollback, which lives in the tmux server's memory
+    and is reachable only through the per-user socket dir ``/tmp/tmux-<uid>``
+    (mode 0700). Nothing is redirected to a file — deliberately. A wrapper that
+    is careful in its own code and then tees stdout into a log has not solved
+    the problem, and the same standard #887 holds ``~/.agentwire`` and
+    ``portal.token`` to applies here: owner-only or not at all.
+
+    What this does NOT hide is ``command`` itself: it lands in the process
+    table, where every local user can read it. Secrets belong in
+    ``~/.agentwire/.env``, never in a service's argv — see
+    ``command_secret_risk``.
+
+    **A created pane is not a surviving process.** ``tmux new-session``
+    returning 0 says a pane was made; the command inside it may already have
+    exited. Reporting that as "started" produced the worst shape available: a
+    success line, a ``[!!] unhealthy`` from doctor one second later prescribing
+    the command that had just claimed success, and the process's own stderr
+    gone with the pane. So the spawn is three steps rather than one — a
+    placeholder, ``remain-on-exit on``, then the real command via
+    ``respawn-pane`` — and then the pane is re-read after a grace period.
+
+    The ordering is the point and is why a placeholder exists at all: setting
+    the option AFTER launching the real command is a race a fast-dying process
+    wins, and it is exactly the fast-dying processes whose reason we need.
+
+    **The placeholder must never outlive the spawn.** Steps 2 and 3 run against
+    a session step 1 just created, so a failure there is not the benign
+    "someone else got there first" the old handler assumed — it is our own
+    placeholder, alive and running ``sleep 3600``. ``pane_dead`` cannot tell
+    that from a healthy process, so leaving it would report a sleep loop as a
+    running service: the same false all-clear one costume over. ``already
+    running`` is therefore reachable only when the session genuinely
+    PRE-EXISTED this call.
+    """
+    cwd = svc.project or str(Path.home())
+    # Every -s and -t goes through the one mapping. tmux rewrites `.` and `:`
+    # at creation, so a target built from the raw name misses the session that
+    # was actually made — and a teardown that misses reports success (#868).
+    name = _tmux_name(svc.name)
+    prior = ""
+    if _tmux_session_exists(svc.name):
+        if not _tmux_pane_dead(svc.name):
+            return True, "already running"
+        # A corpse from a previous run. Read WHY before clearing it — the
+        # respawn destroys the only copy of that output, and this is the moment
+        # the operator is asking about it.
+        tail = _tmux_pane_tail(svc.name)
+        prior = f" (previous run exited: {tail})" if tail else " (previous run exited)"
+        subprocess.run(
+            ["tmux", "kill-session", "-t", f"={name}"],
+            capture_output=True, timeout=30,
+        )
+
+    created_here = False
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", name, "-c", cwd, _PLACEHOLDER_CMD],
+            check=True, capture_output=True, timeout=30,
+        )
+        created_here = True
+        subprocess.run(
+            ["tmux", "set-option", "-w", "-t", f"={name}:", "remain-on-exit", "on"],
+            check=True, capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["tmux", "respawn-pane", "-k", "-c", cwd, "-t", f"={name}:.0",
+             svc.command],
+            check=True, capture_output=True, timeout=30,
+        )
+    except Exception as e:
+        # `created_here` covers the ordinary route; the placeholder check covers
+        # the rest. `new-session` raising CalledProcessError means tmux refused
+        # and made nothing — but TimeoutExpired does NOT: the server can have
+        # created the session and simply not answered in time, leaving
+        # `created_here` False with a live placeholder sitting there. Asking
+        # what the pane is actually running closes that without having to
+        # enumerate the ways it can happen.
+        #
+        # Probing to decide that must not itself throw: this runs while an
+        # error is already in hand, and a second failure here would replace the
+        # real reason with a traceback about the probe.
+        try:
+            ours = created_here or _tmux_pane_is_placeholder(svc.name)
+            foreign = (not ours and _tmux_session_exists(svc.name)
+                       and not _tmux_pane_dead(svc.name))
+        except Exception:
+            ours, foreign = created_here, False
+        if ours:
+            # Ours, and it is only running the placeholder. Take it with us.
+            subprocess.run(
+                ["tmux", "kill-session", "-t", f"={name}"],
+                capture_output=True, timeout=30,
+            )
+        elif foreign:
+            return True, "already running"  # genuinely lost a benign spawn race
+        stderr = ""
+        if isinstance(e, subprocess.CalledProcessError):
+            stderr = (e.stderr or b"").decode(errors="replace").strip()
+        return False, (stderr or str(e)) + prior
+
+    time.sleep(STARTUP_GRACE_S)
+    if _tmux_pane_dead(svc.name):
+        tail = _tmux_pane_tail(svc.name)
+        # The pane is deliberately LEFT dead: it is the only place that output
+        # exists, and the next start reads it before clearing it.
+        return False, f"process exited immediately: {tail}" if tail else (
+            "process exited immediately")
+    return True, "started" + prior
+
+
+# Argv patterns that read as an inline secret. The process table is world-
+# readable, so a service command carrying one hands it to every local user —
+# the one leak a tmux-supervised process service still has.
+#
+# Both joinings, because a flag and its value are the same secret either way:
+# `--token=abc` and `--token abc` reach `ps` identically, and matching only the
+# first would select for whoever writes it the other way — the same class of
+# spelling-shaped rule this repo has been bitten by before (#913/#915).
+_SECRET_NAMES = ("token", "api-key", "apikey", "api_key", "secret", "password", "passwd")
+_SECRET_ARGV_PATTERNS = tuple(
+    pattern
+    for name in _SECRET_NAMES
+    for pattern in (f"--{name}=", f"--{name} ", f"{name}=")
+) + ("bearer ",)
+
+
+#: Built from the same tuple as the argv check, deliberately: a second list
+#: would drift from it the moment either is extended, which is exactly what
+#: happened to the argv one.
+_SECRET_VALUE_RE = re.compile(
+    "(" + "|".join(re.escape(p) for p in _SECRET_ARGV_PATTERNS) + r")(\S+)",
+    re.IGNORECASE,
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Mask values that follow a secret-shaped key in *text*.
+
+    Masks the VALUE and keeps everything else — a redaction that ate the
+    message would re-create the failure it is guarding, which is a refusal that
+    cannot say why.
+    """
+    return _SECRET_VALUE_RE.sub(lambda m: m.group(1) + "***", text)
+
+
+def command_secret_risk(svc: CustomServiceConfig) -> str | None:
+    """The inline-secret pattern *svc*'s command carries, or None.
+
+    Detection only, and named rather than guessed at: the caller decides what
+    to do about it. A false positive here costs a doctor line; a miss costs a
+    credential.
+    """
+    if not svc.command:
+        return None
+    lowered = svc.command.lower()
+    for pattern in _SECRET_ARGV_PATTERNS:
+        if pattern in lowered:
+            return pattern
+    return None
+
+
 def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
-    """Start a service session (detached) if not already running. Idempotent."""
+    """Start a service (detached) if not already running. Idempotent.
+
+    A `command` service is a supervised process; everything else is an
+    agentwire agent session.
+    """
+    if svc.command:
+        return _start_command_service(svc)
     if _tmux_session_exists(svc.name):
         return True, "already running"
 
@@ -247,15 +538,27 @@ def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
         return False, str(e)
 
 
-def stop_service(name: str) -> tuple[bool, str]:
-    """Kill a service's tmux session."""
-    if not _tmux_session_exists(name):
+def stop_service(svc: CustomServiceConfig) -> tuple[bool, str]:
+    """Kill a service's tmux session.
+
+    A command service is killed through tmux directly: `agentwire kill`'s
+    graceful leg sends `/exit` to an *agent*, and there is no agent here — a
+    process would just be handed two characters it never asked for before the
+    kill landed anyway.
+    """
+    if not _tmux_session_exists(svc.name):
         return True, "not running"
     try:
-        subprocess.run(
-            [sys.executable, "-m", "agentwire", "kill", "-s", name, "--json"],
-            check=True, capture_output=True, timeout=30,
-        )
+        if svc.command:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", f"={_tmux_name(svc.name)}"],
+                check=True, capture_output=True, timeout=30,
+            )
+        else:
+            subprocess.run(
+                [sys.executable, "-m", "agentwire", "kill", "-s", svc.name, "--json"],
+                check=True, capture_output=True, timeout=30,
+            )
         return True, "stopped"
     except Exception as e:
         return False, str(e)

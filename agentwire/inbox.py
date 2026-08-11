@@ -49,7 +49,24 @@ EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 # ``ingest/`` subdir and waits there until the recipient *voluntarily* pulls it
 # (``msg pull``). This is the "awareness without being driven" primitive —
 # correspondents drop a passive pointer; the anchor pulls on the human's cue.
-KINDS = ("note", "done", "request", "escalation", "ingest")
+#
+# ``voice`` is the owner speaking to a session through their voice buddy (#985).
+# It replaced a ``<voice>`` marker the buddy used to prepend to the message
+# BODY: attribution rode inside the text while the slot that actually drives
+# behaviour said ``request``. Owner ruling, 2026-08-10:
+#
+#   * **ACTIVE, not passive.** A voice message is the owner talking; it should
+#     drive the session exactly as typing at it would. Making it passive would
+#     be a behaviour *reduction* versus the body prefix it replaces, and this
+#     slice is a consistency/SSOT change, not a capability cut.
+#   * **In ESCALATE_KINDS.** The owner spoke it and walked away. Screenless, a
+#     silently dead-lettered voice message is unrecoverable — there is no
+#     screen on which to notice the graveyard entry.
+#   * **NOT an interrupt.** ``ESCALATE_KINDS`` governs dead-letter escalation,
+#     which is a different axis from the interrupt tier. ``escalation`` remains
+#     the only kind that pre-empts (see ``_alert_dead_letters``'s promotion and
+#     the buddy client's ``isUrgent``).
+KINDS = ("note", "done", "request", "escalation", "ingest", "voice")
 
 # Kinds the drain never touches — they route to a subdir and are pull-only.
 PASSIVE_KINDS = ("ingest",)
@@ -108,7 +125,10 @@ _BOX_STATIC_THRESHOLD = 3
 # Load-bearing kinds: a silently-dropped one is a real loss, so on dead-letter it
 # is escalated out-of-band (owner email). note is fire-and-forget and ingest
 # never auto-delivers, so neither is worth an owner email.
-ESCALATE_KINDS = ("done", "request", "escalation")
+#
+# This tuple is the SSOT and every consumer derives from it via load_bearing()
+# — see that function for the three hand-written copies #985 deleted.
+ESCALATE_KINDS = ("done", "request", "escalation", "voice")
 
 # How long a load-bearing message may sit pending before `doctor` reports it
 # (#879). Comfortably longer than any box-state defer — those clear in minutes —
@@ -125,6 +145,23 @@ _RESERVED_DIRS = {"dead", "sent", ".lock", "ingest"}
 def is_passive(kind: str) -> bool:
     """A passive kind is never auto-delivered — it's pull-only (see KINDS)."""
     return kind in PASSIVE_KINDS
+
+
+def load_bearing(messages: "list[Message]") -> "list[Message]":
+    """The subset of *messages* worth surfacing out-of-band (:data:`ESCALATE_KINDS`).
+
+    One implementation, four consumers: the dead-letter owner email, the
+    long-pending ``doctor`` section, ``doctor``'s dead-letter section, and the
+    ``dead_reports`` badge on ``worktree --list`` / ``--watch``.
+
+    It exists because the last three each carried their own hand-written
+    ``("done", "escalation")`` literal, which already disagreed with
+    ``ESCALATE_KINDS`` about ``request`` and would have disagreed again about
+    ``voice`` (#985) — a dead-lettered voice message emailing the owner on one
+    path and vanishing on another. Adding a fifth copy is the failure this
+    function exists to prevent; call it instead.
+    """
+    return [m for m in messages if m.kind in ESCALATE_KINDS]
 
 
 # =============================================================================
@@ -386,9 +423,7 @@ def stale_pending(older_than_ms: int = STALE_PENDING_MS) -> list[tuple[str, Mess
             messages = list_messages(session)
         except OSError:
             continue
-        for msg in messages:
-            if msg.kind not in ESCALATE_KINDS:
-                continue
+        for msg in load_bearing(messages):
             if msg.ts and now - msg.ts >= older_than_ms:
                 stale.append((session, msg))
     stale.sort(key=lambda pair: pair[1].ts)
@@ -487,7 +522,8 @@ def gc_sender(sender: str) -> dict:
     Messages live keyed by *recipient*, so when a worktree/session exits nothing
     reaps the report-backs it left undelivered across every inbox — they
     accumulate. This scans all pending queues for that sender and clears them:
-    load-bearing kinds (``done``/``request``/``escalation``) are dead-lettered
+    load-bearing kinds (:data:`ESCALATE_KINDS`, which since #985 includes
+    ``voice``) are dead-lettered
     (which escalates via the owner-email path so the loss is never silent); the
     rest are dropped. Passive (``ingest``) messages are never auto-delivered, so
     they're left for the recipient to pull. Returns ``{dead, dropped}`` counts.
@@ -699,6 +735,13 @@ def _alert_dead_letters(batch: list[Message], reason: str) -> None:
     already made the judgment, and a *lost interrupt* is precisely the failure
     the tier exists for.
 
+    **Escalatable is not the interrupt tier**, and this is where the two axes
+    are easiest to conflate. ``voice`` joined ``ESCALATE_KINDS`` in #985, so a
+    lost voice message reaches the owner by email — but the promotion below
+    stays keyed on ``escalation`` alone. Widening it to ``voice`` would make
+    every routine spoken message an alarm, which is the "retires the tier"
+    failure ``fleet_alerts`` exists to avoid.
+
     Two recursion guards, because an alert is ordinary mail and can dead-letter
     like any other. The recipient guard alone is not enough once more than one
     session subscribes: an alert stranded on the way to subscriber A would
@@ -732,8 +775,9 @@ def _alert_dead_letters(batch: list[Message], reason: str) -> None:
 def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
     """Email the owner once per batch when load-bearing report-backs dead-letter.
 
-    ``done`` / ``request`` / ``escalation`` are load-bearing — a silently-dropped
-    one is a real loss, so we surface it out-of-band via the shared Resend wiring
+    ``done`` / ``request`` / ``escalation`` / ``voice`` are load-bearing — a
+    silently-dropped one is a real loss, so we surface it out-of-band via the
+    shared Resend wiring
     (the same owner-escalation channel usage-limit parking uses). ``note`` and
     ``ingest`` are not escalated.
 
@@ -746,7 +790,7 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
     a missing key or send failure must never break the drain — each corpse
     already sits in ``dead/`` for ``agentwire msg dead``.
     """
-    batch = [m for m in messages if m.kind in ESCALATE_KINDS]
+    batch = load_bearing(messages)
     if not batch:
         return
     _alert_dead_letters(batch, reason)
@@ -959,6 +1003,37 @@ def flush_session(session: str, force: bool = False) -> dict:
             if not messages:
                 return {"session": session, "delivered": 0, "deferred": True,
                         "reason": "cohort_held"}
+
+        # Non-tmux delivery (EXPERIMENTAL, voice-layer spike). A recipient that
+        # registered a delivery adapter has no pane to paste into, so every gate
+        # below it is inapplicable — and the gone gate would actively kill its
+        # mail, since tmux is reachable and the recipient legitimately isn't in
+        # the session list. Sits AFTER the cohort hold on purpose: a held report
+        # belongs to `wait --children`, which reads it off disk, and spooling it
+        # here would consume it out from under that collection. Inert for every
+        # session without a `delivery` key in metadata.json — i.e. all of them.
+        from .voice_layer import delivery as _delivery
+
+        if _delivery.adapter_for(session) is not None:
+            ok, reason = _delivery.deliver(session, messages)
+            if ok:
+                for msg in messages:
+                    if msg.path is not None:
+                        msg.path.unlink(missing_ok=True)
+                _log_event(
+                    "delivered", to=session, count=len(messages),
+                    kinds=[m.kind for m in messages], adapter=reason,
+                )
+                return {
+                    "session": session, "delivered": len(messages),
+                    "deferred": False, "reason": "delivered",
+                }
+            dead = _bump_attempts(messages, reason)
+            _log_event("deferred", to=session, count=len(messages), reason=reason)
+            return {
+                "session": session, "delivered": 0, "deferred": True,
+                "reason": reason, "dead": dead,
+            }
 
         # Gone gate FIRST (#694): a recipient that positively doesn't exist can
         # never clear a box, and the ordinary gates misread it — capturing a

@@ -39,6 +39,13 @@ def parse_role_file(path: Path) -> RoleConfig | None:
 
         # Role instructions here...
 
+    Beta-gated regions (``<!-- beta:flag -->``, see :mod:`agentwire.beta`) are
+    resolved HERE rather than at any single call site, because this is the one
+    funnel every role reader in the tree goes through — ``load_roles`` (session launch), ``agentwire
+    roles list``, ``agentwire role show``, the MCP ``role_show``. A gate
+    applied at the launch path only would leave ``role show`` describing a
+    prompt no session receives.
+
     Args:
         path: Path to the role markdown file
 
@@ -52,6 +59,10 @@ def parse_role_file(path: Path) -> RoleConfig | None:
         content = path.read_text()
     except Exception:
         return None
+
+    from ..beta import render as render_beta
+
+    content = render_beta(content)
 
     # Parse YAML frontmatter
     frontmatter = {}

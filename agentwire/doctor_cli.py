@@ -795,6 +795,52 @@ def _render_orphaned_history_section() -> int:
     return len(orphaned)
 
 
+def _render_dead_letter_section() -> int:
+    """Doctor section: load-bearing messages that burned out into ``dead/``.
+
+    The kinds it reports come from :func:`inbox.load_bearing`, never from a
+    literal here. This site used to hand-write a two-kind tuple, one of three
+    such copies (#985): it already disagreed with ``inbox.ESCALATE_KINDS`` about
+    ``request`` — a dead-lettered request emailed the owner but was absent from
+    this section — and adding ``voice`` would have split them again, this time
+    on the kind whose recipient is screenless.
+
+    Returns 1 per session holding load-bearing corpses. Never raises: an
+    unreadable inbox degrades to a ``[..]`` note rather than failing ``doctor``.
+    """
+    from . import inbox
+
+    try:
+        dead_sess = inbox.dead_sessions()
+    except Exception as e:
+        print(f"  [..] Could not check dead-lettered messages: {e}")
+        return 0
+    if not dead_sess:
+        print("  [ok] No dead-lettered messages found")
+        return 0
+
+    issues = 0
+    for ds in dead_sess:
+        try:
+            corpses = inbox.load_bearing(inbox.list_dead(ds))
+        except Exception as e:
+            print(f"  [..] Could not read dead-lettered messages for '{ds}': {e}")
+            continue
+        if not corpses:
+            continue
+        issues += 1
+        print(f"  [!!] Session '{ds}' has {len(corpses)} dead-lettered "
+              f"load-bearing message(s):")
+        for m in corpses:
+            print(f"       - Kind: {m.kind}, Sender: {m.sender}, "
+                  f"Text: {m.text}, Reason: {m.reason}")
+    if not issues:
+        kinds = "/".join(inbox.ESCALATE_KINDS)
+        print(f"  [ok] No dead-lettered {kinds} messages found "
+              "(any dead-letters are informational)")
+    return issues
+
+
 def _render_pending_messages_section() -> int:
     """Doctor section: load-bearing messages queued too long (#879).
 
@@ -1204,6 +1250,100 @@ def _render_secrets_permissions_section(
     return len(issues), fixed
 
 
+def _render_custom_services_section() -> int:
+    """Doctor section: every registry service, agent and process alike (#983).
+
+    Registry-driven, so a new ``services.custom`` entry is reported here the
+    moment it is registered — including a ``command`` service such as the voice
+    buddy's bridge, whose state was previously visible nowhere because it was
+    hand-launched and therefore in no registry at all.
+
+    Two things are reported that a bare healthcheck does not carry:
+
+    - the service's KIND, because "session not found" means a dead agent for
+      one kind and a dead process for the other, and the fix differs;
+    - an inline secret in a process service's ``command``, which is the one
+      leak the tmux supervisor does not close — argv is world-readable in the
+      process table. Same standard as #887's owner-only files, one surface
+      over.
+    """
+    from . import services as services_mod
+    from .config import load_config as _load_config_typed
+
+    issues = 0
+    try:
+        cfg = _load_config_typed()
+        disabled = services_mod.load_disabled()
+        registry = services_mod.registry(cfg)
+    except Exception as e:
+        print(f"  [..] Could not check custom services: {e}")
+        return 0
+
+    for svc in registry:
+        kind = services_mod.service_kind(svc)
+        try:
+            healthy, detail = services_mod.run_healthcheck(svc)
+        except Exception as e:  # a broken healthcheck must not hide the rest
+            print(f"  [..] Service {svc.name} ({kind}): healthcheck error — {e}")
+            continue
+        label = f"Service {svc.name} ({kind})"
+        if healthy:
+            print(f"  [ok] {label}: {detail}")
+        elif svc.name in disabled:
+            print(f"  [..] {label}: stopped via 'services down' ({detail})")
+        elif not svc.autostart:
+            print(f"  [..] {label}: not running (autostart off, {detail})")
+        else:
+            print(f"  [!!] {label}: unhealthy — {detail}")
+            print(f"     Run: agentwire services up {svc.name}")
+            issues += 1
+
+        risk = services_mod.command_secret_risk(svc)
+        if risk:
+            print(f"  [!!] Service {svc.name}: command carries '{risk}' — argv is "
+                  "world-readable in the process table")
+            print("     Fix: move the secret to ~/.agentwire/.env and read it "
+                  "from the environment")
+            issues += 1
+    return issues
+
+
+def _render_beta_section() -> int:
+    """Doctor section: which beta features this install opted into.
+
+    Reported even when everything is off, because "off" is the state a user
+    checks doctor to confirm — a section that prints nothing until you enable
+    something cannot answer "is the voice layer costing me anything?".
+
+    An enabled feature is then checked for the prerequisite it cannot supply
+    itself. **The key's PRESENCE only** — never the value, never a prefix: a
+    doctor run is the output people paste into an issue.
+    """
+    import os
+
+    from .config import BETA_FLAG_NAMES, enabled_beta_flags
+    from .voice_layer.realtime import API_KEY_ENV
+
+    issues = 0
+    enabled = enabled_beta_flags()
+    for name in sorted(BETA_FLAG_NAMES):
+        if name not in enabled:
+            print(f"  [..] beta.{name}: off — set 'beta.{name}: true' in "
+                  "~/.agentwire/config.yaml to enable")
+            continue
+        if name == "voice_layer":
+            if os.environ.get(API_KEY_ENV, "").strip():
+                print(f"  [ok] beta.{name}: on — {API_KEY_ENV} is present")
+            else:
+                print(f"  [!!] beta.{name}: on but {API_KEY_ENV} is not set — "
+                      "the voice buddy cannot mint a session")
+                print(f"     Fix: add {API_KEY_ENV} to ~/.agentwire/.env (chmod 600)")
+                issues += 1
+        else:
+            print(f"  [ok] beta.{name}: on")
+    return issues
+
+
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
     from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
@@ -1395,28 +1535,14 @@ def cmd_doctor(args) -> int:
     print("\nChecking MCP server entrypoint (#874)...")
     issues_found += _render_mcp_import_section()
 
+    # Beta opt-ins (default OFF) — see _render_beta_section.
+    print("\nChecking beta features...")
+    issues_found += _render_beta_section()
+
     # Check custom services (registry-driven: built-in notifications bridge
     # + user-defined services from services.custom)
     print("\nChecking custom services...")
-    from . import services as services_mod
-    from .config import load_config as _load_config_typed
-    try:
-        _svc_cfg = _load_config_typed()
-        _svc_disabled = services_mod.load_disabled()
-        for svc in services_mod.registry(_svc_cfg):
-            healthy, detail = services_mod.run_healthcheck(svc)
-            if healthy:
-                print(f"  [ok] Service {svc.name}: {detail}")
-            elif svc.name in _svc_disabled:
-                print(f"  [..] Service {svc.name}: stopped via 'services down' ({detail})")
-            elif not svc.autostart:
-                print(f"  [..] Service {svc.name}: not running (autostart off, {detail})")
-            else:
-                print(f"  [!!] Service {svc.name}: unhealthy — {detail}")
-                print(f"     Run: agentwire services up {svc.name}")
-                issues_found += 1
-    except Exception as e:
-        print(f"  [..] Could not check custom services: {e}")
+    issues_found += _render_custom_services_section()
 
     # 5. Validate config
     print("\nChecking configuration...")
@@ -1697,26 +1823,7 @@ def cmd_doctor(args) -> int:
 
     # 10. Check for dead-lettered messages
     print("\nChecking for dead-lettered messages...")
-    from agentwire import inbox
-    try:
-        dead_sess = inbox.dead_sessions()
-        done_or_esc_found = False
-        if not dead_sess:
-            print("  [ok] No dead-lettered messages found")
-        else:
-            for ds in dead_sess:
-                dead_msgs = inbox.list_dead(ds)
-                done_or_esc = [m for m in dead_msgs if m.kind in ("done", "escalation")]
-                if done_or_esc:
-                    done_or_esc_found = True
-                    print(f"  [!!] Session '{ds}' has {len(done_or_esc)} dead-lettered report-back/escalation message(s):")
-                    for m in done_or_esc:
-                        print(f"       - Kind: {m.kind}, Sender: {m.sender}, Text: {m.text}, Reason: {m.reason}")
-                    issues_found += 1
-            if not done_or_esc_found:
-                print("  [ok] No dead-lettered done/escalation messages found (any dead-letters are informational)")
-    except Exception as e:
-        print(f"  [..] Could not check dead-lettered messages: {e}")
+    issues_found += _render_dead_letter_section()
 
     # 10b. Long-pending report-backs (#879) — see _render_pending_messages_section.
     print("\nChecking for long-pending report-backs...")

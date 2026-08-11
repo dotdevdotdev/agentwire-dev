@@ -32,8 +32,10 @@ def services_list() -> str:
             flags.append("disabled")
         suffix = f" [{', '.join(flags)}]" if flags else ""
         hc = s.get("healthcheck", {})
-        lines.append(f"- {s['name']}: restart={s.get('restart')}, "
+        lines.append(f"- {s['name']} ({s.get('kind')}): restart={s.get('restart')}, "
                      f"healthcheck={hc.get('kind')}/{hc.get('interval')}s{suffix}")
+        if s.get("command"):
+            lines.append(f"  command: {s['command']}")
         if s.get("project"):
             lines.append(f"  project: {s['project']}")
     return "\n".join(lines)
@@ -63,7 +65,7 @@ def services_status() -> str:
             mark = "!!"
         extra = " (disabled)" if s.get("disabled") else (
             "" if s.get("autostart") else " (autostart off)")
-        lines.append(f"[{mark}] {s['name']}: {s.get('detail')}{extra}")
+        lines.append(f"[{mark}] {s['name']} ({s.get('kind')}): {s.get('detail')}{extra}")
     all_healthy = data.get("all_healthy")
     lines.append(f"\nAll healthy: {'yes' if all_healthy else 'NO'}")
     return "\n".join(lines)

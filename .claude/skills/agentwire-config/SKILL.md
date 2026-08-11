@@ -218,6 +218,19 @@ session:
                              # session (appended last for recency weight). Headless roles
                              # (worker, task-runner, notifications) and soul/soul-* sessions
                              # are excluded automatically; per-session opt-out: --no-soul on new/dev
+
+beta:
+  # Opt-in gates for features that SHIP on main but stay off until asked for.
+  # Every flag defaults to false, and "off" means ABSENT — not merely dormant:
+  # a gated feature's role-prompt lines AND its MCP tool-description prose are
+  # stripped before a model sees them, so a user who never enabled it pays no
+  # tokens for it. Only a real YAML boolean turns one on — `voice_layer: "false"`
+  # (quoted) stays OFF, deliberately. `agentwire doctor` reports each flag's
+  # state either way. Config-only (no CLI verb); env override works via
+  # AGENTWIRE_BETA__VOICE_LAYER=true.
+  voice_layer: false         # The realtime voice buddy (`agentwire buddy`). Off: every buddy
+                             # subcommand refuses, naming this key and OPENAI_API_KEY (which
+                             # lives in ~/.agentwire/.env). See docs/wiki/voice-layer.md §0.
 ```
 
 ## Custom Command-Palette Items (`palette:`) (#676)
