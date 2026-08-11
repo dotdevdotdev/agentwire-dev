@@ -165,6 +165,36 @@ def test_root_orchestrator_idle_is_ledger_only(isolate):
     assert [e["event"] for e in fleet_activity.recent()] == ["session_idle"]
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # THE SHAPE THE VERB ACTUALLY PRODUCES. `agentwire orchestrator` is
+        # sugar for `worktree --kind orchestrator`, so the owner's durable
+        # window carries role=orchestrator, created_by='' AND worktree_path —
+        # two live sessions on this machine look exactly like this. A plain OR
+        # over #716's axes let the LOCATION axis overrule the ROLE and
+        # announced the window the owner was talking to, every 15 minutes.
+        {"role": "orchestrator", "created_by": "",
+         "worktree_path": "/Users/x/worktrees/proj/spike"},
+        # Same veto through the persona axis: Briefing Mode's anchor replaces
+        # the orchestrator role and is likewise who the human talks to.
+        {"role": "worker", "roles": ["anchor", "contributor"],
+         "worktree_path": "/Users/x/worktrees/proj/brief"},
+        # And a spawned orchestrator: created_by is set, so the parent branch
+        # would have fired if authority did not get to veto first.
+        {"role": "orchestrator", "created_by": "boss"},
+    ],
+)
+def test_an_interactive_role_is_never_delegated_whatever_its_location(isolate, fields):
+    buddy = _subscribe()
+    _record("window", **fields)
+
+    fleet_activity.note_session_idle("window", "is idle and done working")
+
+    assert _mail(buddy) == []
+    assert [e["announced"] for e in fleet_activity.recent()] == [False]
+
+
 def test_unknown_session_idle_is_ledger_only(isolate):
     """No record is not evidence of delegation, and the failure direction is quiet."""
     buddy = _subscribe()
@@ -334,6 +364,21 @@ def test_a_corrupt_line_costs_one_entry_not_the_file(isolate):
     assert [e["text"] for e in fleet_activity.recent()] == ["two", "one"]
 
 
+@pytest.mark.parametrize("ts", ["2026-08-11T12:00:00", "not-a-date", 7, None])
+def test_an_unusable_timestamp_never_raises(isolate, ts):
+    """The naive one is the sharp case: it PARSES, then raises on the comparison
+    — outside the guard that wrapped only the parse. That tracebacked
+    `agentwire activity list` on a single hand-edited line, and falsified the
+    "never raises" contract every producer here is written against."""
+    fleet_activity.record("spoke", session="a", text="fine")
+    with open(fleet_activity.ledger_path(), "a") as fh:
+        fh.write(json.dumps({"event": "spoke", "ts": ts, "text": "odd",
+                             "session": "a", "subject": "a"}) + "\n")
+
+    assert [e["text"] for e in fleet_activity.recent()] == ["fine"]
+    assert fleet_activity.note_spoke("still works", session="a")["announced"] == []
+
+
 def test_the_ledger_stays_bounded(isolate):
     for i in range(fleet_activity.TRIM_AT + 20):
         fleet_activity.record("spoke", session="a", text=str(i))
@@ -452,12 +497,34 @@ def test_a_service_session_going_idle_is_not_even_recorded(isolate, monkeypatch)
     assert fleet_activity.recent() == []
 
 
-def test_a_toast_records_through_the_notify_cli(isolate, monkeypatch):
+@pytest.fixture
+def portal(monkeypatch):
+    """A portal that accepts toasts, patched at core's ONE HTTP call.
+
+    Deliberately not patched at `_post_desktop_notification`: that is the seam
+    under test. A test that stubs it proves the producer called *something*,
+    which is exactly the assurance that let the MCP producer ship unrecorded.
+    """
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"success": True, "id": "n1", "clients": 1}
+
+    calls = []
+    monkeypatch.setattr(
+        "agentwire.core.portal_request",
+        lambda method, url, **kw: calls.append((method, url, kw.get("json"))) or _Response(),
+    )
+    return calls
+
+
+def test_a_toast_records_through_the_notify_cli(isolate, portal, monkeypatch):
     from agentwire import notify_cli
     from agentwire.notify_cli import cmd_notify_user
 
     _subscribe()
-    monkeypatch.setattr(notify_cli, "_post_desktop_notification", lambda *a, **kw: True)
     monkeypatch.setattr(notify_cli, "_output_result", lambda *a, **kw: 0)
 
     cmd_notify_user(_ns(text=["build", "is", "red"], session="ci",
@@ -467,17 +534,69 @@ def test_a_toast_records_through_the_notify_cli(isolate, monkeypatch):
     assert [m.kind for m in _mail("buddy")] == ["request"]
 
 
+def test_a_toast_records_through_the_mcp_tool(isolate, portal):
+    """The producer agents actually reach. CLAUDE.md's rule is MCP for agents
+    and CLI for humans, so a CLI-side hook sees exactly the toasts a human
+    posted — and none of the ones the fleet posts. It POSTed on its own
+    transport; now every toast producer goes through one seam."""
+    _subscribe()
+    from agentwire.mcp_notify import notify_user
+
+    notify_user("deploy needs a decision", session="ci", priority="high")
+
+    assert [e["event"] for e in fleet_activity.recent()] == ["toast_high"]
+    assert [m.kind for m in _mail("buddy")] == ["request"]
+
+
+def test_the_briefing_display_card_records_too(isolate, portal, monkeypatch):
+    """`say(display=...)` posts its own toast — the third producer."""
+    from agentwire import channels_cli
+
+    _say_env(channels_cli, monkeypatch, rc=0)
+    channels_cli.cmd_say(_ns(text=["spoken", "headline"], json=True, voice=None,
+                             exaggeration=None, cfg=None, session=None,
+                             display="**the richer card**", backend=None,
+                             instructions=None, language="English", stream=False))
+
+    assert {e["event"] for e in fleet_activity.recent()} == {"toast", "spoke"}
+
+
 def test_a_toast_the_portal_refused_is_still_recorded(isolate, monkeypatch):
     """The case where awareness matters MOST: the screen never got it."""
     from agentwire import notify_cli
     from agentwire.notify_cli import cmd_notify_user
 
-    monkeypatch.setattr(notify_cli, "_post_desktop_notification", lambda *a, **kw: False)
+    def unreachable(*a, **kw):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("agentwire.core.portal_request", unreachable)
     monkeypatch.setattr(notify_cli, "_output_result", lambda *a, **kw: 1)
 
     cmd_notify_user(_ns(text=["heads", "up"], session="ci", priority="normal", json=False))
 
     assert [e["event"] for e in fleet_activity.recent()] == ["toast"]
+
+
+def test_different_high_toasts_are_not_throttled_into_silence(isolate, portal, monkeypatch):
+    """The cooldown groups by CONTENT, not by sender. Keying it on the session
+    made 'build is red' swallow 'deploy rolled back' a minute later — and on the
+    one surface whose caller declared the message urgent, a false-reject is
+    silence with no screen behind it."""
+    from agentwire import notify_cli
+    from agentwire.notify_cli import cmd_notify_user
+
+    _subscribe()
+    monkeypatch.setattr(notify_cli, "_output_result", lambda *a, **kw: 0)
+
+    cmd_notify_user(_ns(text=["build", "is", "red"], session="ci", priority="high", json=False))
+    cmd_notify_user(_ns(text=["deploy", "rolled", "back"], session="ci",
+                        priority="high", json=False))
+    # …and the case the throttle IS for: the same toast, again.
+    cmd_notify_user(_ns(text=["build", "is", "red"], session="ci", priority="high", json=False))
+
+    spoken = [m.text for m in _mail("buddy")]
+    assert len(spoken) == 2
+    assert any("red" in t for t in spoken) and any("rolled back" in t for t in spoken)
 
 
 def test_portal_churn_is_not_recorded(isolate, monkeypatch):
@@ -522,22 +641,26 @@ def test_other_scheduler_events_are_not_activity(isolate, monkeypatch):
     assert fleet_activity.recent() == []
 
 
-def test_speaking_records_the_sink_through_the_say_cli(isolate, monkeypatch):
-    """The say path's own result helper is what records, so the sink is part of
-    the record and a FAILED dispatch is never recorded as spoken."""
-    from agentwire import channels_cli
-
-    _subscribe()
+def _say_env(channels_cli, monkeypatch, *, rc: int = 0, browser: bool = True):
+    """Everything `cmd_say` reaches outside itself, stubbed."""
     monkeypatch.setattr(channels_cli, "load_config", lambda: {"tts": {}})
     monkeypatch.setattr(channels_cli, "get_voice_from_config", lambda: None)
     monkeypatch.setattr(channels_cli, "_get_current_tmux_session", lambda: "worker-1")
     monkeypatch.setattr(channels_cli, "_infer_session_from_path", lambda: None)
-    monkeypatch.setattr(channels_cli, "_handle_voice_notifications",
-                        lambda *a, **kw: None)
+    monkeypatch.setattr(channels_cli, "_handle_voice_notifications", lambda *a, **kw: None)
     monkeypatch.setattr(channels_cli, "_get_portal_url", lambda: "https://portal")
     monkeypatch.setattr(channels_cli, "_check_portal_connections",
-                        lambda s, url: (True, s, 2))
-    monkeypatch.setattr(channels_cli, "_remote_say", lambda *a, **kw: 0)
+                        lambda s, url: (browser, s, 2))
+    monkeypatch.setattr(channels_cli, "_remote_say", lambda *a, **kw: rc)
+
+
+def test_speaking_records_the_sink_through_the_say_cli(isolate, monkeypatch):
+    """The sink is part of the record, and a FAILED dispatch is never recorded
+    as spoken."""
+    from agentwire import channels_cli
+
+    _subscribe()
+    _say_env(channels_cli, monkeypatch, rc=0)
 
     channels_cli.cmd_say(_ns(text=["the", "build", "is", "green"], json=True,
                              voice=None, exaggeration=None, cfg=None, session=None,
@@ -555,16 +678,7 @@ def test_speaking_records_the_sink_through_the_say_cli(isolate, monkeypatch):
 def test_a_failed_say_is_not_recorded_as_spoken(isolate, monkeypatch):
     from agentwire import channels_cli
 
-    monkeypatch.setattr(channels_cli, "load_config", lambda: {"tts": {}})
-    monkeypatch.setattr(channels_cli, "get_voice_from_config", lambda: None)
-    monkeypatch.setattr(channels_cli, "_get_current_tmux_session", lambda: "worker-1")
-    monkeypatch.setattr(channels_cli, "_infer_session_from_path", lambda: None)
-    monkeypatch.setattr(channels_cli, "_handle_voice_notifications",
-                        lambda *a, **kw: None)
-    monkeypatch.setattr(channels_cli, "_get_portal_url", lambda: "https://portal")
-    monkeypatch.setattr(channels_cli, "_check_portal_connections",
-                        lambda s, url: (True, s, 2))
-    monkeypatch.setattr(channels_cli, "_remote_say", lambda *a, **kw: 1)
+    _say_env(channels_cli, monkeypatch, rc=1)
 
     channels_cli.cmd_say(_ns(text=["nobody", "heard", "this"], json=True,
                              voice=None, exaggeration=None, cfg=None, session=None,
@@ -572,3 +686,35 @@ def test_a_failed_say_is_not_recorded_as_spoken(isolate, monkeypatch):
                              language="English", stream=False))
 
     assert fleet_activity.recent() == []
+
+
+def test_a_partly_spoken_say_records_exactly_what_played(isolate, monkeypatch):
+    """The local path CHUNKS. A failure on chunk 3 of 4 still played 1 and 2
+    out loud — recording the whole string claims the owner heard a sentence
+    that never played, and recording nothing lets the buddy later offer, as
+    news, something they already heard."""
+    from agentwire import channels_cli
+
+    _say_env(channels_cli, monkeypatch, browser=False)
+    monkeypatch.setattr(channels_cli, "chunk_text", None, raising=False)
+    monkeypatch.setattr("agentwire.utils.chunker.chunk_text",
+                        lambda t: ["first part.", "second part.", "third part."])
+    played = []
+
+    def dispatch(chunk, *a, **kw):
+        if len(played) == 2:
+            return 1, "os-voice"
+        played.append(chunk)
+        return 0, "os-voice"
+
+    monkeypatch.setattr(channels_cli, "_local_say_dispatch", dispatch)
+
+    channels_cli.cmd_say(_ns(text=["first part. second part. third part."], json=True,
+                             voice=None, exaggeration=None, cfg=None, session=None,
+                             display=None, backend=None, instructions=None,
+                             language="English", stream=False))
+
+    entries = fleet_activity.recent()
+    assert [e["event"] for e in entries] == ["spoke"]
+    assert entries[0]["text"] == "first part. second part."
+    assert "third part" not in entries[0]["text"]

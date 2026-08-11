@@ -4,7 +4,6 @@ from .core import run_agentwire_cmd
 from .mcp_core import (
     mcp,
 )
-from .mcp_desktop import _portal_request
 
 
 @mcp.tool()
@@ -91,12 +90,21 @@ def notify_user(text: str, session: str | None = None, priority: str = "normal",
     Returns:
         Notification ID or error description.
     """
-    body = {"text": text, "priority": priority}
-    if session:
-        body["session"] = session
-    if artifact_url:
-        body["artifact"] = {"url": artifact_url, "title": artifact_title or "Artifact"}
-    data = _portal_request("POST", "/api/desktop/notification", body)
+    # Routed through core's shared toast call rather than posting here (#1016).
+    # This tool is the one agents actually reach — CLAUDE.md's rule is MCP for
+    # agents, CLI for humans — so a producer that posts on its own transport is
+    # precisely the one a CLI-side hook cannot see, and agent-generated toasts
+    # were invisible to the fleet's awareness ledger. One seam, below every
+    # producer.
+    from .core import post_desktop_notification
+
+    data = post_desktop_notification(
+        text,
+        session=session,
+        priority=priority,
+        artifact=({"url": artifact_url, "title": artifact_title or "Artifact"}
+                  if artifact_url else None),
+    )
     if not data.get("success"):
         return f"Failed to post notification: {data.get('error', 'Unknown error')}"
     # Honest delivery: how many dashboards saw it live (#444). The toast is

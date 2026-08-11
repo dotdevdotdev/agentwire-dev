@@ -1822,34 +1822,64 @@ def _get_agentwire_path() -> str:
     return os.path.expanduser("~/.local/bin/agentwire")
 
 
-def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal",
-                               timeout: float | None = None) -> bool:
-    """POST a toast to the portal's desktop-notification endpoint. Best-effort.
+def post_desktop_notification(text: str, session: str | None = None,
+                              priority: str = "normal", timeout: float | None = None,
+                              artifact: dict | None = None) -> dict:
+    """THE toast call. Every producer goes through here (#1016).
 
-    Shared by `agentwire notify-user` and the `say --display` path. Returns True
-    on a 2xx, False on any failure (no portal, network error) — never raises.
-    `timeout` (seconds) overrides the frontend's auto-fade default; 0 = sticky.
+    Returns the portal's parsed response, plus ``success`` — never raises.
+
+    It is the single seam on purpose. There were three toast producers
+    (`agentwire notify-user`, `say --display`, and the MCP ``notify_user``
+    tool), the MCP one POSTing on its own transport — and since agents use MCP
+    and humans use the CLI, the agent-generated toasts were exactly the ones a
+    CLI-side hook could not see. Recording per producer is the shape that
+    leaves the next producer silent, so the record lives here, below all of
+    them, where a new caller inherits it by construction.
+
+    **Recorded whether or not the portal took it.** A toast the portal refused
+    is the case where the buddy knowing about it matters MOST: nothing reached
+    the screen, and the voice channel is what is left.
     """
-    import ssl
-
     body: dict = {"text": text, "priority": priority}
     if session:
         body["session"] = session
     if timeout is not None:
         body["timeout"] = timeout
+    if artifact:
+        body["artifact"] = artifact
+
+    result: dict
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(
-            f"{_get_portal_url()}/api/desktop/notification",
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", **_portal_auth_headers()},
+        response = portal_request(
+            "POST", f"{_get_portal_url()}/api/desktop/notification", json=body, timeout=5,
         )
-        with urllib.request.urlopen(req, context=ctx, timeout=5):
-            return True
-    except Exception:
-        return False
+        if response.status_code != 200:
+            result = {"success": False, "error": f"HTTP {response.status_code}"}
+        else:
+            data = response.json()
+            result = {**data, "success": bool(data.get("success", True))}
+    except Exception as exc:  # noqa: BLE001  # best-effort: the portal may be down
+        result = {"success": False,
+                  "error": f"Portal not reachable. Is it running? ({exc})"}
+
+    try:
+        from . import fleet_activity
+
+        fleet_activity.note_toast(text, session=session or "", priority=priority)
+    except Exception:  # noqa: BLE001  # awareness must never break the toast
+        pass
+    return result
+
+
+def _post_desktop_notification(text: str, session: str | None = None, priority: str = "normal",
+                               timeout: float | None = None) -> bool:
+    """Did the toast land? The bool-shaped view of :func:`post_desktop_notification`.
+
+    `timeout` (seconds) overrides the frontend's auto-fade default; 0 = sticky.
+    """
+    return post_desktop_notification(
+        text, session=session, priority=priority, timeout=timeout)["success"]
 
 
 def _resolve_posture_from_args(args) -> tuple[str | None, str | None]:

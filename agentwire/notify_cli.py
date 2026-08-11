@@ -237,23 +237,13 @@ def cmd_notify_user(args) -> int:
     json_mode = getattr(args, "json", False)
     if not text.strip():
         return _output_result(False, json_mode, "Usage: agentwire notify-user <text>")
-    priority = getattr(args, "priority", "normal")
+    # Fleet awareness (#1016) rides inside _post_desktop_notification, below
+    # every toast producer — see core.post_desktop_notification. Nothing to do
+    # here: a per-producer hook is what leaves the next producer silent.
     ok = _post_desktop_notification(
-        text, session=getattr(args, "session", None), priority=priority,
+        text, session=getattr(args, "session", None),
+        priority=getattr(args, "priority", "normal"),
     )
-    # Fleet awareness (#1016). A toast is a message to the OWNER on a screen
-    # they may not be looking at — the exact gap the voice channel exists to
-    # cover. Recorded whether or not the portal took it (a toast that failed to
-    # post is the case where the buddy knowing about it matters MOST), and only
-    # a --priority high one is ever spoken: the caller declared that urgency
-    # itself, and this layer neither invents it nor overrules it.
-    from agentwire import fleet_activity
-
-    try:
-        fleet_activity.note_toast(
-            text, session=getattr(args, "session", None) or "", priority=priority)
-    except Exception:  # noqa: BLE001  # never break the toast path
-        pass
     return _output_result(ok, json_mode,
                           "Toast posted." if ok else "Failed to post toast (portal not reachable?)")
 

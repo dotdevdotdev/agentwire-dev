@@ -74,6 +74,7 @@ quiet fleet is the #885 shape.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -193,6 +194,23 @@ def _read_entries() -> list[dict]:
     return entries
 
 
+def _older_than(entry: dict, cutoff: datetime) -> "bool | None":
+    """Is *entry* older than *cutoff*? ``None`` when its timestamp is unusable.
+
+    Parse AND compare in one guarded step, because the comparison is the half
+    that raises. `fromisoformat` was already wrapped, but a NAIVE timestamp
+    parses fine and then blows up on `<` with `TypeError: can't compare
+    offset-naive and offset-aware datetimes` — outside the guard. That made
+    `agentwire activity list` traceback on one hand-edited line, and falsified
+    the "never raises" contract every producer here is written against (they
+    survived only on their own outer excepts, which is not the same guarantee).
+    """
+    try:
+        return datetime.fromisoformat(str(entry.get("ts"))) < cutoff
+    except (TypeError, ValueError):
+        return None
+
+
 def _trim(path: Path) -> None:
     """Keep the ledger bounded. Best-effort, and never destructive on failure.
 
@@ -284,11 +302,10 @@ def recent(
             continue
         if session and entry.get("session") != session:
             continue
-        try:
-            when = datetime.fromisoformat(str(entry.get("ts")))
-        except (TypeError, ValueError):
+        older = _older_than(entry, cutoff)
+        if older is None:
             continue
-        if when < cutoff:
+        if older:
             # Append order is chronological, so the first entry older than the
             # window ends the walk — every remaining one is older still.
             break
@@ -307,11 +324,10 @@ def _announced_recently(event: str, subject: str, cooldown: timedelta) -> bool:
     """
     cutoff = _now() - cooldown
     for entry in reversed(_read_entries()):
-        try:
-            when = datetime.fromisoformat(str(entry.get("ts")))
-        except (TypeError, ValueError):
+        older = _older_than(entry, cutoff)
+        if older is None:
             continue
-        if when < cutoff:
+        if older:
             return False
         if (
             entry.get("event") == event
@@ -383,15 +399,36 @@ def note(
 # ---------------------------------------------------------------------------
 
 
+#: Roles the OWNER talks to. Checked against both the ROLE axis
+#: (``orchestrator``) and the persona ``roles`` list (``anchor``, Briefing
+#: Mode's terse human-facing replacement for it), because the two axes carry it
+#: differently and either one means the same thing here: this session's idle is
+#: a conversational turn ending, with the owner on the other side of it.
+_INTERACTIVE_ROLES = frozenset({"orchestrator", "anchor"})
+
+
 def _is_delegated(session: str) -> bool:
     """Did somebody hand this session its work?
 
-    The gate on announcing an idle. True for a session with a recorded parent
-    (``created_by``), a worker/reviewer ROLE, or a worktree checkout — the three
-    independent ways #716 says "this is somebody's delegated work". False for a
-    root orchestrator, whose idle is a conversational turn ending rather than a
-    job finishing, and for anything with no record at all: an unknown session is
-    not evidence of delegation, and the failure direction here is silence.
+    The gate on announcing an idle. #716's three axes are INDEPENDENT — a
+    worktree is *location*, a role is *authority* — so this is not a plain OR
+    over them: **authority is consulted first, and it can veto.**
+
+    That ordering is the whole correctness of the gate, and the OR got it
+    wrong. ``agentwire orchestrator`` is sugar for ``worktree --kind
+    orchestrator``, so the owner's blessed durable window has ``role:
+    orchestrator``, ``created_by: ''`` *and* ``worktree_path`` set — two live
+    sessions on this machine are exactly that shape. Under an OR the location
+    axis overruled the role, the interactive window read as delegated work, and
+    the buddy announced "… is idle and done working" every fifteen minutes into
+    a conversation the owner was having with that very session. That is the
+    narrator failure this gate exists to prevent, reached from inside the gate.
+
+    So: an interactive role is never delegated, whatever its location. After
+    that veto, any one of a recorded parent, a worker/reviewer role, or a
+    worktree checkout is enough. Anything with no record at all is not
+    delegated either — an unknown session is not evidence, and the failure
+    direction here is silence.
     """
     from . import core
 
@@ -400,6 +437,10 @@ def _is_delegated(session: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
     if not meta:
+        return False
+    roles = meta.get("roles")
+    persona = {str(r) for r in roles} if isinstance(roles, list) else set()
+    if str(meta.get("role") or "") in _INTERACTIVE_ROLES or (persona & _INTERACTIVE_ROLES):
         return False
     if str(meta.get("created_by") or "").strip():
         return True
@@ -477,11 +518,21 @@ def note_toast(text: str, *, session: str = "", priority: str = "normal") -> dic
     High priority is announced; normal is ledger-only. The distinction is the
     caller's own declaration of urgency about a screen the owner may not be
     looking at — this layer does not second-guess it in either direction.
+
+    **The subject is the toast, not the sender.** Every other producer here has
+    one subject per thing-that-happened (a session, a task name), but a session
+    posts *different* toasts: keying the cooldown on the sender made "build is
+    red" swallow "deploy rolled back" 60 seconds later, and sessionless toasts
+    shared one subject fleet-wide. On the one surface whose caller has declared
+    the message urgent, a false-reject is silence with no screen behind it —
+    the expensive half. So the throttle groups by content, and what it still
+    catches is the case it was for: the same toast repeating.
     """
     high = priority == "high"
     body = f"toast for the owner: {text}" if not session else f"toast from {session}: {text}"
+    digest = hashlib.sha256(str(text).encode("utf-8", "replace")).hexdigest()[:12]
     return note("toast_high" if high else "toast", session=session, text=body,
-                priority=priority)
+                subject=f"{session}:{digest}", priority=priority)
 
 
 def note_spoke(text: str, *, session: str = "", sink: str = "") -> dict:

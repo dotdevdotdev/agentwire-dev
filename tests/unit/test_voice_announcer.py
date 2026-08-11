@@ -722,6 +722,41 @@ class TestTheBuddyClock:
     volunteers replies — through the injected announce(), never its own
     speaking path."""
 
+    def test_a_fan_out_is_capped_into_utterances_not_a_monologue(self):
+        """#1016. Speech cannot be skimmed and the owner cannot predict when it
+        stops, so an unbounded coalesce is a monologue waiting for a fan-out —
+        ten workers landing in one 5s poll window was one ~2500-char utterance.
+        The overflow is HELD, not dropped: it stays unread and the next quiet
+        tick says it."""
+        report = run_notifier("""
+            spool = [];
+            for (var i = 1; i <= 5; i++) {
+              spool.push({ id: "m" + i, from: "w" + i, kind: "done", text: "body " + i });
+            }
+            await notifier.pollOnce();
+        """)
+        first = report["announced"][0]
+        assert "body 1" in first["text"] and "body 3" in first["text"]
+        assert "body 4" not in first["text"]
+        assert first["text"].endswith("And 2 more waiting.")
+        assert first["meta"]["inboxIds"] == ["m1", "m2", "m3"]
+        # And the ack stops at the spoken run — the held mail is not buried.
+        assert first["meta"]["ackThrough"] == "m3"
+
+    def test_the_held_overflow_is_spoken_on_the_next_gap(self):
+        report = run_notifier("""
+            spool = [];
+            for (var i = 1; i <= 5; i++) {
+              spool.push({ id: "m" + i, from: "w" + i, kind: "done", text: "body " + i });
+            }
+            await notifier.pollOnce();
+            await notifier.pollOnce();
+        """)
+        assert len(report["announced"]) == 2
+        second = report["announced"][1]["text"]
+        assert "body 4" in second and "body 5" in second
+        assert "more waiting" not in second
+
     def test_machine_mail_is_not_narrated_as_a_reply(self):
         """#1016. The fleet's own senders are not colleagues, and the announcer
         speaks composeNotice VERBATIM — the model never gets to rephrase it. So

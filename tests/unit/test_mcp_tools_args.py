@@ -216,32 +216,49 @@ class TestVoiceTools:
         assert "parked" in result
 
 
+def _toast_response(**fields):
+    """A 200 from the portal's notification endpoint, as `requests` returns it."""
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"success": True, "id": "n1", "clients": 1, **fields}
+
+    return _Response()
+
+
 class TestNotifyUserArtifactParams:
     """#822: notify_user's artifact_url/artifact_title params (#821) had zero
     test coverage — cover the body it builds for /api/desktop/notification."""
 
-    @patch("agentwire.mcp_notify._portal_request")
+    # Patched at core's ONE portal call, not at a transport inside mcp_notify:
+    # since #1016 every toast producer (CLI, MCP, `say --display`) goes through
+    # `core.post_desktop_notification`, so this asserts the body that actually
+    # reaches /api/desktop/notification.
+
+    @patch("agentwire.core.portal_request")
     def test_artifact_url_sets_artifact_body_with_default_title(self, mock_req):
         from agentwire.mcp_notify import notify_user
-        mock_req.return_value = _success(id="n1", clients=1)
+        mock_req.return_value = _toast_response()
         notify_user(text="ready", artifact_url="report.html")
-        body = mock_req.call_args[0][2]
+        body = mock_req.call_args.kwargs["json"]
         assert body["artifact"] == {"url": "report.html", "title": "Artifact"}
 
-    @patch("agentwire.mcp_notify._portal_request")
+    @patch("agentwire.core.portal_request")
     def test_artifact_title_overrides_default(self, mock_req):
         from agentwire.mcp_notify import notify_user
-        mock_req.return_value = _success(id="n1", clients=1)
+        mock_req.return_value = _toast_response()
         notify_user(text="ready", artifact_url="report.html", artifact_title="Q3 Report")
-        body = mock_req.call_args[0][2]
+        body = mock_req.call_args.kwargs["json"]
         assert body["artifact"] == {"url": "report.html", "title": "Q3 Report"}
 
-    @patch("agentwire.mcp_notify._portal_request")
+    @patch("agentwire.core.portal_request")
     def test_no_artifact_url_omits_artifact_body(self, mock_req):
         from agentwire.mcp_notify import notify_user
-        mock_req.return_value = _success(id="n1", clients=1)
+        mock_req.return_value = _toast_response()
         notify_user(text="plain toast", artifact_title="ignored without a url")
-        body = mock_req.call_args[0][2]
+        body = mock_req.call_args.kwargs["json"]
         assert "artifact" not in body
 
 

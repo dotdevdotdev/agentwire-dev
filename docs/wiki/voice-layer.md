@@ -535,12 +535,19 @@ owner*, so it refers back to one rather than delivering it as news.
 **What earns the spool** is `fleet_activity.ANNOUNCE`, pinned as data next to
 its kind in `fleet_alerts.DETECTOR_KINDS`:
 
-- **`session_idle` → `done`, and only for DELEGATED work** — a recorded parent,
-  a worker/reviewer role, or a worktree checkout (#716's three axes; any one is
-  enough). A root orchestrator going idle is a conversational turn ending, and
-  announcing that fires once per exchange the owner has with their own session.
-  The event's own parent is excluded, since it already hears this by paste from
-  `notify-parent`; the same news twice is how a channel earns being ignored.
+- **`session_idle` → `done`, and only for DELEGATED work.** #716's axes are
+  independent — location is not authority — so the gate is **not** an OR over
+  them: an interactive role (`orchestrator` on the role axis, `anchor` on the
+  persona axis) is never delegated *whatever its location*, and only then does
+  a recorded parent / a worker-or-reviewer role / a worktree checkout count.
+  The OR got this wrong in a way worth remembering: `agentwire orchestrator` is
+  sugar for `worktree --kind orchestrator`, so the owner's durable window has
+  `role: orchestrator`, `created_by: ''` **and** `worktree_path` set — the
+  location axis overruled the role, and the buddy announced "… is idle and done
+  working" every fifteen minutes into a conversation the owner was having with
+  that very session. The event's own parent is also excluded, since it already
+  hears this by paste from `notify-parent`; the same news twice is how a
+  channel earns being ignored.
 - **`task_completed` → `done`, `request` when it ended badly** — the canonical
   check-in event: the owner did not watch it start and cannot see it end. The
   inherit rule is the dead-letter rule's shape — the fleet already judged it,
@@ -549,7 +556,11 @@ its kind in `fleet_alerts.DETECTOR_KINDS`:
   that says it once, machine-wide, where this would say it again per task.
 - **`toast_high` → `request`** — `notify-user --priority high` is the one
   notify surface that declares its own urgency, about a screen the owner may
-  not be looking at. An ordinary toast is ledger-only.
+  not be looking at. An ordinary toast is ledger-only. Its throttle subject is
+  the toast's **content**, not its sender: keyed on the session, "build is red"
+  swallowed "deploy rolled back" a minute later, and on the one surface whose
+  caller declared the message urgent a false-reject is silence with no screen
+  behind it.
 
 **Nothing lifecycle is ever an `escalation`.** The interrupt tier stays the two
 conditions nothing clears without a human. An idle session is not burning.
@@ -567,16 +578,31 @@ producer's job is its own job:
 | Surface | Seam | Recorded |
 |---|---|---|
 | idle hook | `cmd_notify_parent`, `--on-idle`, **above** the no-target return | `session_idle` |
-| `agentwire say` | `cmd_say`'s own result helper | `spoke` (+ the sink; a failed dispatch records nothing) |
-| `agentwire notify-user` | `cmd_notify_user`, whether or not the portal took it | `toast` / `toast_high` |
+| `agentwire say` | `cmd_say`, per successfully-played chunk | `spoke` (+ the sink) |
+| toasts — CLI `notify-user`, **MCP `notify_user`**, `say --display` | `core.post_desktop_notification`, below all three | `toast` / `toast_high` |
 | `agentwire notify-event` | `cmd_notify`, three events only | `session_created` / `session_closed` / `pane_died` |
 | scheduler | `report._log_event("task_completed")`, the one seam both dispatchers use | `task_completed` |
 
-Two of those placements are the whole point. The idle producer sits **above**
-the "no parent, nothing to do" return — that early exit is exactly the case
-(a root session finishing) that told nobody. And the scheduler hooks the shared
-event log rather than the two dispatch call sites, because a per-call-site copy
-is what drifts (the same ruling as the worktree-path and session-name SSOTs).
+Three of those placements are the whole point.
+
+**The idle producer sits above the "no parent, nothing to do" return** — that
+early exit is exactly the case (a root session finishing) that told nobody.
+
+**The toast producer sits below every transport.** There were three toast
+producers and the MCP one POSTed on its own, so — since agents use MCP and
+humans use the CLI — a CLI-side hook would have recorded exactly the toasts a
+*human* posted and none of the ones the fleet posts.
+`core.post_desktop_notification` is now the one toast call, and it records
+whether or not the portal took it: a toast the portal refused is the case where
+the voice channel is all that is left. Same reasoning for **the scheduler**,
+which hooks the shared event log rather than the two dispatch call sites — a
+per-call-site copy is what drifts (the ruling the worktree-path and
+session-name SSOTs keep re-teaching).
+
+**`say` records what actually played, not what it was asked to say.** The local
+path chunks, so a failure on chunk 3 of 4 records chunks 1–2 — the owner heard
+those. Recording the whole string would claim they heard a sentence that never
+played; recording nothing would let the buddy offer it back later as news.
 
 **The fleet is not a colleague, and the notifier now says so.** `composeNotice`
 speaks its output verbatim — the model never rephrases it — so mail from
@@ -586,6 +612,18 @@ they never sent. Machine senders now render as **"From the fleet: …"**, with n
 verb (the body is already a whole statement), and an escalation keeps its
 "Heads up —" alarm prefix. The JS list is kept in step with
 `fleet_alerts.MACHINE_SENDERS`, which is the same list on the producing side.
+
+**One utterance carries at most three bodies.** `composeNotice` coalesced every
+unread message, which was fine while mail arrived one reply at a time and is a
+monologue the moment a fan-out lands in one 5s poll window — ten workers, one
+~2500-character utterance, spoken over nothing the owner asked for. Speech
+cannot be skimmed and the owner cannot predict when it stops. The overflow is
+**held, not dropped**: only the spoken messages are claimed, marked in-flight
+and eligible to ack, so the rest stays unread and the next quiet tick says the
+next three — the same "announced late, never lost" property the interrupt tier
+already relies on. The notice says "And N more waiting", because a capped batch
+must not sound like a complete one. This was pre-existing in the notifier;
+#1016 is the first producer that reaches that scale with no human in the loop.
 
 `agentwire notify-event`'s other vocabulary — `client_attached`,
 `pane_focused`, `window_activity` — is deliberately absent: it fires on every

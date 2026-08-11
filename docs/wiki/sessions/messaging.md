@@ -366,10 +366,18 @@ places is how the two answers drift.
 
 | Event | Kind | Why, and what bounds it |
 |---|---|---|
-| session went idle | `done`, **only if delegated** | The event the owner wanted: work they handed off has finished. "Delegated" means a recorded parent, a worker/reviewer role, or a worktree (#716's axes; any one suffices) — a root orchestrator goes idle after *every* turn, and announcing that fires once per exchange. Throttled 15m per session; the event's parent is excluded, since it hears this by paste from `notify-parent`. |
+| session went idle | `done`, **only if delegated** | The event the owner wanted: work they handed off has finished. Authority is consulted first and can veto — an `orchestrator`/`anchor` role is never delegated whatever its location, because `agentwire orchestrator` is `worktree --kind orchestrator` and an OR over #716's axes let *location* overrule the role, announcing the owner's own durable window every 15 minutes. After that veto, a recorded parent, a worker/reviewer role, or a worktree checkout each suffice. Throttled 15m per session; the event's parent is excluded, since it hears this by paste from `notify-parent`. |
 | scheduled task completed | `done`, `request` if it ended badly | The owner did not watch it start and cannot see it end. The `request` promotion is the dead-letter inherit rule's shape: the fleet already judged it. `usage_limit` / `auth_expired` runs are **not** announced — those conditions have detectors of their own that say it once, machine-wide. Throttled 2m per task. |
-| `notify-user --priority high` | `request` | The one notify surface that declares its own urgency, about a screen the owner may not be looking at. Throttled 5m per session. |
+| `notify-user --priority high` | `request` | The one notify surface that declares its own urgency, about a screen the owner may not be looking at. Throttled 5m per **toast content**, not per sender: keyed on the session, a second, different high toast a minute later was silently never spoken. |
 | ordinary toast, portal lifecycle, **anything spoken** | **not wired** | Ledger-only. `spoke` most deliberately: the owner heard it in the room, and a voice channel that reads the audio back is worse than one that stays quiet. |
+
+**Do not `alerts subscribe` a DELEGATED session.** Subscription is for a
+listener, and a subscribed *worker* closes a loop: the alert is pasted into its
+prompt, which starts a turn, which ends in an idle, which is announced — a
+cycle that sustains itself at the 15m cadence with nobody asking for any of it.
+Nothing autonomous does this (the buddy subscribes itself, and it has no pane
+to paste into); it takes a human running `alerts subscribe` on a worker. The
+subscriber you want is the one that *reads* mail rather than acting on it.
 
 **No lifecycle event is ever an `escalation`.** The interrupt tier stays the two
 conditions nothing clears without a human. What everything else gets is the
