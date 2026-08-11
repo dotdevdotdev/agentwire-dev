@@ -1303,7 +1303,7 @@ SPOKEN = {
     #
     # "nothing was sent" was a definite claim the system cannot verify:
     # `run_agentwire_cmd` returns success=False on `subprocess.TimeoutExpired`
-    # (mcp_core.py:150), and a timed-out CLI may already have enqueued. Pairing
+    # (core.py), and a timed-out CLI may already have enqueued. Pairing
     # that false certainty with "ask me again" invited a re-propose that
     # DOUBLE-DELIVERS — the acting-twice failure, reached through a spoken line
     # asserting more than the system knows.

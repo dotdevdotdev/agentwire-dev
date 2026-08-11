@@ -2,11 +2,11 @@
 
 import base64
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     format_voices,
     get_portal_url,
     mcp,
-    run_agentwire_cmd,
 )
 
 

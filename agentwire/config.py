@@ -1010,11 +1010,14 @@ def load_config(config_path: Optional[Path] = None) -> Config:
     # Apply environment variable overrides
     data = _apply_env_overrides(data)
 
-    # Debug logging for STT config
+    # Debug logging for STT config. DEBUG, not INFO (#1018): config loading is
+    # not an event anyone asked to be told about, and at INFO it printed on
+    # ordinary CLI commands the moment anything in the process configured the
+    # root logger.
     import logging
     logger = logging.getLogger(__name__)
     if 'stt' in data:
-        logger.info(f"STT config after env overrides: {data['stt']}")
+        logger.debug(f"STT config after env overrides: {data['stt']}")
 
     return _dict_to_config(data)
 

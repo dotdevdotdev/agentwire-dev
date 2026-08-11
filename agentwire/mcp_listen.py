@@ -1,8 +1,8 @@
 """MCP tools — listen domain."""
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     mcp,
-    run_agentwire_cmd,
 )
 
 

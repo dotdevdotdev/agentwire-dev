@@ -1,12 +1,12 @@
 """MCP tools — session domain."""
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     _delivery_result,
     _mcp_result,
     format_sessions,
     get_caller_session,
     mcp,
-    run_agentwire_cmd,
 )
 
 

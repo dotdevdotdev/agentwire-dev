@@ -1,26 +1,58 @@
 """Shared MCP server foundation.
 
 Holds the singleton ``mcp = FastMCP(...)`` instance plus the cross-domain
-helpers (CLI runner, result formatters) that every ``mcp_*`` domain module
-imports. Mirrors ``core.py`` for the CLI split (#495).
+result formatters that every ``mcp_*`` domain module imports. Mirrors
+``core.py`` for the CLI split (#495).
+
+**Importing this module builds an MCP server.** Only ``mcp_*`` modules and the
+``mcp_server`` entrypoint may import it — the CLI-runner helper that used to
+live here now sits in :mod:`agentwire.core`, because a non-MCP consumer of it
+(``buddy_cli``, which ``build_parser()`` imports on EVERY invocation) dragged
+the whole FastMCP construction into ordinary CLI startup (#1018).
 """
 
-import json
 import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import mcp.server.fastmcp.server as _fastmcp_server
 from mcp.server.fastmcp import FastMCP
 
-# Configure logging to stderr (stdout is reserved for MCP JSON-RPC)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stderr,
-)
 logger = logging.getLogger("agentwire-mcp")
+
+
+def configure_logging() -> None:
+    """Send MCP server logs to stderr (stdout is the JSON-RPC channel).
+
+    Called by :func:`agentwire.mcp_server.run_server`, NOT at import time:
+    ``basicConfig`` mutates the ROOT logger, so doing it on import turned every
+    library INFO record in the whole process into CLI stderr noise (#1018).
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stderr,
+    )
+
+
+# ``FastMCP``'s own settings model annotates ``lifespan`` with a forward
+# reference to ``FastMCP`` itself, which is defined further down the same
+# module — so at class-creation time it is unresolved, and pydantic-settings
+# >= 2.15 warns about it on every instantiation. The library ships no
+# ``model_rebuild()`` call of its own; do it here, once the module (and hence
+# the referenced class) is fully imported. This is the exact remedy the warning
+# names, and it is a no-op on versions that already resolve it.
+#
+# Guarded by ``getattr`` deliberately: an upstream rename of ``Settings`` must
+# not take the entire MCP tool surface down with it (#874 was exactly that
+# failure — an SDK bump that removed a module we import at load time). The cost
+# of the guard is that the warning could return silently, which is what
+# ``tests/unit/test_cli_stderr_clean.py`` exists to notice.
+_fastmcp_settings = getattr(_fastmcp_server, "Settings", None)
+if _fastmcp_settings is not None:
+    _fastmcp_settings.model_rebuild()
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -87,72 +119,6 @@ def get_caller_session() -> str | None:
     except (subprocess.TimeoutExpired, OSError):
         pass
     return None
-
-
-def run_agentwire_cmd(
-    args: list[str],
-    json_output: bool = True,
-    timeout: int = 30,
-) -> dict:
-    """Run agentwire CLI command and return result.
-
-    Args:
-        args: Command arguments (e.g., ["list", "--sessions"])
-        json_output: Whether to add --json flag and parse output
-        timeout: Command timeout in seconds (default: 30)
-
-    Returns:
-        Dict with 'success', 'output', and possibly other fields from JSON output.
-        For JSON responses without 'success' field, wraps data with success=True.
-    """
-    cmd = ["agentwire"] + args
-    if json_output:
-        cmd.append("--json")
-
-    logger.debug(f"Running: {' '.join(cmd)}")
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-        # Try to parse JSON output
-        if json_output and result.stdout.strip():
-            try:
-                data = json.loads(result.stdout)
-                # Handle JSON arrays (e.g., history list returns [...])
-                if isinstance(data, list):
-                    return {
-                        "success": result.returncode == 0,
-                        "items": data,
-                    }
-                # If the response is valid JSON but doesn't have 'success',
-                # wrap it with success based on return code
-                if "success" not in data:
-                    return {
-                        "success": result.returncode == 0,
-                        **data,
-                    }
-                return data
-            except json.JSONDecodeError:
-                pass
-
-        # Fall back to raw output
-        return {
-            "success": result.returncode == 0,
-            "output": result.stdout.strip(),
-            "error": result.stderr.strip() if result.returncode != 0 else None,
-        }
-
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Command timed out"}
-    except FileNotFoundError:
-        return {"success": False, "error": "agentwire command not found"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 
 def _delivery_result(data: dict, where: str) -> str:

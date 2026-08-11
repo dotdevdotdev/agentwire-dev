@@ -1,9 +1,9 @@
 """MCP tools — worktree domain."""
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     get_caller_session,
     mcp,
-    run_agentwire_cmd,
 )
 from .worktree import teardown_session_note
 
