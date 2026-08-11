@@ -330,6 +330,18 @@ class TestThePageRendersThePicker:
         assert '<option value="marin" selected>' in page
         assert '<option value="cedar">' in page
 
+    def test_the_newer_pair_is_labelled_and_nothing_else_is(self):
+        """The label derives from ``VOICES[:2]``, and that derivation needs its
+        own pin: swapping it for a hard-coded ``("alloy", "ash")`` left the
+        whole suite green, which makes the structural win unenforced. Both
+        halves — the two that carry it, and the eight that must not.
+        """
+        page = client.page("buddy", "tok")
+        for voice in realtime.VOICES[:2]:
+            assert f">{voice} (newer)<" in page, voice
+        for voice in realtime.VOICES[2:]:
+            assert f">{voice}<" in page, voice
+
     def test_the_page_defaults_to_the_default_voice(self):
         assert '<option value="cedar" selected>' in client.page("buddy", "tok")
 
