@@ -36,7 +36,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..mcp_core import run_agentwire_cmd
+from ..core import run_agentwire_cmd
 from . import delivery, outbox
 from .confirm import strip_controls
 

@@ -37,11 +37,12 @@ from . import (
     mcp_wiki,  # noqa: F401
     mcp_worktree,  # noqa: F401
 )
-from .mcp_core import get_portal_url, logger, mcp
+from .mcp_core import configure_logging, get_portal_url, logger, mcp
 
 
 def run_server():
     """Run the MCP server on stdio transport."""
+    configure_logging()
     logger.info("Starting AgentWire MCP server")
     logger.info(f"Portal URL: {get_portal_url()}")
     mcp.run(transport="stdio")

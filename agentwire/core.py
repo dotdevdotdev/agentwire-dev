@@ -8,6 +8,7 @@ from here — never the reverse — so there is no circular import.
 
 import datetime
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -33,6 +34,80 @@ from .worktree import git_common_dir, git_root, main_worktree, parse_session_nam
 
 # Default config directory
 CONFIG_DIR = Path.home() / ".agentwire"
+
+logger = logging.getLogger(__name__)
+
+
+def run_agentwire_cmd(
+    args: list[str],
+    json_output: bool = True,
+    timeout: int = 30,
+) -> dict:
+    """Run agentwire CLI command and return result.
+
+    Lives here rather than in ``mcp_core`` (#1018): it is a plain subprocess
+    wrapper with no MCP in it, and importing it from ``mcp_core`` meant every
+    consumer — including ``buddy_cli``, which ``build_parser()`` imports on
+    EVERY CLI invocation — constructed the FastMCP singleton and reconfigured
+    the root logger as an import side effect.
+
+    Args:
+        args: Command arguments (e.g., ["list", "--sessions"])
+        json_output: Whether to add --json flag and parse output
+        timeout: Command timeout in seconds (default: 30)
+
+    Returns:
+        Dict with 'success', 'output', and possibly other fields from JSON output.
+        For JSON responses without 'success' field, wraps data with success=True.
+    """
+    cmd = ["agentwire"] + args
+    if json_output:
+        cmd.append("--json")
+
+    logger.debug(f"Running: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        # Try to parse JSON output
+        if json_output and result.stdout.strip():
+            try:
+                data = json.loads(result.stdout)
+                # Handle JSON arrays (e.g., history list returns [...])
+                if isinstance(data, list):
+                    return {
+                        "success": result.returncode == 0,
+                        "items": data,
+                    }
+                # If the response is valid JSON but doesn't have 'success',
+                # wrap it with success based on return code
+                if "success" not in data:
+                    return {
+                        "success": result.returncode == 0,
+                        **data,
+                    }
+                return data
+            except json.JSONDecodeError:
+                pass
+
+        # Fall back to raw output
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout.strip(),
+            "error": result.stderr.strip() if result.returncode != 0 else None,
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Command timed out"}
+    except FileNotFoundError:
+        return {"success": False, "error": "agentwire command not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def role_prompts_dir() -> Path:

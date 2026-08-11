@@ -7,7 +7,8 @@ be identified and closed by whoever tears the session down — `worktree_remove`
 checks this registry during teardown and reports anything still tracked.
 """
 
-from .mcp_core import get_caller_session, mcp, run_agentwire_cmd
+from .core import run_agentwire_cmd
+from .mcp_core import get_caller_session, mcp
 
 
 @mcp.tool()

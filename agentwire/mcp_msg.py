@@ -1,10 +1,10 @@
 """MCP tools — msg domain."""
 
 from .beta import gated_doc
+from .core import run_agentwire_cmd
 from .mcp_core import (
     get_caller_session,
     mcp,
-    run_agentwire_cmd,
 )
 
 

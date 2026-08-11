@@ -240,10 +240,10 @@ class TestFormatVoicesBehavior:
 
 class TestRunAgentwireCmd:
     def setup_method(self):
-        from agentwire.mcp_core import run_agentwire_cmd
+        from agentwire.core import run_agentwire_cmd
         self.fn = run_agentwire_cmd
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_successful_json(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -256,7 +256,7 @@ class TestRunAgentwireCmd:
         cmd = mock_run.call_args[0][0]
         assert cmd == ["agentwire", "list", "--json"]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_json_array_wrapping(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -267,7 +267,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is True
         assert result["items"] == [{"id": 1}, {"id": 2}]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_json_without_success_key(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -278,7 +278,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is True
         assert result["data"] == "hello"
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_json_parse_failure_falls_back(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -289,7 +289,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is True
         assert result["output"] == "not json"
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_nonzero_returncode(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=1,
@@ -300,7 +300,7 @@ class TestRunAgentwireCmd:
         assert result["success"] is False
         assert "session not found" in result["error"]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_json_output_false(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -313,41 +313,41 @@ class TestRunAgentwireCmd:
         cmd = mock_run.call_args[0][0]
         assert "--json" not in cmd
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_timeout_expired(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="agentwire", timeout=30)
         result = self.fn(["long-cmd"])
         assert result["success"] is False
         assert "timed out" in result["error"]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_file_not_found(self, mock_run):
         mock_run.side_effect = FileNotFoundError()
         result = self.fn(["list"])
         assert result["success"] is False
         assert "not found" in result["error"]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_command_construction(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
         self.fn(["new", "-s", "test"])
         cmd = mock_run.call_args[0][0]
         assert cmd == ["agentwire", "new", "-s", "test", "--json"]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_custom_timeout(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
         self.fn(["spawn"], timeout=120)
         assert mock_run.call_args[1]["timeout"] == 120
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_generic_exception(self, mock_run):
         mock_run.side_effect = OSError("permission denied")
         result = self.fn(["list"])
         assert result["success"] is False
         assert "permission denied" in result["error"]
 
-    @patch("agentwire.mcp_core.subprocess.run")
+    @patch("agentwire.core.subprocess.run")
     def test_empty_stdout_nonzero(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         result = self.fn(["x"])

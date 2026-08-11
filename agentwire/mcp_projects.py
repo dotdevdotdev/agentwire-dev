@@ -1,10 +1,10 @@
 """MCP tools — projects domain."""
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     format_projects,
     format_roles,
     mcp,
-    run_agentwire_cmd,
 )
 
 

@@ -1,8 +1,8 @@
 """MCP tools — notify domain."""
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     mcp,
-    run_agentwire_cmd,
 )
 from .mcp_desktop import _portal_request
 

@@ -1,9 +1,9 @@
 """MCP tools — machine domain."""
 
+from .core import run_agentwire_cmd
 from .mcp_core import (
     format_machines,
     mcp,
-    run_agentwire_cmd,
 )
 
 

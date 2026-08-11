@@ -48,7 +48,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..mcp_core import run_agentwire_cmd
+from ..core import run_agentwire_cmd
 from .confirm import spoken_nonce, strip_controls
 from .tools import ToolError, _session_arg
 
