@@ -24,7 +24,10 @@ that validates the model's arguments into a :class:`FrozenWrite`, and the
 spoken templates. :func:`gated_triple` generates the propose/confirm/cancel
 tools from it, so the invariants live in ONE place:
 
-- the WHOLE argv is frozen at propose time, inside ``freeze``;
+- the WHOLE argv is frozen at propose time — every model-supplied element
+  inside ``freeze``, plus the one element only the spine can know: the
+  ``--ref`` naming this proposal's relay file, which is a pure function of the
+  id ``ConfirmSpine.propose`` mints (#1015). Nothing is frozen later;
 - a proposal is single-use and consumed on success (the spine);
 - the approving utterance never reaches the body (#953 — the spine);
 - ``render_body``'s leading-dash assertion guards every body-carrying write;
@@ -138,10 +141,13 @@ def _buddy_arg(args: dict) -> str:
 class FrozenWrite:
     """The output of a spec's ``freeze``: everything that will run, validated.
 
-    ``argv_prefix`` is complete and final. When ``append_body`` is True the
-    spine appends the §4b rendered body (instruction + request utterance +
-    proposal id) at execution; when False, the prefix IS the argv, so every
-    element must already have passed a validator — there is no free-text slot.
+    ``argv_prefix`` holds every element ``freeze`` is the authority on. When
+    ``append_body`` is True the spine extends it once at PROPOSE time with the
+    ``--ref`` naming this proposal's relay file (#1015 — code-derived from the
+    freshly minted id, never model-supplied) and appends the §4b rendered body
+    (instruction + request utterance + proposal id) at execution; when False,
+    the prefix IS the argv, so every element must already have passed a
+    validator — there is no free-text slot and no relay pointer.
     """
 
     session: str
