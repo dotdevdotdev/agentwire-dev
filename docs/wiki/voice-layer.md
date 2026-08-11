@@ -579,7 +579,7 @@ producer's job is its own job:
 |---|---|---|
 | idle hook | `cmd_notify_parent`, `--on-idle`, **above** the no-target return | `session_idle` |
 | `agentwire say` | `cmd_say`, per successfully-played chunk | `spoke` (+ the sink) |
-| toasts — CLI `notify-user`, **MCP `notify_user`**, `say --display` | `core.post_desktop_notification`, below all three | `toast` / `toast_high` |
+| text toasts — CLI `notify-user`, **MCP `notify_user`**, `say --display`, and the scheduler's zombie reaper (`priority=high`) | `core.post_desktop_notification`, below all four | `toast` / `toast_high` |
 | `agentwire notify-event` | `cmd_notify`, three events only | `session_created` / `session_closed` / `pane_died` |
 | scheduler | `report._log_event("task_completed")`, the one seam both dispatchers use | `task_completed` |
 
@@ -592,9 +592,16 @@ early exit is exactly the case (a root session finishing) that told nobody.
 producers and the MCP one POSTed on its own, so — since agents use MCP and
 humans use the CLI — a CLI-side hook would have recorded exactly the toasts a
 *human* posted and none of the ones the fleet posts.
-`core.post_desktop_notification` is now the one toast call, and it records
-whether or not the portal took it: a toast the portal refused is the case where
-the voice channel is all that is left. Same reasoning for **the scheduler**,
+`core.post_desktop_notification` is now the one call for a toast that carries
+**text**, and it records whether or not the portal took it: a toast the portal
+refused is the case where the voice channel is all that is left. Enrolling the
+seam rather than the producers also picked up a fourth one the first draft did
+not know about — the scheduler's zombie reaper posts a `priority=high` notice
+when it finds a session crashed at a bare shell, so that now reaches the buddy
+as a spoken `request`, which is right and is what "a new caller inherits it"
+means. What deliberately stays outside is `mcp_desktop._announce_artifact`: the
+#817 click-to-open notice carries no `text`, and a ledger entry with nothing in
+it is worse than no entry. Same reasoning for **the scheduler**,
 which hooks the shared event log rather than the two dispatch call sites — a
 per-call-site copy is what drifts (the ruling the worktree-path and
 session-name SSOTs keep re-teaching).

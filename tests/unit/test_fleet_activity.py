@@ -548,6 +548,36 @@ def test_a_toast_records_through_the_mcp_tool(isolate, portal):
     assert [m.kind for m in _mail("buddy")] == ["request"]
 
 
+def test_a_refused_toast_keeps_the_portal_s_own_reason(isolate, monkeypatch):
+    """The portal's body names WHICH field was wrong, and that message is what
+    the MCP tool hands back to the agent that called it. A bare "HTTP 400" is a
+    refusal with no next move."""
+    class _Response:
+        status_code = 400
+
+        @staticmethod
+        def json():
+            return {"success": False, "error": "artifact.url required"}
+
+    monkeypatch.setattr("agentwire.core.portal_request", lambda *a, **kw: _Response())
+    from agentwire.mcp_notify import notify_user
+
+    assert "artifact.url required" in notify_user("here is the report", session="ci")
+    # Recorded anyway: a toast the portal refused is the case where the voice
+    # channel is all that is left.
+    assert [e["event"] for e in fleet_activity.recent()] == ["toast"]
+
+
+def test_a_textless_toast_is_not_a_ledger_entry(isolate, portal):
+    """Nothing was shown, so nothing happened worth remembering — an entry with
+    an empty body is one the buddy would offer as news and then have nothing to
+    say about. Same reason `mcp_desktop._announce_artifact` stays off this seam."""
+    from agentwire.mcp_notify import notify_user
+
+    notify_user("   ", session="ci")
+    assert fleet_activity.recent() == []
+
+
 def test_the_briefing_display_card_records_too(isolate, portal, monkeypatch):
     """`say(display=...)` posts its own toast — the third producer."""
     from agentwire import channels_cli

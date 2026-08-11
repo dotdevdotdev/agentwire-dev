@@ -528,6 +528,12 @@ def note_toast(text: str, *, session: str = "", priority: str = "normal") -> dic
     the expensive half. So the throttle groups by content, and what it still
     catches is the case it was for: the same toast repeating.
     """
+    if not str(text).strip():
+        # Nothing was shown to anybody, so nothing happened worth remembering.
+        # An entry reading "toast from ci: " is worse than no entry: the buddy
+        # would offer it as something that occurred and have nothing to say
+        # about it. Same reason `_announce_artifact` stays off this seam.
+        return {"recorded": {}, "announced": [], "throttled": False}
     high = priority == "high"
     body = f"toast for the owner: {text}" if not session else f"toast from {session}: {text}"
     digest = hashlib.sha256(str(text).encode("utf-8", "replace")).hexdigest()[:12]

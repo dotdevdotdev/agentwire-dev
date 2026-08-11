@@ -757,6 +757,32 @@ class TestTheBuddyClock:
         assert "body 4" in second and "body 5" in second
         assert "more waiting" not in second
 
+    def test_an_escalation_behind_the_cap_waits_one_tick_no_longer(self):
+        """The cap's one real cost, bounded and pinned. An escalation sitting at
+        position 4+ of a full-gate batch is pushed to the next tick — and that
+        tick says it whether or not the gate is still full, because the
+        interrupt path filters to urgent messages only. Delay is one 5s poll;
+        the failure this rules out is the escalation waiting behind an ordinary
+        report indefinitely."""
+        report = run_notifier("""
+            spool = [
+              { id: "m1", from: "w1", kind: "done", text: "one" },
+              { id: "m2", from: "w2", kind: "done", text: "two" },
+              { id: "m3", from: "w3", kind: "done", text: "three" },
+              { id: "m4", from: "fleet-alerts", kind: "escalation",
+                text: "login expired" },
+            ];
+            await notifier.pollOnce();
+            logs.push("first: " + announcedCalls[0].text);
+            speakable = false;          // the buddy is now mid-chatter
+            interruptable = true;       // …but the interrupt tier is open
+            await notifier.pollOnce();
+        """)
+        assert "login expired" not in report["announced"][0]["text"]
+        assert report["announced"][0]["text"].endswith("And 1 more waiting.")
+        assert len(report["announced"]) == 2
+        assert "login expired" in report["announced"][1]["text"]
+
     def test_machine_mail_is_not_narrated_as_a_reply(self):
         """#1016. The fleet's own senders are not colleagues, and the announcer
         speaks composeNotice VERBATIM — the model never gets to rephrase it. So

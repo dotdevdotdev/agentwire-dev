@@ -1825,17 +1825,24 @@ def _get_agentwire_path() -> str:
 def post_desktop_notification(text: str, session: str | None = None,
                               priority: str = "normal", timeout: float | None = None,
                               artifact: dict | None = None) -> dict:
-    """THE toast call. Every producer goes through here (#1016).
+    """The one call for a toast that carries TEXT, and the seam that records it (#1016).
 
     Returns the portal's parsed response, plus ``success`` — never raises.
 
-    It is the single seam on purpose. There were three toast producers
-    (`agentwire notify-user`, `say --display`, and the MCP ``notify_user``
-    tool), the MCP one POSTing on its own transport — and since agents use MCP
-    and humans use the CLI, the agent-generated toasts were exactly the ones a
-    CLI-side hook could not see. Recording per producer is the shape that
-    leaves the next producer silent, so the record lives here, below all of
-    them, where a new caller inherits it by construction.
+    Every producer of a text toast goes through here: `agentwire notify-user`,
+    the MCP ``notify_user`` tool, `say --display`, and the zombie reaper's
+    high-priority notice. The MCP one used to POST on its own transport — and
+    since agents use MCP and humans use the CLI, the agent-generated toasts
+    were exactly the ones a CLI-side hook could not see. Recording per producer
+    is the shape that leaves the next producer silent, so the record lives
+    here, below all of them, where a new caller inherits it by construction.
+
+    **Not every POST to that endpoint, and the difference is the text.**
+    ``mcp_desktop._announce_artifact`` posts a bodiless click-to-open artifact
+    notice (#817) and deliberately stays where it is: it has no ``text``, so
+    routing it here would write ledger entries reading "toast from : " — an
+    entry with nothing in it is worse than no entry, since the buddy would
+    offer it as something that happened.
 
     **Recorded whether or not the portal took it.** A toast the portal refused
     is the case where the buddy knowing about it matters MOST: nothing reached
@@ -1855,7 +1862,20 @@ def post_desktop_notification(text: str, session: str | None = None,
             "POST", f"{_get_portal_url()}/api/desktop/notification", json=body, timeout=5,
         )
         if response.status_code != 200:
-            result = {"success": False, "error": f"HTTP {response.status_code}"}
+            # The portal's own body says WHICH field was wrong ("text
+            # required", "artifact.url required"), and that message is what the
+            # MCP tool hands back to the agent that called it. A bare "HTTP
+            # 400" is a refusal with no next move — the defect this project
+            # keeps closing — so the body is read and only falls back to the
+            # status line when there isn't one.
+            detail = ""
+            try:
+                body = response.json()
+                detail = str(body.get("error") or "").strip() if isinstance(body, dict) else ""
+            except Exception:  # noqa: BLE001  # not JSON, or no body at all
+                detail = (response.text or "").strip()[:200]
+            result = {"success": False,
+                      "error": f"HTTP {response.status_code}" + (f": {detail}" if detail else "")}
         else:
             data = response.json()
             result = {**data, "success": bool(data.get("success", True))}
