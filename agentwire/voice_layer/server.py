@@ -274,9 +274,16 @@ class BuddyBridge:
     def switch_voice(self, voice: str) -> dict:
         """Adopt *voice* for this bridge, and persist it for the next run.
 
-        Called from :meth:`mint` when the page's picker sends one. Validated
-        BEFORE anything is spent or written — an unknown voice is a refusal
-        with the list in it, never a session that connects and sounds wrong.
+        Called from :meth:`mint` **after** the session it was minted for
+        exists. The ordering is deliberate: adopting before the mint left a
+        failed mint (an upstream 500) with the bridge and the record both
+        moved to a voice that was never spoken, so a reload came back showing
+        a setting the owner has no evidence for. A voice sticks once it has
+        been minted with, and not before.
+
+        Validation is separate and happens FIRST, in :meth:`mint` — an unknown
+        voice must refuse before anything is spent, which is the opposite
+        ordering and the reason the two are not one call.
 
         The persist is best-effort and guarded, on the same rule every optional
         extra in this package follows (``store_session_metadata`` raises by
@@ -342,10 +349,15 @@ class BuddyBridge:
         behind the client's counter, so the next base is that much less clear
         of the last epoch — bounded by the gap, not by anything smaller.
         """
-        # Before the epoch and before the key: a refused voice must cost
-        # nothing, not a burnt sequence epoch.
+        # Validated before the epoch and before the key: a refused voice must
+        # cost nothing, not a burnt sequence epoch. ADOPTED after the mint —
+        # see switch_voice. A non-dict body is treated as no body: `/mint`
+        # ignored its payload entirely until this argument existed, and a
+        # bridge that 500s on `[1]` where it used to answer is a regression
+        # dressed as a feature.
+        body = payload if isinstance(payload, dict) else {}
         try:
-            switched = self.switch_voice((payload or {}).get("voice") or "")
+            requested = realtime.validate_voice(body.get("voice") or "")
         except realtime.RealtimeError as exc:
             return {"success": False, "error": str(exc)}
         seq_base = self.ring.reserve_epoch(MINT_SEQ_GAP, MAX_SEQ)
@@ -355,8 +367,11 @@ class BuddyBridge:
             instructions=buddy_instructions.build_instructions(),
             tools=tools.realtime_tool_defs(),
             model=self.model,
-            voice=self.voice,
+            # The REQUESTED voice, minted with before it is adopted. A raise
+            # here propagates to the handler's 502 with nothing moved.
+            voice=requested or self.voice,
         )
+        switched = self.switch_voice(requested)
         return {
             "success": True,
             "seq_base": seq_base,

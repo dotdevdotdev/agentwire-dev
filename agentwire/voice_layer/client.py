@@ -1857,13 +1857,19 @@ async function switchVoice() {
   currentVoice = chosen;
   const wasLive = !!pc;
   log("speak", "voice → " + chosen, "tool");
+  // ABOVE the idle return, not inside the live branch. `stop()` deliberately
+  // leaves `greeted` set (#963), so the ordinary Stop → pick → Start sequence
+  // would otherwise connect on the new voice and say nothing at all — the
+  // silent switch this whole gesture exists to avoid, reached by the calmer
+  // of the two routes to it. The asymmetry had no reason: the owner asked for
+  // the change in both cases, and in both cases hearing it is the answer.
+  greeted = false;
   if (!wasLive) { setStatus("idle · " + chosen); return; }
   // Locked for the round trip: a second change mid-reconnect would tear down
   // the session the first one is still building.
   $voice.disabled = true;
   try {
     stop();
-    greeted = false;
     await start();
   } finally {
     $voice.disabled = false;
@@ -1933,13 +1939,17 @@ def voice_options(selected: str) -> str:
     the bridge validates against, with no second copy to drift. The two the
     docs single out are labelled, so the choice reads as a recommendation
     rather than ten equal strings.
+
+    The "(newer)" label is derived from the ORDER of :data:`realtime.VOICES`
+    rather than from a second hard-coded pair — a re-encoded claim next to the
+    thing it claims about is the drift this module keeps closing.
     """
-    labels = {"cedar": "cedar (newer)", "marin": "marin (newer)"}
+    newer = realtime.VOICES[:2]
     return "".join(
         '<option value="{v}"{sel}>{label}</option>'.format(
             v=html.escape(voice),
             sel=" selected" if voice == selected else "",
-            label=html.escape(labels.get(voice, voice)),
+            label=html.escape(f"{voice} (newer)" if voice in newer else voice),
         )
         for voice in realtime.VOICES
     )

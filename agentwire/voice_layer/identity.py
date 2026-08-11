@@ -52,6 +52,21 @@ class BuddyError(Exception):
     """A buddy identity operation could not be completed."""
 
 
+def _valid_voice(voice: str) -> str:
+    """:func:`realtime.validate_voice`, re-raised as a :class:`BuddyError`.
+
+    One failure contract per module. Every caller of this module already
+    catches ``BuddyError`` and nothing catches ``RealtimeError``, so letting
+    the transport layer's exception escape from ``register`` would mean a
+    second, uncaught contract at the only call site that has one — reachable
+    the moment anything registers a buddy without pre-validating the flag.
+    """
+    try:
+        return realtime.validate_voice(voice)
+    except realtime.RealtimeError as exc:
+        raise BuddyError(str(exc)) from exc
+
+
 def validate_name(name: str) -> str:
     if not name or not _NAME_RE.match(name) or ".." in name:
         raise BuddyError(
@@ -81,7 +96,7 @@ def register(name: str = DEFAULT_NAME, *, model: str = "", voice: str = "") -> d
     fresh registration from a voice change without reading the record twice.
     """
     validate_name(name)
-    voice = realtime.validate_voice(voice)
+    voice = _valid_voice(voice)
     metadata = core.load_session_metadata(name)
 
     if metadata and metadata.get("kind") != KIND:
@@ -142,7 +157,7 @@ def registration_delta(name: str, *, model: str = "", voice: str = "") -> dict:
     with no arguments changes nothing and is still not a first registration.
     """
     validate_name(name)
-    voice = realtime.validate_voice(voice)
+    voice = _valid_voice(voice)
     before = core.load_session_metadata(name)
     changes = {}
     for field, key, wanted in (
@@ -172,12 +187,12 @@ def resolve_voice(name: str, requested: str = "") -> str:
     before anything guarantees a record exists, and refusing here would turn a
     missing record into a bridge that will not start.
     """
-    explicit = realtime.validate_voice(requested)
+    explicit = _valid_voice(requested)
     if explicit:
         return explicit
     try:
-        recorded = realtime.validate_voice(registered_voice(name))
-    except (BuddyError, realtime.RealtimeError):
+        recorded = _valid_voice(registered_voice(name))
+    except BuddyError:
         # A record carrying a voice we no longer accept (an id retired
         # upstream) must not wedge the bridge — fall through to the default.
         recorded = ""
@@ -192,7 +207,7 @@ def set_voice(name: str, voice: str) -> str:
     else is a caller bug rather than a typo the owner made.
     """
     validate_name(name)
-    voice = realtime.validate_voice(voice)
+    voice = _valid_voice(voice)
     if not voice:
         raise BuddyError("set_voice needs a voice")
     metadata = core.load_session_metadata(name)

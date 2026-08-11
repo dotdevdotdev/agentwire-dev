@@ -210,7 +210,7 @@ on the page. The picker posts the chosen voice with `/mint`, the bridge
 validates it, adopts it, and persists it to the record so the next `serve` comes
 back on it; the page tears the peer connection down and rebuilds it.
 
-Two decisions inside that are deliberate and would otherwise look like bugs:
+Four decisions inside that are deliberate and would otherwise look like bugs:
 
 - **The switch re-greets**, against the #963 rule that a reconnect stays quiet.
   That rule is about reconnects the owner did not ask for, where a re-greet is
@@ -218,10 +218,33 @@ Two decisions inside that are deliberate and would otherwise look like bugs:
   buddy sounds — a silent switch is indistinguishable from a switch that did not
   happen, to someone with no screen. So it speaks, in the new voice, which is
   the answer to the question they asked.
+- **The greet latch is released on BOTH branches**, live and idle. `stop()`
+  deliberately leaves `greeted` set, so a release scoped to the live branch
+  leaves the *ordinary* sequence silent: talk, press Stop, pick a voice, press
+  Start — connects on the new voice and says nothing. Same failure, calmer
+  route. The first cut of #1017 had exactly that asymmetry and a node test that
+  built the state and asserted everything except the latch.
+- **A voice is adopted after the mint succeeds, never before.** Adopting first
+  left an upstream 500 with the bridge *and* the record moved to a voice that
+  was never spoken: the page got its 502, the call never happened, and a reload
+  came back showing a setting with no evidence behind it. It is still *minted*
+  with, or "don't adopt" would be indistinguishable from ignoring the picker.
 - **A failed persist does not fail the call.** `store_session_metadata` raises
   by design (#885); an unwritable record must cost stickiness across the next
   `serve`, never the live conversation. It is reported on the page rather than
   swallowed.
+
+**One residual, open and named.** `speechSynthesis` utterances already handed to
+the browser survive `stop()` — deliberately, since cancelling them is #950
+defect 3 — so a switch made *while the fallback voice is mid-announcement*
+genuinely overlaps the old robot voice with the new session's greet. The
+teardown itself is clean (`stop()` is synchronous: data channel, peer
+connection, mic tracks, `announcer.teardown()`, in that order, before `start()`
+is awaited), and the model's own audio dies with the peer connection. It is only
+the browser voice that can straddle the switch, and this feature makes that
+one click reachable where it previously took three steps. Audible, not unsafe:
+nothing is approved by it — the announcer is torn down, so the straddling
+utterance anchors nothing.
 
 **`register` on an existing buddy is idempotent in what it SAYS, too.** It always
 was in what it wrote (merge-preserving, `created_at` kept), but it re-printed

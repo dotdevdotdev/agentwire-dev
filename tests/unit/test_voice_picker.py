@@ -154,6 +154,20 @@ class TestABadVoiceFailsEarly:
         assert payload["success"] is False
         assert "nope" in payload["error"]
 
+    def test_identity_raises_its_own_error_type(self, isolate):
+        """One failure contract per module. ``register`` is caught as a
+        ``BuddyError`` at its only call site, so a ``RealtimeError`` escaping
+        it would be an uncaught second contract — unreachable today only
+        because the CLI pre-validates, which is not a guarantee."""
+        for call in (
+            lambda: identity.register("buddy", voice="cedarr"),
+            lambda: identity.registration_delta("buddy", voice="cedarr"),
+            lambda: identity.set_voice("buddy", "cedarr"),
+            lambda: identity.resolve_voice("buddy", "cedarr"),
+        ):
+            with pytest.raises(identity.BuddyError):
+                call()
+
     def test_mint_session_itself_refuses_too(self):
         """The last line before the key is spent, pinned independently of its
         callers — a new call site must not be able to route around them."""
@@ -249,6 +263,47 @@ class TestTheMintCarriesTheVoice:
         bridge_obj.mint({"voice": "nope"})
         assert bridge_obj.ring.high_seq == 0
 
+    def test_a_failed_mint_adopts_nothing(self, bridge, monkeypatch):
+        """A voice sticks once it has been MINTED with, and not before.
+
+        Adopting first left an upstream 500 with the bridge and the record both
+        moved to a voice that was never spoken — the page got its 502, the call
+        never happened, and a reload came back showing a setting the owner has
+        no evidence for.
+        """
+        bridge_obj, _ = bridge
+        monkeypatch.setattr(
+            realtime, "mint_session",
+            lambda **k: (_ for _ in ()).throw(realtime.RealtimeError("upstream 500")),
+        )
+        with pytest.raises(realtime.RealtimeError):
+            bridge_obj.mint({"voice": "marin"})
+        assert bridge_obj.voice == realtime.DEFAULT_VOICE
+        assert identity.registered_voice("buddy") == ""
+
+    def test_the_failed_mint_was_still_attempted_on_the_new_voice(self, bridge, monkeypatch):
+        """The other half: not adopting must not mean not honouring. Without
+        this, "nothing moved" is equally satisfied by ignoring the picker."""
+        seen = []
+        bridge_obj, _ = bridge
+        monkeypatch.setattr(
+            realtime, "mint_session",
+            lambda **k: seen.append(k["voice"]) or (_ for _ in ()).throw(
+                realtime.RealtimeError("upstream 500")
+            ),
+        )
+        with pytest.raises(realtime.RealtimeError):
+            bridge_obj.mint({"voice": "marin"})
+        assert seen == ["marin"]
+
+    @pytest.mark.parametrize("body", [None, [1], "x", 7])
+    def test_a_non_dict_body_is_treated_as_no_body(self, bridge, body):
+        """`/mint` ignored its payload entirely until this argument existed —
+        a bridge that 500s on `[1]` where it used to answer is a regression."""
+        bridge_obj, minted = bridge
+        assert bridge_obj.mint(body)["success"] is True
+        assert minted[0]["voice"] == realtime.DEFAULT_VOICE
+
     def test_a_failed_persist_is_reported_not_swallowed(self, bridge, monkeypatch):
         """The live call must survive an unwritable record — the owner loses
         stickiness, and is told so rather than finding out next serve."""
@@ -325,7 +380,7 @@ class TestTheVoicePickerWire:
             switch,
             wire,
             'await handlers["change"]();',
-            "console.log(JSON.stringify({ events, currentVoice, "
+            "console.log(JSON.stringify({ events, currentVoice, greeted, "
             "disabled: $voice.disabled, wired: Object.keys(handlers) }));",
         ])
 
@@ -364,6 +419,31 @@ class TestTheVoicePickerWire:
         assert "stop" not in report["events"]
         assert not [e for e in report["events"] if e.startswith("start:")]
         assert report["currentVoice"] == "marin"
+
+    def test_an_idle_switch_also_releases_the_greet_latch(self):
+        """The calmer route to the same silent switch, and it is the ORDINARY
+        one: talk (greeted), press Stop, pick a voice, press Start.
+
+        ``stop()`` deliberately leaves ``greeted`` set (#963), so a release
+        that lives only in the live branch means that sequence connects on the
+        new voice and says nothing — the exact failure the live branch's
+        re-greet exists to prevent. The fixture starts from ``greeted = true``
+        precisely because that is the state the sequence arrives in; asserting
+        the events without asserting the latch is how the first version of
+        this harness built the bug and looked away.
+        """
+        report = self._run(self._program(live=False, pick="marin"))
+        assert report["greeted"] is False
+
+    def test_a_live_switch_releases_it_too(self):
+        report = self._run(self._program(live=True, pick="marin"))
+        assert report["greeted"] is False
+
+    def test_declining_to_switch_leaves_the_latch_alone(self):
+        """The release is scoped to an actual change — picking the voice you
+        are already on must not re-greet you."""
+        report = self._run(self._program(live=True, pick="cedar"))
+        assert report["greeted"] is True
 
     def test_the_picker_is_re_enabled_after_the_reconnect(self):
         """Locked for the round trip, released in a `finally` — a picker left
