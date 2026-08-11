@@ -31,7 +31,7 @@ import json
 import re
 
 from .. import core, fleet_alerts
-from . import delivery
+from . import delivery, realtime
 
 #: Session-record marker. Anything reading the session store can use this to
 #: tell "not an agent session" without inferring it from missing keys.
@@ -50,6 +50,21 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 class BuddyError(Exception):
     """A buddy identity operation could not be completed."""
+
+
+def _valid_voice(voice: str) -> str:
+    """:func:`realtime.validate_voice`, re-raised as a :class:`BuddyError`.
+
+    One failure contract per module. Every caller of this module already
+    catches ``BuddyError`` and nothing catches ``RealtimeError``, so letting
+    the transport layer's exception escape from ``register`` would mean a
+    second, uncaught contract at the only call site that has one — reachable
+    the moment anything registers a buddy without pre-validating the flag.
+    """
+    try:
+        return realtime.validate_voice(voice)
+    except realtime.RealtimeError as exc:
+        raise BuddyError(str(exc)) from exc
 
 
 def validate_name(name: str) -> str:
@@ -75,8 +90,13 @@ def register(name: str = DEFAULT_NAME, *, model: str = "", voice: str = "") -> d
 
     Merge-preserving like ``record_session_launch``: re-registering keeps
     ``created_at`` and anything else already on the record.
+
+    Idempotent in the record it writes and, since #1017, in what the CLI SAYS
+    about it — see :func:`registration_delta`, which is how the caller tells a
+    fresh registration from a voice change without reading the record twice.
     """
     validate_name(name)
+    voice = _valid_voice(voice)
     metadata = core.load_session_metadata(name)
 
     if metadata and metadata.get("kind") != KIND:
@@ -120,6 +140,86 @@ def register(name: str = DEFAULT_NAME, *, model: str = "", voice: str = "") -> d
     inbox_dir(name).mkdir(parents=True, exist_ok=True)
     delivery.session_state_dir(name).mkdir(parents=True, exist_ok=True)
     return metadata
+
+
+def registration_delta(name: str, *, model: str = "", voice: str = "") -> dict:
+    """What a :func:`register` call with these arguments would CHANGE.
+
+    Read before the write, so ``agentwire buddy register`` can say "updated
+    voice to marin" instead of re-announcing a registration that already
+    happened (#1017). The full blurb names the inbox, the spool and how other
+    sessions reach the buddy — true and useful exactly once; printed again over
+    a one-word voice change it reads like a second identity was created.
+
+    Returns ``{"registered": bool, "changes": {field: {"from": …, "to": …}}}``.
+    ``registered`` is about the record that exists NOW, so the caller does not
+    have to infer "was this new?" from an empty change set — re-registering
+    with no arguments changes nothing and is still not a first registration.
+    """
+    validate_name(name)
+    voice = _valid_voice(voice)
+    before = core.load_session_metadata(name)
+    changes = {}
+    for field, key, wanted in (
+        ("model", "realtime_model", model),
+        ("voice", "realtime_voice", voice),
+    ):
+        if wanted and before.get(key) != wanted:
+            changes[field] = {"from": before.get(key), "to": wanted}
+    return {"registered": before.get("kind") == KIND, "changes": changes}
+
+
+def registered_voice(name: str) -> str:
+    """The voice recorded for *name*, or ``""`` if it has none.
+
+    A recorded voice that nothing reads is a setting that silently does not
+    work, which is what ``register --voice`` was before #1017: ``serve`` and
+    ``mint`` both fell straight through to :data:`realtime.DEFAULT_VOICE`.
+    """
+    recorded = core.load_session_metadata(validate_name(name)).get("realtime_voice")
+    return recorded if isinstance(recorded, str) else ""
+
+
+def resolve_voice(name: str, requested: str = "") -> str:
+    """The voice to actually use: explicit → recorded → default.
+
+    Tolerates an unregistered name on purpose — the bridge is constructed
+    before anything guarantees a record exists, and refusing here would turn a
+    missing record into a bridge that will not start.
+    """
+    explicit = _valid_voice(requested)
+    if explicit:
+        return explicit
+    try:
+        recorded = _valid_voice(registered_voice(name))
+    except BuddyError:
+        # A record carrying a voice we no longer accept (an id retired
+        # upstream) must not wedge the bridge — fall through to the default.
+        recorded = ""
+    return recorded or realtime.DEFAULT_VOICE
+
+
+def set_voice(name: str, voice: str) -> str:
+    """Record *voice* as the buddy's voice, so it survives the next ``serve``.
+
+    Raises rather than warning on an unknown voice: this is reached from the
+    page's picker, whose options come from :data:`realtime.VOICES`, so anything
+    else is a caller bug rather than a typo the owner made.
+    """
+    validate_name(name)
+    voice = _valid_voice(voice)
+    if not voice:
+        raise BuddyError("set_voice needs a voice")
+    metadata = core.load_session_metadata(name)
+    if metadata.get("kind") != KIND:
+        raise BuddyError(_not_a_buddy(name))
+    metadata["realtime_voice"] = voice
+    core.store_session_metadata(name, metadata)
+    return voice
+
+
+def _not_a_buddy(name: str) -> str:
+    return f"'{name}' is not a registered voice buddy"
 
 
 def is_registered(name: str) -> bool:
@@ -177,6 +277,9 @@ def status(name: str = DEFAULT_NAME) -> dict:
         "delivery": metadata.get(delivery.DELIVERY_KEY),
         "registered_at": metadata.get("registered_at"),
         "realtime_model": metadata.get("realtime_model"),
+        # Reported because it is now READ by serve/mint (#1017). A setting the
+        # status page cannot show is one the owner has to guess at.
+        "realtime_voice": metadata.get("realtime_voice"),
         "inbox_dir": str(box),
         "spool_path": str(delivery.spool_path(name)),
         "pending": pending,

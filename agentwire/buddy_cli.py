@@ -29,6 +29,26 @@ from .voice_layer import delivery, identity, realtime, tools
 #: project keeps closing, and here the owner is often not even at a screen.
 BETA_KEY = "beta.voice_layer"
 
+#: The one ``--voice`` help string, shared by register/mint/serve (#1017).
+#:
+#: Enumerated here rather than declared as argparse ``choices=``, deliberately.
+#: ``choices`` does print the set and does reject early — but its rejection is
+#: argparse's own ("invalid choice"), which cannot say what the default is, is
+#: case-SENSITIVE (so a spoken-then-typed "Cedar" would be refused for no
+#: reason), and exits before any handler runs, which means the ``--json``
+#: caller gets a parser usage dump on stderr instead of a JSON error object.
+#: :func:`_check_voice` does all three properly, and this string is what makes
+#: the list discoverable without reaching the error at all.
+#:
+#: No percent signs anywhere in it: argparse runs help through printf-style
+#: interpolation, and a lone one raises at parse time.
+_VOICE_HELP = (
+    "Realtime voice, one of: " + realtime.voice_list()
+    + f" (default: {realtime.DEFAULT_VOICE}; cedar and marin are the newer, "
+    "more natural pair). Fixed for a session — switch it live from the picker "
+    "on the buddy page."
+)
+
 
 def _refuse_beta(json_mode: bool) -> int:
     """Refuse a buddy command because the beta flag is off.
@@ -127,20 +147,75 @@ def _fail(message: str, json_mode: bool) -> int:
     return 1
 
 
+def _check_voice(args) -> "int | None":
+    """Refuse an unknown ``--voice`` before anything is written or spent.
+
+    Early, and in every verb that takes one: the alternative is a bridge that
+    starts, connects, and then produces no audio at all — which in a screenless
+    channel is indistinguishable from a mic problem, an API outage, or the
+    buddy simply having nothing to say. The refusal carries the whole list,
+    because ten closed values are short enough to print and guessing is what
+    put the typo there.
+
+    Returns an exit code to propagate, or ``None`` when the voice is fine.
+    """
+    voice = getattr(args, "voice", "")
+    if not voice:
+        return None
+    try:
+        args.voice = realtime.validate_voice(voice)
+    except realtime.RealtimeError as exc:
+        return _fail(str(exc), getattr(args, "json", False))
+    return None
+
+
 def cmd_buddy_register(args) -> int:
     json_mode = getattr(args, "json", False)
+    refused = _check_voice(args)
+    if refused is not None:
+        return refused
+    # Read BEFORE the write: what changed is only knowable against the record
+    # that was there. Re-announcing a full registration over a one-word voice
+    # change reads like a second identity was created (#1017).
     try:
+        delta = identity.registration_delta(
+            args.name, model=args.model, voice=args.voice
+        )
         metadata = identity.register(args.name, model=args.model, voice=args.voice)
     except identity.BuddyError as exc:
         return _fail(str(exc), json_mode)
     status = identity.status(args.name)
+    changes = delta["changes"]
+    payload = {
+        "success": True,
+        "created": not delta["registered"],
+        "changes": changes,
+        "buddy": status,
+        "metadata": metadata,
+    }
+    if delta["registered"]:
+        lines = [
+            f"{field} → {change['to']}"
+            + (f" (was {change['from']})" if change["from"] else "")
+            for field, change in sorted(changes.items())
+        ]
+        return _emit(
+            payload,
+            json_mode,
+            [f"Voice buddy '{args.name}' is already registered."]
+            + [f"  updated {line}" for line in lines]
+            + ([] if lines else ["  nothing to change."]),
+        )
     return _emit(
-        {"success": True, "buddy": status, "metadata": metadata},
+        payload,
         json_mode,
         [
             f"Registered voice buddy '{args.name}'.",
             f"  inbox:  {status['inbox_dir']}",
             f"  spool:  {status['spool_path']}",
+            f"  voice:  {status['realtime_voice'] or realtime.DEFAULT_VOICE} (default)"
+            if not status["realtime_voice"]
+            else f"  voice:  {status['realtime_voice']}",
             "",
             f"Other sessions can now reach it: agentwire msg send --to {args.name} ...",
             "It has no tmux session — its mail is spooled, not pasted.",
@@ -164,6 +239,8 @@ def cmd_buddy_status(args) -> int:
             f"  role:        {status['role']} (not in the fleet topology)",
             f"  delivery:    {status['delivery']} (spooled, no tmux pane)",
             f"  registered:  {status['registered_at']}",
+            f"  voice:       {status['realtime_voice'] or realtime.DEFAULT_VOICE}"
+            + ("" if status["realtime_voice"] else " (default)"),
             f"  pending:     {status['pending']} message(s) awaiting the next drain",
             f"  unread:      {status['unread']} spooled message(s)",
         ],
@@ -253,6 +330,9 @@ def cmd_buddy_mint(args) -> int:
     json_mode = getattr(args, "json", False)
     from .voice_layer import instructions as buddy_instructions
 
+    refused = _check_voice(args)
+    if refused is not None:
+        return refused
     if not identity.is_registered(args.name):
         return _fail(_no_buddy(args.name), json_mode)
     try:
@@ -260,7 +340,8 @@ def cmd_buddy_mint(args) -> int:
             instructions=buddy_instructions.build_instructions(),
             tools=tools.realtime_tool_defs(),
             model=args.model or realtime.DEFAULT_MODEL,
-            voice=args.voice or realtime.DEFAULT_VOICE,
+            # Explicit flag → the buddy's recorded voice → the default.
+            voice=identity.resolve_voice(args.name, args.voice),
         )
     except realtime.RealtimeError as exc:
         return _fail(str(exc), json_mode)
@@ -280,6 +361,9 @@ def cmd_buddy_serve(args) -> int:
     """Serve the browser client on localhost until interrupted."""
     from .voice_layer import server
 
+    refused = _check_voice(args)
+    if refused is not None:
+        return refused
     if not identity.is_registered(args.name):
         return _fail(_no_buddy(args.name), getattr(args, "json", False))
     # Renew the fleet-alert lease (#982) — a buddy being started is a buddy that
@@ -294,6 +378,8 @@ def cmd_buddy_serve(args) -> int:
         args.name, port=args.port, model=args.model, voice=args.voice
     )
     print(f"buddy '{args.name}' listening on {url}")
+    print(f"voice: {identity.resolve_voice(args.name, args.voice)} "
+          f"(switch it on the page — no restart needed)")
     print("Open that URL in a browser and click Start talking. Ctrl-C to stop.")
     try:
         while True:
@@ -327,7 +413,7 @@ def register_buddy_parser(subparsers) -> None:
 
     reg = _common(sub.add_parser("register", help="Create the buddy's session identity"))
     reg.add_argument("--model", default="", help=f"Realtime model (default: {realtime.DEFAULT_MODEL})")
-    reg.add_argument("--voice", default="", help=f"Realtime voice (default: {realtime.DEFAULT_VOICE})")
+    reg.add_argument("--voice", default="", metavar="VOICE", help=_VOICE_HELP)
     reg.set_defaults(func=beta_gated(cmd_buddy_register))
 
     _common(sub.add_parser("status", help="Show the buddy's identity and mail counts")).set_defaults(
@@ -359,12 +445,12 @@ def register_buddy_parser(subparsers) -> None:
 
     mint = _common(sub.add_parser("mint", help="Mint an ephemeral Realtime session"))
     mint.add_argument("--model", default="")
-    mint.add_argument("--voice", default="")
+    mint.add_argument("--voice", default="", metavar="VOICE", help=_VOICE_HELP)
     mint.set_defaults(func=beta_gated(cmd_buddy_mint))
 
     srv = _common(sub.add_parser("serve", help="Serve the browser client on localhost"))
     srv.add_argument("--port", type=int, default=8788,
                      help="Port on 127.0.0.1 (default: 8788 — never a portal port)")
     srv.add_argument("--model", default="")
-    srv.add_argument("--voice", default="")
+    srv.add_argument("--voice", default="", metavar="VOICE", help=_VOICE_HELP)
     srv.set_defaults(func=beta_gated(cmd_buddy_serve))

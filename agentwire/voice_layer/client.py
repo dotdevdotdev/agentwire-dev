@@ -94,6 +94,8 @@ from __future__ import annotations
 import html
 import json
 
+from . import realtime
+
 #: The announcer, kept separate from the page so tests can run it under ``node``
 #: with a fake ``send``/``speak``/timer and assert on the DATA CHANNEL. Spliced
 #: into the page by :func:`page`; also exported by :func:`announcer_source` for
@@ -1098,6 +1100,12 @@ _PAGE = """<!doctype html>
   button.stop { background: transparent; color: var(--fg); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   #status { color: var(--muted); margin-left: 12px; font-size: 13px; }
+  label.voice { color: var(--muted); font-size: 13px; margin-left: 12px; }
+  select {
+    font: inherit; font-size: 14px; padding: 8px 10px; border-radius: var(--radius);
+    border: 1px solid var(--border); background: #0d1117; color: var(--fg);
+  }
+  select:disabled { opacity: .45; cursor: not-allowed; }
   #log {
     margin-top: 20px; border: 1px solid var(--border); border-radius: var(--radius);
     padding: 14px; height: 60vh; overflow-y: auto; background: #0d1117;
@@ -1124,6 +1132,8 @@ _PAGE = """<!doctype html>
 <div>
   <button id="start">Start talking</button>
   <button id="stop" class="stop" disabled>Stop</button>
+  <label class="voice" for="voice">voice</label>
+  <select id="voice">__VOICE_OPTIONS__</select>
   <span id="status">idle</span>
 </div>
 <div id="log"></div>
@@ -1141,6 +1151,12 @@ const $log = document.getElementById("log");
 const $status = document.getElementById("status");
 const $start = document.getElementById("start");
 const $stop = document.getElementById("stop");
+const $voice = document.getElementById("voice");
+
+// The voice this page will mint with. Seeded from the bridge, which resolved
+// it from `--voice` → the buddy's record → the default, so a reload comes back
+// showing whatever was last chosen rather than silently reverting (#1017).
+let currentVoice = __VOICE__;
 
 let pc = null, dc = null, micStream = null, audioEl = null;
 let responseActive = false;
@@ -1515,8 +1531,18 @@ async function start() {
   $start.disabled = true;
   setStatus("minting session…");
   try {
-    const session = await post("/mint", {});
+    // The voice rides the mint, because a voice change IS a new session: the
+    // API fixes the voice once the model has emitted audio, and the buddy
+    // greets on connect, so there is never a live session whose voice a
+    // `session.update` could still change (#1017).
+    const session = await post("/mint", { voice: currentVoice });
     if (!session.success) throw new Error(session.error || "mint failed");
+    // The bridge is the authority on what it actually minted with — a voice it
+    // refused or normalised must show in the picker, not just in the log.
+    if (session.voice) { currentVoice = session.voice; $voice.value = session.voice; }
+    if (session.voice_persisted === false) {
+      log("error", "voice not saved for next time: " + (session.voice_persist_error || ""), "err");
+    }
     // The clock's ORIGIN, from the bridge (#978). Seeded here — before the
     // data channel exists, so nothing has emitted an event and nothing has
     // called nextSeq() yet. No `|| 0` default: a bridge that did not answer
@@ -1813,8 +1839,46 @@ function stop() {
   setStatus("idle");
 }
 
+// One click, and the reconnect is the mechanism rather than the price (#1017).
+// Before this, changing voice meant Ctrl-C the bridge, re-serve with a
+// different --voice, and reload the page by hand — three steps for a setting
+// with ten values. It cannot be a `session.update`: the Realtime API fixes the
+// voice once the model has emitted audio, and the buddy greets on connect.
+//
+// The greet latch is deliberately RELEASED here, against the #963 rule that a
+// reconnect stays quiet. That rule is about a reconnect the owner did not ask
+// for, where a re-greet is noise. This one they asked for, and the entire
+// observable result of it is how the buddy SOUNDS — a silent switch is
+// indistinguishable from a switch that did not happen, in a channel where the
+// owner has no screen. So it speaks, in the new voice, which is the answer.
+async function switchVoice() {
+  const chosen = $voice.value;
+  if (chosen === currentVoice) return;
+  currentVoice = chosen;
+  const wasLive = !!pc;
+  log("speak", "voice → " + chosen, "tool");
+  // ABOVE the idle return, not inside the live branch. `stop()` deliberately
+  // leaves `greeted` set (#963), so the ordinary Stop → pick → Start sequence
+  // would otherwise connect on the new voice and say nothing at all — the
+  // silent switch this whole gesture exists to avoid, reached by the calmer
+  // of the two routes to it. The asymmetry had no reason: the owner asked for
+  // the change in both cases, and in both cases hearing it is the answer.
+  greeted = false;
+  if (!wasLive) { setStatus("idle · " + chosen); return; }
+  // Locked for the round trip: a second change mid-reconnect would tear down
+  // the session the first one is still building.
+  $voice.disabled = true;
+  try {
+    stop();
+    await start();
+  } finally {
+    $voice.disabled = false;
+  }
+}
+
 $start.addEventListener("click", start);
 $stop.addEventListener("click", stop);
+$voice.addEventListener("change", switchVoice);
 </script>
 </body>
 </html>
@@ -1867,8 +1931,37 @@ def confirm_gate_source() -> str:
     return CONFIRM_GATE_JS
 
 
-def page(buddy: str, token: str) -> str:
-    """Render the client page for one buddy + one run token."""
+def voice_options(selected: str) -> str:
+    """The picker's ``<option>`` list, from the one enumeration (#1017).
+
+    Rendered server-side from :data:`realtime.VOICES` rather than built in JS
+    from an injected array: the list the owner picks from is then the same list
+    the bridge validates against, with no second copy to drift. The two the
+    docs single out are labelled, so the choice reads as a recommendation
+    rather than ten equal strings.
+
+    The "(newer)" label is derived from the ORDER of :data:`realtime.VOICES`
+    rather than from a second hard-coded pair — a re-encoded claim next to the
+    thing it claims about is the drift this module keeps closing.
+    """
+    newer = realtime.VOICES[:2]
+    return "".join(
+        '<option value="{v}"{sel}>{label}</option>'.format(
+            v=html.escape(voice),
+            sel=" selected" if voice == selected else "",
+            label=html.escape(f"{voice} (newer)" if voice in newer else voice),
+        )
+        for voice in realtime.VOICES
+    )
+
+
+def page(buddy: str, token: str, voice: str = "") -> str:
+    """Render the client page for one buddy + one run token.
+
+    *voice* is what the bridge resolved, so a reload shows the voice actually
+    in use rather than the default.
+    """
+    voice = voice or realtime.DEFAULT_VOICE
     return (
         _PAGE.replace("__ANNOUNCER__", ANNOUNCER_JS)
         .replace("__NOTIFIER__", INBOX_NOTIFIER_JS)
@@ -1876,5 +1969,7 @@ def page(buddy: str, token: str) -> str:
         .replace("__RERAISE__", RERAISE_JS)
         .replace("__OUTCOME_ROUTER__", OUTCOME_ROUTER_JS)
         .replace("__BUDDY__", html.escape(buddy))
+        .replace("__VOICE_OPTIONS__", voice_options(voice))
+        .replace("__VOICE__", json.dumps(voice))
         .replace("__TOKEN__", json.dumps(token))
     )
