@@ -12,10 +12,21 @@ asked for:
    for the whole process, promoting library INFO records (the STT config line)
    into CLI stderr.
 
-The output assertions below are the user-visible pin, but they can only fail on
-a machine whose pydantic-settings actually emits that warning. So the
-structural invariants are pinned separately: they fail on every version, and
-they are what a future refactor would actually break.
+**Which of these pins is live depends on the installed dependencies, so say so
+rather than claim a blanket guarantee.** Measured against the unfixed tree:
+
+- ``uv.lock`` (pydantic-settings 2.14.2 / mcp 1.27.2 — what CI runs): 5 of the
+  7 go red. The two that do not are the ``--version`` and ``roles list``
+  stderr assertions; neither command loads config, and 2.14.2 emits no warning,
+  so there is nothing for them to catch there. They are the forward-looking
+  half — they bite the moment the pinned deps move up.
+- pydantic-settings 2.15.0 / mcp 1.29.0 (the versions that reproduce the
+  reported symptom): all 7 go red.
+
+Every half of the bug therefore has at least one live control under the locked
+set: the STT line via ``projects list`` and the log-level test, and the
+pydantic warning via the two structural pins, which key on state and ordering
+rather than on the warning and so hold on every version.
 """
 
 import logging
@@ -93,14 +104,32 @@ def test_stt_config_line_is_not_emitted_at_info(tmp_path, monkeypatch, caplog):
     )
 
 
-def test_building_the_parser_does_not_build_an_mcp_server():
+
+
+def _probe(code: str, home: Path) -> subprocess.CompletedProcess:
+    """Run a probe in a fresh interpreter against an isolated HOME.
+
+    Isolated deliberately: a probe reading the developer's real
+    ``~/.agentwire`` makes its result machine-dependent, which is the opposite
+    of what a pin is for.
+    """
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        capture_output=True, text=True, timeout=120, cwd=REPO_ROOT,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+             "HOME": str(home),
+             "PYTHONPATH": str(REPO_ROOT)},
+    )
+
+
+def test_building_the_parser_does_not_build_an_mcp_server(tmp_path):
     """The structural pin: no CLI import path may reach ``mcp_core``.
 
     Version-independent, unlike the stderr assertions — this fails the moment
     any ``*_cli`` module reaches for an MCP helper again, which is how both
     symptoms got in.
     """
-    probe = textwrap.dedent("""\
+    proc = _probe("""\
         import sys
         import agentwire.__main__ as m
         m.build_parser()
@@ -109,62 +138,95 @@ def test_building_the_parser_does_not_build_an_mcp_server():
             if n == "agentwire.mcp_core" or n.startswith("mcp.server")
         )
         print(",".join(leaked))
-        """)
-    proc = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True, text=True, timeout=120, cwd=REPO_ROOT,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(Path.home()),
-             "PYTHONPATH": str(REPO_ROOT)},
-    )
+        """, _fake_home(tmp_path))
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "", (
         "build_parser() imported MCP server modules: " + proc.stdout.strip()
     )
 
 
-def test_root_logger_is_untouched_by_building_the_parser():
+def test_root_logger_is_untouched_by_building_the_parser(tmp_path):
     """No import may call ``logging.basicConfig`` on the CLI's behalf.
 
     A handler on the root logger is what turned every library INFO record into
     CLI stderr; asserting on the absence of one catches a re-introduction
     wherever it happens, not just in ``mcp_core``.
     """
-    probe = textwrap.dedent("""\
+    proc = _probe("""\
         import logging
         import agentwire.__main__ as m
         m.build_parser()
         print(len(logging.getLogger().handlers))
-        """)
-    proc = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True, text=True, timeout=120, cwd=REPO_ROOT,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(Path.home()),
-             "PYTHONPATH": str(REPO_ROOT)},
-    )
+        """, _fake_home(tmp_path))
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", (
         f"root logger gained {proc.stdout.strip()} handler(s) at import time"
     )
 
 
-def test_importing_mcp_core_emits_no_settings_warning():
+def test_mcp_core_rebuilds_settings_before_it_constructs_the_server(tmp_path):
     """The MCP server path is clean too — its stderr is the client's log.
 
-    ``mcp_core`` resolves the ``lifespan`` forward reference with
-    ``Settings.model_rebuild()`` before constructing FastMCP. Vacuous on a
-    pydantic-settings old enough not to warn; real on >= 2.15.
+    Pinned on ORDERING, and measured at the only instant that discriminates.
+    Two facts make the obvious assertions useless here, both verified rather
+    than assumed:
+
+    - Only pydantic-settings >= 2.15 warns about the unresolved forward
+      reference, and ``uv.lock`` pins 2.14.2 — so a warning-based assertion is
+      vacuous under exactly the dependency set CI runs, which is no control at
+      all for the headline symptom of #1018.
+    - ``Settings.__pydantic_complete__`` read *after* importing ``mcp_core`` is
+      True on the unfixed tree too: constructing ``FastMCP()`` completes the
+      model as a side effect of validation (which is why upstream warns instead
+      of raising). Sampled there, the flag cannot tell the trees apart.
+
+    What actually distinguishes them is whether the model was ALREADY complete
+    at the moment ``mcp_core`` constructed the server — i.e. that the rebuild
+    runs first. So spy on ``FastMCP.__init__`` and sample the flag inside it.
+    Version-independent, and it pins the ordering the fix depends on, which
+    nothing else does.
+
+    The ``RENAMED`` branch is not redundant: ``mcp_core`` guards the rebuild
+    with ``getattr`` so an upstream rename cannot take the whole tool surface
+    down, and that guard degrades to a silent no-op. This is what notices it.
     """
-    probe = textwrap.dedent("""\
-        import warnings
-        warnings.simplefilter("error")
-        import agentwire.mcp_core  # noqa: F401
-        print("ok")
-        """)
-    proc = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True, text=True, timeout=120, cwd=REPO_ROOT,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(Path.home()),
-             "PYTHONPATH": str(REPO_ROOT)},
-    )
+    proc = _probe("""\
+        import mcp.server.fastmcp.server as s
+
+        settings = getattr(s, "Settings", None)
+        if settings is None:
+            print("RENAMED")
+        else:
+            sampled = {}
+            original = s.FastMCP.__init__
+
+            def spy(self, *args, **kwargs):
+                # Sample BEFORE delegating: the constructor itself completes
+                # the model, so after the call every tree looks identical.
+                sampled.setdefault("complete", settings.__pydantic_complete__)
+                return original(self, *args, **kwargs)
+
+            s.FastMCP.__init__ = spy
+            import agentwire.mcp_core  # noqa: F401  (constructs the singleton)
+
+            if "complete" not in sampled:
+                print("NEVER_CONSTRUCTED")
+            else:
+                print("complete" if sampled["complete"] else "INCOMPLETE")
+        """, _fake_home(tmp_path))
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "ok"
+    verdict = proc.stdout.strip()
+    assert verdict != "RENAMED", (
+        "upstream renamed FastMCP's Settings model — mcp_core's getattr guard "
+        "is now a silent no-op and the lifespan warning is back in every MCP "
+        "client's log"
+    )
+    assert verdict != "NEVER_CONSTRUCTED", (
+        "mcp_core no longer constructs FastMCP through FastMCP.__init__ — this "
+        "probe is measuring nothing; re-point it before trusting it"
+    )
+    assert verdict == "complete", (
+        "mcp_core constructed FastMCP while its Settings model still had an "
+        "unresolved forward reference — Settings.model_rebuild() did not run "
+        "first, and pydantic-settings >= 2.15 warns on every instantiation"
+    )

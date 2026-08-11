@@ -48,8 +48,14 @@ def configure_logging() -> None:
 # Guarded by ``getattr`` deliberately: an upstream rename of ``Settings`` must
 # not take the entire MCP tool surface down with it (#874 was exactly that
 # failure — an SDK bump that removed a module we import at load time). The cost
-# of the guard is that the warning could return silently, which is what
-# ``tests/unit/test_cli_stderr_clean.py`` exists to notice.
+# is that the guard degrades to a silent no-op, so the degradation is pinned
+# structurally rather than by the warning:
+# ``test_mcp_core_rebuilds_settings_before_it_constructs_the_server`` fails on
+# the rename AND on a reordering that put this after the construction below.
+# Watching for the warning itself would NOT do: only pydantic-settings >= 2.15
+# emits it, ``uv.lock`` pins 2.14.2, and constructing ``FastMCP`` completes the
+# model as a side effect — so both obvious probes are green under the deps CI
+# actually runs.
 _fastmcp_settings = getattr(_fastmcp_server, "Settings", None)
 if _fastmcp_settings is not None:
     _fastmcp_settings.model_rebuild()
