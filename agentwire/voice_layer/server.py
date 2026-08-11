@@ -48,7 +48,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import client, confirm, realtime, tools, transcript, write_tools
+from . import client, confirm, identity, realtime, tools, transcript, write_tools
 from . import instructions as buddy_instructions
 
 #: Not 8765 (portal SSL) and not 8100 (portal HTTP) — a spike must never
@@ -166,7 +166,9 @@ class BuddyBridge:
         self.buddy = buddy
         self.token = token
         self.model = model or realtime.DEFAULT_MODEL
-        self.voice = voice or realtime.DEFAULT_VOICE
+        # Explicit flag → the buddy's recorded voice → the default (#1017).
+        # `register --voice` used to write a key nothing read.
+        self.voice = identity.resolve_voice(buddy, voice)
         # One ring and one gate per bridge — per CONVERSATION, in effect. Not
         # module-level: a process-global store of pending writes would outlive
         # the conversation that proposed them.
@@ -269,8 +271,45 @@ class BuddyBridge:
         anchored = self.spine.announce(proposal_id.strip(), seq)
         return {"success": True, "anchored": anchored, "seq": seq}
 
-    def mint(self) -> dict:
+    def switch_voice(self, voice: str) -> dict:
+        """Adopt *voice* for this bridge, and persist it for the next run.
+
+        Called from :meth:`mint` when the page's picker sends one. Validated
+        BEFORE anything is spent or written — an unknown voice is a refusal
+        with the list in it, never a session that connects and sounds wrong.
+
+        The persist is best-effort and guarded, on the same rule every optional
+        extra in this package follows (``store_session_metadata`` raises by
+        design, #885): the owner's live call must not fail because the record
+        could not be updated. What they lose is stickiness across the next
+        ``serve``, and they lose it loudly in the returned payload rather than
+        silently.
+        """
+        voice = realtime.validate_voice(voice)
+        if not voice or voice == self.voice:
+            return {"changed": False, "voice": self.voice}
+        self.voice = voice
+        persisted, error = True, ""
+        try:
+            identity.set_voice(self.buddy, voice)
+        except Exception as exc:  # noqa: BLE001  # never fatal to a live call
+            persisted, error = False, str(exc)
+        result = {"changed": True, "voice": voice, "voice_persisted": persisted}
+        if error:
+            result["voice_persist_error"] = error
+        return result
+
+    def mint(self, payload: "dict | None" = None) -> dict:
         """Mint an ephemeral client secret — and the page's CLOCK ORIGIN (#978).
+
+        An optional ``voice`` in the body switches the buddy's voice for this
+        session and every later one (#1017). It rides ``/mint`` rather than a
+        route of its own because a voice change IS a new session: the API fixes
+        the voice once the model has emitted audio (see
+        :data:`~agentwire.voice_layer.realtime.VOICE_IS_SESSION_FIXED`), and
+        the buddy greets on connect, so there is no live call whose voice could
+        be updated in place. The page therefore tears down and re-mints — the
+        one click is the product; the reconnect is the mechanism.
 
         The logical clock the confirm gate orders on is assigned by the client,
         because the client is the only place that sees data-channel event
@@ -303,6 +342,12 @@ class BuddyBridge:
         behind the client's counter, so the next base is that much less clear
         of the last epoch — bounded by the gap, not by anything smaller.
         """
+        # Before the epoch and before the key: a refused voice must cost
+        # nothing, not a burnt sequence epoch.
+        try:
+            switched = self.switch_voice((payload or {}).get("voice") or "")
+        except realtime.RealtimeError as exc:
+            return {"success": False, "error": str(exc)}
         seq_base = self.ring.reserve_epoch(MINT_SEQ_GAP, MAX_SEQ)
         if not seq_base:
             return {"success": False, "error": "sequence space exhausted"}
@@ -312,7 +357,14 @@ class BuddyBridge:
             model=self.model,
             voice=self.voice,
         )
-        return {"success": True, "seq_base": seq_base, **session}
+        return {
+            "success": True,
+            "seq_base": seq_base,
+            "voice": self.voice,
+            "voice_changed": switched["changed"],
+            **{k: v for k, v in switched.items() if k.startswith("voice_")},
+            **session,
+        }
 
     def tool_call(self, payload: dict) -> dict:
         name = payload.get("name")
@@ -377,7 +429,11 @@ def _handler_factory(bridge: BuddyBridge):
                 return
             path = self.path.split("?", 1)[0]
             if path == "/":
-                page = client.page(bridge.buddy, bridge.token).encode("utf-8")
+                # The voice comes off the BRIDGE, not off a constant: a switch
+                # made in one tab is what a reload must come back showing.
+                page = client.page(
+                    bridge.buddy, bridge.token, voice=bridge.voice
+                ).encode("utf-8")
                 self._send(200, page, "text/html; charset=utf-8")
                 return
             self._json(404, {"success": False, "error": "not found"})
@@ -416,7 +472,7 @@ def _handler_factory(bridge: BuddyBridge):
 
             if path == "/mint":
                 try:
-                    self._json(200, bridge.mint())
+                    self._json(200, bridge.mint(payload))
                 except realtime.RealtimeError as exc:
                     self._json(502, {"success": False, "error": str(exc)})
                 return

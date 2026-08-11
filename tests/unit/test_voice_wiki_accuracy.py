@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from agentwire import inbox
-from agentwire.voice_layer import confirm, server, tools, write_tools
+from agentwire.voice_layer import confirm, realtime, server, tools, write_tools
 
 WIKI = Path(__file__).resolve().parents[2] / "docs" / "wiki" / "voice-layer.md"
 VOICE_LAYER = Path(confirm.__file__).parent
@@ -477,6 +477,35 @@ class TestTheToolSurfaceIsNotEnumeratedStale:
         """
         assert "the gate is LIVENESS, not the `@` character" in page
         assert "local **by demonstration**" in page
+
+
+class TestTheVoiceListIsDocumentedFromTheCode(object):
+    """The enumeration the owner reads must be the one the code enforces.
+
+    Derived, not literal: an eleventh voice added to ``realtime.VOICES`` and not
+    to the page is exactly the drift a hand-written list in this file would
+    reproduce rather than catch. #1017's whole premise is that the list is
+    discoverable, and a page listing nine of ten is worse than one listing none
+    — the missing one reads as unsupported.
+    """
+
+    def test_every_voice_appears(self, page):
+        for voice in realtime.VOICES:
+            assert f"`{voice}`" in page, voice
+
+    def test_the_default_is_named_as_the_default(self, page):
+        assert f"default: {realtime.DEFAULT_VOICE}" in page
+
+    def test_the_page_says_the_voice_is_fixed_once_audio_is_emitted(self, page):
+        """The reason the picker reconnects instead of sending session.update.
+        Without this sentence the reconnect reads as laziness."""
+        assert "cannot be modified for that session" in page
+        assert realtime.VOICE_IS_SESSION_FIXED is True
+
+    def test_the_page_does_not_claim_the_mint_validates_the_voice(self, page):
+        """It is NOT measured, and the model-id footgun is what happens when a
+        page rounds "unverified" up to "checked upstream"."""
+        assert "not measured" in page
 
 
 class TestTheBridgeRoutesAreDocumented:

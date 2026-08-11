@@ -38,8 +38,40 @@ CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 #: /v1/models 404s it). A mint that succeeds proves nothing about the model.
 DEFAULT_MODEL = "gpt-realtime-2.1"
 
+#: Every voice the Realtime API accepts, newest first (docs, fetched
+#: 2026-08-11). ``cedar`` and ``marin`` are the two the docs single out as the
+#: newer, more natural ones; the remaining eight predate them.
+#:
+#: Enumerated here rather than left as "any string" (#1017) because the failure
+#: mode of a typo is the model-id footgun one level down: the mint endpoint is
+#: not a validator. Whether it rejects an unknown VOICE is **not measured** —
+#: what is known is that it returns 200 for a model that does not exist, so a
+#: successful mint proves nothing, and in a screenless channel the owner's
+#: evidence for "cedarr" being wrong is a buddy that never speaks. Validating
+#: locally turns that into a sentence with the list in it, before the key is
+#: spent.
+#:
+#: Ordered, not a set: this tuple is what ``--help``, the picker on the page,
+#: and the error message all enumerate, and the owner reads them in this order.
+VOICES = (
+    "cedar", "marin", "alloy", "ash", "ballad",
+    "coral", "echo", "sage", "shimmer", "verse",
+)
+
 #: One of the newer natural voices.
 DEFAULT_VOICE = "cedar"
+
+#: **The voice is fixed for the life of a realtime session.** The docs are
+#: explicit: "Once the model has emitted audio in a session, the ``voice``
+#: cannot be modified for that session." A ``session.update`` before the first
+#: audio would take, but the buddy greets on connect (#963), so by the time
+#: anyone picks a different voice the session has always emitted audio.
+#:
+#: That is why the picker on the page RECONNECTS instead of sending a
+#: ``session.update``: the only honest mid-call voice change is a new session,
+#: and the thing worth engineering is that it costs one click rather than a
+#: kill, a re-serve and a manual reload. See :mod:`~agentwire.voice_layer.client`.
+VOICE_IS_SESSION_FIXED = True
 
 #: Transcribes the OWNER's audio, for the on-screen transcript and the log.
 #: Independent of the conversational model above.
@@ -52,6 +84,33 @@ class RealtimeError(Exception):
     def __init__(self, message: str, status: int = 0):
         super().__init__(message)
         self.status = status
+
+
+def voice_list() -> str:
+    """The voices as one comma-separated line — one wording, three surfaces."""
+    return ", ".join(VOICES)
+
+
+def validate_voice(voice: str) -> str:
+    """Return *voice*, or raise :class:`RealtimeError` naming every valid one.
+
+    Empty means "unspecified" and is the caller's problem to default, not an
+    error: every ``--voice`` on the CLI defaults to ``""``.
+
+    Case-folded, because "Cedar" is a transcription of the same choice and
+    refusing it would be a false reject with nothing behind it. Anything else
+    refuses — including a name that merely looks plausible, which is the whole
+    point: the list is short, closed, and printed in the refusal.
+    """
+    if not voice:
+        return ""
+    normalized = voice.strip().lower()
+    if normalized not in VOICES:
+        raise RealtimeError(
+            f"unknown realtime voice {voice!r} — valid voices are: {voice_list()} "
+            f"(default: {DEFAULT_VOICE})"
+        )
+    return normalized
 
 
 def api_key() -> str:
@@ -125,7 +184,13 @@ def mint_session(
     voice: str = DEFAULT_VOICE,
     opener=None,
 ) -> dict:
-    """Mint an ephemeral Realtime session. ``opener`` is injectable for tests."""
+    """Mint an ephemeral Realtime session. ``opener`` is injectable for tests.
+
+    The voice is validated HERE as well as at every caller, deliberately: this
+    is the last line before the owner's API key is spent, and a bad voice that
+    gets past it costs a session that connects and then sounds like nothing.
+    """
+    voice = validate_voice(voice) or DEFAULT_VOICE
     body = json.dumps(
         build_session_request(
             instructions=instructions, tools=tools, model=model, voice=voice

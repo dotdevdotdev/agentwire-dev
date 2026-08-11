@@ -36,11 +36,15 @@ class TestBuddyLease:
         assert fleet_alerts.subscribers() == ["buddy"]
 
     def test_registering_does_not_disturb_the_identity_record(self, isolate):
-        identity.register("buddy", model="m", voice="v")
+        # A REAL voice, not a placeholder: register validates against
+        # realtime.VOICES since #1017, and the model id deliberately still
+        # does not (it is verified with GET /v1/models, not by this process).
+        identity.register("buddy", model="m", voice="marin")
         meta = core.load_session_metadata("buddy")
         assert meta["kind"] == identity.KIND
         assert meta[delivery.DELIVERY_KEY] == delivery.VOICE_ADAPTER
         assert meta["realtime_model"] == "m"
+        assert meta["realtime_voice"] == "marin"
 
     def test_unregistering_stops_production(self, isolate):
         identity.register("buddy")

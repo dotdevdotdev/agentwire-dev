@@ -132,6 +132,7 @@ data. Where the design hypothesis and the docs disagreed, the docs won.
 | **Function-call events** | Tools declared as `session.tools[]`. Calls arrive on `response.done` as `output[]` items with `type: "function_call"`, carrying `name`, `arguments` (a JSON **string**), `call_id`. Result returns as `conversation.item.create` → `function_call_output`, then `response.create`. | — |
 | **Turn detection** | `semantic_vad` (default) decides turns from *what was said*, not a silence timer. Or `null` for manual control. `create_response` / `interrupt_response` can be disabled independently. | ⚠️ Unstated. `semantic_vad` matters here — the owner thinking out loud about the fleet pauses mid-sentence constantly. |
 | **Barge-in** | Native and free. `input_audio_buffer.speech_started` fires, the in-flight response emits `response.cancelled`. Over WebRTC the browser handles playback truncation; only WebSocket clients must hand-send `conversation.item.truncate`. | ✅ Supported — better than assumed, and needs no code on WebRTC. |
+| **Voices** | Ten, closed: `cedar`, `marin`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`. The docs single out `cedar`/`marin` as the newer, more natural pair. **Fixed per session:** "Once the model has emitted audio in a session, the `voice` cannot be modified for that session." | ⚠️ Unstated. Matters twice — see [The voice list](#the-voice-list-and-why-switching-costs-a-reconnect-1017). |
 | **Audio format** | 24kHz PCM in (`{"type": "audio/pcm", "rate": 24000}`) for browser mic capture. Input transcription is a **separate** model (`gpt-4o-mini-transcribe`) from the conversational one. | ⚠️ Unstated. Two models, not one. |
 
 **One correction worth stating plainly:** the model is `gpt-realtime-2.1`, not
@@ -164,6 +165,71 @@ GET /v1/models/gpt-realtime-2.1  → 200  id=gpt-realtime-2.1  owned_by=system
 Corroborated by DocumentScribe's own `DEFAULT_REALTIME_MODEL`, which is the
 same string. When these ids rotate — and they will — verify with
 `GET /v1/models/<id>`, never with a mint.
+
+### The voice list, and why switching costs a reconnect (#1017)
+
+The voices are enumerated once, in `realtime.VOICES`, and that one tuple feeds
+all three surfaces the owner can meet: `--help` on `register`/`mint`/`serve`,
+the picker on the buddy page, and the refusal text when a name is wrong.
+
+```bash
+agentwire buddy register buddy --voice marin   # persisted on the record
+agentwire buddy serve buddy --voice ash        # explicit flag wins for this run
+agentwire buddy serve buddy --voice cedarr
+# → unknown realtime voice 'cedarr' — valid voices are: cedar, marin, alloy,
+#   ash, ballad, coral, echo, sage, shimmer, verse (default: cedar)
+```
+
+Resolution is **explicit flag → the buddy's recorded voice → `cedar`**. Before
+#1017 the middle term did not exist: `register --voice` wrote `realtime_voice`
+onto the record and nothing ever read it, so the flag looked like a setting and
+behaved like a comment.
+
+**Why validate locally at all.** Not because the mint endpoint is known to
+accept a bad voice — that is *not measured*. Because of the footgun one section
+up: the mint endpoint is not a validator, it returns 200 for a model that does
+not exist, so a successful mint is not evidence about anything it was handed.
+The cost of being wrong is paid in the worst channel we have — the owner is not
+looking at a screen, and "the buddy never spoke" reads identically as a dead
+mic, an API outage, or a typo in a voice name. Ten closed values are short
+enough to print in the error, so they are.
+
+Every `--voice` refuses **before** the record is written, the sequence epoch is
+reserved, or the API key is spent. That ordering is the point: a refusal that
+already cost you something is a worse refusal.
+
+**Switching is a reconnect, and it has to be.** The API fixes the voice once the
+model has emitted audio, and the buddy greets on connect (#963) — so by the time
+anyone wants a different voice, `session.update` is already closed to them.
+There is no honest mid-call voice change; there is only a new session.
+
+What #1017 buys is therefore not a new capability, it is the **cost** of the one
+that existed: Ctrl-C the bridge → re-serve with a different `--voice` → reload
+the page, three steps for a ten-value setting, becomes one click on a `<select>`
+on the page. The picker posts the chosen voice with `/mint`, the bridge
+validates it, adopts it, and persists it to the record so the next `serve` comes
+back on it; the page tears the peer connection down and rebuilds it.
+
+Two decisions inside that are deliberate and would otherwise look like bugs:
+
+- **The switch re-greets**, against the #963 rule that a reconnect stays quiet.
+  That rule is about reconnects the owner did not ask for, where a re-greet is
+  noise. This one they asked for, and its *entire* observable result is how the
+  buddy sounds — a silent switch is indistinguishable from a switch that did not
+  happen, to someone with no screen. So it speaks, in the new voice, which is
+  the answer to the question they asked.
+- **A failed persist does not fail the call.** `store_session_metadata` raises
+  by design (#885); an unwritable record must cost stickiness across the next
+  `serve`, never the live conversation. It is reported on the page rather than
+  swallowed.
+
+**`register` on an existing buddy is idempotent in what it SAYS, too.** It always
+was in what it wrote (merge-preserving, `created_at` kept), but it re-printed
+the full blurb — inbox path, spool path, "other sessions can now reach it" —
+over a one-word voice change, which reads like a second identity was created.
+It now prints `updated voice → marin (was cedar)`, or `nothing to change`.
+`--json` carries `created` and a `changes` map, computed against the record that
+was there **before** the write.
 
 ---
 
@@ -2034,7 +2100,16 @@ agentwire buddy inbox --ack      # read and mark read
 
 # talk to it (needs OPENAI_API_KEY in ~/.agentwire/.env, chmod 600)
 agentwire buddy serve buddy      # → http://127.0.0.1:8788/
+
+# pick a voice — see `--help` for the list, or the picker on the page
+agentwire buddy register buddy --voice marin   # sticks; prints "updated voice → marin"
+agentwire buddy serve buddy --voice ash        # just this run
 ```
+
+The page carries a **voice picker** (#1017): changing it reconnects in one
+click and persists the choice, because the API fixes a session's voice once the
+model has spoken — see
+[The voice list](#the-voice-list-and-why-switching-costs-a-reconnect-1017).
 
 `buddy call` runs a tool through the same dispatch path the model reaches, with
 **no spine wired**, so a write tool there is refused outright rather than
