@@ -100,6 +100,30 @@ def test_failing_middle_stage_isolated(stub_stages, monkeypatch, capsys, tmp_pat
     assert rec["stage"] == "inbox"
 
 
+def test_unattended_block_digest_stage_is_isolated(stub_stages, monkeypatch, capsys,
+                                                   tmp_path):
+    """The #925 digest flush raises — nothing upstream is starved.
+
+    ``safety_notify.tick`` guards itself internally, so this monkeypatches past
+    that guard on purpose: the point is that the WATCHDOG contains it, not that
+    the stage happens to be well-behaved today. A digest is pure housekeeping —
+    it must never be able to cost the fleet a routing or reaping pass.
+    """
+    monkeypatch.setattr(limits_cli, "WATCHDOG_EVENTS_FILE", tmp_path / "watchdog-events.jsonl")
+
+    import agentwire.safety_notify as sn_mod
+
+    monkeypatch.setattr(sn_mod, "tick", lambda: (_ for _ in ()).throw(_Boom("digest exploded")))
+
+    rc = limits_cli.cmd_limits_tick(argparse.Namespace(json=True))
+
+    assert rc == 0
+    assert stub_stages["usage_limit"] and stub_stages["prompt_router"]
+    assert stub_stages["inbox"] and stub_stages["session_context"]
+    rec = json.loads((tmp_path / "watchdog-events.jsonl").read_text().strip())
+    assert rec["stage"] == "safety_notify"
+
+
 def test_all_stages_clean_logs_nothing(stub_stages, monkeypatch, tmp_path):
     """No failures → no watchdog event file written."""
     events_file = tmp_path / "watchdog-events.jsonl"
