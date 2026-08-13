@@ -94,14 +94,14 @@ MUTATIONS = [
     Mutation(
         name="dash-c-resolved-against-cwd",
         property_broken="the -C chain is CUMULATIVE, each hop against the previous result",
-        old='        acting_dir = current_dir\n        for hop in gopts["chdir"]:\n            acting_dir = _abs_path(hop, acting_dir)',
-        new='        acting_dir = current_dir\n        for hop in gopts["chdir"]:\n            acting_dir = _abs_path(hop, current_dir)',
+        old="            acting_dir = _abs_path(hop, acting_dir)",
+        new="            acting_dir = _abs_path(hop, current_dir)",
     ),
     Mutation(
         name="git-dir-resolved-against-cwd",
         property_broken="--git-dir/--work-tree resolve against the -C result, not the cwd",
-        old='            if selector:\n                dirs.extend(_resolve_dir(selector, acting_dir))',
-        new='            if selector:\n                dirs.extend(_resolve_dir(selector, current_dir))',
+        old="                dirs.extend(_resolve_dir(selector, acting_dir))",
+        new="                dirs.extend(_resolve_dir(selector, current_dir))",
     ),
     Mutation(
         name="env-assignments-discarded",
@@ -120,6 +120,36 @@ MUTATIONS = [
         property_broken="a refused entry BINDS its rule instead of falling back to a looser layer",
         old="        grants.setdefault(rid, [])\n        unknown =",
         new="        unknown =",
+    ),
+    Mutation(
+        name="substitution-refuses-on-presence-again",
+        property_broken="substitution is judged by POSITION, not presence (#942/#943) "
+                        "— the unconditional form refuses the motivating message case",
+        old="    command, mask_err = _mask_command_substitutions(command)\n"
+            "    if mask_err:\n        return [], mask_err",
+        new="    command, mask_err = _mask_command_substitutions(command)\n"
+            "    if mask_err:\n        return [], mask_err\n"
+            "    if _CMD_SUBST_SENTINEL in command:\n"
+            '        return [], "command substitution"',
+    ),
+    Mutation(
+        name="dash-c-substitution-trusted",
+        property_broken="a substituted -C value refuses rather than resolving a garbage literal",
+        old='            if _CMD_SUBST_SENTINEL in hop:\n'
+            '                return [], "command substitution decides the -C target directory"\n',
+        new="",
+    ),
+    Mutation(
+        name="core-worktree-redirect-ignored",
+        property_broken="a repo redirected via `git config core.worktree` (#927) is measured",
+        old="                    redirect = _git_config_core_worktree(root)",
+        new="                    redirect = None and _git_config_core_worktree(root)",
+    ),
+    Mutation(
+        name="inline-config-redirect-ignored",
+        property_broken="`-c core.worktree=…` / include.* on the command line refuses (#927)",
+        old='        for centry in gopts["config"]:',
+        new='        for centry in []:',
     ),
     Mutation(
         name="mcp-scope-measured-against-cwd",

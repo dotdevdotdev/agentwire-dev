@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "8d267c7ab802b4d315a1116d89370e70619caba6b88ff320291bf4e6dfaad3f4", "generated_at": "2026-08-09T23:11:32Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "dee9a6c193321c5be8f3c8e6ec45c2f0adbb88ea805e4e63483e325955dde841", "generated_at": "2026-08-13T12:24:39Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -668,12 +668,18 @@ def load_config(
 #
 # WHAT IT REFUSES RATHER THAN GUESSES — an enumerated list, not a guarantee.
 # ``command_scope_dirs`` refuses on: a ``cd`` not joined by ``&&``; an indirect
-# runner (``sh -c``, ``xargs``, ``sudo``, ``ssh`` …); a subshell/group; command
-# substitution / ``eval`` / a base64 pipeline; an unrecognized environment
-# assignment; and a rule whose pattern matches no single segment. It READS,
-# rather than refuses: the cwd, ``cd <literal> &&``, git's ``-C`` /
+# runner (``sh -c``, ``xargs``, ``sudo``, ``ssh`` …); a subshell/group;
+# ``eval`` / a base64 pipeline; command substitution IN A DIRECTORY-DECIDING
+# POSITION (a ``cd`` target, a ``-C``/``--git-dir``/``--work-tree`` value, a
+# ``GIT_DIR``-family assignment, the segment head, a git config key) — a
+# substitution in an operand such as a ``-m`` message cannot move the command
+# and no longer refuses (#942/#943); a ``core.worktree``/``include.*`` config
+# set on the command line (``-c``/``--config-env``); an unrecognized
+# environment assignment; and a rule whose pattern matches no single segment.
+# It READS, rather than refuses: the cwd, ``cd <literal> &&``, git's ``-C`` /
 # ``--git-dir`` / ``--work-tree``, git's ``GIT_DIR``-family environment
-# assignments, and the enclosing git repo root.
+# assignments, the enclosing git repo root, and that root's ``core.worktree``
+# redirect (#927 — measured against the scope like any other selector).
 #
 # That list is the honest form of the claim. An earlier draft of this comment
 # said "anything that makes the target directory unknowable does not apply the
@@ -686,14 +692,13 @@ def load_config(
 # do not assert a closure property over shell semantics.
 #
 # NOT closed, and stated so rather than implied:
-#   * ``git config core.worktree`` is a reachable TWO-STEP ESCAPE, not merely a
-#     parser blind spot. It redirects a repo from inside its own config, which
-#     no reading of the command can see — AND the redirect is itself unruled
-#     (``git config core.worktree <elsewhere>`` matches no rule, with or without
-#     ``-C``). A session holding a scoped commit grant can therefore point the
-#     in-scope store's work tree elsewhere and then commit entirely within
-#     scope. Closing it needs a rule making that ``ask``-tier, which is
-#     rule-file territory; tracked in #927.
+#   * The ``git config core.worktree`` REDIRECT command itself is still
+#     unruled (rule-file territory, #927) — but the escape it enabled is
+#     closed on the COMMIT side: scope evaluation now reads the resolved
+#     repo's ``core.worktree`` and measures the redirect target against the
+#     scope, so a redirected in-scope store refuses the commit. The
+#     command-line spellings (``-c core.worktree=…``, ``--config-env``,
+#     ``include.path``) refuse outright.
 #   * Resolution is a TOCTOU window — the hook validates a path the command has
 #     not used yet.
 #
@@ -960,6 +965,7 @@ def git_global_dirs(argv: List[str]) -> Tuple[Dict[str, Any], List[str]]:
     chdir: List[str] = []
     git_dir: Optional[str] = None
     work_tree: Optional[str] = None
+    config: List[str] = []
     rest: List[str] = argv[:1]
 
     def _record(opt: str, value: str) -> None:
@@ -980,6 +986,12 @@ def git_global_dirs(argv: List[str]) -> Tuple[Dict[str, Any], List[str]]:
             i += 2
             continue
         if tok in _GIT_OPTS_VALUE_NOT_DIR:
+            # `-c key=value` / `--config-env key=ENVVAR` set config from the
+            # command line — the same power as editing the repo config, so
+            # their assignments are surfaced for the caller to inspect
+            # (core.worktree / include.* redirect the repo; #927).
+            if tok in ("-c", "--config-env") and i + 1 < len(argv):
+                config.append(argv[i + 1])
             i += 2
             continue
         matched = False
@@ -991,12 +1003,17 @@ def git_global_dirs(argv: List[str]) -> Tuple[Dict[str, Any], List[str]]:
         if matched:
             i += 1
             continue
+        if tok.startswith("--config-env="):
+            config.append(tok[len("--config-env="):])
+            i += 1
+            continue
         if tok.startswith("-"):
             i += 1
             continue
         rest.extend(argv[i:])
         break
-    return {"chdir": chdir, "git_dir": git_dir, "work_tree": work_tree}, rest
+    return {"chdir": chdir, "git_dir": git_dir, "work_tree": work_tree,
+            "config": config}, rest
 
 
 def _git_repo_root(path: str) -> Optional[str]:
@@ -1042,6 +1059,117 @@ def _split_assignments(argv: List[str]) -> Tuple[List[str], List[str]]:
 # context something this parser will not reason about.
 _SCOPE_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
 _SCOPE_GROUPING = {"(", ")", "{", "}"}
+
+# Placeholder a masked command substitution collapses to. No whitespace, no
+# shell metacharacters — it stays inside whatever token the substitution was
+# part of, so positional analysis can ask "does THIS token carry a
+# substitution?" instead of refusing the whole command (#942/#943).
+_CMD_SUBST_SENTINEL = "\x00cmdsub\x00"
+
+
+def _mask_command_substitutions(command: str) -> Tuple[str, Optional[str]]:
+    """Collapse every ``$(...)`` / backtick span to a sentinel token.
+
+    Returns ``(masked, error)``. Scope evaluation used to refuse on a
+    substitution ANYWHERE in the command (#942/#943), which refused #914's own
+    motivating case — ``git commit -m "review $(date +%F)"`` in an in-scope
+    store — even though a substitution in the commit message cannot move the
+    command. Masking instead lets the positional analysis below decide: a
+    sentinel in a directory-deciding position (a ``cd`` target, ``-C`` /
+    ``--git-dir`` / ``--work-tree``, a ``GIT_DIR``-family assignment, the
+    segment head) still refuses; a sentinel in an operand does not.
+
+    ``$(...)`` is scanned with paren balancing (nesting is real:
+    ``$(dirname $(pwd))``); an unclosed span refuses. A paren inside quotes
+    inside the substitution can close the span early — the leftover text then
+    fails tokenization or lands somewhere refusable, which errs closed.
+    """
+    out: List[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        if command.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            if depth:
+                return "", "command substitution is unbalanced"
+            out.append(_CMD_SUBST_SENTINEL)
+            i = j
+            continue
+        if command[i] == "`":
+            j = command.find("`", i + 1)
+            if j == -1:
+                return "", "command substitution is unbalanced"
+            out.append(_CMD_SUBST_SENTINEL)
+            i = j + 1
+            continue
+        out.append(command[i])
+        i += 1
+    return "".join(out), None
+
+
+# ``git config core.worktree`` redirects a repo from inside its own config —
+# the #927 two-step escape: point the in-scope store's work tree elsewhere,
+# then commit entirely within scope. The command-line spellings of the same
+# redirect (``-c core.worktree=…``, ``--config-env=core.worktree=…``, and the
+# ``include.path``/``includeIf.*`` keys that can pull core.worktree in from an
+# arbitrary file) are refused below; the in-repo-config spelling is closed by
+# READING the resolved repo's config and measuring the redirect target against
+# the scope like any other selector (see _git_config_core_worktree).
+_GIT_SECTION_RE = re.compile(r"^\s*\[([^\]]*)\]")
+_GIT_WORKTREE_LINE_RE = re.compile(r"^\s*worktree\s*=\s*(.*?)\s*$", re.IGNORECASE)
+
+
+def _dir_redirecting_config_key(key: str) -> bool:
+    """True when a git config key can redirect which directory a repo acts on."""
+    k = key.strip().lower()
+    return k == "core.worktree" or k.startswith("include.") or k.startswith("includeif.")
+
+
+def _git_config_core_worktree(root: str) -> Optional[str]:
+    """``core.worktree`` from the repo at ``root``, resolved absolute, or None.
+
+    Pure filesystem reading (the hook is on the tool's hot path — same
+    constraint as ``_git_repo_root``): follow a ``.git`` FILE's ``gitdir:``
+    pointer, then line-scan ``config`` and ``config.worktree`` for a
+    ``[core] worktree`` entry, last one wins. A relative value resolves against
+    the git dir, matching git's own reading. Best-effort by construction — an
+    unreadable config returns None, which means "no redirect discoverable",
+    not "no redirect"; the command-line spellings are refused separately.
+    """
+    gitdir = os.path.join(root, ".git")
+    if os.path.isfile(gitdir):
+        try:
+            with open(gitdir, encoding="utf-8", errors="replace") as fh:
+                first = fh.readline()
+        except OSError:
+            return None
+        if not first.startswith("gitdir:"):
+            return None
+        gitdir = _abs_path(first.split(":", 1)[1].strip(), root)
+    value: Optional[str] = None
+    for name in ("config", "config.worktree"):
+        try:
+            with open(os.path.join(gitdir, name), encoding="utf-8", errors="replace") as fh:
+                in_core = False
+                for line in fh:
+                    section = _GIT_SECTION_RE.match(line)
+                    if section:
+                        in_core = section.group(1).strip().lower() == "core"
+                        continue
+                    if in_core:
+                        m = _GIT_WORKTREE_LINE_RE.match(line)
+                        if m:
+                            value = m.group(1).strip().strip('"')
+        except OSError:
+            continue
+    if not value:
+        return None
+    return _abs_path(value, gitdir)
 
 
 def _scope_segments(command: str) -> Tuple[List[Tuple[List[str], str]], Optional[str]]:
@@ -1091,7 +1219,7 @@ def _cd_target(argv: List[str]) -> Optional[str]:
     if len(argv) != 2:
         return None
     target = argv[1]
-    if target == "-" or target.startswith("$") or "$" in target:
+    if target == "-" or "$" in target or _CMD_SUBST_SENTINEL in target:
         return None
     return target
 
@@ -1158,14 +1286,28 @@ def command_scope_dirs(
 
     Reads the RAW command, never a normalized haystack — so it is independent
     of #913's land order (the orchestrator ruling keeps the raw command
-    reachable precisely so this stays true).
+    reachable precisely so this stays true). The one transformation applied is
+    its own: ``$(...)``/backtick spans are masked to a sentinel so substitution
+    can be judged by POSITION rather than by presence (#942/#943).
     """
     if pattern and pattern.startswith("ambiguous:"):
         return [], pattern.split(":", 1)[1] or "unverifiable command"
 
-    obf = detect_obfuscation(command)
-    if obf:
-        return [], obf
+    # Substitution is judged BY POSITION, not by presence (#942/#943): mask
+    # every `$(...)`/backtick span to a sentinel first, then refuse only when
+    # the sentinel lands somewhere that decides a directory. Refusing on
+    # presence refused `git commit -m "$(date +%F)"` — #914's own motivating
+    # case. eval / base64-decode stay whole-command refusals: they conceal the
+    # VERB, which no positional argument analysis can recover. They are checked
+    # on the masked form so an eval inside a message substitution (which cannot
+    # move the command) does not refuse.
+    command, mask_err = _mask_command_substitutions(command)
+    if mask_err:
+        return [], mask_err
+    if _EVAL_RE.search(command):
+        return [], "eval"
+    if _BASE64_PIPE_RE.search(command):
+        return [], "base64-decode pipeline"
 
     segments, split_err = _scope_segments(command)
     if split_err:
@@ -1208,7 +1350,8 @@ def command_scope_dirs(
         is_git = head == "git"
         gopts, stripped = (
             git_global_dirs(argv) if is_git
-            else ({"chdir": [], "git_dir": None, "work_tree": None}, argv)
+            else ({"chdir": [], "git_dir": None, "work_tree": None,
+                   "config": []}, argv)
         )
 
         if pattern:
@@ -1228,6 +1371,27 @@ def command_scope_dirs(
         if head in _INDIRECT_RUNNERS:
             return [], f"command runs through {head} — target directory is not statically knowable"
 
+        if _CMD_SUBST_SENTINEL in argv[0]:
+            # A substituted verb (or a substituted path TO the verb) — what
+            # runs is not statically knowable. Checked on the full token, not
+            # `head`: basename() would strip `$(...)/git` down to `git`.
+            return [], "command substitution decides what runs"
+
+        # git config set from the command line has the same power as editing
+        # the repo config: `-c core.worktree=<elsewhere>` redirects the repo
+        # exactly like the #927 two-step, and `include.path` can pull such a
+        # redirect in from an arbitrary file. Refuse those keys, and any
+        # assignment whose key cannot be read.
+        for centry in gopts["config"]:
+            key, _, _ = centry.partition("=")
+            if _CMD_SUBST_SENTINEL in key or not key.strip():
+                return [], "command substitution decides a git config key"
+            if _dir_redirecting_config_key(key):
+                return [], (
+                    f"command sets git config {key.strip()} — a work-tree "
+                    "redirect makes the target directory not statically knowable"
+                )
+
         # Fold the `-C` chain FIRST — it establishes the directory everything
         # else on this segment is measured from. Left to right, each value
         # against the running result, an absolute value resetting the chain
@@ -1236,6 +1400,8 @@ def command_scope_dirs(
         # onto the in-scope directory and be granted while git walks out of it.
         acting_dir = current_dir
         for hop in gopts["chdir"]:
+            if _CMD_SUBST_SENTINEL in hop:
+                return [], "command substitution decides the -C target directory"
             acting_dir = _abs_path(hop, acting_dir)
         dirs.extend(_resolve_dir(acting_dir, current_dir))
 
@@ -1243,6 +1409,8 @@ def command_scope_dirs(
         # `-C` result, not the cwd.
         for selector in (gopts["git_dir"], gopts["work_tree"]):
             if selector:
+                if _CMD_SUBST_SENTINEL in selector:
+                    return [], "command substitution decides the git directory"
                 dirs.extend(_resolve_dir(selector, acting_dir))
 
         # Environment assignments. Recognized git repo selectors are read as
@@ -1254,6 +1422,8 @@ def command_scope_dirs(
         for assign in assigns:
             name, _, value = assign.partition("=")
             if name in _GIT_DIR_ENV_VARS:
+                if _CMD_SUBST_SENTINEL in value:
+                    return [], f"command substitution decides the {name} target"
                 if value:
                     dirs.extend(_resolve_dir(value, acting_dir))
                 continue
@@ -1277,6 +1447,16 @@ def command_scope_dirs(
                 root = _git_repo_root(candidate)
                 if root:
                     dirs.extend(_resolve_dir(root, current_dir))
+                    # The repo can be redirected from INSIDE its own config
+                    # (`git config core.worktree <elsewhere>` — the #927
+                    # two-step escape), which no reading of the command can
+                    # see. Read the config and measure the redirect target
+                    # like any other selector: an out-of-scope redirect then
+                    # refuses the commit even though the command itself stays
+                    # entirely within scope.
+                    redirect = _git_config_core_worktree(root)
+                    if redirect:
+                        dirs.extend(_resolve_dir(redirect, current_dir))
 
     if pattern and considered == 0:
         # The rule matched the command as a whole but no individual segment —
