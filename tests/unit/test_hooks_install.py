@@ -82,6 +82,20 @@ class TestInstallManagedFile:
         assert target.read_text() == source.read_text()
         assert target.stat().st_mode & 0o111  # executable
 
+    def test_symlink_install_never_chmods_the_source(self, source, target_dir):
+        """#947: chmod follows symlinks, so a chmod aimed at the installed
+        link lands on the SOURCE — which, in a dev checkout, is a tracked
+        file. The suite itself was the reproducer: every run flipped
+        ``agentwire/hooks/queue-processor.sh`` to 755 in every dev's tree.
+        The symlink path must leave the source's mode alone entirely."""
+        import os
+
+        os.chmod(source, 0o644)
+        target = target_dir / "hook.sh"
+        assert _install_managed_file(source, target) is True
+        assert target.is_symlink()
+        assert (source.stat().st_mode & 0o777) == 0o644
+
     def test_current_file_untouched(self, source, target_dir):
         target = target_dir / "hook.sh"
         _install_managed_file(source, target, copy=True)
