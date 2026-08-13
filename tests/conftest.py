@@ -153,6 +153,48 @@ def _real_agentwire_home_untouched():
         pytest.fail(failure, pytrace=False)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _source_tree_untouched():
+    """Mirror backstop to the one above: no test may modify the SOURCE (#947).
+
+    ``_real_agentwire_home_untouched`` catches writes into the real
+    ``~/.agentwire``; nothing covered the reverse direction — an operation
+    aimed at the install landing in the checkout. It happened: the installed
+    ``queue-processor.sh`` is a symlink into the package, macOS ``chmod``
+    follows symlinks, and the suite's hook-install path chmod'd a tracked
+    file to 755 on every run. Every dev dirtied their tree; ``git commit -a``
+    re-committed the mode change silently.
+
+    Snapshot ``git status`` over ``agentwire/`` at session start, compare at
+    session end — content and mode changes both surface as ``M`` entries.
+    Only NEW entries fail, so running the suite in an intentionally dirty
+    working tree stays legal.
+    """
+    import subprocess
+
+    root = Path(__file__).parent.parent
+
+    def _status() -> "set[str] | None":
+        proc = subprocess.run(
+            ["git", "status", "--porcelain", "--", "agentwire/"],
+            cwd=root, capture_output=True, text=True,
+        )
+        return set(proc.stdout.splitlines()) if proc.returncode == 0 else None
+
+    before = _status()
+    yield
+    if before is None:  # not a git checkout (installed package, sdist) — nothing to guard
+        return
+    after = _status()
+    new = sorted((after or set()) - before)
+    if new:
+        pytest.fail(
+            "the test suite modified tracked source files (#947 — an operation "
+            "aimed at the install landed in the checkout?):\n  " + "\n  ".join(new),
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _no_real_outbound_email(request, monkeypatch):
     """No test may send real email — ever.
