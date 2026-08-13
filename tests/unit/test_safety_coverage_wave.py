@@ -352,21 +352,38 @@ class TestControlPlaneAllowlistOverlap:
 # ---------------------------------------------------------------------------
 
 
+# HOME for hook subprocess probes. Deliberately NOT the pytest tmp dir: on the
+# Linux CI runner tmp lives under /tmp, and the shipped allowlist's /tmp/*
+# build-artifact entry then re-permits every probe target — the exact
+# environment-shaped green/red split #938 documents from #920. The path never
+# needs to exist (the hooks match strings, they don't stat), and audit logs
+# are redirected into the real tmp dir via AGENTWIRE_DIR.
+HERMETIC_HOME = "/home/agentwire-hermetic"
+
+
+def _hook_env(tmp_path):
+    return {
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "HOME": HERMETIC_HOME,
+        "AGENTWIRE_DIR": str(tmp_path / ".agentwire"),
+    }
+
+
 class TestNotebookEditCoverage:
     HOOK = HOOKS_DIR / "edit-tool-damage-control.py"
 
-    def _run(self, payload, home):
+    def _run(self, payload, tmp_path):
         return subprocess.run(
             [sys.executable, str(self.HOOK)],
             input=json.dumps(payload),
             capture_output=True, text=True,
-            env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(home)},
+            env=_hook_env(tmp_path),
             timeout=15,
         )
 
     def test_notebookedit_to_control_plane_blocks(self, tmp_path):
         """An operation refused via Edit must be refused via NotebookEdit."""
-        target = str(tmp_path / ".claude" / "settings.json")
+        target = HERMETIC_HOME + "/.claude/settings.json"
         edit = self._run({"tool_name": "Edit", "tool_input": {"file_path": target}}, tmp_path)
         nb = self._run(
             {"tool_name": "NotebookEdit", "tool_input": {"notebook_path": target}},
@@ -378,7 +395,7 @@ class TestNotebookEditCoverage:
     def test_ordinary_notebook_passes(self, tmp_path):
         proc = self._run(
             {"tool_name": "NotebookEdit",
-             "tool_input": {"notebook_path": str(tmp_path / "analysis.ipynb")}},
+             "tool_input": {"notebook_path": HERMETIC_HOME + "/proj/analysis.ipynb"}},
             tmp_path,
         )
         assert proc.returncode == 0
@@ -392,14 +409,14 @@ class TestNotebookEditCoverage:
 class TestMcpPathScreening:
     HOOK = HOOKS_DIR / "mcp-tool-damage-control.py"
 
-    def _run(self, tool_name, tool_input, home):
+    def _run(self, tool_name, tool_input, tmp_path):
         payload = {"tool_name": tool_name, "tool_input": tool_input,
                    "permission_mode": "bypassPermissions"}
         return subprocess.run(
             [sys.executable, str(self.HOOK)],
             input=json.dumps(payload),
             capture_output=True, text=True,
-            env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(home)},
+            env=_hook_env(tmp_path),
             timeout=15,
         )
 
@@ -409,7 +426,7 @@ class TestMcpPathScreening:
         # test the allowlist, not the screen.
         proc = self._run(
             "mcp__filesystem__read_file",
-            {"path": str(tmp_path / ".ssh" / "id_rsa")},
+            {"path": HERMETIC_HOME + "/.ssh/id_rsa"},
             tmp_path,
         )
         assert proc.returncode == 2, proc.stderr
@@ -417,7 +434,7 @@ class TestMcpPathScreening:
     def test_writeish_tool_naming_control_plane_blocks(self, tmp_path):
         proc = self._run(
             "mcp__filesystem__write_file",
-            {"path": str(tmp_path / ".claude" / "settings.json"), "content": "x"},
+            {"path": HERMETIC_HOME + "/.claude/settings.json", "content": "x"},
             tmp_path,
         )
         assert proc.returncode == 2, proc.stderr
@@ -426,7 +443,7 @@ class TestMcpPathScreening:
         """The control plane is readable by design; only writes are gated."""
         proc = self._run(
             "mcp__filesystem__read_file",
-            {"path": str(tmp_path / ".claude" / "settings.json")},
+            {"path": HERMETIC_HOME + "/.claude/settings.json"},
             tmp_path,
         )
         assert proc.returncode == 0, proc.stderr

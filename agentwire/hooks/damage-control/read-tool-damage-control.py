@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "86d1b20c4650a88f24d3ad434691b8848c92ee0ee1e84a374798e3265a48280f", "generated_at": "2026-08-13T19:16:25Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "ed36d64d7cea91450987aa38dbe19729e6f8687b4d11b5ca4216d954a346c416", "generated_at": "2026-08-13T20:38:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1859,17 +1859,31 @@ def control_plane_allowlist_overlaps(
     replaced by a literal token), so the check cannot disagree with what the
     hook would actually allow. Entries that only re-permit reads are skipped:
     the control plane is readable by design; only its writes are protected.
+
+    Judged against a CANONICAL home, not this process's ``$HOME``: both the
+    protected sample and a ``~``-anchored entry are expanded to the same
+    fixed anchor before matching. The question doctor asks is "does this
+    entry's SHAPE cover the control plane", and answering it with the live
+    ``$HOME`` made the verdict depend on where the process happens to run —
+    a test harness (or CI) with its home relocated under ``/tmp`` turned the
+    shipped ``/tmp/*`` build-artifact entry into a false overlap, the exact
+    environment-shaped failure #938 itself documents from #920.
     """
+    canonical_home = "/home/agentwire-canonical"
+
+    def _anchor(p: str) -> str:
+        return canonical_home + p[1:] if p.startswith("~") else p
+
     write_ops = ALL_OPERATIONS - {"read"}
     out: List[Tuple[str, str]] = []
     for entry in allowed_paths:
         if not entry.get("allow", set()) & write_ops:
             continue
         for prot in PROTECTED_CONTROL_PLANE_PATHS:
-            sample = os.path.expanduser(prot).replace("*", "x")
+            sample = _anchor(prot).replace("*", "x")
             if not os.path.isabs(sample):
                 sample = "/x/" + sample
-            if match_path(sample, entry["path"]):
+            if match_path(sample, _anchor(entry["path"])):
                 out.append((entry["path"], prot))
     return out
 
