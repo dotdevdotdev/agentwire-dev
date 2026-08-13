@@ -4,6 +4,7 @@
     "agentwire.yaml": [
       "2c49ab654ff58675a3917d852093bc5f5ecc7d16cab10cd5046d11e8cede9621",
       "a30f698ca4156bc9a0715c5df4583c41d026a566d0bd8d534d263bec8b951e74",
+      "a977b051e9ff66490816bbbd562e9106015c4e0950b547422f92debfd7d361f6",
       "c471a54cf5045348dc1df644852dc5933aa8bfd0e1aee0cddc1a20862128adde"
     ],
     "aws.yaml": [
@@ -90,7 +91,8 @@
     ],
     "git.yaml": [
       "28ad144fd96331325a283f6ac7255513ed82ec3dbf4aebac870793da6513e91d",
-      "95cbc99d28a36996b73a8f2aed7bcb7cbb18f4ffebfc8b630741dcddc1cb9a2f"
+      "95cbc99d28a36996b73a8f2aed7bcb7cbb18f4ffebfc8b630741dcddc1cb9a2f",
+      "c913356bd094ff11522f80196c935bd91cae41046acbe9a8c7ac6cd3c623792b"
     ],
     "gws.yaml": [
       "2d637c82796dc60efe692835f32ee35aebbb517805c8e30912a23172011f3dca",

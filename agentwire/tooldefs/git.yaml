@@ -37,6 +37,14 @@ commands:
     access: read
     description: List stashed changes
 
+  - cmd: "git stash show [-p]"
+    access: read
+    description: Show a stash's changes
+
+  - cmd: "git merge-base [--is-ancestor] <commit> <commit>"
+    access: read
+    description: Find common ancestor / check ancestry
+
   # Staging & committing
   - cmd: "git add <file>"
     access: write
@@ -62,9 +70,13 @@ commands:
     description: Apply most recent stash
 
   # Branching & merging
-  - cmd: "git checkout -b <branch>"
+  # One prefix rule covers every checkout form (the generated pattern stops at
+  # the first flag), so the description must name the whole operation — the old
+  # "Create and switch to new branch" misdescribed a refused
+  # ``git checkout -- <file>`` (#933).
+  - cmd: "git checkout <target>"
     access: write
-    description: Create and switch to new branch
+    description: Switch branches, create one (-b), or restore working-tree files (overwrites uncommitted changes to restored paths)
 
   - cmd: "git merge <branch>"
     access: write
