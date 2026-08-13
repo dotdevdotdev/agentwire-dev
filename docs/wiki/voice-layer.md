@@ -1191,6 +1191,7 @@ the set `SPOKEN` is checked against **both ways**:
 | `nothing_to_cancel` | nothing — there was nothing of ours left to take back |
 | `too_many_attempts` | ask again from the top; that proposal is gone |
 | `dispatch_failed` | check that session, *then* decide — it may have gone out |
+| `build_failed` | ask again — the argv never got built, so the runner never ran and nothing went out (#1005) |
 
 `refused` and `pending_transcript` demand *opposite* behaviour. Collapsing them
 trains the owner to repeat into a system that needed them to hold still. Four
