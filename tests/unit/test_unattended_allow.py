@@ -34,7 +34,9 @@ BUNDLED_TOOLDEFS = REPO / "agentwire" / "tooldefs"
 # Pinned at load. Dropping ``tooldefs_dir`` silently removes the anchored
 # patterns; a missing pyyaml removes all of them. Both would otherwise present
 # as a smaller, greener run.
-EXPECTED_PATTERNS = 264
+# 264 -> 257 in #924/#921: 8 remote.yaml ssh twins deleted (redundant with
+# the wrapper-payload rescan), 1 unanchored rule added (git.config-exec-key).
+EXPECTED_PATTERNS = 257
 EXPECTED_ANCHORED = 237
 
 UV_IDS = {

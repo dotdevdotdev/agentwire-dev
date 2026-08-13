@@ -76,7 +76,9 @@ def bundled_config(bash_hook):
     # does not (a tooldef command with an explicit `id:` yields e.g. `git.push`,
     # not `tooldef.*`).
     hand = [p for p in cfg["bashToolPatterns"] if p.get("source") != "tooldef"]
-    assert len(hand) == 177, f"expected 177 hand-written rules, got {len(hand)}"
+    # 177 before #924: 8 remote.yaml ssh-twins deleted (redundant with the
+    # wrapper-payload rescan) + 1 payloads.yaml rule added (#921).
+    assert len(hand) == 170, f"expected 170 hand-written rules, got {len(hand)}"
     cfg["safety"] = dict(SAFETY)
     return cfg
 
@@ -152,13 +154,16 @@ class TestAnchoringIsFileWide:
     def test_all_of_remote_yaml_is_unanchored(self):
         """remote.yaml is 100% wrapper rules — anchoring any of it is a hole."""
         remote = [e for f, e in BUNDLED if f == "remote.yaml"]
-        assert len(remote) == 12
+        # 12 before #924's rescan made the local rules apply over ssh; what
+        # remains is the ssh-ONLY surface (reboot/shutdown/service-stop) plus
+        # the deliberately-stricter docker rm -f twin.
+        assert len(remote) == 4
         assert all(e["anchored"] is False for e in remote)
 
     def test_payloads_rules_pin_their_ids(self):
         """The move must not churn ids that safety.disabled_rules may name."""
         payloads = [e for f, e in BUNDLED if f == "payloads.yaml"]
-        assert len(payloads) == 15
+        assert len(payloads) == 16  # +1: git.config-exec-key (#921)
         assert all(e.get("id") for e in payloads), (
             "every rule moved into payloads.yaml needs an explicit `id:` pinned "
             "to the id it had in its old file — otherwise the id is re-derived "
@@ -166,7 +171,7 @@ class TestAnchoringIsFileWide:
         )
         # ids are pinned to the ORIGINAL file, which is the point
         assert {e["id"].split(".")[0] for e in payloads} == {
-            "core", "databases", "db", "containers",
+            "core", "databases", "db", "containers", "git",
         }
 
 
@@ -840,11 +845,17 @@ class TestQuotedCommandSubstitutionIsNotContent:
 
 
 class TestMutationProvesTheAssertionsHaveTeeth:
-    """Anchor the must-not-anchor class and the guard measurably disappears.
+    """MEANING INVERTED BY #924 — read before editing.
 
-    Without this, the tests above could be green for the wrong reason. The
-    mutation flips every rule to ``anchored: true`` — the blanket change this
-    PR deliberately did NOT make — and asserts each wrapper case goes through.
+    This mutation (flip every rule to ``anchored: true``) used to make every
+    wrapper case go through, proving the wrapped coverage lived on the
+    unanchored haystacks alone. The #924 wrapper-payload rescan made that
+    coverage STRUCTURAL: an ssh payload is re-scanned as a command in its own
+    right and a client payload (``psql -c``) is emitted as exec-surface text,
+    so anchored rules reach both. The assertion is therefore now the opposite:
+    blanket anchoring must NOT lose the wrapped forms anymore. (The per-file
+    do-not-anchor policy is still enforced by TestAnchoringIsFileWide — it
+    protects the rules' OWN matching, not the wrapper coverage.)
     """
 
     @pytest.fixture(scope="class")
@@ -855,8 +866,57 @@ class TestMutationProvesTheAssertionsHaveTeeth:
         ]
         return mutated
 
-    @pytest.mark.parametrize("command", SSH_WRAPPED_MASKED + CLIENT_WRAPPED_MASKED)
-    def test_blanket_anchoring_loses_the_wrapper_guard(
+    # Rows whose refusal now SURVIVES blanket anchoring. Two mechanisms, both
+    # #924: an ssh payload with a rule of its own is re-scanned as a command
+    # (anchored rules reach it at real command positions), and a client
+    # payload whose rule matches the STATEMENT alone (DROP TABLE, TRUNCATE…)
+    # is emitted as payload text, matched anywhere.
+    STRUCTURAL = [
+        c for c in SSH_WRAPPED_MASKED
+        if c not in (
+            'ssh prod "reboot now"',
+            'ssh prod "shutdown -h now"',
+            'ssh prod "systemctl stop nginx"',
+        )
+    ] + [
+        'psql -c "DROP TABLE users"',
+        'psql -c "DROP DATABASE production"',
+        'psql -c "TRUNCATE TABLE users"',
+        'psql -c "DELETE FROM users;"',
+        'mysql -e "DROP DATABASE production"',
+    ]
+
+    # Rows still carried ONLY by the unanchored haystacks: ssh payloads with
+    # no rule of their own (reboot/shutdown/service-stop — remote.yaml is
+    # their whole coverage), and rules that pair the CLIENT NAME with the
+    # statement in one regex (db.psql-write, mysql UPDATE, mongosh, perl
+    # unlink) — the payload-text entry lacks the client name, so anchoring
+    # those rules loses the guard. This is exactly why remote.yaml and
+    # payloads.yaml stay unanchored per file, and this mutation keeps that
+    # policy's teeth.
+    HAYSTACK_ONLY = [
+        'ssh prod "reboot now"',
+        'ssh prod "shutdown -h now"',
+        'ssh prod "systemctl stop nginx"',
+        'psql -h db -c "INSERT INTO users VALUES (1)"',
+        'mysql -e "UPDATE users SET admin = 1"',
+        'mongosh --eval "db.users.deleteMany({ })"',
+        "perl -e 'unlink \"/srv/data\"'",
+    ]
+
+    @pytest.mark.parametrize("command", STRUCTURAL)
+    def test_blanket_anchoring_no_longer_loses_the_structural_rows(
+        self, bash_hook, bundled_config, all_anchored, command
+    ):
+        assert bash_hook.check_command(command, bundled_config)["decision"] in REFUSED
+        mutated = bash_hook.check_command(command, all_anchored)["decision"]
+        assert mutated in REFUSED, (
+            f"{command!r} is {mutated} under blanket anchoring — the #924 "
+            f"rescan no longer carries the wrapped form on its own"
+        )
+
+    @pytest.mark.parametrize("command", HAYSTACK_ONLY)
+    def test_blanket_anchoring_still_loses_the_haystack_only_rows(
         self, bash_hook, bundled_config, all_anchored, command
     ):
         assert bash_hook.check_command(command, bundled_config)["decision"] in REFUSED
@@ -864,6 +924,11 @@ class TestMutationProvesTheAssertionsHaveTeeth:
         assert mutated not in REFUSED, (
             f"mutation is inert for {command!r} (still {mutated}) — the shipped "
             f"assertion for it proves nothing about the anchoring decision"
+        )
+
+    def test_the_two_groups_cover_the_whole_corpus(self):
+        assert sorted(self.STRUCTURAL + self.HAYSTACK_ONLY) == sorted(
+            SSH_WRAPPED_MASKED + CLIENT_WRAPPED_MASKED
         )
 
     def test_unanchoring_reintroduces_the_reported_bug(self, bash_hook, bundled_config):
@@ -1170,55 +1235,45 @@ class TestRemainingPayloadMechanisms:
 
 
 class TestSshWrappedCoverageReduction:
-    """DISCLOSURE: anchoring demotes ~125 of 151 ssh-wrapped dangerous forms
-    from refused to allowed, and this PR does not fix that. #924.
+    """#924 LANDED — this class was the expected-fail disclosure of the gap.
 
-    Read this before reading TestSshWrappedCommandsStillRefused, whose corpus
-    is EXACTLY the 12 forms ``remote.yaml`` protects — a corpus shaped to the
-    survivors, which proves nothing about the rest. That is the fixture-shaped
-    blind spot this file's own docstring calls out in the #675 test, reproduced
-    one level up.
-
-    Why it is a demotion rather than a regression in design: the pre-change
-    blocking of `ssh prod "<anything dangerous>"` was INCIDENTAL — it came from
-    the same match-anywhere behaviour that IS the bug. ``remote.yaml``'s 12
-    rules are the *intentional* ssh coverage and they are untouched. But the
-    coverage was real while it lasted, so it is stated, not buried.
-
-    The fix is #924 — extend the ``_SHELL_NAMES`` rescan to
-    ``ssh <host> "<payload>"`` so every rule applies to the payload, after
-    which ``remote.yaml`` becomes DELETABLE. It lives in ``masked_subcommands``,
-    which the orchestrator assigned to #913's plumbing, not here. Widening
-    ``remote.yaml`` to ~120 ssh twins is explicitly NOT the answer: it
-    duplicates the whole rule set, which is the second-thing-to-keep-in-sync
-    this PR exists to avoid.
+    Before the wrapper-payload rescan, ~125 of 151 ssh-wrapped dangerous forms
+    were allowed (only ``remote.yaml``'s hand-written twins were intentional
+    coverage). The rescan extracts ssh's remote command and re-scans it as a
+    command in its own right, so every rule applies wrapped — asserted here
+    with the RULE ID, because the point is that the payload's OWN rule now
+    catches it, not an ssh twin.
     """
 
-    # Representative sample of the demoted class, one per rule family.
-    DEMOTED = [
-        'ssh prod "terraform destroy"',
-        'ssh prod "gh repo delete owner/repo"',
-        'ssh prod "aws ec2 terminate-instances --instance-ids i-1"',
-        'ssh prod "gcloud projects delete my-proj"',
-        'ssh prod "kubectl delete namespace prod"',
-        'ssh prod "helm uninstall release"',
-        'ssh prod "docker volume rm pgdata"',
-        'ssh prod "npm unpublish my-pkg"',
-        'ssh prod "chmod 777 /srv"',
-        'ssh prod "tmux kill-server"',
-        'ssh prod "prisma migrate reset"',
-        'ssh prod "history -c"',
+    # One per rule family; the id each unwrapped payload blocks under.
+    NOW_REFUSED = [
+        ('ssh prod "terraform destroy"', "infrastructure"),
+        ('ssh prod "gh repo delete owner/repo"', "cloud-hosting"),
+        ('ssh prod "aws ec2 terminate-instances --instance-ids i-1"', "aws"),
+        ('ssh prod "gcloud projects delete my-proj"', "gcp"),
+        ('ssh prod "kubectl delete namespace prod"', "containers"),
+        ('ssh prod "helm uninstall release"', "containers"),
+        ('ssh prod "docker volume rm pgdata"', "containers"),
+        ('ssh prod "npm unpublish my-pkg"', "cloud-hosting"),
+        ('ssh prod "chmod 777 /srv"', "core"),
+        ('ssh prod "tmux kill-server"', "agentwire"),
+        ('ssh prod "prisma migrate reset"', "db"),
+        ('ssh prod "history -c"', "core"),
     ]
 
-    @pytest.mark.parametrize("command", DEMOTED)
-    def test_ssh_wrapped_form_is_knowingly_allowed(
-        self, bash_hook, bundled_config, command
+    @pytest.mark.parametrize("command,id_prefix", NOW_REFUSED)
+    def test_ssh_wrapped_form_refused_by_the_payloads_own_rule(
+        self, bash_hook, bundled_config, command, id_prefix
     ):
-        """Expected-fail row. Green here means the gap is still open (#924)."""
         result = bash_hook.check_command(command, bundled_config)
-        assert result["decision"] not in REFUSED, (
-            f"{command!r} is now refused — #924 may have landed. If so, delete "
-            f"this row and update the disclosure in the PR body and the wiki."
+        assert result["decision"] in REFUSED, f"{command!r} → {result['decision']}"
+        rule_id = str(result.get("id") or "")
+        assert rule_id.split(".")[0] == id_prefix and not rule_id.startswith(
+            "remote."
+        ), (
+            f"{command!r} refused by {rule_id!r}, expected the payload's own "
+            f"{id_prefix}.* rule — an ssh twin taking the credit means the "
+            f"rescan is not what carries this form"
         )
 
     def test_remote_yaml_intentional_coverage_is_what_survives(

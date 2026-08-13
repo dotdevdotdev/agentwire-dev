@@ -1,48 +1,31 @@
 # Remote execution damage control rules
 # SSH remote execution safeguards
-
-# WHY THIS WHOLE FILE IS UNANCHORED (#915)
 #
-# Every rule here is a WRAPPER rule: the dangerous command is ssh's quoted
-# payload (``ssh box "<destructive command>"``). `anchored: true` matches
-# against masked_subcommands(), which blanks any fully-quoted token containing
-# whitespace -- so anchoring would blank exactly the half these rules exist to
-# read, and `ssh prod "sudo rm -rf /var/lib"` would become ALLOW.
+# MOSTLY SUPERSEDED BY THE WRAPPER-PAYLOAD RESCAN (#924). ssh's remote command
+# is now extracted and re-scanned as a command in its own right
+# (`_ssh_remote_payload` in agentwire/safety/_core.py), so EVERY rule —
+# anchored ones included, at real command positions — applies to the wrapped
+# form automatically. The hand-written ssh twins of local rules (rm -rf,
+# sudo rm, mkfs, dd-to-device, dropdb, mysqladmin drop, redis FLUSHALL,
+# docker system prune) were measured redundant against the full corpus and
+# deleted; do not add new twins here — a rule written once applies over ssh.
 #
-# These rules also DOUBLE-COVER the local rules in core.yaml: anchored
-# `core.sudo-rm` still blocks `sudo rm /etc/hosts` but loses the ssh-wrapped
-# form, and this file is the backstop that keeps it covered. Anchoring
-# core.yaml and remote.yaml together would take the wrapped forms from
-# double-covered to UNCOVERED. That is why anchoring is decided per FILE
-# against a shape test rather than per rule.
+# What remains is the ssh-ONLY surface: operations with no local rule twin
+# (rebooting/stopping a REMOTE machine is a risk locally unruled), plus one
+# rule that is deliberately STRICTER than its local tooldef tier.
+#
+# WHY THIS FILE STAYS UNANCHORED (#915)
+#
+# The dangerous text is ssh's quoted payload; `anchored: true` matches against
+# masked_subcommands(), which blanks any fully-quoted token containing
+# whitespace -- so anchoring would blank exactly the half these rules read.
 #
 # DO NOT add `anchored: true` to anything in this file. Enforced by
 # tests/unit/test_damage_control_payload_anchoring.py.
 
 bashToolPatterns:
-  # ---------------------------------------------------------------------------
-  # REMOTE EXECUTION SAFEGUARDS
-  # ---------------------------------------------------------------------------
-  # Remote commands amplify risk - a single rm -rf on remote is unrecoverable
-  # Block dangerous remote operations that could destroy remote systems
-
-  # SSH with destructive commands
-  - pattern: '\bssh\s+.*\brm\s+-[rRf]'
-    reason: SSH remote rm with recursive/force flags
-    anchored: false
-
-  - pattern: '\bssh\s+.*\bsudo\s+rm\b'
-    reason: SSH remote sudo rm
-    anchored: false
-
-  - pattern: '\bssh\s+.*\bmkfs\b'
-    reason: SSH remote filesystem format
-    anchored: false
-
-  - pattern: '\bssh\s+.*\bdd\s+.*of=/dev/'
-    reason: SSH remote dd to device
-    anchored: false
-
+  # Remote machine-state operations — no local rule twin exists for these, so
+  # the rescan alone leaves them uncovered.
   - pattern: '\bssh\s+.*\breboot\b'
     reason: SSH remote reboot
     ask: true
@@ -58,24 +41,9 @@ bashToolPatterns:
     ask: true
     anchored: false
 
-  # Remote database operations
-  - pattern: '\bssh\s+.*\bdropdb\b'
-    reason: SSH remote PostgreSQL database drop
-    anchored: false
-
-  - pattern: '\bssh\s+.*\bmysqladmin\s+drop\b'
-    reason: SSH remote MySQL database drop
-    anchored: false
-
-  - pattern: '\bssh\s+.*\bredis-cli\s+FLUSHALL\b'
-    reason: SSH remote Redis FLUSHALL
-    anchored: false
-
-  # Remote Docker destruction
-  - pattern: '\bssh\s+.*\bdocker\s+system\s+prune\s+-a'
-    reason: SSH remote docker system prune -a
-    anchored: false
-
+  # Deliberately STRICTER than the local tier: `docker rm -f` locally is
+  # ask-tier (tooldef); on a remote box it stays a hard block — deleting this
+  # twin would downgrade the wrapped form from block to ask.
   - pattern: '\bssh\s+.*\bdocker\s+rm\s+.*-f'
     reason: SSH remote docker rm -f
     anchored: false
