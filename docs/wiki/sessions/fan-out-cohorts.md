@@ -96,6 +96,13 @@ Each pass, per pending child:
 
 - a report waiting in the parent's inbox is **consumed, then the child is torn
   down**;
+- a child whose slot holds ONLY the idle handler's synthetic placeholder
+  (`kind=idle`, "is idle and done working") is marked `resolved_idle`, **not**
+  `reported` (#952): it went idle without saying anything, and `wait` says so
+  (`N idle-without-report` plus a WARNING line) rather than counting silence
+  as a report. The discriminator is the message KIND, never the text — a
+  child that legitimately writes those same words in its own `done` report is
+  still `reported`;
 - a child whose session already vanished is marked `gone`;
 - past the cohort deadline, whatever is left is torn down and marked `timeout`,
   and returned as a failure so the parent's summary can name it.
@@ -163,7 +170,9 @@ half:
 
 Cohort teardown is deliberately **session-only** and, for worktree children,
 doesn't happen at all — a worktree's branch, open PR, and working tree stay
-entirely with `agentwire worktree --remove` and its merge-verification guard.
+entirely with `agentwire worktree --remove`, whose guards split by what's at
+risk (#941): worktree/session removal refuses a dirty tree (durability),
+branch deletion demands a verified merge (integration).
 
 ## Reference
 

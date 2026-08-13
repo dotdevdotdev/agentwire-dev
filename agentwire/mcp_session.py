@@ -440,6 +440,11 @@ def wait_children(timeout: int = 300) -> str:
     lines = []
     for entry in data.get("reports") or []:
         lines.append(f"── {entry['session']} ──\n{entry.get('report') or '(no report text)'}")
+    for entry in data.get("idle") or []:
+        lines.append(
+            f"── {entry['session']} ── IDLE WITHOUT REPORT: went idle without "
+            "sending a report (#952) — verify its work actually happened "
+            "before counting it as done.")
     for entry in data.get("failed") or []:
         why = "never reported" if entry.get("state") == "timeout" else "session gone"
         lines.append(f"── {entry['session']} ── FAILED: {why}")

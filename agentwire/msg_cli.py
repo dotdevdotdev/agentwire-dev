@@ -356,7 +356,8 @@ def register_msg_parser(subparsers) -> None:
     )
     send_parser.add_argument(
         "--kind", default="note", choices=inbox.KINDS,
-        help="Message kind (default: note)",
+        help="Message kind (default: note; `idle` is the idle handler's "
+             "synthetic placeholder, #952 — don't hand-send it)",
     )
     send_parser.add_argument(
         "--from", dest="from_session", default=None,

@@ -70,10 +70,12 @@ STALE_GRACE = 3600
 # silently disarms the guard.
 PENDING = "pending"
 REPORTED = "reported"  # report collected, child killed
+IDLE = "resolved_idle"  # child went idle WITHOUT reporting (#952) — the idle
+                        # handler's synthetic placeholder arrived, no report did
 TIMEOUT = "timeout"    # deadline hit with no report; child killed anyway
 GONE = "gone"          # child's session vanished before it reported
 
-RESOLVED_STATES = (REPORTED, TIMEOUT, GONE)
+RESOLVED_STATES = (REPORTED, IDLE, TIMEOUT, GONE)
 
 # Topologies, which decide whether resolving a child also tears its session
 # down. A `main`-topology child (`agentwire new`) is the leak this issue is
@@ -99,6 +101,14 @@ WORKTREE = "worktree"
 # cohort resolves, the same shape `ingest` already has. Pinned in
 # tests/unit/test_voice_kind.py::TestCohortInteraction.
 REPORT_KINDS = ("done", "request", "escalation", "note")
+
+# The idle handler's synthetic placeholder kind (#952). Harvested so the child
+# still RESOLVES promptly, but never counted as a report: a placeholder means
+# "the child went idle without reporting", and `wait` says exactly that
+# (state IDLE) instead of flattening it into `reported`. The discriminator is
+# the KIND, deliberately not the message text — a sentinel string is defeated
+# by any child that happens to write the same words as its genuine report.
+IDLE_KIND = "idle"
 
 _POLL_INTERVAL = 2.0
 
@@ -314,7 +324,7 @@ def _harvest(parent: str) -> dict[str, list]:
 
         out: dict[str, list] = {}
         for msg in inbox.list_messages(parent):
-            if msg.kind in REPORT_KINDS:
+            if msg.kind in REPORT_KINDS or msg.kind == IDLE_KIND:
                 out.setdefault(msg.sender, []).append(msg)
         return out
     except Exception:
@@ -361,9 +371,21 @@ def collect(parent: str) -> dict | None:
     for child in outstanding:
         msgs = reports.get(child)
         if msgs:
-            _mark(data, child, REPORTED, _consume(msgs))
+            # A slot holding ONLY the idle handler's synthetic placeholder is
+            # not a report (#952): the child went idle without saying anything.
+            # Any genuine report kind alongside it wins — the child both
+            # reported and idled, which is the normal happy path.
+            real = [m for m in msgs if m.kind in REPORT_KINDS]
+            placeholders = [m for m in msgs if m.kind == IDLE_KIND]
+            if real:
+                text = _consume(real)
+                _consume(placeholders)  # clear the files, drop the synthetic text
+                _mark(data, child, REPORTED, text)
+                log_event("collected", parent=parent, child=child)
+            else:
+                _mark(data, child, IDLE, _consume(placeholders))
+                log_event("child_idle_no_report", parent=parent, child=child)
             _teardown(data, child)
-            log_event("collected", parent=parent, child=child)
         elif not session_exists(child):
             _mark(data, child, GONE)
             log_event("child_gone", parent=parent, child=child)
@@ -405,12 +427,17 @@ def summarize(data: dict) -> dict:
         "pending": [c["session"] for c in children if c.get("state") == PENDING],
         "reports": [{"session": c["session"], "report": c.get("report")}
                     for c in children if c.get("state") == REPORTED],
+        # Resolved without a report (#952) — the child idled and the only
+        # thing in its slot was the idle handler's placeholder. Silence is a
+        # legitimate outcome; being counted as a report is not.
+        "idle": [{"session": c["session"], "report": c.get("report")}
+                 for c in children if c.get("state") == IDLE],
         "failed": [{"session": c["session"], "state": c.get("state")}
                    for c in children if c.get("state") in (TIMEOUT, GONE)],
         # Resolved but deliberately still running: worktree children, whose
         # branch/PR teardown follows merge verification (#756).
         "left_alive": [c["session"] for c in children
-                       if c.get("state") in (REPORTED, TIMEOUT)
+                       if c.get("state") in (REPORTED, IDLE, TIMEOUT)
                        and c.get("torn_down") is False],
         "children": children,
     }
@@ -432,8 +459,8 @@ def wait(parent: str, timeout: float = 600.0,
     data = load(parent)
     if not data:
         return {"parent": parent, "cohort": False, "resolved": True,
-                "pending": [], "reports": [], "failed": [], "left_alive": [],
-                "children": []}
+                "pending": [], "reports": [], "idle": [], "failed": [],
+                "left_alive": [], "children": []}
 
     deadline = time.time() + max(timeout, 0)
     while True:
@@ -442,7 +469,8 @@ def wait(parent: str, timeout: float = 600.0,
         if not result["pending"]:
             discard(parent)
             log_event("resolved", parent=parent,
-                      reported=len(result["reports"]), failed=len(result["failed"]))
+                      reported=len(result["reports"]), idle=len(result["idle"]),
+                      failed=len(result["failed"]))
             return {**result, "cohort": True, "resolved": True}
         if time.time() >= deadline:
             return {**result, "cohort": True, "resolved": False}

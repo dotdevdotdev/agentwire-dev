@@ -66,7 +66,15 @@ EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 #     which is a different axis from the interrupt tier. ``escalation`` remains
 #     the only kind that pre-empts (see ``_alert_dead_letters``'s promotion and
 #     the buddy client's ``isUrgent``).
-KINDS = ("note", "done", "request", "escalation", "ingest", "voice")
+#
+# ``idle`` is the idle handler SPEAKING FOR a child that went quiet without
+# reporting (#952). It used to travel as ``done`` with the sentinel text
+# "is idle and done working", which made a placeholder and a genuine report
+# the same shape at the point of collection — `wait --children` counted an
+# unreviewed PR as reviewed. The kind is the discriminator, never the text:
+# a child that legitimately sends those words as its own report stays `done`.
+# Synthetic, so NOT load-bearing (a dead-lettered placeholder is no loss).
+KINDS = ("note", "done", "request", "escalation", "ingest", "voice", "idle")
 
 # Kinds the drain never touches — they route to a subdir and are pull-only.
 PASSIVE_KINDS = ("ingest",)
