@@ -7258,6 +7258,20 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     text-overflow: ellipsis;
 }
 
+/* Synthetic-graft note (#955) — a repo-scoped ghost grafted under the focused
+   family by _scopedGhosts draws NO connector wire (topology-render.js skips it),
+   so this line is what carries the relationship: "placed here because it shares
+   your repo", never "your child". Distinct channel from the ghost dash, which
+   only says "no live session". */
+.topology-ghost-graft {
+    font-size: 9.5px;
+    font-style: italic;
+    color: color-mix(in srgb, var(--text-muted) 80%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* Read-only git-status badges (#801) — reuses the sidebar's `.sidebar-git-badge`
    + `.git-*` classes (sidebar/sessions-section.js's `renderGitBadges`) so a
    worktree reads identically whether it's a live session or a ghost; only the

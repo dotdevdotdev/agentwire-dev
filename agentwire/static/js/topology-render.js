@@ -415,6 +415,14 @@ export class TopologyView {
             entry.nameEl.title = label === name ? '' : name;
         }
 
+        // Only ghosts can be grafted (#955) — _scopedGhosts fabricates parents
+        // exclusively for session-less worktree cards — but keep the toggle
+        // unconditional so a card re-rendered without the flag (adopted, or the
+        // view re-rooted) sheds the note.
+        const isGraft = isGhost && !!session.syntheticParent;
+        entry.graftEl.hidden = !isGraft;
+        entry.card.classList.toggle('topology-card--grafted', isGraft);
+
         if (isGhost) {
             this._renderGhostCard(entry, session);
             return; // ghost cards skip the live-state/role/self styling below
@@ -540,6 +548,14 @@ export class TopologyView {
         meta.className = 'topology-card-meta';
         meta.append(machineEl, ghostInfoEl);
 
+        // "This wire-less card is here because it shares your repo" (#955) —
+        // shown only for _scopedGhosts' synthetic grafts, so a recorded-lineage
+        // ghost and a repo-scoped graft never read the same.
+        const graftEl = document.createElement('div');
+        graftEl.className = 'topology-ghost-graft';
+        graftEl.textContent = 'same repo — not a recorded child';
+        graftEl.hidden = true;
+
         const ghostGitEl = document.createElement('div');
         ghostGitEl.className = 'topology-ghost-git';
         ghostGitEl.hidden = true;
@@ -560,13 +576,13 @@ export class TopologyView {
         noteEl.hidden = true;
         ghostActions.append(cleanupBtn, adoptBtn, noteEl);
 
-        card.append(top, pulseEl, meta, ghostGitEl, ghostActions);
+        card.append(top, pulseEl, meta, graftEl, ghostGitEl, ghostActions);
 
         const entry = {
             card, dot, nameEl, roleEl, machineEl, metaEl: meta, pulseEl, menuBtn, state: null, tintVar: null, session: null,
             expanded: false, expandSlot: null, expandDispose: null,
             isSelf: false, selfDispose: null,
-            isGhost: false, ghostBadge, ghostInfoEl, ghostGitEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
+            isGhost: false, ghostBadge, ghostInfoEl, graftEl, ghostGitEl, ghostActions, cleanupBtn, adoptBtn, noteEl,
             ghostConfirm: null, ghostConfirmTimer: null, ghostBusy: false,
             menuEl: null, menuOpen: false, resetKill: null,
         };
@@ -830,6 +846,12 @@ export class TopologyView {
         for (const [name, session] of byName) {
             const parentName = session.parent;
             if (!name || !parentName || parentName === name || !byName.has(parentName)) continue;
+            // A synthetic graft (#955) gets NO wire: the `parent` was fabricated
+            // by _scopedGhosts purely to place the card in the focused family's
+            // block, and a connector identical to recorded lineage asserts a
+            // parentage the data doesn't hold. Placement + the on-card note
+            // carry the "same repo" relationship instead.
+            if (session.syntheticParent) continue;
             const childEntry = this._cards.get(name);
             const parentEntry = this._cards.get(parentName);
             if (!childEntry || !parentEntry) continue;
