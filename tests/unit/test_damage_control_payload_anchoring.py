@@ -76,7 +76,7 @@ def bundled_config(bash_hook):
     # does not (a tooldef command with an explicit `id:` yields e.g. `git.push`,
     # not `tooldef.*`).
     hand = [p for p in cfg["bashToolPatterns"] if p.get("source") != "tooldef"]
-    assert len(hand) == 178, f"expected 178 hand-written rules, got {len(hand)}"
+    assert len(hand) == 177, f"expected 177 hand-written rules, got {len(hand)}"
     cfg["safety"] = dict(SAFETY)
     return cfg
 
@@ -186,8 +186,9 @@ DANGEROUS_SAMPLE = {
     '\\btmux\\s+kill-session\\s+.*-a\\b': 'tmux kill-session -t main -a',
     '\\bagentwire\\s+destroy\\b': 'agentwire destroy',
     '\\bagentwire\\s+.*--force.*remove\\b': 'agentwire worktree --force --remove old',
-    '\\brm\\s+.*\\.agentwire': 'rm -r ~/.agentwire/sessions',
-    '\\brm\\s+.*~/.agentwire': 'rm -r ~/.agentwire',
+    '\\brm\\s+(?:[^;&|]*\\s)?-(?:[a-zA-Z]*[rRf][a-zA-Z]*|-recursive|-force)\\b'
+    '[^;&|]*\\s(?:(?:~|\\$HOME|/Users/[^/\\s]+|/home/[^/\\s]+)/)?'
+    '\\.agentwire/?(?=\\s|$|[;&|])': 'rm -r ~/.agentwire',
     '\\baws\\s+s3\\s+rm\\s+.*--recursive': 'aws s3 rm s3://bucket/data --recursive',
     '\\baws\\s+s3\\s+rb\\s+.*--force': 'aws s3 rb s3://bucket --force',
     '\\baws\\s+ec2\\s+terminate-instances\\b': 'aws ec2 terminate-instances',
@@ -816,20 +817,22 @@ class TestQuotedCommandSubstitutionIsNotContent:
         Without this the rows could be passing for an unrelated reason; with it,
         the fix is shown to be what carries them.
         """
-        original = bash_hook.masked_subcommands
+        original = bash_hook.anchored_match_entries
 
         def remasked(cmd):
             # the pre-fix behaviour: blank any fully-quoted whitespace token,
             # substitution or not — emulated by stripping the substitution
-            # spans before masking so `is_content` reverts to its old verdict
+            # spans before the anchored haystacks are built, so `is_content`
+            # reverts to its old verdict. (anchored_match_entries is the seam
+            # the anchored path reads since #922's position enforcement.)
             import re as _re
             return original(_re.sub(r"\$\([^)]*\)|`[^`]*`", "PLACEHOLDER TEXT", cmd))
 
-        bash_hook.masked_subcommands = remasked
+        bash_hook.anchored_match_entries = remasked
         try:
             result = bash_hook.check_command(command, bundled_config)
         finally:
-            bash_hook.masked_subcommands = original
+            bash_hook.anchored_match_entries = original
         assert result["decision"] != "block", (
             f"mutation is inert for {command!r} — it still blocks with the "
             f"substitution masked, so the shipped row proves nothing"
@@ -984,94 +987,95 @@ class TestItIsNotOnlyMsgSend:
 
 
 class TestRemainingPayloadMechanisms:
-    """The payload bug has THREE mechanisms; anchoring fixes ONE.
+    """The payload bug had THREE mechanisms; #922 closes the other two.
 
-    These are asserted as still-refused ON PURPOSE. A green suite must not be
-    readable as "the reported symptom is fixed" — it is not, and #915's own
-    headline example (a read whose search string mentions a deletion) is in
-    here. The day one of these starts passing, the assertion fails and someone
-    has to come update the story deliberately.
+    History: #915's anchoring fixed mechanism 1 (bashToolPatterns matching
+    quoted prose), and this class used to pin mechanisms 2 and 3 as
+    still-refused ON PURPOSE so a green suite could not read as "the reported
+    symptom is fixed". #922 fixed them, so the pins now assert the FIX — and,
+    since both fixes are guard-weakenings, each released read carries a
+    companion destructive form asserted to still refuse by its own mechanism.
 
-    - **Mechanism 2 — the path ladders.** ``zeroAccessPaths`` /
-      ``readOnlyPaths`` / ``noDeletePaths`` iterate the RAW haystacks and have
-      no ``anchored`` concept at all, so a read whose SEARCH STRING mentions a
-      deletion is refused when the directory being read is protected.
-    - **Mechanism 3 — masking is keyed on WHITESPACE.** ``masked_subcommands``
-      blanks a fully-quoted token only when it contains whitespace, so a
-      single-word quoted payload is never masked.
-
-    Both are #922. They are deliberately out of scope here because this is a
-    guard-WEAKENING change and the governing question is *what else did this
-    just permit* — the path ladders gate reads of secrets, not just deletions,
-    so widening the blast radius to three ladder steps in the same diff is the
-    wrong trade.
+    - **Mechanism 2 — the path ladders.** ``readOnlyPaths`` / ``noDeletePaths``
+      (and the protected control plane) now match their verb patterns against
+      masked haystacks with path-mentioning operands kept visible
+      (``path_ladder_haystacks``), so a read whose SEARCH STRING mentions a
+      deletion no longer refuses. ``zeroAccessPaths`` is untouched: it blocks a
+      MENTION regardless of any verb, by design.
+    - **Mechanism 3 — masking was keyed on WHITESPACE.** Anchored rules now
+      match only at COMMAND POSITION (``anchored_match_entries``), so a
+      single-word quoted operand can no longer supply the verb. Rules that
+      deliberately match argument content (payloads.yaml, remote.yaml) are
+      unanchored and unaffected.
     """
 
-    # These rows assert on ``~``-form protected paths, so they need $HOME to look
-    # like a real home — the same reason and the same marker as
-    # test_damage_control_bypass.py. The #893 redirect points HOME at a pytest
-    # tmp dir, which on Linux is under ``/tmp``, which core.yaml allowlists
-    # ``allow: all`` — and an allowlist entry OUTRANKS both noDeletePaths and
-    # protectedControlPlane (``check_command`` consults it inside each ladder).
-    # So the rows resolved to ``allow`` on CI for a reason with nothing to do
-    # with the mechanism. macOS temp is /private/var/folders, not allowlisted,
-    # which is why a local run could not see it.
-    #
-    # NOT a skip: conftest honours the marker by handing back the real paths, so
-    # the rows run and assert for real. Reads only; the session-scoped audit
-    # backstop still fails the run on any write.
+    # These rows assert on ``~``-form protected paths, so they need $HOME to
+    # look like a real home — the same reason and the same marker as
+    # test_damage_control_bypass.py (a tmp HOME under /tmp is allowlisted
+    # `allow: all`, which outranks the ladders and makes the rows meaningless).
     pytestmark = pytest.mark.real_agentwire_home
 
-    # mechanism 2 — the literal incident from #915's body, in its literal form
-    LADDER_CASES = [
-        ('grep -rn "rm -rf" ~/.agentwire/', "noDeletePath"),
-        ('rg "rm -rf" ~/.claude/hooks/', "protectedControlPlane"),
+    # mechanism 2 — the literal incident from #915's body, in its literal form,
+    # now released. Destructive companions asserted below.
+    LADDER_READS = [
+        'grep -rn "rm -rf" ~/.agentwire/',
+        'rg "rm -rf" ~/.claude/hooks/',
         # `.git/` is a RELATIVE noDeletePath — no $HOME and no tmp prefix, so
         # this row holds regardless of how the suite redirects HOME.
-        ('grep -rn "rm -rf" .git/', "noDeletePath"),
+        'grep -rn "rm -rf" .git/',
+        # the #922 acceptance command, verbatim
+        'grep -rn "rm file deletion" ~/.agentwire/damage-control/',
     ]
 
-    # The same three ladder steps against explicit non-allowlisted literals, so
-    # at least one row per step is independent of $HOME *and* of the allowlist.
-    EXPLICIT_LADDER_CASES = [
-        ("noDeletePaths", 'grep -rn "rm -rf" /srv/protected/'),
-        ("readOnlyPaths", 'grep -rn "rm -rf" /srv/readonly/'),
-        ("zeroAccessPaths", 'grep -rn "rm -rf" /srv/secret/'),
+    # The guard half: a real destructive verb against the same paths must still
+    # refuse — by the mechanism that owns it, not incidentally.
+    LADDER_DESTRUCTIVE = [
+        ("shred ~/.agentwire/sessions.json", "noDeletePath"),
+        ("unlink .git/HEAD", "noDeletePath"),
+        # quoted path operand with internal whitespace: the ladder
+        # keep-predicate is what keeps this token visible
+        ('shred "~/.agentwire/dead letters.json"', "noDeletePath"),
     ]
 
-    # mechanism 3 — a one-word payload in the exact reported carrier
-    WHITESPACE_CASES = [
-        'agentwire msg send --to orch --kind done "rmdir"',
-        'ssh prod "reboot"',
-        'mongosh --eval "db.dropDatabase()"',
-        # masking works on trailing comments no better than on one-word tokens
-        "true  # note: git reset --hard was blocked",
-    ]
+    @pytest.mark.parametrize("command", LADDER_READS)
+    def test_path_ladder_releases_a_read_that_mentions_a_deletion(
+        self, bash_hook, bundled_config, command
+    ):
+        result = bash_hook.check_command(command, bundled_config)
+        assert result["decision"] == "allow", (
+            f"{command!r} refused via {result.get('pattern')} — mechanism 2 "
+            f"(#922) has regressed: a read is refused for what its search "
+            f"string SAYS"
+        )
 
-    @pytest.mark.parametrize("command,via", LADDER_CASES)
-    def test_path_ladder_still_refuses_a_read_that_mentions_a_deletion(
+    @pytest.mark.parametrize("command,via", LADDER_DESTRUCTIVE)
+    def test_path_ladder_still_refuses_the_destructive_form(
         self, bash_hook, bundled_config, command, via
     ):
         result = bash_hook.check_command(command, bundled_config)
         assert result["decision"] in REFUSED, (
-            f"{command!r} now passes — mechanism 2 looks fixed. If that is "
-            f"intentional (#922), update this test and #915's story."
+            f"{command!r} now passes — the ladder fix released a real delete"
         )
         assert via in str(result.get("pattern", "")), (
-            f"expected refusal via {via}, got {result.get('pattern')} — the "
-            f"mechanism changed even though the verdict did not"
+            f"expected refusal via {via}, got {result.get('pattern')}"
         )
 
-    @pytest.mark.parametrize("ladder,command", EXPLICIT_LADDER_CASES)
-    def test_each_ladder_step_refuses_a_read_on_its_search_string(
-        self, bash_hook, ladder, command
+    @pytest.mark.parametrize(
+        "ladder,command,expected",
+        [
+            # verb-pairing ladders: prose can no longer supply the verb
+            ("noDeletePaths", 'grep -rn "rm -rf" /srv/protected/', "allow"),
+            ("readOnlyPaths", 'grep -rn "rm -rf" /srv/readonly/', "allow"),
+            # zeroAccess blocks the MENTION — no verb involved, deliberately
+            # unchanged by #922
+            ("zeroAccessPaths", 'grep -rn "rm -rf" /srv/secret/', "block"),
+        ],
+    )
+    def test_each_ladder_step_on_a_read_naming_its_search_string(
+        self, bash_hook, ladder, command, expected
     ):
-        """One row per ladder step, against literal paths.
-
-        Three steps, three different predicates — which is why one
-        anchored-style flag cannot serve them and why they are #922 rather than
-        an extension of this PR.
-        """
+        """One row per ladder step, against literal paths — the verb-pairing
+        steps release the read, the mention-keyed step still refuses it."""
         cfg = {
             "bashToolPatterns": [],
             "zeroAccessPaths": [],
@@ -1082,36 +1086,45 @@ class TestRemainingPayloadMechanisms:
         }
         cfg[ladder] = [command.rsplit(" ", 1)[-1]]
         result = bash_hook.check_command(command, cfg)
-        assert result["decision"] in REFUSED, (
-            f"{ladder} no longer refuses {command!r} — mechanism 2 looks fixed "
-            f"(#922). The ladder has no `anchored` concept; if it grew one, "
-            f"update this row and #915's story."
+        assert result["decision"] == expected, (
+            f"{ladder}: {command!r} -> {result['decision']}, expected "
+            f"{expected} ({result.get('reason')})"
         )
 
-    def test_protected_control_plane_step_refuses_a_read(self, bash_hook):
+    def test_protected_control_plane_releases_a_read(self, bash_hook):
         """Ladder step 0, with an EMPTY allowlist passed explicitly.
 
-        Deliberately not done with a tmp HOME. `tmp_path` is under `/tmp` on
-        Linux, which core.yaml allowlists `allow: all`, and the allowlist
-        outranks the protected control plane — so a tmp HOME is the one thing
-        guaranteed to make this row lie. Passing `allowed=[]` states the
-        precondition instead of depending on an environment to supply it.
+        The read is released; the write/delete spellings against the same
+        paths — quoting tricks and interpreter forms included — must all
+        still refuse.
         """
-        command = 'rg "rm -rf" ~/.claude/hooks/'
-        blocked, reason = bash_hook.check_protected_command(command, [])
-        assert blocked, (
-            f"{command!r} no longer refused by the protected control plane — "
-            f"step 0 of mechanism 2 looks fixed (#922)"
+        blocked, _ = bash_hook.check_protected_command(
+            'rg "rm -rf" ~/.claude/hooks/', []
         )
-        assert reason
+        assert not blocked, (
+            "a read of the control plane is still refused for what its search "
+            "string says — mechanism 2 (#922) regressed at step 0"
+        )
+        for command in (
+            "rm ~/.claude/hooks/idle-handler.sh",
+            "r''m ~/.claude/hooks/idle-handler.sh",
+            "echo x > ~/.claude/settings.json",
+            "sed -i s/x/y/ ~/.claude/hooks/idle-handler.sh",
+            'shred "~/.claude/hooks/idle handler.sh"',
+            "python3 -c 'open(p, \"w\").write(x)' ~/.agentwire/damagecontrol.yml",
+        ):
+            blocked, reason = bash_hook.check_protected_command(command, [])
+            assert blocked, (
+                f"{command!r} no longer refused — the #922 ladder fix "
+                f"released a control-plane write"
+            )
+            assert reason
 
     def test_allowlist_outranks_the_ladders(self, bash_hook):
-        """Pin the trap itself, since it has now cost two sessions a red CI.
+        """Pin the trap itself, since it has cost two sessions a red CI.
 
-        An `allow: all` entry short-circuits BOTH ladders. That is why a tmp
-        HOME under /tmp turns these rows green-to-allow, and it is worth an
-        assertion rather than a comment.
-        """
+        An `allow: all` entry short-circuits BOTH ladders. Asserted on a REAL
+        delete now that the read form is released without any allowlist."""
         cfg = {
             "bashToolPatterns": [],
             "zeroAccessPaths": [],
@@ -1120,7 +1133,7 @@ class TestRemainingPayloadMechanisms:
             "allowedPaths": [],
             "safety": dict(SAFETY),
         }
-        command = 'grep -rn "rm -rf" /srv/protected/'
+        command = "unlink /srv/protected/state.json"
         assert bash_hook.check_command(command, cfg)["decision"] in REFUSED
         cfg["allowedPaths"] = [{"path": "/srv/*", "allow": "all"}]
         assert bash_hook.check_command(command, cfg)["decision"] == "allow", (
@@ -1128,17 +1141,29 @@ class TestRemainingPayloadMechanisms:
             "that made this file's CI red has changed shape"
         )
 
-    @pytest.mark.parametrize("command", WHITESPACE_CASES)
-    def test_single_word_payload_is_never_masked(
-        self, bash_hook, bundled_config, command
+    # mechanism 3 — prose operands are released; live payload carriers stay
+    # refused because THEIR rules (payloads.yaml, remote.yaml) are unanchored
+    # by invariant and never position-gated.
+    @pytest.mark.parametrize(
+        "command,expected",
+        [
+            ('agentwire msg send --to orch --kind done "rmdir"', "allow"),
+            ("true  # note: git reset --hard was blocked", "allow"),
+            ('ssh prod "reboot"', "ask"),
+            ('mongosh --eval "db.dropDatabase()"', "block"),
+        ],
+    )
+    def test_single_word_operand_verbs_are_position_gated(
+        self, bash_hook, bundled_config, command, expected
     ):
         result = bash_hook.check_command(command, bundled_config)
-        assert result["decision"] in REFUSED, (
-            f"{command!r} now passes — mechanism 3 looks fixed (#922)."
+        assert result["decision"] == expected, (
+            f"{command!r} -> {result['decision']}, expected {expected} "
+            f"({result.get('reason')})"
         )
 
     def test_the_masking_control_case_does_pass(self, bash_hook, bundled_config):
-        """Two words, so it IS masked — the boundary mechanism 3 sits on."""
+        """Two words, so it IS masked — the boundary mechanism 3 sat on."""
         assert bash_hook.check_command(
             'echo "terraform destroy"', bundled_config
         )["decision"] == "allow"
