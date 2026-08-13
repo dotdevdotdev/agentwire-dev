@@ -469,18 +469,16 @@ function createAnnouncer(deps) {
     // case is therefore one budget, and it is bounded even if the watchdog is
     // broken.
     //
-    // WHAT THIS DELAY IS UPSTREAM OF, said here because it falsifies a
-    // sentence in another file: the announcer's own two bounded deferrals are
+    // WHAT THIS DELAY IS UPSTREAM OF, said here because the bound it adds is
+    // stated in another file: the announcer's own two bounded deferrals are
     // counted from the moment an item becomes `current`, and confirm.py's
-    // not_announced note bounds the wait for that refusal in units of
-    // fallbackMs on that basis. A refusal queued while a fallback utterance is
-    // live now waits HERE first, so that note under-states the worst case by
-    // up to one speaking budget in exactly that state. The trade is still the
-    // right one — the owner is listening to the buddy for the whole wait
-    // rather than sitting in silence — but the number over there is no longer
-    // the whole story. Filed as #1009 rather than left living here as a
-    // comment: confirm.py was owned elsewhere the wave this landed in, and an
-    // unfiled residual is worse than a filed one.
+    // not_announced note counts THIS deferral on top of that arithmetic — one
+    // speaking budget in front of the fallbackMs intervals, in exactly the
+    // state where a fallback utterance is live (#1009). The trade is still
+    // the right one — the owner is listening to the buddy for the whole wait
+    // rather than sitting in silence, so the deferral extends the wait and
+    // never the silence. Change this bound and that note's pins fail with it:
+    // the note derives its numbers from these constants.
     if (speaking.length && !force) {
       if (!pumpDeferTimer) {
         var bound = pumpBound();

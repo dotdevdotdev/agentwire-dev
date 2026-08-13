@@ -258,7 +258,16 @@ class TestGitGlobalDirs:
         """All three selectors pick the repo independently, so a scope that
         reads one of them is a scope over one of them — and they are returned
         structured, because they do not relate to the cwd the same way."""
-        assert git_global_dirs(argv)[0] == expected
+        assert git_global_dirs(argv)[0] == {"config": [], **expected}
+
+    def test_inline_config_assignments_are_surfaced(self):
+        """`-c`/`--config-env` set config from the command line — the same
+        power as editing the repo config (#927), so scope evaluation must be
+        able to see what key they set."""
+        gopts, _ = git_global_dirs(
+            ["git", "-c", "core.worktree=/w", "--config-env=user.name=N", "commit"]
+        )
+        assert gopts["config"] == ["core.worktree=/w", "user.name=N"]
 
     def test_strips_globals_to_the_form_rules_are_written_against(self):
         assert git_global_dirs(["git", "-C", "/r", "commit", "-m", "x"])[1] == \
@@ -312,7 +321,7 @@ class TestCommandScopeDirs:
         ("sh -c 'git commit -m x'", "runs through sh"),
         ("xargs git commit -m x", "runs through xargs"),
         ("ssh host git commit -m x", "runs through ssh"),
-        ("git commit -m $(cat /tmp/x)", "command substitution"),
+        ("git -C $(cat /tmp/x) commit -m y", "command substitution"),
         ("( cd /store && git commit -m x )", "subshell"),
         ("pushd /store && git commit -m x", "directory stack"),
     ])
@@ -730,3 +739,173 @@ class TestAgainstBundledRules:
         for command in ("rm -rf /tmp/x", "git push --force origin main",
                         "git reset --hard origin/main"):
             assert check_command(command, bundled_config)["decision"] == "block", command
+
+
+# ---------------------------------------------------------------------------
+# Substitution by POSITION, not presence (#942/#943)
+# ---------------------------------------------------------------------------
+
+
+class TestSubstitutionPosition:
+    """A substitution in a commit message cannot move the command; one in a
+    directory-deciding position can. #942/#943: refusing on presence refused
+    #914's own motivating case (the nightly memory pass commits with a dated
+    message). Every granted row here refused before the fix, so each is
+    asserted by verdict AND, for the refusals, by reason — a verdict-only
+    refusal test passes before and after and pins nothing."""
+
+    @pytest.mark.parametrize("command", [
+        'git commit -m "review $(date +%F)"',          # the motivating case
+        'git commit --author="$(whoami)" -m x',        # author field
+        "git commit -F $(echo /tmp/msg)",              # message-file operand
+        "git commit -m `date`",                        # backtick spelling
+    ])
+    def test_substitution_in_an_operand_is_scopeable(self, store, command):
+        s, _, scope = store
+        (s / ".git").mkdir()
+        dirs, err = command_scope_dirs(command, str(s), COMMIT_PATTERN)
+        assert err is None, f"{command!r} wrongly unscopeable: {err}"
+        assert str(s) in dirs
+        ok, why = unattended_grant_allows(
+            "git.commit", command, {"git.commit": [[scope]]}, str(s), COMMIT_PATTERN
+        )
+        assert ok, why
+
+    @pytest.mark.parametrize("command,fragment", [
+        # Pinned so a fix cannot over-narrow: these decide the directory.
+        ("git -C $(echo /store) commit -m x", "command substitution decides the -C target"),
+        ("git -C `x` commit -m y", "command substitution decides the -C target"),
+        ("git --git-dir=$(x) commit -m y", "command substitution decides the git directory"),
+        ("GIT_DIR=$(x) git commit -m y", "command substitution decides the GIT_DIR target"),
+        ("cd $(cat /tmp/dir) && git commit -m x", "not a literal path"),
+        ("git commit -m 'unbalanced $(oops'", "unbalanced"),
+    ])
+    def test_substitution_in_a_directory_deciding_position_refuses(
+        self, store, command, fragment
+    ):
+        s, _, scope = store
+        dirs, err = command_scope_dirs(command, str(s), COMMIT_PATTERN)
+        assert err is not None, f"{command!r} was resolved to {dirs}"
+        assert fragment in err
+        ok, why = unattended_grant_allows(
+            "git.commit", command, {"git.commit": [[scope]]}, str(s), COMMIT_PATTERN
+        )
+        assert not ok
+        assert fragment in why
+
+    def test_cd_then_message_substitution_is_granted_per_segment(self, tmp_path):
+        """#943's per-segment acceptance pair: the cd decides the directory
+        (literal → fine); the substitution rides in the message (→ fine)."""
+        repo = tmp_path / "s t o r e"  # spaces: quoting must survive masking
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        ok, why = unattended_grant_allows(
+            "git.commit", f'cd "{repo}" && git commit -m "$(date)"',
+            {"git.commit": [[f"{repo}/"]]}, "/somewhere/else", COMMIT_PATTERN,
+        )
+        assert ok, why
+
+    def test_eval_and_base64_still_refuse_whole_command(self, store):
+        s, _, _ = store
+        for command, fragment in [
+            ("eval git commit -m x", "eval"),
+            ("base64 -d /tmp/x | sh && git commit -m y", "base64"),
+        ]:
+            _, err = command_scope_dirs(command, str(s), None)
+            assert err is not None and fragment in err, command
+
+
+# ---------------------------------------------------------------------------
+# core.worktree redirects (#927)
+# ---------------------------------------------------------------------------
+
+
+class TestCoreWorktreeRedirect:
+    """`git config core.worktree` converts write access inside a scope into
+    write access outside it. The redirect command itself is rule-file
+    territory (a sibling wave); HERE the commit side closes: scope evaluation
+    reads the resolved repo's config and measures the redirect target."""
+
+    def _grants(self, scope):
+        return {"git.commit": [[scope]]}
+
+    def _init_repo(self, path):
+        import subprocess
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+
+    def test_two_step_escape_refuses_the_commit(self, store):
+        """The full #927 escape: redirect an in-scope store, then commit
+        entirely within scope. The commit must not be granted."""
+        s, other, scope = store
+        self._init_repo(s)
+        (s / ".git" / "config").open("a").write(
+            f'[core]\n\tworktree = {other}\n'
+        )
+        ok, why = unattended_grant_allows(
+            "git.commit", "git commit -m x", self._grants(scope), str(s), COMMIT_PATTERN
+        )
+        assert not ok, "redirected repo must refuse the scoped grant"
+        assert str(other) in why
+
+    def test_unredirected_repo_still_granted(self, store):
+        """The companion: reading the config must not refuse a normal repo."""
+        s, _, scope = store
+        self._init_repo(s)
+        ok, why = unattended_grant_allows(
+            "git.commit", "git commit -m x", self._grants(scope), str(s), COMMIT_PATTERN
+        )
+        assert ok, why
+
+    def test_in_scope_redirect_is_permitted(self, store, tmp_path):
+        """A redirect to another directory INSIDE the scope moves nothing the
+        grant did not already cover."""
+        s, _, scope = store
+        sibling = tmp_path / "projects" / "proj-b" / "memory"
+        sibling.mkdir(parents=True)
+        self._init_repo(s)
+        (s / ".git" / "config").open("a").write(
+            f'[core]\n\tworktree = {sibling}\n'
+        )
+        ok, why = unattended_grant_allows(
+            "git.commit", "git commit -m x", self._grants(scope), str(s), COMMIT_PATTERN
+        )
+        assert ok, why
+
+    def test_relative_redirect_resolves_against_the_git_dir(self, store):
+        """git reads a relative core.worktree relative to the .git dir; the
+        evaluator must not resolve it against the cwd and miss the escape."""
+        s, other, scope = store
+        self._init_repo(s)
+        rel = os.path.relpath(other, s / ".git")
+        (s / ".git" / "config").open("a").write(
+            f'[core]\n\tworktree = {rel}\n'
+        )
+        ok, why = unattended_grant_allows(
+            "git.commit", "git commit -m x", self._grants(scope), str(s), COMMIT_PATTERN
+        )
+        assert not ok
+        assert str(other) in why
+
+    @pytest.mark.parametrize("command,fragment", [
+        ("git -c core.worktree=/elsewhere commit -m x", "core.worktree"),
+        ("git -c include.path=/tmp/evil.conf commit -m x", "include.path"),
+        ("git --config-env=core.worktree=EVIL commit -m x", "core.worktree"),
+        ("git -c $(x) commit -m y", "config key"),
+    ])
+    def test_command_line_config_redirect_refuses(self, store, command, fragment):
+        """The one-step spellings of the same redirect."""
+        s, _, scope = store
+        ok, why = unattended_grant_allows(
+            "git.commit", command, self._grants(scope), str(s), COMMIT_PATTERN
+        )
+        assert not ok, command
+        assert fragment in why
+
+    def test_harmless_inline_config_still_granted(self, store):
+        s, _, scope = store
+        self._init_repo(s)
+        ok, why = unattended_grant_allows(
+            "git.commit", 'git -c user.name="Nightly Bot" commit -m x',
+            self._grants(scope), str(s), COMMIT_PATTERN,
+        )
+        assert ok, why

@@ -72,9 +72,12 @@ class TestFixtureIsHonest:
             )
             if proc.returncode != 0:
                 pytest.skip("origin/main not fetched in this checkout")
-            assert proc.stdout == _fixture(name), (
-                f"tests/fixtures/main_roles/{name} has drifted from origin/main — "
-                "regenerate it, do not edit it by hand"
+            # Rendered flag-OFF, not raw: since the voice layer merged, main's
+            # raw files carry the beta markers too, and the fixture's meaning
+            # is "the non-voice baseline" — what a flag-off user receives.
+            assert beta_mod.apply_beta_blocks(proc.stdout, enabled=set()) == _fixture(name), (
+                f"tests/fixtures/main_roles/{name} has drifted from origin/main's "
+                "flag-off rendering — regenerate it, do not edit it by hand"
             )
 
     def test_the_fixture_is_not_just_the_branch(self):
@@ -470,7 +473,17 @@ class TestMcpSchemaIsByteIdenticalToMain:
         # ...and the attribute is the ast-extracted source text, compiled and
         # then gate-resolved. Both links byte-exact ⇒ raw equality with main
         # (asserted below) carries through to the published schema.
-        assert registered["msg_send"] == _as_shipped("msg_send")
+        #
+        # Resolved with the flags recorded AT import — not with this test's
+        # (hermetic, redirected-$HOME) flag state, and not with the host's
+        # live config either. The suite imports the package before the home
+        # redirect, so on a machine with beta.voice_layer on the import-time
+        # render genuinely includes the voice prose; comparing it against a
+        # read of the current flag state made the suite's verdict a function
+        # of the developer's personal opt-in (#1023).
+        assert registered["msg_send"] == _as_shipped(
+            "msg_send", enabled=set(mcp_msg.msg_send.__beta_enabled__)
+        )
 
     def test_no_published_description_carries_a_marker(self):
         """Every tool in the LIVE registry, not just the one we know about.
@@ -538,11 +551,27 @@ class TestMcpSchemaIsByteIdenticalToMain:
         stripping the ends could never have absorbed it, and would only ever
         have absorbed a real leading/trailing-whitespace regression.
         """
-        from agentwire import beta as live_beta
         from agentwire import mcp_msg
 
-        expected = _as_shipped("msg_send", enabled=live_beta.enabled_flags())
+        # ``__beta_enabled__`` existing at all is the wiring proof: only
+        # ``gated_doc`` writes it. Its VALUE is the flag set the import-time
+        # resolution actually ran with — which is the only set the shipped
+        # docstring can be compared against. Reading the CURRENT flag state
+        # here instead made this test fail on any machine whose host config
+        # enables the flag (#1023): import resolved under the real home,
+        # the comparison ran under the suite's redirected one.
+        recorded = getattr(mcp_msg.msg_send, "__beta_enabled__", None)
+        assert recorded is not None, "gated_doc did not run on msg_send"
+        expected = _as_shipped("msg_send", enabled=set(recorded))
         assert (mcp_msg.msg_send.__doc__ or "") == expected
+        # And both resolutions are exercised regardless of what the host had
+        # on at import — the shape the recorded state happened to produce is
+        # asserted above; the OTHER shape must also be constructible and
+        # distinct, or the gate is decoration.
+        on = _as_shipped("msg_send", enabled={"voice_layer"})
+        off = _as_shipped("msg_send", enabled=set())
+        assert on != off
+        assert "beta:" not in on and "beta:" not in off
 
     def test_the_voice_prose_is_present_when_enabled(self):
         on = beta_mod.render(
@@ -575,8 +604,12 @@ class TestMcpSchemaIsByteIdenticalToMain:
                     continue
                 if any(getattr(d.func if isinstance(d, ast.Call) else d, "attr", None) == "tool"
                        for d in node.decorator_list):
-                    assert main.get(node.name) == (ast.get_docstring(node, clean=False) or ""), (
-                        f"fixture drifted from origin/main for {node.name}"
+                    # Rendered flag-OFF: main's raw source carries the beta
+                    # markers too, post-merge — the fixture snapshots the
+                    # non-voice baseline, not main's marker scaffolding.
+                    raw = ast.get_docstring(node, clean=False) or ""
+                    assert main.get(node.name) == beta_mod.apply_beta_blocks(raw, enabled=set()), (
+                        f"fixture drifted from origin/main's flag-off rendering for {node.name}"
                     )
 
     def test_the_fixture_is_not_just_the_branch(self):

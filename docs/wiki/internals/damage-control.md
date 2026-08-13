@@ -575,8 +575,10 @@ deliberately — not a closure claim over shell semantics:
 | the working directory | a `cd` **not** joined by `&&` (with `;` the next command runs even if the `cd` failed) |
 | `cd <literal> &&` | an indirect runner — `sh -c`, `xargs`, `sudo`, `ssh`, `env`, `find` … |
 | git `-C` / `--git-dir` / `--work-tree` | a subshell or group |
-| git `GIT_DIR`-family env assignments | command substitution, `eval`, a base64 pipeline |
-| the enclosing git **repo root** | any **unmodelled** environment assignment (`FOO=1 git commit`) |
+| git `GIT_DIR`-family env assignments | command substitution **in a directory-deciding position** (a `cd` target, a `-C`/`--git-dir`/`--work-tree` value, a `GIT_DIR`-family assignment, the segment head, a git config key) — one in an operand such as a `-m` message cannot move the command and is scopeable (#942/#943) |
+| the enclosing git **repo root** | `eval`, a base64 pipeline |
+| the repo root's **`core.worktree` redirect** (#927) | `-c`/`--config-env` setting `core.worktree` or `include.*` |
+| | any **unmodelled** environment assignment (`FOO=1 git commit`) |
 | | a rule whose pattern matches no single segment |
 
 Three selectors pick a git repo independently — cwd, `-C`, and
@@ -617,17 +619,19 @@ admits its own contents). This is load-bearing rather than theoretical — `ln
 the grantee can write inside the scope. **Treat "the grantee can write inside
 the scope" as the threat model, not a cooperative caller.**
 
-**Two limits that are NOT closed**, stated rather than implied:
+**`core.worktree` redirects (#927).** A repo can be redirected from inside its
+own config (`git config core.worktree <elsewhere>`), which no reading of the
+command can see. Scope evaluation therefore reads the resolved repo's config
+and measures the redirect target against the scope like any other selector —
+so a redirected in-scope store **refuses the commit** even though the command
+itself stays entirely within scope. The command-line spellings of the same
+redirect (`-c core.worktree=…`, `--config-env`, and the `include.path` /
+`includeIf.*` keys that can pull one in from an arbitrary file) refuse
+outright. The redirect *command* itself is still unruled — making it
+`ask`-tier is rule-file work, tracked in #927.
 
-- **`git config core.worktree` is a reachable two-step escape, not a theoretical
-  blind spot.** It redirects a repo from inside its own config, which no reading
-  of the command can see — *and the redirect is itself unrestricted* (`git
-  config core.worktree <elsewhere>` matches no rule at all, with or without
-  `-C`). So a session holding a scoped commit grant can point the in-scope
-  store's work tree elsewhere and then commit entirely within scope. Closing it
-  needs a rule making that `ask`-tier; tracked in #927.
-- Resolution is a **TOCTOU window**: the hook validates a path the command has
-  not used yet.
+**One limit that is NOT closed**, stated rather than implied: resolution is a
+**TOCTOU window** — the hook validates a path the command has not used yet.
 
 **MCP tools.** The MCP hook's command is *synthesized* from the tool call
 (`agentwire email --to …`) and names no directory, so a **scoped** grant there

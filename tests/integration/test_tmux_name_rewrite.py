@@ -62,6 +62,24 @@ def tmux_sock():
             ["tmux", "-S", socket, *args], capture_output=True, text=True
         )
 
+    # Precondition, asserted rather than commented (#948): these tests measure
+    # the name-rewrite mapping of the tmux SERVER actually running here, and
+    # some environments' tmux does not rewrite at all — the sweep then reads
+    # back its own probe string unchanged and every content assertion fails
+    # with output that says "your substitution set is wrong", sending the
+    # reader to the branch's code instead of to the environment. Probe one
+    # character KNOWN to be rewritten (a literal '.') and require that it
+    # changed, so a marker-less run fails with one diagnostic sentence.
+    probed = _real_name(run, "a.b")
+    if probed == "a.b":
+        run("kill-server")
+        pytest.fail(
+            "tmux here does not rewrite session names ('a.b' came back "
+            "unchanged) — this environment cannot measure the mapping these "
+            "tests exist to verify (see pytestmark). If this is CI, the "
+            "requires_tmux marker was not deselected.",
+            pytrace=False,
+        )
     yield run
     run("kill-server")
 
