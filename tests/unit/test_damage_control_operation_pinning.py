@@ -188,8 +188,9 @@ class TestAgentwireDirRule:
         # damagecontrol.yml may still block these via its own ladders — that is
         # the machine's call, not this rule's, so the only pin here is that any
         # block is NOT the .agentwire directory rule and names a real rule.
+        # (ladder verdicts carry `pattern`, rule verdicts carry `id`)
         if result["decision"] == "block":
-            assert result.get("id"), result
+            assert result.get("id") or result.get("pattern"), result
 
     DESTRUCTION_FORMS = [
         "rm -rf ~/.agentwire",
