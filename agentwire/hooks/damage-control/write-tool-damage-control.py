@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "fd330cac622d37e04b2ae2a1e5643a3de4ddb29bda52ac461f8c589a012ad55a", "generated_at": "2026-08-13T13:46:17Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "58790d88d88aec0cbabaa52af8cdde396cd1062ccab5162538ca2b82e04d033e", "generated_at": "2026-08-13T17:26:34Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -823,6 +823,31 @@ DEFAULT_UNATTENDED_ALLOW = [
     "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
     "gh.pr-create",  # open a PR — the human-reviewed gate
     "outbound.agentwire-email",  # blanket allow, any recipient (#804)
+    # Run the project's own tooling — tests, linters, the project CLI (#925).
+    #
+    # This tier is `ask` because `uv run` executes code, which is true of every
+    # scheduled task by definition: the dispatch already granted "run this
+    # agent on this repo". Withholding the project's OWN test runner from it
+    # does not withhold code execution, it only withholds VERIFICATION — the
+    # task still writes the change and still opens the PR, just without having
+    # been able to run the suite over it. 18 of the 111 unattended blocks
+    # measured over the 14 days to 2026-08-06 were exactly this.
+    #
+    # Safe to allow only because the id it grants cannot shadow a hard block.
+    # Verified, not assumed: rules are evaluated in order and the FIRST match
+    # returns its id, so an earlier `ask` rule CAN hide a later `block` — the
+    # matrix in tests/unit/test_unattended_allow.py pins that every dangerous
+    # form behind `uv run` still comes back with the DESTRUCTIVE rule's id, not
+    # this one (the launcher-payload rescan that guarantees it landed in #1028).
+    #
+    # BOTH ids, deliberately. `uv run <script.py>` and `uv run <cmd>` are two
+    # tooldef lines that compile to the IDENTICAL pattern `\buv\s+run\b`, so
+    # which id a command comes back with is decided by which yaml line sits
+    # higher, not by anything about the command. Allowlisting only one would be
+    # guarding the phrasing: reorder uv.yaml and the permission silently
+    # evaporates with nothing failing to say so.
+    "tooldef.uv-run-a-script-in-project-environment",
+    "tooldef.uv-run-a-command-in-project-environment",
 ]
 
 

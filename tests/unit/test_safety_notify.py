@@ -421,7 +421,9 @@ class TestTheAuditLogIsNotThrottled:
     ])
     def test_the_hook_logs_before_it_notifies(self, hook):
         src = (HOOKS_DIR / hook).read_text()
-        notify = src.index("_notify_unattended_block(command, reason, rule_id)")
+        # Pin the CALL, not one spelling of its arguments (#1028 rewords the
+        # reason argument; the ordering guarantee is about the invocation).
+        notify = src.index("        _notify_unattended_block(command, ")
         # The unattended branch's own log_blocked call, immediately above it.
         log = src.rindex("log_blocked", 0, notify)
         between = src[log:notify]
