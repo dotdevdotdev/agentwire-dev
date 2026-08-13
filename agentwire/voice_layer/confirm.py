@@ -895,9 +895,11 @@ class Proposal:
         prefix = list(self.argv_prefix)
         # The full relay (#1015) is written HERE, at execution, not at propose:
         # a proposal the owner cancels or lets expire must leave nothing on
-        # disk. ``write_relay`` never raises — this line sits after the
-        # ``_proposals.pop()`` and outside the runner's ``try``, where a throw
-        # eats an approved message with no screen to report it on.
+        # disk. ``write_relay`` never raises — this runs after the
+        # ``_proposals.pop()`` with the utterance spent, and while a throw now
+        # degrades to a spoken ``build_failed`` (#1005) rather than silence,
+        # that outcome still costs the owner the message and a re-propose, so
+        # a relay miss must not be allowed to buy it.
         written = ""
         # Matched against the path this id DERIVES, and matched at the TAIL:
         # ``ConfirmSpine.propose`` appends its pair last, so the tail is the
@@ -1126,10 +1128,14 @@ def _lead_safe(text: str) -> str:
     :func:`render_body`, with this function merely usually-right: it stripped
     only the first dash RUN, so ``"- - force a restart"`` reached the assert and
     raised. ``render_body`` is called from ``Proposal.build_argv()``, which
-    ``ConfirmSpine.confirm`` runs **after** ``_proposals.pop()`` and **outside**
-    the runner's ``try`` — the proposal is already consumed and the approving
-    utterance already spent, so the raise destroyed the message with no retry
-    and, for a screenless owner, nothing anywhere saying why.
+    ``ConfirmSpine.confirm`` runs **after** ``_proposals.pop()`` — the proposal
+    is already consumed and the approving utterance already spent, and at the
+    time this shipped nothing guarded that path, so the raise destroyed the
+    message with no retry and, for a screenless owner, nothing anywhere saying
+    why. (#1005 has since put a structural guard around ``build_argv`` — a
+    throw there now degrades to a spoken ``build_failed`` — but that outcome
+    still costs the owner the message, so totality here remains the cheaper
+    property, not a redundant one.)
 
     So: no raise on this path, and no ``assert`` either. An assert is compiled
     out by ``python -O``, which turned the incomplete strip into the *silent*
@@ -1341,10 +1347,21 @@ SPOKEN = {
     # `responseActive` TRUE, so pump() cancels that one and creates OURS, and
     # the server's ack of our create sets `sawCreate` while the item is still
     # current. The owner-speaking leg (`maxOwnerDeferrals`, 3) never cared which
-    # response is running. So at `fallbackMs` 6000 the bound here is the
-    # announcer's general worst case, 5 intervals — 30s — dropping to 4 (24s)
-    # only in the sub-case where our own create is never acked at all. The
-    # deadlock sentence above was written against 2 intervals, 12s.
+    # response is running. So at `fallbackMs` 6000 the announcer's own half of
+    # the wait is its general worst case, 5 intervals — 30s — dropping to 4
+    # (24s) only in the sub-case where our own create is never acked at all.
+    # The deadlock sentence above was written against 2 intervals, 12s.
+    #
+    # And that half is not the whole wait (#997, closed by #1009). Both
+    # deferrals are counted from the moment this refusal becomes `current` in
+    # the announcer's FIFO, and pump() holds a queued item UPSTREAM of that
+    # while a fallback utterance is still playing — bounded by that
+    # utterance's own speaking budget (30s floor + 140ms/char, client.py's
+    # speakingBudget). So in the one state where the browser voice is
+    # mid-utterance when this refusal is queued, the worst case is one
+    # speaking budget in front of the 30s above, and a coalesced five-reply
+    # notice puts minutes there, not seconds. The interval arithmetic above is
+    # complete only when nothing is being spoken.
     #
     # The deadlock argument survives the bigger number, and not by calling 30s
     # tolerable. It survives because a deferral is not a suppression: each is
@@ -1357,7 +1374,11 @@ SPOKEN = {
     # most one unspent deferral still lands between their silence and the
     # speech. That bounds the silence anyone can be left in waiting for THIS
     # refusal at 12s, whatever the 30s above does to the buddy's own patience.
-    # A deadlock needs both parties waiting; only one of them ever is.
+    # The pump leg does not add to it: it is taken only while a fallback
+    # utterance is PLAYING — audio the owner is hearing the whole time — so it
+    # too extends the wait and never the silence, which is why the deferral
+    # was chosen over talking over it. A deadlock needs both parties waiting;
+    # only one of them ever is.
     "not_announced": (
         "Hang on — I haven't finished telling you what I'd send yet."
     ),
@@ -1466,6 +1487,17 @@ SPOKEN = {
     "dispatch_failed": (
         "That failed partway and I can't tell whether it took effect. "
         "Check that session before asking me again."
+    ),
+    # The argv could not even be BUILT (#1005): the throw landed between the
+    # pop and the runner, so — unlike `dispatch_failed`, whose whole line is
+    # the uncertainty — the system positively knows the runner was never
+    # called and nothing went out. That difference is the owner's next move:
+    # here a re-propose is SAFE and is the only remedy (the utterance is
+    # spent, the proposal popped), while `dispatch_failed`'s "check that
+    # session" would send them to verify a write that provably never left.
+    "build_failed": (
+        "Something broke on my side before anything went out, so nothing "
+        "was sent. Ask me again and I'll set it up fresh."
     ),
 }
 
@@ -1583,7 +1615,7 @@ REASONS = frozenset(
     {
         "no_proposal", "expired", "not_announced", "replayed", "refused",
         "wrong_nonce", "quoted_frame", "denied", "pending_transcript",
-        "too_many_attempts", "dispatch_failed", "in_flight",
+        "too_many_attempts", "dispatch_failed", "build_failed", "in_flight",
         "cancel_in_flight", "nothing_to_cancel", "cancelled",
     }
 )
@@ -1922,23 +1954,37 @@ class ConfirmSpine:
         with self._lock:
             self._proposals.pop(token, None)
 
-        # RESIDUAL, stated rather than implied (#1004 review). This line sits
-        # after the pop and outside the try below, so anything it throws eats
-        # the proposal with the approving utterance already spent — silent loss
-        # to an owner who is not watching a screen. The concrete lead-dash
-        # hazard that used to live here is closed by TOTALITY, not by position:
-        # build_argv, _reply_target, render_body, _lead_safe, _clip, _one_line,
-        # reply_nudge and strip_controls are all total on str, so there is no
-        # raise path left. A FUTURE throw is the open part.
+        # GUARDED ON ITS OWN, not folded into the runner's except (#1005).
+        # This line still runs after the pop with the approving utterance
+        # already spent, and every function on the path is total on str — but
+        # totality was the only thing standing between a future edit and
+        # silent loss of an approved message, and nothing enforced it. Now a
+        # throw degrades STRUCTURALLY to a spoken outcome.
         #
-        # Moving it inside the try is NOT the one-line change it looks like:
-        # `argv` would be unbound in the except, and `record_write` /
-        # `verdict.argv` both need a defined value — so it forces a ruling on
-        # what `buddy_sent` shows for a write whose argv never existed, and
-        # `buddy_sent` is precisely the surface the persona is told to trust
-        # for "what did you send". That is its own change, deliberately not
-        # rushed in alongside the kind migration.
-        argv = proposal.build_argv()
+        # The ruling the move forced, priced on both halves: a build_argv
+        # throw means the runner was NEVER called, so unlike `dispatch_failed`
+        # the system positively knows nothing went out. Reusing that reason
+        # here would claim uncertainty it does not have and send the owner to
+        # check a session nothing was sent to — so this is its own outcome,
+        # `build_failed`, whose line admits the loss and invites the
+        # re-propose that is safe here and unsafe there. `buddy_sent` gets a
+        # record with an EMPTY argv and success False: `delivery_state` reads
+        # that as "it never went out, the reason is in detail", which is
+        # literally true. And the token is deliberately marked NEITHER
+        # `_failed` nor `_succeeded` — `_failed` would answer the retry with
+        # "check that session"; unmarked, a retry lands on `no_proposal` and a
+        # cancel on `nothing_to_cancel`, both of which are true.
+        try:
+            argv = proposal.build_argv()
+        except Exception as exc:
+            outbox.record_write(  # #958; never raises
+                proposal,
+                [],
+                {"success": False, "error": f"build_argv raised before dispatch: {exc}"},
+            )
+            return Verdict(
+                approved=False, reason="build_failed", utterance=verdict.utterance
+            )
         verdict.argv = argv
         if self._runner is not None:
             try:
