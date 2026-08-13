@@ -93,3 +93,27 @@ class TestQueuedRendersUniquely:
             assert cmd_notify_parent(_args()) == 0
         rendered = [m.render() for m in inbox.list_messages("orch")]
         assert len(rendered) == 2 and rendered[0] != rendered[1]
+
+
+class TestBodyFile:
+    """--body-file (#944): same rail as `msg send`, shared core helper."""
+
+    def test_body_file_verbatim(self, isolate, worktree_child, tmp_path):
+        p = tmp_path / "body.md"
+        p.write_text("done: run `agentwire doctor` and $(true)")
+        assert cmd_notify_parent(_args(text=[], body_file=str(p))) == 0
+        msgs = inbox.list_messages("orch")
+        assert len(msgs) == 1
+        assert msgs[0].text == "done: run `agentwire doctor` and $(true)"
+
+    def test_mutually_exclusive(self, isolate, worktree_child, tmp_path):
+        p = tmp_path / "body.md"
+        p.write_text("x")
+        assert cmd_notify_parent(_args(body_file=str(p))) == 1
+        assert inbox.list_messages("orch") == []
+
+    def test_unreadable_fails(self, isolate, worktree_child, tmp_path):
+        rc = cmd_notify_parent(
+            _args(text=[], body_file=str(tmp_path / "nope.md")))
+        assert rc == 1
+        assert inbox.list_messages("orch") == []
