@@ -116,3 +116,19 @@ bashToolPatterns:
     reason: docker rm -f $(docker ps) (force removes containers)
     id: containers.docker-rm-f-docker-ps-force-removes-containers
     anchored: false
+
+  # ---------------------------------------------------------------------------
+  # GIT CONFIG KEYS THAT NAME AN EXECUTABLE (#921)
+  # ---------------------------------------------------------------------------
+  # A subset of `git -c` keys name a program git will RUN (core.sshCommand,
+  # core.fsmonitor, core.pager, ...). The value is additionally re-scanned as a
+  # command in its own right (`_git_exec_config_payloads`), so a dangerous
+  # payload hits its own block rule; this rule is the confirm tier for
+  # payloads no rule recognizes. Unanchored: the key sits in an option's
+  # attached/separate value, never at command position.
+
+  - pattern: '\bgit\b[^;&|]*\s-c\s*(?:alias\.[^.=\s]+=!|(?:core\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\.editor|gpg\.program|diff\.external|credential\.helper|uploadpack\.packobjectshook|filter\.[^.=\s]+\.(?:clean|smudge|process)|difftool\.[^.=\s]+\.cmd|mergetool\.[^.=\s]+\.cmd|merge\.[^.=\s]+\.driver|remote\.[^.=\s]+\.(?:uploadpack|receivepack)|browser\.[^.=\s]+\.cmd|man\.[^.=\s]+\.cmd)=)'
+    reason: git -c sets a config key that names a program git will execute
+    ask: true
+    id: git.config-exec-key
+    anchored: false

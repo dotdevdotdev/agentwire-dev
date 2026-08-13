@@ -493,7 +493,8 @@ class TestRuleIdUniqueness:
         """Measured against BUNDLED rules AND BUNDLED tooldefs, counts asserted."""
         cfg = load_config(BUNDLED_RULES, BUNDLED_TOOLDEFS)
         patterns = cfg["bashToolPatterns"]
-        assert len(patterns) == 264
+        # 264 -> 257 in #924/#921 (8 remote.yaml ssh twins deleted, 1 rule added)
+        assert len(patterns) == 257
         assert sum(1 for p in patterns if p.get("anchored")) == 237
         assert cfg.get("_duplicate_rule_ids") is None
 
@@ -740,7 +741,9 @@ class TestInstalledPathBehaviour:
         # file, bundled tooldefs, no filtering — so "not blocked" cannot be an
         # artifact of a narrowed corpus.
         live = load_config(safety_commands.RULES_DIR, safety_commands.TOOLDEFS_DIR)
-        assert len(live["bashToolPatterns"]) >= 260, "live corpus is suspiciously small"
+        # floor lowered 260 -> 255 when #924 deleted 8 redundant remote.yaml
+        # ssh twins (net -7 rules)
+        assert len(live["bashToolPatterns"]) >= 255, "live corpus is suspiciously small"
         before_decision = __import__(
             "agentwire.safety._core", fromlist=["check_command"]
         ).check_command(NETLIFY_CMD, live)

@@ -289,6 +289,38 @@ def _render_damage_control_section() -> int:
     else:
         print("  [ok] Damage control enabled (enabled: true)")
 
+    # allowedPaths vs the protected control plane (#938). The allowlist
+    # deliberately outranks control-plane protection (the one human, host-side
+    # override) — but a broad entry silently takes the kill switch and rule
+    # files with it, so name every overlap. Judged with the enforcement
+    # matcher itself (control_plane_allowlist_overlaps), never a
+    # re-implementation.
+    try:
+        from .safety._core import (
+            control_plane_allowlist_overlaps,
+            load_allowed_paths,
+        )
+        from .safety._core import (
+            load_config as load_dc_config,
+        )
+        from .safety_commands import _resolve_rules_dir, _resolve_tooldefs_dir
+        dc_cfg = load_dc_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
+        overlaps = control_plane_allowlist_overlaps(load_allowed_paths(dc_cfg))
+    except Exception as e:
+        print(f"  [..] Could not check allowedPaths against control plane: {e}")
+    else:
+        if overlaps:
+            print("  [!!] allowedPaths re-permits PROTECTED control-plane paths:")
+            for entry_path, prot in overlaps:
+                print(f"       {entry_path!r} covers {prot}")
+            print("       A write there can disable damage control itself "
+                  "(kill switch, rules, hooks).")
+            print("       Fix: narrow the allowedPaths entry so it no longer "
+                  "covers these paths.")
+            issues += 1
+        else:
+            print("  [ok] allowedPaths does not cover the protected control plane")
+
     try:
         from . import safety_commands
     except Exception as e:

@@ -445,6 +445,8 @@ allowed_paths:
 
 The allowlist is the one knob that overrides the protected-control-plane check, so it lives behind that same protection — an agent can't edit `.damagecontrol.yml` to widen its own freedom.
 
+**The override cuts both ways (#938).** Because `allowedPaths` outranks control-plane protection, a *broad* entry silently turns that protection off for whatever it covers — `{path: "*/.agentwire/*", allow: all}` makes the kill switch (`~/.agentwire/damagecontrol.yml`), the rule files, and the hook scripts agent-writable, and `{path: "~/.claude/*"}` takes hook registration (`settings.json`) with it. The control plane is protected *unless your allowlist covers it*. `agentwire doctor` flags any entry whose glob overlaps a protected control-plane path, using the enforcement matcher itself, and names both sides.
+
 Per-project paths are relative to the project root and resolved to absolute paths before matching.
 
 **Bypassable bash patterns**: Some bash patterns (plain `rm`, `rmdir`, `trash`) are marked `bypassable: true` in their rules YAML. When a command matches a bypassable pattern, the system checks if ALL target paths have the required operation permission (e.g., `delete` for `rm`). If all paths match, the command is allowed. Hard-blocked patterns (like `rm -rf`) are never bypassed regardless of permissions.
@@ -818,25 +820,56 @@ Protects:
 - Credentials and API keys from any access
 - Session state from deletion
 
-### Remote Execution Safeguards
+### Remote Execution Safeguards — the wrapper-payload rescan (#924)
 
-```yaml
-bashToolPatterns:
-  - pattern: '\bssh\s+[^\s]+\s+.*\brm\s+-[rf]'
-    reason: dangerous remote rm command
+`ssh <host> "<payload>"` is a command wrapper, and since #924 the engine treats
+it as one: the remote command is extracted (`_ssh_remote_payload`, ssh's
+option grammar from the OpenSSH manual, nesting bounded) and **re-scanned as a
+command in its own right**, so every rule — anchored ones at real command
+positions — applies over ssh automatically, and the refusal carries the
+payload's OWN rule id. Measured on the 151-form dangerous corpus: 150/150
+wrapped forms refused. Never write an ssh twin of a local rule; `remote.yaml`
+keeps only the ssh-ONLY surface (reboot / shutdown / `systemctl stop`, which
+have no local rule, plus a deliberately-stricter `docker rm -f` block).
 
-  - pattern: '\bssh\s+[^\s]+\s+.*\bDROP\s+DATABASE\b'
-    reason: remote database drop
+The same principle covers two siblings:
 
-  - pattern: '\bssh\s+[^\s]+\s+.*\bsystemctl\s+stop\b'
-    reason: remote service shutdown
-```
+- **DB clients** — `psql -c` / `mysql -e` / `mongosh --eval` joined the
+  exec-surface table: the quoted statement is emitted as payload text the
+  unanchored SQL rules read even after masking.
+- **`git -c` exec keys (#921)** — a subset of git config keys name a program
+  git will run (`core.sshCommand`, `core.fsmonitor`, `core.pager`,
+  `credential.helper`, `alias.x=!…`, `filter.*.clean/smudge`, …). The value is
+  re-scanned as a command (a dangerous payload blocks under its own rule) and
+  the operation itself is ask-tier via `git.config-exec-key`, with a
+  block-outranks-ask guarantee in the decision ladder so rule-file load order
+  can never demote a hard block to a confirm.
 
-Protects against:
-- Remote file deletions via SSH
-- Remote database drops
-- Remote service shutdowns
-- Remote Docker prune operations
+### The unverifiable tier (#934)
+
+Two populations used to share the `ask` fallback, and under the default bypass
+posture "fails closed" was ALLOW. They now resolve differently
+(`ambiguity_conceals_verb`, judged by position, not presence):
+
+| shape | example | bypass | unattended |
+|---|---|---|---|
+| operand substitution | `echo "$(basename $p)"` | allow (demoted, as before) | **allow** (#925 Part 3 — every rule already scanned the masked form) |
+| verb concealment | `psql -c "$(cat x.sql)"`, `eval …`, `base64 -d \| sh`, `$(which x) --prod` | **ask — not demoted** | block, no grant applies |
+
+Verb concealment also outranks an ordinary ask-rule match, so a granted id
+(`uv run $(echo rm) -rf`) cannot compose with a substitution into an
+unguarded run.
+
+### Tool-channel parity (#923)
+
+Damage control is registered per tool matcher, and a guard that asks "did this
+arrive as Bash" misses the same operation arriving as a tool call. Coverage
+now: `NotebookEdit` routes through the edit hook (`notebook_path` is a file
+write), and **every** `mcp__*` tool call has its path-valued arguments
+screened — zero-access secrets block on mention for any tool; protected
+control-plane paths block for write-shaped tool names. Full rule-level
+per-tool policy (classifying each MCP tool's tier) is #923's remaining design
+work.
 
 ---
 

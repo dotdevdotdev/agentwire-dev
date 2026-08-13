@@ -576,7 +576,13 @@ DAMAGE_CONTROL_MATCHERS = {
     "Read": "read-tool-damage-control.py",
     "Grep": "read-tool-damage-control.py",
     "Glob": "read-tool-damage-control.py",
-    "mcp__agentwire__(email_send|quo_send)": "mcp-tool-damage-control.py",
+    # NotebookEdit writes files without matching Edit or Write (#923).
+    "NotebookEdit": "edit-tool-damage-control.py",
+    # Every MCP tool, ours and third-party (#923): outbound tools are gated
+    # like their Bash shell-outs; every other tool call gets its path-valued
+    # arguments screened against zeroAccessPaths and (for write-shaped tools)
+    # the protected control plane. The hook exits 0 fast for anything else.
+    "mcp__.*": "mcp-tool-damage-control.py",
 }
 
 

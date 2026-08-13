@@ -64,6 +64,7 @@
       "ffbc4f3d175d33ecd488f55db92a140663b253f1e437872ff99db3bf0636d1d6"
     ],
     "payloads.yaml": [
+      "27207d2a9caee39014053d66628fdc66393f4e7689076f3484ff9e9facf9228b",
       "712be7a12564ec2f46b35a59a78a0e843f69c9b4b1e7cb20e4b320255c49d160"
     ],
     "publish.yaml": [
@@ -72,7 +73,8 @@
     ],
     "remote.yaml": [
       "029d182c015d2d74d9ad63151ccd4175e6ee77d51e0128970b67939ae1c637e3",
-      "cb16dbba11c759950bfaf2dd3c39c8d74cd8d54787f5f28f10ab78f5be3dba96"
+      "cb16dbba11c759950bfaf2dd3c39c8d74cd8d54787f5f28f10ab78f5be3dba96",
+      "dea06e851e9ddd0b90ba9b084476dbd927961d4f8a897579f1975110dd737fd4"
     ]
   },
   "tooldefs": {

@@ -435,16 +435,36 @@ class TestCheckCommandSafetyDecisionPaths:
         result = check_command_safety("rm /tmp/proj/dist/old.whl")
         assert result["decision"] == "allow"
 
-    def test_decision_order_ask_beats_block(self, tmp_path, monkeypatch):
-        """ask wins when both ask and bypassable patterns match a command."""
+    def test_decision_order_block_beats_ask(self, tmp_path, monkeypatch):
+        """A rule-level block outranks an ask regardless of rule order (#921).
+
+        Pre-#921 the ask returned as soon as the loop met it, so rule-file
+        load order decided — `git -c core.pager="<deletion>" log` matched both
+        the exec-key ask and the deletion block, and whichever loaded first
+        won. Asks are now collected and returned only after every rule block
+        (and any bypassable block) has had its chance.
+        """
         self._rules(tmp_path, monkeypatch, {
             "bashToolPatterns": [
                 {"pattern": r"\brm\b", "reason": "rm anything", "ask": True},
                 {"pattern": r"\brm\s+[^-]", "reason": "rm bypassable", "bypassable": True},
             ],
         })
-        # Both match — ask wins because it's evaluated first.
+        # Both match; the bypassable rule resolves to block (no allowlist) and
+        # that block wins over the earlier-listed ask.
         result = check_command_safety("rm foo.txt")
+        assert result["decision"] == "block"
+
+        # With the path allowlisted the bypassable rule stands aside and the
+        # ask surfaces again.
+        self._rules(tmp_path, monkeypatch, {
+            "bashToolPatterns": [
+                {"pattern": r"\brm\b", "reason": "rm anything", "ask": True},
+                {"pattern": r"\brm\s+[^-]", "reason": "rm bypassable", "bypassable": True},
+            ],
+            "allowedPaths": [{"path": "*/dist/*", "allow": ["delete"]}],
+        })
+        result = check_command_safety("rm /tmp/proj/dist/old.whl")
         assert result["decision"] == "ask"
 
     def test_no_match_allows(self, tmp_path, monkeypatch):
