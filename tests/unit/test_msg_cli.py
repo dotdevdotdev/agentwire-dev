@@ -213,3 +213,61 @@ class TestDeadLister:
         rc = msg_cli.cmd_msg_dead(_ns(purge=True, older_than="lol"))
         assert rc == 2
         assert "Invalid --older-than" in capsys.readouterr().err
+
+
+class TestSendBodyFile:
+    """--body-file (#944): a code-bearing body never transits shell argv."""
+
+    HOSTILE = "run `voice` then $(rm -rf /) and `ingest`\nline two\n"
+
+    def _live(self, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"orch"})
+
+    def test_body_file_preserved_verbatim(self, isolate, monkeypatch, tmp_path):
+        self._live(monkeypatch)
+        p = tmp_path / "body.md"
+        p.write_text(self.HOSTILE)
+        rc = msg_cli.cmd_msg_send(_ns(to="orch", body_file=str(p)))
+        assert rc == 0
+        msgs = inbox.list_messages("orch")
+        assert len(msgs) == 1
+        # Backticks and $() intact — the whole point of the flag.
+        assert msgs[0].text == self.HOSTILE
+
+    def test_dash_reads_stdin(self, isolate, monkeypatch):
+        import io
+
+        self._live(monkeypatch)
+        monkeypatch.setattr("sys.stdin", io.StringIO(self.HOSTILE))
+        rc = msg_cli.cmd_msg_send(_ns(to="orch", body_file="-"))
+        assert rc == 0
+        assert inbox.list_messages("orch")[0].text == self.HOSTILE
+
+    def test_mutually_exclusive_with_text(self, isolate, tmp_path, capsys):
+        p = tmp_path / "body.md"
+        p.write_text("x")
+        rc = msg_cli.cmd_msg_send(_ns(to="orch", body_file=str(p), text=["hi"]))
+        assert rc == 1
+        assert "mutually exclusive" in capsys.readouterr().out
+        assert inbox.list_messages("orch") == []
+
+    def test_unreadable_path_fails_loudly(self, isolate, tmp_path, capsys):
+        rc = msg_cli.cmd_msg_send(
+            _ns(to="orch", body_file=str(tmp_path / "nope.md"), json=True))
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["success"] is False and "--body-file" in out["error"]
+        assert inbox.list_messages("orch") == []
+
+    def test_empty_file_is_empty_message(self, isolate, tmp_path, capsys):
+        p = tmp_path / "empty.md"
+        p.write_text("   \n")
+        rc = msg_cli.cmd_msg_send(_ns(to="orch", body_file=str(p)))
+        assert rc == 1
+        assert "Usage" in capsys.readouterr().out
+
+    def test_positional_text_path_unchanged(self, isolate, monkeypatch):
+        self._live(monkeypatch)
+        rc = msg_cli.cmd_msg_send(_ns(to="orch", text=["plain", "words"]))
+        assert rc == 0
+        assert inbox.list_messages("orch")[0].text == "plain words"

@@ -19,6 +19,7 @@ from .core import (
     _output_result,
     _portal_auth_headers,
     _post_desktop_notification,
+    read_body_file,
 )
 
 #: The ``notify-event`` vocabulary worth remembering (#1016). Deliberately not
@@ -44,11 +45,24 @@ def cmd_notify_parent(args) -> int:
         agentwire notify "Worker 1 completed task"
         agentwire notify --to agentwire "Build finished"
     """
-    text = " ".join(args.text) if args.text else ""
     json_mode = getattr(args, 'json', False)
+    body_file = getattr(args, "body_file", None)
+    if body_file is not None and args.text:
+        return _output_result(
+            False, json_mode,
+            "--body-file and positional text are mutually exclusive")
+    if body_file is not None:
+        try:
+            text = read_body_file(body_file)
+        except OSError as exc:
+            return _output_result(False, json_mode, f"--body-file: {exc}")
+    else:
+        text = " ".join(args.text) if args.text else ""
 
-    if not text:
-        return _output_result(False, json_mode, "Usage: agentwire notify-parent <message>")
+    if not text.strip():
+        return _output_result(
+            False, json_mode,
+            "Usage: agentwire notify-parent <message | --body-file PATH>")
 
     target_session = getattr(args, 'to', None)
     current_session = pane_manager.get_current_session()
@@ -341,7 +355,12 @@ def cmd_notify(args) -> int:
 def register_notify_parser(subparsers) -> None:
     # === notify command (worker→parent) ===
     notify_cmd_parser = subparsers.add_parser("notify-parent", help="Notify parent session (worker→orchestrator)")
-    notify_cmd_parser.add_argument("text", nargs="*", help="Notification message")
+    notify_cmd_parser.add_argument("text", nargs="*", help="Notification message (or --body-file)")
+    notify_cmd_parser.add_argument(
+        "--body-file", dest="body_file", default=None, metavar="PATH",
+        help="Read the message body from PATH ('-' for stdin) instead of "
+             "positional text — code-bearing bodies need no shell escaping (#944)",
+    )
     notify_cmd_parser.add_argument("--to", type=str, metavar="SESSION", help="Target session (default: parent from .agentwire.yml)")
     notify_cmd_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     notify_cmd_parser.add_argument("--raw", action="store_true",

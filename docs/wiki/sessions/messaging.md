@@ -483,9 +483,11 @@ skipped automatically because their pane 0 doesn't run an agent.
 ## CLI
 
 ```bash
-agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice|idle] [--ref <path>] <text>
+agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice|idle] [--ref <path>] <text | --body-file PATH>
 agentwire msg send --to agentwire-dev-fix-nav --kind done "PR #312 drafted"
 agentwire msg send --to anchor --kind ingest --ref /path/report.md "auth findings"  # passive
+agentwire msg send --to reviewer --kind request --body-file /tmp/findings.md       # code-bearing body, no escaping
+git diff --stat | agentwire msg send --to orch --body-file -                       # '-' reads stdin
 agentwire msg inbox [-s <session>]   # peek pending + passive (does not drain/consume)
 agentwire msg pull  [-s <session>]   # read + REMOVE passive (ingest) messages
 agentwire msg dead  [-s <session>]   # list dropped (dead-lettered) msgs + why
@@ -493,6 +495,15 @@ agentwire msg dead  --purge [-s <session>] [--older-than 7d]  # clear the gravey
 agentwire msg flush [-s <session>] [--force]  # attempt a drain now (gated unless --force)
 agentwire msg purge [<session>]      # drop a session's PENDING queue (self-heal a wedged inbox)
 ```
+
+`--body-file PATH` (`-` for stdin, same shape as `gh --body-file`) exists
+because a body **about code** carries backticks and `$(...)`, which the
+caller's shell executes as command substitution before `msg` ever sees the
+text — a word silently vanishes and the send still reports `Queued` (#944).
+Mutually exclusive with positional text. `notify-parent` takes the same flag;
+`council ask` already had `--file`/stdin. The MCP `msg_send` tool needs no
+equivalent: it passes structured arguments and never transits a shell, which
+is why the two paths differ in risk.
 
 `msg send` to a named session that doesn't currently exist still queues (the
 session may be about to be created) but **warns in the confirmation** — text

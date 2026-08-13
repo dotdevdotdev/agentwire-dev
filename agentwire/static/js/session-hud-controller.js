@@ -235,10 +235,12 @@ class HudController {
         for (const g of this._ghosts) {
             if (g.parent && knownNames.has(g.parent)) { out.push(g); continue; }
             if (!g.projectPath || repoNameFromPath(g.projectPath) === repo) {
-                // `parent` here is display-only (grafts the card under the
-                // focused family's wire) — `syntheticParent` tells
-                // `_adoptGhost` not to record it as the real creator, since
-                // this ghost never actually had one.
+                // `parent` here is display-only (places the card inside the
+                // focused family's block). `syntheticParent` makes the graft
+                // render AS a graft (#955): topology-render.js draws no
+                // connector wire and shows a "same repo — not a recorded
+                // child" note, and `_adoptGhost` refuses to record it as the
+                // real creator, since this ghost never actually had one.
                 out.push({ ...g, parent: this._contextSession, syntheticParent: true });
             }
         }
