@@ -6,7 +6,7 @@ the recipient's file inbox and the watchdog injects it only when the input box
 is empty and the pane is a safe target — so a worker reporting back never
 clobbers a half-typed human draft.
 
-    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] <text>
+    agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] <text | --body-file PATH>
     agentwire msg inbox [-s <session>]      # peek pending + passive (does not drain/consume)
     agentwire msg pull  [-s <session>]      # read + REMOVE passive (ingest) messages
     agentwire msg dead  [-s <session>]      # list dropped (dead-lettered) msgs
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 
-from . import inbox, pane_manager
+from . import core, inbox, pane_manager
 
 
 def _current_session() -> "str | None":
@@ -34,9 +34,28 @@ def _current_session() -> "str | None":
 
 def cmd_msg_send(args) -> int:
     """Enqueue a message for a session (or @all)."""
-    text = " ".join(args.text) if args.text else ""
+    body_file = getattr(args, "body_file", None)
+    if body_file is not None and args.text:
+        msg = "--body-file and positional text are mutually exclusive"
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": msg}))
+        else:
+            print(f"Error: {msg}")
+        return 1
+    if body_file is not None:
+        try:
+            text = core.read_body_file(body_file)
+        except OSError as exc:
+            if getattr(args, "json", False):
+                print(json.dumps({"success": False, "error": f"--body-file: {exc}"}))
+            else:
+                print(f"Error: --body-file: {exc}")
+            return 1
+    else:
+        text = " ".join(args.text) if args.text else ""
     if not text.strip():
-        print("Usage: agentwire msg send --to <session> <text>", flush=True)
+        print("Usage: agentwire msg send --to <session> <text | --body-file PATH>",
+              flush=True)
         if getattr(args, "json", False):
             print(json.dumps({"success": False, "error": "empty message"}))
         return 1
@@ -356,7 +375,8 @@ def register_msg_parser(subparsers) -> None:
     )
     send_parser.add_argument(
         "--kind", default="note", choices=inbox.KINDS,
-        help="Message kind (default: note)",
+        help="Message kind (default: note; `idle` is the idle handler's "
+             "synthetic placeholder, #952 — don't hand-send it)",
     )
     send_parser.add_argument(
         "--from", dest="from_session", default=None,
@@ -366,7 +386,12 @@ def register_msg_parser(subparsers) -> None:
         "--ref", default="",
         help="Optional machine-readable pointer (e.g. a report path) — surfaced as a typed field; ideal with --kind ingest",
     )
-    send_parser.add_argument("text", nargs="+", help="Message text")
+    send_parser.add_argument(
+        "--body-file", dest="body_file", default=None, metavar="PATH",
+        help="Read the message body from PATH ('-' for stdin) instead of "
+             "positional text — code-bearing bodies need no shell escaping (#944)",
+    )
+    send_parser.add_argument("text", nargs="*", help="Message text (or --body-file)")
     send_parser.add_argument("--json", action="store_true", help="Output JSON")
     send_parser.set_defaults(func=cmd_msg_send)
 

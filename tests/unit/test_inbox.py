@@ -344,6 +344,77 @@ class TestFlush:
         assert sent[0].count("[MSG from") == 3
         assert inbox.list_messages("s") == []
 
+    def test_four_plus_coalesce_never_exceeds_line_bound(self, isolate, monkeypatch):
+        # #930 regression (the chip regime): 4+ rendered lines in ONE paste
+        # collapse to the "[Pasted text]" chip, blinding the #689 stuck test —
+        # a swallowed Enter then wedges EVERY message in the paste, permanently
+        # (never healed, never dead-lettered, never emailed). The drain must
+        # never paste more than PASTE_MAX_LINES messages per blob.
+        for i in range(5):
+            inbox.enqueue("s", f"report {i}", sender="x")
+        sent = _patch_delivery(monkeypatch, empty=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 5 and not res["deferred"]
+        assert inbox.list_messages("s") == []
+        assert len(sent) == 2  # 3 + 2 — never a 5-line blob
+        for paste in sent:
+            assert len(paste.split("\n")) <= inbox.PASTE_MAX_LINES
+
+    def test_three_messages_still_one_paste(self, isolate, monkeypatch):
+        # The other side of the #930 line bound: 3 messages measured as fully
+        # healable (3 of 3 stuck hits at 386 chars) must stay a SINGLE paste.
+        for i in range(3):
+            inbox.enqueue("s", f"m{i}", sender="x")
+        sent = _patch_delivery(monkeypatch, empty=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 3
+        assert len(sent) == 1
+
+    def test_char_bound_splits_below_line_bound(self, isolate, monkeypatch):
+        # #930 regression (the windowing regime): character length governs
+        # independently of line count — 530 chars on ONE line windows with no
+        # chip and the heal misses. Two messages whose coalesced render
+        # exceeds PASTE_MAX_CHARS must split even though 2 ≤ PASTE_MAX_LINES.
+        inbox.enqueue("s", "a" * 250, sender="x")
+        inbox.enqueue("s", "b" * 250, sender="x")
+        sent = _patch_delivery(monkeypatch, empty=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 2 and not res["deferred"]
+        assert len(sent) == 2
+        for paste in sent:
+            assert len(paste) <= inbox.PASTE_MAX_CHARS
+
+    def test_small_pair_stays_one_paste(self, isolate, monkeypatch):
+        # Both-sides for the char bound: a pair comfortably under it coalesces.
+        inbox.enqueue("s", "short one", sender="x")
+        inbox.enqueue("s", "short two", sender="x")
+        sent = _patch_delivery(monkeypatch, empty=True)
+        inbox.flush_session("s")
+        assert len(sent) == 1
+
+    def test_oversized_single_message_pastes_alone(self, isolate, monkeypatch):
+        # A single message over the char bound can't be split — it goes alone
+        # (never starves the queue), and its neighbors go in their own paste.
+        inbox.enqueue("s", "x" * 600, sender="x")
+        inbox.enqueue("s", "tail", sender="x")
+        sent = _patch_delivery(monkeypatch, empty=True)
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 2
+        assert len(sent) == 2
+        assert "x" * 600 in sent[0] and "tail" in sent[1]
+
+    def test_batch_failure_defers_only_attempted_batch(self, isolate, monkeypatch):
+        # A refusal mid-drain penalizes only the batch that was actually
+        # pasted-at; the un-attempted tail stays pending with attempts == 0.
+        for i in range(5):
+            inbox.enqueue("s", f"r{i}", sender="x")
+        _patch_delivery(monkeypatch, empty=True, deliver=(False, "target_not_agent"))
+        res = inbox.flush_session("s")
+        assert res["deferred"] and res["reason"] == "target_not_agent"
+        msgs = inbox.list_messages("s")
+        assert len(msgs) == 5
+        assert [m.attempts for m in msgs] == [1, 1, 1, 0, 0]
+
     def test_empty_inbox_noop(self, isolate, monkeypatch):
         _patch_delivery(monkeypatch, empty=True)
         res = inbox.flush_session("s")

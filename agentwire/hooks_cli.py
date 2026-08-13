@@ -314,9 +314,15 @@ def _install_managed_file(source: Path, target: Path, force: bool = False, copy:
         target.unlink()
     if copy:
         shutil.copy2(source, target)
+        # Only the copied file gets a chmod. On the symlink path, chmod
+        # FOLLOWS the link — and when the package is a source checkout, the
+        # link points at a tracked file, so a chmod aimed at the install
+        # lands in the repo and dirties every dev's tree (#947). Execution
+        # through a symlink uses the target's mode, and the packaged hook
+        # scripts ship 755, so the link needs no chmod of its own.
+        target.chmod(0o755)
     else:
         target.symlink_to(source.resolve())
-    target.chmod(0o755)
     return True
 
 

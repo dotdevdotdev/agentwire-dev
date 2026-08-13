@@ -176,7 +176,18 @@ def gated_doc(fn):
     wrong, so the property is pinned over the WHOLE registry —
     ``test_no_published_description_carries_a_marker`` fails on any published
     description containing a marker, whatever put it there.
+
+    The resolution happens ONCE, at import, against whatever flag state the
+    process started with — so any later reader that wants to verify the
+    resolved text needs to know which flags it was resolved WITH, not which
+    flags are on now. ``__beta_enabled__`` records exactly that (and
+    ``__beta_raw_doc__`` the pre-resolution text), which is what lets the
+    byte-identity tests hold on a machine with a beta flag enabled instead of
+    silently asserting the developer's personal config (#1023).
     """
-    if fn.__doc__:
-        fn.__doc__ = render(fn.__doc__)
+    if fn.__doc__ and "beta:" in fn.__doc__:
+        enabled = enabled_flags()
+        fn.__beta_raw_doc__ = fn.__doc__
+        fn.__beta_enabled__ = frozenset(enabled)
+        fn.__doc__ = render(fn.__doc__, enabled=enabled)
     return fn

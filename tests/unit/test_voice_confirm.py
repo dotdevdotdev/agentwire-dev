@@ -2725,6 +2725,17 @@ class TestOutcomesAreDistinctAndSpoken:
         race_spine.confirm(racing.token)
         seen |= set(cancelled)
 
+        # build_failed: the argv could not be built — popped, never dispatched
+        # (#1005). Distinct from dispatch_failed because the runner never ran.
+        broken = convo.announced_proposal()
+        convo.approve(broken)
+
+        def _boom():
+            raise RuntimeError("render blew up")
+
+        broken.build_argv = _boom
+        seen.add(convo.spine.confirm(broken.token).reason)
+
         # cancelled: the ordinary retraction. Split from `denied` because it
         # POPS — "say the phrase again" cannot work once it has.
         retracted = convo.announced_proposal()
@@ -2906,6 +2917,96 @@ class TestOutcomesAreDistinctAndSpoken:
 # =============================================================================
 
 
+class TestABuildFailureIsSpokenNotSilent:
+    """#1005. ``build_argv`` runs after ``_proposals.pop()``, with the approving
+    utterance already spent — so before this, anything it threw destroyed an
+    APPROVED message with nothing anywhere saying why, which is the worst place
+    in the system to lose one. It is now guarded on its own, not folded into
+    the runner's except: the two failures are different facts. A runner failure
+    may have partially written ("I can't tell whether it took effect"); a
+    ``build_argv`` throw means the runner was NEVER called, so the system
+    positively knows nothing went out and may honestly invite a re-propose.
+
+    Both halves priced: the false-accept (claiming ``dispatch_failed``'s
+    uncertainty here) would send the owner to verify a session nothing was sent
+    to, and would leave re-propose looking unsafe when it is the exact remedy;
+    the false-reject half is the utterance already spent — one re-propose, and
+    the line says so.
+    """
+
+    def _broken(self, convo):
+        proposal = convo.announced_proposal()
+        convo.approve(proposal)
+
+        def boom():
+            raise RuntimeError("render blew up")
+
+        # Instance attribute shadows the method: the one throw site #1005 names.
+        proposal.build_argv = boom
+        return proposal
+
+    def test_the_throw_degrades_to_a_spoken_outcome_not_a_raise(self, convo, runner):
+        proposal = self._broken(convo)
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is False
+        assert verdict.reason == "build_failed"
+        payload = verdict.to_dict()
+        assert payload["must_speak"] is True
+        assert payload["say"].strip()
+        # Terminal: the handshake ends here, the owner is not told to wait.
+        assert payload["owner_should_wait"] is False
+        assert payload["confirm_terminal"] is True
+        # The runner was never reached — that is what separates this from
+        # dispatch_failed, and what makes "nothing was sent" true.
+        assert runner.calls == []
+
+    def test_the_line_states_the_certainty_it_actually_has(self):
+        line = confirm.SPOKEN["build_failed"].lower()
+        assert "nothing was sent" in line
+        assert "ask me again" in line
+        # It must NOT borrow dispatch_failed's hedge: the runner never ran, so
+        # "I can't tell" would be false uncertainty, and "check that session"
+        # sends the owner to verify a write that provably never went out.
+        assert "can't tell" not in line
+        assert "check that session" not in line
+
+    def test_a_retry_and_a_cancel_are_answered_truthfully(self, convo, runner):
+        """Deliberately NEITHER ``_failed`` nor ``_succeeded``: marking
+        ``_failed`` would make the retry say "check that session before asking
+        me again" about a write the system knows never went out. Unmarked, the
+        retry lands on ``no_proposal`` ("tell me again what you'd like sent")
+        and a cancel on ``nothing_to_cancel`` — both true, both naming the
+        owner's real next move."""
+        proposal = self._broken(convo)
+        assert convo.spine.confirm(proposal.token).reason == "build_failed"
+        assert convo.spine.confirm(proposal.token).reason == "no_proposal"
+        assert convo.spine.cancel(proposal.token).reason == "nothing_to_cancel"
+        assert runner.calls == []
+
+    def test_the_failure_is_recorded_so_buddy_sent_can_answer(
+        self, convo, runner, monkeypatch
+    ):
+        """The #1005 ruling on what ``buddy_sent`` shows for a proposal popped
+        but never dispatched: a record with an EMPTY argv and success False,
+        which ``delivery_state`` reads as ``dispatch_failed`` — whose meaning
+        in the outbox ("it never went out, the reason is in detail") is
+        literally true of a build failure."""
+        records = []
+        monkeypatch.setattr(
+            confirm.outbox,
+            "record_write",
+            lambda proposal, argv, result: records.append((proposal, argv, result)),
+        )
+        proposal = self._broken(convo)
+        convo.spine.confirm(proposal.token)
+        assert len(records) == 1
+        recorded, argv, result = records[0]
+        assert recorded is proposal
+        assert argv == []
+        assert result["success"] is False
+        assert "render blew up" in result["error"]
+
+
 class TestWriteToolSurface:
     @pytest.fixture
     def live(self, monkeypatch):
@@ -3014,6 +3115,34 @@ class TestWriteToolSurface:
         assert argv[8] == "--ref"
         assert argv[9] == str(relay.relay_path(proposal.id))
         assert len(argv) == 11
+
+    def test_the_cancel_description_tells_the_model_cancel_can_refuse(self):
+        """#1008. The description is part of the prompt the buddy reasons
+        over. "Does nothing and never fails" was falsified by #990 (the shared
+        claim gave cancel real refusal paths) — a model that believes it has
+        no reason to check the outcome or relay a refusal, and it was also
+        mis-instructing the ``no_proposal`` path into re-proposing the very
+        write the owner retracted. Pinned, because a model-facing description
+        drifting from the code had no test at all."""
+        descriptions = {
+            name: description
+            for name, description, _schema, _fn in write_tools.WRITE_TOOL_SPECS
+        }
+        for name, description in descriptions.items():
+            if not name.startswith("cancel_"):
+                continue
+            lowered = description.lower()
+            # The stale claims, swept with the phrasings spine-races-rev used.
+            for stale in (
+                "does nothing", "never fails", "cannot fail", "always succeeds",
+                "never refus", "refusing is free", "never gated",
+            ):
+                assert stale not in lowered, (name, stale)
+            # And the true ones: it can refuse, and a refusal must reach the
+            # owner rather than invite a re-propose of a retracted write.
+            assert "can refuse" in lowered, name
+            assert "say line" in lowered, name
+            assert "never re-propose" in lowered, name
 
     def test_cancel_never_writes(self, convo, runner, live):
         proposal = convo.announced_proposal()

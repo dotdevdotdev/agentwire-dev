@@ -291,10 +291,22 @@ def gated_triple(spec: WriteSpec) -> tuple:
             send,
         ),
         (
+            # "Does nothing and never fails" was true before #990 routed
+            # cancel through the shared claim, and stale after — and a tool
+            # description is MODEL-FACING: a model told cancelling is free has
+            # no reason to check the outcome or relay a refusal, which in a
+            # screenless channel is how a refused cancel becomes silence
+            # (#1008). Narrowed, not qualified: it states what cancel does,
+            # that it can refuse, and the one move its refusals must never
+            # invite.
             f"cancel_{spec.name}",
             (
                 f"Drop a proposal for {spec.action} the owner declined or "
-                "changed their mind about. Does nothing and never fails."
+                "changed their mind about. It performs no write itself, but it "
+                "CAN refuse: too late when the write is already going out, and "
+                "nothing-to-cancel when no proposal is pending. Always relay "
+                "the outcome's say line to the owner — and never re-propose a "
+                "write the owner just retracted."
             ),
             token_schema,
             cancel,

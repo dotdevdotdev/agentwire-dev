@@ -66,6 +66,7 @@ from .worktree import (
     is_registered_worktree,
     is_valid_branch_name,
     linked_git_worktrees,
+    main_worktree,
     parse_session_name,
     register_worktree,
     remove_worktree,
@@ -1024,7 +1025,15 @@ def cmd_worktree(args) -> int:
         project_base = Path(wt_config.default_project).expanduser().resolve()
     else:
         project_base = Path(os.getcwd())
-    project_path = git_root(project_base) or project_base
+    # ... then normalized to the repo's MAIN checkout (#954). `git_root` from
+    # inside a LINKED worktree returns that worktree's own top level, whose
+    # basename ("voice-control") is not the project — so --list/--prune read
+    # an empty registry and report a confident all-clear, and teardown looks
+    # for sessions named `<worktree-dir>-<name>` that never existed, removing
+    # the worktree while leaving its real session alive. The registry is keyed
+    # by the main repo path; every mode below must resolve to the same key
+    # regardless of which checkout the command runs from.
+    project_path = main_worktree(git_root(project_base) or project_base)
 
     # Per-project overrides (#705): the repo's .agentwire.yml `worktree:` block
     # (dir/base) beats the global config for THIS project. Precedence:
@@ -1450,6 +1459,23 @@ def _sessions_by_path() -> dict[str, str]:
     return out
 
 
+def _live_session_inside(worktree_path: Path) -> str | None:
+    """A live tmux session whose pane cwd is *worktree_path* or under it.
+
+    The teardown occupancy guard (#954): convention-blind, so it catches a
+    session whatever it is named — the whole point is that the resolved NAME
+    was wrong.
+    """
+    try:
+        root = str(worktree_path.resolve())
+    except (OSError, RuntimeError):
+        root = str(worktree_path)
+    for pane_path, sess in _sessions_by_path().items():
+        if pane_path == root or pane_path.startswith(root + os.sep):
+            return sess
+    return None
+
+
 def _session_for_worktree(
     worktree_path: Path, project_name: str, name: str, recorded: str | None = None,
 ) -> str:
@@ -1618,6 +1644,7 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
     """
     removed = []
     gc_merged_out = []
+    gc_refused = []
     gc_orphaned_tabs = []
     gc_merged = getattr(args, 'gc_merged', False)
     for e in list(worktree_registry.entries(project_path)):
@@ -1644,12 +1671,19 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                     gc_merged_out.append(e["session"])
                     for t in result.get("orphaned_tabs") or []:
                         gc_orphaned_tabs.append({**t, "session": e["session"]})
+                else:
+                    # A refusal (dirty worktree, live occupant) must be said,
+                    # not folded into "Nothing to prune" (#941/#954).
+                    gc_refused.append({"session": e["session"],
+                                       "error": result.get("error")})
     subprocess.run(["git", "-C", str(project_path), "worktree", "prune"],
                    capture_output=True)
     if json_mode:
         _output_json({"success": True, "pruned": removed, "gc_merged": gc_merged_out,
-                      "orphaned_tabs": gc_orphaned_tabs})
+                      "gc_refused": gc_refused, "orphaned_tabs": gc_orphaned_tabs})
     else:
+        for r in gc_refused:
+            print(f"SKIPPED {r['session']}: {r['error']}")
         if removed:
             print(f"Pruned {len(removed)} stale registry entr{'y' if len(removed) == 1 else 'ies'}: {', '.join(removed)}")
         if gc_orphaned_tabs:
@@ -1658,7 +1692,7 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                   f"{ids} — close via tabs_close_mcp")
         if gc_merged_out:
             print(f"GC'd {len(gc_merged_out)} merged worktree{'s' if len(gc_merged_out) != 1 else ''}: {', '.join(gc_merged_out)}")
-        if not removed and not gc_merged_out:
+        if not removed and not gc_merged_out and not gc_refused:
             print("Nothing to prune.")
     return 0
 
@@ -1876,7 +1910,7 @@ def _delete_branch_if_safe(
 def _teardown_entry(
     project_path: Path, worktree_dir: Path, session_name: str, worktree_path: Path,
     branch: str | None, base: str | None, *, keep_branch: bool = False, force_branch: bool = False,
-    close_pr_branch: bool = False, kill_session: bool = True,
+    close_pr_branch: bool = False, kill_session: bool = True, discard_changes: bool = False,
 ) -> dict:
     """Core atomic teardown: force-remove the worktree + prune, kill session,
     unregister, best-effort branch cleanup. Shared by --remove and
@@ -1903,6 +1937,11 @@ def _teardown_entry(
     disk with no session left to notice, on any removal failure (bad
     project_path, a stuck worktree, ...) (#740).
 
+    Two refusals precede any mutation: a DIRTY worktree (uncommitted changes
+    removal would destroy — #941's durability question; override with
+    ``discard_changes``) and a live UNRESOLVED occupant session (#954's
+    occupancy guard — see ``_live_session_inside``).
+
     ``kill_session=False`` for a "pane"-topology entry (#837): its
     ``session_name`` is the OWNING session, whose pane 0 is an unrelated
     orchestrator — killing it would take down the wrong thing entirely.
@@ -1917,6 +1956,50 @@ def _teardown_entry(
     """
     was_registered = is_registered_worktree(project_path, worktree_path)
     worktree_existed = worktree_path.exists()
+    session_existed = tmux_session_exists(session_name)
+
+    # Durability guard (#941). Teardown safety is two questions the old rule
+    # conflated: "is the work durable?" and "has it been integrated?". THIS
+    # guard asks the first — the only one session/worktree removal can
+    # actually destroy. Committed work survives worktree removal on the
+    # branch ref; UNCOMMITTED changes do not, so a dirty worktree refuses
+    # unless the caller explicitly discards. Merge verification remains the
+    # guard on BRANCH deletion (`_delete_branch_if_safe`), unchanged.
+    if worktree_existed and not discard_changes and (worktree_path / ".git").exists():
+        st = worktree_status(worktree_path)
+        if st.get("dirty"):
+            return {"success": False, "session": session_name,
+                    "path": str(worktree_path), "killed": False,
+                    "worktree_removed": False,
+                    "worktree_existed": worktree_existed,
+                    "session_existed": session_existed,
+                    "session_kill_skipped": not kill_session,
+                    "error": (f"worktree has uncommitted changes "
+                              f"(+{st['staged']}/~{st['unstaged']}/?{st['untracked']}) "
+                              "that removal would destroy. Commit them first, "
+                              "or pass --discard-changes to drop them.")}
+
+    # Occupancy guard (#954): when the resolved session name matches nothing
+    # live, but a LIVE session is running inside the worktree we're about to
+    # delete, resolution went wrong — proceeding removes the directory out
+    # from under a running session (the #868 failure arriving via a different
+    # route). "No live session by that name" and "no live session in this
+    # worktree" are different facts; only the second makes removal safe.
+    if worktree_existed and kill_session and not session_existed:
+        occupant = _live_session_inside(worktree_path)
+        if occupant and occupant != session_name:
+            return {"success": False, "session": session_name,
+                    "path": str(worktree_path), "killed": False,
+                    "worktree_removed": False,
+                    "worktree_existed": worktree_existed,
+                    "session_existed": False,
+                    "session_kill_skipped": not kill_session,
+                    "error": (f"live session '{occupant}' is running inside "
+                              f"{worktree_path}, but teardown resolved the "
+                              f"session name '{session_name}' (not live). "
+                              "Refusing to delete a running session's "
+                              "directory — re-run with the correct name, or "
+                              "kill the session first.")}
 
     # Force-remove the git worktree, then prune admin files either way.
     _, remove_error = remove_worktree(project_path, worktree_path, force=True)
@@ -1926,8 +2009,6 @@ def _teardown_entry(
     if worktree_path.exists() and not was_registered:
         shutil.rmtree(worktree_path, ignore_errors=True)
         hard_deleted_orphan = not worktree_path.exists()
-
-    session_existed = tmux_session_exists(session_name)
 
     if worktree_path.exists():
         reason = remove_error or "worktree directory still present after `git worktree remove --force`"
@@ -2029,6 +2110,7 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
         close_pr_branch=getattr(args, 'close_pr_branch', False),
         # A pane entry's session belongs to the orchestrator, not the worktree.
         kill_session=ref.topology != "pane",
+        discard_changes=getattr(args, 'discard_changes', False),
     )
     result["resolved_by"] = ref.source
 
@@ -2513,6 +2595,7 @@ def register_session_parser(subparsers) -> None:
         parser.add_argument("--keep-branch", action="store_true", help="With --remove: skip branch cleanup entirely (default: best-effort delete once confirmed merged)")
         parser.add_argument("--force-delete-branch", action="store_true", help="With --remove: delete the branch (local + remote) even if not confirmed merged. Refuses if the branch has an OPEN PR (would silently close it) unless --close-pr-branch is also given")
         parser.add_argument("--close-pr-branch", action="store_true", help="With --remove --force-delete-branch: also delete a branch that has an OPEN PR, closing it (explicit escape hatch for #756's guard)")
+        parser.add_argument("--discard-changes", action="store_true", help="With --remove: remove the worktree even if it has uncommitted changes, destroying them (#941 — by default a dirty worktree refuses; committed work always survives on the branch)")
         parser.add_argument("--prune", action="store_true", help="Drop registry entries whose worktree is gone + git worktree prune")
         parser.add_argument("--gc-merged", action="store_true", help="Tear down (session/worktree/branch) any registered entry whose branch is confirmed merged; implies --prune (runs standalone too)")
         parser.add_argument("--all", action="store_true", help="With --list/--dangling: include worktree sessions across every repo")

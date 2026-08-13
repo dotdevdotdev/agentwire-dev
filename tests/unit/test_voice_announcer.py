@@ -3084,6 +3084,36 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
         assert "a deferral is not a suppression" in note
         assert "not the owner's silence" in note
 
+    def test_the_note_counts_the_pump_deferral_and_derives_its_numbers(self):
+        """#1009. #997 put a delay strictly UPSTREAM of both counted deferrals
+        — pump() holds a queued item while a fallback utterance plays, bounded
+        by that utterance's speaking budget — so the paragraph's interval
+        arithmetic stopped being a complete bound in exactly the state where a
+        fallback utterance is live. The rewritten note states that leg, and
+        its numbers are DERIVED here from ``client.py``'s constants the same
+        way the interval numbers are: transcription across two files with
+        nothing connecting them is how the first number went stale, and the
+        second one after it."""
+        src = client.ANNOUNCER_JS
+        fallback, _owner = self._constants()
+        base_mult = int(
+            re.search(r"deps\.speakingMaxMs \|\| fallbackMs \* (\d+)", src).group(1)
+        )
+        per_char = int(
+            re.search(r"deps\.speakingMsPerChar === undefined \? (\d+)", src).group(1)
+        )
+        floor_s = fallback * base_mult // 1000
+        note = _source_prose(confirm.__file__)
+        # The pump leg, with the budget stated from the constants that bound it.
+        assert f"{floor_s}s floor + {per_char}ms/char" in note
+        assert "one speaking budget in front of" in note
+        # Narrowed, not qualified: the interval numbers are named as complete
+        # only in the no-audio state, rather than left reading as the bound.
+        assert "complete only when nothing is being spoken" in note
+        # And the silence claim survives for the stated reason — the pump leg
+        # is taken only behind audio the owner is hearing.
+        assert "extends the wait and never the silence" in note
+
     def test_the_ordinary_path_here_takes_both_legs_and_speaks_on_fire_five(self):
         """The ordinary path here takes BOTH legs and speaks on fire five.
 
@@ -3212,21 +3242,19 @@ class TestThePumpDefersToTheBrowserVoice:
         assert "false-reject (promoting too early)" in prose
 
     def test_the_comment_names_the_bound_this_delay_pushes_out(self):
-        """The cross-file half, and the reason it is written down rather than
-        assumed obvious: ``confirm.py``'s not_announced note bounds the wait for
-        that refusal in units of ``fallbackMs``, counted from the moment the
-        item becomes ``current``. This deferral happens BEFORE that, so in the
-        one state where a fallback utterance is live the note under-states its
-        own worst case. A behaviour change that silently falsifies a sentence
-        elsewhere is the defect class this whole layer keeps finding; naming it
-        in the file that caused it is the cheapest place it survives."""
+        """The cross-file half: ``confirm.py``'s not_announced note counts its
+        wait in ``fallbackMs`` intervals from the moment the item becomes
+        ``current``, and this deferral happens BEFORE that. #1009 closed the
+        gap — the note now counts this leg too — so the comment here must
+        state the closed relationship and no longer claim the note under-states
+        its own worst case (a comment claiming a defect that no longer exists
+        is the same drift with its polarity reversed)."""
         prose = _page_prose()
         assert "confirm.py's not_announced note" in prose
-        assert "under-states the worst case by up to one speaking budget" in prose
-        # And it is FILED, not merely commented. A caveat that lives only in a
-        # comment is invisible to the board the owner reads, and the ruling for
-        # this beta is that nothing known-open ships unfiled.
-        assert "Filed as #1009" in prose
+        assert "counts THIS deferral on top of that arithmetic" in prose
+        assert "under-states the worst case" not in prose
+        # And the wave-ownership clause went with the fix (#1009 scope 3).
+        assert "owned elsewhere the wave this landed in" not in prose
 
     def test_a_queued_item_is_not_pumped_into_the_starting_browser_voice(self):
         """The reproduction from #997, inverted.

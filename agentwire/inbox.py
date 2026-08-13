@@ -66,7 +66,15 @@ EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 #     which is a different axis from the interrupt tier. ``escalation`` remains
 #     the only kind that pre-empts (see ``_alert_dead_letters``'s promotion and
 #     the buddy client's ``isUrgent``).
-KINDS = ("note", "done", "request", "escalation", "ingest", "voice")
+#
+# ``idle`` is the idle handler SPEAKING FOR a child that went quiet without
+# reporting (#952). It used to travel as ``done`` with the sentinel text
+# "is idle and done working", which made a placeholder and a genuine report
+# the same shape at the point of collection — `wait --children` counted an
+# unreviewed PR as reviewed. The kind is the discriminator, never the text:
+# a child that legitimately sends those words as its own report stays `done`.
+# Synthetic, so NOT load-bearing (a dead-lettered placeholder is no loss).
+KINDS = ("note", "done", "request", "escalation", "ingest", "voice", "idle")
 
 # Kinds the drain never touches — they route to a subdir and are pull-only.
 PASSIVE_KINDS = ("ingest",)
@@ -948,6 +956,52 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
     return consumed
 
 
+# ── Coalesced-paste bounds (#930) ─────────────────────────────────────────
+# The #689 swallowed-Enter heal reads the input box, and Claude Code's box
+# stops showing the full paste in TWO independent regimes governed by
+# DIFFERENT variables (measured in a live pane — issue #930):
+#
+#   LINE COUNT — 4+ rendered lines collapse to the "[Pasted text]" chip
+#   (4 lines chip at 87 chars; the same 87 chars on ONE line render as text).
+#   The stuck test then matches nothing, so a drain that coalesced 4+
+#   messages wedges EVERY one of them: never healed, never dead-lettered,
+#   therefore never emailed. Routine on a busy fleet (`wait --children`
+#   with four reporting children IS the 4-message coalesce).
+#
+#   CHARACTER LENGTH — a long single-line paste WINDOWS (the box shows a
+#   bounded tail) well before it chips: 520 chars healed, 540 missed, at
+#   80×24. So "not a chip" is not evidence the heal will fire, and a fix
+#   scoped to the line-count cliff leaves this regime open.
+#
+# Both bounds therefore apply to the coalesced paste; neither substitutes
+# for the other. The char bound sits under the voice layer's measured
+# worst-case-clear (~385 against the 520 boundary) because a shorter pane
+# windows sooner and this fleet runs 64-column panes. A single message
+# whose own render exceeds the char bound is pasted alone — the drain
+# cannot split one message; bounding bodies at enqueue is a separate
+# decision (#930 leaves it open).
+PASTE_MAX_LINES = 3
+PASTE_MAX_CHARS = 380
+
+
+def _paste_batch(messages: list[Message]) -> list[Message]:
+    """Oldest-first prefix of *messages* that fits ONE safe coalesced paste.
+
+    Bounded by ``PASTE_MAX_LINES`` and ``PASTE_MAX_CHARS`` (see above).
+    Always returns at least one message so an oversized single message still
+    moves rather than starving the queue.
+    """
+    batch = [messages[0]]
+    total = len(messages[0].render())
+    for msg in messages[1:]:
+        line = msg.render()
+        if len(batch) >= PASTE_MAX_LINES or total + 1 + len(line) > PASTE_MAX_CHARS:
+            break
+        batch.append(msg)
+        total += 1 + len(line)
+    return batch
+
+
 def _cohort_held(session: str, messages: list[Message]) -> list[Message]:
     """Messages from *session*'s still-pending fan-out children (#852).
 
@@ -973,8 +1027,10 @@ def _cohort_held(session: str, messages: list[Message]) -> list[Message]:
 def flush_session(session: str, force: bool = False) -> dict:
     """Attempt to drain one session's inbox now.
 
-    Delivers oldest-first, coalescing all queued messages into a single paste
-    (one submit) when the box is empty. On any refusal the messages stay put,
+    Delivers oldest-first, coalescing queued messages into bounded pastes
+    (≤``PASTE_MAX_LINES`` messages / ≤``PASTE_MAX_CHARS`` chars each, #930 —
+    a bigger blob stops rendering fully in the input box, which blinds the
+    #689 swallowed-Enter heal) when the box is empty. On any refusal the messages stay put,
     their ``attempts`` bump, and over the cap they dead-letter. Never raises.
 
     *force* (the ``msg flush --force`` escape hatch) bypasses the empty-box /
@@ -1151,42 +1207,56 @@ def flush_session(session: str, force: bool = False) -> dict:
 
             _clear_box_state(session)  # box is empty — reset the static counter
 
-        rendered = "\n".join(m.render() for m in messages)
-        delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
-        if not delivered:
-            # delivery_unverified means the box-cleared confirm failed — but the
-            # paste may have LANDED. Consume any message now visible on scrollback
-            # (idempotent delivery) so a false-negative can't cause re-injection.
-            # Other reasons (gone/parked/non-agent/dialog) never pasted, so there's
-            # nothing to dedup.
-            consumed = (
-                _dedup_landed(session, messages)
-                if reason == "delivery_unverified"
-                else []
-            )
-            consumed_ids = {m.id for m in consumed}
-            remaining = [m for m in messages if m.id not in consumed_ids]
-            if not remaining:
+        # Deliver in bounded batches (#930): a coalesced paste over the line
+        # or char bound stops being fully visible in the input box (chip /
+        # windowing), which blinds the #689 stuck test — the exact heal that
+        # makes a swallowed Enter recoverable. safe_deliver confirms the box
+        # cleared before returning True, so pasting the next batch immediately
+        # is safe; on any refusal the un-attempted tail stays pending with NO
+        # penalty (the target didn't refuse those — we never pasted them).
+        delivered_total = pre_consumed
+        while messages:
+            batch = _paste_batch(messages)
+            rendered = "\n".join(m.render() for m in batch)
+            delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
+            if not delivered:
+                # delivery_unverified means the box-cleared confirm failed — but
+                # the paste may have LANDED. Consume any message now visible on
+                # scrollback (idempotent delivery) so a false-negative can't
+                # cause re-injection. Other reasons (gone/parked/non-agent/
+                # dialog) never pasted, so there's nothing to dedup.
+                consumed = (
+                    _dedup_landed(session, batch)
+                    if reason == "delivery_unverified"
+                    else []
+                )
+                consumed_ids = {m.id for m in consumed}
+                remaining = [m for m in batch if m.id not in consumed_ids]
+                delivered_total += len(consumed)
+                if not remaining:
+                    messages = messages[len(batch):]
+                    continue
+                dead = _bump_attempts(remaining, reason)
+                _log_event(
+                    "deferred", to=session, count=len(remaining), reason=reason,
+                )
                 return {
-                    "session": session, "delivered": pre_consumed + len(consumed),
-                    "deferred": False, "reason": "delivered",
+                    "session": session, "delivered": delivered_total,
+                    "deferred": True, "reason": reason, "dead": dead,
                 }
-            dead = _bump_attempts(remaining, reason)
-            _log_event("deferred", to=session, count=len(remaining), reason=reason)
-            return {
-                "session": session, "delivered": pre_consumed + len(consumed),
-                "deferred": True, "reason": reason, "dead": dead,
-            }
 
-        for msg in messages:
-            if msg.path is not None:
-                msg.path.unlink(missing_ok=True)
-        _log_event(
-            "delivered", to=session, count=len(messages),
-            kinds=[m.kind for m in messages],
-        )
+            for msg in batch:
+                if msg.path is not None:
+                    msg.path.unlink(missing_ok=True)
+            _log_event(
+                "delivered", to=session, count=len(batch),
+                kinds=[m.kind for m in batch],
+            )
+            delivered_total += len(batch)
+            messages = messages[len(batch):]
+
         return {
-            "session": session, "delivered": pre_consumed + len(messages),
+            "session": session, "delivered": delivered_total,
             "deferred": False, "reason": "delivered",
         }
     except Exception as exc:  # draining must never break the watchdog

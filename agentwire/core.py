@@ -1057,6 +1057,22 @@ def _get_all_machines() -> list[dict]:
         return []
 
 
+def read_body_file(path: str) -> str:
+    """Read a message body from *path*, or stdin when path is ``-`` (#944).
+
+    Free text destined for another agent must never require shell escaping:
+    backticks and ``$(...)`` are command substitution, so the caller's shell
+    eats them silently before the CLI ever sees the text — and the send still
+    reports success. A file (or stdin) removes the question instead of
+    answering it more carefully, same shape as ``gh --body-file``.
+
+    Raises OSError on an unreadable path; callers report it and fail the send.
+    """
+    if path == "-":
+        return sys.stdin.read()
+    return Path(path).read_text()
+
+
 def _output_json(data: dict) -> None:
     """Output JSON to stdout."""
     print(json.dumps(data, indent=2))

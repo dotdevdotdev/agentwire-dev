@@ -30,13 +30,18 @@ bashToolPatterns:
     reason: agentwire force remove operations
     anchored: true
 
-  # AgentWire directory destruction
-  - pattern: '\brm\s+.*\.agentwire'
-    reason: Removing .agentwire directory (destroys all AgentWire state)
-    anchored: true
-
-  - pattern: '\brm\s+.*~/.agentwire'
-    reason: Removing ~/.agentwire directory (destroys all AgentWire state)
+  # AgentWire directory destruction — keyed to the OPERATION, not the spelling
+  # (#949). The old ``\brm\s+.*\.agentwire`` matched ANY rm that mentioned the
+  # path anywhere, so every legitimate single-file cleanup inside the state
+  # directory (stale registry entries, dead-letter files, log rotation) was
+  # refused with a message claiming the command destroys all state. What is
+  # actually worth a hard block here is a recursive/forced rm whose TARGET is
+  # the .agentwire directory itself: both a -r/-R/-f (or --recursive/--force)
+  # flag AND a path terminating at .agentwire — a nested file cannot destroy
+  # the directory and falls through to core.yaml's ordinary (bypassable) rm
+  # rules with an honest reason.
+  - pattern: '\brm\s+(?:[^;&|]*\s)?-(?:[a-zA-Z]*[rRf][a-zA-Z]*|-recursive|-force)\b[^;&|]*\s(?:(?:~|\$HOME|/Users/[^/\s]+|/home/[^/\s]+)/)?\.agentwire/?(?=\s|$|[;&|])'
+    reason: Recursive/forced rm of the .agentwire directory itself (destroys AgentWire state)
     anchored: true
 
   # Note: `agentwire tasks promote` (#720/#721) is blocked via

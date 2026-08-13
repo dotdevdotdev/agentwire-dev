@@ -190,9 +190,10 @@ agentwire prompts clear -s name --pane 1  # drop a marker
 
 # Polite messaging (non-interrupting agent-to-agent inbox; see wiki sessions/messaging.md)
 agentwire msg send --to name "text"          # queue a message (delivers when their box is clear)
-agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation|ingest|voice
+agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation|ingest|voice|idle (idle = the idle hook's synthetic placeholder, #952)
 agentwire msg send --to name --kind ingest --ref "/path/report.md" "topic"  # PASSIVE: never auto-delivered, pull-only
 agentwire msg send --to @all "team update"   # broadcast to live agent sessions except sender
+agentwire msg send --to name --body-file /tmp/body.md  # code-bearing body, no shell escaping ('-' = stdin)
 agentwire msg inbox -s name                  # peek pending + passive (does not drain/consume)
 agentwire msg pull -s name                   # read + REMOVE passive (ingest) messages — the voluntary pull
 agentwire msg dead -s name                   # list dropped (dead-lettered) msgs + reason/timestamp

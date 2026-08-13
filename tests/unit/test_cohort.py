@@ -171,6 +171,60 @@ class TestCollect:
         assert [m.sender for m in inbox.list_messages("memory-manager")] == ["someone-else"]
 
 
+class TestIdlePlaceholderIsNotAReport:
+    """#952 — a child that idles without reporting must be counted as
+    idle-without-report, never as reported. The discriminator is the message
+    KIND (`idle`, minted only by `notify-parent --on-idle --queued`), not the
+    sentinel text — a sentinel is defeated by any child that happens to write
+    the same words in a genuine report."""
+
+    def test_idle_only_slot_resolves_as_idle_not_reported(self, isolate):
+        children = _fan_out(isolate, n=1)
+        inbox.enqueue("memory-manager", "is idle and done working",
+                      kind="idle", sender=children[0])
+        data = cohort.collect("memory-manager")
+        entry = data["children"][0]
+        assert entry["state"] == "resolved_idle"
+        assert isolate["killed"] == [children[0]]
+        summary = cohort.summarize(data)
+        assert summary["reports"] == []
+        assert [e["session"] for e in summary["idle"]] == [children[0]]
+        assert summary["failed"] == []
+
+    def test_literal_placeholder_text_as_done_kind_is_a_report(self, isolate):
+        # Acceptance in #952: a child that LEGITIMATELY sends this exact text
+        # as its own report is counted as reported.
+        children = _fan_out(isolate, n=1)
+        inbox.enqueue("memory-manager", "is idle and done working",
+                      kind="done", sender=children[0])
+        data = cohort.collect("memory-manager")
+        assert data["children"][0]["state"] == "reported"
+
+    def test_report_plus_placeholder_is_reported_without_the_synthetic_text(self, isolate):
+        children = _fan_out(isolate, n=1)
+        inbox.enqueue("memory-manager", "task complete: PR opened",
+                      kind="done", sender=children[0])
+        inbox.enqueue("memory-manager", "is idle and done working",
+                      kind="idle", sender=children[0])
+        data = cohort.collect("memory-manager")
+        entry = data["children"][0]
+        assert entry["state"] == "reported"
+        assert entry["report"] == "task complete: PR opened"
+        # Both messages consumed — nothing left for gc_sender to dead-letter.
+        assert inbox.list_messages("memory-manager") == []
+
+    def test_idle_worktree_child_is_left_running(self, isolate):
+        state = isolate
+        state["live"].update({"memory-manager", "wt-child"})
+        cohort.enroll("memory-manager", "wt-child", topology=cohort.WORKTREE)
+        inbox.enqueue("memory-manager", "is idle and done working",
+                      kind="idle", sender="wt-child")
+        data = cohort.collect("memory-manager")
+        assert data["children"][0]["state"] == "resolved_idle"
+        assert state["killed"] == []
+        assert cohort.summarize(data)["left_alive"] == ["wt-child"]
+
+
 class TestWorktreeChildrenAreNotTornDown:
     """#756 — a worktree child holds a branch and possibly an open PR, whose
     teardown follows merge verification, and its session is where a reviewer
@@ -241,7 +295,7 @@ class TestWait:
     def test_no_cohort_returns_immediately(self, isolate):
         result = cohort.wait("lonely", timeout=99)
         assert result == {"parent": "lonely", "cohort": False, "resolved": True,
-                          "pending": [], "reports": [], "failed": [],
+                          "pending": [], "reports": [], "idle": [], "failed": [],
                           "left_alive": [], "children": []}
 
     def test_straggler_surfaces_as_a_failure(self, isolate):
@@ -343,3 +397,20 @@ class TestWaitCli:
         inbox.enqueue("memory-manager", "all done", kind="done", sender=children[0])
         assert wait_cli.cmd_wait(args) == 0
         assert "all done" in capsys.readouterr().out
+
+    def test_idle_without_report_is_said_loudly(self, isolate, capsys):
+        # #952: "cohort resolved: 2 reported, 0 failed" for a child that did
+        # nothing is exactly the false all-clear this exists to prevent.
+        from agentwire import wait_cli
+
+        children = _fan_out(isolate, n=2)
+        inbox.enqueue("memory-manager", "real report", kind="done", sender=children[0])
+        inbox.enqueue("memory-manager", "is idle and done working",
+                      kind="idle", sender=children[1])
+        args = SimpleNamespace(session="memory-manager", timeout=0, json=False,
+                               children=True)
+        assert wait_cli.cmd_wait(args) == 0
+        out = capsys.readouterr().out
+        assert "1 reported, 1 idle-without-report, 0 failed" in out
+        assert "WARNING" in out and children[1] in out
+        assert "IDLE WITHOUT REPORT" in out
