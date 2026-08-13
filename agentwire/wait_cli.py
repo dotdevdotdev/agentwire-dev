@@ -49,6 +49,9 @@ def cmd_wait(args) -> int:
     for entry in result["reports"]:
         print(f"── {entry['session']} ──")
         print(entry["report"] or "(no report text)")
+    for entry in result.get("idle") or []:
+        print(f"── {entry['session']} ── IDLE WITHOUT REPORT: the child went "
+              "idle without sending a report — its work may not have happened")
     for entry in result["failed"]:
         state = "never reported" if entry["state"] == "timeout" else "session gone"
         print(f"── {entry['session']} ── FAILED: {state}")
@@ -59,8 +62,16 @@ def cmd_wait(args) -> int:
         print(f"still pending: {', '.join(result['pending'])} "
               "— call `agentwire wait --children` again to keep waiting")
         return 1
+    idle = result.get("idle") or []
     print(f"cohort resolved: {len(result['reports'])} reported, "
-          f"{len(result['failed'])} failed")
+          f"{len(idle)} idle-without-report, {len(result['failed'])} failed")
+    if idle:
+        # Loud on purpose (#952): a parent that reads "0 failed" will proceed,
+        # and here proceeding once meant treating unreviewed code as reviewed.
+        print("WARNING: "
+              + ", ".join(e["session"] for e in idle)
+              + " resolved WITHOUT reporting — verify their work actually "
+                "happened before acting on this cohort.")
     return 0
 
 

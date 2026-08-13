@@ -78,6 +78,15 @@ agentwire worktree --dangling --all  # every repo
 
 `agentwire doctor` also sweeps for the plain **orphan** shape now that every creation site registers: a worktree still on disk whose owning session is gone. It reports only — teardown stays with `--remove`/`--prune`, where the #756 merged-branch guards live.
 
+### Teardown asks two questions (#941)
+
+Teardown safety was long written as one rule — "verify the PR is merged before tearing down" — but it is really two questions, and they authorize **different acts**:
+
+1. **Is the work durable?** — committed (and, for anything a PR references, pushed), so the branch and PR exist independently of the session. This is what authorizes tearing down the **session and worktree**. Removing a worktree cannot destroy committed work — the branch ref lives on in the main repo — so the only thing at risk is *uncommitted changes*, and `--remove` refuses a dirty worktree (`--discard-changes` to override, destroying them deliberately).
+2. **Has it been integrated?** — merged, the issue CLOSED. This is what authorizes deleting the **branch**, and it keeps all the guards described below.
+
+Merge status is the common way of satisfying question 1, not the only way. A worker whose PR **by design never merges** — a spike branch, slice work PR'd into a spike branch — can never satisfy question 2, and holding its session open forever is pure cost. Once its work is committed and pushed, reap the session (`--remove --keep-branch` leaves branch and PR untouched); the branch-deletion guard is what still demands a verified merge.
+
 ### Teardown is atomic (#717)
 
 `--remove` kills the tmux session, force-removes the git worktree (`git worktree remove --force` + `git worktree prune`), and only THEN drops the registry entry — it never touches `main` or requires switching the primary checkout's branch, so it works even when `~/projects/<repo>` permanently holds `main`. If the directory somehow can't be cleared (e.g. its `.git` link is broken), the command fails LOUDLY — non-zero exit, `success: false`, the reason in `error` — and the registry entry is **kept** so `--list`/`--prune` still see it. It never silently "unregisters" an orphaned directory.
@@ -92,7 +101,7 @@ agentwire worktree --remove name --force-delete-branch --close-pr-branch  # ...e
 
 #### The orchestrator flow: ready → merge → verify → THEN teardown
 
-Never teardown a worker's worktree before its work has actually landed. The order is: the worker reports **ready** (draft PR open, notified back) → the orchestrator **merges** the PR → the orchestrator **verifies** the merge landed (issue CLOSED via `Closes #N`, not just "PR shown green" — a draft PR or a still-open PR is not landed) → **only then** teardown. Tearing down first and checking later is how real work gets dropped.
+Never teardown a worker's worktree before its work has actually landed. The order is: the worker reports **ready** (draft PR open, notified back) → the orchestrator **merges** the PR → the orchestrator **verifies** the merge landed (issue CLOSED via `Closes #N`, not just "PR shown green" — a draft PR or a still-open PR is not landed) → **only then** teardown. Tearing down first and checking later is how real work gets dropped. The exception is the never-merging branch above (#941): there, "landed" means committed-and-pushed, and the session is reaped with `--keep-branch` while the branch and PR persist.
 
 #### `--force-delete-branch` does not bypass an OPEN PR (#756)
 

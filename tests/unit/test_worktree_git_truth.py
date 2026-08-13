@@ -252,6 +252,153 @@ class TestPaneTopologyTeardownGuard:
         assert killed == []  # the orchestrator session survives
 
 
+class TestProjectResolvesToMainCheckout:
+    """#954 — `worktree --list`/`--prune` run from INSIDE a linked worktree
+    read the registry keyed on the worktree's directory name and reported a
+    confident all-clear. Every mode must resolve the same registry key
+    regardless of which checkout the command runs from."""
+
+    def _make_linked(self, repo, tmp_path):
+        wt = tmp_path / "voice-control"
+        _git(repo, "worktree", "add", "-q", "-b", "voice-control", str(wt))
+        return wt
+
+    def test_list_from_inside_a_worktree_sees_the_registry(self, repo, tmp_path,
+                                                           monkeypatch, capsys):
+        from agentwire import session_cli as m
+
+        register_worktree(repo, branch="other", session="myapp-other",
+                          base="main", worktree_path=tmp_path / "other-wt")
+        wt = self._make_linked(repo, tmp_path)
+        monkeypatch.setattr(m.os, "getcwd", lambda: str(wt))
+        monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+
+        args = type("A", (), {"json": True, "name": None, "list": True,
+                              "all": False, "project": None})()
+        assert m.cmd_worktree(args) == 0
+        import json as _json
+        out = _json.loads(capsys.readouterr().out)
+        assert [e["session"] for e in out["entries"]] == ["myapp-other"]
+
+    def test_prune_from_inside_a_worktree_prunes_the_stale_entry(self, repo, tmp_path,
+                                                                 monkeypatch, capsys):
+        from agentwire import session_cli as m
+
+        # A registered path that never exists on disk = the stale-entry shape
+        # --prune exists to drop.
+        register_worktree(repo, branch="gone", session="myapp-gone",
+                          base="main", worktree_path=tmp_path / "long-gone")
+        wt = self._make_linked(repo, tmp_path)
+        monkeypatch.setattr(m.os, "getcwd", lambda: str(wt))
+        monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+
+        args = type("A", (), {"json": True, "name": None, "list": False,
+                              "watch": False, "prune": True, "gc_merged": False,
+                              "all": False, "project": None})()
+        assert m.cmd_worktree(args) == 0
+        import json as _json
+        out = _json.loads(capsys.readouterr().out)
+        assert out["pruned"] == ["myapp-gone"]
+
+
+class TestTeardownOccupancyGuard:
+    """#954 — teardown resolved a session name that matched nothing live and
+    removed the worktree anyway, leaving the REAL session running inside a
+    deleted directory. When the resolved name is dead but a live session's
+    pane cwd is inside the worktree, refuse."""
+
+    def test_refuses_when_a_live_unresolved_session_occupies_the_worktree(
+            self, repo, tmp_path, monkeypatch):
+        from agentwire import session_cli as m
+
+        wt = tmp_path / "wt-occupied"
+        _git(repo, "worktree", "add", "-q", "-b", "occupied", str(wt))
+        monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+        monkeypatch.setattr(m, "_sessions_by_path",
+                            lambda: {str(wt.resolve()): "myapp-occupied"})
+
+        result = m._teardown_entry(repo, tmp_path, "voice-control-occupied", wt,
+                                   "occupied", "main")
+        assert result["success"] is False
+        assert "myapp-occupied" in result["error"]
+        assert wt.exists()
+
+    def test_matching_occupant_does_not_trip_the_guard(self, repo, tmp_path, monkeypatch):
+        from agentwire import session_cli as m
+
+        wt = tmp_path / "wt-mine"
+        _git(repo, "worktree", "add", "-q", "-b", "mine", str(wt))
+        monkeypatch.setattr(m.chrome_tabs, "REGISTRY_FILE", tmp_path / "tabs.json")
+        monkeypatch.setattr(m.shutil, "which", lambda *_: None)
+        monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+        monkeypatch.setattr(m, "_sessions_by_path",
+                            lambda: {str(wt.resolve()): "myapp-mine"})
+
+        result = m._teardown_entry(repo, tmp_path, "myapp-mine", wt,
+                                   "mine", "main", keep_branch=True)
+        assert result["success"] is True
+        assert not wt.exists()
+
+
+class TestDurabilityGuard:
+    """#941 — session/worktree teardown is authorized by DURABILITY (nothing
+    uncommitted at risk), branch deletion by a verified merge. A dirty
+    worktree refuses; a clean-but-never-merged one removes fine with the
+    branch kept."""
+
+    def _teardown(self, m, repo, tmp_path, wt, **kw):
+        return m._teardown_entry(repo, tmp_path, "myapp-x", wt, "x", "main",
+                                 keep_branch=True, **kw)
+
+    @pytest.fixture
+    def clean_env(self, tmp_path, monkeypatch):
+        from agentwire import session_cli as m
+
+        monkeypatch.setattr(m.chrome_tabs, "REGISTRY_FILE", tmp_path / "tabs.json")
+        monkeypatch.setattr(m.shutil, "which", lambda *_: None)
+        monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+        monkeypatch.setattr(m, "_sessions_by_path", lambda: {})
+        return m
+
+    def test_dirty_worktree_refuses(self, repo, tmp_path, clean_env):
+        m = clean_env
+        wt = tmp_path / "wt-dirty"
+        _git(repo, "worktree", "add", "-q", "-b", "x", str(wt))
+        (wt / "uncommitted.txt").write_text("real work\n")
+
+        result = self._teardown(m, repo, tmp_path, wt)
+        assert result["success"] is False
+        assert "--discard-changes" in result["error"]
+        assert wt.exists()
+        assert (wt / "uncommitted.txt").exists()
+
+    def test_discard_changes_overrides(self, repo, tmp_path, clean_env):
+        m = clean_env
+        wt = tmp_path / "wt-dirty2"
+        _git(repo, "worktree", "add", "-q", "-b", "x", str(wt))
+        (wt / "uncommitted.txt").write_text("discard me\n")
+
+        result = self._teardown(m, repo, tmp_path, wt, discard_changes=True)
+        assert result["success"] is True
+        assert not wt.exists()
+
+    def test_clean_never_merged_worktree_removes_and_keeps_the_branch(
+            self, repo, tmp_path, clean_env):
+        # The #941 spike shape: committed work, a branch that by design never
+        # merges. Session/worktree teardown is legitimate; the branch persists.
+        m = clean_env
+        wt = tmp_path / "wt-spike"
+        _git(repo, "worktree", "add", "-q", "-b", "x", str(wt))
+        (wt / "spike.txt").write_text("committed\n")
+        _git(wt, "add", "-A")
+        _git(wt, "commit", "-qm", "spike work")
+
+        result = self._teardown(m, repo, tmp_path, wt)
+        assert result["success"] is True
+        assert not wt.exists()
+        assert _git(repo, "rev-parse", "--verify", "x").returncode == 0
+
+
 # --- doctor: orphaned worktrees are finally visible (#837) ---
 
 class TestFindOrphanedWorktrees:

@@ -141,9 +141,14 @@ def cmd_notify_parent(args) -> int:
     if getattr(args, 'queued', False):
         from agentwire import inbox
 
+        # --on-idle marks the message as the idle handler's SYNTHETIC
+        # placeholder, not a report the child wrote (#952). The kind is the
+        # typed discriminator the cohort ledger keys on — sentinel text is
+        # defeated by any child that happens to write the same words.
+        kind = "idle" if getattr(args, 'on_idle', False) else "done"
         try:
             msgs = inbox.enqueue(
-                to=target_session, text=text, kind="done",
+                to=target_session, text=text, kind=kind,
                 sender=current_session or "unknown",
             )
         except (ValueError, OSError) as e:

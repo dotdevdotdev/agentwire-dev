@@ -483,7 +483,7 @@ skipped automatically because their pane 0 doesn't run an agent.
 ## CLI
 
 ```bash
-agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] [--ref <path>] <text | --body-file PATH>
+agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice|idle] [--ref <path>] <text | --body-file PATH>
 agentwire msg send --to agentwire-dev-fix-nav --kind done "PR #312 drafted"
 agentwire msg send --to anchor --kind ingest --ref /path/report.md "auth findings"  # passive
 agentwire msg send --to reviewer --kind request --body-file /tmp/findings.md       # code-bearing body, no escaping
