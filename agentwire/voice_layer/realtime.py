@@ -176,6 +176,41 @@ def parse_session_response(payload: dict, requested_model: str) -> dict:
     }
 
 
+#: Error codes/types where retrying is spending the owner's patience on a
+#: guaranteed no: the account has to change, not the timing. A bare 429 hid
+#: "You have no credits remaining" for a whole debugging session (#1037).
+TERMINAL_ERROR_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted"})
+
+
+def describe_error_body(status: int, body: str) -> str:
+    """Render ``(status): <what OpenAI actually said>`` for an error response.
+
+    Parses ``error.message``/``error.code`` when the body is the standard
+    OpenAI JSON error envelope, and appends "retrying won't help" for the
+    terminal codes. Anything unparseable falls back to the raw (truncated)
+    body next to the status — never less information than before (#1037).
+    """
+    detail = body[:500]
+    err: dict = {}
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+            err = parsed["error"]
+    except json.JSONDecodeError:
+        pass
+    if err.get("message") or err.get("code"):
+        parts = [str(err["message"])] if err.get("message") else []
+        if err.get("code"):
+            parts.append(f"[{err['code']}]")
+        detail = " ".join(parts)
+    terminal = (
+        err.get("code") in TERMINAL_ERROR_CODES
+        or err.get("type") in TERMINAL_ERROR_CODES
+    )
+    suffix = " — add credits; retrying won't help" if terminal else ""
+    return f"({status}): {detail}{suffix}"
+
+
 def mint_session(
     *,
     instructions: str,
@@ -210,8 +245,10 @@ def mint_session(
         with send(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:500]
-        raise RealtimeError(f"realtime mint failed ({exc.code}): {detail}", exc.code)
+        body = exc.read().decode("utf-8", "replace")
+        raise RealtimeError(
+            f"realtime mint failed {describe_error_body(exc.code, body)}", exc.code
+        )
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         raise RealtimeError(f"realtime mint failed: {exc}")
     return parse_session_response(payload, model)
