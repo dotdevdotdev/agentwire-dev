@@ -251,10 +251,39 @@ MAX_CONFIRM_ATTEMPTS = 5
 #: pass — and folding a spelling for a word we no longer mint is machinery with
 #: nothing to do. The selection rule replaces both: **one morpheme, no
 #: en-US/en-GB split.**
+#:
+#: **The base vocabulary is the NATO phonetic alphabet (#1039)** — designed for
+#: exactly this job and familiar to the owner — filtered by the admission test
+#: above, MEASURED against the real transcriber (``gpt-4o-mini-transcribe``)
+#: rather than assumed. ``tools/nonce_stt_probe.py`` synthesizes each candidate
+#: inside the real phrase ("confirm <word>") at three macOS voices (en-US,
+#: en-GB, en-AU) and admits a word only when every transcription across three
+#: runs renders it as exactly its canonical token. Measured 2026-08-13; the
+#: failures are the tuple's negative space and each is the harbor/harbour or
+#: digit failure reached through a different door:
+#:
+#: - ``alfa``/``alpha`` — BOTH spellings failed: rendered ``alpha`` or ``elva``.
+#: - ``juliett`` — the ICAO spelling never comes back; the transcriber emits
+#:   ``juliet``, which is the spelling admitted instead.
+#: - ``x-ray`` — segments as ``x ray``, both spellings, every run.
+#: - ``mike`` — rendered ``mic`` and ``my``. A homophone of a word this channel
+#:   is ABOUT is the worst candidate the alphabet contained.
+#: - ``papa`` — rendered ``popup``/``pop up``; one run also glued the phrase
+#:   into ``confirme papa``.
+#: - ``sierra`` — one run heard "confirms the error", i.e. the PHRASE itself
+#:   dissolved, not just the word.
+#: - ``foxtrot`` — rendered ``vostrot`` in one run of nine samples; unstable.
+#: - ``quebec`` — rendered ``québec`` (diacritic) in one run; ``normalize``
+#:   strips no diacritics, so that is a second spelling.
+#: - ``whiskey`` — measured stable across nine samples, but excluded by the
+#:   standing selection rule: ``whisky`` is a live en-GB/spirits split, the
+#:   harbor/harbour shape with a thinner measurement than the rule demands.
+#:
+#: Re-run the probe before adding a word; a word failing ANY run stays out.
 NONCE_WORDS = (
-    "tango", "banjo", "violet", "cobalt", "meadow", "falcon", "amber",
-    "kestrel", "juniper", "onyx", "saffron", "walrus", "domino", "pelican",
-    "quartz", "thistle", "vertigo", "narwhal", "gumbo", "lantern",
+    "bravo", "charlie", "delta", "echo", "golf", "hotel", "india", "juliet",
+    "kilo", "lima", "november", "oscar", "romeo", "tango", "uniform",
+    "victor", "yankee", "zulu",
 )
 
 #: Digit spellings, kept for normalization only. Nothing MINTS a digit nonce;
@@ -777,6 +806,75 @@ def classify(text: str, nonce: str) -> str:
 def matches_nonce(text: str, nonce: str) -> bool:
     """Convenience predicate: does *text* approve *nonce* outright?"""
     return classify(text, nonce) == APPROVED
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Plain Levenshtein distance. Inputs are short normalized tokens."""
+    if len(a) < len(b):
+        a, b = b, a
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + (ca != cb),
+            ))
+        previous = current
+    return previous[-1]
+
+
+def near_miss_heard(text: str, nonce: str) -> str:
+    """The token *text* rendered CLOSE to *nonce*, or ``""`` when none did.
+
+    The false-reject half of the gate, made diagnosable (#1039): when the
+    transcriber renders the code word as ``tang go`` or ``tangle``, the
+    taxonomy used to answer ``refused`` — "say confirm and then the word I gave
+    you" — which reads to the owner as "you were not heard at all". Naming what
+    WAS heard turns the retry into one word instead of a renegotiation.
+
+    This is messaging only, never matching: a near miss REFUSES exactly as it
+    always did, burns an attempt exactly as it always did, and nothing here can
+    approve. The bounds are what keep the diagnosis honest:
+
+    - Candidates are single normalized tokens and adjacent-pair merges (the
+      segmentation failure: ``tang go``), fillers removed.
+    - Distance is bounded (1 for a nonce of four letters or fewer, else 2) —
+      beyond that, "close" would be a guess spoken as a fact.
+    - **Distance zero is excluded.** An utterance carrying the exact nonce
+      without the confirm framing stays ``refused``, because the heard word is
+      spoken back in the refusal line and the fallback channel must never
+      carry the nonce (#953). Structural, not cosmetic: this function's return
+      value is guaranteed to differ from *nonce*.
+    - A candidate at or under the bound must also be STRICTLY closer to this
+      nonce than to every other word in :data:`NONCE_WORDS`, and never one of
+      them outright — a near miss must not cross into another live token, and
+      an exact other-alphabet word is ``wrong_nonce`` territory, not this.
+    """
+    target = normalize(nonce)
+    bound = 1 if len(target) <= 4 else 2
+    tokens = [t for t in normalize(text).split() if t not in _FILLERS]
+    candidates = list(tokens)
+    candidates.extend(a + b for a, b in zip(tokens, tokens[1:]))
+    best = ""
+    best_distance = bound + 1
+    for candidate in candidates:
+        if candidate == target or candidate in NONCE_WORDS:
+            continue
+        if candidate in _CONFIRM_WORDS or candidate in _DENIAL_WORDS:
+            continue
+        distance = _edit_distance(candidate, target)
+        if distance == 0 or distance > bound or distance >= best_distance:
+            continue
+        if any(
+            _edit_distance(candidate, other) <= distance
+            for other in NONCE_WORDS
+            if other != nonce
+        ):
+            continue
+        best, best_distance = candidate, distance
+    return best
 
 
 def request_utterance_from(ring) -> str:
@@ -1390,6 +1488,16 @@ SPOKEN = {
         "I didn't hear the confirmation phrase, so I haven't sent anything. "
         "Say confirm and then the word I gave you."
     ),
+    # A refusal that can NAME what was heard (#1039). ``{heard}`` is filled by
+    # :attr:`Verdict.spoken` from ``heard_word``, which ``near_miss_heard``
+    # guarantees is never the nonce itself — the fallback voice speaks this
+    # line, and the fallback channel must never carry the nonce (#953). The
+    # advice is the full phrase, not the bare word, because the bare word does
+    # not approve and advice that cannot work is the taxonomy's cardinal sin.
+    "near_miss": (
+        "I heard {heard} — close, but not quite the code word, so I haven't "
+        "sent anything. Say confirm and the word I gave you, once more."
+    ),
     "wrong_nonce": (
         "That was a different code word, so I haven't sent anything. "
         "Ask me what the word was and I'll say it again."
@@ -1614,7 +1722,8 @@ WAIT_OUTCOMES = frozenset(
 REASONS = frozenset(
     {
         "no_proposal", "expired", "not_announced", "replayed", "refused",
-        "wrong_nonce", "quoted_frame", "denied", "pending_transcript",
+        "near_miss", "wrong_nonce", "quoted_frame", "denied",
+        "pending_transcript",
         "too_many_attempts", "dispatch_failed", "build_failed", "in_flight",
         "cancel_in_flight", "nothing_to_cancel", "cancelled",
     }
@@ -1642,12 +1751,23 @@ class Verdict:
     #: whenever two proposals interleave. Empty means the write has no session
     #: target, and the key is then omitted rather than shipped empty.
     acted_session: str = ""
+    #: The near-miss token, set only on ``reason == "near_miss"``. Filled into
+    #: the spoken line so the owner hears what WAS heard (#1039). Guaranteed by
+    #: :func:`near_miss_heard` to never be the nonce.
+    heard_word: str = ""
 
     @property
     def spoken(self) -> str:
         if self.approved:
             return ""
-        return SPOKEN.get(self.reason) or "I couldn't do that, so nothing was sent."
+        line = SPOKEN.get(self.reason) or "I couldn't do that, so nothing was sent."
+        if self.reason == "near_miss":
+            # The template needs a word; an empty one (a hand-built Verdict)
+            # degrades to the plain refused line rather than speaking a blank.
+            if not self.heard_word:
+                return SPOKEN["refused"]
+            return line.format(heard=self.heard_word)
+        return line
 
     def to_dict(self) -> dict:
         if self.approved:
@@ -2220,6 +2340,21 @@ class ConfirmSpine:
                 return Verdict(
                     approved=False, reason="wrong_nonce", utterance=wrong_nonce.text
                 )
+            # Before the generic refusal: did any usable entry render the code
+            # word CLOSE to right (#1039)? Newest first, same order the judge
+            # binds approvals. Messaging only — still a refusal, still burns an
+            # attempt — but the spoken line names what was heard, so the retry
+            # is one word rather than a renegotiation. Denials never reach
+            # here: the loop above returns on DENIED before this runs.
+            for entry in reversed(usable):
+                heard = near_miss_heard(entry.text, proposal.nonce)
+                if heard:
+                    return Verdict(
+                        approved=False,
+                        reason="near_miss",
+                        utterance=entry.text,
+                        heard_word=heard,
+                    )
             return Verdict(
                 approved=False, reason="refused", utterance=usable[-1].text
             )
@@ -2374,6 +2509,7 @@ __all__ = [
     "is_buddy_echo",
     "matches_nonce",
     "mint_nonce",
+    "near_miss_heard",
     "normalize",
     "render_body",
     "reply_nudge",

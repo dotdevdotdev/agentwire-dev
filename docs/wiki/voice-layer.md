@@ -992,6 +992,31 @@ fold token-for-token (`rip cord` is two tokens), and folding a spelling for a
 word nothing mints is machinery with nothing to do. The rule replaces both —
 **one morpheme, no en-US/en-GB split.**
 
+**The base vocabulary is the NATO phonetic alphabet (#1039), filtered by that
+same admission test — MEASURED, not assumed.** `tools/nonce_stt_probe.py`
+synthesizes each candidate inside the real phrase ("confirm <word>") at three
+macOS voices and sends it to the real transcription model; a word joins only if
+every transcription across three runs renders exactly its canonical token.
+Measured 2026-08-13, eight NATO words failed: `alfa`/`alpha` (both spellings —
+rendered `alpha` or `elva`), `juliett` (comes back `juliet`, which is admitted
+instead), `x-ray` (segments as `x ray`), `mike` (`mic`, `my`), `papa`
+(`popup`), `sierra` (one run dissolved the phrase into "confirms the error"),
+`foxtrot` (`vostrot`, one run of nine), `quebec` (`québec`, a diacritic second
+spelling). `whiskey` measured stable but is excluded by the standing
+no-en-US/en-GB-split rule (`whisky`). The shipped alphabet is the 18 survivors,
+pinned in the tests with a minimum pairwise edit distance of 3.
+
+**`near_miss` is the false-reject half made diagnosable (#1039).** When a
+transcription renders the code word close-but-wrong (`tangle`, `tang go`), the
+verdict names what WAS heard — "I heard tangle — close, but not quite the code
+word" — so the retry is one word, not a renegotiation. Messaging only, never
+matching: it refuses exactly as `refused` did, burns an attempt, and cannot
+approve. Bounds keep the diagnosis honest: edit distance ≤ 2 (≤ 1 for short
+nonces), single tokens plus adjacent-pair merges, strictly closer to this nonce
+than to any other alphabet word, denial/confirm/alphabet words excluded — and
+**distance zero is excluded by design**, because the heard word is spoken back
+in the refusal and the fallback channel must never carry the nonce (#953).
+
 Disfluencies are skipped **between the confirm word and the nonce**, for the same
 reason the denial grammar strips them before matching: "confirm, uh, tango" is
 the phrase, said by someone hesitating before a code word, which is exactly how
@@ -1181,6 +1206,7 @@ the set `SPOKEN` is checked against **both ways**:
 | `not_announced` | **wait** — the buddy hasn't finished saying it |
 | `replayed` | nothing — it already went out |
 | `refused` | say the phrase |
+| `near_miss` | say the phrase once more — the line names what WAS heard (#1039) |
 | `wrong_nonce` | ask what the word was |
 | `quoted_frame` | say confirm and the word on its own — the word was right |
 | `denied` | say the phrase again when you're ready — the proposal is still live |
