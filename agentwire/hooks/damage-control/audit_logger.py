@@ -9,7 +9,8 @@ Format: One JSON object per line (JSONL)
 
 Fields:
 - timestamp: ISO 8601 timestamp
-- session_id: AgentWire session ID (from env)
+- session_id: AgentWire session name (env override → tmux pane → #871 metadata)
+- conversation_id: Claude conversation UUID (from the hook stdin payload)
 - agent_id: Agent identifier (if in parallel execution)
 - tool: Tool name (Bash, Edit, Write)
 - command: Command/path that was checked
@@ -21,9 +22,18 @@ Fields:
 
 import json
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# The hook's parsed stdin payload. Each damage-control hook assigns this right
+# after ``json.load(sys.stdin)`` so every log_* call in that process carries
+# attribution without threading a kwarg through every call site. Claude Code
+# puts the conversation UUID in the payload's ``session_id`` field — the same
+# id agentwire mints and records per #871 — so this is the recorded identity,
+# not a scrape.
+HOOK_INPUT: dict = {}
 
 
 def get_log_dir() -> Path:
@@ -41,10 +51,101 @@ def get_log_file() -> Path:
     return log_dir / f"{today}.jsonl"
 
 
+def _conversation_id() -> Optional[str]:
+    """Claude's conversation UUID for this hook invocation, or None.
+
+    Comes from the hook stdin payload (``session_id`` there is the
+    conversation id agentwire mints per #871).
+    """
+    cid = HOOK_INPUT.get("session_id") if isinstance(HOOK_INPUT, dict) else None
+    return cid if isinstance(cid, str) and cid else None
+
+
+def _tmux_session_name() -> Optional[str]:
+    """The tmux session this hook process runs inside, or None.
+
+    The hook inherits ``TMUX``/``TMUX_PANE`` from the pane's shell, so asking
+    tmux for ``#S`` names the agentwire session directly (session names ARE
+    tmux session names). Never raises; a couple-second timeout bounds the
+    worst case.
+    """
+    if not os.environ.get("TMUX"):
+        return None
+    cmd = ["tmux", "display-message", "-p", "#S"]
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        cmd[2:2] = ["-t", pane]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=2, check=False,
+        )
+    except Exception:
+        return None
+    name = result.stdout.strip() if result.returncode == 0 else ""
+    return name or None
+
+
+def _sessions_dir() -> Path:
+    """Mirror of ``core.sessions_dir()`` — the SSOT root for #871 records.
+
+    This hook is a standalone PEP 723 script (uv isolated env) and cannot
+    import ``agentwire.core``, so the join is mirrored here; the structural
+    SSOT test exempts exactly this line.
+    """
+    agentwire_dir = os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire"))
+    return Path(agentwire_dir) / "sessions"
+
+
+def _session_from_metadata(conversation_id: str) -> Optional[str]:
+    """Resolve a session name by scanning #871's recorded launch metadata.
+
+    ``~/.agentwire/sessions/<name>/metadata.json`` carries the
+    ``conversation_ids`` chain; the entry containing this conversation id names
+    the session. Best-effort — corrupt/missing records are skipped.
+    """
+    try:
+        entries = list(_sessions_dir().iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        meta_file = entry / "metadata.json"
+        try:
+            metadata = json.loads(meta_file.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        chain = metadata.get("conversation_ids") or []
+        if isinstance(chain, list) and conversation_id in chain:
+            return entry.name
+    return None
+
+
 def get_session_context() -> dict:
-    """Extract session context from environment variables."""
+    """Session attribution for an audit row (#940 prerequisite).
+
+    ``session_id`` is the agentwire session NAME; ``conversation_id`` is the
+    Claude conversation UUID from the hook payload. Resolution order for the
+    name: explicit env override → tmux (the pane the hook runs in) → #871
+    metadata scan by conversation id → ``"unknown"``.
+
+    FAIL-OPEN by design: attribution must never block an action or crash the
+    hook, so every probe swallows its own failures and the worst outcome is
+    the pre-#940 row shape ("unknown").
+    """
+    conversation_id = None
+    session = os.environ.get("AGENTWIRE_SESSION_ID") or None
+    try:
+        conversation_id = _conversation_id()
+        if not session:
+            session = _tmux_session_name()
+        if not session and conversation_id:
+            session = _session_from_metadata(conversation_id)
+    except Exception:
+        pass
     return {
-        "session_id": os.environ.get("AGENTWIRE_SESSION_ID", "unknown"),
+        "session_id": session or "unknown",
+        "conversation_id": conversation_id,
         "agent_id": os.environ.get("AGENTWIRE_AGENT_ID", "main"),
     }
 
@@ -80,6 +181,7 @@ def log_entry(
     entry = {
         "timestamp": datetime.now().isoformat(),
         "session_id": context["session_id"],
+        "conversation_id": context["conversation_id"],
         "agent_id": context["agent_id"],
         "tool": tool,
         "command": command,

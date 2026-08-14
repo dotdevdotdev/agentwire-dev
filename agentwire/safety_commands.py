@@ -460,6 +460,118 @@ def safety_logs_cmd(
     return 0
 
 
+def summarize_audit_blocks(days: int = 14) -> Dict[str, Any]:
+    """Aggregate blocked audit rows over a window — the #940 measurement.
+
+    Reads ``~/.agentwire/logs/damage-control/*.jsonl`` for the last *days*
+    daily files (filename-dated, so no per-row timestamp parsing) and counts
+    blocks by tier (attended vs unattended — ``blocked_by`` starting with
+    ``"unattended"``, the same discriminator #940 used), by rule id, and by
+    session. Also reports attribution coverage: rows written before the #940
+    prerequisite carry ``session_id: "unknown"`` and no ``conversation_id``,
+    and any error-rate analysis needs to know how much of the window that is.
+    """
+    summary: Dict[str, Any] = {
+        "days": days,
+        "total_blocks": 0,
+        "attended": 0,
+        "unattended": 0,
+        "by_rule": {},
+        "by_session": {},
+        "by_tool": {},
+        "attributed": 0,
+        "unattributed": 0,
+        "files_read": 0,
+    }
+    if not LOGS_DIR.exists():
+        return summary
+
+    from datetime import timedelta
+
+    cutoff = datetime.now().date() - timedelta(days=days - 1)
+    for log_file in sorted(LOGS_DIR.glob("*.jsonl")):
+        try:
+            file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            continue
+        try:
+            lines = log_file.read_text().splitlines()
+        except OSError:
+            continue
+        summary["files_read"] += 1
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("decision") != "blocked":
+                continue
+            summary["total_blocks"] += 1
+            blocked_by = entry.get("blocked_by") or ""
+            tier = "unattended" if blocked_by.startswith("unattended") else "attended"
+            summary[tier] += 1
+            rule = entry.get("rule_id") or "(no rule_id recorded)"
+            summary["by_rule"][rule] = summary["by_rule"].get(rule, 0) + 1
+            tool = entry.get("tool") or "unknown"
+            summary["by_tool"][tool] = summary["by_tool"].get(tool, 0) + 1
+            session = entry.get("session_id") or "unknown"
+            if session == "unknown" and not entry.get("conversation_id"):
+                summary["unattributed"] += 1
+            else:
+                summary["attributed"] += 1
+            per = summary["by_session"].setdefault(
+                session, {"attended": 0, "unattended": 0}
+            )
+            per[tier] += 1
+    return summary
+
+
+def format_safety_report(summary: Dict[str, Any]) -> str:
+    """Human rendering of :func:`summarize_audit_blocks`."""
+    lines = [
+        f"Damage-control blocks — last {summary['days']} days "
+        f"({summary['files_read']} log files)",
+        "=" * 60,
+        f"total blocks : {summary['total_blocks']}",
+        f"  attended   : {summary['attended']}",
+        f"  unattended : {summary['unattended']}",
+        f"attribution  : {summary['attributed']} attributed, "
+        f"{summary['unattributed']} unattributed (pre-#940 rows)",
+    ]
+    if summary["by_rule"]:
+        lines += ["", "By rule:"]
+        for rule, count in sorted(summary["by_rule"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {count:6d}  {rule}")
+    if summary["by_tool"]:
+        lines += ["", "By tool:"]
+        for tool, count in sorted(summary["by_tool"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {count:6d}  {tool}")
+    if summary["by_session"]:
+        lines += ["", "By session (attended / unattended):"]
+        ranked = sorted(
+            summary["by_session"].items(),
+            key=lambda kv: -(kv[1]["attended"] + kv[1]["unattended"]),
+        )
+        for session, per in ranked:
+            lines.append(
+                f"  {per['attended'] + per['unattended']:6d}  {session}"
+                f"  ({per['attended']} / {per['unattended']})"
+            )
+    return "\n".join(lines)
+
+
+def safety_report_cmd(days: int = 14, json_output: bool = False) -> int:
+    """CLI command: ``agentwire safety report``."""
+    summary = summarize_audit_blocks(days)
+    if json_output:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(format_safety_report(summary))
+    return 0
+
+
 def safety_tooldefs_list_cmd() -> int:
     """CLI command: ``agentwire safety tooldefs list``."""
     tooldefs_dir = TOOLDEFS_DIR if TOOLDEFS_DIR.exists() else None

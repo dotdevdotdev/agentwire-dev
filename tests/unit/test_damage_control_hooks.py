@@ -1706,13 +1706,26 @@ class TestAuditLogger:
         monkeypatch.setenv("AGENTWIRE_SESSION_ID", "sess-123")
         monkeypatch.setenv("AGENTWIRE_AGENT_ID", "worker-1")
         ctx = audit_module.get_session_context()
-        assert ctx == {"session_id": "sess-123", "agent_id": "worker-1"}
+        assert ctx == {
+            "session_id": "sess-123",
+            "conversation_id": None,
+            "agent_id": "worker-1",
+        }
 
     def test_session_context_defaults(self, audit_module, monkeypatch):
         monkeypatch.delenv("AGENTWIRE_SESSION_ID", raising=False)
         monkeypatch.delenv("AGENTWIRE_AGENT_ID", raising=False)
+        # Isolate from the test runner's own tmux/metadata (#940 attribution
+        # would legitimately resolve them).
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setattr(audit_module, "HOOK_INPUT", {})
         ctx = audit_module.get_session_context()
-        assert ctx == {"session_id": "unknown", "agent_id": "main"}
+        assert ctx == {
+            "session_id": "unknown",
+            "conversation_id": None,
+            "agent_id": "main",
+        }
 
     def test_log_dir_creates_path(self, audit_module, tmp_path):
         log_dir = audit_module.get_log_dir()

@@ -909,6 +909,9 @@ agentwire safety logs --session agentwire-dev/auth-refactor
 
 # Search for specific pattern
 agentwire safety logs --pattern "rm -rf"
+
+# Summarize blocks by tier / rule / session over a window (#940 measurement)
+agentwire safety report --days 14 [--json]
 ```
 
 **Audit Log Format**:
@@ -916,6 +919,7 @@ agentwire safety logs --pattern "rm -rf"
 {
   "timestamp": "2026-04-30T13:45:22Z",
   "session_id": "agentwire-dev/damage-control",
+  "conversation_id": "2f9c…-uuid",
   "agent_id": "wave-2-task-1",
   "tool": "Bash",
   "command": "rm -rf /tmp/test",
@@ -924,6 +928,14 @@ agentwire safety logs --pattern "rm -rf"
   "pattern_matched": "\\brm\\s+-[rRf]"
 }
 ```
+
+**Attribution (#940 prerequisite):** `session_id` is the agentwire session
+name and `conversation_id` the Claude conversation UUID from the hook stdin
+payload (the identity #871 records). Resolution: `AGENTWIRE_SESSION_ID` env →
+tmux (`#S` of the pane the hook runs in) → scan of
+`~/.agentwire/sessions/*/metadata.json` `conversation_ids` chains. Fail-open by
+design: attribution never blocks an action or crashes the hook; when nothing
+resolves the row carries the pre-#940 `"unknown"`.
 
 ---
 

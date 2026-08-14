@@ -3729,6 +3729,14 @@ def main() -> None:
         print(f"Error reading input: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Session attribution for audit rows (#940): hand the parsed payload to
+    # audit_logger so every log_* call carries the conversation id. Fail-open.
+    try:
+        import audit_logger as _audit_logger
+        _audit_logger.HOOK_INPUT = input_data
+    except Exception:
+        pass
+
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
     # Claude Code passes ``permission_mode`` in the hook input. Two modes
