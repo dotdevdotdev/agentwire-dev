@@ -192,6 +192,7 @@ class TestHookSubprocessAttribution:
             },
             tmp_path,
         )
+        assert proc.returncode in (0, 2)
         rows = [r for r in _read_rows(tmp_path) if r["decision"] == "blocked"]
         if rows:  # only assert attribution when the bundled rules blocked it
             assert rows[-1]["conversation_id"] == "conv-uuid-2"
