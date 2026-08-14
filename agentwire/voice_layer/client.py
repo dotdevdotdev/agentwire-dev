@@ -1315,6 +1315,31 @@ function log(who, text, cls) {
   $log.scrollTop = $log.scrollHeight;
 }
 
+// The status code alone hid "You have no credits remaining" behind a bare
+// 429 for a whole debugging session (#1037). When the body is the standard
+// OpenAI error envelope, say what it said — and say whether retrying can
+// help: insufficient_quota / credit_balance_exhausted is terminal, while a
+// plain rate-limit stays exactly the message it was, so a retryable blip
+// never reads as permanent (both halves priced). Unparseable bodies fall
+// back to the bare status — never less than before.
+function describeApiFailure(prefix, status, bodyText) {
+  let detail = "";
+  let terminal = false;
+  try {
+    const err = (JSON.parse(bodyText) || {}).error;
+    if (err && (err.message || err.code)) {
+      const parts = [];
+      if (err.message) parts.push(err.message);
+      if (err.code) parts.push("[" + err.code + "]");
+      detail = ": " + parts.join(" ");
+      terminal = ["insufficient_quota", "credit_balance_exhausted"]
+        .some((c) => c === err.code || c === err.type);
+    }
+  } catch (e) { /* not JSON — the bare status is the fallback */ }
+  return prefix + " (" + status + ")" + detail
+    + (terminal ? " — add credits; retrying won't help" : "");
+}
+
 async function post(path, body) {
   const res = await fetch(path, {
     method: "POST",
@@ -1827,7 +1852,13 @@ async function start() {
         "Content-Type": "application/sdp",
       },
     });
-    if (!answer.ok) throw new Error("realtime connect failed (" + answer.status + ")");
+    if (!answer.ok) {
+      // Read the body BEFORE throwing: OpenAI delivers the real reason there
+      // ("You have no credits remaining"), and discarding it reduced a
+      // terminal condition to a retry-me status code (#1037).
+      const bodyText = await answer.text().catch(() => "");
+      throw new Error(describeApiFailure("realtime connect failed", answer.status, bodyText));
+    }
     await pc.setRemoteDescription({ type: "answer", sdp: await answer.text() });
   } catch (err) {
     log("error", String(err && err.message || err), "err");

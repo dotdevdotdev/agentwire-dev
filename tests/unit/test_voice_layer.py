@@ -604,6 +604,67 @@ class TestRealtime:
         with pytest.raises(realtime.RealtimeError):
             realtime.parse_session_response(payload, "gpt-realtime-2.1")
 
+    def test_terminal_error_body_names_the_reason_and_says_dont_retry(self):
+        """A bare 429 hid "no credits remaining" for a debugging session
+        (#1037): the body's message must ride next to the status, and a
+        terminal code must say retrying won't help."""
+        body = json.dumps({"error": {
+            "message": "You have no credits remaining. Add credits to continue.",
+            "type": "insufficient_quota",
+            "code": "credit_balance_exhausted",
+        }})
+        rendered = realtime.describe_error_body(429, body)
+        assert "You have no credits remaining" in rendered
+        assert "[credit_balance_exhausted]" in rendered
+        assert "(429)" in rendered
+        assert "retrying won't help" in rendered
+
+    def test_terminal_type_alone_is_enough(self):
+        """OpenAI puts insufficient_quota in ``type`` on some errors; the
+        hint must not depend on which field carries it."""
+        body = json.dumps({"error": {"message": "quota", "type": "insufficient_quota"}})
+        assert "retrying won't help" in realtime.describe_error_body(429, body)
+
+    def test_plain_rate_limit_stays_retryable(self):
+        """Both halves priced (#1037): a retryable blip must never read as
+        permanent, so a plain rate-limit gets no terminal hint."""
+        body = json.dumps({"error": {
+            "message": "Rate limit reached", "type": "requests", "code": "rate_limit_exceeded",
+        }})
+        rendered = realtime.describe_error_body(429, body)
+        assert "Rate limit reached" in rendered
+        assert "retrying won't help" not in rendered
+
+    @pytest.mark.parametrize("body", ["", "<html>gateway timeout</html>", '{"nope": 1}'])
+    def test_unparseable_body_falls_back_to_status_plus_raw(self, body):
+        rendered = realtime.describe_error_body(502, body)
+        assert "(502)" in rendered
+        assert body[:500] in rendered
+        assert "retrying won't help" not in rendered
+
+    def test_mint_http_error_carries_the_parsed_body(self, monkeypatch):
+        """The mint path itself (not just the helper) must surface it."""
+        import io
+        import urllib.error
+
+        monkeypatch.setenv(realtime.API_KEY_ENV, "sk-test")
+
+        def opener(request, timeout):
+            raise urllib.error.HTTPError(
+                realtime.CLIENT_SECRETS_URL, 429, "Too Many Requests", {},
+                io.BytesIO(json.dumps({"error": {
+                    "message": "You have no credits remaining.",
+                    "type": "insufficient_quota",
+                    "code": "credit_balance_exhausted",
+                }}).encode("utf-8")),
+            )
+
+        with pytest.raises(realtime.RealtimeError) as exc:
+            realtime.mint_session(instructions="x", tools=[], opener=opener)
+        assert "no credits remaining" in str(exc.value)
+        assert "retrying won't help" in str(exc.value)
+        assert exc.value.status == 429
+
     def test_missing_api_key_names_the_blessed_location(self, monkeypatch):
         monkeypatch.delenv(realtime.API_KEY_ENV, raising=False)
         with pytest.raises(realtime.RealtimeError, match=r"~/\.agentwire"):
@@ -713,6 +774,19 @@ class TestBridge:
 
         page = client.page("buddy", 'tok"with-quote')
         assert 'const TOKEN = "tok\\"with-quote"' in page
+
+    def test_connect_failure_reads_the_body_not_just_the_status(self):
+        """#1037: the page must read the OpenAI error body on a failed
+        connect and carry the terminal don't-retry hint — a bare status is
+        only the fallback for unparseable bodies."""
+        from agentwire.voice_layer import client
+
+        page = client.page("buddy", "tok")
+        assert "describeApiFailure" in page
+        assert "await answer.text()" in page
+        assert "retrying won't help" in page
+        assert "insufficient_quota" in page
+        assert "credit_balance_exhausted" in page
 
     def test_default_port_avoids_the_portal(self):
         from agentwire.voice_layer import server
