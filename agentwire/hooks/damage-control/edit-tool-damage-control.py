@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "ed36d64d7cea91450987aa38dbe19729e6f8687b4d11b5ca4216d954a346c416", "generated_at": "2026-08-13T20:38:12Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e191ee140a246252a671c00b3d0b5c8e272529c628acb412afd315cc51484a25", "generated_at": "2026-08-14T00:35:16Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -671,6 +671,7 @@ def load_config(
     """
     merged: Dict[str, Any] = {
         "bashToolPatterns": [],
+        "mcpToolPolicies": [],
         "zeroAccessPaths": [],
         "readOnlyPaths": [],
         "noDeletePaths": [],
@@ -693,7 +694,7 @@ def load_config(
                 data = yaml.safe_load(f) or {}
             for key in merged:
                 items = data.get(key, []) or []
-                if key == "bashToolPatterns":
+                if key in ("bashToolPatterns", "mcpToolPolicies"):
                     for it in items:
                         if isinstance(it, dict):
                             _assign_rule_id(it, rules_file.stem, taken_ids, duplicate_ids)
@@ -3660,6 +3661,122 @@ def check_read_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
             return True, f"zero-access path {zero_path} (no read access)"
 
     return False, ""
+
+
+# ============================================================================
+# MCP TOOL POLICY (#923)
+# ============================================================================
+#
+# The bash rules are written against shell command STRINGS; an MCP tool call is
+# a name plus a JSON argument object, so those rules cannot transfer without
+# importing the string-matching defects (#915/#916). What a rule MEANS for a
+# structured tool call is a per-tool classification — issue #923's option (1):
+# each tool carries a tier the same decision ladder the Bash hook uses, with a
+# stable id that ``unattended_allow`` / ``disabled_rules`` can name.
+#
+# Policies live in the same rule YAMLs the heal deploys, under
+# ``mcpToolPolicies``. An entry is::
+#
+#     - tool: mcp__agentwire__worktree_remove   # exact full tool name, OR
+#       match: "(write|delete|remove)"          # regex searched on the name
+#       tier: ask            # allow | ask | block   (default: ask)
+#       mutates: true        # screen protected control-plane path args
+#       id: mcp.agentwire.worktree-remove
+#       reason: tears down a worktree and can delete a branch
+#
+# First match wins, in rule-file load order. ``mutates`` decides whether the
+# tool's path-valued arguments are screened against the PROTECTED control
+# plane (zero-access secrets are screened for every tool regardless — the
+# path's mere presence in a call is the leak). Defaulted to true for any
+# non-``allow`` tier.
+#
+# THE DEFAULT FOR UNCLASSIFIED TOOLS — the decision #923 calls "the whole
+# design" — is ALLOW with path screening, i.e. exactly the #1036 posture,
+# stated as data rather than implied by a matcher. Fail-closed would make
+# every unclassified tool (every third-party server, every tool added after
+# this file shipped) dead until classified — and in an unattended session a
+# wrongful tool refusal is a silent loop, which prices worse than the residual
+# gap: the dangerous core is classified explicitly, secrets are screened for
+# every tool, and control-plane writes are caught by the bundled name-shape
+# fallback entry (data, host-editable — no longer a hardcoded regex).
+
+_MCP_TIERS = {"allow", "ask", "block"}
+
+
+def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Decide allow/ask/block for an MCP tool CALL by per-tool policy (#923).
+
+    Returns ``{decision, reason, id, mutates, matched}`` — the same decision
+    vocabulary as :func:`check_command`, so the hook's unattended fail-closed
+    ladder and ``unattended_allow`` grants apply to tools unchanged. A tool
+    call names no filesystem target, so grants are evaluated with
+    ``scopeable=False`` by the caller (a path-scoped grant refuses).
+
+    ``mutates`` is None when NO policy matched — the caller distinguishes
+    "classified as non-mutating" from "unclassified" (the latter may fall back
+    to a bridge heuristic on installs whose rules dir predates mcp-tools.yaml).
+    """
+    safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
+    disabled_rules = set(safety_cfg.get("disabled_rules", []) or [])
+
+    # No YAML parser ⇒ no policies loaded ⇒ fail closed, same as check_command.
+    if config.get("_parser_unavailable"):
+        return {
+            "decision": "block",
+            "reason": str(config["_parser_unavailable"]),
+            "id": None,
+            "mutates": None,
+            "matched": False,
+        }
+
+    if safety_cfg.get("enabled", True) is False:
+        return {
+            "decision": "allow",
+            "reason": "safety disabled",
+            "id": None,
+            "mutates": None,
+            "matched": False,
+            "disabled": True,
+        }
+
+    for entry in config.get("mcpToolPolicies", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        rule_id = entry.get("id")
+        if rule_id and rule_id in disabled_rules:
+            continue
+        exact = entry.get("tool")
+        pattern = entry.get("match")
+        hit = False
+        if isinstance(exact, str) and exact:
+            hit = exact == tool_name
+        elif isinstance(pattern, str) and pattern:
+            try:
+                hit = bool(re.search(pattern, tool_name, re.IGNORECASE))
+            except re.error:
+                continue
+        if not hit:
+            continue
+        tier = str(entry.get("tier", "ask")).strip().lower()
+        if tier not in _MCP_TIERS:
+            # An unknown tier is a policy the author believes they set. Fail
+            # toward the confirmable middle, never silently to allow.
+            tier = "ask"
+        return {
+            "decision": tier,
+            "reason": entry.get("reason", f"MCP tool policy {rule_id or exact or pattern}"),
+            "id": rule_id,
+            "mutates": bool(entry.get("mutates", tier != "allow")),
+            "matched": True,
+        }
+
+    return {
+        "decision": "allow",
+        "reason": "no MCP tool policy matched",
+        "id": None,
+        "mutates": None,
+        "matched": False,
+    }
 # === END GENERATED ===
 
 
