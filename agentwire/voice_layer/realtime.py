@@ -148,7 +148,16 @@ def build_session_request(
                     # 24kHz PCM is what browser mic capture is documented to send.
                     "format": {"type": "audio/pcm", "rate": 24000},
                     "transcription": {"model": DEFAULT_TRANSCRIPTION_MODEL},
-                    "turn_detection": {"type": "semantic_vad"},
+                    # interrupt_response is the server-side half of barge-in
+                    # (#1041): owner speech cancels the in-flight response and
+                    # stops the model's audio stream. It documents to default
+                    # true; stated explicitly because barge-in is a core
+                    # interaction here and a silent default flip would present
+                    # as "she talks through me" with nothing to grep for.
+                    "turn_detection": {
+                        "type": "semantic_vad",
+                        "interrupt_response": True,
+                    },
                 },
                 "output": {"voice": voice},
             },

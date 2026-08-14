@@ -581,6 +581,9 @@ class TestRealtime:
         assert session["model"] == realtime.DEFAULT_MODEL
         assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
         assert session["audio"]["input"]["turn_detection"]["type"] == "semantic_vad"
+        # The server-side half of barge-in (#1041): stated, not defaulted — a
+        # silent default flip would present as "she talks through me".
+        assert session["audio"]["input"]["turn_detection"]["interrupt_response"] is True
         assert session["audio"]["output"]["voice"] == realtime.DEFAULT_VOICE
         assert session["tool_choice"] == "auto"
         # Reads plus the one gated write (Slice 1) — every allowlisted tool.
