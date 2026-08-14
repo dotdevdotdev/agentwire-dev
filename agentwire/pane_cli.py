@@ -246,7 +246,7 @@ def cmd_list(args) -> int:
     remote_only = getattr(args, 'remote', False)
     machine_filter = getattr(args, 'machine', None)
     show_context = getattr(args, 'context', False)
-    show_sessions = getattr(args, 'sessions', False) or show_context
+    show_sessions = getattr(args, 'sessions', False) or show_context or getattr(args, 'services', False)
 
     # Check if we're inside a tmux session
     current_session = pane_manager.get_current_session()
@@ -288,9 +288,16 @@ def cmd_list(args) -> int:
     for machine_sessions in remote_by_machine.values():
         all_sessions.extend(machine_sessions)
 
+    # Classify infrastructure services vs user-facing work (#1038) — one SSOT
+    # predicate (services.is_service_session), shared with the portal sidebar.
+    from . import services as services_mod
+    services_mod.annotate_service_sessions(all_sessions)
+    svc_summary = services_mod.service_sessions_summary(all_sessions)
+    show_services = getattr(args, 'services', False)
+
     # Output
     if json_mode:
-        _output_json({"success": True, "sessions": all_sessions})
+        _output_json({"success": True, "sessions": all_sessions, "services": svc_summary})
         return 0
 
     # Text output - grouped by machine
@@ -317,6 +324,11 @@ def cmd_list(args) -> int:
     # Display all sessions grouped by machine
     for machine_id, sessions in sorted(all_machines.items(), key=lambda x: (x[0] is not None, x[0])):
         label = machine_id if machine_id else "local"
+        # Healthy services collapse into the summary line below; an unhealthy
+        # one stays in the listing so it surfaces loudly (#1038).
+        if not show_services:
+            sessions = [s for s in sessions
+                        if not s.get("service") or s.get("service_healthy") is False]
         print(f"{label}:")
         if sessions:
             for s in sessions:
@@ -333,10 +345,18 @@ def cmd_list(args) -> int:
                     else:
                         flag = " ⚠ LOW" if ctx.get("flagged") else ""
                         ctx_marker = f"  ctx={ctx['remaining_pct']}% left{flag}"
-                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}{ctx_marker}")
+                svc_marker = ""
+                if s.get("service"):
+                    svc_marker = (f" [service — UNHEALTHY: {s.get('service_detail')}]"
+                                  if s.get("service_healthy") is False
+                                  else " [service]")
+                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}{ctx_marker}{svc_marker}")
         else:
             print("  (no sessions)")
         print()
+
+    if not show_services and svc_summary["count"]:
+        print(f"Services: {svc_summary['line']}  (--services to list them)")
 
     return 0
 
@@ -1142,6 +1162,9 @@ def register_pane_parser(subparsers) -> None:
     list_parser.add_argument("--remote", action="store_true", help="Only show remote sessions")
     list_parser.add_argument("--machine", help="Filter by specific machine ID")
     list_parser.add_argument("--sessions", action="store_true", help="Show sessions instead of panes")
+    list_parser.add_argument("--services", action="store_true",
+                             help="List infrastructure service sessions inline instead of "
+                                  "collapsing healthy ones into the summary line (implies --sessions)")
     list_parser.add_argument("--context", action="store_true",
                              help="Annotate each session with its Claude Code context headroom "
                                   "(remaining %%); flags sessions running low (implies --sessions)")

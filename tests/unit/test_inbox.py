@@ -1345,3 +1345,23 @@ class TestStuckInBox:
         remaining = inbox.list_messages("s")
         assert len(remaining) == 1 and "beta" in remaining[0].text
         assert pasted == []
+
+
+class TestBroadcastServiceExclusion:
+    """#1038 — @all never fans out to infrastructure service sessions."""
+
+    def test_at_all_excludes_services(self, isolate, monkeypatch):
+        from agentwire import services
+        monkeypatch.setattr(
+            inbox, "_live_agent_sessions",
+            lambda: ["a", "agentwire-notifications", "orch"])
+        monkeypatch.setattr(
+            services, "is_service_session",
+            lambda s: s == "agentwire-notifications")
+        written = inbox.enqueue("@all", "team update", sender="orch")
+        assert sorted(m.to for m in written) == ["a"]
+
+    def test_service_still_reachable_by_name(self, isolate, monkeypatch):
+        monkeypatch.setattr(inbox, "_live_agent_sessions", lambda: ["a"])
+        written = inbox.enqueue("agentwire-notifications", "direct", sender="orch")
+        assert [m.to for m in written] == ["agentwire-notifications"]
