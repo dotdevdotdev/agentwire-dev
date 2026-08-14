@@ -332,3 +332,33 @@ class TestSpeakability:
         assert "`" not in body
         assert "- " not in body  # no bullet lists in a spoken prompt
         assert "response.create" not in body
+
+
+class TestGateFirstThenSpeak:
+    """#1039 part 1. Observed live: the buddy said "ok great, I'll send it
+    out" BEFORE the matcher ruled, then contradicted itself one line later.
+    The prompt must forbid pre-acknowledgment, and the outcome line must be
+    the tool result's own "say" — the spine's spoken template — never the
+    model's optimistic guess. Prose is not the mechanism (the gate is), but a
+    prompt that INVITES the contradiction is a defect of its own."""
+
+    def test_the_rule_is_present_and_orders_gate_before_speech(self):
+        text = instructions.VOICE_MODE
+        assert "GATE FIRST, THEN SPEAK" in text
+        assert "until send_session_message has returned" in text
+
+    def test_the_outcome_line_is_the_tool_results_say(self):
+        assert 'speak the "say" line the result hands back' in (
+            instructions.VOICE_MODE
+        )
+
+    def test_it_forbids_the_observed_pre_acknowledgment_shape(self):
+        text = instructions.VOICE_MODE
+        assert "do not acknowledge it" in text
+        # The observed contradiction, named so the rule stays anchored to it.
+        assert "I'll send it out" in text
+
+    def test_the_near_miss_relay_is_named(self):
+        """The heard-word diagnosis only helps if the model passes it on
+        verbatim rather than paraphrasing it away."""
+        assert "names what was heard" in instructions.VOICE_MODE

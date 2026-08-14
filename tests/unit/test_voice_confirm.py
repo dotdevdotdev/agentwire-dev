@@ -236,7 +236,7 @@ class TestNonceGrammar:
 
     def test_a_wrong_nonce_is_its_own_outcome(self):
         """"repeat it" and "ask what the code was" are different advice."""
-        assert confirm.classify("confirm violet", "tango") == confirm.WRONG_NONCE
+        assert confirm.classify("confirm bravo", "tango") == confirm.WRONG_NONCE
         assert confirm.classify("confirm tango", "tango") == confirm.APPROVED
 
     def test_no_nonce_word_has_a_second_transcriber_rendering(self):
@@ -307,7 +307,7 @@ class TestNonceGrammar:
         assert confirm.classify("confirm the tango step", "tango") == confirm.NO_MATCH
         # and the wrong-nonce scan uses the same skipping, or a hesitated
         # wrong code word reports "say it again" instead of "ask me the word".
-        assert confirm.classify("confirm, uh, violet", "tango") == confirm.WRONG_NONCE
+        assert confirm.classify("confirm, uh, bravo", "tango") == confirm.WRONG_NONCE
 
     def test_an_exception_never_masks_the_token_after_its_own_span(self):
         """BLOCKER: the masking loop ate one token too many.
@@ -2576,6 +2576,152 @@ class TestAttribution:
 
 
 # =============================================================================
+# The NATO alphabet and the near-miss diagnosis (#1039)
+# =============================================================================
+
+
+class TestTheNonceAlphabetIsNato:
+    """The base vocabulary is the NATO phonetic alphabet, filtered by the
+    one-transcriber-rendering admission test — MEASURED via
+    tools/nonce_stt_probe.py against gpt-4o-mini-transcribe (2026-08-13),
+    never assumed. These pins hold the measured shape."""
+
+    #: The words the measurement REJECTED, each with its observed failure
+    #: rendering recorded at NONCE_WORDS. Their absence is the measurement.
+    MEASURED_REJECTS = {
+        "alfa", "alpha", "juliett", "mike", "papa", "quebec", "sierra",
+        "foxtrot", "xray", "x-ray", "whiskey", "whisky",
+    }
+
+    def test_every_word_survives_its_own_normalization(self):
+        """A word normalize() rewrites can never match its own transcript."""
+        for word in confirm.NONCE_WORDS:
+            assert confirm.normalize(word) == word, word
+
+    def test_the_measured_rejects_are_absent(self):
+        assert not self.MEASURED_REJECTS & set(confirm.NONCE_WORDS)
+
+    def test_one_token_one_morpheme_lowercase(self):
+        for word in confirm.NONCE_WORDS:
+            assert word.isalpha() and word.islower(), word
+            assert " " not in word and "-" not in word, word
+
+    def test_words_are_mutually_distinct_beyond_the_near_miss_bound(self):
+        """Pairwise edit distance >= 3, so a near miss within the bound of 2
+        can never sit as close to another live token as to its own."""
+        words = confirm.NONCE_WORDS
+        for i, a in enumerate(words):
+            for b in words[i + 1:]:
+                assert confirm._edit_distance(a, b) >= 3, (a, b)
+
+    def test_no_word_collides_with_the_grammar(self):
+        grammar = set(confirm._DENIAL_WORDS) | set(confirm._FILLERS) | set(
+            confirm._CONFIRM_WORDS
+        )
+        assert not grammar & set(confirm.NONCE_WORDS)
+
+    def test_the_alphabet_is_large_enough_to_mint_from(self):
+        """MAX outstanding proposals in practice is single digits; exhaustion
+        must stay unreachable."""
+        assert len(confirm.NONCE_WORDS) >= 15
+
+
+class TestNearMissDiagnosis:
+    """#1039 part 3: a refusal that can name what WAS heard does so — and it
+    is messaging ONLY. Nothing here approves, and the deny side is untouched."""
+
+    def test_a_one_letter_slip_is_named(self):
+        assert confirm.near_miss_heard("confirm tangle", "tango") == "tangle"
+
+    def test_a_segmented_nonce_is_diagnosed(self):
+        """"tang go" names the close fragment; the adjacent-pair merge exists
+        for renderings no single token gets close to."""
+        assert confirm.near_miss_heard("confirm tang go", "tango") == "tang"
+        # The merge wins only when it is strictly closer than any one token.
+        assert confirm.near_miss_heard("confirm tan goz", "tango") == "tangoz"
+
+    def test_the_exact_nonce_is_never_the_heard_word(self):
+        """Distance zero is excluded BY DESIGN: the heard word is spoken back
+        in the refusal, and the fallback channel never carries the nonce
+        (#953). A bare exact nonce stays a plain refusal."""
+        assert confirm.near_miss_heard("tango", "tango") == ""
+        # A segmentation whose merge IS the nonce reports the near fragment,
+        # never the reassembled nonce itself.
+        assert confirm.near_miss_heard("tan go", "tango") == "tan"
+
+    def test_it_never_crosses_into_another_live_token(self):
+        for word in confirm.NONCE_WORDS:
+            heard = confirm.near_miss_heard(f"confirm {word}", "tango")
+            assert heard == "", word
+
+    def test_far_words_are_not_called_close(self):
+        assert confirm.near_miss_heard("confirm banana", "tango") == ""
+        assert confirm.near_miss_heard("Yeah.", "tango") == ""
+
+    def test_denial_words_are_never_diagnosed_as_near_misses(self):
+        """"no" is one edit from several short words in principle; the grammar
+        words are excluded outright so a retraction can never be answered with
+        "close, say it once more"."""
+        assert confirm.near_miss_heard("no", "onyx") == ""
+
+    def test_the_gate_speaks_the_heard_word_and_never_the_nonce(
+        self, convo, runner
+    ):
+        proposal = convo.announced_proposal()
+        convo.says(f"confirm {proposal.nonce}z")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is False
+        assert verdict.reason == "near_miss"
+        assert runner.calls == []
+        line = verdict.spoken
+        assert verdict.heard_word == f"{proposal.nonce}z"
+        assert verdict.heard_word in line
+        # The nonce itself must not ride the refusal line (#953) — as a WORD;
+        # the heard token necessarily contains it as a substring here.
+        assert proposal.nonce not in confirm.normalize(line).split()
+
+    def test_a_near_miss_still_burns_an_attempt(self, convo):
+        proposal = convo.announced_proposal()
+        for _ in range(confirm.MAX_CONFIRM_ATTEMPTS - 1):
+            convo.says(f"confirm {proposal.nonce}z")
+            assert convo.spine.confirm(proposal.token).reason == "near_miss"
+        convo.says(f"confirm {proposal.nonce}z")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.reason == "too_many_attempts"
+
+    def test_a_denial_outranks_a_near_miss(self, convo, runner):
+        proposal = convo.announced_proposal()
+        convo.says(f"no, confirm {proposal.nonce}z")
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.reason == "denied"
+        assert runner.calls == []
+
+    def test_a_correct_approval_after_a_near_miss_still_writes(
+        self, convo, runner
+    ):
+        """The recovery the diagnosis exists for: one more word, and it goes."""
+        proposal = convo.announced_proposal()
+        convo.says(f"confirm {proposal.nonce}z")
+        assert convo.spine.confirm(proposal.token).reason == "near_miss"
+        convo.approve(proposal)
+        verdict = convo.spine.confirm(proposal.token)
+        assert verdict.approved is True
+        assert len(runner.calls) == 1
+
+    def test_a_hand_built_verdict_with_no_heard_word_degrades_to_refused(self):
+        verdict = confirm.Verdict(approved=False, reason="near_miss")
+        assert verdict.spoken == confirm.SPOKEN["refused"]
+
+    def test_wrong_nonce_outranks_near_miss(self, convo):
+        """An exact OTHER alphabet word is wrong_nonce — a different diagnosis
+        with different advice — never a near miss of this one."""
+        proposal = convo.announced_proposal()
+        other = next(w for w in confirm.NONCE_WORDS if w != proposal.nonce)
+        convo.says(f"confirm {other}")
+        assert convo.spine.confirm(proposal.token).reason == "wrong_nonce"
+
+
+# =============================================================================
 # Outcomes speak, and say different things
 # =============================================================================
 
@@ -2605,6 +2751,13 @@ class TestOutcomesAreDistinctAndSpoken:
         convo.says("Yeah.")
         cases["refused"] = convo.spine.confirm(rejected.token)
 
+        # The code word rendered one letter off — the transcriber's doing, not
+        # the owner's (#1039). Any one-char mutation is within the bound and,
+        # with pairwise alphabet distances >= 3, never closer to another word.
+        near = convo.announced_proposal()
+        convo.says(f"confirm {near.nonce}z")
+        cases["near_miss"] = convo.spine.confirm(near.token)
+
         denied = convo.announced_proposal()
         convo.says(f"no, confirm {confirm.spoken_nonce(denied.nonce)}")
         cases["denied"] = convo.spine.confirm(denied.token)
@@ -2625,7 +2778,7 @@ class TestOutcomesAreDistinctAndSpoken:
             assert line.strip(), f"{label} refused silently"
             assert len(line) > 25, label
             spoken.add(line)
-        assert len(spoken) == 7, "outcomes must not share a spoken line"
+        assert len(spoken) == 8, "outcomes must not share a spoken line"
 
     def test_the_wait_outcomes_are_flagged_as_such(self, convo, clock):
         for label, verdict in self._outcomes(convo, clock).items():
@@ -3431,7 +3584,7 @@ class TestTheQuotedFrameGuard:
         """The frame quoting a DIFFERENT word is a different problem — the
         owner needs this proposal's code, so wrong_nonce's advice is right."""
         assert confirm.classify(
-            "to approve say confirm violet", "tango"
+            "to approve say confirm bravo", "tango"
         ) == confirm.WRONG_NONCE
 
     def test_a_hesitated_frame_is_still_the_frame(self):
@@ -3876,12 +4029,12 @@ class TestTheNonceNeverLeavesTheGate:
         is not a request, so selection skips it — falling back to the real
         request sentence, false-reject half covered by the fallback below."""
         convo.says("tell the orchestrator to restart the portal")
-        convo.says("confirm walrus")
+        convo.says("confirm zulu")
         proposal = convo.announced_proposal(instruction="restart the portal")
         convo.approve(proposal)
         convo.spine.confirm(proposal.token)
         body = runner.calls[0][-1]
-        assert "walrus" not in body
+        assert "zulu" not in body
         assert 'said: "tell the orchestrator to restart the portal"' in body
 
     def test_an_empty_ring_at_propose_still_delivers(self, convo, runner):
