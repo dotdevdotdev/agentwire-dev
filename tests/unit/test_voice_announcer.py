@@ -67,6 +67,10 @@ let speakFails = false;
 // finding F4 lives in: this fixture's shape was the reason nothing saw it.
 let speakDefers = false;
 const pendingSpeech = [];
+// The barge-in cut (#1041): how many times the announcer asked the harness to
+// stop the browser voice's audio. The real dep is speechSynthesis.cancel(),
+// which recalls audio already playing — the one thing speak() cannot undo.
+let stopSpeakCalls = 0;
 
 const announcer = createAnnouncer({
   send: (e) => { if (!channelOpen) return false; events.push(e); return true; },
@@ -76,6 +80,7 @@ const announcer = createAnnouncer({
     if (speakFails) { if (onFail) onFail(); return; }
     if (onDone) onDone();
   },
+  stopSpeak: () => { stopSpeakCalls++; },
   onSpoken: (meta, how) => anchored.push({ meta: meta, how: how }),
   onNotSpoken: (meta) => notSpoken.push(meta),
   ownerSpeaking: () => ownerIsSpeaking,
@@ -113,7 +118,7 @@ function finishSpeech() {
 }
 function report() {
   return JSON.stringify({
-    events, spoken, logs, anchored, notSpoken,
+    events, spoken, logs, anchored, notSpoken, stopSpeakCalls,
     armedTimers: timers.length,
     armedMs: timers.map((t) => t.ms),
     pending: announcer.pending(),
@@ -1323,11 +1328,18 @@ class TestThePageEmbedsTheRealThing:
         """#950 defect 2, both edges, pinned on the page source: the error our
         own best-effort cancel generates is never announced, and only one
         error notice may be pending at a time. Plus defect 3: no cancel()
-        before speak() — it killed the previous utterance mid-word."""
+        before speak() — it killed the previous utterance mid-word. Pinned on
+        the OPERATION, not the string: since #1041 cancel() legitimately
+        exists as the barge-in cut (stopSpeak), so what must hold is that the
+        speak dep itself never cancels."""
         page = client.page("buddy", "tok")
         assert 'if (code === "response_cancel_not_active") break;' in page
         assert "errorNoticePending" in page
-        assert "window.speechSynthesis.cancel()" not in page
+        speak_dep = page.split("speak: (text, onSpokenAloud, onSpeakFailed)", 1)[1]
+        speak_dep = speak_dep.split("stopSpeak:", 1)[0]
+        assert "window.speechSynthesis.cancel()" not in speak_dep
+        # The one cancel in the page is the barge-in cut, nothing else.
+        assert page.count("window.speechSynthesis.cancel()") == 1
 
     def test_stop_resets_the_error_notice_gate(self):
         """The reset must live INSIDE stop(), pinned — a notice pending when a
@@ -3415,3 +3427,110 @@ class TestThePumpDefersToTheBrowserVoice:
         """)
         # Only the promoted item's own 6s fallback remains.
         assert "armed=6000" in report["logs"]
+
+
+class TestBargeInCutsTheFallbackVoice:
+    """#1041. The owner speaking over the BROWSER voice must stop its audio.
+
+    Native barge-in covers model audio only — the server truncates the response
+    and the WebRTC stream stops — while speechSynthesis is outside that path
+    and used to play straight through. The inconsistency the owner reported
+    correlated exactly with WHAT was playing: model replies cut off, announced
+    notices talked through them. bargeIn() is the missing half.
+    """
+
+    def test_the_cut_is_synchronous_and_settles_not_spoken(self):
+        """The bound on "owner speaks -> audio stops" is one event tick: no
+        timer stands between bargeIn() and the stop, so the residual latency
+        is VAD detection alone, never the utterance's remaining length."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("worker-a got back to you: done.", { inboxIds: ["m1"] });
+            fireTimers();                       // fallback fires; audio starts
+            const cut = announcer.bargeIn();    // owner starts speaking
+            logs.push("cut=" + cut);
+        """)
+        assert report["stopSpeakCalls"] == 1
+        assert any("cut=1" in line for line in report["logs"])
+        # Settled NOT SPOKEN — the ids are released so the notice is said
+        # again at the next quiet tick: announced late, never lost.
+        assert report["notSpoken"] == [{"inboxIds": ["m1"]}]
+        assert report["anchored"] == []
+        assert report["pending"] == 0
+
+    def test_a_late_end_event_after_the_cut_is_a_no_op(self):
+        """speechSynthesis.cancel() makes the browser fire its own onend or
+        onerror for the recalled utterance — the settle latch must make that
+        arrival mean nothing, or a cut notice is reported heard AND retried."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("worker-a got back to you: done.", { inboxIds: ["m1"] });
+            fireTimers();
+            announcer.bargeIn();
+            finishSpeech();                     // the browser's late onend
+        """)
+        assert report["anchored"] == []
+        assert len(report["notSpoken"]) == 1
+
+    def test_nothing_speaking_means_no_cut(self):
+        """bargeIn is scoped to fallback AUDIO in flight. A queued item or an
+        armed fallback timer is not audio, and the owner speaking merely
+        delays those (armFallback re-checks ownerSpeaking) — cutting them
+        would convert a delay into a drop."""
+        report = run_announcer("""
+            announcer.announce("worker-a got back to you: done.", { inboxIds: ["m1"] });
+            const cut = announcer.bargeIn();    // fallback timer armed, no audio yet
+            logs.push("cut=" + cut);
+        """)
+        assert report["stopSpeakCalls"] == 0
+        assert any("cut=0" in line for line in report["logs"])
+        assert report["notSpoken"] == []
+        assert report["pending"] == 1           # still owed to the owner
+
+    def test_a_proposal_cut_mid_statement_never_anchors(self):
+        """The confirm-spine half of the pricing: a half-stated proposal must
+        not open the approval window — refusing that is what the anchor is
+        for, and the on-screen not-spoken record says why."""
+        report = run_announcer("""
+            speakDefers = true;
+            announcer.announce("Restart the portal. Say confirm tango.", { anchor: "p1" });
+            fireTimers();
+            announcer.bargeIn();
+        """)
+        assert report["anchored"] == []
+        assert report["notSpoken"] == [{"anchor": "p1"}]
+        assert report["anchorPending"] is False
+
+    def test_ten_consecutive_barge_ins_each_stop_the_audio(self):
+        """The acceptance shape from #1041: N consecutive trials, every one
+        cut, none talked through — reliability, not a lucky regime."""
+        report = run_announcer("""
+            speakDefers = true;
+            for (let i = 0; i < 10; i++) {
+              announcer.announce("notice " + i, { inboxIds: ["m" + i] });
+              fireTimers();                     // audio starts
+              if (announcer.bargeIn() !== 1) logs.push("MISSED " + i);
+            }
+        """)
+        assert report["stopSpeakCalls"] == 10
+        assert len(report["notSpoken"]) == 10
+        assert not any("MISSED" in line for line in report["logs"])
+
+
+class TestThePageWiresBargeIn:
+    """The page slice: speech_started must actually call the cut, and the
+    announcer must actually be handed speechSynthesis.cancel."""
+
+    def test_speech_started_cuts_the_browser_voice(self):
+        page = client.page("buddy", "tok")
+        started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
+        started = started.split("break;", 1)[0]
+        assert "announcer.bargeIn()" in started
+        # Instrumentation (#1041): every barge-in correlates with WHAT was
+        # playing — the fallback voice (cut count) or a model response.
+        assert "cut the browser voice" in started
+        assert "server VAD truncates" in started
+
+    def test_the_announcer_is_handed_the_real_cancel(self):
+        page = client.page("buddy", "tok")
+        assert "stopSpeak: () => window.speechSynthesis.cancel()" in page

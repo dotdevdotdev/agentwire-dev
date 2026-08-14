@@ -112,6 +112,11 @@ ANNOUNCER_JS = """
 function createAnnouncer(deps) {
   var send = deps.send;
   var speak = deps.speak;
+  // Cuts the fallback voice's AUDIO, immediately (#1041). speak() starts an
+  // utterance this page cannot otherwise recall — speechSynthesis is outside
+  // the WebRTC path, so the model's native barge-in never touches it, and an
+  // owner talking over a fallback-spoken notice was talked straight through.
+  var stopSpeak = deps.stopSpeak || function () {};
   var setTimer = deps.setTimer;
   var clearTimer = deps.clearTimer;
   var onLog = deps.onLog || function () {};
@@ -565,13 +570,45 @@ function createAnnouncer(deps) {
         stopSpeaking(it);
       });
     },
+    // The owner started speaking over the FALLBACK voice (#1041). Native
+    // barge-in covers model audio only — the server truncates the response and
+    // the WebRTC stream stops — while speechSynthesis is outside that path and
+    // used to play straight through, which is the "sometimes she won't shut
+    // up" regime: it correlated exactly with WHAT was playing.
+    //
+    // Synchronous on purpose: the cut lands inside the speech_started event
+    // tick, so the bound on "owner speaks → audio stops" is VAD detection
+    // latency alone, never the utterance's remaining length.
+    //
+    // Both halves priced. The cut utterance settles NOT SPOKEN — through the
+    // same latch as onerror/watchdog, so the browser's own late events for it
+    // are no-ops — which means an inbox notice is released and said again at
+    // the next quiet tick (announced late, never lost: the truncated
+    // confirm-spine outcome line is re-delivered, not dropped mid-word), and
+    // a proposal cut mid-statement never anchors: refusing to approve a
+    // half-stated proposal is what the anchor is FOR. The queue and the armed
+    // fallback timer are deliberately untouched — the owner speaking delays
+    // them (armFallback re-checks ownerSpeaking), it does not discard them.
+    // Cost accepted: an owner who interrupts near the end hears the notice
+    // twice; double-speak is the cheap failure, talked-through is the
+    // expensive one.
+    bargeIn: function () {
+      if (!speaking.length) return 0;
+      var cut = speaking.slice();
+      // Global cancel — everything speechSynthesis holds is ours, and all of
+      // it is audio the owner is now talking over.
+      try { stopSpeak(); } catch (e) {}
+      cut.forEach(function (it) { settleSpeech(it, false); });
+      return cut.length;
+    },
     // Withdraw announcements whose meta matches, queued or current (#963: the
     // owner speaking first CANCELS the greeting; queueing it behind them would
     // greet someone who has already moved on). A withdrawn item's fallback is
     // disarmed and onSpoken never fires for it — it was never heard, and
     // nothing downstream may believe it was. Note what this does NOT
-    // establish: it cannot recall audio the model has already emitted; native
-    // barge-in covers that, this covers the QUEUE and the TIMER.
+    // establish: it cannot recall audio already EMITTED — the model's via
+    // native barge-in, the fallback voice's via bargeIn() above; this covers
+    // the QUEUE and the TIMER.
     cancel: function (match) {
       queue = queue.filter(function (it) { return !match(it.meta); });
       if (current && match(current.meta)) {
@@ -1638,6 +1675,10 @@ async function start() {
         // "browser voice FAILED: interrupted" (#950 defect 3).
         window.speechSynthesis.speak(utterance);
       },
+      // The barge-in cut for the channel above (#1041). cancel() is global —
+      // fine, because everything queued in speechSynthesis is this page's own
+      // fallback audio, and every bit of it is being talked over.
+      stopSpeak: () => window.speechSynthesis.cancel(),
       onSpoken,
       onNotSpoken,
       // The timer's own "never over the owner" re-check (#978 item 3). The
@@ -1765,7 +1806,19 @@ async function start() {
           // playing; this kills the QUEUE and the fallback TIMER.
           ownerSpeaking = true;
           greeted = true;
-          if (announcer) announcer.cancel((m) => !!(m && m.greeting));
+          if (announcer) {
+            announcer.cancel((m) => !!(m && m.greeting));
+            // BARGE-IN ON THE FALLBACK VOICE (#1041): speechSynthesis is
+            // outside the WebRTC path, so native barge-in never stops it —
+            // this does, synchronously, inside this event tick.
+            const cut = announcer.bargeIn();
+            if (cut) log("speak", "barge-in: cut the browser voice (" + cut + " utterance(s))", "tool");
+          }
+          // Instrumentation for the other regime (#1041): model audio is cut
+          // by the SERVER (interrupt_response) and the stream just stops —
+          // this line is what lets a "talked through me" report be correlated
+          // with what was actually playing.
+          if (responseActive) log("speak", "barge-in during a model response — server VAD truncates it", "tool");
           if (payload.item_id) {
             const startSeq = nextSeq();
             speechSeq[payload.item_id] = startSeq;
