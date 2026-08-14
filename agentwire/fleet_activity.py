@@ -387,6 +387,12 @@ def note(
             kind=kind or None,
             exclude=skip,
             sender=SENDER,
+            # Stable identity for the voice layer (#1048): dedups a repeat of
+            # the same event about the same subject across message ids, and
+            # lets the staleness gate check the SUBJECT session's liveness —
+            # "auth-fix is idle and done working" about a torn-down session is
+            # not news, whatever the machine sender's own liveness says.
+            ref=f"activity:{event}:{subject}",
         )
     except Exception as exc:  # noqa: BLE001  # awareness must not break producers
         fleet_alerts.log_event("activity_emit_failed", activity_event=event, error=str(exc))

@@ -315,7 +315,18 @@ function createAnnouncer(deps) {
         armFallback(item);
         return;
       }
-      onLog("fallback", "no spoken confirmation within " + fallbackMs + "ms");
+      // The 6s-miss, with its cause attached (#1048). The miss rate was the
+      // diagnostic question — "why does the model's confirmation go missing?"
+      // — and the dominant answer is interrupts: every announce() of a queued
+      // item cancels whatever response is in flight, so under a notice
+      // firehose each announcement's own model turn was cancelled by the next
+      // notice before its transcript could disarm the timer. Counting cancels
+      // seen while THIS item was current makes the correlation measurable
+      // from the log alone, before/after.
+      onLog("fallback", "no spoken confirmation within " + fallbackMs + "ms"
+        + (item.cancels
+          ? " (" + item.cancels + " response(s) cancelled while this was pending — interrupt-correlated)"
+          : ""));
       if (current === item) current = null;
       // The owner DID hear it — in a robot voice, but they heard it. Anything
       // keyed on "was this spoken" (the proposal anchor) must be told so here,
@@ -541,6 +552,7 @@ function createAnnouncer(deps) {
         sawCreate: false,
         deferred: false,
         ownerDeferrals: 0,
+        cancels: 0,
       });
       pump();
     },
@@ -632,8 +644,10 @@ function createAnnouncer(deps) {
     onResponseCancelled: function () {
       responseActive = false;
       // Whatever was in flight is dead, so it can no longer be "our audio
-      // still playing" — the deferral signal must not outlive it.
-      if (current) current.sawCreate = false;
+      // still playing" — the deferral signal must not outlive it. Counted for
+      // the 6s-miss diagnosis (#1048): a cancel while this item is current is
+      // the interrupt that most plausibly cost it its spoken confirmation.
+      if (current) { current.sawCreate = false; current.cancels += 1; }
     },
     // Returns true ONLY when this transcript is the model speaking the
     // CURRENT scripted announcement — i.e. exactly when it disarms. The page's
@@ -741,8 +755,21 @@ function createInboxNotifier(deps) {
   var onLog = deps.onLog || function () {};
   var pollMs = deps.pollMs;
   var seen = deps.seen;
+  // Page-lifetime map of stable notice IDENTITIES the owner has heard (#1048).
+  // The no-parent detector re-raises the same blocked prompt as a NEW message
+  // (new id) every alert TTL, so id-keyed `seen` cannot dedup it — each
+  // re-raise was a fresh spoken notice, the same dead alert 3x in one gap. A
+  // message's `ref` is its identity across re-raises (prompt hash included, so
+  // a CHANGED prompt is a new identity and speaks again): one speech per
+  // identity, then only on state change.
+  var seenRefs = deps.seenRefs || {};
   var canInterrupt = deps.canInterrupt || function () { return false; };
   var reRaise = deps.reRaise || null;
+
+  // Stale/duplicate drops the bridge reported, logged ONCE each — the poll
+  // returns them every 5s until the cursor moves past, and a log line per
+  // tick buries the screen the reason exists for.
+  var droppedLogged = {};
 
   // Announced this session but not yet confirmed spoken. Per-notifier on
   // purpose: if the session dies mid-announcement the map dies with it, so
@@ -777,19 +804,35 @@ function createInboxNotifier(deps) {
   // owner cannot predict when it stops, so an unbounded coalesce is a monologue
   // waiting for a fan-out: ten workers landing in one 5s poll window produced
   // one ~2500-character utterance, spoken over nothing the owner asked for. The
-  // overflow is NOT dropped and NOT acked — it stays unread and the next quiet
-  // tick says the next three, which is the same "announced late, never lost"
-  // property the interrupt tier already relies on.
+  // overflow past the cap is COLLAPSED, not queued for later airtime (#1048):
+  // it is named by count and sender in the summary tail, claimed and acked
+  // with the batch, and never read out at a later tick — serial replay of a
+  // backlog was the spam. The bodies stay in the spool for anyone who asks.
   var MAX_NOTICE_BODIES = 3;
 
-  function composeNotice(messages, waiting) {
+  function composeNotice(messages, rest) {
     // An escalation in the batch names itself as one — the owner should be
     // able to hear the difference between news and an alarm.
     var prefix = messages.some(isUrgent) ? "Heads up \\u2014 " : "";
-    // Said out loud rather than left implicit: the owner has to be able to tell
-    // "that was everything" from "there is more coming", or a capped batch
-    // sounds exactly like a complete one.
-    var tail = waiting > 0 ? " And " + waiting + " more waiting." : "";
+    // THE BACKLOG COLLAPSES TO A SUMMARY (#1048). "And N more waiting" used to
+    // mean "the next quiet tick reads the next three bodies" — a firehose
+    // replayed serially, gap after gap. The overflow is now CLAIMED by this
+    // notice: named by count and sender, never read out, and acked with the
+    // batch. The bodies stay on disk (the spool is append-only) for anyone who
+    // asks; what they never get again is airtime.
+    var tail = "";
+    if (rest && rest.length) {
+      var names = [];
+      var seenName = {};
+      rest.forEach(function (msg) {
+        var who = speaker(msg);
+        if (!seenName[who]) { seenName[who] = true; names.push(who); }
+      });
+      var listed = names.slice(0, 3).join(", ")
+        + (names.length > 3 ? " and others" : "");
+      tail = " Plus " + rest.length + " more from " + listed
+        + " \\u2014 I've collapsed those; ask me if you want them.";
+    }
     if (messages.length === 1) {
       var m = messages[0];
       // No verb for machine mail: the body is already a whole statement
@@ -826,6 +869,16 @@ function createInboxNotifier(deps) {
       // speaking or a confirm handshake is outstanding. #962's rule survives
       // intact where it was about the human; the leg it loses is only
       // "wait for the buddy's own chatter to finish".
+      // The bridge dropped these at the staleness gate (#1048) — a prompt no
+      // longer live, a sender torn down, mail past the freshness TTL. Never
+      // spoken; the REASON goes on screen, once per id, so a dropped notice
+      // is auditable rather than silently missing.
+      (res.dropped || []).forEach(function (d) {
+        if (!d || !d.id || droppedLogged[d.id]) return;
+        droppedLogged[d.id] = true;
+        onLog("inbox", "stale notice dropped (" + (d.reason || "stale") + "): "
+          + (d.from || "?") + " " + (d.id || ""));
+      });
       var full = canSpeak();
       if (!full && !canInterrupt()) return;
       var take = function (m) { return full || isUrgent(m); };
@@ -833,6 +886,17 @@ function createInboxNotifier(deps) {
       var picked = {};
       var fresh = unread.filter(take).filter(function (m) {
         if (!m || !m.id || seen[m.id] || inFlight[m.id] || picked[m.id]) return false;
+        // A re-raise of an identity the owner already heard: not fresh news.
+        // Marked `seen` so the contiguity walk below can ack past it — the
+        // whole point is that it never replays (#1048).
+        if (m.ref && seenRefs[m.ref]) {
+          seen[m.id] = true;
+          if (!droppedLogged[m.id]) {
+            droppedLogged[m.id] = true;
+            onLog("inbox", "re-raised notice deduped (already heard): " + m.id);
+          }
+          return false;
+        }
         picked[m.id] = true;
         return true;
       });
@@ -850,13 +914,16 @@ function createInboxNotifier(deps) {
         }
         return;
       }
-      // CAP THE UTTERANCE, not the mail. Only what this notice actually SAYS
-      // is claimed, marked in-flight and eligible to be acked; the rest is
-      // untouched in the spool and the next quiet tick picks it up.
-      var batch = fresh.slice(0, MAX_NOTICE_BODIES);
-      var waiting = fresh.length - batch.length;
+      // CAP THE UTTERANCE — and CLAIM the whole backlog (#1048). Escalations
+      // outrank news for the read-in-full slots (stable within each tier);
+      // everything past the cap is collapsed into the summary tail, claimed
+      // and acked WITH the batch, never replayed serially at later ticks.
+      var ordered = fresh.filter(isUrgent).concat(
+        fresh.filter(function (m) { return !isUrgent(m); }));
+      var batch = ordered.slice(0, MAX_NOTICE_BODIES);
+      var rest = ordered.slice(MAX_NOTICE_BODIES);
       var claimed = {};
-      var ids = batch.map(function (m) { claimed[m.id] = true; return m.id; });
+      var ids = ordered.map(function (m) { claimed[m.id] = true; return m.id; });
       ids.forEach(function (id) { inFlight[id] = true; });
       // HOW FAR THIS NOTICE MAY ACK (#970). The cursor is ONE id, so acking
       // through id X marks everything before X read too. The only safe target
@@ -877,17 +944,21 @@ function createInboxNotifier(deps) {
         ackThrough = m.id;
       }
       onLog("inbox", "volunteering " + batch.length + " message(s)"
-        + (waiting ? " (" + waiting + " held for the next gap)" : ""));
+        + (rest.length ? " (" + rest.length + " collapsed into the summary)" : ""));
       // inboxMsgs rides along so the page can register request/escalation
       // notices in the re-raise ledger AT THE MOMENT THEY ARE HEARD (its
       // onSpoken) — the ledger must never hold something the owner wasn't
-      // actually told.
-      announce(composeNotice(batch, waiting), {
+      // actually told. Only the READ-IN-FULL batch registers: a collapsed
+      // message was named, not stated, and re-raising it later would remind
+      // the owner of something they were never told. `ref` rides along so
+      // onSpoken can commit the identity to seenRefs (#1048).
+      announce(composeNotice(batch, rest), {
         inboxIds: ids,
         ackThrough: ackThrough,
         inboxMsgs: batch.map(function (m) {
-          return { id: m.id, from: m.from, kind: m.kind, text: m.text };
+          return { id: m.id, from: m.from, kind: m.kind, text: m.text, ref: m.ref };
         }),
+        inboxRefs: ordered.map(function (m) { return m.ref || ""; }),
       });
     }).catch(function (err) {
       onLog("inbox", "poll failed: " + err);
@@ -901,6 +972,10 @@ function createInboxNotifier(deps) {
   function noticeSpoken(meta) {
     if (!meta || !meta.inboxIds) return Promise.resolve();
     meta.inboxIds.forEach(function (id) { seen[id] = true; });
+    // Commit the IDENTITIES too (#1048): a later re-raise of the same prompt
+    // arrives as a new id, and this is what dedups it. Collapsed messages
+    // count — the owner was told they exist, which is this notice's claim.
+    (meta.inboxRefs || []).forEach(function (r) { if (r) seenRefs[r] = true; });
     // Nothing contiguous to ack — this tick spoke past an unread message and
     // the cursor cannot express that. Marking `seen` is the whole receipt; the
     // ack rides the later tick that says the skipped one.
@@ -1268,6 +1343,10 @@ const INBOX_POLL_MS = 5000;
 // Page-lifetime: ids the owner has actually HEARD. Never reset by stop() — a
 // reconnect must not replay every notice.
 const heardReplies = {};
+// Page-lifetime like heardReplies, keyed by stable notice IDENTITY (`ref`)
+// rather than message id (#1048): a re-raised prompt arrives as a new id, and
+// this is the map that keeps it to one mention per state.
+const heardNoticeRefs = {};
 let inboxNotifier = null;
 let ownerSpeaking = false;
 
@@ -1406,15 +1485,47 @@ function forward(path, body) {
 // anything that changes what they should do next. `fallbackText`, when given,
 // is what the browser-voice fallback utters instead of `text` — the
 // un-echo-cancelled channel gets the echo-safe variant.
+//
+// A PROPOSAL ANCHORS HERE, AT RENDER (#1048). The log() call above puts the
+// proposal text — nonce and all — on the owner's screen the moment it exists,
+// so this channel is not screenless while the transcript panel is open, and
+// screen visibility satisfies the announcement precondition. Anchoring only
+// at onSpoken was the livelock: a notice interrupt cut the announcement, the
+// item settled not-spoken, and the proposal was never anchored — so every
+// correct "confirm <nonce>" got "hang on — I haven't finished telling you",
+// forever, AND the volunteering gate (which closes at anchored()) stayed open
+// for the next notice to interrupt with. Anchoring at render closes both at
+// once: the confirm token is acceptable from the moment the text is
+// displayed, and confirmGate.outstanding() holds the hard hold on
+// volunteering from the same moment. The price — an owner who confirms
+// without looking approves a proposal they never heard finish — is bounded by
+// the nonce itself: it is on the screen, never in any refusal, and guessing
+// it is the same odds it always was.
 function announce(text, meta, fallbackText) {
   log("buddy", text, "buddy");
+  if (meta && meta.anchor) {
+    confirmGate.anchored();
+    log("speak", "anchored proposal " + meta.anchor + " (rendered)", "tool");
+    forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
+  }
   if (announcer) announcer.announce(text, meta, fallbackText);
   else {
-    try {
-      window.speechSynthesis.speak(
-        new SpeechSynthesisUtterance(fallbackText || text));
-    } catch (e) {}
+    try { window.speechSynthesis.speak(fallbackUtterance(fallbackText || text)); }
+    catch (e) {}
   }
+}
+
+// The browser voice, volume/rate-matched to the realtime one (#1048). The
+// platform default is FULL volume — jarringly louder than marin — and every
+// fallback utterance ships through here, so the constants are pinned by test
+// rather than left to whatever the browser defaults to this year.
+const FALLBACK_VOICE_VOLUME = 0.4;
+const FALLBACK_VOICE_RATE = 1.0;
+function fallbackUtterance(text) {
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.volume = FALLBACK_VOICE_VOLUME;
+  utterance.rate = FALLBACK_VOICE_RATE;
+  return utterance;
 }
 
 // One spoken error notice at a time. An error event while a previous notice
@@ -1469,11 +1580,10 @@ function onSpoken(meta, how) {
     return;
   }
   if (!meta || !meta.anchor) return;
-  // The proposal is now HEARD and the confirm window is open — the same
-  // evidence that starts the server-side TTL closes the volunteering gate.
-  confirmGate.anchored();
-  log("speak", "anchored proposal " + meta.anchor + " (" + how + ")", "tool");
-  forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });
+  // The anchor already happened, at RENDER (#1048) — announce() closed the
+  // gate and forwarded /anchor before this text was ever queued to be spoken.
+  // This is the on-screen record that the audio landed too, and of HOW.
+  log("speak", "proposal " + meta.anchor + " spoken (" + how + ")", "tool");
 }
 
 // The not-spoken counterpart to onSpoken (#978 item 5, #996). TWO callers, and
@@ -1507,11 +1617,11 @@ function onNotSpoken(meta) {
     return;
   }
   if (meta.anchor) {
-    // Nothing to retry: a proposal is announced once, and the spine's TTL is
-    // what ends it. What is left is to say so on screen rather than let the
-    // owner hear nothing and then be told `not_announced` for 120s.
+    // Nothing to retry: a proposal is announced once. Since #1048 it anchored
+    // at RENDER, so an unspoken proposal is still confirmable from the screen
+    // — say which channel failed rather than claiming it cannot be approved.
     log("error",
-      "proposal " + meta.anchor + " was never spoken — it cannot be approved",
+      "proposal " + meta.anchor + " was never spoken — it's on screen and can still be confirmed",
       "err");
   }
 }
@@ -1680,7 +1790,7 @@ async function start() {
       // evidence actually available, and for the mechanism whose entire job is
       // that silence is unacceptable, taking it is cheap.
       speak: (text, onSpokenAloud, onSpeakFailed) => {
-        const utterance = new SpeechSynthesisUtterance(text);
+        const utterance = fallbackUtterance(text);
         utterance.onend = () => {
           log("speak", "browser voice finished", "tool");
           if (onSpokenAloud) onSpokenAloud();
@@ -1743,6 +1853,7 @@ async function start() {
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
       pollMs: INBOX_POLL_MS,
       seen: heardReplies,
+      seenRefs: heardNoticeRefs,
     });
     dc.addEventListener("open", () => { setStatus("listening"); $stop.disabled = false; });
     dc.addEventListener("close", () => setStatus("closed"));
