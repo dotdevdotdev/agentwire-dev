@@ -40,6 +40,11 @@ def cmd_safety_logs(args) -> int:
     return safety_commands.safety_logs_cmd(tail, session, today, pattern)
 
 
+def cmd_safety_report(args) -> int:
+    """CLI command: agentwire safety report"""
+    return safety_commands.safety_report_cmd(args.days, args.json)
+
+
 def cmd_safety_install(args) -> int:
     """CLI command: agentwire safety install"""
     return safety_commands.safety_install_cmd(
@@ -109,6 +114,19 @@ def register_safety_parser(subparsers) -> None:
         "--pattern", "-p", help="Filter by pattern (regex or substring)"
     )
     safety_logs.set_defaults(func=cmd_safety_logs)
+
+    # safety report — block summary by tier/rule/session (#940)
+    safety_report = safety_subparsers.add_parser(
+        "report",
+        help="Summarize damage-control blocks by tier/rule/session over a window",
+    )
+    safety_report.add_argument(
+        "--days", type=int, default=14, help="Window in days (default 14)"
+    )
+    safety_report.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    safety_report.set_defaults(func=cmd_safety_report)
 
     # safety install
     safety_install = safety_subparsers.add_parser(

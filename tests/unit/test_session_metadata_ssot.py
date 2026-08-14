@@ -183,6 +183,11 @@ def test_no_module_hand_builds_the_metadata_path():
             # exactly where the SSOT lives.
             if path.name == "core.py" and line.strip() == 'return CONFIG_DIR / "sessions"':
                 continue
+            # The damage-control hooks are standalone PEP 723 scripts (uv
+            # isolated env) that cannot import agentwire.core, so audit_logger
+            # mirrors the join in its own single definition (#940 attribution).
+            if path.name == "audit_logger.py" and line.strip() == 'return Path(agentwire_dir) / "sessions"':
+                continue
             offenders.append(f"{path.relative_to(root.parent)}:{number}: {line.strip()}")
     assert not offenders, (
         "hand-built session metadata path — route through core.sessions_dir() / "
