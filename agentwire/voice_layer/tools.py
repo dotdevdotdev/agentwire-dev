@@ -197,7 +197,22 @@ class ReadOnlyTool:
 
 
 def _fleet_sessions(args: dict) -> dict:
-    return run_agentwire_cmd(["list", "--sessions"])
+    """Live sessions, with infrastructure services suppressed by default (#1038).
+
+    Spoken lists pay per word, so healthy service sessions (portal, scheduler,
+    stt, …) collapse to the one-line summary already in the payload; an
+    UNHEALTHY service stays in the list — it IS news. Pass
+    ``include_services=true`` when the owner is asking about the services
+    themselves.
+    """
+    data = run_agentwire_cmd(["list", "--sessions"])
+    if not data.get("success") or args.get("include_services") is True:
+        return data
+    data["sessions"] = [
+        s for s in data.get("sessions", [])
+        if not s.get("service") or s.get("service_healthy") is False
+    ]
+    return data
 
 
 def _fleet_worktrees(args: dict) -> dict:
@@ -482,9 +497,24 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
         description=(
             "List every live agentwire session with its role, parent and activity. "
             "This is the answer to 'what is running' and the source of truth for "
-            "exact session names."
+            "exact session names. Infrastructure services (portal, scheduler, "
+            "stt, …) are collapsed into the 'services' summary line unless one "
+            "is unhealthy — pass include_services=true only when the owner asks "
+            "about the services themselves."
         ),
         run=_fleet_sessions,
+        parameters={
+            "type": "object",
+            "properties": {
+                "include_services": {
+                    "type": "boolean",
+                    "description": (
+                        "List healthy infrastructure service sessions inline "
+                        "instead of collapsing them into the summary."
+                    ),
+                },
+            },
+        },
     ),
     ReadOnlyTool(
         name="fleet_worktrees",

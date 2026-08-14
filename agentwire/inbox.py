@@ -644,7 +644,16 @@ def resolve_targets(to: str, sender: "str | None") -> list[str]:
     else is a single literal session name.
     """
     if to == BROADCAST_TOKEN:
-        return [s for s in _live_agent_sessions() if s != sender]
+        # Infrastructure services are excluded from broadcast (#1038) — an
+        # @all message is addressed to working sessions; pasting it into the
+        # idle-nag bridge or another service session is pure noise. A service
+        # can still be messaged by name.
+        from .services import is_service_session
+
+        return [
+            s for s in _live_agent_sessions()
+            if s != sender and not is_service_session(s)
+        ]
     return [_validate_session(to)]
 
 

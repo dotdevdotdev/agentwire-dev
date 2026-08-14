@@ -567,3 +567,53 @@ class TestTtsToolPromptFetch:
         # With no shim prompt at import time, no capabilities section
         if not mcp_server._TTS_TOOL_PROMPT:
             assert "Backend capabilities" not in mcp_server._SAY_DESCRIPTION
+
+
+class TestFormatSessionsServiceGrouping:
+    """#1038 — services collapse into the summary line; unhealthy ones stay loud."""
+
+    def _data(self):
+        return {
+            "sessions": [
+                {"name": "documentscribe", "machine": None, "windows": 1,
+                 "path": "/p", "posture": "bypass", "service": False},
+                {"name": "agentwire-portal", "machine": None, "windows": 1,
+                 "path": "/q", "posture": "bypass", "service": True,
+                 "service_healthy": True, "service_detail": "running"},
+            ],
+            "services": {"count": 1, "unhealthy": [],
+                         "line": "1 service session(s) healthy (agentwire-portal)."},
+        }
+
+    def test_healthy_service_suppressed_into_summary(self):
+        from agentwire.mcp_core import format_sessions
+        out = format_sessions(self._data())
+        assert "documentscribe" in out
+        assert "  - agentwire-portal" not in out
+        assert "Services: 1 service session(s) healthy" in out
+
+    def test_unhealthy_service_surfaces_loudly(self):
+        from agentwire.mcp_core import format_sessions
+        data = self._data()
+        data["sessions"][1].update(service_healthy=False, service_detail="process exited")
+        data["services"] = {"count": 1,
+                            "unhealthy": [{"name": "agentwire-portal", "detail": "process exited"}],
+                            "line": "1 service session(s), 1 UNHEALTHY — agentwire-portal: process exited."}
+        out = format_sessions(data)
+        assert "agentwire-portal" in out
+        assert "SERVICE UNHEALTHY" in out
+
+    def test_only_services_running(self):
+        from agentwire.mcp_core import format_sessions
+        data = self._data()
+        data["sessions"] = [data["sessions"][1]]
+        out = format_sessions(data)
+        assert "No user-facing sessions" in out
+        assert "healthy" in out
+
+    def test_unannotated_payload_still_lists_everything(self):
+        # Backward shape safety: rows without the `service` key list as before.
+        from agentwire.mcp_core import format_sessions
+        out = format_sessions({"sessions": [
+            {"name": "a", "machine": None, "windows": 1, "path": "/a"}]})
+        assert "  - a" in out

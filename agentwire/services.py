@@ -91,6 +91,7 @@ _BUILTIN_SERVICE_SESSIONS = frozenset({
     "agentwire-stt",
     "agentwire-kokoro",
     "agentwire-scheduler",
+    "agentwire-buddy",
 })
 
 
@@ -114,6 +115,73 @@ def is_service_session(name: str) -> bool:
         return any(s.name == bare for s in load_config().services.custom)
     except Exception:
         return False
+
+
+# ─────────────────────────────────────────────────────────────
+# Fleet-listing classification (#1038)
+# ─────────────────────────────────────────────────────────────
+#
+# Every surface that enumerates the fleet (`agentwire list --sessions`, the
+# MCP sessions_list, the buddy's fleet_sessions tool, doctor's session
+# roll-up) uses THESE helpers to separate infrastructure services from
+# user-facing work, so a service session is summarized ("N services healthy")
+# instead of presented as delegated work. An UNHEALTHY service still surfaces
+# loudly — suppression applies to healthy infrastructure only.
+
+
+def annotate_service_sessions(sessions: list[dict]) -> None:
+    """Mark each session row (from `list --sessions`) with `service: bool`.
+
+    Local service rows also get `service_healthy` + `service_detail` from a
+    cheap pane-liveness probe. Remote rows (name carries `@machine`) are
+    counted but not probed — a per-listing SSH healthcheck would make every
+    fleet query pay for it — and read as healthy with an honest detail.
+    """
+    for s in sessions:
+        name = s.get("name", "")
+        if not is_service_session(name):
+            s["service"] = False
+            continue
+        s["service"] = True
+        bare = name.split("@")[0]
+        if s.get("machine"):
+            s["service_healthy"] = True
+            s["service_detail"] = "remote (not probed)"
+        elif s.get("usage_limit"):
+            s["service_healthy"] = False
+            s["service_detail"] = "parked: usage limit"
+        elif _tmux_pane_dead(bare):
+            tail = _tmux_pane_tail(bare)
+            s["service_healthy"] = False
+            s["service_detail"] = f"process exited: {tail}" if tail else "process exited"
+        else:
+            s["service_healthy"] = True
+            s["service_detail"] = "running"
+
+
+def service_sessions_summary(sessions: list[dict]) -> dict:
+    """One-line roll-up of the service rows in an annotated session list.
+
+    Returns ``{"count", "names", "unhealthy": [{"name","detail"}], "line"}``.
+    ``line`` is the default rendering every channel shares — the voice channel
+    especially pays per word, so healthy infrastructure collapses to one
+    sentence while anything unhealthy is named in it.
+    """
+    rows = [s for s in sessions if s.get("service")]
+    unhealthy = [
+        {"name": s.get("name", ""), "detail": s.get("service_detail", "unhealthy")}
+        for s in rows if s.get("service_healthy") is False
+    ]
+    count = len(rows)
+    names = [s.get("name", "") for s in rows]
+    if not count:
+        line = "No service sessions running."
+    elif not unhealthy:
+        line = f"{count} service session(s) healthy ({', '.join(names)})."
+    else:
+        bad = "; ".join(f"{u['name']}: {u['detail']}" for u in unhealthy)
+        line = f"{count} service session(s), {len(unhealthy)} UNHEALTHY — {bad}."
+    return {"count": count, "names": names, "unhealthy": unhealthy, "line": line}
 
 
 def _source_dir() -> str:

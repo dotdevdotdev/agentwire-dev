@@ -186,9 +186,19 @@ def _mcp_result(data: dict, on_success: str, operation: str = "complete operatio
 
 
 def format_sessions(data: dict) -> str:
-    """Format sessions list for LLM consumption."""
-    sessions = data.get("sessions", [])
+    """Format sessions list for LLM consumption.
+
+    Infrastructure service sessions (portal, scheduler, stt, …) are collapsed
+    into one summary line — they're support plumbing, not user-facing work
+    (#1038). An unhealthy service is still listed individually and loudly.
+    """
+    all_rows = data.get("sessions", [])
+    sessions = [s for s in all_rows
+                if not s.get("service") or s.get("service_healthy") is False]
+    svc = data.get("services") or {}
     if not sessions:
+        if svc.get("count"):
+            return f"No user-facing sessions. Services: {svc.get('line')}"
         return "No active sessions."
 
     lines = ["Active sessions:"]
@@ -199,7 +209,13 @@ def format_sessions(data: dict) -> str:
         path = s.get("path", "")
         posture = s.get("posture", "unknown")
         parked = " [PARKED: usage limit, auto-resumes after reset]" if s.get("usage_limit") else ""
-        lines.append(f"  - {name} ({machine}): {windows} window(s), posture={posture}, path={path}{parked}")
+        unhealthy = ""
+        if s.get("service"):
+            unhealthy = f" ⚠ SERVICE UNHEALTHY: {s.get('service_detail', 'unknown')}"
+        lines.append(f"  - {name} ({machine}): {windows} window(s), posture={posture}, path={path}{parked}{unhealthy}")
+
+    if svc.get("count"):
+        lines.append(f"Services: {svc.get('line')}")
 
     return "\n".join(lines)
 

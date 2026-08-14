@@ -292,3 +292,62 @@ class TestServicesCLI:
 
     def test_unknown_service(self, cli, capsys):
         assert cli.cmd_services_up(self._args(name="nope")) == 1
+
+
+class TestFleetListingClassification:
+    """#1038 — one SSOT predicate applied across fleet listings."""
+
+    def _rows(self):
+        return [
+            {"name": "documentscribe", "machine": None},
+            {"name": "agentwire-portal", "machine": None},
+            {"name": "agentwire-scheduler", "machine": "studio"},
+        ]
+
+    def test_builtin_buddy_is_service(self):
+        assert services.is_service_session("agentwire-buddy")
+
+    def test_annotate_marks_services_and_probes_local(self, monkeypatch):
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda name: False)
+        rows = self._rows()
+        services.annotate_service_sessions(rows)
+        assert rows[0]["service"] is False
+        assert rows[1]["service"] is True and rows[1]["service_healthy"] is True
+        # remote row: counted, never probed
+        assert rows[2]["service"] is True
+        assert rows[2]["service_detail"] == "remote (not probed)"
+
+    def test_dead_pane_reads_unhealthy(self, monkeypatch):
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda name: True)
+        monkeypatch.setattr(services, "_tmux_pane_tail", lambda name: "boom")
+        rows = [{"name": "agentwire-portal", "machine": None}]
+        services.annotate_service_sessions(rows)
+        assert rows[0]["service_healthy"] is False
+        assert "boom" in rows[0]["service_detail"]
+
+    def test_parked_service_is_unhealthy(self, monkeypatch):
+        rows = [{"name": "agentwire-portal", "machine": None, "usage_limit": True}]
+        services.annotate_service_sessions(rows)
+        assert rows[0]["service_healthy"] is False
+        assert "usage limit" in rows[0]["service_detail"]
+
+    def test_summary_healthy_line(self, monkeypatch):
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda name: False)
+        rows = self._rows()
+        services.annotate_service_sessions(rows)
+        summary = services.service_sessions_summary(rows)
+        assert summary["count"] == 2
+        assert summary["unhealthy"] == []
+        assert "2 service session(s) healthy" in summary["line"]
+
+    def test_summary_names_the_unhealthy(self, monkeypatch):
+        monkeypatch.setattr(services, "_tmux_pane_dead", lambda name: True)
+        monkeypatch.setattr(services, "_tmux_pane_tail", lambda name: "")
+        rows = [{"name": "agentwire-portal", "machine": None}]
+        services.annotate_service_sessions(rows)
+        summary = services.service_sessions_summary(rows)
+        assert "UNHEALTHY" in summary["line"]
+        assert "agentwire-portal" in summary["line"]
+
+    def test_summary_empty(self):
+        assert services.service_sessions_summary([])["count"] == 0

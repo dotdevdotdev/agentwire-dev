@@ -160,14 +160,21 @@ def cmd_network_status(args) -> int:
         capture_output=True,
         text=True,
     )
+    # Services vs work uses the one SSOT predicate (#1038) — the old
+    # startswith("agentwire") filter hid the real `agentwire` orchestrator
+    # session and every agentwire-dev worktree along with the services.
+    from . import services as _services_mod
     if result.returncode == 0:
-        sessions = [s for s in result.stdout.strip().split("\n") if s and not s.startswith("agentwire")]
+        all_names = [s for s in result.stdout.strip().split("\n") if s]
+        sessions = [s for s in all_names if not _services_mod.is_service_session(s)]
+        svc_count = len(all_names) - len(sessions)
+        svc_note = f"  (+{svc_count} services)" if svc_count else ""
         if sessions:
-            print(f"  {hostname:<16}{len(sessions)} sessions    {', '.join(sessions[:5])}")
+            print(f"  {hostname:<16}{len(sessions)} sessions    {', '.join(sessions[:5])}{svc_note}")
             if len(sessions) > 5:
                 print(f"  {'':<16}... and {len(sessions) - 5} more")
         else:
-            print(f"  {hostname:<16}0 sessions")
+            print(f"  {hostname:<16}0 sessions{svc_note}")
     else:
         print(f"  {hostname:<16}(no tmux server)")
 
@@ -178,7 +185,8 @@ def cmd_network_status(args) -> int:
 
         result = _run_remote(machine_id, "tmux list-sessions -F '#{session_name}' 2>/dev/null")
         if result.returncode == 0 and result.stdout.strip():
-            sessions = [s for s in result.stdout.strip().split("\n") if s]
+            sessions = [s for s in result.stdout.strip().split("\n")
+                        if s and not _services_mod.is_service_session(s)]
             if sessions:
                 print(f"  {machine_id:<16}{len(sessions)} sessions    {', '.join(sessions[:5])}")
                 if len(sessions) > 5:

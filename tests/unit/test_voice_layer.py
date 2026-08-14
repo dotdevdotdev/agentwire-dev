@@ -718,3 +718,35 @@ class TestBridge:
         from agentwire.voice_layer import server
 
         assert server.DEFAULT_PORT not in (8100, 8765, 8101)
+
+
+class TestFleetSessionsServiceSuppression:
+    """#1038 — spoken fleet lists suppress healthy services, keep unhealthy ones."""
+
+    def _payload(self):
+        return {
+            "success": True,
+            "sessions": [
+                {"name": "documentscribe", "service": False},
+                {"name": "agentwire-portal", "service": True, "service_healthy": True},
+                {"name": "agentwire-stt", "service": True, "service_healthy": False,
+                 "service_detail": "process exited"},
+            ],
+            "services": {"count": 2, "line": "…"},
+        }
+
+    def test_healthy_services_dropped_by_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "agentwire.voice_layer.tools.run_agentwire_cmd",
+            lambda cmd: self._payload())
+        data = tools._fleet_sessions({})
+        names = [s["name"] for s in data["sessions"]]
+        assert names == ["documentscribe", "agentwire-stt"]
+        assert data["services"]["count"] == 2
+
+    def test_include_services_lists_everything(self, monkeypatch):
+        monkeypatch.setattr(
+            "agentwire.voice_layer.tools.run_agentwire_cmd",
+            lambda cmd: self._payload())
+        data = tools._fleet_sessions({"include_services": True})
+        assert len(data["sessions"]) == 3
