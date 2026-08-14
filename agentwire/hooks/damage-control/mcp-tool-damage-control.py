@@ -7,10 +7,17 @@
 AgentWire MCP Tool Damage Control
 =================================
 
-Claude Code PreToolUse hook for the outbound ``mcp__agentwire__*`` tools that
-reach real people irreversibly (``email_send``, ``quo_send``). PreToolUse fires
+Claude Code PreToolUse hook for every ``mcp__*`` tool call. PreToolUse fires
 for MCP tools and receives their args in ``tool_input``, so we gate them at the
-tool-call boundary.
+tool-call boundary. Three layers (#923):
+
+1. Outbound tools (``email_send``, ``quo_send``) synthesize their equivalent
+   ``agentwire`` command and run the SAME rule ladder the Bash hook uses.
+2. Every other tool runs the per-tool policy ladder (``check_mcp_tool`` over
+   the ``mcpToolPolicies`` entries in the rule YAMLs) — allow/ask/block tiers
+   with stable ids that ``unattended_allow`` / ``disabled_rules`` can name.
+3. Path-valued arguments are screened: zero-access secrets for every tool,
+   the protected control plane for tools whose policy says they mutate.
 
 The tools run exactly ``agentwire email …`` / ``agentwire quo …`` under the hood
 (``run_agentwire_cmd``), so this hook *synthesizes the equivalent command* from
@@ -42,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "ed36d64d7cea91450987aa38dbe19729e6f8687b4d11b5ca4216d954a346c416", "generated_at": "2026-08-13T20:38:12Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e191ee140a246252a671c00b3d0b5c8e272529c628acb412afd315cc51484a25", "generated_at": "2026-08-14T00:35:16Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -683,6 +690,7 @@ def load_config(
     """
     merged: Dict[str, Any] = {
         "bashToolPatterns": [],
+        "mcpToolPolicies": [],
         "zeroAccessPaths": [],
         "readOnlyPaths": [],
         "noDeletePaths": [],
@@ -705,7 +713,7 @@ def load_config(
                 data = yaml.safe_load(f) or {}
             for key in merged:
                 items = data.get(key, []) or []
-                if key == "bashToolPatterns":
+                if key in ("bashToolPatterns", "mcpToolPolicies"):
                     for it in items:
                         if isinstance(it, dict):
                             _assign_rule_id(it, rules_file.stem, taken_ids, duplicate_ids)
@@ -3672,6 +3680,122 @@ def check_read_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
             return True, f"zero-access path {zero_path} (no read access)"
 
     return False, ""
+
+
+# ============================================================================
+# MCP TOOL POLICY (#923)
+# ============================================================================
+#
+# The bash rules are written against shell command STRINGS; an MCP tool call is
+# a name plus a JSON argument object, so those rules cannot transfer without
+# importing the string-matching defects (#915/#916). What a rule MEANS for a
+# structured tool call is a per-tool classification — issue #923's option (1):
+# each tool carries a tier the same decision ladder the Bash hook uses, with a
+# stable id that ``unattended_allow`` / ``disabled_rules`` can name.
+#
+# Policies live in the same rule YAMLs the heal deploys, under
+# ``mcpToolPolicies``. An entry is::
+#
+#     - tool: mcp__agentwire__worktree_remove   # exact full tool name, OR
+#       match: "(write|delete|remove)"          # regex searched on the name
+#       tier: ask            # allow | ask | block   (default: ask)
+#       mutates: true        # screen protected control-plane path args
+#       id: mcp.agentwire.worktree-remove
+#       reason: tears down a worktree and can delete a branch
+#
+# First match wins, in rule-file load order. ``mutates`` decides whether the
+# tool's path-valued arguments are screened against the PROTECTED control
+# plane (zero-access secrets are screened for every tool regardless — the
+# path's mere presence in a call is the leak). Defaulted to true for any
+# non-``allow`` tier.
+#
+# THE DEFAULT FOR UNCLASSIFIED TOOLS — the decision #923 calls "the whole
+# design" — is ALLOW with path screening, i.e. exactly the #1036 posture,
+# stated as data rather than implied by a matcher. Fail-closed would make
+# every unclassified tool (every third-party server, every tool added after
+# this file shipped) dead until classified — and in an unattended session a
+# wrongful tool refusal is a silent loop, which prices worse than the residual
+# gap: the dangerous core is classified explicitly, secrets are screened for
+# every tool, and control-plane writes are caught by the bundled name-shape
+# fallback entry (data, host-editable — no longer a hardcoded regex).
+
+_MCP_TIERS = {"allow", "ask", "block"}
+
+
+def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Decide allow/ask/block for an MCP tool CALL by per-tool policy (#923).
+
+    Returns ``{decision, reason, id, mutates, matched}`` — the same decision
+    vocabulary as :func:`check_command`, so the hook's unattended fail-closed
+    ladder and ``unattended_allow`` grants apply to tools unchanged. A tool
+    call names no filesystem target, so grants are evaluated with
+    ``scopeable=False`` by the caller (a path-scoped grant refuses).
+
+    ``mutates`` is None when NO policy matched — the caller distinguishes
+    "classified as non-mutating" from "unclassified" (the latter may fall back
+    to a bridge heuristic on installs whose rules dir predates mcp-tools.yaml).
+    """
+    safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
+    disabled_rules = set(safety_cfg.get("disabled_rules", []) or [])
+
+    # No YAML parser ⇒ no policies loaded ⇒ fail closed, same as check_command.
+    if config.get("_parser_unavailable"):
+        return {
+            "decision": "block",
+            "reason": str(config["_parser_unavailable"]),
+            "id": None,
+            "mutates": None,
+            "matched": False,
+        }
+
+    if safety_cfg.get("enabled", True) is False:
+        return {
+            "decision": "allow",
+            "reason": "safety disabled",
+            "id": None,
+            "mutates": None,
+            "matched": False,
+            "disabled": True,
+        }
+
+    for entry in config.get("mcpToolPolicies", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        rule_id = entry.get("id")
+        if rule_id and rule_id in disabled_rules:
+            continue
+        exact = entry.get("tool")
+        pattern = entry.get("match")
+        hit = False
+        if isinstance(exact, str) and exact:
+            hit = exact == tool_name
+        elif isinstance(pattern, str) and pattern:
+            try:
+                hit = bool(re.search(pattern, tool_name, re.IGNORECASE))
+            except re.error:
+                continue
+        if not hit:
+            continue
+        tier = str(entry.get("tier", "ask")).strip().lower()
+        if tier not in _MCP_TIERS:
+            # An unknown tier is a policy the author believes they set. Fail
+            # toward the confirmable middle, never silently to allow.
+            tier = "ask"
+        return {
+            "decision": tier,
+            "reason": entry.get("reason", f"MCP tool policy {rule_id or exact or pattern}"),
+            "id": rule_id,
+            "mutates": bool(entry.get("mutates", tier != "allow")),
+            "matched": True,
+        }
+
+    return {
+        "decision": "allow",
+        "reason": "no MCP tool policy matched",
+        "id": None,
+        "mutates": None,
+        "matched": False,
+    }
 # === END GENERATED ===
 
 
@@ -3757,15 +3881,14 @@ def _synthesize_command(tool_name: str, tool_input: dict) -> str | None:
     return None
 
 
-# Write-shaped MCP tool names (#923). The rules are written against shell
-# command strings and an MCP call is a name plus a JSON object, so full rule
-# coverage does not transfer; what DOES transfer is the path ladders. A
-# zero-access secret is blocked on MENTION for every tool (same semantics as
-# check_read_path — the path's mere presence in a call is the leak), while the
-# protected control plane is readable by design, so it is only enforced for
-# tools whose name declares a mutating operation. This is deliberately partial
-# — per-tool policy classification is #923's remaining design work.
-_WRITEISH_TOOL_RE = re.compile(
+# Bridge for installs whose ~/.agentwire/damage-control/ predates
+# mcp-tools.yaml (#923): a stale user rules dir wins over the bundled copy and
+# carries no ``mcpToolPolicies``, so per-tool classification loads empty. Until
+# the heal installs the missing file, control-plane screening must not degrade
+# below the #1036 posture — this regex is consulted ONLY when zero policies
+# loaded. With policies present, the same shape lives as DATA (the
+# ``mcp.writeish-name`` entry in mcp-tools.yaml) and this constant is inert.
+_WRITEISH_BRIDGE_RE = re.compile(
     r"(write|edit|delete|remove|move|rename|create|append|patch|mkdir|"
     r"rmdir|copy|upload|chmod|prune|kill|purge)",
     re.IGNORECASE,
@@ -3797,10 +3920,14 @@ def _pathlike_args(tool_input: dict):
             yield s
 
 
-def _screen_tool_paths(tool_name: str, tool_input: dict, config: dict) -> None:
-    """Exit 2 when a path-valued argument violates the path ladders (#923)."""
-    short = tool_name.split("__")[-1]
-    writeish = bool(_WRITEISH_TOOL_RE.search(short))
+def _screen_tool_paths(tool_name: str, tool_input: dict, config: dict, writeish: bool) -> None:
+    """Exit 2 when a path-valued argument violates the path ladders (#923).
+
+    Zero-access secrets block on MENTION for every tool (same semantics as
+    check_read_path — the path's mere presence in a call is the leak); the
+    protected control plane is readable by design, so it is only enforced when
+    the tool's POLICY says it mutates (``writeish``).
+    """
     allowed = load_allowed_paths(config)
     for p in _pathlike_args(tool_input):
         blocked, reason = check_read_path(p, config)
@@ -3835,10 +3962,64 @@ def main() -> None:
 
     command = _synthesize_command(tool_name, tool_input)
     if not command:
-        # Not a gated outbound tool: screen its path-valued arguments against
-        # the path ladders instead (#923) — an operation refused via Bash must
-        # not be permitted via a tool. Exits 2 on a violation, 0 otherwise.
-        _screen_tool_paths(tool_name, tool_input, config)
+        # Not a gated outbound tool: run the per-tool policy ladder (#923
+        # option 1) and screen path-valued arguments — an operation refused
+        # via Bash must not be permitted via a tool.
+        policy = check_mcp_tool(tool_name, config)
+        decision = policy["decision"]
+        reason = policy["reason"]
+        rule_id = policy.get("id")
+
+        if decision == "block":
+            log_blocked(tool_name, tool_name, reason)
+            print(f"SECURITY: Blocked MCP tool: {reason}", file=sys.stderr)
+            sys.exit(2)
+
+        # Path screening runs before any allow/ask verdict is emitted: a
+        # protected path argument blocks regardless of the tool's tier.
+        mutates = policy.get("mutates")
+        if mutates is None and not config.get("mcpToolPolicies"):
+            # Stale rules dir with no policies loaded — see _WRITEISH_BRIDGE_RE.
+            mutates = bool(_WRITEISH_BRIDGE_RE.search(tool_name.split("__")[-1]))
+        _screen_tool_paths(tool_name, tool_input, config, bool(mutates))
+
+        if decision == "ask" and is_unattended():
+            # No human present: fail closed unless the policy's id is granted.
+            # A tool call names no directory, so scopeable=False — a
+            # path-scoped grant refuses rather than guessing (#914).
+            grants = resolve_unattended_grants(config)
+            granted, why = unattended_grant_allows(
+                rule_id, tool_name, grants, os.getcwd(), scopeable=False,
+            )
+            if granted:
+                log_allowed(tool_name, tool_name, user_approved=False)
+                sys.exit(0)
+            try:
+                log_blocked(tool_name, tool_name, f"unattended: {reason} — {why}",
+                            rule_id=rule_id)
+            except TypeError:
+                log_blocked(tool_name, tool_name, f"unattended: {reason} — {why}")
+            _notify_unattended_block(tool_name, f"{reason} — {why}", rule_id)
+            print(f"SECURITY: Blocked (unattended — no human to confirm): {reason}",
+                  file=sys.stderr)
+            print(f"Tool: {tool_name}", file=sys.stderr)
+            print(f"Why: {why}", file=sys.stderr)
+            if rule_id and rule_id not in grants:
+                print(f"To permit this for an unattended task, add rule id "
+                      f"'{rule_id}' to its .agentwire.tasks.yml task `unattended_allow`.",
+                      file=sys.stderr)
+            sys.exit(2)
+        elif decision == "ask" and permission_mode not in bypass_modes:
+            log_asked(tool_name, tool_name, reason)
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": reason,
+                }
+            }))
+            sys.exit(0)
+
         sys.exit(0)
 
     result = check_command(command, config)

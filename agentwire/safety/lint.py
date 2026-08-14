@@ -149,7 +149,10 @@ def lint_task_posture(
     # exactly like one that works. That is how the install drift in #916 stayed
     # invisible: five of six DEFAULT_UNATTENDED_ALLOW ids name no live rule.
     known_ids = {
-        p.get("id") for p in config.get("bashToolPatterns", []) if isinstance(p, dict)
+        p.get("id")
+        for key in ("bashToolPatterns", "mcpToolPolicies")
+        for p in config.get(key, [])
+        if isinstance(p, dict)
     }
     report.unknown_grants = sorted(
         rid for rid in task_grants if rid and rid not in known_ids
@@ -193,7 +196,10 @@ def unattended_defaults_missing(config: dict) -> list[str]:
     from ._core import DEFAULT_UNATTENDED_ALLOW
 
     known = {
-        p.get("id") for p in config.get("bashToolPatterns", []) if isinstance(p, dict)
+        p.get("id")
+        for key in ("bashToolPatterns", "mcpToolPolicies")
+        for p in config.get(key, [])
+        if isinstance(p, dict)
     }
     defaults, _ = parse_unattended_allow(DEFAULT_UNATTENDED_ALLOW)
     return sorted(rid for rid in defaults if rid not in known)

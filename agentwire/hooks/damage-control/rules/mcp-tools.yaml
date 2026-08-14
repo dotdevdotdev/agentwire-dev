@@ -1,0 +1,84 @@
+# Per-tool policy for MCP tool calls (#923 option 1).
+#
+# The bash rules match shell command strings; an MCP call is a name plus a JSON
+# object, so coverage does not transfer — a tool is classified HERE instead.
+# First match wins. Fields: `tool` (exact full name) or `match` (regex on the
+# name), `tier` (allow | ask | block; default ask), `mutates` (screen protected
+# control-plane path arguments; defaults true for any non-allow tier), `id`
+# (stable — `unattended_allow` / `disabled_rules` name it), `reason`.
+#
+# Tier semantics are the Bash hook's, unchanged: `ask` is an interactive
+# confirm, demoted to allow under bypassPermissions/auto, and FAIL-CLOSED
+# (block + owner email) in an unattended session unless the id is granted.
+# A tool call names no directory, so a path-scoped grant refuses — grant these
+# ids unscoped, per task, deliberately.
+#
+# WHAT IS CLASSIFIED: the measured dangerous core — the kill/remove/teardown
+# class whose effect is not "a message to a guarded session". Each mirrors the
+# in-CLI safety its command path already carries (merge-verification, dirty
+# refusal, PR guards); the tier is additive on top, giving the tool call the
+# same unattended fail-closed posture its Bash spelling gets from the rules.
+#
+# WHAT IS DELIBERATELY NOT CLASSIFIED (pricing both halves — a wrongful tool
+# refusal in an unattended session is a silent loop):
+#   * session_send / session_send_keys / pane_send / msg_send — their effect is
+#     a message to a Claude session that runs its OWN damage control; the Bash
+#     twin (`agentwire send`) is unruled, and gating only the tool would
+#     recreate #923's channel asymmetry in reverse.
+#   * everything read-shaped or additive (create/list/status/output) — allow by
+#     falling through, with zero-access secret screening still applied to every
+#     tool's path arguments.
+#
+# UNCLASSIFIED TOOLS fall through to the final name-shape entry below (the
+# #1036 heuristic, now data a host can edit) and otherwise to allow-with-
+# screening. That default is the design decision #923 names: fail-closed would
+# kill every third-party tool and every future tool until classified.
+
+mcpToolPolicies:
+  # --- teardown / kill class -------------------------------------------------
+  - tool: mcp__agentwire__worktree_remove
+    id: mcp.agentwire.worktree-remove
+    tier: ask
+    mutates: true
+    reason: worktree_remove tears down a session's worktree and can delete its branch
+
+  - tool: mcp__agentwire__worktree_prune
+    id: mcp.agentwire.worktree-prune
+    tier: ask
+    mutates: true
+    reason: worktree_prune bulk-removes worktrees and can delete merged branches
+
+  - tool: mcp__agentwire__session_kill
+    id: mcp.agentwire.session-kill
+    tier: ask
+    mutates: true
+    reason: session_kill terminates another agent session
+
+  - tool: mcp__agentwire__pane_kill
+    id: mcp.agentwire.pane-kill
+    tier: ask
+    mutates: true
+    reason: pane_kill terminates a worker pane
+
+  - tool: mcp__agentwire__session_recreate
+    id: mcp.agentwire.session-recreate
+    tier: ask
+    mutates: true
+    reason: session_recreate force-removes the session's worktree and recursively deletes its directory
+
+  - tool: mcp__agentwire__machine_remove
+    id: mcp.agentwire.machine-remove
+    tier: ask
+    mutates: true
+    reason: machine_remove deregisters a remote machine from the fleet
+
+  # --- fallback for unclassified tools --------------------------------------
+  # The #1036 write-shaped-name heuristic, kept as DATA rather than code: a
+  # tool whose name declares a mutating operation gets its path-valued
+  # arguments screened against the protected control plane. `allow` tier — the
+  # name shape alone never blocks or asks; only a protected path argument does.
+  - match: "(write|edit|delete|remove|move|rename|create|append|patch|mkdir|rmdir|copy|upload|chmod|prune|kill|purge)"
+    id: mcp.writeish-name
+    tier: allow
+    mutates: true
+    reason: write-shaped MCP tool name — protected control-plane path arguments are refused
