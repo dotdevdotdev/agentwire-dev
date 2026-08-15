@@ -357,7 +357,7 @@ class TestTheMissLogNamesItsCause:
             fireTimers();                       // the 6s miss
             """,
         )
-        miss = [l for l in report["logs"] if "no spoken confirmation" in l]
+        miss = [line for line in report["logs"] if "no spoken confirmation" in line]
         assert len(miss) == 1
         assert "1 response(s) cancelled while this was pending" in miss[0]
         assert "interrupt-correlated" in miss[0]
@@ -370,7 +370,7 @@ class TestTheMissLogNamesItsCause:
             fireTimers();
             """,
         )
-        miss = [l for l in report["logs"] if "no spoken confirmation" in l]
+        miss = [line for line in report["logs"] if "no spoken confirmation" in line]
         assert len(miss) == 1
         assert "interrupt-correlated" not in miss[0]
 
@@ -561,7 +561,7 @@ class TestTheAcceptanceComposition:
         assert "root-sess is blocked" in texts[0]
         assert "something new" in texts[1]
         # The deduped re-raise is on the record, not silently missing.
-        assert any("re-raised notice deduped" in l for l in report["logs"])
+        assert any("re-raised notice deduped" in line for line in report["logs"])
         # And it is ACKABLE: the changed-prompt notice's ack walks past it.
         assert report["cursor"] == 3
 
@@ -585,7 +585,7 @@ class TestTheAcceptanceComposition:
             await n2.pollOnce();
             await n2.pollOnce();
         """)
-        drop_lines = [l for l in report["logs"] if "stale notice dropped" in l]
+        drop_lines = [line for line in report["logs"] if "stale notice dropped" in line]
         assert len(drop_lines) == 1
         assert "subject session gone" in drop_lines[0]
         assert report["noticeTexts"] == []
