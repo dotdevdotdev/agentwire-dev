@@ -701,7 +701,15 @@ def _alert_no_parent(
         )
         reached = fleet_alerts.emit_for(
             "blocked_pane_no_parent",
-            f"{session} (pane {pane_index}) is blocked on a {info.kind} prompt "
+            # The ref is the alert's STABLE IDENTITY across re-raises (#1048):
+            # this alert re-fires every NO_PARENT_ESCALATE_TTL while the same
+            # prompt stays up, each time as a new message id, and a listener
+            # that dedups by id speaks every one. Keyed on the prompt hash, so
+            # a genuinely different question is a new identity — and the voice
+            # layer's staleness gate verifies the marker by this same key
+            # before speaking, so an answered prompt is dropped, not replayed.
+            ref=f"prompt:{session}:{pane_index}:{info.content_hash()}",
+            text=f"{session} (pane {pane_index}) is blocked on a {info.kind} prompt "
             f"and is a root session — there is no parent to route it to, so "
             f"nothing will answer it automatically.{waited} Question: "
             f"{info.question} Answer with: agentwire prompts answer -s "

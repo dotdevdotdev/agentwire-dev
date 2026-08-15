@@ -397,6 +397,113 @@ def _fleet_voice_health(args: dict) -> dict:
     }
 
 
+#: How old spooled mail may be and still be VOLUNTEERED (#1048). Speech has no
+#: scrollback: an hours-stale "is idle and done working" about workers torn
+#: down the previous night was spoken as fresh news. Past this, the notice is
+#: dropped with a reason rather than read out — the spool keeps the body, and
+#: the ack of a later spoken notice retires it.
+STALE_NOTICE_S = 900
+
+#: Grace before "sender session gone" makes a message stale. A worker that
+#: reports and is reaped seconds later still deserves its report spoken; one
+#: whose sender has been gone for minutes is history, not news.
+SENDER_GONE_GRACE_S = 300
+
+
+def _staleness_reason(m: dict, now_ms: int, live: "set | None") -> "str | None":
+    """Why *m* must not be volunteered, or None while it is still news.
+
+    Verified against CURRENT state at read time, never replayed from what was
+    true at enqueue (#1048): a prompt alert whose marker is gone or answered,
+    an activity notice whose subject session no longer exists, mail from a
+    long-gone sender, and anything past :data:`STALE_NOTICE_S`. *live* is the
+    tmux session set, or None when tmux itself was unreachable — an outage is
+    not a verdict, so gone-checks abstain then (only the age gate still runs).
+    """
+    from .. import fleet_alerts
+
+    age_s = max(0, now_ms - int(m.get("ts") or 0)) / 1000.0
+    ref = str(m.get("ref") or "")
+    if ref.startswith("prompt:"):
+        # prompt:{session}:{pane}:{hash} — session names never contain `:`
+        # (tmux rewrites it to `_`, #878), so a plain rsplit is exact.
+        parts = ref[len("prompt:"):].rsplit(":", 2)
+        if len(parts) == 3:
+            from .. import prompt_router
+
+            session, pane_s, phash = parts
+            try:
+                marker = prompt_router.read_marker(session, int(pane_s))
+            except Exception:
+                marker = None
+            if not marker or str(marker.get("hash") or "") != phash:
+                return "prompt no longer live"
+    if ref.startswith("activity:session_idle:") and live is not None:
+        subject = ref[len("activity:session_idle:"):]
+        if subject and subject not in live:
+            return "subject session gone"
+    if age_s > STALE_NOTICE_S:
+        return f"older than {STALE_NOTICE_S // 60} minutes"
+    sender = str(m.get("from") or "")
+    if (
+        sender
+        and sender not in fleet_alerts.MACHINE_SENDERS
+        and live is not None
+        and sender not in live
+        and age_s > SENDER_GONE_GRACE_S
+    ):
+        return "sender session gone"
+    return None
+
+
+def _gate_notices(messages: list[dict]) -> "tuple[list[dict], list[dict]]":
+    """The volunteering gate (#1048): (still news, dropped-with-reason).
+
+    Two passes. Staleness first — each message verified against current state.
+    Then identity dedup: messages sharing a non-empty ``ref`` are re-raises of
+    one condition (the no-parent detector re-fires per TTL with a fresh id),
+    and only the NEWEST speaks; the rest are superseded. Dropped entries carry
+    ``{id, from, ref, reason}`` so the client can put the reason on screen —
+    dropped, never silently missing.
+    """
+    import time
+
+    from .. import inbox
+
+    now_ms = int(time.time() * 1000)
+    live = inbox.live_sessions()
+    live_set = set(live) if live is not None else None
+
+    dropped: list[dict] = []
+    fresh: list[dict] = []
+    for m in messages:
+        reason = _staleness_reason(m, now_ms, live_set)
+        if reason:
+            dropped.append(
+                {"id": m.get("id"), "from": m.get("from"),
+                 "ref": m.get("ref"), "reason": reason}
+            )
+        else:
+            fresh.append(m)
+
+    newest_by_ref: dict[str, str] = {}
+    for m in fresh:
+        ref = str(m.get("ref") or "")
+        if ref:
+            newest_by_ref[ref] = m.get("id")
+    kept: list[dict] = []
+    for m in fresh:
+        ref = str(m.get("ref") or "")
+        if ref and newest_by_ref.get(ref) != m.get("id"):
+            dropped.append(
+                {"id": m.get("id"), "from": m.get("from"),
+                 "ref": ref, "reason": "superseded by a newer re-raise"}
+            )
+        else:
+            kept.append(m)
+    return kept, dropped
+
+
 def _buddy_inbox(args: dict) -> dict:
     """The buddy's OWN mail — what other sessions have reported to it.
 
@@ -439,6 +546,19 @@ def _buddy_inbox(args: dict) -> dict:
         if asked_through
         else bool(ack and messages)
     )
+    # The staleness gate runs on the UNREAD view only (#1048) — that is the
+    # volunteering path, and a stale notice must be dropped at speak time with
+    # a reason, never replayed as fresh news. A deliberate full-history read
+    # (unread_only=false) is the owner asking for the record and gets it
+    # unfiltered. Dropped messages stay in the spool; the contiguous ack of a
+    # later spoken notice retires them from the unread view for good.
+    dropped: list[dict] = []
+    if unread_only:
+        from .. import fleet_alerts
+
+        messages, dropped = _gate_notices(messages)
+        for d in dropped:
+            fleet_alerts.log_event("stale_notice_dropped", buddy=name, **d)
     return {
         "success": True,
         "acked": acked,
@@ -448,6 +568,7 @@ def _buddy_inbox(args: dict) -> dict:
             {k: m.get(k) for k in ("id", "from", "kind", "text", "ts", "ref")}
             for m in messages
         ],
+        "dropped": dropped,
     }
 
 

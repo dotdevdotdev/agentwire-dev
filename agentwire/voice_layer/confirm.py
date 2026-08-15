@@ -218,6 +218,21 @@ APPROVAL_WAIT_S = 2.5
 #: a model that keeps guessing.
 MAX_CONFIRM_ATTEMPTS = 5
 
+#: How many times a confirm may be refused ``not_announced`` before the spine
+#: accepts the token anyway (#1048). The proposal text is RENDERED on the page
+#: the moment it is proposed — the client anchors at render now, so this path
+#: fires only when that forward was lost — and the announcement-gating livelock
+#: is the never-approve-unannounced rule composing with notice interruptions:
+#: the announcement never completes, so every correct "confirm <nonce>" is
+#: answered "hang on — I haven't finished telling you", forever. Same class as
+#: the digit-nonce livelock above: a gate that refuses a CORRECT approval
+#: deterministically is worse than the false-accept the strictness was buying.
+#: One "hang on" is a correction; a second is the livelock, so after one the
+#: judge runs — the nonce, minted at propose and never spoken by any refusal
+#: (#953), remains the evidence the owner knows what they are approving. The
+#: deny-side grammar is untouched.
+MAX_NOT_ANNOUNCED_REFUSALS = 1
+
 #: The nonce alphabet: short, phonetically distinct WORDS with one spelling each.
 #:
 #: **Digits were tried and they livelock.** "four seven" comes back from the
@@ -972,6 +987,9 @@ class Proposal:
     #: msg-shaped "queued" phrasing — see :meth:`Verdict.to_dict` for why the
     #: two claims must differ (§3.6: never claim more than the write did).
     success_say: str = ""
+    #: How many confirms this proposal has refused ``not_announced``. Bounded
+    #: by :data:`MAX_NOT_ANNOUNCED_REFUSALS` — see the livelock note there.
+    not_announced_refusals: int = 0
 
     @property
     def announced(self) -> bool:
@@ -2463,7 +2481,15 @@ class ConfirmSpine:
             if proposal is None:
                 return None, Verdict(approved=False, reason="no_proposal")
             if require_announced and not proposal.announced:
-                return None, Verdict(approved=False, reason="not_announced")
+                # Capped at one "hang on" per proposal (#1048). The client
+                # anchors at RENDER now, so reaching here at all means the
+                # /anchor forward was lost — and a second refusal on the same
+                # proposal is the announcement-gating livelock, not a
+                # correction. Past the cap the claim proceeds: the judge still
+                # requires the spoken nonce, which no refusal ever utters.
+                if proposal.not_announced_refusals < MAX_NOT_ANNOUNCED_REFUSALS:
+                    proposal.not_announced_refusals += 1
+                    return None, Verdict(approved=False, reason="not_announced")
             self._in_flight.add(token)
             return proposal, None
 
@@ -2491,6 +2517,7 @@ __all__ = [
     "APPROVAL_WAIT_S",
     "MAX_BODY_CHARS",
     "MAX_CONFIRM_ATTEMPTS",
+    "MAX_NOT_ANNOUNCED_REFUSALS",
     "PROPOSAL_TTL_S",
     "SPOKEN",
     "WAIT_OUTCOMES",

@@ -728,11 +728,11 @@ class TestTheBuddyClock:
     speaking path."""
 
     def test_a_fan_out_is_capped_into_utterances_not_a_monologue(self):
-        """#1016. Speech cannot be skimmed and the owner cannot predict when it
-        stops, so an unbounded coalesce is a monologue waiting for a fan-out —
-        ten workers landing in one 5s poll window was one ~2500-char utterance.
-        The overflow is HELD, not dropped: it stays unread and the next quiet
-        tick says it."""
+        """#1016 + #1048. Speech cannot be skimmed, so one utterance reads at
+        most MAX_NOTICE_BODIES bodies — and the overflow now COLLAPSES into a
+        spoken summary (count + senders) rather than being held for serial
+        replay at later gaps, which was the spam. The whole backlog is claimed
+        by this one notice."""
         report = run_notifier("""
             spool = [];
             for (var i = 1; i <= 5; i++) {
@@ -742,33 +742,33 @@ class TestTheBuddyClock:
         """)
         first = report["announced"][0]
         assert "body 1" in first["text"] and "body 3" in first["text"]
-        assert "body 4" not in first["text"]
-        assert first["text"].endswith("And 2 more waiting.")
-        assert first["meta"]["inboxIds"] == ["m1", "m2", "m3"]
-        # And the ack stops at the spoken run — the held mail is not buried.
-        assert first["meta"]["ackThrough"] == "m3"
+        assert "body 4" not in first["text"] and "body 5" not in first["text"]
+        assert "Plus 2 more from w4, w5" in first["text"]
+        assert "collapsed" in first["text"]
+        # The summary CLAIMS the overflow: all five ids, acked to the tail.
+        assert first["meta"]["inboxIds"] == ["m1", "m2", "m3", "m4", "m5"]
+        assert first["meta"]["ackThrough"] == "m5"
 
-    def test_the_held_overflow_is_spoken_on_the_next_gap(self):
+    def test_the_collapsed_overflow_is_never_replayed(self):
+        """#1048. "And N more waiting" used to mean the next quiet tick read
+        the next three bodies — a firehose replayed serially, gap after gap.
+        Collapsed mail is acked with the batch and gets no later airtime."""
         report = run_notifier("""
             spool = [];
             for (var i = 1; i <= 5; i++) {
               spool.push({ id: "m" + i, from: "w" + i, kind: "done", text: "body " + i });
             }
             await notifier.pollOnce();
+            await notifier.noticeSpoken(announcedCalls[0].meta);
             await notifier.pollOnce();
         """)
-        assert len(report["announced"]) == 2
-        second = report["announced"][1]["text"]
-        assert "body 4" in second and "body 5" in second
-        assert "more waiting" not in second
+        assert len(report["announced"]) == 1
+        assert report["cursor"] == 5
 
-    def test_an_escalation_behind_the_cap_waits_one_tick_no_longer(self):
-        """The cap's one real cost, bounded and pinned. An escalation sitting at
-        position 4+ of a full-gate batch is pushed to the next tick — and that
-        tick says it whether or not the gate is still full, because the
-        interrupt path filters to urgent messages only. Delay is one 5s poll;
-        the failure this rules out is the escalation waiting behind an ordinary
-        report indefinitely."""
+    def test_an_escalation_never_waits_behind_ordinary_reports(self):
+        """#1048. The read-in-full slots go to escalations first (stable within
+        each tier), so an alarm arriving fourth in a full batch is READ, not
+        collapsed into the summary behind three routine reports."""
         report = run_notifier("""
             spool = [
               { id: "m1", from: "w1", kind: "done", text: "one" },
@@ -778,15 +778,13 @@ class TestTheBuddyClock:
                 text: "login expired" },
             ];
             await notifier.pollOnce();
-            logs.push("first: " + announcedCalls[0].text);
-            speakable = false;          // the buddy is now mid-chatter
-            interruptable = true;       // …but the interrupt tier is open
-            await notifier.pollOnce();
         """)
-        assert "login expired" not in report["announced"][0]["text"]
-        assert report["announced"][0]["text"].endswith("And 1 more waiting.")
-        assert len(report["announced"]) == 2
-        assert "login expired" in report["announced"][1]["text"]
+        first = report["announced"][0]["text"]
+        assert "login expired" in first
+        assert first.startswith("Heads up")
+        # One ordinary report gave up its slot to the alarm and is summarized.
+        assert "Plus 1 more from w3" in first
+        assert report["announced"][0]["meta"]["inboxIds"] == ["m4", "m1", "m2", "m3"]
 
     def test_machine_mail_is_not_narrated_as_a_reply(self):
         """#1016. The fleet's own senders are not colleagues, and the announcer
@@ -1160,8 +1158,10 @@ class TestTheConfirmGate:
         assert report["outstanding"] is True
 
     def test_the_page_wires_the_gate_to_the_anchor_and_the_outcome(self):
-        """The gate's edges on the page: closed when the proposal is SPOKEN
-        (the onSpoken anchor branch), reopened by the outcome router — which
+        """The gate's edges on the page: closed the moment the proposal is
+        RENDERED (#1048 — announce()'s anchor branch, before the announcer is
+        even asked to speak it, so the volunteering hold cannot be defeated by
+        an interrupted announcement), reopened by the outcome router — which
         keys on the payload's confirm_terminal, never on tool names, so a
         second declared write (#966) reopens it too. The behavioral half runs
         under node in TestTheOutcomeRouter."""
@@ -1170,8 +1170,14 @@ class TestTheConfirmGate:
         assert client.outcome_router_source().strip() in page
         # ttl mirrors confirm.PROPOSAL_TTL_S — the false-reject bound.
         assert "ttlMs: 120000" in page
-        anchor_branch = page.split("if (!meta || !meta.anchor) return;", 1)[1]
-        assert "confirmGate.anchored();" in anchor_branch.split("}", 1)[0]
+        announce_body = page.split("function announce(text, meta, fallbackText) {", 1)[1]
+        announce_body = announce_body.split("\n}", 1)[0]
+        # The RENDER (log) comes first, then the anchor, then the speech path —
+        # anchored-at-render means anchored before the announcer can fail.
+        assert announce_body.index('log("buddy", text, "buddy");') \
+            < announce_body.index("confirmGate.anchored();") \
+            < announce_body.index("announcer.announce(")
+        assert 'forward("/anchor"' in announce_body
         wiring = page.split("createOutcomeRouter({", 1)[1].split("});", 1)[0]
         assert "gate: confirmGate," in wiring
         assert "ledger: reRaiseLedger," in wiring
@@ -1264,11 +1270,15 @@ class TestThePageEmbedsTheRealThing:
         done_at = page.index('case "response.done": {')
         assert cancelled_at < done_at
         assert "announcer.onResponseCancelled()" in page
-        # The only anchor forward is inside onSpoken.
+        # The only anchor forward is inside announce() — the RENDER (#1048).
+        # response.done, cancels, and the announcer's spoken/not-spoken
+        # verdicts touch it not at all, so nothing a response does can steal
+        # it OR starve it.
         assert page.count('forward("/anchor"') == 1
+        announce_at = page.index("function announce(text, meta, fallbackText)")
         onspoken_at = page.index("function onSpoken(meta, how)")
         anchor_at = page.index('forward("/anchor"')
-        assert onspoken_at < anchor_at
+        assert announce_at < anchor_at < onspoken_at
 
     def test_every_client_side_spoken_literal_is_asserted(self):
         """The category no test was exercising.
