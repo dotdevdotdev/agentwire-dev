@@ -84,7 +84,10 @@ COMPRESSIBLE_SUFFIXES = {
 # since filenames aren't content-hashed yet (a follow-up could append_version).
 IMAGE_SUFFIXES = {".webp", ".png", ".jpeg", ".jpg", ".gif", ".woff", ".woff2"}
 STATIC_CACHE_IMAGE = "public, max-age=604800"  # 7 days
-STATIC_CACHE_CODE = "public, max-age=3600"     # 1 hour
+# Code is revalidated on every load (ETag -> 304), never trusted for a fixed window:
+# a plain reload only revalidates the HTML, so max-age on JS kept the browser
+# running pre-rebuild scripts for up to an hour and made shipped fixes invisible.
+STATIC_CACHE_CODE = "no-cache"
 
 # Paste chunking: large inputs (pastes) are written in chunks with delays
 # to avoid flooding the PTY buffer and freezing the agent session.
@@ -2544,16 +2547,21 @@ class AgentWireServer(
 
         accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "")
         if suffix in COMPRESSIBLE_SUFFIXES and accepts_gzip:
-            body = self._gzipped_static(target)
+            stat = target.stat()
+            etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}-gz"'
+            headers = {
+                "Cache-Control": cache,
+                "ETag": etag,
+                "Content-Encoding": "gzip",
+                "Vary": "Accept-Encoding",
+            }
+            if request.headers.get("If-None-Match") == etag:
+                return web.Response(status=304, headers=headers)
             return web.Response(
-                body=body,
+                body=self._gzipped_static(target),
                 content_type=content_type,
                 charset="utf-8",
-                headers={
-                    "Cache-Control": cache,
-                    "Content-Encoding": "gzip",
-                    "Vary": "Accept-Encoding",
-                },
+                headers=headers,
             )
 
         # Pass Content-Type explicitly: web.FileResponse otherwise guesses via

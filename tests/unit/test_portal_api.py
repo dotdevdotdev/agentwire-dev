@@ -62,6 +62,23 @@ async def portal_client_with_origins(tmp_path):
         yield client, server
 
 
+class TestStaticCaching:
+    async def test_code_revalidates_and_images_stay_cached(self, portal_client):
+        """A plain reload only revalidates the HTML, so JS under max-age kept
+        the browser on pre-rebuild scripts and shipped fixes never showed up."""
+        client, _ = portal_client
+        first = await client.get("/static/js/hotkeys.js", headers={"Accept-Encoding": "gzip"})
+        assert first.status == 200
+        assert first.headers["Cache-Control"] == "no-cache"
+        again = await client.get(
+            "/static/js/hotkeys.js",
+            headers={"Accept-Encoding": "gzip", "If-None-Match": first.headers["ETag"]},
+        )
+        assert again.status == 304
+        icon = await client.get("/static/img/icon-192.png")
+        assert "max-age" in icon.headers["Cache-Control"]
+
+
 # ---------------------------------------------------------------------------
 # Health endpoint
 # ---------------------------------------------------------------------------
