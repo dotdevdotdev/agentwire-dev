@@ -51,7 +51,10 @@ def test_cycling_bound_to_alt_brackets(cycling_handler):
     assert "e.code" in cycling_handler
     assert "'BracketRight'" in cycling_handler
     assert "'BracketLeft'" in cycling_handler
-    assert "e.altKey" in cycling_handler
+    # bindHotkey (hotkeys.js) owns the capture/altKey/preventDefault mechanics;
+    # tests/unit/test_hotkeys_js.py exercises them for real.
+    assert "bindHotkey" in cycling_handler
+    assert "alt: true" in cycling_handler
     assert "cycleWindow" in cycling_handler
 
 
