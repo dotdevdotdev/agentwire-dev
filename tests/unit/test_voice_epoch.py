@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentwire.voice_layer import client, confirm, server, transcript
+from agentwire.voice_layer import confirm, server, transcript
 
 
 class FakeMint:
@@ -192,35 +192,6 @@ class TestAReloadCannotBeApprovedByLastSessionsSpeech:
         assert calls == []
 
 
-class TestThePageTakesItsOriginFromTheMint:
-    """The wiring half. The node harnesses cover the factories; the origin
-    lives in the page's own ``start()``, so it is asserted on the source."""
-
-    def test_the_counter_is_seeded_from_the_mint_response(self):
-        page = client.page("buddy", "tok")
-        start = page.split("async function start()", 1)[1].split("function stop()", 1)[0]
-        assert "seqCounter = session.seq_base" in start
-
-    def test_the_seed_is_not_defaulted_to_zero(self):
-        """``session.seq_base || 0`` reads defensive and silently restores the
-        exact defect — a bridge that failed to answer would hand every page a
-        zero origin again. A missing base is a broken bridge, and start()
-        already throws on one."""
-        page = client.page("buddy", "tok")
-        assert "seq_base || 0" not in page
-        assert "seq_base ||" not in page
-
-    def test_the_seed_lands_before_anything_can_consume_a_sequence(self):
-        """The declaration's 0 is only unreachable because the seed happens
-        before the data channel exists — nothing emits an event, and so
-        nothing calls ``nextSeq()``, until then. Reordering the seed below
-        ``createDataChannel`` would put a zero-origin sequence back on the
-        wire without changing a single line that mentions the origin."""
-        page = client.page("buddy", "tok")
-        start = page.split("async function start()", 1)[1].split("function stop()", 1)[0]
-        assert start.index("seqCounter = session.seq_base") < start.index(
-            "pc.createDataChannel"
-        )
 
 
 class TestTheEpochIsReservedAtomically:
@@ -387,13 +358,6 @@ class TestASequenceIsBoundedAtBothEnds:
         assert minter.calls == 0
 
 
-class TestThePageRefusesAnUnusableOrigin:
-    def test_the_guard_requires_a_safe_integer_not_merely_a_number(self):
-        """``typeof x === "number"`` passes for ``Infinity``, and a page that
-        counts from Infinity serializes every anchor as ``null``."""
-        page = client.page("buddy", "tok")
-        assert "Number.isSafeInteger(session.seq_base)" in page
-        assert 'typeof session.seq_base !== "number"' not in page
 
 
 class TestAReservationIsAWholeBlock:

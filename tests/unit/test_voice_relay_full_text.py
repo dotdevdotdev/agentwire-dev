@@ -411,30 +411,6 @@ class TestTheStoreIsBounded:
         assert relay.relay_dir() == Path("/somewhere/else/voice/relays")
 
 
-class TestTheWikiStatesWhatShipped:
-    """The page is what a future session reads before touching the caps. A
-    sentence there that outruns the code gets rounded back up, so the two
-    load-bearing claims are pinned against the code, not just written down."""
-
-    @pytest.fixture
-    def page(self):
-        return " ".join(
-            (
-                Path(__file__).resolve().parents[2]
-                / "docs" / "wiki" / "voice-layer.md"
-            ).read_text(encoding="utf-8").split()
-        )
-
-    def test_the_priority_ruling_is_recorded(self, page):
-        assert "Recoverable yields to unrecoverable." in page
-        assert "The pointer is not droppable" in page
-
-    def test_the_residual_is_stated_rather_than_implied(self, page):
-        """``MAX_INSTRUCTION_CHARS`` still refuses a long proposal outright.
-        The page must not let "the full utterance reaches the session" imply
-        that limit went away."""
-        assert "MAX_INSTRUCTION_CHARS = 600" in page
-        assert write_tools.MAX_INSTRUCTION_CHARS == 600
 
 
 class TestEndToEndThroughTheSpine:

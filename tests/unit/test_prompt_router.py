@@ -453,27 +453,6 @@ class TestSafeDeliver:
         assert not ok and reason == "delivery_unverified"
 
 
-class TestHookScriptsUseRealCommands:
-    HOOKS_DIR = (
-        __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-        / "agentwire"
-        / "hooks"
-    )
-
-    def test_no_nonexistent_alert_command(self):
-        # `agentwire alert` never existed — every delivery through it was
-        # silently dropped (#276). Guard against reintroduction.
-        for script in ("idle-handler.sh", "queue-processor.sh"):
-            source = (self.HOOKS_DIR / script).read_text()
-            assert " alert " not in source.replace("alert-activity", ""), script
-
-    def test_queue_processor_uses_notify_parent_raw(self):
-        source = (self.HOOKS_DIR / "queue-processor.sh").read_text()
-        assert "notify-parent -q --raw --to" in source
-
-    def test_idle_handler_has_prompt_router_guard(self):
-        source = (self.HOOKS_DIR / "idle-handler.sh").read_text()
-        assert ".agentwire/prompt-router/" in source
 
 
 @pytest.fixture

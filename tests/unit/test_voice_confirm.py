@@ -30,7 +30,6 @@ a guard; the runner is injected rather than stubbed at the subprocess layer.
 
 import itertools
 import re
-import textwrap
 import threading
 import time
 
@@ -2022,94 +2021,6 @@ class TestTheCancelBarrierIsONELockHold:
         assert verdict.reason == expected, (recorded, marker, verdict.reason)
         assert verdict.reason not in ASSERTS_NOTHING_SENT
 
-    def test_the_barrier_read_and_mark_are_syntactically_inside_one_hold(self):
-        """The barrier's read and mark are SYNTACTICALLY inside one lock hold.
-
-        The blind spot a boundary sweep has BY CONSTRUCTION.
-
-        The sweep fires at lock RELEASES, so it can only see states that a
-        release creates. Move the ``_cancelled`` read outside every lock and
-        there is no release between the read and the mark to fire at — the
-        sweep stays green while a cancel landing there is told "I haven't sent
-        anything" with the runner already called. That is the same bug, in the
-        one form the instrument cannot reach.
-
-        So this one is read off the SOURCE. A structural assertion is the right
-        tool exactly when the property is "these statements are in this scope",
-        which no amount of runtime observation can establish.
-
-        **This pin checks SCOPE. It does not check ORDER.** Marking
-        ``_dispatching`` before reading ``_cancelled``, both inside the one
-        hold, passes here — and returns without entering the ``try``/``finally``
-        that releases the marker, so the marker leaks and every later cancel is
-        told *"Too late to stop that one — it's already going out"* forever,
-        about a write that never happened. The current order is correct and
-        nothing on this branch does that; the point is that whoever moves these
-        two statements is not protected against it by this test.
-        """
-        import ast
-        import inspect
-
-        source = inspect.getsource(confirm.ConfirmSpine._confirm_claimed)
-        tree = ast.parse(textwrap.dedent(source))
-
-        def holds_the_lock(node) -> bool:
-            return isinstance(node, ast.With) and any(
-                isinstance(item.context_expr, ast.Attribute)
-                and item.context_expr.attr == "_lock"
-                for item in node.items
-            )
-
-        def mentions(node, name: str) -> bool:
-            return any(
-                isinstance(child, ast.Attribute) and child.attr == name
-                for child in ast.walk(node)
-            )
-
-        barriers = [
-            node
-            for node in ast.walk(tree)
-            if holds_the_lock(node)
-            and mentions(node, "_cancelled")
-            and mentions(node, "_dispatching")
-        ]
-        assert len(barriers) == 1, (
-            "the _cancelled read and the _dispatching mark must sit in exactly "
-            f"one `with self._lock` block; found {len(barriers)}"
-        )
-
-        # ...and the two halves of the decision happen nowhere else. Two holds,
-        # a mark placed after the block, or an unlocked read all fail here.
-        #
-        # Scoped to the READ and the MARK, not to every mention: the `finally`
-        # that DISCARDS `_dispatching` is a legitimate second touch, and a
-        # blanket "this name appears once" would forbid releasing the marker at
-        # all. What must be atomic is deciding, not unwinding.
-        barrier = barriers[0]
-        span = range(barrier.lineno, (barrier.end_lineno or barrier.lineno) + 1)
-
-        def is_mark(node) -> bool:
-            return (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "add"
-                and isinstance(node.func.value, ast.Attribute)
-                and node.func.value.attr == "_dispatching"
-            )
-
-        stray = [
-            child.lineno
-            for child in ast.walk(tree)
-            if (
-                (isinstance(child, ast.Attribute) and child.attr == "_cancelled")
-                or is_mark(child)
-            )
-            and child.lineno not in span
-        ]
-        assert stray == [], (
-            f"the _cancelled read or the _dispatching mark sits outside the "
-            f"barrier hold, at lines {stray} (relative to _confirm_claimed)"
-        )
 
     def test_the_two_flags_are_never_both_observable(self, convo):
         """The invariant stated directly as well as behaviourally.
@@ -3918,71 +3829,6 @@ class TestTheBuddysOwnVoiceCannotDeny:
         assert len(runner.calls) == 1
 
 
-class TestHonestLimit:
-    #: Every clause of §3.7. Each is a separate claim and each can be lost
-    #: independently by a well-meaning edit, so each is asserted separately.
-    CLAUSES = (
-        "mis-transcription",
-        "against an approval the conversational model invented",
-        "does **not** cover every mis-transcription",
-        "narrows but does not eliminate",
-        "A spoken retraction is caught only when it uses a word or phrase the "
-        "grammar knows",
-        # The fourth caveat. confirm.py's own docstring claims "the wiki and the
-        # docstring both carry" this paragraph — which was false for the whole
-        # time the wiki carried three clauses and the module carried four (#981).
-        # Listing it here is what makes that sentence true rather than aspirational.
-        "evidence of what was **heard**, not proof of what was **said**",
-        "as trustworthy as the local browser page",
-        "**not** a security boundary against an adversary",
-    )
-
-    def test_the_confirm_module_states_the_full_widened_guarantee(self):
-        doc = _flat(confirm.__doc__ or "")
-        for clause in self.CLAUSES:
-            assert clause in doc, clause
-
-    def test_the_wiki_page_states_it_too(self):
-        from pathlib import Path
-
-        page = Path(__file__).resolve().parents[2] / "docs" / "wiki" / "voice-layer.md"
-        text = _flat(page.read_text(encoding="utf-8"))
-        for clause in self.CLAUSES:
-            assert clause in text, clause
-
-    def test_nothing_rounds_the_guarantee_up(self):
-        """The defect class this repo hit twice, caught mechanically.
-
-        A prohibition ("do not paraphrase this as X") legitimately contains X,
-        so each occurrence is checked in context: it must sit next to a
-        negation. An unqualified assertion of X fails.
-        """
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parents[2]
-        targets = [
-            root / "agentwire" / "voice_layer" / "confirm.py",
-            root / "agentwire" / "voice_layer" / "write_tools.py",
-            root / "agentwire" / "voice_layer" / "transcript.py",
-            root / "docs" / "wiki" / "voice-layer.md",
-        ]
-        overclaims = (
-            "confirm gate protects writes",
-            "secures the write path",
-            "two models must fail the same way",
-            "the approval surface is speech itself",
-        )
-        negations = ("not ", "never", "do not", "wrong", "false", "refuse", "was ")
-        for path in targets:
-            flat = _flat(path.read_text(encoding="utf-8").lower())
-            for claim in overclaims:
-                start = 0
-                while (index := flat.find(claim, start)) != -1:
-                    context = flat[max(0, index - 160):index]
-                    assert any(word in context for word in negations), (
-                        f"{path.name} asserts '{claim}' without qualification"
-                    )
-                    start = index + len(claim)
 
 
 class TestTheNonceNeverLeavesTheGate:

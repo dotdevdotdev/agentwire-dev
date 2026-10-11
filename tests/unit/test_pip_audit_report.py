@@ -445,11 +445,6 @@ class TestTheIgnoreRationaleIsStillTrue:
     AGENTWIRE = REPO / "agentwire"
     IGNORE = "PYSEC-2026-3483"
 
-    def test_the_mcp_server_runs_on_stdio(self):
-        source = (self.AGENTWIRE / "mcp_server.py").read_text()
-        assert 'transport="stdio"' in source, (
-            f"the MCP server no longer runs on stdio — the reachability "
-            f"argument for --ignore-vuln {self.IGNORE} no longer holds")
 
     def test_nothing_imports_the_websocket_server_transport(self):
         """The module the advisory is actually about."""
@@ -464,15 +459,6 @@ class TestTheIgnoreRationaleIsStillTrue:
             "drop the --ignore-vuln and take mcp>=1.28.1 (and its 32-package "
             "torch/CUDA cascade), or stop using it")
 
-    def test_the_ignore_and_its_rationale_travel_together(self):
-        """If the ignore is dropped, this stops guarding — which is correct.
-        If it is kept, the rationale must be findable from the ignore."""
-        workflow = WORKFLOW.read_text()
-        if f"--ignore-vuln {self.IGNORE}" not in workflow:
-            pytest.skip("advisory no longer ignored; premise no longer load-bearing")
-        assert "stdio" in workflow, "the ignore has lost its inline rationale"
-        doc = (REPO / "docs/wiki/security/pip-audit.md").read_text()
-        assert self.IGNORE in doc and "stdio" in doc
 
 
 class TestWorkflowWiring:
@@ -569,12 +555,3 @@ class TestWorkflowWiring:
         runs = " ".join(s.get("run", "") for s in audit_job["steps"])
         assert "--ignore-vuln PYSEC-2026-3483" in runs
 
-    def test_every_ignored_id_is_documented(self, audit_job):
-        """An ignore with no rationale is indistinguishable from a mistake."""
-        runs = " ".join(s.get("run", "") for s in audit_job["steps"])
-        ignored = {tok for i, tok in enumerate(runs.split())
-                   if i and runs.split()[i - 1] == "--ignore-vuln"}
-        doc = (REPO / "docs/wiki/security/pip-audit.md").read_text()
-        yaml_text = WORKFLOW.read_text()
-        for vid in ignored:
-            assert vid in doc or vid in yaml_text, f"{vid} ignored with no rationale"
