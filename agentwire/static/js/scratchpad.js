@@ -44,7 +44,7 @@ class ScratchPad {
         desktop.on('scratchpad_updated', ({ notes }) => this._onRemoteUpdate(notes));
 
         // Alt+N toggles the drawer (Option+N is a macOS dead key — handled
-        // by bindHotkey, see dead-key-suppressor.js).
+        // by bindHotkey, see dead-key-residue.js).
         bindHotkey({ code: 'KeyN', alt: true }, () => this.toggle());
 
         // Selection capture popover (DOM selections: Monitor panes, artifacts…)

@@ -5,16 +5,15 @@
  * transcript <input>, the palette field), or its character lands in the box.
  * Every claim therefore: runs in the CAPTURE phase on window, preventDefault +
  * stopPropagation, ignores auto-repeat unless asked, and — for the macOS dead
- * keys — arms the shared composition suppressor so the accent can't leak in
- * through the composition path that preventDefault cannot cancel (see
- * dead-key-suppressor.js). Binding through here means a new chord can't forget
- * any of that.
+ * keys — removes the accent the browser has already put in the focused field
+ * (see dead-key-residue.js). Binding through here means a new chord can't
+ * forget any of that.
  *
  * Detection is by e.code (the physical key), never e.key: Option rewrites
  * e.key on macOS ('Dead', 'π', '“').
  */
 
-import { armDeadKeySuppressor, DEAD_KEY_CODES } from './dead-key-suppressor.js';
+import { scrubDeadKeyResidue, DEAD_KEY_CODES } from './dead-key-residue.js';
 
 /**
  * @param {object} spec
@@ -32,8 +31,8 @@ export function bindHotkey({ code, alt = false, when = null, allowRepeat = false
         if (when && !when()) return;
         e.preventDefault();
         e.stopPropagation();
+        if (alt && DEAD_KEY_CODES.has(e.code)) scrubDeadKeyResidue();
         if (e.repeat && !allowRepeat) return;
-        if (alt && DEAD_KEY_CODES.has(e.code)) armDeadKeySuppressor();
         handler(e);
     }, true);
 }
