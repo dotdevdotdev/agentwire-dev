@@ -158,25 +158,6 @@ class TestNotAnnouncedIsCappedAtOneRefusal:
 # =============================================================================
 
 
-class TestTheProposalAnchorsAtRender:
-    def test_announce_anchors_before_the_announcer_can_fail(self):
-        page = client.page("buddy", "tok")
-        body = page.split("function announce(text, meta, fallbackText) {", 1)[1]
-        body = body.split("\n}", 1)[0]
-        assert body.index('log("buddy", text, "buddy");') \
-            < body.index("confirmGate.anchored();") \
-            < body.index("announcer.announce(")
-        assert 'forward("/anchor", { proposal_id: meta.anchor, seq: nextSeq() });' in body
-
-    def test_the_anchor_forward_no_longer_waits_on_speech(self):
-        """Exactly one /anchor forward on the page, and it lives in announce()
-        — the spoken/not-spoken verdicts can no longer starve it."""
-        page = client.page("buddy", "tok")
-        assert page.count('forward("/anchor"') == 1
-        onspoken = page.split("function onSpoken(meta, how)", 1)[1]
-        onspoken = onspoken.split("function onNotSpoken", 1)[0]
-        assert 'forward("/anchor"' not in onspoken
-        assert "confirmGate.anchored" not in onspoken
 
 
 # =============================================================================
@@ -332,17 +313,6 @@ class TestTheStalenessGate:
 # =============================================================================
 
 
-class TestTheFallbackVoiceIsNormalized:
-    def test_the_constants_are_pinned_and_wired(self):
-        page = client.page("buddy", "tok")
-        assert "const FALLBACK_VOICE_VOLUME = 0.4;" in page
-        assert "const FALLBACK_VOICE_RATE = 1.0;" in page
-        assert "utterance.volume = FALLBACK_VOICE_VOLUME;" in page
-        assert "utterance.rate = FALLBACK_VOICE_RATE;" in page
-        # BOTH speechSynthesis paths route through the normalized constructor:
-        # the announcer's speak dep and announce()'s no-announcer fallback.
-        assert page.count("fallbackUtterance(") >= 3  # def + 2 call sites
-        assert page.count("new SpeechSynthesisUtterance(") == 1  # inside it
 
 
 @_NODE

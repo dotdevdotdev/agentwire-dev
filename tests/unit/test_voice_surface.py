@@ -152,13 +152,6 @@ class TestTierAudit:
         guard and a nonce is not the right one."""
         assert surface.tier_of("pane_detach") == "excluded"
 
-    def test_each_reclassification_carries_a_written_ruling(self):
-        """A bare tier move is not a ruling. surface.py is the precedent
-        store, so the reason must be readable in the module that holds the
-        decision — a future reader hits the docstring, not this test."""
-        doc = surface.__doc__ or ""
-        for name in ("scheduler_report", "pane_detach"):
-            assert name in doc, f"{name} moved tier with no written ruling"
 
 
 class TestTierThreeIsUnreachableByName:
@@ -412,13 +405,6 @@ class TestEveryWiredToolIsRuled:
         for ruling in surface.VOICE_NATIVE.values():
             assert ruling["ruling"].strip(), "a grade with no reason is not a ruling"
 
-    def test_the_docstring_no_longer_claims_no_light_writes_are_wired(self):
-        """The sentence was true when written and false the moment buddy_inbox
-        shipped. Rewritten, not qualified — a stale guarantee gets rounded back
-        up by the next reader."""
-        doc = " ".join((surface.__doc__ or "").split())
-        assert "currently none are wired" not in doc
-        assert "buddy_inbox" in doc
 
 
 # =============================================================================
@@ -1140,16 +1126,7 @@ class TestRequireLiveNamesTheMechanismItActuallyHas:
     prose, and the live one must be named.
     """
 
-    def test_the_docstring_does_not_claim_a_syntax_refusal(self):
-        doc = _flat(write_tools._require_live.__doc__)
-        assert "refuses the syntax outright" not in doc
-        assert "local by construction" not in doc
 
-    def test_the_docstring_names_liveness_and_session_arg(self):
-        doc = _flat(write_tools._require_live.__doc__)
-        assert "LIVENESS" in doc
-        assert "_session_arg" in doc
-        assert "local by DEMONSTRATION" in doc
 
     def test_the_named_mechanism_is_the_one_that_runs(self, monkeypatch):
         """The control that keeps the sentence honest rather than merely

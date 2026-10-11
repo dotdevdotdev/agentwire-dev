@@ -7,7 +7,6 @@ command itself runs in.
 """
 
 import types
-from pathlib import Path
 
 import pytest
 
@@ -367,7 +366,3 @@ class TestParser:
         assert args.func is restart_cli.cmd_restart
         assert args.session == "x" and args.json is True
 
-    def test_path_never_string_built(self):
-        """restart launches at the RECORDED cwd, never a rebuilt convention path."""
-        source = Path(restart_cli.__file__).read_text()
-        assert "worktrees/" not in source

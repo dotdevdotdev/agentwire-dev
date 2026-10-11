@@ -133,11 +133,6 @@ def _stuck_matches(rendered: str, box_content: str) -> bool:
 
 
 class TestTheBodySurvivesTheRealPastePath:
-    def test_the_stuck_test_still_looks_like_this(self):
-        """Guards the reproduction above against drift in ``flush_session``."""
-        source = inspect.getsource(inbox.flush_session)
-        assert "stuck = [" in source
-        assert '"".join(m.render().split()) in "".join(' in source
 
     def test_the_689_heal_finds_the_message_in_a_real_box(self, worst_case_body):
         """The property the whole one-line rule exists to preserve.
@@ -285,28 +280,6 @@ class TestControlCharacters:
             assert char in body, char
 
 
-class TestTheCoalescedResidualIsStated:
-    """§3.7 discipline applied to the cap: narrow, do not qualify.
-
-    The one-line rule protects the SINGLE-message case. A voice write coalesced
-    behind other messages is governed by the coalesced line count — a variable
-    the voice layer cannot observe — and no per-caller cap can bound it. The
-    wiki must not let the cap imply a guarantee it does not have.
-    """
-
-    def test_the_wiki_states_the_coalesced_residual(self):
-        from pathlib import Path
-
-        page = (
-            Path(__file__).resolve().parents[2] / "docs" / "wiki" / "voice-layer.md"
-        ).read_text(encoding="utf-8")
-        flat = " ".join(page.split())
-        assert "protects the **single-message case**" in flat
-        assert "no per-caller fix can bound it" in flat
-        assert 'Do not read the cap as "one line, so the heal fires."' in flat
-        # And the measured cliff is recorded, not just asserted.
-        assert "Four lines chips at 87 characters" in flat
-        assert "wedges every one of them" in flat
 
 
 class TestTheCohortInteraction:

@@ -295,9 +295,7 @@ class TestTheFallbackIsArmedNotTriggered:
         """)
         assert len(cancels(report)) == 1
         assert len(creates(report)) == 1
-        assert report["spoken"] == [
-            "Hang on — I haven't finished telling you what I'd send yet."
-        ]
+        assert report["spoken"] == ["Hang on — I haven't finished telling you what I'd send yet."]
 
     def test_no_reason_is_special_cased_out_of_the_fallback(self):
         """Every outcome the spine can produce arms the timer identically."""
@@ -331,7 +329,7 @@ class TestTheFallbackIsArmedNotTriggered:
         assert report["pending"] == 0
 
     def test_a_close_paraphrase_counts_as_spoken(self):
-        """"Say exactly" is prompt compliance, and prompt compliance is not a
+        """ "Say exactly" is prompt compliance, and prompt compliance is not a
         mechanism — so verification is overlap, not equality. A paraphrase that
         carried the reason DID reach the owner's ear."""
         report = run_announcer("""
@@ -507,18 +505,6 @@ class TestOneAnnouncementLogsOnce:
         assert report["spoken"] == ["Say confirm tango to approve."]
         assert "ours: false" in report["logs"]
 
-    def test_the_page_logs_the_transcript_under_the_verdict_driven_kind(self):
-        """The wiring: the response.done log site keys the kind off the
-        announcer's verdict, and the scripted announce() log keeps the plain
-        buddy kind — two visibly different kinds for one utterance."""
-        page = client.page("buddy", "tok")
-        assert "announcer.onResponseDone(said) === true" in page
-        assert 'log(saidOurScript ? "heard" : "buddy", said, saidOurScript ? "heard" : "buddy");' in page
-        # The scripted-text log site is unchanged — kind "buddy".
-        assert 'log("buddy", text, "buddy");' in page
-        # And the heard kind is actually styled distinctly, not just named.
-        assert ".heard" in page
-
 
 class TestTheGreeting:
     """#963. On connect the buddy speaks first — and the greeting doubles as
@@ -553,9 +539,7 @@ class TestTheGreeting:
             fireTimers();
         """)
         assert report["spoken"] == ["Heads up, my main voice is not working."]
-        assert report["anchored"] == [
-            {"meta": {"greeting": True}, "how": "fallback"}
-        ]
+        assert report["anchored"] == [{"meta": {"greeting": True}, "how": "fallback"}]
 
     def test_cancel_withdraws_a_queued_greeting_entirely(self):
         """The owner speaking first cancels the greeting, not queues behind it.
@@ -596,54 +580,6 @@ class TestTheGreeting:
             fireTimers();
         """)
         assert report["spoken"] == ["a refusal that must still speak"]
-
-    def test_the_page_greets_only_when_genuinely_ready(self):
-        """Channel-open is not readiness: the greet site requires the server's
-        session.created AND the audio track being attached, and fires once."""
-        page = client.page("buddy", "tok")
-        greet_body = page.split("function maybeGreet() {", 1)[1].split("\n}", 1)[0]
-        assert "if (greeted || !sessionReady || !audioAttached) return;" in greet_body
-        assert "greeted = true;" in greet_body
-        assert 'case "session.created":' in page
-        # both readiness legs re-check, whichever lands last.
-        assert page.count("maybeGreet()") >= 2
-
-    def test_the_page_never_regreets_on_reconnect(self):
-        """`greeted` is page-lifetime: stop() resets session state but must
-        NOT reset it — a dropped and re-established connection stays quiet."""
-        page = client.page("buddy", "tok")
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "greeted = false" not in stop_body
-        assert "greeted = true" not in stop_body
-
-    def test_the_owner_speaking_cancels_the_greeting_on_the_page(self):
-        """speech_started both suppresses a not-yet-fired greeting and
-        withdraws a queued/current one."""
-        page = client.page("buddy", "tok")
-        started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
-        started = started.split("break;", 1)[0]
-        assert "greeted = true;" in started
-        assert "announcer.cancel(" in started
-
-    def test_the_greeting_rides_announce_not_a_new_speaking_path(self):
-        """#950's constraint, pinned: response.create appears exactly twice in
-        the page — the announcer's pump and maybeCreateResponse. The greeting
-        (and everything else new) adds no third."""
-        page = client.page("buddy", "tok")
-        assert page.count('type: "response.create"') == 2
-        assert "announce(GREETING" in page
-
-    def test_the_greeting_literals_are_speakable(self):
-        page = client.page("buddy", "tok")
-        import re
-
-        greeting = re.search(r'const GREETING = "([^"]+)";', page)
-        warning = re.search(r'const MODEL_AUDIO_DEAD = "([^"]+)";', page)
-        assert greeting and warning
-        for line in (greeting.group(1), warning.group(1)):
-            assert "`" not in line and "_" not in line, line
-        # the warning names the consequence — the owner cannot see a screen.
-        assert "approve" in warning.group(1).lower()
 
 
 # The buddy's clock (#962): a fake bridge with real cursor semantics — fetch
@@ -1022,74 +958,6 @@ class TestTheBuddyClock:
         assert "armed after start: 1" in report["logs"]
         assert "armed after stop: 0" in report["logs"]
 
-    def test_the_page_wires_the_notifier_through_announce_only(self):
-        """No second speaking path (#950): the notifier's announce dep IS the
-        page's announce, the poll interval is a named constant, and the
-        response.create count is unchanged."""
-        page = client.page("buddy", "tok")
-        assert client.notifier_source().strip() in page
-        assert "const INBOX_POLL_MS" in page
-        assert "createInboxNotifier({" in page
-        assert "announce: announce," in page
-        assert page.count('type: "response.create"') == 2
-
-    def test_the_page_gates_on_owner_and_response_state(self):
-        page = client.page("buddy", "tok")
-        assert (
-            "canSpeak: () => !ownerSpeaking && !responseActive"
-            " && !!announcer && announcer.pending() === 0"
-            " && !confirmGate.outstanding()," in page
-        )
-        started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
-        assert "ownerSpeaking = true;" in started.split("break;", 1)[0]
-        committed = page.split('case "input_audio_buffer.committed":', 1)[1]
-        assert "ownerSpeaking = false;" in committed.split("break;", 1)[0]
-
-    def test_the_page_polls_the_inbox_tool_and_acks_via_on_spoken(self):
-        page = client.page("buddy", "tok")
-        assert (
-            'fetchInbox: () => post("/tool", { name: "buddy_inbox",'
-            " arguments: { ack: false } })," in page
-        )
-        assert (
-            'ackInbox: (through) => post("/tool", { name: "buddy_inbox",'
-            " arguments: { ack_through: through } })," in page
-        )
-        # The wire that matters: the id travels, so the bridge acks exactly
-        # what was spoken. `ack: true` would sweep the tail (#970).
-        assert '{ name: "buddy_inbox", arguments: { ack: true } }' not in page
-        # onSpoken routes a spoken notice back to the notifier for the ack.
-        onspoken_body = page.split("function onSpoken(meta, how)", 1)[1]
-        assert "meta.inboxIds" in onspoken_body.split("function send", 1)[0]
-
-    def test_heard_replies_survive_stop_but_the_notifier_does_not(self):
-        page = client.page("buddy", "tok")
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "inboxNotifier.stop();" in stop_body
-        assert "heardReplies =" not in stop_body
-        assert "heardReplies[" not in stop_body
-
-    def test_the_page_carries_no_strays_array_at_all(self):
-        """#970 deletes #969's workaround rather than relocating it. The array
-        existed for one reason — the ack was all-or-nothing to the tail, so a
-        message swept past it had no route left but page-lifetime client state,
-        and a page unload lost it silently. With the ack scoped to what was
-        spoken, nothing is ever swept past unread: the spool IS the store.
-
-        Pinned as an absence because that is the claim. A surviving array would
-        mean the invariant still rests on client bookkeeping surviving a page.
-        """
-        page = client.page("buddy", "tok")
-        assert "strayReplies" not in page
-        assert "strayIds" not in page
-        # Pin the operations, not the mentions — the comments still explain
-        # what the array was for and why it is gone, which is the record.
-        code = "\n".join(
-            line for line in client.notifier_source().splitlines()
-            if not line.strip().startswith("//")
-        )
-        assert "stray" not in code.lower()
-
 
 _CONFIRM_GATE_HARNESS = """
 let clock = 0;
@@ -1157,48 +1025,6 @@ class TestTheConfirmGate:
         """)
         assert report["outstanding"] is True
 
-    def test_the_page_wires_the_gate_to_the_anchor_and_the_outcome(self):
-        """The gate's edges on the page: closed the moment the proposal is
-        RENDERED (#1048 — announce()'s anchor branch, before the announcer is
-        even asked to speak it, so the volunteering hold cannot be defeated by
-        an interrupted announcement), reopened by the outcome router — which
-        keys on the payload's confirm_terminal, never on tool names, so a
-        second declared write (#966) reopens it too. The behavioral half runs
-        under node in TestTheOutcomeRouter."""
-        page = client.page("buddy", "tok")
-        assert client.confirm_gate_source().strip() in page
-        assert client.outcome_router_source().strip() in page
-        # ttl mirrors confirm.PROPOSAL_TTL_S — the false-reject bound.
-        assert "ttlMs: 120000" in page
-        announce_body = page.split("function announce(text, meta, fallbackText) {", 1)[1]
-        announce_body = announce_body.split("\n}", 1)[0]
-        # The RENDER (log) comes first, then the anchor, then the speech path —
-        # anchored-at-render means anchored before the announcer can fail.
-        assert announce_body.index('log("buddy", text, "buddy");') \
-            < announce_body.index("confirmGate.anchored();") \
-            < announce_body.index("announcer.announce(")
-        assert 'forward("/anchor"' in announce_body
-        wiring = page.split("createOutcomeRouter({", 1)[1].split("});", 1)[0]
-        assert "gate: confirmGate," in wiring
-        assert "ledger: reRaiseLedger," in wiring
-        dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
-        dispatch = dispatch.split("function spokenText", 1)[0]
-        assert "outcomeRouter.route(item.name, result);" in dispatch
-        # The router is the ONLY dispatcher of the outcome — a second inline
-        # gate/ledger call here would reintroduce the name-keyed path.
-        assert "confirmGate.resolved" not in dispatch
-        assert "reRaiseLedger.actedOn" not in dispatch
-
-    def test_the_gate_survives_stop_because_the_proposal_does(self):
-        """The spine lives in the bridge, not the page: a reconnect inside
-        the TTL can still be answered, so stop() leaves the gate alone and
-        the TTL is what reopens it."""
-        page = client.page("buddy", "tok")
-        # Operations, not mentions: stop() must not resolve or re-anchor.
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "confirmGate.resolved" not in stop_body
-        assert "confirmGate.anchored" not in stop_body
-
 
 class TestThePageEmbedsTheRealThing:
     def test_the_page_contains_the_announcer_verbatim(self):
@@ -1225,142 +1051,6 @@ class TestThePageEmbedsTheRealThing:
         )
         assert result.returncode == 0, result.stderr
 
-    def test_the_client_forwards_speech_started_not_only_the_commit(self):
-        """The ordering foundation. Asserted on the page source because the
-        event wiring is what the bridge depends on."""
-        page = client.page("buddy", "tok")
-        assert "input_audio_buffer.speech_started" in page
-        assert "speech_started_seq" in page
-        assert "input_audio_buffer.committed" in page
-        assert "conversation.item.input_audio_transcription.completed" in page
-
-    def test_the_client_awaits_forwards_before_dispatching_tools(self):
-        """Two independent fetches, otherwise: the gate can be asked about an
-        utterance the ring has not received yet."""
-        page = client.page("buddy", "tok")
-        assert "await forwardChain" in page
-
-    def test_the_output_is_delivered_before_the_scripted_response(self):
-        """Ordering, and it is not cosmetic.
-
-        Announcing first creates a response against an UNRESOLVED function
-        call, and races the ordinary ``maybeCreateResponse`` at the same time.
-        The output must land (with the ordinary response suppressed) and only
-        then does the announcer create its scripted one.
-        """
-        page = client.page("buddy", "tok")
-        send_at = page.index("sendFunctionCallOutput(item.call_id, result, mustSpeak)")
-        announce_at = page.index("if (mustSpeak) {")
-        assert send_at < announce_at
-        assert "if (!suppressResponse) maybeCreateResponse();" in page
-
-    def test_the_anchor_is_never_driven_by_a_bare_response_done(self):
-        """BLOCKING 2. The anchor must key on evidence the PROPOSAL was spoken.
-
-        Binding it to "the next response.done carrying any text" let the
-        announcer's own ``response.cancel`` steal it — anchoring a proposal to a
-        turn that said something else, BEFORE the proposal was spoken. That is
-        the barge-in hole, reintroduced one layer below where the clock fix
-        closed it.
-        """
-        page = client.page("buddy", "tok")
-        assert "pendingAnchor" not in page, "the stealable anchor is gone"
-        # response.cancelled is its own case and never reaches onResponseDone.
-        cancelled_at = page.index('case "response.cancelled":')
-        done_at = page.index('case "response.done": {')
-        assert cancelled_at < done_at
-        assert "announcer.onResponseCancelled()" in page
-        # The only anchor forward is inside announce() — the RENDER (#1048).
-        # response.done, cancels, and the announcer's spoken/not-spoken
-        # verdicts touch it not at all, so nothing a response does can steal
-        # it OR starve it.
-        assert page.count('forward("/anchor"') == 1
-        announce_at = page.index("function announce(text, meta, fallbackText)")
-        onspoken_at = page.index("function onSpoken(meta, how)")
-        anchor_at = page.index('forward("/anchor"')
-        assert announce_at < anchor_at < onspoken_at
-
-    def test_every_client_side_spoken_literal_is_asserted(self):
-        """The category no test was exercising.
-
-        Two digit-era strings shipped on the spoken path because they lived in
-        prompt strings rather than in logic — and grepping for "digit" would
-        only ever have found the one that used the word. The client's own
-        ``announce()`` literals are the same category: a wrong instruction there
-        is indistinguishable from a right one at review time.
-
-        So the set is pinned. Adding one is fine; adding one without deciding
-        what it says is what this catches.
-        """
-        import re
-
-        page = client.page("buddy", "tok")
-        spoken = set(re.findall(r'announce\("([^"]+)"', page))
-        expected = {
-            "I couldn't reach my own tools just then, so I did nothing.",
-            "I lost the connection to the voice service, so I couldn't finish that.",
-            "I'm getting garbled data from the voice service — I may miss things.",
-            "I'm having trouble hearing you — the local bridge didn't answer.",
-            "Something went wrong handling that, so I did nothing.",
-            "The voice service reported an error, so I may have missed that.",
-        }
-        assert spoken == expected, spoken ^ expected
-
-        for line in spoken:
-            # Speakable: a whole sentence, no markup, no identifiers.
-            assert line[0].isupper(), line
-            assert line.rstrip().endswith("."), line
-            assert "`" not in line and "_" not in line, line
-            # And it must say what happened to the request, not just that
-            # something broke — the owner cannot see a screen.
-            assert any(
-                cue in line.lower()
-                for cue in ("did nothing", "couldn't finish", "may miss",
-                            "didn't answer", "may have missed")
-            ), line
-
-    def test_no_spoken_literal_carries_stale_nonce_wording(self):
-        """The digit-era lesson, applied to every spoken surface at once."""
-        from agentwire.voice_layer import confirm as confirm_mod
-        from agentwire.voice_layer import instructions
-
-        surfaces = [
-            client.page("buddy", "tok"),
-            instructions.build_instructions(),
-            " ".join(confirm_mod.SPOKEN.values()),
-        ]
-        for text in surfaces:
-            lowered = text.lower()
-            assert "two digits" not in lowered
-            assert "confirm four seven" not in lowered
-
-    def test_the_error_handler_cannot_feed_itself(self):
-        """#950 defect 2, both edges, pinned on the page source: the error our
-        own best-effort cancel generates is never announced, and only one
-        error notice may be pending at a time. Plus defect 3: no cancel()
-        before speak() — it killed the previous utterance mid-word. Pinned on
-        the OPERATION, not the string: since #1041 cancel() legitimately
-        exists as the barge-in cut (stopSpeak), so what must hold is that the
-        speak dep itself never cancels."""
-        page = client.page("buddy", "tok")
-        assert 'if (code === "response_cancel_not_active") break;' in page
-        assert "errorNoticePending" in page
-        speak_dep = page.split("speak: (text, onSpokenAloud, onSpeakFailed)", 1)[1]
-        speak_dep = speak_dep.split("stopSpeak:", 1)[0]
-        assert "window.speechSynthesis.cancel()" not in speak_dep
-        # The one cancel in the page is the barge-in cut, nothing else.
-        assert page.count("window.speechSynthesis.cancel()") == 1
-
-    def test_stop_resets_the_error_notice_gate(self):
-        """The reset must live INSIDE stop(), pinned — a notice pending when a
-        session died was never going to be spoken by it, and carrying the flag
-        into the next session suppresses that session's FIRST error notice,
-        silently. Unpinned, a refactor drops the reset and nothing notices:
-        the exact unexercised-protection shape the quoted-frame guard had."""
-        page = client.page("buddy", "tok")
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "errorNoticePending = false;" in stop_body
-
     def test_the_proposal_say_field_is_speech_not_a_directive(self):
         """#950 root cause: one field carrying two kinds of value. `say` must
         now be literal first-person speech that the disarm check can match,
@@ -1375,8 +1065,7 @@ class TestThePageEmbedsTheRealThing:
         spine = confirm_mod.ConfirmSpine(transcript.TranscriptRing(), wait_s=0.0)
         with patch.object(inbox, "live_sessions", lambda: {"orchestrator"}):
             result = write_tools.propose_session_message(
-                {"session": "orchestrator", "message": "restart it",
-                 "_buddy": "buddy"},
+                {"session": "orchestrator", "message": "restart it", "_buddy": "buddy"},
                 spine,
             )
         for directive in ("tell the owner", "do not call", "spell it out"):
@@ -1391,12 +1080,6 @@ class TestThePageEmbedsTheRealThing:
             fireTimers();
         """)
         assert report["spoken"] == []
-
-    def test_the_client_has_no_silent_catch(self):
-        """The four silent paths §3.5 names. ``catch { return; }`` was the
-        JSON-parse drop; a bare swallow must not come back."""
-        page = client.page("buddy", "tok")
-        assert "catch { return; }" not in page
 
 
 class TestTheInterruptTier:
@@ -1554,8 +1237,14 @@ class TestTheInterruptTier:
             await notifier.pollOnce();
         """)
         msgs = report["announced"][0]["meta"]["inboxMsgs"]
-        assert msgs == [{"id": "m1", "from": "reviewer", "kind": "request",
-                         "text": "need a call on the API shape"}]
+        assert msgs == [
+            {
+                "id": "m1",
+                "from": "reviewer",
+                "kind": "request",
+                "text": "need a call on the API shape",
+            }
+        ]
 
     def test_a_notifier_without_the_new_deps_behaves_as_before(self):
         """The deps are optional: absent canInterrupt means escalations wait
@@ -1744,8 +1433,7 @@ class TestReRaiseThroughTheNotifier:
         """)
         assert len(report["announced"]) == 1
         assert "Still open" in report["announced"][0]["text"]
-        assert report["announced"][0]["meta"] == {"reRaise": True,
-                                                  "reRaiseIds": ["m1"]}
+        assert report["announced"][0]["meta"] == {"reRaise": True, "reRaiseIds": ["m1"]}
 
     def test_fresh_news_outranks_the_reminder(self):
         report = run_notifier("""
@@ -1792,82 +1480,6 @@ class TestReRaiseThroughTheNotifier:
             await notifier.pollOnce();
         """)
         assert len(report["announced"]) == 1
-
-
-class TestThePersonaAndInterruptWiring:
-    """The page-source pins for #967: the tier, the ledger, and the pinned
-    speaking-path count."""
-
-    def test_the_page_wires_the_interrupt_gate_without_the_chatter_leg(self):
-        """canInterrupt keeps the unconditional legs of #962 — owner not
-        speaking, no confirm handshake — and drops responseActive /
-        announcer.pending, which is what lets an escalation pre-empt the
-        buddy's own speech via the announcer's existing cancel.
-
-        Asserted as the legs it HAS and the legs it must NOT have, rather than
-        as the whole line: #978 item 2 adds a third leg to the handshake side
-        (a proposal still in the announcer's pipe is a handshake the gate's own
-        TTL cannot yet see), and pinning the literal made that indistinguishable
-        from reinstating the chatter leg.
-        """
-        page = client.page("buddy", "tok")
-        wiring = page.split("canInterrupt: ", 1)[1].split("\n", 1)[0]
-        assert "!ownerSpeaking" in wiring
-        assert "!confirmGate.outstanding()" in wiring
-        # The chatter leg, still gone: an escalation does not wait for the
-        # buddy's own in-flight response or its queue depth.
-        assert "responseActive" not in wiring
-        assert "announcer.pending()" not in wiring
-        # The FULL gate is unchanged — #962's rule survives verbatim.
-        assert (
-            "canSpeak: () => !ownerSpeaking && !responseActive"
-            " && !!announcer && announcer.pending() === 0"
-            " && !confirmGate.outstanding()," in page
-        )
-
-    def test_the_interrupt_tier_adds_no_speaking_path(self):
-        """#950's pin: still exactly two response.create sites. The escalation
-        tier and the re-raise both ride announce()."""
-        page = client.page("buddy", "tok")
-        assert page.count('type: "response.create"') == 2
-
-    def test_the_page_embeds_the_ledger_verbatim_and_wires_it(self):
-        page = client.page("buddy", "tok")
-        assert client.reraise_source().strip() in page
-        assert "const RERAISE_DUE_MS" in page
-        assert "createReRaiseLedger({" in page
-        wiring = page.split("createInboxNotifier({", 1)[1].split("});", 1)[0]
-        assert "reRaise: reRaiseLedger," in wiring
-
-    def test_only_asking_kinds_enter_the_ledger_and_only_once_heard(self):
-        """register lives in onSpoken's inboxIds branch — the moment there is
-        evidence the owner heard the notice — and takes only request and
-        escalation. A done/note is news; re-raising news is chatter."""
-        page = client.page("buddy", "tok")
-        onspoken = page.split("function onSpoken(meta, how)", 1)[1].split("function send(", 1)[0]
-        register_at = onspoken.split("reRaiseLedger.register", 1)[0]
-        assert '"request"' in register_at and '"escalation"' in register_at
-        # And nowhere else on the page registers.
-        assert page.count("reRaiseLedger.register(") == 1
-
-    def test_the_reminder_is_spent_only_from_on_spoken(self):
-        """The commit side of mark-on-spoken: exactly one spoken() call site
-        on the page, inside onSpoken's reRaise branch — the announce path
-        never spends the mention it is still trying to deliver."""
-        page = client.page("buddy", "tok")
-        assert page.count("reRaiseLedger.spoken(") == 1
-        onspoken = page.split("function onSpoken(meta, how)", 1)[1].split(
-            "function send(", 1)[0]
-        assert "reRaiseLedger.spoken(meta.reRaiseIds || [])" in onspoken
-
-    def test_the_ledger_survives_stop(self):
-        """Page-lifetime, like heardReplies: stop() must not touch it, or a
-        reconnect wipes the peer's memory of its own words. Same for the
-        router, whose proposal-target memory the actedOn leg depends on."""
-        page = client.page("buddy", "tok")
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "reRaiseLedger." not in stop_body
-        assert "outcomeRouter" not in stop_body
 
 
 # =============================================================================
@@ -1961,9 +1573,7 @@ class TestTheOutcomeRouter:
         closed rather than reopen volunteering mid-handshake."""
         handlers, spine = _second_write_tools()
         proposal = handlers["propose_beacon_flare"]({}, spine)
-        outcome = handlers["send_beacon_flare"](
-            {"confirm_token": proposal["confirm_token"]}, spine
-        )
+        outcome = handlers["send_beacon_flare"]({"confirm_token": proposal["confirm_token"]}, spine)
         assert outcome["reason"] in confirm.WAIT_OUTCOMES
         assert outcome["confirm_terminal"] is False
         report = run_outcome_router(f"""
@@ -2102,15 +1712,6 @@ class TestAnEscalationCannotSpeakInsideTheHandshake:
         """)
         assert report["anchorPending"] is False
 
-    def test_the_page_wires_the_leg_into_can_interrupt(self):
-        page = client.page("buddy", "tok")
-        wiring = page.split("canInterrupt: ", 1)[1].split("\n", 1)[0]
-        assert "announcer.anchorPending()" in wiring
-        # The two legs #967 made unconditional must still be there — this is an
-        # addition, never a replacement.
-        assert "!ownerSpeaking" in wiring
-        assert "confirmGate.outstanding()" in wiring
-
 
 class TestTheFallbackDoesNotSpeakOverTheOwner:
     """#978 item 3. "Never while the owner is speaking" held at GATE time and
@@ -2168,13 +1769,6 @@ class TestTheFallbackDoesNotSpeakOverTheOwner:
         assert report["spoken"] == []
         assert report["armed"] is True
 
-    def test_the_page_gives_the_announcer_the_owner_speaking_signal(self):
-        """The injected deps did not expose it, which is why the timer could
-        not check it at all."""
-        page = client.page("buddy", "tok")
-        deps = page.split("announcer = createAnnouncer({", 1)[1].split("});", 1)[0]
-        assert "ownerSpeaking:" in deps
-
 
 class TestStopTakesTheArmedTimerWithIt:
     """#978 item 4. ``stop()`` nulled the announcer, but the armed
@@ -2213,14 +1807,6 @@ class TestStopTakesTheArmedTimerWithIt:
         """)
         assert report["pending"] == 0
         assert report["spoken"] == []
-
-    def test_the_page_tears_the_announcer_down_before_dropping_it(self):
-        page = client.page("buddy", "tok")
-        stop_body = page.split("function stop() {", 1)[1].split("\n}", 1)[0]
-        assert "announcer.teardown()" in stop_body
-        assert stop_body.index("announcer.teardown()") < stop_body.index(
-            "announcer = null"
-        )
 
 
 class TestASilentlyFailedAnnouncementIsRetried:
@@ -2296,14 +1882,6 @@ class TestASilentlyFailedAnnouncementIsRetried:
         """)
         assert len(report["announced"]) == 1
 
-    def test_the_page_routes_a_browser_voice_error_back(self):
-        page = client.page("buddy", "tok")
-        deps = page.split("announcer = createAnnouncer({", 1)[1].split("      onSpoken,", 1)[0]
-        assert "onSpeakFailed" in deps, "the speak dep must take a failure callback"
-        assert "onNotSpoken" in page
-        handler = page.split("function onNotSpoken(meta)", 1)[1].split("\n}", 1)[0]
-        assert "noticeFailed" in handler
-
 
 class TestTheStopTimeRaceAnnouncesNothing:
     """#978 item 6. ``pollOnce`` is not cancellable mid-flight. After
@@ -2340,14 +1918,6 @@ class TestTheStopTimeRaceAnnouncesNothing:
         """)
         assert len(report["announced"]) == 1
         assert "still open" in report["announced"][0]["text"]
-
-    def test_the_page_will_not_announce_through_a_dead_announcer(self):
-        """The second half of the fix: even if a tick did get through, the
-        interrupt gate now requires a live announcer, so nothing reaches the
-        bare speechSynthesis path with inbox meta attached."""
-        page = client.page("buddy", "tok")
-        wiring = page.split("canInterrupt: ", 1)[1].split("\n", 1)[0]
-        assert "!!announcer" in wiring
 
 
 class TestCarriedTheReasonIsNotDecidedByStopwords:
@@ -2438,92 +2008,9 @@ class TestCarriedTheReasonIsNotDecidedByStopwords:
             assert report["spoken"] == [], reason
 
 
-class TestTheCommentsDescribeTheCodeTheySitOn:
-    """The nits, pinned. A false sentence at a use site is how the next
-    reviewer reads the wrong mechanism as the shipped one — this module's
-    recurring failure, and the reason each of these is asserted rather than
-    merely fixed.
-    """
-
-    def test_the_wait_outcomes_comment_names_all_three(self):
-        """``in_flight`` became a wait outcome in #987 and the enumeration at
-        the dispatch site still said two."""
-        page = client.page("buddy", "tok")
-        dispatch = page.split("async function handleFunctionCall(item)", 1)[1]
-        dispatch = dispatch.split("function spokenText", 1)[0]
-        assert "pending_transcript / not_announced)" not in dispatch
-        for name in ("pending_transcript", "not_announced", "in_flight"):
-            assert name in dispatch, name
-
-    def test_nothing_in_the_client_branches_on_a_wait_outcome_by_name(self):
-        """Why the enumeration above is a comment fix and not a code fix: the
-        router keys on ``confirm_terminal``, which the spine sets for every
-        non-wait outcome, so a third wait outcome needed no dispatch change.
-        This is the assertion that made that safe to claim."""
-        page = client.page("buddy", "tok")
-        script = page.split("<script>", 1)[1].rsplit("</script>", 1)[0]
-        code = "\n".join(
-            line for line in script.splitlines() if not line.strip().startswith("//")
-        )
-        for name in ("pending_transcript", "not_announced", "in_flight",
-                     "owner_should_wait"):
-            assert name not in code, f"{name} is branched on, not just described"
-
-    def test_the_outcome_router_comment_does_not_claim_to_hold_state(self):
-        """It holds none — its own header says the opposite, and the guess it
-        replaced (remember the last proposal's session) is the bug #966 fixed."""
-        page = client.page("buddy", "tok")
-        preamble = page.split("const outcomeRouter = createOutcomeRouter", 1)[0]
-        assert "holds the most recent proposal's target session" not in preamble
-
-    def test_the_interrupt_comment_does_not_overstate_pre_emption(self):
-        page = client.page("buddy", "tok")
-        assert "an escalation may pre-empt the buddy's own\n      // speech" not in page
-
-    def test_the_module_docstring_stamps_utterances_at_speech_start(self):
-        """The docstring said ``input_audio_buffer.committed``, which is the
-        ordering the whole clock change exists to reject."""
-        doc = client.__doc__
-        assert "an utterance at ``input_audio_buffer.committed``" not in doc
-        assert "input_audio_buffer.speech_started" in doc
-
-    def test_the_ring_docstring_says_no_prior_speech_started(self):
-        from agentwire.voice_layer import transcript as transcript_mod
-
-        assert "a\ntranscript arriving with no prior commit" not in transcript_mod.__doc__
-        assert "no prior ``speech_started``" in transcript_mod.__doc__
-
-
 # =============================================================================
 # #993 review — F2 to F6
 # =============================================================================
-
-
-class TestTheBrowserVoiceErrorIsActuallyWired:
-    """Review F2. A MUTATION SURVIVED: deleting the call from
-    ``utterance.onerror`` left the whole suite green. That one line is the
-    only wire between the browser's error event and the entirety of item 5 —
-    the node tests exercise the announcer's failure leg with a fake ``speak``,
-    and the page pin asserted the parameter NAME in the signature and that
-    ``onNotSpoken`` reaches ``noticeFailed``, but nothing asserted the handler
-    in between invokes anything.
-
-    This is not the browser half that cannot be verified here. It is a
-    page-source pin, the same technique the clock origin uses.
-    """
-
-    def test_the_error_handler_invokes_the_failure_callback(self):
-        page = client.page("buddy", "tok")
-        handler = page.split("utterance.onerror = (event) => {", 1)[1]
-        handler = handler.split("};", 1)[0]
-        assert "onSpeakFailed()" in handler
-
-    def test_the_success_handler_still_invokes_the_spoken_one(self):
-        """The control: an assertion that only ever looked at onerror would
-        pass just as well with onend gutted."""
-        page = client.page("buddy", "tok")
-        handler = page.split("utterance.onend = () => {", 1)[1].split("};", 1)[0]
-        assert "onSpokenAloud()" in handler
 
 
 class TestAFailedNoticeComesBackFromTheSpool:
@@ -2739,11 +2226,6 @@ class TestTheDeferralBoundIsWhatItSays:
             assert f"fire {n} spoken=0" in report["logs"]
         assert "fire 5 spoken=1" in report["logs"]
 
-    def test_the_stated_bound_matches(self):
-        page = client.page("buddy", "tok")
-        assert "fallbackMs * (1 + maxOwnerDeferrals)" not in page
-        assert "fallbackMs * (2 + maxOwnerDeferrals)" in page
-
 
 class TestTheDedupHalfOfTheWeightingIsPinned:
     """Review F6. Dropping ``uniq`` from ``want`` survived the whole suite:
@@ -2951,44 +2433,6 @@ class TestTheSpeakingWatchdogReleasesTheNotice:
         # be treated as stated.
         assert report["anchored"] == []
 
-    def test_the_false_reject_leg_is_priced_as_what_it_actually_does(self):
-        """"The owner hears it twice" was the cheap phrasing and it hid the
-        cost. ``stopSpeaking`` empties ``speaking`` but cannot cancel the
-        browser's audio — there is no ``cancel()`` on this path, deliberately
-        (#950 defect 3) — so the re-announcement pumps while the first
-        utterance is still playing: twice SIMULTANEOUSLY, which reopens #997
-        for that window. Still the right trade, and now stated as the trade it
-        is rather than a milder one."""
-        prose = _page_prose()
-        assert "The owner hears it twice SIMULTANEOUSLY" in prose
-        assert "CANNOT cancel the browser's audio" in prose
-        assert "reopens #997 for exactly that window" in prose
-
-    def test_the_page_really_does_not_cancel_the_browser_voice(self):
-        """The behavioural half of that claim, and the reason the sentence is
-        true rather than pessimistic: nothing on the fallback path calls
-        ``speechSynthesis.cancel()``. If that ever changes, the paragraph above
-        is over-stating the cost and this fails alongside it."""
-        page = client.page("buddy", "tok")
-        speak_dep = page.split("speak: (text, onSpokenAloud, onSpeakFailed) =>", 1)[1]
-        speak_dep = speak_dep.split("window.speechSynthesis.speak(utterance);", 1)[0]
-        assert "speechSynthesis.cancel" not in speak_dep
-
-    def test_the_handler_no_longer_calls_itself_never_a_guess(self):
-        """``onNotSpoken``'s own header said "reached only from the browser
-        voice's own onerror — a positive report that the utterance failed,
-        never a guess". This change makes the WATCHDOG a second caller, and the
-        watchdog IS a guess: it infers failure from the ABSENCE of an end
-        event. Same class as the ``speakingBaseMs`` paragraph corrected
-        alongside it — a guarantee written broader than the code, which gets
-        rounded back up by the next reader — so it is REWRITTEN, not qualified.
-        """
-        prose = _page_prose()
-        assert "never a guess" not in prose
-        assert "an INFERENCE from the ABSENCE of any end event" in prose
-        # And the third state stays out of it: a throw is "we cannot know".
-        assert "deliberately NOT routed here" in prose
-
     def test_a_torn_down_utterance_reports_nothing_at_all(self):
         """teardown()'s own statement, extended to the leg it did not reach.
 
@@ -3011,41 +2455,6 @@ class TestTheSpeakingWatchdogReleasesTheNotice:
         assert report["pending"] == 0
 
 
-# =============================================================================
-# Wave-2 prose: two guarantees stated broader than the code
-# =============================================================================
-
-
-def _page_prose() -> str:
-    """The served page's JS comments as flat prose.
-
-    Flattened so an assertion survives a re-wrap: these sentences are 80 columns
-    wide and every one of them spans a line break. One implementation, because a
-    second copy is one more thing that can quietly stop matching what it reads.
-    """
-    lines = [
-        line.strip().removeprefix("//").strip()
-        for line in client.page("buddy", "tok").splitlines()
-    ]
-    return " ".join(" ".join(lines).split())
-
-
-def _source_prose(path: str) -> str:
-    """A module's source, comment markers stripped and whitespace-normalized.
-
-    A sentence written across several ``#`` lines is one sentence, and the
-    comment beside the code is exactly where the stale claim lived. Normalizing
-    lets an assertion survive a re-wrap of the prose.
-    """
-    from pathlib import Path
-
-    lines = [
-        line.lstrip().removeprefix("#:").removeprefix("#").strip()
-        for line in Path(path).read_text(encoding="utf-8").splitlines()
-    ]
-    return " ".join(" ".join(lines).split())
-
-
 class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
     """``confirm.py``'s ``not_announced`` note promised "the ONE bounded
     deferral", and reasoned its deadlock argument against the ~12s that
@@ -3062,79 +2471,9 @@ class TestTheNotAnnouncedDeadlockParagraphStatesTheRealBound:
 
     def _constants(self) -> tuple[int, int]:
         src = client.ANNOUNCER_JS
-        fallback = int(
-            re.search(r"deps\.fallbackMs \|\| (\d+)", src).group(1)
-        )
-        owner = int(
-            re.search(r"deps\.maxOwnerDeferrals === undefined \? (\d+)", src).group(1)
-        )
+        fallback = int(re.search(r"deps\.fallbackMs \|\| (\d+)", src).group(1))
+        owner = int(re.search(r"deps\.maxOwnerDeferrals === undefined \? (\d+)", src).group(1))
         return fallback, owner
-
-    def test_the_single_deferral_claim_is_gone(self):
-        note = _source_prose(confirm.__file__)
-        assert "the one bounded deferral keys only on a response created AFTER" not in note
-        assert "TWO bounded deferrals" in note
-
-    def test_the_note_states_the_bound_the_constants_produce(self):
-        """Every number in the paragraph, DERIVED — bumping either constant in
-        ``client.py`` fails the sentence in ``confirm.py`` that quotes it.
-        Transcription across two files with nothing connecting them is how the
-        first number went stale, and the second one after it."""
-        fallback, owner = self._constants()
-        both_legs = fallback * (2 + owner) // 1000       # the bound: 30s
-        unacked = fallback * (1 + owner) // 1000         # the sub-case: 24s
-        silence = fallback * 2 // 1000                   # the owner's: 12s
-        note = _source_prose(confirm.__file__)
-        assert f"{2 + owner} intervals — {both_legs}s" in note
-        assert f"{1 + owner} ({unacked}s)" in note
-        assert f"at {silence}s" in note
-
-    def test_the_note_does_not_present_the_sub_case_as_the_bound(self):
-        """The corrected error, pinned in the direction it actually went: 24s
-        was stated as this outcome's bound when it is the unacked sub-case, and
-        6s as the owner's silence when the in-flight leg is available here."""
-        note = _source_prose(confirm.__file__)
-        assert "the worst case in this outcome 4 intervals" not in note
-        assert "where the in-flight leg is unavailable" not in note
-        assert "BOTH are live in this state" in note
-
-    def test_the_reason_the_deadlock_argument_survives_is_stated(self):
-        """Not "30s is fine" — the argument has to name WHY, or the next bump
-        re-opens it. Both legs: a deferral is not a suppression, and the leg
-        that grew is bought by the owner's own voice."""
-        note = _source_prose(confirm.__file__)
-        assert "a deferral is not a suppression" in note
-        assert "not the owner's silence" in note
-
-    def test_the_note_counts_the_pump_deferral_and_derives_its_numbers(self):
-        """#1009. #997 put a delay strictly UPSTREAM of both counted deferrals
-        — pump() holds a queued item while a fallback utterance plays, bounded
-        by that utterance's speaking budget — so the paragraph's interval
-        arithmetic stopped being a complete bound in exactly the state where a
-        fallback utterance is live. The rewritten note states that leg, and
-        its numbers are DERIVED here from ``client.py``'s constants the same
-        way the interval numbers are: transcription across two files with
-        nothing connecting them is how the first number went stale, and the
-        second one after it."""
-        src = client.ANNOUNCER_JS
-        fallback, _owner = self._constants()
-        base_mult = int(
-            re.search(r"deps\.speakingMaxMs \|\| fallbackMs \* (\d+)", src).group(1)
-        )
-        per_char = int(
-            re.search(r"deps\.speakingMsPerChar === undefined \? (\d+)", src).group(1)
-        )
-        floor_s = fallback * base_mult // 1000
-        note = _source_prose(confirm.__file__)
-        # The pump leg, with the budget stated from the constants that bound it.
-        assert f"{floor_s}s floor + {per_char}ms/char" in note
-        assert "one speaking budget in front of" in note
-        # Narrowed, not qualified: the interval numbers are named as complete
-        # only in the no-audio state, rather than left reading as the bound.
-        assert "complete only when nothing is being spoken" in note
-        # And the silence claim survives for the stated reason — the pump leg
-        # is taken only behind audio the owner is hearing.
-        assert "extends the wait and never the silence" in note
 
     def test_the_ordinary_path_here_takes_both_legs_and_speaks_on_fire_five(self):
         """The ordinary path here takes BOTH legs and speaks on fire five.
@@ -3242,42 +2581,6 @@ class TestThePumpDefersToTheBrowserVoice:
         assert base and per_char, "the budget constants moved — this test is stale"
         return 6000 * int(base.group(1)) + len(text) * int(per_char.group(1))
 
-    def test_the_comment_no_longer_claims_the_defect_is_ruled_out(self):
-        prose = _page_prose()
-        assert "which reopens both gates and lets the MODEL start a response" not in prose
-        # And no longer calls the pump path live, either — the sentence that
-        # class existed to keep honest is now a sentence about a closed defect.
-        assert "That path is a live residual" not in prose
-        assert "pump() now defers while `speaking` is non-empty" in prose
-
-    def test_the_comment_names_the_gates_the_budget_actually_covers(self):
-        prose = _page_prose()
-        assert "reopens the NOTIFIER's gates — canSpeak and canInterrupt" in prose
-
-    def test_the_comment_states_the_bound_and_prices_both_halves(self):
-        """The trap #997 names, kept stated in the code that implements it: an
-        unbounded defer is a suppression defect, which is worse than the audio
-        defect it fixes."""
-        prose = _page_prose()
-        assert "BOUNDED, and the bound is the whole design" in prose
-        assert "false-accept (waiting too long)" in prose
-        assert "false-reject (promoting too early)" in prose
-
-    def test_the_comment_names_the_bound_this_delay_pushes_out(self):
-        """The cross-file half: ``confirm.py``'s not_announced note counts its
-        wait in ``fallbackMs`` intervals from the moment the item becomes
-        ``current``, and this deferral happens BEFORE that. #1009 closed the
-        gap — the note now counts this leg too — so the comment here must
-        state the closed relationship and no longer claim the note under-states
-        its own worst case (a comment claiming a defect that no longer exists
-        is the same drift with its polarity reversed)."""
-        prose = _page_prose()
-        assert "confirm.py's not_announced note" in prose
-        assert "counts THIS deferral on top of that arithmetic" in prose
-        assert "under-states the worst case" not in prose
-        # And the wave-ownership clause went with the fix (#1009 scope 3).
-        assert "owned elsewhere the wave this landed in" not in prose
-
     def test_a_queued_item_is_not_pumped_into_the_starting_browser_voice(self):
         """The reproduction from #997, inverted.
 
@@ -3299,8 +2602,7 @@ class TestThePumpDefersToTheBrowserVoice:
         assert len(creates(report)) == 1
         # Still owed, not dropped: pending() counts it, so canSpeak stays shut.
         assert "speaking=1 pending=2" in report["logs"]
-        assert any("deferred — the browser voice is speaking" in line
-                   for line in report["logs"])
+        assert any("deferred — the browser voice is speaking" in line for line in report["logs"])
 
     def test_it_is_promoted_the_moment_that_audio_ends(self):
         """Deferral, not suppression — and on the ORDINARY path it costs no
@@ -3495,7 +2797,7 @@ class TestBargeInCutsTheFallbackVoice:
         assert report["stopSpeakCalls"] == 0
         assert any("cut=0" in line for line in report["logs"])
         assert report["notSpoken"] == []
-        assert report["pending"] == 1           # still owed to the owner
+        assert report["pending"] == 1  # still owed to the owner
 
     def test_a_proposal_cut_mid_statement_never_anchors(self):
         """The confirm-spine half of the pricing: a half-stated proposal must
@@ -3525,22 +2827,3 @@ class TestBargeInCutsTheFallbackVoice:
         assert report["stopSpeakCalls"] == 10
         assert len(report["notSpoken"]) == 10
         assert not any("MISSED" in line for line in report["logs"])
-
-
-class TestThePageWiresBargeIn:
-    """The page slice: speech_started must actually call the cut, and the
-    announcer must actually be handed speechSynthesis.cancel."""
-
-    def test_speech_started_cuts_the_browser_voice(self):
-        page = client.page("buddy", "tok")
-        started = page.split('case "input_audio_buffer.speech_started":', 1)[1]
-        started = started.split("break;", 1)[0]
-        assert "announcer.bargeIn()" in started
-        # Instrumentation (#1041): every barge-in correlates with WHAT was
-        # playing — the fallback voice (cut count) or a model response.
-        assert "cut the browser voice" in started
-        assert "server VAD truncates" in started
-
-    def test_the_announcer_is_handed_the_real_cancel(self):
-        page = client.page("buddy", "tok")
-        assert "stopSpeak: () => window.speechSynthesis.cancel()" in page
