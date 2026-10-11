@@ -273,7 +273,10 @@ export class TerminalPane {
             const newSize = this._fontSizeOverride ?? pickTerminalFontSize();
             terminalEl.style.setProperty('--terminal-font-size', `${newSize}px`);
             this.terminal.options.fontSize = newSize;
-            this._handleResize();
+            // repaint: the WebGL atlas still holds glyphs rasterised at the old
+            // size. The focused pane gets redrawn by live output; an idle one
+            // keeps the stale atlas until something forces a refresh.
+            this._handleResize({ repaint: true });
         };
         this._narrowMedia = window.matchMedia(NARROW_VIEWPORT);
         this._narrowMediaHandler = applyNewSize;
@@ -585,7 +588,7 @@ export class TerminalPane {
         this.resizeObserver.observe(this._terminalEl);
     }
 
-    _handleResize() {
+    _handleResize({ repaint = false } = {}) {
         if (!this.fitAddon || !this.terminal) return;
         requestAnimationFrame(() => {
             // dispose() may have run between scheduling and this frame (e.g. a
@@ -597,6 +600,7 @@ export class TerminalPane {
                 this.terminal.options.fontSize = this._fontSizeOverride ?? pickTerminalFontSize();
                 this.fitAddon.fit();
                 this._sendResize();
+                if (repaint) this._forceRepaint();
             } catch (e) {
                 console.error('[TerminalPane] resize error:', e);
             }
