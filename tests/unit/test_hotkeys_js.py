@@ -1,11 +1,11 @@
 """Behavioural guard for portal hotkeys: a hotkey's character must never reach a box.
 
-Drives the REAL hotkeys.js + dead-key-suppressor.js in node against a stub DOM
-(tests/fixtures/hotkeys_harness.mjs). Covers the regression where Option+`
-left a stray ` in visible inputs because the suppressor only cleaned xterm's
-hidden textarea. The native macOS composition itself can't be reproduced
-headlessly — this pins the contract the modules own: claim the key, arm for
-dead keys, swallow composition/input events, restore the pre-chord value.
+Drives the REAL hotkeys.js + dead-key-residue.js in node against a stub DOM
+(tests/fixtures/hotkeys_harness.mjs). The event order it replays was MEASURED in
+Safari 26: Option down, composition puts the accent in the field, THEN the
+chord's keydown arrives — so the contract is: claim the key, and restore the
+value captured when Option went down. The native composition itself can't be
+reproduced headlessly.
 """
 
 import json
@@ -34,4 +34,4 @@ def results():
 def test_hotkey_contract(results):
     failed = [name for name, ok in results.items() if ok is not True]
     assert not failed, failed
-    assert len(results) >= 16, "harness stopped reporting checks"
+    assert len(results) >= 13, "harness stopped reporting checks"

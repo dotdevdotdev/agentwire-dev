@@ -108,7 +108,7 @@ class SessionHud {
         // claimed Option+T for toggle-thinking — our capture-phase handler would
         // otherwise swallow it before it reached a session running Claude Code.
         // Option+P isn't a macOS dead key (it types a literal π rather than
-        // composing), so bindHotkey arms no suppressor for it.
+        // composing), so bindHotkey cleans no accent for it.
         bindHotkey({ code: 'KeyP', alt: true }, () => this.toggle());
 
         // The vh-based floor/cap move with the viewport (e.g. a resized

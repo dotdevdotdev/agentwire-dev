@@ -44,8 +44,8 @@ export const sidebar = {
             }
         });
 
-        // Option/Alt + ` toggles (a macOS dead key — bindHotkey arms the
-        // composition suppressor so the grave accent never lands in a box).
+        // Option/Alt + ` toggles (a macOS dead key — bindHotkey removes
+        // the grave accent the browser already put in the focused box).
         bindHotkey({ code: 'Backquote', alt: true }, () => this.toggle());
 
         // Pin toggle
