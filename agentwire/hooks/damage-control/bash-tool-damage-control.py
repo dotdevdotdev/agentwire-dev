@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "e191ee140a246252a671c00b3d0b5c8e272529c628acb412afd315cc51484a25", "generated_at": "2026-08-14T00:35:16Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "7f62c61b3fd5baeba0b7fac81aac42b0fd71e4788b54fd4fd265a0e0a7388b7a", "generated_at": "2026-10-11T14:34:31Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2089,6 +2089,129 @@ _ASSIGN_RE = re.compile(
 _SHELL_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
 
 
+# INERT VIEW — what the ambiguity analysis (normalize_subcommands,
+# ambiguity_conceals_verb) is allowed to see. Two things the shell treats as
+# DATA were being read as SYNTAX, and every ordinary multi-line commit or
+# ``python3 - <<'EOF'`` paid for it with a confirm dialog (an apostrophe in a
+# heredoc body read as "unbalanced quotes", its parentheses as a "subshell",
+# a ``\``` inside double quotes as an unbalanced substitution):
+#
+#   * the body of a QUOTED-delimiter heredoc (``<<'EOF'`` / ``<<"EOF"`` /
+#     ``<<\EOF``) — the shell performs no expansion in it, so it is literal text;
+#   * a backtick or ``$(`` inside single quotes, or a backslash-escaped
+#     backtick / ``$(`` — likewise literal characters.
+#
+# This view feeds ONLY the ambiguity fallback. Rule matching still reads the raw
+# command (every haystack list leads with it), so a destructive verb or a
+# protected path inside a heredoc body is matched exactly as before.
+#
+# Left untouched, so they keep failing closed: an UNQUOTED heredoc (its body
+# expands ``$(...)``), an unterminated heredoc, a heredoc whose marker sits
+# inside a quoted string (not a real heredoc), and a heredoc that FEEDS A SHELL
+# (``bash <<'EOF'`` — the body is the program, a payload like ``sh -c``).
+
+_QUOTED_HEREDOC_RE = re.compile(
+    r"(?<!<)<<-?[ \t]*(?:'([A-Za-z_]\w*)'|\"([A-Za-z_]\w*)\"|\\([A-Za-z_]\w*))"
+)
+_HEREDOC_BODY = "heredoc-body"
+_LITERAL_CHAR = "\x01"
+_HEREDOC_SHELL_CONSUMERS = {"ssh", "eval", "source", "."}
+
+
+def _heredoc_marker_is_live(prefix: str) -> bool:
+    """True when a ``<<'X'`` marker is a real heredoc, not text inside a string.
+
+    ``echo "<<'EOF'"`` opens no heredoc, and hiding the lines after it would
+    hide real commands. A marker on a line with an odd number of quotes is only
+    live inside a ``$(`` / backtick span (the ``-m "$(cat <<'EOF'`` idiom).
+    """
+    line = prefix.rsplit("\n", 1)[-1]
+    if "$(" in line or "`" in line:
+        return True
+    return line.count("'") % 2 == 0 and line.count('"') % 2 == 0
+
+
+def _heredoc_feeds_shell(prefix: str) -> bool:
+    """True when the command a heredoc is attached to runs its stdin as shell."""
+    segment = re.split(r"[;&|\n(`]", prefix)[-1]
+    return any(
+        word.rsplit("/", 1)[-1] in (_SHELL_NAMES | _HEREDOC_SHELL_CONSUMERS)
+        for word in segment.split()
+    )
+
+
+def _neutralize_literal_heredocs(command: str) -> str:
+    """Replace each literal heredoc body with one inert line (see INERT VIEW)."""
+    out: List[str] = []
+    pos = 0
+    while True:
+        m = _QUOTED_HEREDOC_RE.search(command, pos)
+        if not m:
+            break
+        delim = m.group(1) or m.group(2) or m.group(3)
+        nl = command.find("\n", m.end())
+        if nl == -1:
+            break
+        body_start, term, idx = nl + 1, None, nl + 1
+        while idx <= len(command):
+            eol = command.find("\n", idx)
+            if command[idx: eol if eol != -1 else len(command)].strip() == delim:
+                term = idx
+                break
+            if eol == -1:
+                break
+            idx = eol + 1
+        if term is None:
+            break  # unterminated: leave it, the fallback fails closed
+        prefix = command[:m.start()]
+        if not _heredoc_marker_is_live(prefix) or _heredoc_feeds_shell(prefix):
+            out.append(command[pos:term])
+        else:
+            out.append(command[pos:body_start])
+            out.append(_HEREDOC_BODY + "\n")
+        pos = term
+    out.append(command[pos:])
+    return "".join(out)
+
+
+def _blank_literal_substitutions(command: str) -> str:
+    """Blank backticks / ``$(`` the shell reads as literal characters."""
+    out: List[str] = []
+    n = len(command)
+    i = 0
+    single = double = False
+    while i < n:
+        c = command[i]
+        if single:
+            if c == "'":
+                single = False
+                out.append(c)
+            elif c == "`" or command.startswith("$(", i):
+                out.append(_LITERAL_CHAR)
+            else:
+                out.append(c)
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            nxt = command[i + 1]
+            literal = nxt == "`" or (nxt == "$" and command.startswith("(", i + 2))
+            out.append(c)
+            out.append(_LITERAL_CHAR if literal else nxt)
+            i += 2
+        else:
+            if c == "'" and not double:
+                single = True
+            elif c == '"':
+                double = not double
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def inert_view(command: str) -> str:
+    """``command`` with literal-data spans neutralized, for ambiguity analysis only."""
+    return _blank_literal_substitutions(_neutralize_literal_heredocs(command))
+
+
 def detect_obfuscation(command: str) -> Optional[str]:
     """Return a reason string if ``command`` hides intent behind shell features.
 
@@ -2124,7 +2247,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
     cannot place — a subshell, an unsplittable segment — is treated as
     concealing, which errs closed.
     """
-    masked, mask_err = _mask_command_substitutions(command)
+    masked, mask_err = _mask_command_substitutions(inert_view(command))
     if mask_err:
         return mask_err
     if _EVAL_RE.search(masked):
@@ -2182,6 +2305,7 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
     a reason string when the command can't be tokenized safely (and the caller
     should fail closed); it is ``None`` on success.
     """
+    command = inert_view(command)
     obf = detect_obfuscation(command)
     if obf:
         return [], obf

@@ -860,6 +860,25 @@ Verb concealment also outranks an ordinary ask-rule match, so a granted id
 (`uv run $(echo rm) -rf`) cannot compose with a substitution into an
 unguarded run.
 
+**Data is not syntax: the inert view.** The ambiguity analysis used to
+tokenize *everything*, so an apostrophe in a commit-message heredoc read as
+"unbalanced quotes", its parentheses as a "subshell", and a `\`` inside double
+quotes as an unbalanced substitution — an ordinary multi-line commit or
+`python3 - <<'EOF'` earned a confirm even under `auto`. `inert_view()`
+neutralizes exactly the spans the shell treats as literal — the body of a
+**quoted-delimiter** heredoc (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) and backticks /
+`$(` inside single quotes or backslash-escaped — **for the ambiguity analysis
+only**. Rule matching still reads the raw command, so a protected path in a
+heredoc body keeps blocking. What stays unverifiable on purpose: an unquoted
+heredoc (its body expands `$(…)`), an unterminated heredoc, a marker inside a
+string (`echo "<<'EOF'"` opens no heredoc, and hiding what follows would hide a
+real `eval`), and a heredoc that **feeds a shell** (`bash <<'EOF'`, `ssh host
+<<'EOF'` — the body is the program). A *real* backtick or `$(` is unchanged. The
+`git commit -m "$(cat <<'EOF' … EOF)"` idiom keeps its operand-position
+substitution ask, which bypass/auto demote — it is just no longer misread as
+verb concealment. `tests/unit/test_damage_control_inert_view.py` pins both
+halves; each guard has a mutation that turns it red.
+
 ### Tool-channel parity (#923)
 
 Damage control is registered per tool matcher, and a guard that asks "did this
