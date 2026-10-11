@@ -19,6 +19,7 @@ import { ArtifactWindow } from './artifact-window.js';
 import { ReviewWindow } from './review-window.js';
 import { WorkspaceWindow } from './workspace-window.js';
 import { CouncilWindow, COUNCIL_WINDOW_ID } from './council-window.js';
+import { bindHotkey } from './hotkeys.js';
 import { sidebar } from './sidebar.js';
 import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.js';
 import { notificationsActive } from './notification-prefs.js';
@@ -556,14 +557,12 @@ function cycleWindow(direction) {
 // Detected via e.code (physical key) because on macOS Option composes e.key
 // into “ / ‘ — same trick as setupCollage's Alt+`.
 function setupWindowCycling() {
-    window.addEventListener('keydown', (e) => {
-        if (!e.altKey || e.metaKey || e.ctrlKey) return;
-        if (e.code !== 'BracketRight' && e.code !== 'BracketLeft') return;
-        if (isCommandPaletteOpen() || isHelpOpen()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        cycleWindow(e.code === 'BracketRight' ? 1 : -1);
-    }, true);  // capture phase — runs before xterm's handlers
+    bindHotkey({
+        code: ['BracketRight', 'BracketLeft'],
+        alt: true,
+        when: () => !isCommandPaletteOpen() && !isHelpOpen(),
+        allowRepeat: true,  // holding the chord keeps cycling
+    }, (e) => cycleWindow(e.code === 'BracketRight' ? 1 : -1));
 }
 
 // Two-finger horizontal swipe (trackpad) to cycle windows — the gesture analog
@@ -634,17 +633,11 @@ function isWithinHorizontalScroller(target) {
 function setupCollage() {
     collage.init(_lookupWindowInstance);
 
-    // Capture phase on window + stopPropagation so xterm's <textarea> never
-    // sees the keystroke (and the browser default — F3 find-next — is
-    // suppressed).
-    window.addEventListener('keydown', (e) => {
-        if (e.code !== 'F3') return;
-        if (isCommandPaletteOpen() || isHelpOpen()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.repeat) return;  // ignore auto-repeat while the key is held
-        collage.toggle();
-    }, true);
+    // Also suppresses the browser default (F3 find-next).
+    bindHotkey({
+        code: 'F3',
+        when: () => !isCommandPaletteOpen() && !isHelpOpen(),
+    }, () => collage.toggle());
 }
 
 // Clean up on page unload

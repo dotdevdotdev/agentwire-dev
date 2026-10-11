@@ -7,7 +7,7 @@
 
 import { scratchpad } from './scratchpad.js';
 import { sessionHud } from './session-hud.js';
-import { armDeadKeySuppressor } from './dead-key-suppressor.js';
+import { bindHotkey } from './hotkeys.js';
 
 const PIN_KEY = 'sidebar-pinned';
 
@@ -44,20 +44,9 @@ export const sidebar = {
             }
         });
 
-        // Option/Alt + ` toggles. Capture phase on window + stopPropagation so
-        // xterm's <textarea> never sees the keystroke; arm the shared dead-key
-        // suppressor so the grave-accent composition (Option+` on macOS) never
-        // leaks into the focused terminal. Mirrors desktop.js setupCollage's
-        // alt-backquote idiom — e.code (not e.key) because the macOS dead key
-        // makes e.key 'Dead', never a backtick.
-        window.addEventListener('keydown', (e) => {
-            if (!(e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'Backquote')) return;
-            e.preventDefault();
-            e.stopPropagation();
-            if (e.repeat) return;  // ignore auto-repeat while the key is held
-            armDeadKeySuppressor();
-            this.toggle();
-        }, true);
+        // Option/Alt + ` toggles (a macOS dead key — bindHotkey arms the
+        // composition suppressor so the grave accent never lands in a box).
+        bindHotkey({ code: 'Backquote', alt: true }, () => this.toggle());
 
         // Pin toggle
         this.pinBtn?.addEventListener('click', (e) => {

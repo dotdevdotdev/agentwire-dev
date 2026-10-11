@@ -40,6 +40,7 @@
  * the peek auto-size sum below.
  */
 
+import { bindHotkey } from './hotkeys.js';
 import { sidebar } from './sidebar.js';
 import { scratchpad } from './scratchpad.js';
 import { servicesSection } from './sidebar/services-section.js';
@@ -106,20 +107,9 @@ class SessionHud {
         // Alt+P ("peek") toggles the drawer. Moved off Alt+T once Claude Code
         // claimed Option+T for toggle-thinking — our capture-phase handler would
         // otherwise swallow it before it reached a session running Claude Code.
-        // Capture phase + stopPropagation so xterm never sees the keystroke —
-        // mirrors scratchpad.js's Alt+N binding. e.code (not e.key):
-        // physical-key detection, consistent with every other Alt combo in the
-        // portal. Option+P isn't a macOS dead key (it types a literal π rather
-        // than composing), so no suppressor arm is needed — same reasoning as
-        // the Alt+bracket window-cycle combo.
-        window.addEventListener('keydown', (e) => {
-            if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyP') {
-                e.preventDefault();
-                e.stopPropagation();
-                if (e.repeat) return;
-                this.toggle();
-            }
-        }, true);
+        // Option+P isn't a macOS dead key (it types a literal π rather than
+        // composing), so bindHotkey arms no suppressor for it.
+        bindHotkey({ code: 'KeyP', alt: true }, () => this.toggle());
 
         // The vh-based floor/cap move with the viewport (e.g. a resized
         // browser window) — re-run auto-height so a stale px value doesn't
