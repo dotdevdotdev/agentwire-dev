@@ -1795,15 +1795,22 @@ class TestStaticAssets:
         assert all(name.endswith(".webp") for name in data["default"])
         assert all(name.endswith(".webp") for name in data["custom"])
 
-    async def test_js_served_gzipped_with_cache(self, portal_client):
+    async def test_js_served_gzipped_and_revalidated(self, portal_client):
+        """A plain reload only revalidates the HTML, so JS under max-age kept
+        the browser on pre-rebuild scripts and shipped fixes never showed up."""
         client, _ = portal_client
         resp = await client.get(
             "/static/js/icon-manager.js", headers={"Accept-Encoding": "gzip"}
         )
         assert resp.status == 200
         assert resp.headers["Content-Encoding"] == "gzip"
-        assert "max-age" in resp.headers["Cache-Control"]
+        assert resp.headers["Cache-Control"] == "no-cache"
         assert resp.content_type == "text/javascript"
+        again = await client.get(
+            "/static/js/icon-manager.js",
+            headers={"Accept-Encoding": "gzip", "If-None-Match": resp.headers["ETag"]},
+        )
+        assert again.status == 304
 
     async def test_image_has_long_cache_and_no_gzip(self, portal_client):
         client, _ = portal_client
