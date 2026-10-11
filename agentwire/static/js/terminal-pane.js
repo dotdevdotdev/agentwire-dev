@@ -272,11 +272,16 @@ export class TerminalPane {
             if (!this.terminal) return;
             const newSize = this._fontSizeOverride ?? pickTerminalFontSize();
             terminalEl.style.setProperty('--terminal-font-size', `${newSize}px`);
+            // A pane that isn't laid out (minimized / hidden window) must NOT
+            // have the option written now: xterm measures the cell at 0 and
+            // keeps the old metrics, and when the pane is shown the option is
+            // already at the new value, so nothing re-measures and the text
+            // stays squished until a refresh. Leave the option alone;
+            // _handleResize writes it on the first pass after the pane is
+            // visible, which is a real change and re-measures.
+            if (!this._isLaidOut()) return;
             this.terminal.options.fontSize = newSize;
-            // repaint: the WebGL atlas still holds glyphs rasterised at the old
-            // size. The focused pane gets redrawn by live output; an idle one
-            // keeps the stale atlas until something forces a refresh.
-            this._handleResize({ repaint: true });
+            this._handleResize();
         };
         this._narrowMedia = window.matchMedia(NARROW_VIEWPORT);
         this._narrowMediaHandler = applyNewSize;
@@ -588,19 +593,24 @@ export class TerminalPane {
         this.resizeObserver.observe(this._terminalEl);
     }
 
-    _handleResize({ repaint = false } = {}) {
+    _isLaidOut() {
+        return !!this._terminalEl && this._terminalEl.offsetWidth > 0 && this._terminalEl.offsetHeight > 0;
+    }
+
+    _handleResize() {
         if (!this.fitAddon || !this.terminal) return;
         requestAnimationFrame(() => {
             // dispose() may have run between scheduling and this frame (e.g. a
             // card collapsed while its resize was in flight) — re-check rather
             // than trusting the guard taken before the async hop.
             if (!this.fitAddon || !this.terminal) return;
+            // Nothing to measure or fit while hidden; see applyNewSize.
+            if (!this._isLaidOut()) return;
             try {
                 this.terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
                 this.terminal.options.fontSize = this._fontSizeOverride ?? pickTerminalFontSize();
                 this.fitAddon.fit();
                 this._sendResize();
-                if (repaint) this._forceRepaint();
             } catch (e) {
                 console.error('[TerminalPane] resize error:', e);
             }
