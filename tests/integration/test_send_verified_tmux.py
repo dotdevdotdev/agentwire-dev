@@ -27,9 +27,10 @@ import pytest
 
 from agentwire import session_ready
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("tmux") is None, reason="tmux not available"
-)
+pytestmark = [
+    pytest.mark.requires_tmux,
+    pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not available"),
+]
 
 # A self-contained emulator — written to a temp file and run as the pane's
 # command. Reads stdin byte-by-byte in raw mode; \r submits, \n is literal,

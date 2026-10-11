@@ -47,25 +47,28 @@ def test_at_least_one_subcommand_discovered():
     assert len(_all_paths()) > 0
 
 
-@pytest.mark.parametrize(
-    "path",
-    _all_paths(),
-    ids=lambda p: " ".join(p),
-)
-def test_subcommand_help_renders(path, capsys):
-    """`agentwire <subcmd...> --help` renders cleanly and exits 0.
+def test_every_subcommand_help_renders(capsys):
+    """`agentwire <subcmd...> --help` renders cleanly and exits 0, for every subcommand.
 
     Help-string formatting (e.g. a stray ``%`` that argparse treats as a
     printf token) raises here at the parser layer, before any handler runs.
+    One test over the whole tree: the failure lists every broken path.
     """
     from agentwire.__main__ import build_parser
 
     parser = build_parser()
-    with pytest.raises(SystemExit) as exc_info:
-        parser.parse_args([*path, "--help"])
-    assert exc_info.value.code == 0
-    # Help should actually print something.
-    assert capsys.readouterr().out.strip()
+    broken = {}
+    for path in _all_paths():
+        try:
+            parser.parse_args([*path, "--help"])
+            broken[" ".join(path)] = "did not exit"
+        except SystemExit as exc:
+            out = capsys.readouterr().out
+            if exc.code != 0 or not out.strip():
+                broken[" ".join(path)] = f"exit={exc.code} help_printed={bool(out.strip())}"
+        except Exception as exc:  # noqa: BLE001 - the bug class is any crash at the parser layer
+            broken[" ".join(path)] = repr(exc)
+    assert not broken, broken
 
 
 # --- #827: --kind reviewer is a valid argparse choice everywhere --kind is

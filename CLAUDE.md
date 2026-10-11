@@ -25,6 +25,16 @@ git pull --ff-only && agentwire rebuild && agentwire portal restart --dev
 
 Rebuild alone = stale static files. Restart alone = stale Python. The MCP server runs as a separate process started by Claude Code — session restart required after rebuild to pick up MCP changes. `rebuild` now refuses (warn + `--force` to override) when the checkout is behind `origin/main`, and `agentwire doctor` flags a behind-main checkout, a disabled kill switch (`enabled: false` in `~/.agentwire/damagecontrol.yml`), damage-control rule/hook/matcher drift, and any of `~/.agentwire/` · `.env` · `portal.token` · `machines.json` readable beyond its owner (`doctor --yes` tightens them; #887).
 
+## Tests
+
+The PR gate has to stay fast or it gets bypassed. Rules for adding tests:
+
+- **One assertion repeated over N inputs is ONE test.** Loop, collect the offenders, `assert not bad, bad` — a failure then lists every bad input at once. Never `parametrize` a range or a cross-product just to get N test items.
+- **A test must fail against the bug it guards.** Mutate the code it protects once and watch it go red; a pin that passes against the behavior it was written to forbid proves nothing.
+- **Test behavior, not text.** No tests that grep source files or docs prose for strings — they fail on refactors and pass on regressions.
+- **No real waits, no real tmux in the fast set.** Stub the probe or the clock. A test that genuinely needs a real tmux or real git process is marked `requires_tmux` / `slow`: PRs run `-m "not requires_tmux and not slow"` with no coverage; pushes to main run everything hermetic with coverage.
+- `agentwire/safety/_core.py` compiles regexes through `_rx()` (memoized) — keep new dynamic patterns on it, or each `check_command` re-pays ~90 ms of compilation.
+
 ## CLI is the Single Source of Truth
 
 All session/machine logic lives in CLI commands (`agentwire/__main__.py`). The portal (`agentwire/server.py`) is a thin wrapper that:

@@ -17,6 +17,9 @@ from agentwire import worktree_registry as reg
 from agentwire.config import Config, WorktreeConfig
 from agentwire.worktree import find_git_worktree, main_worktree
 
+# Real git repos and worktrees per test (~0.4 s each): out of the fast PR set.
+pytestmark = pytest.mark.slow
+
 
 def _git(repo, *a):
     return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
