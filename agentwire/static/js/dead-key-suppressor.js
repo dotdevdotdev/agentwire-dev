@@ -56,6 +56,27 @@ function restoreSnapshot(target) {
     } catch { /* selection API unavailable on this input type */ }
 }
 
+// What a macOS dead key leaves behind: the five Option accents and their ASCII
+// look-alikes. The residue check below only fires when the value is EXACTLY the
+// pre-chord value with one of these spliced in at the caret, so a real
+// keystroke typed inside the window can never be mistaken for it.
+const ACCENTS = ['`', '\u00b4', '\u00a8', '\u02c6', '\u02dc', '^', '~'];
+
+function isAccentResidue(el) {
+    const { value, start, end } = snapshot;
+    return ACCENTS.some((ch) => el.value === value.slice(0, start) + ch + value.slice(end));
+}
+
+// The commit can land after compositionend, via an input event of any type, or
+// not announce itself at all, so the cleanup is by RESULT rather than by event:
+// whenever we look inside the window and the box holds the accent, take it out.
+function scrubResidue() {
+    if (!snapshot || performance.now() > suppressUntil) return;
+    const el = snapshot.el;
+    if (el.isConnected === false || !isAccentResidue(el)) return;
+    restoreSnapshot(el);
+}
+
 function swallow(e) {
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -75,7 +96,10 @@ for (const type of ['compositionstart', 'compositionupdate', 'compositionend']) 
 for (const type of ['beforeinput', 'input']) {
     window.addEventListener(type, (e) => {
         if (performance.now() > suppressUntil) return;
-        if (e.inputType !== 'insertCompositionText') return;
+        if (e.inputType !== 'insertCompositionText') {
+            if (type === 'input') scrubResidue();
+            return;
+        }
         swallow(e);
         if (type === 'input') restoreSnapshot(e.target);
     }, true);
@@ -92,6 +116,12 @@ export function armDeadKeySuppressor(ms = 700) {
     snapshot = takeSnapshot(ae);
     if (isEditable(ae)) {
         ae.blur();  // forces Chrome to commit the composition into the armed window
-        requestAnimationFrame(() => ae.focus());
+        requestAnimationFrame(() => {
+            ae.focus();
+            scrubResidue();
+        });
+        // Chrome can commit the pending accent well after the blur; look again
+        // until the window closes.
+        for (const delay of [30, 100, 250, ms]) setTimeout(scrubResidue, delay);
     }
 }

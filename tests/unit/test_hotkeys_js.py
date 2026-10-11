@@ -31,12 +31,7 @@ def results():
     return json.loads(proc.stdout)
 
 
-@pytest.mark.parametrize("check", [
-    "claimed", "fired_once", "repeat_ignored", "cmd_variant_untouched", "bare_untouched",
-    "blurred_for_commit", "value_restored", "app_listeners_never_saw_it",
-    "plain_typing_untouched", "expired_passes_through", "non_dead_no_blur",
-    "when_false_leaves_key", "when_true_claims_key", "allow_repeat",
-])
-def test_hotkey_contract(results, check):
-    assert results[check] is True
-
+def test_hotkey_contract(results):
+    failed = [name for name, ok in results.items() if ok is not True]
+    assert not failed, failed
+    assert len(results) >= 16, "harness stopped reporting checks"

@@ -10,6 +10,9 @@ const listeners = [];
 let now = 1000;
 globalThis.performance = { now: () => now };
 globalThis.requestAnimationFrame = (fn) => fn();
+const timeouts = [];
+globalThis.setTimeout = (fn) => { timeouts.push(fn); return timeouts.length; };
+const runTimeouts = () => timeouts.splice(0).forEach((fn) => fn());
 const doc = { activeElement: null };
 globalThis.document = doc;
 globalThis.window = {
@@ -81,6 +84,26 @@ out.app_listeners_never_saw_it = seen.length === 0;
 input.value = 'hellox';
 const typed = dispatch('input', { target: input, inputType: 'insertText' });
 out.plain_typing_untouched = !typed.immediateStopped && input.value === 'hellox';
+
+// 3b. A commit that lands LATE and announces itself with no composition event
+// (the leak the event-based cleanup missed) is scrubbed by the timed re-check.
+const late1 = makeInput('abc');
+late1.selectionStart = 3; late1.selectionEnd = 3;
+doc.activeElement = late1;
+timeouts.length = 0;
+dispatch('keydown', { code: 'Backquote', altKey: true });
+late1.value = 'abc`';  // native commit, no events dispatched
+runTimeouts();
+out.silent_late_commit_scrubbed = late1.value === 'abc';
+
+// 3c. ...but a real character typed inside the window is never taken for it.
+const late2 = makeInput('abc');
+late2.selectionStart = 3; late2.selectionEnd = 3;
+doc.activeElement = late2;
+dispatch('keydown', { code: 'Backquote', altKey: true });
+late2.value = 'abcx';
+runTimeouts();
+out.typed_char_survives_recheck = late2.value === 'abcx';
 
 // 4. Outside the window nothing is swallowed.
 now += 5000;
