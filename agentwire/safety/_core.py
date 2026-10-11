@@ -9,6 +9,7 @@ fail loudly if drift happens.
 """
 
 import fnmatch
+import functools
 import json
 import os
 import re
@@ -20,6 +21,20 @@ try:
     import yaml
 except ImportError:
     yaml = None
+
+
+@functools.lru_cache(maxsize=None)
+def _rx(pattern: str, flags: int = re.IGNORECASE) -> "re.Pattern[str]":
+    """Compile ``pattern`` once per process.
+
+    Rules and path ladders feed ~2,000 pattern x haystack searches through one
+    ``check_command`` call, but only a few hundred DISTINCT patterns. Python's
+    own ``re`` cache holds 512, so it thrashed: ~97% of a 90 ms call was
+    re-compiling the same regexes (the Bash hook pays it on every command, and
+    the safety tests on every case). A compile error is not cached, so callers'
+    ``except re.error`` still fires at the same place.
+    """
+    return re.compile(pattern, flags)
 
 
 # ============================================================================
@@ -211,7 +226,7 @@ def matches_path_in_command(pattern: str, command: str) -> bool:
     matched = False
     for hay in haystacks:
         try:
-            m = re.search(regex, hay, re.IGNORECASE)
+            m = _rx(regex).search(hay)
         except re.error:
             return False
         if m and not _SAFE_ENV_TEMPLATE_RE.search(m.group(0)):
@@ -423,7 +438,7 @@ def path_ladder_haystacks(command: str, path: str) -> List[str]:
     verbs that had no business pairing with it.
     """
     try:
-        keep = re.compile(_path_context_regex(path), re.IGNORECASE)
+        keep = _rx(_path_context_regex(path))
     except re.error:
         return [command]
 
@@ -450,7 +465,7 @@ def check_path_patterns(
     for pattern_template, operation in patterns:
         try:
             full_pattern = pattern_template.replace("{path}", path_regex)
-            if re.search(full_pattern, command, re.IGNORECASE):
+            if _rx(full_pattern).search(command):
                 return True, f"{operation} operation on {path_type} {path}"
         except re.error:
             continue
@@ -1448,7 +1463,7 @@ def command_scope_dirs(
             # correct on either side of that change.
             haystacks = [" ".join(assigns + argv), " ".join(assigns + stripped)]
             try:
-                if not any(re.search(pattern, h, re.IGNORECASE) for h in haystacks):
+                if not any(_rx(pattern).search(h) for h in haystacks):
                     continue
             except re.error:
                 return [], "rule pattern is not a usable regex"
@@ -1611,7 +1626,7 @@ def path_in_scope(path: str, scope_pattern: str) -> bool:
                 regex += re.escape(ch)
             i += 1
         try:
-            if re.fullmatch(regex + r"(?:/.*)?", normalized):
+            if _rx(regex + r"(?:/.*)?", 0).fullmatch(normalized):
                 return True
         except re.error:
             continue
@@ -1995,7 +2010,7 @@ def check_protected_bash_command(command: str) -> Tuple[bool, str]:
     for pattern, reason in PROTECTED_COMMAND_PATTERNS:
         for hay in haystacks:
             try:
-                if re.search(pattern, hay, re.IGNORECASE):
+                if _rx(pattern).search(hay):
                     return True, reason
             except re.error:
                 continue
@@ -3383,10 +3398,10 @@ def _search_match_entries(
     for text, spans in entries:
         try:
             if spans is None:
-                if re.search(pattern, text, re.IGNORECASE):
+                if _rx(pattern).search(text):
                     return True
                 continue
-            for m in re.finditer(pattern, text, re.IGNORECASE):
+            for m in _rx(pattern).finditer(text):
                 if any(start <= m.start() < end for start, end in spans):
                     return True
         except re.error:
@@ -3516,7 +3531,7 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     def _search(pat: str, hays: List[str]) -> bool:
         for hay in hays:
             try:
-                if re.search(pat, hay, re.IGNORECASE):
+                if _rx(pat).search(hay):
                     return True
             except re.error:
                 return False
@@ -3841,7 +3856,7 @@ def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
             hit = exact == tool_name
         elif isinstance(pattern, str) and pattern:
             try:
-                hit = bool(re.search(pattern, tool_name, re.IGNORECASE))
+                hit = bool(_rx(pattern).search(tool_name))
             except re.error:
                 continue
         if not hit:

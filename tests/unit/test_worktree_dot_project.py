@@ -63,27 +63,26 @@ class TestTmuxRewriteSet:
     #: and deliberately NOT mirrored: see tmux_safe_name's docstring.
     VIS_ESCAPED = {"\\", "\t", "\n", "\r", "\x01", "\x7f"}
 
-    @pytest.mark.parametrize("ch", sorted(SUBSTITUTED))
-    def test_every_substituted_char_is_mapped(self, ch):
-        assert tmux_safe_name(f"a{ch}b") == "a_b"
+    def test_every_substituted_char_is_mapped(self):
+        wrong = {ch: tmux_safe_name(f"a{ch}b") for ch in sorted(self.SUBSTITUTED)
+                 if tmux_safe_name(f"a{ch}b") != "a_b"}
+        assert not wrong, wrong
 
-    @pytest.mark.parametrize("ch", sorted(
-        set(map(chr, range(32, 127))) - SUBSTITUTED - VIS_ESCAPED
-    ))
-    def test_no_other_printable_ascii_is_touched(self, ch):
+    def test_no_other_printable_ascii_is_touched(self):
         """The other direction: over-sanitizing renames sessions that were fine.
 
         `/` is the load-bearing one — `project/branch` is the convention every
         worktree session uses — but the guarantee is general.
         """
-        name = f"a{ch}b"
-        assert tmux_safe_name(name) == name
+        untouched = set(map(chr, range(32, 127))) - self.SUBSTITUTED - self.VIS_ESCAPED
+        touched = {ch: tmux_safe_name(f"a{ch}b") for ch in sorted(untouched)
+                   if tmux_safe_name(f"a{ch}b") != f"a{ch}b"}
+        assert not touched, touched
 
     def test_utf8_passes_through(self):
         assert tmux_safe_name("café-→-fix") == "café-→-fix"
 
-    @pytest.mark.parametrize("ch", sorted(VIS_ESCAPED))
-    def test_vis_escaped_chars_are_a_documented_non_goal(self, ch):
+    def test_vis_escaped_chars_are_a_documented_non_goal(self):
         """tmux mangles these, and tmux_safe_name deliberately does NOT mirror it.
 
         Mirroring would mean reimplementing tmux's ``vis`` escaping, and these
@@ -92,8 +91,9 @@ class TestTmuxRewriteSet:
         decision rather than an oversight — if one ever becomes reachable, this
         test is where the argument lives.
         """
-        name = f"a{ch}b"
-        assert tmux_safe_name(name) == name  # untouched — NOT a fixed point of tmux
+        changed = {ch: tmux_safe_name(f"a{ch}b") for ch in sorted(self.VIS_ESCAPED)
+                   if tmux_safe_name(f"a{ch}b") != f"a{ch}b"}  # untouched — NOT a fixed point of tmux
+        assert not changed, changed
 
 
 class TestWorktreeSessionName:

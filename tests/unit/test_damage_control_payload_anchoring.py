@@ -120,18 +120,18 @@ UNANCHORED_FILES = {"payloads.yaml", "remote.yaml"}
 
 
 class TestAnchoringIsFileWide:
-    @pytest.mark.parametrize(
-        "filename,entry", BUNDLED,
-        ids=[f"{f}:{e.get('pattern', '')[:44]}" for f, e in BUNDLED],
-    )
-    def test_every_rule_declares_anchored(self, filename, entry):
+    def test_every_rule_declares_anchored(self):
         # The matcher default is unanchored (fail-safe), so a rule that forgets
         # the key silently reintroduces #915. Force the author to choose.
-        assert "anchored" in entry, (
-            f"{filename}: rule {entry.get('pattern')!r} must declare "
-            f"`anchored:` — see #915."
+        bad = [
+            f"{filename}: {entry.get('pattern')!r}"
+            for filename, entry in BUNDLED
+            if not isinstance(entry.get("anchored"), bool)
+        ]
+        assert not bad, (
+            "rules must declare a boolean `anchored:` — see #915. Offenders: "
+            f"{bad}"
         )
-        assert isinstance(entry["anchored"], bool)
 
     def test_no_file_mixes_anchored_and_unanchored(self):
         """A mixed file is a per-rule skip-list wearing a filename."""
@@ -351,25 +351,22 @@ class TestEveryAnchoredRuleStillRefusesItsDangerousForm:
             f"anchoring decision needs one (#915): {missing}"
         )
 
-    @pytest.mark.parametrize(
-        "filename,entry", ANCHORED,
-        ids=[f"{f}:{e['pattern'][:44]}" for f, e in ANCHORED],
-    )
-    def test_rule_alone_refuses_its_sample(self, bash_hook, filename, entry):
+    def test_rule_alone_refuses_its_sample(self, bash_hook):
         """Solo config: no other rule can take the credit for the refusal."""
-        sample = DANGEROUS_SAMPLE[entry["pattern"]]
-        result = bash_hook.check_command(sample, _solo_config(entry))
-        assert result["decision"] in REFUSED, (
-            f"{filename}: anchoring {entry['pattern']!r} lets {sample!r} "
-            f"through — the rule no longer matches its own dangerous form"
-        )
+        leaks = []
+        for filename, entry in ANCHORED:
+            sample = DANGEROUS_SAMPLE[entry["pattern"]]
+            result = bash_hook.check_command(sample, _solo_config(entry))
+            if result["decision"] not in REFUSED:
+                leaks.append(f"{filename}: anchoring {entry['pattern']!r} lets {sample!r} through")
+        assert not leaks, "rules no longer match their own dangerous form:\n" + "\n".join(leaks)
 
-    @pytest.mark.parametrize("sample", sorted(set(DANGEROUS_SAMPLE.values())))
-    def test_full_ruleset_refuses_sample(self, bash_hook, bundled_config, sample):
-        result = bash_hook.check_command(sample, bundled_config)
-        assert result["decision"] in REFUSED, (
-            f"{sample!r} was ALLOWED by the full bundled rule set"
-        )
+    def test_full_ruleset_refuses_sample(self, bash_hook, bundled_config):
+        allowed = [
+            sample for sample in sorted(set(DANGEROUS_SAMPLE.values()))
+            if bash_hook.check_command(sample, bundled_config)["decision"] not in REFUSED
+        ]
+        assert not allowed, f"ALLOWED by the full bundled rule set: {allowed}"
 
 
 # Anchoring normalizes quoting/escaping/indirection of the COMMAND, so these

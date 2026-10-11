@@ -24,10 +24,22 @@ def _make_config(tmp_path, auth_token=None, allowed_origins=None):
     return config
 
 
+
+def _make_server(config):
+    """An AgentWireServer whose tmux pane probe is stubbed.
+
+    ``_wait_for_pane_ready`` polls a real ``tmux capture-pane`` for up to 2 s;
+    with no such session every create-session test paid the full timeout (and
+    touched the host's tmux). These tests assert the HTTP contract, not tmux.
+    """
+    server = AgentWireServer(config)
+    server._wait_for_pane_ready = AsyncMock(return_value=True)
+    return server
+
 @pytest.fixture
 async def portal_client(tmp_path):
     """Create an AgentWireServer and wrap in TestClient."""
-    server = AgentWireServer(_make_config(tmp_path))
+    server = _make_server(_make_config(tmp_path))
     async with TestClient(TestServer(server.app)) as client:
         yield client, server
 
@@ -35,7 +47,7 @@ async def portal_client(tmp_path):
 @pytest.fixture
 async def portal_client_with_token(tmp_path):
     """Portal with bearer-token auth enforced."""
-    server = AgentWireServer(_make_config(tmp_path, auth_token="testtoken123"))
+    server = _make_server(_make_config(tmp_path, auth_token="testtoken123"))
     async with TestClient(TestServer(server.app)) as client:
         yield client, server
 
@@ -43,7 +55,7 @@ async def portal_client_with_token(tmp_path):
 @pytest.fixture
 async def portal_client_with_origins(tmp_path):
     """Portal with an allowed_origins entry (tunnel-domain case)."""
-    server = AgentWireServer(
+    server = _make_server(
         _make_config(tmp_path, allowed_origins=["https://portal.example.com"])
     )
     async with TestClient(TestServer(server.app)) as client:

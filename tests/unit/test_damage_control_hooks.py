@@ -611,25 +611,27 @@ def reversed_config(bash_hook):
 class TestGitGlobalOptionBypass:
     """#913 — git's global options must not hide the subcommand from a rule."""
 
-    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
-    @pytest.mark.parametrize("prefix", _GIT_PREFIXES)
-    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
     def test_global_options_do_not_bypass(
-        self, bash_hook, bundled_config, unanchored_config, routing, prefix, rest,
-        expected,
+        self, bash_hook, bundled_config, unanchored_config,
     ):
-        cfg = bundled_config if routing == "anchored" else unanchored_config
-        cmd = f"git {prefix} {rest}"
-        decision = bash_hook.check_command(cmd, cfg)["decision"]
-        assert decision == expected, (
-            f"{cmd!r} resolved to {decision} under {routing} routing, want {expected}"
-        )
+        wrong = []
+        for routing, cfg in (("anchored", bundled_config), ("unanchored", unanchored_config)):
+            for prefix in _GIT_PREFIXES:
+                for rest, expected in _GIT_GATED:
+                    cmd = f"git {prefix} {rest}"
+                    decision = bash_hook.check_command(cmd, cfg)["decision"]
+                    if decision != expected:
+                        wrong.append(f"{cmd!r} -> {decision} under {routing} routing, want {expected}")
+        assert not wrong, "\n".join(wrong)
 
-    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
-    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config, rest, expected):
+    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config):
         """Anchors the pairs above: the plain form already decided this way."""
-        decision = bash_hook.check_command(f"git {rest}", bundled_config)["decision"]
-        assert decision == expected
+        wrong = {
+            rest: bash_hook.check_command(f"git {rest}", bundled_config)["decision"]
+            for rest, expected in _GIT_GATED
+            if bash_hook.check_command(f"git {rest}", bundled_config)["decision"] != expected
+        }
+        assert not wrong, wrong
 
     @pytest.mark.parametrize("cmd", _GIT_STILL_ALLOWED)
     def test_no_over_blocking(self, bash_hook, bundled_config, cmd):
@@ -661,12 +663,8 @@ class TestGitGlobalOptionBypass:
         cmd = f"git -C /repo push {_FORCE} origin main"
         assert bash_hook.check_command(cmd, cfg)["decision"] == "block"
 
-    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
-    @pytest.mark.parametrize("prefix", _GIT_PREFIXES)
-    @pytest.mark.parametrize("rest,expected", _GIT_GATED)
     def test_never_downgrades_a_block_to_ask(
-        self, bash_hook, bundled_config, reversed_config, prefix, rest, expected,
-        order,
+        self, bash_hook, bundled_config, reversed_config,
     ):
         """Additive matching cannot remove a match — but it CAN change which
         rule reports first, and that is not severity-neutral.
@@ -686,17 +684,20 @@ class TestGitGlobalOptionBypass:
         pinning a fixed verdict here would have mis-attributed it to #913 while
         still not detecting a normalizer-introduced downgrade.
         """
-        if expected != "block":
-            pytest.skip("only meaningful where the plain form blocks")
-        cfg = bundled_config if order == "as-loaded" else reversed_config
-        plain = bash_hook.check_command(f"git {rest}", cfg)["decision"]
-        prefixed = bash_hook.check_command(f"git {prefix} {rest}", cfg)["decision"]
-        assert prefixed == plain, (
-            f"git {prefix} {rest} decided {prefixed} but plain decided {plain} "
-            f"({order} order)"
-        )
-        if order == "as-loaded":
-            assert prefixed == "block"
+        bad = []
+        for order, cfg in (("as-loaded", bundled_config), ("reversed", reversed_config)):
+            for prefix in _GIT_PREFIXES:
+                for rest, expected in _GIT_GATED:
+                    if expected != "block":
+                        continue  # only meaningful where the plain form blocks
+                    plain = bash_hook.check_command(f"git {rest}", cfg)["decision"]
+                    prefixed = bash_hook.check_command(f"git {prefix} {rest}", cfg)["decision"]
+                    if prefixed != plain or (order == "as-loaded" and prefixed != "block"):
+                        bad.append(
+                            f"git {prefix} {rest} decided {prefixed} but plain decided "
+                            f"{plain} ({order} order)"
+                        )
+        assert not bad, "\n".join(bad)
 
     def test_fixture_actually_loads_the_whole_rule_set(self, bundled_config):
         """Guard on the FIXTURE, not the behavior — the likeliest way this PR
@@ -1042,24 +1043,27 @@ _TMUX_STILL_ALLOWED = [
 class TestTmuxGlobalOptionBypass:
     """#919 — the fleet-kill rule must survive a socket option."""
 
-    @pytest.mark.parametrize("routing", ["anchored", "unanchored"])
-    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
-    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
     def test_global_options_do_not_bypass(
-        self, bash_hook, bundled_config, unanchored_config, routing, prefix, rest,
-        expected,
+        self, bash_hook, bundled_config, unanchored_config,
     ):
-        cfg = bundled_config if routing == "anchored" else unanchored_config
-        cmd = f"tmux {prefix} {rest}"
-        decision = bash_hook.check_command(cmd, cfg)["decision"]
-        assert decision == expected, (
-            f"{cmd!r} resolved to {decision} under {routing} routing, want {expected}"
-        )
+        wrong = []
+        for routing, cfg in (("anchored", bundled_config), ("unanchored", unanchored_config)):
+            for prefix in _TMUX_PREFIXES:
+                for rest, expected in _TMUX_GATED:
+                    cmd = f"tmux {prefix} {rest}"
+                    decision = bash_hook.check_command(cmd, cfg)["decision"]
+                    if decision != expected:
+                        wrong.append(f"{cmd!r} -> {decision} under {routing} routing, want {expected}")
+        assert not wrong, "\n".join(wrong)
 
-    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
-    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config, rest, expected):
+    def test_plain_form_is_the_baseline(self, bash_hook, bundled_config):
         """Anchors the pairs above: the plain form already decided this way."""
-        assert bash_hook.check_command(f"tmux {rest}", bundled_config)["decision"] == expected
+        wrong = {
+            rest: bash_hook.check_command(f"tmux {rest}", bundled_config)["decision"]
+            for rest, expected in _TMUX_GATED
+            if bash_hook.check_command(f"tmux {rest}", bundled_config)["decision"] != expected
+        }
+        assert not wrong, wrong
 
     @pytest.mark.parametrize("cmd", _TMUX_STILL_ALLOWED)
     def test_no_over_blocking(self, bash_hook, bundled_config, cmd):
@@ -1081,21 +1085,23 @@ class TestTmuxGlobalOptionBypass:
         assert result.get("id") == plain.get("id"), result
         assert result.get("id", "").startswith("agentwire.tmux-kill-server"), result
 
-    @pytest.mark.parametrize("order", ["as-loaded", "reversed"])
-    @pytest.mark.parametrize("prefix", _TMUX_PREFIXES)
-    @pytest.mark.parametrize("rest,expected", _TMUX_GATED)
     def test_never_downgrades_a_block_to_ask(
-        self, bash_hook, bundled_config, reversed_config, prefix, rest, expected, order,
+        self, bash_hook, bundled_config, reversed_config,
     ):
         """Parity with the plain form in the SAME config — see the git twin for
         why a fixed verdict is the wrong invariant here."""
-        cfg = bundled_config if order == "as-loaded" else reversed_config
-        plain = bash_hook.check_command(f"tmux {rest}", cfg)["decision"]
-        prefixed = bash_hook.check_command(f"tmux {prefix} {rest}", cfg)["decision"]
-        assert prefixed == plain, (
-            f"tmux {prefix} {rest} decided {prefixed} but plain decided {plain} "
-            f"({order} order)"
-        )
+        bad = []
+        for order, cfg in (("as-loaded", bundled_config), ("reversed", reversed_config)):
+            for prefix in _TMUX_PREFIXES:
+                for rest, _expected in _TMUX_GATED:
+                    plain = bash_hook.check_command(f"tmux {rest}", cfg)["decision"]
+                    prefixed = bash_hook.check_command(f"tmux {prefix} {rest}", cfg)["decision"]
+                    if prefixed != plain:
+                        bad.append(
+                            f"tmux {prefix} {rest} decided {prefixed} but plain decided "
+                            f"{plain} ({order} order)"
+                        )
+        assert not bad, "\n".join(bad)
 
 
 class TestShortOptionClusterIsPerTool:

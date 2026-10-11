@@ -35,6 +35,11 @@ class DesktopRoutesMixin:
         import asyncio
         import uuid
 
+        # No browser connected means nobody can answer — don't make the caller
+        # (an agent's desktop_windows_list) sit out the 3 s timeout for it.
+        if not self.dashboard_clients:
+            return web.json_response({"success": True, "windows": []})
+
         request_id = str(uuid.uuid4())[:8]
 
         # Set up a future to collect responses
