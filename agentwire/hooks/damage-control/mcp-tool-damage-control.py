@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "bfb3f61883e0ee08fb46c17285334c4497d4b8891bd89f0e3d06db69a5aa11b9", "generated_at": "2026-10-12T13:32:42Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "1d19197c29e9f6a1da1b277eb192133c841cf27f44abb97bb0cf85fc63558881", "generated_at": "2026-10-12T13:40:36Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3616,42 +3616,67 @@ def _rm_target_is_recoverable(path: str) -> bool:
     return _git_file_state(repo, rel) in ("untracked", "clean")
 
 
-def rm_removes_only_recoverable_files(command: str, cwd: Optional[str]) -> bool:
-    """True only when EVERY `rm` in ``command`` removes just recoverable plain files.
+_VAR_REF_RE = re.compile(r'\$(?:\{(\w+)\}|(\w+))')
+_RM_FLAGS_RE = re.compile(r'^-[rRf]+$')
 
-    Refuses (False) on anything it cannot model: no cwd, a group/subshell, an
-    `rm` that is not at the head of its segment, a flag, a glob/variable/
-    substitution operand, a `cd` that is not a literal `&&`-joined target.
+
+def _expand_known_vars(token: str, env: Dict[str, str]) -> str:
+    """Replace ``$NAME`` / ``${NAME}`` that a literal assignment defined; leave the rest."""
+    def sub(m: "re.Match[str]") -> str:
+        name = m.group(1) or m.group(2)
+        return env.get(name, m.group(0))
+    return _VAR_REF_RE.sub(sub, token)
+
+
+def _parse_rm_command(
+    command: str, cwd: Optional[str]
+) -> Optional[List[Tuple[List[str], List[str], str]]]:
+    """Every `rm` in ``command`` as ``(flags, operands, directory)``; None if unmodelled.
+
+    Operands are the words after the flags with literal ``VAR=value`` assignments
+    expanded (``S=/tmp/x; rm $S/f``). None on anything this parser will not
+    reason about: no cwd, a group/subshell, an `rm` that is not at the head of
+    its segment, a `cd` that is not a literal `&&`-joined target, an `rm` with
+    no operand. A command with no `rm` at all yields ``[]``.
     """
     if not cwd:
-        return False
+        return None
     masked, mask_err = _mask_command_substitutions(inert_view(command))
     if mask_err:
-        return False
+        return None
     segments, split_err = _scope_segments(_newlines_as_separators(masked))
     if split_err:
-        return False
+        return None
     current = os.path.abspath(cwd)
-    seen_rm = False
+    env: Dict[str, str] = {}
+    found: List[Tuple[List[str], List[str], str]] = []
     for argv, following_op in segments:
-        _assigns, argv = _split_assignments(argv)
+        assigns, argv = _split_assignments(argv)
+        if argv and os.path.basename(argv[0]) == "export" and all(_ASSIGN_TOKEN_RE.match(t) for t in argv[1:]):
+            assigns, argv = argv[1:], []
         if not argv:
+            for a in assigns:
+                name, _, value = a.partition("=")
+                if _CMD_SUBST_SENTINEL in value or _GLOB_OR_EXPANSION_RE.search(value):
+                    env.pop(name, None)
+                else:
+                    env[name] = _expand_known_vars(value, env)
             continue
         head = os.path.basename(argv[0])
         if head in _CWD_CHANGING:
             if head != "cd" or following_op != "&&":
-                return False
+                return None
             target = _cd_target(argv)
             if target is None:
-                return False
+                return None
             current = _resolve_dir(target, current)[0]
             continue
         if head != _RM_NAME:
             # An `rm` anywhere but the head of a segment belongs to a wrapper.
             if any(os.path.basename(t) == _RM_NAME for t in argv[1:]):
-                return False
+                return None
             continue
-        seen_rm = True
+        flags: List[str] = []
         operands: List[str] = []
         skip_next = False
         for i, tok in enumerate(argv[1:], start=1):
@@ -3663,15 +3688,77 @@ def rm_removes_only_recoverable_files(command: str, cwd: Optional[str]) -> bool:
                 if operands and argv[i - 1].isdigit():
                     operands.pop()  # the `2` of `2>/dev/null`
                 continue
-            operands.append(tok)
+            if tok.startswith("-") and not operands:
+                flags.append(tok)
+            else:
+                operands.append(_expand_known_vars(tok, env))
         if not operands:
-            return False
+            return None
+        found.append((flags, operands, current))
+    return found
+
+
+def _operand_is_literal(tok: str) -> bool:
+    return not (tok.startswith("-") or _CMD_SUBST_SENTINEL in tok or _GLOB_OR_EXPANSION_RE.search(tok))
+
+
+def rm_removes_only_recoverable_files(command: str, cwd: Optional[str]) -> bool:
+    """True only when EVERY `rm` in ``command`` removes just recoverable plain files.
+
+    No flags, literal operands only (variables resolve only through a literal
+    assignment earlier in the same command), each a scratch/untracked/clean file.
+    """
+    parsed = _parse_rm_command(command, cwd)
+    if not parsed:
+        return False
+    for flags, operands, directory in parsed:
+        if flags:
+            if not _rm_entry_in_scratch(flags, operands, directory):
+                return False
+            continue
         for tok in operands:
-            if tok.startswith("-") or _CMD_SUBST_SENTINEL in tok or _GLOB_OR_EXPANSION_RE.search(tok):
+            if not _operand_is_literal(tok) or not _rm_target_is_recoverable(_abs_path(tok, directory)):
                 return False
-            if not _rm_target_is_recoverable(_abs_path(tok, current)):
-                return False
-    return seen_rm
+    return True
+
+
+def _inside_scratch(path: str) -> bool:
+    """Strictly inside a session scratch dir: at least project/session/entry below the root."""
+    for root in _scratch_roots():
+        if not path.startswith(root + os.sep):
+            continue
+        if len(Path(path[len(root) + 1:]).parts) >= 3:
+            return True
+    return False
+
+
+def _rm_entry_in_scratch(flags: List[str], operands: List[str], directory: str) -> bool:
+    """One `rm` (flags limited to r, R, f) whose every operand is strictly inside scratch."""
+    if not all(_RM_FLAGS_RE.match(f) for f in flags):
+        return False
+    for tok in operands:
+        if not _operand_is_literal(tok) or tok.endswith("/"):
+            return False
+        path = _abs_path(tok, directory)
+        if os.path.islink(path):
+            return False
+        real = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+        if not _inside_scratch(real) or (os.path.lexists(path) and not _inside_scratch(os.path.realpath(path))):
+            return False
+    return True
+
+
+def rm_with_flags_only_in_scratch(command: str, cwd: Optional[str]) -> bool:
+    """True only when every `rm` in ``command`` targets paths inside a scratch dir.
+
+    The scratch dir is disposable by design, so a forced recursive removal there
+    loses nothing. Literal operands only; a symlink target is refused, and the
+    scratch root itself is never a target.
+    """
+    parsed = _parse_rm_command(command, cwd)
+    if not parsed:
+        return False
+    return all(_rm_entry_in_scratch(f, o, d) for f, o, d in parsed)
 
 
 def check_command(
@@ -3835,6 +3922,8 @@ def check_command(
                         }
                 elif bypassable:
                     bypassable_matches.append((pattern, reason, rule_id))
+                elif reason.startswith("rm with ") and rm_with_flags_only_in_scratch(command, cwd):
+                    continue
                 else:
                     return {
                         "decision": "block",

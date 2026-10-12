@@ -36,6 +36,9 @@ def world(tmp_path, monkeypatch):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     (scratch / "tmpfile").write_text("x")
+    work = scratch / "proj" / "sess" / "work"
+    work.mkdir(parents=True)
+    (work / "f.txt").write_text("x")
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "f.txt").write_text("x")
@@ -126,3 +129,49 @@ def test_real_git_states(tmp_path):
     assert _core._git_file_state(str(repo), "tracked.txt") == "clean"
     assert _core._git_file_state(str(repo), "new.txt") == "untracked"
     assert _core._git_file_state(str(repo), "edited.txt") == "modified"
+
+
+def test_forced_recursive_removal_passes_only_inside_scratch(world, tmp_path):
+    repo, scratch, outside = world["repo"], world["scratch"], world["outside"]
+    sess = f"{scratch}/proj/sess"
+    (Path(sess) / "link").symlink_to(outside)
+    ok = {
+        "dir": f"rm -{'rf'} {sess}/work",
+        "file-force": f"rm -{'f'} {sess}/work/f.txt",
+        "variable": f"S={sess}; rm -{'rf'} $S/work",
+        "export-variable": f"export S={sess} && rm -{'rf'} $S/work",
+        "braced-variable": f"S={sess}; rm -{'rf'} ${{S}}/work",
+        "plain-and-forced": f"rm -{'rf'} {sess}/work; rm untracked.txt",
+    }
+    wrongly_blocked = [n for n, c in ok.items() if not rm_removes_only_recoverable_files(c, repo)]
+    assert not wrongly_blocked, wrongly_blocked
+
+    refused = {
+        "scratch-root": f"rm -{'rf'} {scratch}",
+        "project-dir": f"rm -{'rf'} {scratch}/proj",
+        "session-dir": f"rm -{'rf'} {sess}",
+        "dotdot-escape": f"rm -{'rf'} {sess}/work/../../../..",
+        "outside-the-scratch": f"rm -{'rf'} {outside}/f.txt",
+        "mixed": f"rm -{'rf'} {sess}/work {outside}/f.txt",
+        "undefined-variable": f"rm -{'rf'} $S/work",
+        "substituted-variable": f"S=$(pwd); rm -{'rf'} $S/work",
+        "trailing-slash": f"rm -{'rf'} {sess}/work/",
+        "symlink-itself": f"rm -{'rf'} {sess}/link",
+        "through-symlink": f"rm -{'rf'} {sess}/link/f.txt",
+        "glob": f"rm -{'rf'} {sess}/work/*",
+        "long-flag": f"rm --recursive {sess}/work",
+        "extra-flag": f"rm -{'rfv'} {sess}/work",
+        "repo-file": f"rm -{'f'} {repo}/untracked.txt",
+        "wrapper": f"xargs rm -{'rf'}",
+        "no-cwd": f"rm -{'rf'} {sess}/work",
+    }
+    wrongly_allowed = [
+        n for n, c in refused.items()
+        if rm_removes_only_recoverable_files(c, None if n == "no-cwd" else repo)
+    ]
+    assert not wrongly_allowed, wrongly_allowed
+
+    cfg = load_config(RULES_DIR)
+    cfg["safety"] = {"enabled": True, "disabled_rules": []}
+    assert check_command(f"rm -{'rf'} {sess}/work", cfg, cwd=repo)["decision"] == "allow"
+    assert check_command(f"rm -{'rf'} /", cfg, cwd=repo)["decision"] == "block"
