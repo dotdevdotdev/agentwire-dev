@@ -109,4 +109,49 @@ def summarize_outcomes(days: int = 14, log_dir: Optional[Path] = None) -> Dict[s
         "unlabelled": len(joined) - len(labelled),
         "by_label": dict(overall),
         "by_rule": {rule: dict(c) for rule, c in label_counts(labelled).items()},
+        "friction": friction_ranking(labelled),
+        "by_day": {day: dict(c) for day, c in sorted(day_counts(labelled).items())},
     }
+
+
+# Labels that cost the owner or the agent a stop: a prompt answered, a prompt
+# abandoned, a rule block. ``approved`` is the false-positive candidate: a human
+# said yes, so the rule's question may not have needed asking.
+FRICTION_LABELS = ("approved", "declined-or-abandoned", "rule-blocked")
+
+
+def friction_ranking(labelled: Iterable[dict]) -> List[dict]:
+    """Rules ranked by how often they stopped work, approved-most first.
+
+    ``approve_rate`` is approved / (approved + declined-or-abandoned): the share
+    of prompts a human let through. A rule with many prompts and a rate near 1.0
+    is the next loosening candidate; a rate near 0 means the rule is earning
+    its keep. Rule blocks have no human answer, so they count in ``stopped``
+    but not in the rate.
+    """
+    ranking = []
+    for rule, counts in label_counts(labelled).items():
+        stopped = sum(counts[k] for k in FRICTION_LABELS)
+        if not stopped:
+            continue
+        answered = counts["approved"] + counts["declined-or-abandoned"]
+        ranking.append({
+            "rule": rule,
+            "stopped": stopped,
+            "approved": counts["approved"],
+            "declined": counts["declined-or-abandoned"],
+            "blocked": counts["rule-blocked"],
+            "approve_rate": round(counts["approved"] / answered, 2) if answered else None,
+        })
+    ranking.sort(key=lambda r: (-r["approved"], -r["stopped"], r["rule"]))
+    return ranking
+
+
+def day_counts(labelled: Iterable[dict]) -> Dict[str, Counter]:
+    """``{YYYY-MM-DD: Counter(label)}`` so a rule change can be judged before/after."""
+    table: Dict[str, Counter] = {}
+    for row in labelled:
+        day = str(row.get("timestamp", ""))[:10]
+        if day:
+            table.setdefault(day, Counter())[row["label"]] += 1
+    return table

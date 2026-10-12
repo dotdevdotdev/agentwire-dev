@@ -216,3 +216,47 @@ def test_git_clean_passes_only_with_explicit_paths_inside_a_repo(world):
     cfg["safety"] = {"enabled": True, "disabled_rules": []}
     assert check_command("git clean -fq untracked.txt", cfg, cwd=repo)["decision"] == "allow"
     assert check_command("git clean -fd", cfg, cwd=repo)["decision"] == "block"
+
+
+def test_find_delete_passes_only_inside_scratch(world):
+    from agentwire.safety._core import find_delete_only_in_scratch
+
+    repo, scratch, outside = world["repo"], world["scratch"], world["outside"]
+    sess = f"{scratch}/proj/sess"
+    (Path(sess) / "link").symlink_to(outside)
+    ok = {
+        "name": f"find {sess}/work -name '*.txt' -delete",
+        "type-depth": f"find {sess}/work -maxdepth 2 -type f -mtime +1 -delete",
+        "empty": f"find {sess}/work -empty -delete",
+        "relative": "find work -name '*.log' -delete",
+        "variable": f"S={sess}; find $S/work -name x -delete",
+        "two-paths": f"find {sess}/work {sess}/work/f.txt -delete",
+    }
+    wrongly_blocked = [n for n, c in ok.items() if not find_delete_only_in_scratch(c, sess)]
+    assert not wrongly_blocked, wrongly_blocked
+
+    refused = {
+        "repo": f"find {repo} -name '*.txt' -delete",
+        "outside": f"find {outside} -delete",
+        "cwd-default": "find -name x -delete",
+        "scratch-root": f"find {scratch} -delete",
+        "session-dir": f"find {sess} -delete",
+        "dotdot-escape": f"find {sess}/work/../../../.. -delete",
+        "mixed": f"find {sess}/work {outside} -delete",
+        "symlink-start": f"find {sess}/link -delete",
+        "follow-links": f"find -L {sess}/work -delete",
+        "exec": f"find {sess}/work -exec sh -c x {{}} ; -delete",
+        "exec-rm": f"find {sess}/work -exec rm {{}} +",
+        "fprint": f"find {sess}/work -fprint {outside}/out -delete",
+        "substituted-arg": f"find {sess}/work -name $(whoami) -delete",
+        "undefined-variable": "find $S/work -delete",
+        "glob-start": f"find {sess}/work/* -delete",
+        "wrapper": f"xargs find {sess}/work -delete",
+    }
+    wrongly_allowed = [n for n, c in refused.items() if find_delete_only_in_scratch(c, sess)]
+    assert not wrongly_allowed, wrongly_allowed
+
+    cfg = load_config(RULES_DIR)
+    cfg["safety"] = {"enabled": True, "disabled_rules": []}
+    assert check_command(f"find {sess}/work -name '*.txt' -delete", cfg, cwd=sess)["decision"] == "allow"
+    assert find_delete_only_in_scratch(f"find {sess}/work -delete", None) is False

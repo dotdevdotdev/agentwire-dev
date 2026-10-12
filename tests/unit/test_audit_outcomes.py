@@ -117,6 +117,35 @@ def test_summary_reads_the_log_directory(tmp_path):
     assert s["by_rule"] == {"git.commit": {"approved": 1}}
 
 
+def test_friction_ranking_and_daily_trend(tmp_path):
+    from agentwire.safety_commands import format_safety_report
+
+    d = tmp_path / "logs" / "damage-control"
+    d.mkdir(parents=True)
+    rows = []
+    for i in range(3):  # a rule humans always wave through
+        rows += [{"tool_use_id": f"a{i}", "timestamp": "2026-10-12T10:00:00", "decision": "asked", "rule_id": "noisy"},
+                 {"kind": "outcome", "tool_use_id": f"a{i}", "result": "executed"}]
+    rows += [{"tool_use_id": "d1", "timestamp": "2026-10-13T10:00:00", "decision": "asked", "rule_id": "earned"}]
+    rows += [{"tool_use_id": "b1", "timestamp": "2026-10-13T10:00:00", "decision": "blocked", "rule_id": "hard"}]
+    rows += [{"tool_use_id": "r1", "timestamp": "2026-10-13T10:00:00", "decision": "allowed", "rule_id": None},
+             {"kind": "outcome", "tool_use_id": "r1", "result": "executed"}]
+    (d / "2026-10-13.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    s = summarize_outcomes(3650, d)
+    by_rule = {r["rule"]: r for r in s["friction"]}
+    assert list(by_rule) == ["noisy", "earned", "hard"]
+    assert by_rule["noisy"]["approve_rate"] == 1.0
+    assert by_rule["earned"]["approve_rate"] == 0.0
+    assert by_rule["hard"]["approve_rate"] is None and by_rule["hard"]["blocked"] == 1
+    assert s["by_day"]["2026-10-12"] == {"approved": 3}
+    assert s["by_day"]["2026-10-13"]["ran"] == 1
+    out = format_safety_report({
+        "days": 3650, "files_read": 1, "total_blocks": 0, "attended": 0, "unattended": 0,
+        "attributed": 0, "unattributed": 0, "by_rule": {}, "by_tool": {}, "by_session": {}, "outcomes": s,
+    })
+    assert "Friction by rule" in out and "noisy" in out and "Per day" in out
+
+
 def test_install_registers_the_outcome_hook_for_all_three_events():
     entry = next(e for e in _managed_hook_files() if e[0] == "outcome_logger.py")
     assert set(entry[2]) == {"PostToolUse", "PostToolUseFailure", "PermissionDenied"}

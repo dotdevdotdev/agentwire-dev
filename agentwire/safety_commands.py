@@ -557,6 +557,18 @@ def format_safety_report(summary: Dict[str, Any]) -> str:
         ]
         for label, count in sorted(outcomes["by_label"].items(), key=lambda kv: -kv[1]):
             lines.append(f"  {count:6d}  {label}")
+        if outcomes["friction"]:
+            lines += ["", "Friction by rule (approved-most first; rate = approved / answered prompts):"]
+            lines.append("  approved declined blocked  rate  rule")
+            for r in outcomes["friction"][:15]:
+                rate = "  -  " if r["approve_rate"] is None else f"{r['approve_rate']:5.2f}"
+                lines.append(f"  {r['approved']:8d} {r['declined']:8d} {r['blocked']:7d} {rate}  {r['rule']}")
+        if outcomes["by_day"]:
+            lines += ["", "Per day (stopped = approved + declined + blocked):"]
+            for day, counts in outcomes["by_day"].items():
+                stopped = sum(counts.get(k, 0) for k in ("approved", "declined-or-abandoned", "rule-blocked"))
+                total = sum(counts.values())
+                lines.append(f"  {day}  {stopped:4d} stopped of {total}")
     if summary["by_session"]:
         lines += ["", "By session (attended / unattended):"]
         ranked = sorted(
