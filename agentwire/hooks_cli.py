@@ -211,10 +211,25 @@ def skill_drift() -> dict[str, str]:
     return drift
 
 
+def hook_matcher(hook_name: str) -> str:
+    """The tool-name matcher a managed hook registers with.
+
+    The outcome logger exists to label damage-control decisions, so it matches
+    exactly the tools damage control matches (SSOT: ``DAMAGE_CONTROL_MATCHERS``);
+    every other managed hook matches everything.
+    """
+    if hook_name == "outcome_logger.py":
+        from agentwire.safety_commands import DAMAGE_CONTROL_MATCHERS
+
+        return "|".join(DAMAGE_CONTROL_MATCHERS)
+    return ".*"
+
+
 def register_hook_in_settings(event: str, hook_name: str) -> bool:
     """Register a hook under `event` in Claude's settings.json.
 
-    Returns True if settings were updated, False if already configured.
+    Returns True if settings were updated (added, or its matcher corrected to
+    the current :func:`hook_matcher`), False if already configured.
 
     Claude Code hook format:
     {
@@ -249,16 +264,25 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
     if event not in settings["hooks"]:
         settings["hooks"][event] = []
 
+    matcher = hook_matcher(hook_name)
+
     # Check if already registered (check nested hooks array)
     for entry in settings["hooks"][event]:
         if "hooks" in entry:
             for h in entry["hooks"]:
                 if h.get("command") == hook_command:
-                    return False  # Already registered
+                    if entry.get("matcher") == matcher or matcher == ".*":
+                        # Already registered. A default-matcher hook keeps
+                        # whatever matcher the owner hand-set.
+                        return False
+                    # Registered under an older matcher: correct it in place.
+                    entry["matcher"] = matcher
+                    settings_file.write_text(json.dumps(settings, indent=2))
+                    return True
 
     # Add hook with correct Claude Code format
     hook_entry = {
-        "matcher": ".*",
+        "matcher": matcher,
         "hooks": [
             {"type": "command", "command": hook_command}
         ]

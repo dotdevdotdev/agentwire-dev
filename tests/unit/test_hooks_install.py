@@ -225,6 +225,45 @@ class TestSettingsRegistration:
     def test_unregister_missing_returns_false(self):
         assert unregister_hook_from_settings("Notification", "idle-handler.sh") is False
 
+    def _settings(self, home):
+        import json
+
+        return json.loads((home / ".claude" / "settings.json").read_text())
+
+    def test_outcome_logger_matches_exactly_the_damage_control_tools(self, fake_home):
+        from agentwire.safety_commands import DAMAGE_CONTROL_MATCHERS
+
+        for event in ("PostToolUse", "PostToolUseFailure", "PermissionDenied"):
+            assert register_hook_in_settings(event, "outcome_logger.py") is True
+            (entry,) = self._settings(fake_home)["hooks"][event]
+            assert entry["matcher"].split("|") == list(DAMAGE_CONTROL_MATCHERS), event
+
+    def test_an_older_catch_all_registration_is_narrowed_in_place(self, fake_home):
+        import json
+
+        path = fake_home / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"hooks": {"PostToolUse": [{
+            "matcher": ".*",
+            "hooks": [{"type": "command", "command": "~/.claude/hooks/outcome_logger.py"}],
+        }]}}))
+        assert register_hook_in_settings("PostToolUse", "outcome_logger.py") is True
+        (entry,) = self._settings(fake_home)["hooks"]["PostToolUse"]
+        assert entry["matcher"] != ".*" and "Bash" in entry["matcher"]
+        assert register_hook_in_settings("PostToolUse", "outcome_logger.py") is False
+
+    def test_a_hand_set_matcher_on_a_default_hook_is_left_alone(self, fake_home):
+        import json
+
+        path = fake_home / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"hooks": {"Notification": [{
+            "matcher": "idle_prompt",
+            "hooks": [{"type": "command", "command": "~/.claude/hooks/idle-handler.sh"}],
+        }]}}))
+        assert register_hook_in_settings("Notification", "idle-handler.sh") is False
+        assert self._settings(fake_home)["hooks"]["Notification"][0]["matcher"] == "idle_prompt"
+
 
 class TestPackagedHooksPresent:
     """The managed-files table must match what actually ships in the package."""
