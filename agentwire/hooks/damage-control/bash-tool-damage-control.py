@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "b58054c89d20e0fe504051a2ab9709a9e98ec858165b669033cce2c16a6efb30", "generated_at": "2026-10-12T13:49:01Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "4098889840b5b636e7f995a78fbdfcc6f7e9c45b800a2975e31c222bb9ee415b", "generated_at": "2026-10-12T14:22:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2319,6 +2319,38 @@ def detect_obfuscation(command: str) -> Optional[str]:
     return None
 
 
+_SCRIPT_OPERAND_RE = re.compile(r"\.(?:py|js|mjs|cjs|ts|sh|bash|zsh|rb|pl|php|lua)$")
+
+
+def _substitution_in_payload(head: str, args: List[str]) -> bool:
+    """Whether a masked substitution in ``args`` lands where ``head`` takes CODE.
+
+    ``python3 -c "$(cat x)"`` runs what the substitution prints; ``python3
+    script.py $(date)`` only hands it to the script as data. Reading words left
+    to right: a substitution BEFORE the script operand is concealment (a payload
+    flag's value, an option value, or the thing that chooses what runs); once a
+    script operand (a path or a known script extension, ``-m <module>``, or ``-``
+    for stdin) has been seen, the rest are that script's arguments: data. With
+    no script operand in sight the whole line is conservatively concealment.
+    Surfaces whose payload is positional (``awk``, ``tmux``, ``sqlite3``) and
+    ``ssh`` (everything after the host is the remote command) keep the
+    anywhere-rule.
+    """
+    sentinel = _CMD_SUBST_SENTINEL
+    if head == "ssh":
+        return any(sentinel in t for t in args)
+    if head not in _SHELL_NAMES and not _EXEC_SURFACES.get(head):
+        return any(sentinel in t for t in args)
+    for i, tok in enumerate(args):
+        if tok == "-m" and i + 1 < len(args):
+            return sentinel in args[i + 1]
+        if sentinel in tok:
+            return True
+        if tok == "-" or (not tok.startswith("-") and _SCRIPT_OPERAND_RE.search(tok)):
+            return False
+    return False
+
+
 def ambiguity_conceals_verb(command: str) -> Optional[str]:
     """Which verb-concealing shape makes ``command`` unverifiable, or None.
 
@@ -2346,7 +2378,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
         return "eval"
     if _BASE64_PIPE_RE.search(masked):
         return "base64-decode pipeline"
-    segments, split_err = _scope_segments(masked, grouping_ok=True)
+    segments, split_err = _scope_segments(_newlines_as_separators(masked), grouping_ok=True)
     if split_err:
         return split_err
     for argv, _op in segments:
@@ -2383,7 +2415,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
         # is the motivating case — the permissive path used to be obscuring
         # the payload behind a substitution.
         if head in _SHELL_NAMES or head in _EXEC_SURFACES or head == "ssh":
-            if any(_CMD_SUBST_SENTINEL in t for t in argv[head_idx + 1:]):
+            if _substitution_in_payload(head, argv[head_idx + 1:]):
                 return f"command substitution is the payload of {head}"
     return None
 
