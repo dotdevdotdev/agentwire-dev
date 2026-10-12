@@ -59,6 +59,9 @@ DATA_SHAPES = {
     "escaped-backtick-in-dquotes": 'grep -rn -E "altKey|\\`" src',
     "backtick-in-squotes": "echo '`not a substitution`'",
     "dollar-paren-in-squotes": "echo '$(not run)'",
+    "function-definition": 'shot() { ls "$1" 2>/dev/null; echo "$1"; }; shot a; shot b',
+    "brace-group": "{ echo a; echo b; } > out.txt",
+    "subshell": "(cd /tmp && ls)",
 }
 
 
@@ -69,6 +72,14 @@ def test_data_shapes_are_not_ambiguous(name, cfg):
     assert ambiguous is None, ambiguous
     assert ambiguity_conceals_verb(command) is None
     assert check_command(command, cfg)["decision"] == "allow"
+
+
+def test_group_with_operand_substitution_is_not_unverifiable(cfg):
+    """The shape that prompted this: a function body with an operand ``$(...)``
+    keeps the bypass-demotable ask, never the unverifiable tier."""
+    command = 'shot() { echo "$1: $(ls -la x | wc -l)"; }; shot a'
+    assert ambiguity_conceals_verb(command) is None
+    assert not check_command(command, cfg).get("unverifiable")
 
 
 def test_commit_idiom_is_not_unverifiable(cfg):
@@ -105,6 +116,9 @@ STILL_CONCEALING = {
     "heredoc-feeds-ssh": "ssh host <<'EOF'\n$(echo rm) " + _RF + " /x\nEOF",
     "substitution-decides-verb": "$(echo rm) " + _RF + " /x",
     "eval": "eval \"$cmd\"",
+    "eval-in-group": "{ eval \"$cmd\"; }",
+    "substitution-verb-in-subshell": "(cd /tmp && $(echo rm) " + _RF + " x)",
+    "substitution-verb-in-function": "f() { $(echo rm) " + _RF + " x; }; f",
 }
 
 

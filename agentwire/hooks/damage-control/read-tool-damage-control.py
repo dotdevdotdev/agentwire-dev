@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "f7ddeefd7f22a4ddf8612ad1d52daa8bd3ca80f7e635370e9d272f4e8d0f1709", "generated_at": "2026-10-11T16:19:47Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "8993b629688c30d940c553cfec602e80fe2401d5ebb3e40ed98919eb2fce03ad", "generated_at": "2026-10-12T11:55:38Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1309,7 +1309,9 @@ def _git_config_core_worktree(root: str) -> Optional[str]:
     return _abs_path(value, gitdir)
 
 
-def _scope_segments(command: str) -> Tuple[List[Tuple[List[str], str]], Optional[str]]:
+def _scope_segments(
+    command: str, grouping_ok: bool = False
+) -> Tuple[List[Tuple[List[str], str]], Optional[str]]:
     """Split ``command`` into ``[(argv, operator_that_follows)]``.
 
     This is a SECOND, deliberately separate splitter from
@@ -1327,6 +1329,11 @@ def _scope_segments(command: str) -> Tuple[List[Tuple[List[str], str]], Optional
     a silent scope escape. If anyone ever does unify them, the shared helper
     must preserve operators and let each caller decide, with a test asserting
     the ``;`` and ``&&`` forms evaluate to the same scope decision.
+
+    ``grouping_ok`` makes ``( ) { }`` plain separators instead of a refusal.
+    Only the concealment check wants that: it walks every inner command
+    itself, so a group or function body adds no hidden verb. Scope evaluation
+    needs the refusal — a subshell's cwd cannot be modelled.
     """
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -1338,6 +1345,10 @@ def _scope_segments(command: str) -> Tuple[List[Tuple[List[str], str]], Optional
     segments: List[Tuple[List[str], str]] = []
     cur: List[str] = []
     for tok in tokens:
+        if tok in _SCOPE_GROUPING and grouping_ok:
+            segments.append((cur, ";"))
+            cur = []
+            continue
         if tok in _SCOPE_GROUPING:
             return [], "command uses a subshell/group — execution context is not statically knowable"
         if tok in _SCOPE_OPERATORS:
@@ -2271,7 +2282,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
         return "eval"
     if _BASE64_PIPE_RE.search(masked):
         return "base64-decode pipeline"
-    segments, split_err = _scope_segments(masked)
+    segments, split_err = _scope_segments(masked, grouping_ok=True)
     if split_err:
         return split_err
     for argv, _op in segments:
