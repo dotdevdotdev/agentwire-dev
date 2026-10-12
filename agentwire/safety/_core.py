@@ -514,7 +514,7 @@ def path_ladder_haystacks(command: str, path: str) -> List[str]:
         canon = canonicalize_command(token)
         return canon != token and bool(keep.search(canon))
 
-    return masked_subcommands(command, keep=_mentions_path)
+    return masked_subcommands(mask_sed_substitutions(command), keep=_mentions_path)
 
 
 def check_path_patterns(
@@ -3870,6 +3870,70 @@ def rm_with_flags_only_in_scratch(command: str, cwd: Optional[str]) -> bool:
     return all(_rm_entry_in_scratch(f, o, d) for f, o, d in parsed)
 
 
+# A plain sed substitution script is DATA for the path ladders: it names text to
+# rewrite, not a file to touch (the target is the file operand). `s|a|b|` with
+# only the g/p/i/I/number flags can neither write (`w`) nor run (`e`) anything,
+# so its mention of `dist/` or `node_modules/` is not a mention of the path.
+_SED_SUBST_RE = re.compile(r"^s(?P<d>[^\\\w\s])(?:(?!(?P=d)).)*(?P=d)(?:(?!(?P=d)).)*(?P=d)[gpiI0-9]*$")
+_SED_PLACEHOLDER = "'SED'"
+
+
+def mask_sed_substitutions(command: str) -> str:
+    """``command`` with simple quoted sed substitution scripts replaced by a placeholder."""
+    if "sed" not in command:
+        return command
+    tokens = _prose_tokens(command)
+    if not tokens:
+        return command
+    spans: List[Tuple[int, int]] = []
+    seg: List[Tuple[int, int, str]] = []
+
+    def _flush() -> None:
+        words = [t for t in seg if t[2] not in _PROSE_OPERATORS]
+        if not words or os.path.basename(words[0][2]) != "sed":
+            return
+        k = 1
+        while k < len(words):
+            raw = words[k][2]
+            if raw in ("-e", "--expression") and k + 1 < len(words):
+                script = words[k + 1]
+                k += 2
+            elif raw.startswith("-"):
+                k += 1
+                if raw == "-i" and k < len(words) and words[k][2] in ("''", '""'):
+                    k += 1  # macOS: the empty backup suffix
+                continue
+            else:
+                script = words[k]
+                k += 1
+                # With no -e, the first operand is the script and the rest are files.
+                k = len(words)
+            s_, e_, raw_script = script
+            if len(raw_script) >= 2 and raw_script[0] == raw_script[-1] and raw_script[0] in "'\"":
+                body = raw_script[1:-1]
+                if raw_script[0] == '"' and re.search(r'(?<!\\)(?:\$|`)', body):
+                    continue
+                if _SED_SUBST_RE.match(body):
+                    spans.append((s_, e_))
+
+    for tok in tokens:
+        if tok[2] in (";", "&", "|", "\n"):
+            _flush()
+            seg = []
+        else:
+            seg.append(tok)
+    _flush()
+    if not spans:
+        return command
+    out, pos = [], 0
+    for s_, e_ in sorted(spans):
+        out.append(command[pos:s_])
+        out.append(_SED_PLACEHOLDER)
+        pos = e_
+    out.append(command[pos:])
+    return "".join(out)
+
+
 _GIT_CLEAN_FLAGS_RE = re.compile(r'^-[fqdX]+$')
 
 
@@ -3905,6 +3969,8 @@ def git_clean_only_explicit_untracked(command: str, cwd: Optional[str]) -> bool:
             if rel == ".git" or rel.startswith(".git" + os.sep) or rel.startswith(".." + os.sep):
                 return False
     return True
+
+
 
 
 def check_command(
