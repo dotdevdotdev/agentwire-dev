@@ -175,3 +175,44 @@ def test_forced_recursive_removal_passes_only_inside_scratch(world, tmp_path):
     cfg["safety"] = {"enabled": True, "disabled_rules": []}
     assert check_command(f"rm -{'rf'} {sess}/work", cfg, cwd=repo)["decision"] == "allow"
     assert check_command(f"rm -{'rf'} /", cfg, cwd=repo)["decision"] == "block"
+
+
+def test_git_clean_passes_only_with_explicit_paths_inside_a_repo(world):
+    from agentwire.safety._core import git_clean_only_explicit_untracked
+
+    repo, scratch, outside = world["repo"], world["scratch"], world["outside"]
+    ok = {
+        "file": ("git clean -fq untracked.txt", repo),
+        "dir": ("git clean -fdq sub", repo),
+        "ignored-only": ("git clean -fdXq sub", repo),
+        "double-dash": ("git clean -f -- untracked.txt", repo),
+        "after-cd": ("cd sub && git clean -fq clean2.txt", repo),
+        "scratch": (f"git clean -fdq {scratch}/proj/sess/work", repo),
+        "absolute": (f"git clean -fq {repo}/untracked.txt", "/"),
+    }
+    wrongly_blocked = [n for n, (c, cwd) in ok.items() if not git_clean_only_explicit_untracked(c, cwd)]
+    assert not wrongly_blocked, wrongly_blocked
+
+    refused = {
+        "whole-tree": ("git clean -fd", repo),
+        "untracked-and-ignored": ("git clean -fdx sub", repo),
+        "dot": ("git clean -fd .", repo),
+        "repo-root": (f"git clean -fd {repo}", repo),
+        "git-dir": ("git clean -fd .git", repo),
+        "glob": ("git clean -fd *.txt", repo),
+        "variable": ("git clean -fd $D", repo),
+        "outside-repo": (f"git clean -fd {outside}/f.txt", repo),
+        "dotdot": ("git clean -fd ../outside", repo),
+        "interactive": ("git clean -fdi sub", repo),
+        "global-option": ("git -C sub clean -fd x", repo),
+        "wrapper": ("ls | xargs git clean -fd", repo),
+        "subshell": ("(git clean -fd sub)", repo),
+        "no-cwd": ("git clean -fd sub", None),
+    }
+    wrongly_allowed = [n for n, (c, cwd) in refused.items() if git_clean_only_explicit_untracked(c, cwd)]
+    assert not wrongly_allowed, wrongly_allowed
+
+    cfg = load_config(RULES_DIR)
+    cfg["safety"] = {"enabled": True, "disabled_rules": []}
+    assert check_command("git clean -fq untracked.txt", cfg, cwd=repo)["decision"] == "allow"
+    assert check_command("git clean -fd", cfg, cwd=repo)["decision"] == "block"
