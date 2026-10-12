@@ -901,7 +901,7 @@ The PreToolUse audit row records the decision (`allowed` / `asked` / `blocked`),
 - **Never in the way:** the hook prints nothing, swallows every error and always exits 0.
 - **Labels** (`agentwire.safety.audit.join_outcomes`): `ran` (allowed, executed), `approved` (asked, executed), `declined-or-abandoned` (asked, nothing ran), `rule-blocked`, `classifier-denied`, `failed`. Rows written before this existed have no `tool_use_id` and stay unlabelled.
 - **Read it:** `agentwire safety report` appends an "Outcomes" section; `--json` includes the per-rule label counts.
-- **Cost:** one small Python process after each tool call (registered for every tool, matcher `.*`).
+- **Scope:** registered with exactly the damage-control matchers (`DAMAGE_CONTROL_MATCHERS`, joined with `|`), so it runs only after tools damage control already decided on. `hooks install` narrows an older catch-all registration in place.
 
 Retention is not bounded and there is no copy outside `~/.agentwire/`: a wipe of that directory erases the history (it did on 2026-10-11). See #1068 for the follow-ups.
 
