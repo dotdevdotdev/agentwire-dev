@@ -3569,7 +3569,174 @@ def mask_prose_operands(command: str) -> str:
     return "".join(out)
 
 
-def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Recoverable `rm` (#940). A plain `rm <file>` is destructive only when the
+# bytes cannot come back, so the rule yields exactly when they can: the target
+# is a session scratch file, untracked/ignored in a git repo (the owner's call:
+# local, small, the agent's own artefact), or tracked with NO uncommitted
+# change (git has it). Anything else — flags, globs, variables, directories,
+# a tracked file with local edits, a file outside every repo — stays blocked.
+# `git rm` is NOT covered here; it is its own ask rule.
+# ---------------------------------------------------------------------------
+
+_REDIRECT_TOKEN_RE = re.compile(r'^[<>&|]+$')
+_GLOB_OR_EXPANSION_RE = re.compile(r'[*?\[\]{}$`\\]')
+# A wrapper/runner that takes `rm` as ITS argument (`xargs rm`, `sudo rm`,
+# `sh -c "rm x"`): the operands are not this parser's to read.
+_RM_NAME = "rm"
+
+
+def _newlines_as_separators(command: str) -> str:
+    """Unquoted newlines become ``;`` — shlex reads them as plain whitespace.
+
+    Without this, ``cat > f <<'EOF' … EOF`` newline ``rm x`` folds the `rm` into
+    the `cat` segment. A backslash-newline is a continuation, not a separator.
+    """
+    out: List[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                out.append(command[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+            out.append(ch)
+        elif ch == "\\" and i + 1 < len(command) and command[i + 1] == "\n":
+            out.append(" ")
+            i += 1
+        elif ch == "\n":
+            out.append(" ; ")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _scratch_roots() -> List[str]:
+    uid = os.getuid()
+    roots = {f"/tmp/claude-{uid}", f"/private/tmp/claude-{uid}"}
+    roots |= {os.path.realpath(r) for r in list(roots)}
+    return sorted(roots)
+
+
+def _git_file_state(repo: str, rel: str) -> Optional[str]:
+    """``untracked`` | ``clean`` | ``modified`` for ``rel`` in ``repo``; None on error.
+
+    ``clean`` means tracked with no staged or unstaged change, so ``git
+    checkout`` restores it. One short subprocess, only ever reached when an
+    `rm` rule already matched.
+    """
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    base = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", repo]
+    try:
+        tracked = subprocess.run(
+            base + ["ls-files", "--error-unmatch", "--", rel],
+            capture_output=True, text=True, timeout=3, env=env,
+        )
+        if tracked.returncode != 0:
+            return "untracked"
+        status = subprocess.run(
+            base + ["status", "--porcelain", "--untracked-files=no", "--", rel],
+            capture_output=True, text=True, timeout=3, env=env,
+        )
+        if status.returncode != 0:
+            return None
+        return "modified" if status.stdout.strip() else "clean"
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _rm_target_is_recoverable(path: str) -> bool:
+    """Whether removing the single file ``path`` loses nothing git/scratch can't give back."""
+    parent, name = os.path.split(path)
+    if not name:
+        return False
+    real_target = os.path.join(os.path.realpath(parent), name)
+    if not os.path.lexists(real_target):
+        return True  # rm of a missing file is a no-op
+    if os.path.isdir(real_target) and not os.path.islink(real_target):
+        return False
+    for root in _scratch_roots():
+        if real_target == root or real_target.startswith(root + os.sep):
+            return True
+    repo = _git_repo_root(os.path.dirname(real_target))
+    if repo is None:
+        return False
+    rel = os.path.relpath(real_target, repo)
+    if rel == ".git" or rel.startswith(".git" + os.sep) or rel.startswith(".." + os.sep):
+        return False
+    return _git_file_state(repo, rel) in ("untracked", "clean")
+
+
+def rm_removes_only_recoverable_files(command: str, cwd: Optional[str]) -> bool:
+    """True only when EVERY `rm` in ``command`` removes just recoverable plain files.
+
+    Refuses (False) on anything it cannot model: no cwd, a group/subshell, an
+    `rm` that is not at the head of its segment, a flag, a glob/variable/
+    substitution operand, a `cd` that is not a literal `&&`-joined target.
+    """
+    if not cwd:
+        return False
+    masked, mask_err = _mask_command_substitutions(inert_view(command))
+    if mask_err:
+        return False
+    segments, split_err = _scope_segments(_newlines_as_separators(masked))
+    if split_err:
+        return False
+    current = os.path.abspath(cwd)
+    seen_rm = False
+    for argv, following_op in segments:
+        _assigns, argv = _split_assignments(argv)
+        if not argv:
+            continue
+        head = os.path.basename(argv[0])
+        if head in _CWD_CHANGING:
+            if head != "cd" or following_op != "&&":
+                return False
+            target = _cd_target(argv)
+            if target is None:
+                return False
+            current = _resolve_dir(target, current)[0]
+            continue
+        if head != _RM_NAME:
+            # An `rm` anywhere but the head of a segment belongs to a wrapper.
+            if any(os.path.basename(t) == _RM_NAME for t in argv[1:]):
+                return False
+            continue
+        seen_rm = True
+        operands: List[str] = []
+        skip_next = False
+        for i, tok in enumerate(argv[1:], start=1):
+            if skip_next:
+                skip_next = False
+                continue
+            if _REDIRECT_TOKEN_RE.match(tok):
+                skip_next = True
+                if operands and argv[i - 1].isdigit():
+                    operands.pop()  # the `2` of `2>/dev/null`
+                continue
+            operands.append(tok)
+        if not operands:
+            return False
+        for tok in operands:
+            if tok.startswith("-") or _CMD_SUBST_SENTINEL in tok or _GLOB_OR_EXPANSION_RE.search(tok):
+                return False
+            if not _rm_target_is_recoverable(_abs_path(tok, current)):
+                return False
+    return seen_rm
+
+
+def check_command(
+    command: str, config: Dict[str, Any], cwd: Optional[str] = None
+) -> Dict[str, Any]:
     """Decide whether a bash command should be allowed/blocked/asked.
 
     Returns ``{decision, reason, pattern, command}`` plus optional ``id``,
@@ -3745,6 +3912,8 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
     for pattern, reason, rule_id in bypassable_matches:
+        if reason.startswith("rm file deletion") and rm_removes_only_recoverable_files(command, cwd):
+            continue
         operation = _infer_operation_from_reason(reason)
         if not is_command_path_allowed(command, allowed, operation):
             return {
