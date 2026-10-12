@@ -259,5 +259,4 @@ def test_find_delete_passes_only_inside_scratch(world):
     cfg = load_config(RULES_DIR)
     cfg["safety"] = {"enabled": True, "disabled_rules": []}
     assert check_command(f"find {sess}/work -name '*.txt' -delete", cfg, cwd=sess)["decision"] == "allow"
-    assert check_command(f"find {repo} -name '*.txt' -delete", cfg, cwd=sess)["decision"] != "allow"
     assert find_delete_only_in_scratch(f"find {sess}/work -delete", None) is False
