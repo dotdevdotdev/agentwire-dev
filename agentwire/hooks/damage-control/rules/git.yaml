@@ -51,6 +51,15 @@ bashToolPatterns:
     ask: true
     anchored: true
 
+  # `git rm` deletes tracked files from the working tree AND the index; unlike a
+  # plain rm of a clean file it is a deliberate history-shaping act, rarely
+  # right for an agent. `--cached` only unstages (the file stays), so it passes.
+  - id: git.rm-tracked-files
+    pattern: '\bgit\s+rm\b(?!.*--cached)'
+    reason: git rm deletes tracked files (use rm of a clean file, or confirm)
+    ask: true
+    anchored: true
+
   - pattern: '\bgit\s+stash\s+drop\b'
     reason: Permanently deletes a stash
     ask: true
