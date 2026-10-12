@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "ba0aadeda6bbbc3b04490a253f75acd6ea935fd411c6b0f9465349bcf3c033a3", "generated_at": "2026-10-12T14:29:31Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "ddc41d3fd37e047290e2612c9f395bde4db5bc7894c4e8c416cff6d6693cd254", "generated_at": "2026-10-12T17:23:20Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3790,15 +3790,15 @@ def _expand_known_vars(token: str, env: Dict[str, str]) -> str:
 def _is_verb(argv: List[str], verb: str) -> bool:
     """``argv`` is the verb's own invocation: `rm ...` or `git clean ...`."""
     head = os.path.basename(argv[0])
-    if verb == "rm":
-        return head == "rm"
+    if verb in ("rm", "find"):
+        return head == verb
     return head == "git" and len(argv) > 1 and argv[1] == "clean"
 
 
 def _mentions_verb(argv: List[str], verb: str) -> bool:
     """The verb appears somewhere it is not at the head: a wrapper's payload."""
-    if verb == "rm":
-        return any(os.path.basename(t) == "rm" for t in argv[1:])
+    if verb in ("rm", "find"):
+        return any(os.path.basename(t) == verb for t in argv[1:])
     return "clean" in argv and any(os.path.basename(t) == "git" for t in argv)
 
 
@@ -3853,7 +3853,7 @@ def _parse_rm_command(
         flags: List[str] = []
         operands: List[str] = []
         skip_next = False
-        first = 1 if verb == "rm" else 2
+        first = 2 if verb == "git clean" else 1
         for i, tok in enumerate(argv[first:], start=first):
             if skip_next:
                 skip_next = False
@@ -3934,6 +3934,49 @@ def rm_with_flags_only_in_scratch(command: str, cwd: Optional[str]) -> bool:
     if not parsed:
         return False
     return all(_rm_entry_in_scratch(f, o, d) for f, o, d in parsed)
+
+
+# `find` primaries that cannot run a program or write a file, with the number of
+# words each consumes. Anything outside this table (-exec, -ok, -fprint, -fls,
+# -delete's siblings that act) makes the whole find unmodelled.
+_FIND_PRIMARIES = {
+    "-delete": 0, "-empty": 0, "-prune": 0, "-print": 0, "-print0": 0,
+    "-o": 0, "-a": 0, "-and": 0, "-or": 0, "-not": 0, "!": 0,
+    "-name": 1, "-iname": 1, "-path": 1, "-ipath": 1, "-type": 1, "-mtime": 1,
+    "-mmin": 1, "-atime": 1, "-amin": 1, "-ctime": 1, "-cmin": 1, "-newer": 1,
+    "-maxdepth": 1, "-mindepth": 1, "-size": 1, "-user": 1, "-perm": 1,
+}
+
+
+def find_delete_only_in_scratch(command: str, cwd: Optional[str]) -> bool:
+    """True only when every `find` in ``command`` can delete nothing outside a scratch dir.
+
+    A scratch dir is disposable by design, so ``find <scratch>/... -name x
+    -delete`` loses nothing. Start paths are literal and strictly inside
+    scratch (symlinks refused, no leading ``-L``/``-H``); the expression uses
+    only the non-acting primaries in ``_FIND_PRIMARIES``, so no ``-exec``.
+    """
+    parsed = _parse_rm_command(command, cwd, verb="find")
+    if not parsed:
+        return False
+    for flags, operands, directory in parsed:
+        if flags:
+            return False
+        i = 0
+        while i < len(operands) and not operands[i].startswith(("-", "!", "(")):
+            i += 1
+        paths, expression = operands[:i], operands[i:]
+        if not paths or not _rm_entry_in_scratch(["-r"], paths, directory):
+            return False
+        j = 0
+        while j < len(expression):
+            arity = _FIND_PRIMARIES.get(expression[j])
+            if arity is None or _CMD_SUBST_SENTINEL in "".join(expression[j:j + 1 + arity]):
+                return False
+            j += 1 + arity
+        if j != len(expression):
+            return False
+    return True
 
 
 # A plain sed substitution script is DATA for the path ladders: it names text to
@@ -4222,6 +4265,8 @@ def check_command(
 
     for pattern, reason, rule_id in bypassable_matches:
         if reason.startswith("rm file deletion") and rm_removes_only_recoverable_files(command, cwd):
+            continue
+        if reason.startswith("find -delete") and find_delete_only_in_scratch(command, cwd):
             continue
         operation = _infer_operation_from_reason(reason)
         if not is_command_path_allowed(command, allowed, operation):
