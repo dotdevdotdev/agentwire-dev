@@ -48,15 +48,15 @@ def world(tmp_path, monkeypatch):
 def test_recoverable_removals_pass(world):
     repo, scratch = world["repo"], world["scratch"]
     cases = {
-        "untracked": (f"rm untracked.txt", repo),
-        "tracked-clean": (f"rm clean.txt", repo),
+        "untracked": ("rm untracked.txt", repo),
+        "tracked-clean": ("rm clean.txt", repo),
         "absolute": (f"rm {repo}/untracked.txt", "/"),
         "scratch": (f"rm {scratch}/tmpfile", repo),
-        "cd-then-rm": (f"cd sub && rm clean2.txt", repo),
-        "redirect-noise": (f"rm untracked.txt 2>/dev/null", repo),
-        "two-files": (f"rm untracked.txt clean.txt", repo),
-        "missing-file": (f"rm nothing-here.txt", repo),
-        "heredoc-around": (f"cat > n.txt <<'EOF'\nrm dirty.txt (not code)\nEOF\nrm untracked.txt", repo),
+        "cd-then-rm": ("cd sub && rm clean2.txt", repo),
+        "redirect-noise": ("rm untracked.txt 2>/dev/null", repo),
+        "two-files": ("rm untracked.txt clean.txt", repo),
+        "missing-file": ("rm nothing-here.txt", repo),
+        "heredoc-around": ("cat > n.txt <<'EOF'\nrm dirty.txt (not code)\nEOF\nrm untracked.txt", repo),
     }
     wrongly_blocked = [n for n, (c, cwd) in cases.items() if not rm_removes_only_recoverable_files(c, cwd)]
     assert not wrongly_blocked, wrongly_blocked
@@ -65,31 +65,31 @@ def test_recoverable_removals_pass(world):
 def test_everything_else_still_blocks(world):
     repo, outside = world["repo"], world["outside"]
     cases = {
-        "tracked-modified": (f"rm dirty.txt", repo),
-        "one-bad-among-good": (f"rm untracked.txt dirty.txt", repo),
+        "tracked-modified": ("rm dirty.txt", repo),
+        "one-bad-among-good": ("rm untracked.txt dirty.txt", repo),
         "outside-any-repo": (f"rm {outside}/f.txt", repo),
-        "relative-outside": (f"rm f.txt", outside),
+        "relative-outside": ("rm f.txt", outside),
         "force-flag": (f"rm {_F} untracked.txt", repo),
         "recursive-flag": (f"rm {_RF} sub", repo),
-        "directory": (f"rm sub", repo),
-        "glob": (f"rm *.txt", repo),
-        "brace": (f"rm {{untracked,clean}}.txt", repo),
-        "variable": (f"rm $F", repo),
-        "substitution": (f"rm $(ls)", repo),
+        "directory": ("rm sub", repo),
+        "glob": ("rm *.txt", repo),
+        "brace": ("rm {untracked,clean}.txt", repo),
+        "variable": ("rm $F", repo),
+        "substitution": ("rm $(ls)", repo),
         "backtick": ("rm `ls`", repo),
-        "git-internals": (f"rm .git/config", repo),
-        "escape-the-repo": (f"rm ../../outside/f.txt", repo + "/sub"),
-        "xargs": (f"ls | xargs rm", repo),
-        "sudo": (f"sudo rm untracked.txt", repo),
-        "shell-c": (f"sh -c 'rm untracked.txt'", repo),
-        "cd-with-semicolon": (f"cd sub; rm clean2.txt", repo),
-        "cd-variable": (f"cd $D && rm untracked.txt", repo),
-        "subshell": (f"(cd sub && rm clean2.txt)", repo),
+        "git-internals": ("rm .git/config", repo),
+        "escape-the-repo": ("rm ../../outside/f.txt", repo + "/sub"),
+        "xargs": ("ls | xargs rm", repo),
+        "sudo": ("sudo rm untracked.txt", repo),
+        "shell-c": ("sh -c 'rm untracked.txt'", repo),
+        "cd-with-semicolon": ("cd sub; rm clean2.txt", repo),
+        "cd-variable": ("cd $D && rm untracked.txt", repo),
+        "subshell": ("(cd sub && rm clean2.txt)", repo),
         "newline-dirty": ("ls\nrm dirty.txt", repo),
         "newline-cd": ("cd sub\nrm clean2.txt", repo),
-        "no-cwd": (f"rm untracked.txt", None),
-        "no-operand": (f"rm", repo),
-        "unrelated-command": (f"ls untracked.txt", repo),
+        "no-cwd": ("rm untracked.txt", None),
+        "no-operand": ("rm", repo),
+        "unrelated-command": ("ls untracked.txt", repo),
     }
     wrongly_allowed = [n for n, (c, cwd) in cases.items() if rm_removes_only_recoverable_files(c, cwd)]
     assert not wrongly_allowed, wrongly_allowed

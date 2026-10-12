@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "0ee573ccc3bf047a2fe1a90221a2d60da2b59474615d62f68391903ea819df41", "generated_at": "2026-10-12T13:25:25Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "bfb3f61883e0ee08fb46c17285334c4497d4b8891bd89f0e3d06db69a5aa11b9", "generated_at": "2026-10-12T13:32:42Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -247,6 +247,22 @@ _SAFE_ENV_TEMPLATE_RE = re.compile(
 )
 
 
+# An extension glob is aimed at filenames, but JS property access and a jq
+# field path match it too. Code mode, not path mode: the token opens with
+# expression punctuation (``(``, ``[``, ``!``, ``${``) and is a bare identifier
+# chain — no ``/``, no whitespace, no quote. A real read puts the name after a
+# verb or a quote, so those keep matching. Narrow on purpose: it releases only
+# tokens that cannot be a path argument.
+_MEMBER_ACCESS_TOKEN_RE = re.compile(
+    r'[\w$.]*(?:\\?\(|\$\{|\[|!)+\.?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*'
+)
+
+
+def _match_token(matched: str) -> str:
+    """The matched path token with its boundary characters stripped off."""
+    return matched.strip(' \t\n"\'<>=)')
+
+
 def matches_path_in_command(pattern: str, command: str) -> bool:
     """Check if a path pattern occurs in a command string in a path-context.
 
@@ -262,14 +278,28 @@ def matches_path_in_command(pattern: str, command: str) -> bool:
     if canon != command:
         haystacks.append(canon)
 
+    glob = is_glob_pattern(pattern)
     matched = False
     for hay in haystacks:
         try:
-            m = _rx(regex).search(hay)
+            rx = _rx(regex)
+            pos = 0
+            while True:
+                m = rx.search(hay, pos)
+                if not m:
+                    break
+                if _SAFE_ENV_TEMPLATE_RE.search(m.group(0)) or (
+                    glob and _MEMBER_ACCESS_TOKEN_RE.fullmatch(_match_token(m.group(0)))
+                ):
+                    # Skipped hit: step back one char so the boundary it
+                    # consumed can lead the NEXT token.
+                    pos = max(m.end() - 1, pos + 1)
+                    continue
+                matched = True
+                break
         except re.error:
             return False
-        if m and not _SAFE_ENV_TEMPLATE_RE.search(m.group(0)):
-            matched = True
+        if matched:
             break
     if not matched:
         return False
