@@ -3649,9 +3649,6 @@ def mask_prose_operands(command: str) -> str:
 
 _REDIRECT_TOKEN_RE = re.compile(r'^[<>&|]+$')
 _GLOB_OR_EXPANSION_RE = re.compile(r'[*?\[\]{}$`\\]')
-# A wrapper/runner that takes `rm` as ITS argument (`xargs rm`, `sudo rm`,
-# `sh -c "rm x"`): the operands are not this parser's to read.
-_RM_NAME = "rm"
 
 
 def _newlines_as_separators(command: str) -> str:
@@ -3756,10 +3753,25 @@ def _expand_known_vars(token: str, env: Dict[str, str]) -> str:
     return _VAR_REF_RE.sub(sub, token)
 
 
+def _is_verb(argv: List[str], verb: str) -> bool:
+    """``argv`` is the verb's own invocation: `rm ...` or `git clean ...`."""
+    head = os.path.basename(argv[0])
+    if verb == "rm":
+        return head == "rm"
+    return head == "git" and len(argv) > 1 and argv[1] == "clean"
+
+
+def _mentions_verb(argv: List[str], verb: str) -> bool:
+    """The verb appears somewhere it is not at the head: a wrapper's payload."""
+    if verb == "rm":
+        return any(os.path.basename(t) == "rm" for t in argv[1:])
+    return "clean" in argv and any(os.path.basename(t) == "git" for t in argv)
+
+
 def _parse_rm_command(
-    command: str, cwd: Optional[str]
+    command: str, cwd: Optional[str], verb: str = "rm"
 ) -> Optional[List[Tuple[List[str], List[str], str]]]:
-    """Every `rm` in ``command`` as ``(flags, operands, directory)``; None if unmodelled.
+    """Every ``verb`` (`rm` or `git clean`) in ``command`` as ``(flags, operands, directory)``; None if unmodelled.
 
     Operands are the words after the flags with literal ``VAR=value`` assignments
     expanded (``S=/tmp/x; rm $S/f``). None on anything this parser will not
@@ -3799,15 +3811,16 @@ def _parse_rm_command(
                 return None
             current = _resolve_dir(target, current)[0]
             continue
-        if head != _RM_NAME:
-            # An `rm` anywhere but the head of a segment belongs to a wrapper.
-            if any(os.path.basename(t) == _RM_NAME for t in argv[1:]):
+        if not _is_verb(argv, verb):
+            # The verb anywhere but the head of a segment belongs to a wrapper.
+            if _mentions_verb(argv, verb):
                 return None
             continue
         flags: List[str] = []
         operands: List[str] = []
         skip_next = False
-        for i, tok in enumerate(argv[1:], start=1):
+        first = 1 if verb == "rm" else 2
+        for i, tok in enumerate(argv[first:], start=first):
             if skip_next:
                 skip_next = False
                 continue
@@ -3887,6 +3900,43 @@ def rm_with_flags_only_in_scratch(command: str, cwd: Optional[str]) -> bool:
     if not parsed:
         return False
     return all(_rm_entry_in_scratch(f, o, d) for f, o, d in parsed)
+
+
+_GIT_CLEAN_FLAGS_RE = re.compile(r'^-[fqdX]+$')
+
+
+def git_clean_only_explicit_untracked(command: str, cwd: Optional[str]) -> bool:
+    """True only when every `git clean` names explicit literal paths inside a repo or scratch.
+
+    git clean removes UNTRACKED files only (``-X``: only ignored ones), so a
+    path-limited run loses nothing git can restore: the owner's rule is that an
+    agent may delete its own untracked files. What stays blocked: no operand
+    (the whole tree), the repo root itself, ``.git``, globs/variables, ``-x``
+    (untracked AND ignored: where an ``.env`` lives), and any flag beyond
+    f/q/d/X.
+    """
+    parsed = _parse_rm_command(command, cwd, verb="git clean")
+    if not parsed:
+        return False
+    for flags, operands, directory in parsed:
+        if not all(_GIT_CLEAN_FLAGS_RE.match(f) for f in flags if f != "--"):
+            return False
+        for tok in operands:
+            if tok == "--":
+                continue
+            if not _operand_is_literal(tok):
+                return False
+            path = _abs_path(tok, directory)
+            real = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+            if _inside_scratch(real):
+                continue
+            repo = _git_repo_root(os.path.dirname(real))
+            if repo is None or real == repo:
+                return False
+            rel = os.path.relpath(real, repo)
+            if rel == ".git" or rel.startswith(".git" + os.sep) or rel.startswith(".." + os.sep):
+                return False
+    return True
 
 
 def check_command(
@@ -4056,6 +4106,8 @@ def check_command(
                 elif bypassable:
                     bypassable_matches.append((pattern, reason, rule_id))
                 elif reason.startswith("rm with ") and rm_with_flags_only_in_scratch(command, cwd):
+                    continue
+                elif reason.startswith("git clean with ") and git_clean_only_explicit_untracked(command, cwd):
                     continue
                 else:
                     return {
