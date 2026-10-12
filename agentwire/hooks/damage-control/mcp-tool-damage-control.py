@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "dad6e3926fff3cbf2a59c30eccd97b1363710a03734eb3dc0ae592c2c8d278f4", "generated_at": "2026-10-12T13:22:06Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "6db321894fa09cb29f290634e5f919460591bd8d88fa6cd49ac4b31a16b43702", "generated_at": "2026-10-12T13:36:33Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -273,6 +273,34 @@ _MEMBER_ACCESS_TOKEN_RE = re.compile(
 )
 
 
+_BRACE_GROUP_RE = re.compile(r'(?<![$\\])\{([^{}\s]*,[^{}\s]*)\}')
+_BRACE_VARIANT_CAP = 256
+
+
+def brace_variants(text: str) -> Optional[List[str]]:
+    """The strings bash would produce by expanding ``{a,b}`` groups in ``text``.
+
+    Innermost-first, so nested groups resolve. ``${var}`` and a brace group
+    holding whitespace are not expansions and are left alone. Returns ``[]``
+    when there is nothing to expand and None when the expansion would exceed
+    the cap (an expansion bomb), so the caller can fail closed.
+    """
+    pending = [text]
+    done: List[str] = []
+    while pending:
+        cur = pending.pop()
+        m = _BRACE_GROUP_RE.search(cur)
+        if not m:
+            if cur != text:
+                done.append(cur)
+            continue
+        for alt in m.group(1).split(","):
+            pending.append(cur[:m.start()] + alt + cur[m.end():])
+        if len(pending) + len(done) > _BRACE_VARIANT_CAP:
+            return None
+    return done
+
+
 def _match_token(matched: str) -> str:
     """The matched path token with its boundary characters stripped off."""
     return matched.strip(' \t\n"\'<>=)')
@@ -292,6 +320,14 @@ def matches_path_in_command(pattern: str, command: str) -> bool:
     canon = canonicalize_command(command)
     if canon != command:
         haystacks.append(canon)
+    # `cat {<secret>,x}` / `dir/{<secret>,x}`: bash expands the group before
+    # cat ever runs, so the rule must read the expanded words too. A command
+    # whose groups outgrow the cap fails CLOSED — it cannot be shown clean.
+    for hay in list(haystacks):
+        variants = brace_variants(hay)
+        if variants is None:
+            return True
+        haystacks.extend(v for v in variants if v != hay)
 
     glob = is_glob_pattern(pattern)
     matched = False

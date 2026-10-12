@@ -71,6 +71,11 @@ BYPASS_VECTORS = [
     "cat ${HOME}/.ssh/id_rsa",
     "cat ~/.aws/credentials",
     "cat ~/.netrc",
+    # brace expansion hides the secret from literal matching (#1067)
+    "cat {.env,x}",
+    "cat ~/.agentwire/{.env,x}",
+    "cat ~/.ssh/{id_rsa,x}",
+    "cat ~/{.netrc,x}",
     # baseline literal (sanity)
     "rm " + _RF + " /x",
 ]
