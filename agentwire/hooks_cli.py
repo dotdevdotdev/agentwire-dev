@@ -273,12 +273,19 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
 
 
 # Agentwire-owned files deployed by `hooks install`. Each entry:
-# (filename in agentwire/hooks/, target directory, settings.json event or None)
-def _managed_hook_files() -> list[tuple[str, Path, str | None]]:
+# (filename in agentwire/hooks/, target directory, settings.json event(s), maybe none)
+def _managed_hook_files() -> list[tuple[str, Path, tuple[str, ...]]]:
     return [
-        ("agentwire-permission.sh", CLAUDE_HOOKS_DIR, "PermissionRequest"),
-        ("idle-handler.sh", CLAUDE_HOOKS_DIR, "Notification"),
-        ("queue-processor.sh", Path.home() / ".agentwire", None),
+        ("agentwire-permission.sh", CLAUDE_HOOKS_DIR, ("PermissionRequest",)),
+        ("idle-handler.sh", CLAUDE_HOOKS_DIR, ("Notification",)),
+        # Records what happened AFTER damage-control decided: ran / failed /
+        # denied. Joined to the audit rows by tool_use_id.
+        (
+            "outcome_logger.py",
+            CLAUDE_HOOKS_DIR,
+            ("PostToolUse", "PostToolUseFailure", "PermissionDenied"),
+        ),
+        ("queue-processor.sh", Path.home() / ".agentwire", ()),
     ]
 
 
@@ -371,8 +378,8 @@ def install_hooks(
         else:
             results[hook_name] = "current"
 
-        if event:
-            register_hook_in_settings(event, hook_name)
+        for ev in event:
+            register_hook_in_settings(ev, hook_name)
 
     # Heal the full damage-control surface (hook scripts + rules + tooldefs +
     # PreToolUse matchers), not just the settings.json matchers. This closes the
@@ -532,8 +539,9 @@ def cmd_hooks_uninstall(args) -> int:
             target.unlink()
             print(f"Removed: {target}")
             removed_any = True
-        if event and unregister_hook_from_settings(event, hook_name):
-            print(f"Unregistered {hook_name} from Claude settings.json")
+        for ev in event:
+            if unregister_hook_from_settings(ev, hook_name):
+                print(f"Unregistered {hook_name} ({ev}) from Claude settings.json")
 
     if not removed_any:
         print("No hooks installed")
@@ -567,11 +575,11 @@ def cmd_hooks_status(args) -> int:
         location = f"{target} -> {target.resolve()}" if target.is_symlink() else str(target)
         print(f"  Location: {location}")
 
-        if event:
-            if is_hook_registered(event, hook_name):
-                print(f"  Registered: yes ({event} in ~/.claude/settings.json)")
+        for ev in event:
+            if is_hook_registered(ev, hook_name):
+                print(f"  Registered: yes ({ev} in ~/.claude/settings.json)")
             else:
-                print("  Registered: NO - run 'agentwire hooks install' to fix")
+                print(f"  Registered ({ev}): NO - run 'agentwire hooks install' to fix")
 
     # Tmux portal sync hooks
     print("\n=== Tmux Portal Sync Hooks ===")

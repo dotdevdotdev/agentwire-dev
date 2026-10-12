@@ -548,6 +548,15 @@ def format_safety_report(summary: Dict[str, Any]) -> str:
         lines += ["", "By tool:"]
         for tool, count in sorted(summary["by_tool"].items(), key=lambda kv: -kv[1]):
             lines.append(f"  {count:6d}  {tool}")
+    outcomes = summary.get("outcomes")
+    if outcomes and outcomes["labelled"]:
+        lines += [
+            "",
+            f"Outcomes ({outcomes['labelled']} of {outcomes['decisions']} decisions joined "
+            "to what happened next):",
+        ]
+        for label, count in sorted(outcomes["by_label"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {count:6d}  {label}")
     if summary["by_session"]:
         lines += ["", "By session (attended / unattended):"]
         ranked = sorted(
@@ -565,6 +574,9 @@ def format_safety_report(summary: Dict[str, Any]) -> str:
 def safety_report_cmd(days: int = 14, json_output: bool = False) -> int:
     """CLI command: ``agentwire safety report``."""
     summary = summarize_audit_blocks(days)
+    from agentwire.safety.audit import summarize_outcomes
+
+    summary["outcomes"] = summarize_outcomes(days, LOGS_DIR)
     if json_output:
         print(json.dumps(summary, indent=2))
     else:

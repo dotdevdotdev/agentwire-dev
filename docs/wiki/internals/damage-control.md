@@ -892,6 +892,19 @@ work.
 
 ---
 
+## Outcome logging: what happened after the decision (#1068 Phase 0)
+
+The PreToolUse audit row records the decision (`allowed` / `asked` / `blocked`), never what followed. Tuning rules needs the label: did the human approve the prompt, did the call run, did Claude Code's own classifier refuse it. Those facts only reach hooks that fire after the decision, so `hooks install` also registers `outcome_logger.py` for `PostToolUse`, `PostToolUseFailure` and `PermissionDenied`.
+
+- **Join key:** decision rows now carry `tool_use_id` and `permission_mode`; outcome rows (`kind: "outcome"`, `result: executed | failed | denied`) carry the same `tool_use_id` and are appended to the same daily JSONL.
+- **Content-free by design:** outcome rows hold identifiers, result, timing and the payload's field names (`payload_keys`, a discovery aid for what this Claude Code version sends). No command, tool input or tool output: the command is already in the decision row, and tool output can hold anything. A `PermissionDenied` row keeps at most 200 characters of the denial reason.
+- **Never in the way:** the hook prints nothing, swallows every error and always exits 0.
+- **Labels** (`agentwire.safety.audit.join_outcomes`): `ran` (allowed, executed), `approved` (asked, executed), `declined-or-abandoned` (asked, nothing ran), `rule-blocked`, `classifier-denied`, `failed`. Rows written before this existed have no `tool_use_id` and stay unlabelled.
+- **Read it:** `agentwire safety report` appends an "Outcomes" section; `--json` includes the per-rule label counts.
+- **Cost:** one small Python process after each tool call (registered for every tool, matcher `.*`).
+
+Retention is not bounded and there is no copy outside `~/.agentwire/`: a wipe of that directory erases the history (it did on 2026-10-11). See #1068 for the follow-ups.
+
 ## Usage
 
 ### Testing Commands

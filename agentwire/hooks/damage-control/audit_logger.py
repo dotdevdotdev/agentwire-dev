@@ -61,6 +61,12 @@ def _conversation_id() -> Optional[str]:
     return cid if isinstance(cid, str) and cid else None
 
 
+def _hook_field(name: str) -> Optional[str]:
+    """A string field of the hook stdin payload, or None."""
+    value = HOOK_INPUT.get(name) if isinstance(HOOK_INPUT, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 def _tmux_session_name() -> Optional[str]:
     """The tmux session this hook process runs inside, or None.
 
@@ -192,6 +198,9 @@ def log_entry(
         "rule_id": rule_id,
         "escape_reason": escape_reason,
         "cwd": cwd or os.environ.get("PWD") or os.getcwd(),
+        # Join keys for the outcome rows written by hooks/outcome_logger.py.
+        "tool_use_id": _hook_field("tool_use_id"),
+        "permission_mode": _hook_field("permission_mode"),
     }
 
     log_file = get_log_file()
