@@ -185,11 +185,13 @@ class TestAnchoredRules:
         assert r["decision"] == "ask"
 
     def test_unanchored_rule_still_matches_content(self, bash_hook):
-        # Content-based rules keep whole-command semantics.
+        # Content-based rules keep whole-command semantics. (A git commit
+        # message is NOT such content — mask_prose_operands neutralizes it —
+        # so the carrier here is echo, which runs nothing but is not masked.)
         rule = dict(self.GH_RULE)
         del rule["anchored"]
         r = bash_hook.check_command(
-            'git commit -m "mentions gh pr comment"', self._config([rule])
+            'echo "mentions gh pr comment"', self._config([rule])
         )
         assert r["decision"] == "ask"
 

@@ -3455,6 +3455,120 @@ def _search_match_entries(
 # ============================================================================
 
 
+# ---------------------------------------------------------------------------
+# Prose operands (#940). A commit message or a PR/issue body is DATA handed to
+# git/gh — it never runs. Rules that match text anywhere (SQL statements, path
+# mentions) read "rm <file>" or a SQL keyword inside one as a command, and a
+# human writing an honest message about a rule gets stopped by it. The value is
+# replaced with a placeholder for rule matching ONLY when it is a pure quoted
+# string with nothing that executes: a double-quoted value holding `$(` or a
+# backtick stays visible (that substitution RUNS), and nothing else about the
+# command is touched, so `git commit -m "x" && psql -c "<sql>"` still reads the
+# second half in full.
+# ---------------------------------------------------------------------------
+
+_PROSE_FLAG_RE = re.compile(r'^(?:-[A-Za-z]*m|--message|--body|-b|--title|-t|--notes)$')
+_PROSE_OPERATORS = set(";&|()<>\n")
+_PROSE_PLACEHOLDER = '"PROSE"'
+_GH_PROSE_GROUPS = {"pr", "issue", "release"}
+_GH_PROSE_VERBS = {"create", "edit", "comment", "review", "close", "reopen"}
+
+
+def _prose_tokens(command: str) -> Optional[List[Tuple[int, int, str]]]:
+    """Top-level tokens as ``(start, end, raw)``; operators are their own tokens.
+
+    None on unbalanced quotes — the caller then leaves the command alone.
+    """
+    tokens: List[Tuple[int, int, str]] = []
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch in " \t":
+            i += 1
+            continue
+        if ch in _PROSE_OPERATORS:
+            tokens.append((i, i + 1, ch))
+            i += 1
+            continue
+        start = i
+        while i < n and command[i] not in " \t" and command[i] not in _PROSE_OPERATORS:
+            c = command[i]
+            if c == "\\" and i + 1 < n:
+                i += 2
+            elif c in "'\"":
+                j = i + 1
+                while j < n and command[j] != c:
+                    j += 2 if (c == '"' and command[j] == "\\") else 1
+                if j >= n:
+                    return None
+                i = j + 1
+            else:
+                i += 1
+        tokens.append((start, i, command[start:i]))
+    return tokens
+
+
+def _pure_quoted_value(raw: str) -> bool:
+    """A single quoted string, nothing outside the quotes, nothing that executes."""
+    if len(raw) < 2 or raw[0] not in "'\"" or raw[-1] != raw[0]:
+        return False
+    body = raw[1:-1]
+    if raw[0] == "'":
+        return "'" not in body
+    return not re.search(r'(?<!\\)(?:\$\(|`)', body) and not re.search(r'(?<!\\)"', body)
+
+
+def mask_prose_operands(command: str) -> str:
+    """``command`` with git/gh message-and-body values replaced by a placeholder."""
+    if "git" not in command and "gh" not in command:
+        return command
+    tokens = _prose_tokens(command)
+    if not tokens:
+        return command
+    spans: List[Tuple[int, int]] = []
+    seg: List[Tuple[int, int, str]] = []
+
+    def _flush() -> None:
+        words = [t for t in seg if t[2] not in _PROSE_OPERATORS]
+        texts = [t[2] for t in words]
+        if not texts:
+            return
+        head = os.path.basename(texts[0])
+        takes_prose = (
+            head == "git" and any(t in ("commit", "tag") for t in texts[1:4])
+        ) or (
+            head == "gh" and len(texts) > 2 and texts[1] in _GH_PROSE_GROUPS and texts[2] in _GH_PROSE_VERBS
+        )
+        if not takes_prose:
+            return
+        for k, (s, e, raw) in enumerate(words):
+            if _PROSE_FLAG_RE.match(raw) and k + 1 < len(words):
+                vs, ve, vraw = words[k + 1]
+                if _pure_quoted_value(vraw):
+                    spans.append((vs, ve))
+            elif "=" in raw and _PROSE_FLAG_RE.match(raw.split("=", 1)[0]):
+                flag, _, vraw = raw.partition("=")
+                if _pure_quoted_value(vraw):
+                    spans.append((s + len(flag) + 1, e))
+
+    for tok in tokens:
+        if tok[2] in (";", "&", "|", "\n"):
+            _flush()
+            seg = []
+        else:
+            seg.append(tok)
+    _flush()
+    if not spans:
+        return command
+    out, pos = [], 0
+    for s, e in sorted(spans):
+        out.append(command[pos:s])
+        out.append(_PROSE_PLACEHOLDER)
+        pos = e
+    out.append(command[pos:])
+    return "".join(out)
+
+
 def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Decide whether a bash command should be allowed/blocked/asked.
 
@@ -3549,12 +3663,17 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     # behind substitution/eval/base64-pipe/unbalanced-quotes — we fail closed to
     # ``ask`` at the end (the unattended resolver turns that into a block).
     subcommands, ambiguous = normalize_subcommands(command)
-    haystacks = [command] + [s for s in subcommands if s and s != command]
+    # Ambiguity is judged on the real command; RULE matching reads it with
+    # git/gh message and body values neutralized (see mask_prose_operands).
+    rule_command = mask_prose_operands(command)
+    if rule_command != command:
+        subcommands, _ = normalize_subcommands(rule_command)
+    haystacks = [rule_command] + [s for s in subcommands if s and s != rule_command]
     # Anchored (command-prefix) rules match only masked subcommands, so quoted
     # argument text — commit messages, echo strings — can't false-match (#675),
     # and only at COMMAND POSITION, so a bare/single-word operand can't supply
     # the verb either (#922) — see anchored_match_entries.
-    anchored_entries = anchored_match_entries(command)
+    anchored_entries = anchored_match_entries(rule_command)
     # Third variant (#913 git, #919 the class): the tool with its global
     # options stripped, so a rule written as ``\bgit\s+push\b`` or
     # ``\btmux\s+kill-server\b`` still sees the subcommand behind
@@ -3566,8 +3685,8 @@ def check_command(command: str, config: Dict[str, Any]) -> Dict[str, Any]:
     # on this machine carry zero ``anchored: true`` and read the raw path, so
     # covering one alone would fix the bypass in only one of the two rule sets
     # in play.
-    normalized_haystacks = global_option_normalized_haystacks(command)
-    normalized_entries = _normalized_match_entries(command)
+    normalized_haystacks = global_option_normalized_haystacks(rule_command)
+    normalized_entries = _normalized_match_entries(rule_command)
 
     def _search(pat: str, hays: List[str]) -> bool:
         for hay in hays:
