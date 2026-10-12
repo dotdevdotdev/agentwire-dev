@@ -78,7 +78,7 @@ def bundled_config(bash_hook):
     hand = [p for p in cfg["bashToolPatterns"] if p.get("source") != "tooldef"]
     # 177 before #924: 8 remote.yaml ssh-twins deleted (redundant with the
     # wrapper-payload rescan) + 1 payloads.yaml rule added (#921).
-    assert len(hand) == 170, f"expected 170 hand-written rules, got {len(hand)}"
+    assert len(hand) == 171, f"expected 171 hand-written rules, got {len(hand)}"
     cfg["safety"] = dict(SAFETY)
     return cfg
 
@@ -305,6 +305,7 @@ DANGEROUS_SAMPLE = {
     '\\bgit\\s+checkout\\s+--\\s*\\.': 'git checkout -- .',
     '\\bgit\\s+restore\\s+\\.': 'git restore .',
     '\\bgit\\s+stash\\s+drop\\b': 'git stash drop',
+    '\\bgit\\s+rm\\b(?!.*--cached)': 'git rm tracked.txt',
     '\\bgit\\s+branch\\s+(-[^\\s]*)*-D': 'git branch -D feature',
     '\\bgit\\s+push\\s+\\S+\\s+--delete\\b': 'git push origin --delete feature',
     '\\bgit\\s+push\\s+\\S+\\s+:\\S+': 'git push origin :feature',
