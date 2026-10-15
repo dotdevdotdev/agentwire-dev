@@ -1492,21 +1492,12 @@ def cmd_doctor(args) -> int:
     # 4. Check agentwire-owned hook files (existence AND drift from packaged source)
     print("\nChecking AgentWire hooks...")
 
-    hook_meta = {
-        "agentwire-permission.sh": ("Permission hook", False,
-                                    "optional for prompted sessions"),
-        "idle-handler.sh": ("Idle notification hook", True,
-                            "required for worker notifications and scheduled tasks"),
-        "queue-processor.sh": ("Queue processor", True,
-                               "required for notification queuing"),
-    }
     try:
         hooks_source = get_hooks_source()
     except FileNotFoundError:
         hooks_source = None
 
-    for hook_name, target_dir, _event in _managed_hook_files():
-        label, required, why = hook_meta[hook_name]
+    for hook_name, target_dir, _event, label, required, why in _managed_hook_files():
         target = target_dir / hook_name
         source = hooks_source / hook_name if hooks_source else None
         state = _managed_file_state(target, source) if source and source.exists() \

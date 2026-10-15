@@ -147,6 +147,6 @@ def test_friction_ranking_and_daily_trend(tmp_path):
 
 
 def test_install_registers_the_outcome_hook_for_all_three_events():
-    entry = next(e for e in _managed_hook_files() if e[0] == "outcome_logger.py")
-    assert set(entry[2]) == {"PostToolUse", "PostToolUseFailure", "PermissionDenied"}
+    entry = next(e for e in _managed_hook_files() if e.name == "outcome_logger.py")
+    assert set(entry.events) == {"PostToolUse", "PostToolUseFailure", "PermissionDenied"}
     assert Path(OUTCOME_HOOK).stat().st_mode & 0o111, "the hook must ship executable"

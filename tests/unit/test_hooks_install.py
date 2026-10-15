@@ -151,7 +151,7 @@ class TestInstallHooks:
 
         hooks_src = tmp_path / "pkg-hooks"
         hooks_src.mkdir()
-        for name, _dir, _event in _managed_hook_files():
+        for name, *_ in _managed_hook_files():
             (hooks_src / name).write_text(f"#!/bin/bash\n# {name}\n")
         monkeypatch.setattr(main_mod, "get_hooks_source", lambda: hooks_src)
         monkeypatch.setattr(main_mod, "CLAUDE_HOOKS_DIR", home / ".claude" / "hooks")
@@ -271,5 +271,11 @@ class TestPackagedHooksPresent:
     def test_all_managed_files_exist_in_source(self):
         from agentwire.hooks_cli import get_hooks_source
         hooks_source = get_hooks_source()
-        for name, _dir, _event in _managed_hook_files():
+        for name, *_ in _managed_hook_files():
             assert (hooks_source / name).exists(), f"{name} missing from agentwire/hooks/"
+
+
+def test_every_managed_hook_has_doctor_metadata():
+    """#1082: doctor prints from the managed list itself, so none can lack a label."""
+    bad = [h.name for h in _managed_hook_files() if not (h.label and h.why)]
+    assert not bad, bad
