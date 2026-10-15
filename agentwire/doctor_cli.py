@@ -918,6 +918,28 @@ def _render_pending_messages_section() -> int:
     return 1
 
 
+def _render_cohort_section() -> int:
+    """Doctor section: cohort ledgers the sweep refuses to act on (#1087)."""
+    from . import cohort
+
+    suspects = []
+    if cohort.COHORT_ROOT.exists():
+        for path in sorted(cohort.COHORT_ROOT.rglob("*.json")):
+            parent = str(path.relative_to(cohort.COHORT_ROOT))[: -len(".json")]
+            data = cohort.load(parent)
+            reason = cohort.suspect_reason(parent, data) if data else None
+            if reason:
+                suspects.append((parent, reason))
+    if not suspects:
+        print("  [ok] No suspect cohort ledgers")
+        return 0
+    print(f"  [!!] {len(suspects)} cohort ledger(s) the sweep will not act on:")
+    for parent, reason in suspects:
+        print(f"       - {parent}: {reason}")
+    print("       Inspect/remove: ~/.agentwire/cohorts/<parent>.json")
+    return 1
+
+
 def _render_auth_expired_section() -> int:
     """Doctor section: an active expired-login outage (#906).
 
@@ -1868,6 +1890,10 @@ def cmd_doctor(args) -> int:
     # 10b. Long-pending report-backs (#879) — see _render_pending_messages_section.
     print("\nChecking for long-pending report-backs...")
     issues_found += _render_pending_messages_section()
+
+    # 10b2. Cohort ledgers that aren't fan-outs (#1087)
+    print("\nChecking for suspect cohort ledgers...")
+    issues_found += _render_cohort_section()
 
     # 10c. Expired Claude login (#906) — the state that made #867 cost two
     # hours. Nothing else on this list would surface it: the pane is alive and

@@ -122,7 +122,7 @@ class SessionsAdminRoutesMixin:
                     cli_session = name
 
             # Build CLI args
-            args = ["new", "-s", cli_session]
+            args = ["new", "-s", cli_session, "--no-cohort"]
             # Pass -p when provided (CLI uses it to locate repo for worktree creation)
             if custom_path:
                 args.extend(["-p", custom_path])
@@ -381,7 +381,7 @@ class SessionsAdminRoutesMixin:
                 new_session_name = f"{new_session_name}@{machine}"
 
             # Build CLI args - use `agentwire new` with the sibling session name
-            args = ["new", "-s", new_session_name]
+            args = ["new", "-s", new_session_name, "--no-cohort"]
             # Preserve the session's posture (the single axis)
             args.extend(["--posture", old_config.posture])
 

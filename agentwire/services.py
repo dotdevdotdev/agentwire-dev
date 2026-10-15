@@ -589,7 +589,7 @@ def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
     # `services up`) must degrade to a harmless "already exists", never
     # kill-replace a healthy instance that won the race.
     cmd = [sys.executable, "-m", "agentwire", "new", "-s", svc.name, "-p", project,
-           "--allow-shared-dir", "--json"]
+           "--allow-shared-dir", "--no-cohort", "--json"]
     if svc.roles:
         cmd.extend(["--roles", svc.roles])
     if svc.posture:
