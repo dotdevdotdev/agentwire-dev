@@ -506,3 +506,92 @@ def test_host_side_edit_is_honored_by_loader(tmp_path):
     assert load_safety_config(global_config_path=g, cwd=str(tmp_path))["enabled"] is True
     _write(g, "enabled: false\n")  # owner flips the kill switch on the host
     assert load_safety_config(global_config_path=g, cwd=str(tmp_path))["enabled"] is False
+
+
+# --------------------------------------------------------------------------
+# #1086 — a MENTION inside an interpreter program's prose literal is data;
+# a real write through the same interpreter is still refused.
+# --------------------------------------------------------------------------
+
+_SETTINGS = "~/.claude/settings.json"
+
+PROSE_MENTIONS = [
+    f"cd /tmp && python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\n"
+    "open('/tmp/x.md','w').write(s)\nEOF",
+    f"python3 -c \"print('see {_SETTINGS} for details')\"",
+    f"perl -e 'print \"see {_SETTINGS} by hand\"'",
+]
+
+INTERPRETER_REAL_WRITES = [
+    f"python3 - <<'EOF'\nopen('{_SETTINGS}','w').write('x')\nEOF",
+    f"python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\nopen('{_SETTINGS}','w').write(s)\nEOF",
+    f"python3 -c 'import os; os.system(\"echo x > {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"sed -i s/a/b/ {_SETTINGS}\")'",
+    f"perl -e 'open(F, \">\", \"{_SETTINGS}\")'",
+    f"python3 - <<'EOF'\nimport os\nos.system(\"echo x > {_SETTINGS}\")\nEOF",
+    f"python3 - <<'EOF'\nimport os\nos.system(\"cp /tmp/x {_SETTINGS}\")\nEOF",
+    # writers the shell ladder has no verb for — command-shaped literals stay visible
+    f"python3 -c 'import os; os.system(\"ln -sf /tmp/a {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"curl -o {_SETTINGS} http://x/y\")'",
+    f"python3 -c 'import os; os.system(\"wget -O {_SETTINGS} http://x/y\")'",
+    f"python3 -c 'import os; os.system(\"git checkout -- {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"tar -xf a.tgz -C {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"ed {_SETTINGS}\")'",
+    # flagless, slashless, operatorless: only the first-word-is-a-program check saves these
+    f"python3 -c 'import os; os.system(\"patch {_SETTINGS} diff\")'",
+    f"python3 -c 'import os; os.system(\"ln a {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"gzip {_SETTINGS} now\")'",
+    f"python3 -c 'import os; os.system(\"python3 x.py {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"git restore {_SETTINGS} now\")'",
+    f"python3 -c 'import os; os.system(\"tar xf a {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"touch {_SETTINGS} now\")'",
+    # a stopword makes it LOOK like prose; the first word being a program must still win
+    f"python3 -c 'import os; os.system(\"gzip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"patch the {_SETTINGS} for me\")'",
+    f"python3 -c 'import os; os.system(\"ln the {_SETTINGS}\")'",    # a leading non-program word / shell keyword must not hide the verb
+    f"python3 -c 'import os; os.system(\"for f in a; do gzip {_SETTINGS}; done\")'",
+    f"python3 -c 'import os; os.system(\"if true; then gzip {_SETTINGS}; fi\")'",
+    f"python3 -c 'import os; os.system(\"please gzip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"to gzip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"! gzip {_SETTINGS} now\")'",
+    f"python3 -c 'import os; os.system(\"{{ gzip {_SETTINGS}; }}\")'",
+    # shell syntax characters alone disqualify, even among unknown words
+    f"python3 -c 'import os; os.system(\"zzfoo; zzbar {_SETTINGS} in place\")'",
+    # the verb sits in a NEIGHBOURING literal — the prose literal must not be redacted
+    f"python3 -c 'import os; os.system(\"echo hi > \" + \"{_SETTINGS} is here\")'",
+    f"python3 -c 'import os; os.system(\"cp /tmp/a \" + \"{_SETTINGS} is x\")'",
+    f"python3 -c 'import os; os.system(\"mv /tmp/a %s\" % \"{_SETTINGS} is x\")'",
+    f"python3 -c 'import subprocess; subprocess.run([\"cp\",\"/tmp/a\",\"{_SETTINGS} is x\"])'",
+    f"python3 -c 'import os; os.system(\"gz\" \"ip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"gzip \" + \"{_SETTINGS} is here\")'",
+    f"python3 -c 'import os; os.system(\" \".join([\"gzip\",\"{_SETTINGS} in place\"]))'",
+    f"python3 -c 'import os; os.system(\"{_SETTINGS} in place\")'",
+    # structurally standalone but command-shaped: the content screen must still keep it
+    f"python3 -c 'import os; c=\"gzip {_SETTINGS} in place\"; os.system(c)'",
+    f"python3 -c 'import os; c=\"ln a {_SETTINGS}\"; os.system(c)'",
+    # indirection through the assigned variable, and prose piped to code as stdin
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; os.system(\"echo hi > \" + s)'",
+    f"python3 - <<'EOF'\nimport os\ns='the {_SETTINGS} is'\nos.system('echo hi > ' + s)\nEOF",
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; open(s.split()[1],\"w\")'",
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; print(s); open(s.split()[1],\"w\")'",
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; exec(\"open(s.split()[1],0)\")'",
+    f"echo 'the {_SETTINGS} is' | python3 -c 'import sys,os; os.system(\"echo hi > \"+sys.stdin.read().split()[1])'",
+    # unknown tool, no sentence markers: not provably prose, so it stays visible
+    f"python3 -c 'import os; os.system(\"zzunknowntool {_SETTINGS} now\")'",
+]
+
+
+def test_prose_mention_in_interpreter_literal_not_blocked(cfg):
+    wrongly_blocked = [
+        c for c in PROSE_MENTIONS
+        if check_command(c, cfg).get("protected") is True
+    ]
+    assert not wrongly_blocked, wrongly_blocked
+
+
+def test_real_interpreter_write_still_blocked_beside_prose(cfg):
+    leaked = [
+        c for c in INTERPRETER_REAL_WRITES
+        if check_command(c, cfg).get("protected") is not True
+    ]
+    assert not leaked, leaked

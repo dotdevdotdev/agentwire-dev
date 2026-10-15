@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2002,6 +2003,138 @@ def check_protected_path(
     return False, ""
 
 
+# Innermost literals only (no quote of either kind inside): an outer shell
+# quote wrapping ``print('…')`` must not swallow the literal that holds the prose.
+_QUOTED_LITERAL_RE = re.compile(r"'[^'\"\n]*'|\"[^'\"\n]*\"")
+
+
+_PROSE_STOPWORDS = frozenset(
+    "the is are was were be been for in by see to of and with this that from on "
+    "it its has have not but or at as into when where which".split()
+)
+_SHELL_WORDS = frozenset(
+    "cd source exec eval command builtin export set unset alias".split()
+)
+_SHELL_SYNTAX_CHARS = frozenset(";&|$`(){}<>\\!")
+
+
+def _reads_as_prose(words: List[str]) -> bool:
+    """True when ``words`` (a literal minus the path) is English, not a command.
+
+    Fail closed: ALL must hold — no flags/paths/operators/shell syntax
+    characters; NO word anywhere is a shell reserved word, builtin, or a program
+    on PATH (``shutil.which``) — a leading ``please``/``to``/``for f in a; do``
+    cannot hide the verb behind it; and a stopword (``the``/``is``/``in`` …) or
+    sentence punctuation shows it is a sentence. Over-blocks prose that happens
+    to contain a program name (``see the test``) — the safe direction.
+
+    Declared residual: ``which`` consults the HOOK's PATH, not the shell's, and
+    knows nothing of shell functions/aliases, so a program missing from the
+    hook's PATH is read as a plain word.
+    """
+    if len(words) < 2:
+        return False
+    for t in words:
+        if t[0] in "-/~." or "/" in t or "=" in t or _SHELL_SYNTAX_CHARS & set(t):
+            return False
+        w = t.lower().strip(",:;.!?")
+        if w in _SHELL_WORDS or shutil.which(w):
+            return False
+    return any(
+        t.lower().strip(",:;.!?") in _PROSE_STOPWORDS or t[-1] in ",:;!?"
+        for t in words
+    )
+
+
+_DATA_SINK_RE = re.compile(
+    r"\b(?:print|write|echo|log|info|debug|warn|warning|error)\s*\(?\s*$"
+)
+_ASSIGN_PREFIX_RE = re.compile(r"(?:^|[\n;])[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*$")
+
+
+def _is_standalone_data(command: str, start: int, end: int) -> bool:
+    """True when the literal at ``command[start:end]`` is syntactically alone.
+
+    Its left neighbour must be a plain assignment ``name =`` at the start of a
+    statement, or a data-only sink call (``print(`` / ``.write(`` / ``echo ``),
+    and its right neighbour a closing ``)`` / ``;`` / ``#`` / newline / end.
+    A pipe is NOT allowed: it feeds the literal to code as stdin. ``+``, ``%``, ``,``, ``[``, ``.join``, an
+    adjacent literal, a keyword argument, or any other call all fail — so the
+    path can never be assembled with a write verb sitting in a neighbouring
+    literal.
+    """
+    before = command[:start].rstrip(" \t")
+    after = command[end:].lstrip(" \t")
+    nxt = after[:1]
+    assign = _ASSIGN_PREFIX_RE.search(command[:start])
+    if assign:
+        return nxt in ("", ";", "#", "\n") and _only_sunk(command, assign.group(1))
+    if not _DATA_SINK_RE.search(before):
+        return False
+    # a closing quote is the enclosing shell quote (``perl -e 'print "…"'``)
+    return nxt in ("", ")", ";", "#", "\n", "'", '"')
+
+
+def _only_sunk(command: str, name: str) -> bool:
+    """True when every use of ``name`` is the assignment or ``sink(name)``.
+
+    ``s='<prose>'`` is data only while nothing can feed ``s`` to code:
+    ``'echo hi > ' + s``, ``s.split()``, ``open(s…)``, ``os.system(s)``,
+    ``f"{s}"`` all name it somewhere other than as the sole argument of a data
+    sink, so the occurrence count exceeds the assignment plus the sunk uses.
+    """
+    word = r"\b" + re.escape(name) + r"\b"
+    sunk = re.compile(
+        r"\b(?:print|write|echo|log|info|debug|warn|warning|error)\s*\(\s*"
+        + word + r"\s*\)"
+    )
+    return len(re.findall(word, command)) == 1 + len(sunk.findall(command))
+
+
+def redact_prose_mentions(command: str, path: str) -> str:
+    """Blank quoted literals that merely TALK ABOUT ``path`` (#1086).
+
+    The interpreter net (#678) reads opaque program text, so it cannot tell
+    ``s='hooks in <path> are empty'`` from a write. Contract, fail closed — a
+    literal is redacted ONLY when:
+
+    1. STRUCTURE (:func:`_is_standalone_data`): it is a whole assignment value
+       or the sole argument of a data-only sink (print/write/echo/log), so it
+       cannot be joined to a neighbouring literal that holds the verb;
+    2. CONTENT (:func:`_reads_as_prose`): it reads as a sentence — stopword or
+       punctuation, no flags/slashes/operators/shell syntax, no word a program
+       on PATH or shell builtin; and
+    3. no shell write pattern matches it.
+
+    Everything else stays visible: the path alone (``open('<path>','w')``),
+    command-shaped literals, anything ambiguous.
+
+    An assigned literal additionally requires every other use of the variable
+    to be ``sink(name)`` (:func:`_only_sunk`), so indirection through the
+    variable keeps it visible.
+
+    Declared residual: program detection uses the hook's PATH (see
+    :func:`_reads_as_prose`).
+    """
+    path_re = _rx(_path_context_regex(path))
+    out: List[str] = []
+    last = 0
+    for m in _QUOTED_LITERAL_RE.finditer(command):
+        lit = m.group(0)
+        body = lit[1:-1]
+        if (
+            path_re.search(body)
+            and _is_standalone_data(command, m.start(), m.end())
+            and _reads_as_prose(path_re.sub(" ", body).split())
+            and not check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]
+        ):
+            out.append(command[last:m.start()])
+            out.append(lit[0] + path_re.sub("<path-mention>", body) + lit[-1])
+            last = m.end()
+    out.append(command[last:])
+    return "".join(out)
+
+
 def check_protected_command(
     command: str,
     allowed_paths: List[Dict[str, Any]],
@@ -2024,9 +2157,10 @@ def check_protected_command(
         # text (#678) — a heredoc body is exactly what masking strips, so they
         # keep reading the raw haystacks. Only the shell-level write/delete
         # patterns move to the masked ladder haystacks.
+        interp_hays = [redact_prose_mentions(h, path) for h in raw_haystacks]
         for hays, patterns in (
             (path_ladder_haystacks(command, path), READ_ONLY_BLOCKED),
-            (raw_haystacks, INTERPRETER_WRITE_PATTERNS),
+            (interp_hays, INTERPRETER_WRITE_PATTERNS),
         ):
             for hay in hays:
                 matched, reason = check_path_patterns(
