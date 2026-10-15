@@ -180,3 +180,23 @@ class TestDoctorDamageControlSection:
         out = capsys.readouterr().out
         assert issues >= 1
         assert "matchers not registered" in out
+
+
+class TestStatusReportsWiring:
+    """#1085: scripts on disk but nothing registered must not read as healthy."""
+
+    def test_status_flags_unregistered_hooks_and_clears_after_heal(self, fake_env):
+        safety_commands.heal_damage_control(quiet=True)
+        settings = Path.home() / ".claude" / "settings.json"
+        settings.write_text(json.dumps({"hooks": {}}))
+
+        status = safety_commands.get_safety_status()
+        assert status["hooks_installed"]  # the old, misleading signal
+        assert set(status["missing_matchers"]) == set(safety_commands.DAMAGE_CONTROL_MATCHERS)
+        out = safety_commands.format_safety_status(status)
+        assert "NOT WIRED UP" in out and "✓ PreToolUse matchers" not in out
+
+        safety_commands.heal_damage_control(quiet=True)
+        status = safety_commands.get_safety_status()
+        assert status["missing_matchers"] == []
+        assert "NOT WIRED UP" not in safety_commands.format_safety_status(status)

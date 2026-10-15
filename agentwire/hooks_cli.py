@@ -13,6 +13,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 CLAUDE_HOOKS_DIR = Path.home() / ".claude" / "hooks"
 CLAUDE_COMMANDS_DIR = Path.home() / ".claude" / "commands"
@@ -296,20 +297,44 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
     return True
 
 
-# Agentwire-owned files deployed by `hooks install`. Each entry:
-# (filename in agentwire/hooks/, target directory, settings.json event(s), maybe none)
-def _managed_hook_files() -> list[tuple[str, Path, tuple[str, ...]]]:
+class ManagedHook(NamedTuple):
+    """An agentwire-owned file deployed by `hooks install`.
+
+    ``events`` are the settings.json events it is registered under (none for
+    non-hook files). ``label``/``required``/``why`` are what `doctor` prints, so
+    the install list and the doctor list are one list.
+    """
+
+    name: str  # filename in agentwire/hooks/
+    target_dir: Path
+    events: tuple[str, ...]
+    label: str
+    required: bool
+    why: str
+
+
+def _managed_hook_files() -> list[ManagedHook]:
     return [
-        ("agentwire-permission.sh", CLAUDE_HOOKS_DIR, ("PermissionRequest",)),
-        ("idle-handler.sh", CLAUDE_HOOKS_DIR, ("Notification",)),
+        ManagedHook(
+            "agentwire-permission.sh", CLAUDE_HOOKS_DIR, ("PermissionRequest",),
+            "Permission hook", False, "optional for prompted sessions",
+        ),
+        ManagedHook(
+            "idle-handler.sh", CLAUDE_HOOKS_DIR, ("Notification",),
+            "Idle notification hook", True,
+            "required for worker notifications and scheduled tasks",
+        ),
         # Records what happened AFTER damage-control decided: ran / failed /
         # denied. Joined to the audit rows by tool_use_id.
-        (
-            "outcome_logger.py",
-            CLAUDE_HOOKS_DIR,
+        ManagedHook(
+            "outcome_logger.py", CLAUDE_HOOKS_DIR,
             ("PostToolUse", "PostToolUseFailure", "PermissionDenied"),
+            "Outcome logger", True, "required for damage-control audit outcomes",
         ),
-        ("queue-processor.sh", Path.home() / ".agentwire", ()),
+        ManagedHook(
+            "queue-processor.sh", Path.home() / ".agentwire", (),
+            "Queue processor", True, "required for notification queuing",
+        ),
     ]
 
 
@@ -379,7 +404,7 @@ def install_hooks(
     if state in prov.REFUSING_STATES and not allow_foreign:
         for line in prov.refusal_lines(canonical, running, "agentwire-owned hooks"):
             print(f"  {line}" if line else "")
-        return {name: "refused-foreign" for name, _t, _e in _managed_hook_files()}
+        return {h.name: "refused-foreign" for h in _managed_hook_files()}
 
     try:
         hooks_source = get_hooks_source()
@@ -388,7 +413,7 @@ def install_hooks(
         return {}
 
     results: dict[str, str] = {}
-    for hook_name, target_dir, event in _managed_hook_files():
+    for hook_name, target_dir, event, *_ in _managed_hook_files():
         source = hooks_source / hook_name
         if not source.exists():
             print(f"  Warning: {hook_name} not found in package, skipping")
@@ -455,7 +480,7 @@ def cmd_hooks_install(args) -> int:
     if any(state == "refused-foreign" for state in results.values()):
         # A refusal must never be reportable as a successful install (#936).
         return 1
-    for hook_name, target_dir, _event in _managed_hook_files():
+    for hook_name, target_dir, *_ in _managed_hook_files():
         state = results.get(hook_name)
         if state in ("installed", "updated"):
             print(f"{state.capitalize()} {hook_name} -> {target_dir / hook_name}")
@@ -557,7 +582,7 @@ def is_hook_registered(event: str, hook_name: str) -> bool:
 def cmd_hooks_uninstall(args) -> int:
     """Remove all agentwire-owned hook files and their settings.json registration."""
     removed_any = False
-    for hook_name, target_dir, event in _managed_hook_files():
+    for hook_name, target_dir, event, *_ in _managed_hook_files():
         target = target_dir / hook_name
         if target.exists() or target.is_symlink():
             target.unlink()
@@ -581,7 +606,7 @@ def cmd_hooks_status(args) -> int:
     except FileNotFoundError:
         hooks_source = None
 
-    for hook_name, target_dir, event in _managed_hook_files():
+    for hook_name, target_dir, event, *_ in _managed_hook_files():
         target = target_dir / hook_name
         print(f"{hook_name}:")
 

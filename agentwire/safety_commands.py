@@ -194,6 +194,9 @@ def get_safety_status() -> Dict[str, Any]:
 
     status: Dict[str, Any] = {
         "hooks_installed": HOOKS_DIR.exists(),
+        # Scripts on disk prove nothing: Claude Code only calls the ones
+        # registered in settings.json (#1085).
+        "missing_matchers": missing_damage_control_matchers(),
         "enabled": safety_cfg.get("enabled", True),
         "disabled_rules": list(safety_cfg.get("disabled_rules", []) or []),
         "policy_file": str(DAMAGECONTROL_FILE),
@@ -310,6 +313,14 @@ def format_safety_status(status: Dict[str, Any]) -> str:
     lines.append("")
 
     lines.append(f"✓ Hooks directory: {status['hooks_installed']}")
+    if status["missing_matchers"]:
+        lines.append(
+            "⚠️  NOT WIRED UP — PreToolUse matchers missing from ~/.claude/settings.json: "
+            f"{', '.join(status['missing_matchers'])}"
+        )
+        lines.append("   Damage control is NOT running. Fix: agentwire safety install --yes")
+    else:
+        lines.append("✓ PreToolUse matchers registered in ~/.claude/settings.json")
     lines.append(f"✓ Rules directory: {status['rules_dir']}")
     lines.append(f"  Exists: {status['patterns_exist']}")
     if status.get("rule_files"):
