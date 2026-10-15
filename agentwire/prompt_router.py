@@ -144,10 +144,14 @@ class PromptInfo:
     question: str
     options: list[dict] = field(default_factory=list)  # {number,label,description}
     summary: str = ""  # one-line context (tool/command for permissions)
+    # The dialog's own body (the command / file / diff being approved), wrap-
+    # and whitespace-free. Part of the identity: two "Unverifiable command"
+    # confirms share kind+question+labels and differ ONLY here (#1049).
+    body: str = ""
 
     def content_hash(self) -> str:
         labels = " ".join(o.get("label", "") for o in self.options)
-        raw = _normalize(f"{self.kind} {self.question} {labels}")
+        raw = _normalize(f"{self.kind} {self.question} {labels}") + "\0" + self.body
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -192,6 +196,33 @@ def _detect_plan(clean: str, norm: str) -> "PromptInfo | None":
     )
 
 
+_DIALOG_RULE_RE = re.compile(r"^[ \t]*─{3,}[ \t]*$", re.M)
+# Enough to tell commands apart, small enough to survive a 24-row pane at 40
+# columns (~500 visible body characters there).
+_BODY_TAIL = 200
+
+
+def _dialog_body(before_question: str) -> str:
+    """The approved command/file/diff, as a crop- and wrap-invariant tail.
+
+    Identity, not display, so it must survive a redraw at any pane width AND
+    any capture height. ``_capture`` is visible-screen only, so a long command
+    at a narrow width pushes the dialog's top rule off the top, and which
+    prefix survives depends on the width. The one thing every render keeps is
+    the END of the body (it sits right above the question), so the identity is
+    the last ``_BODY_TAIL`` characters with ALL whitespace dropped (a token
+    wrapped mid-word gains a newline a wider render lacks). Text above the
+    rule — spinner, timer, prior output — is excluded when the rule is visible;
+    when it isn't, the dialog fills the screen and there is nothing above it.
+    The same hash feeds ``prompts answer --expect``, so a wobbling body would
+    reject valid answers. Two commands that differ only before their last
+    ``_BODY_TAIL`` characters still share a hash — the price of crop-invariance.
+    """
+    rules = list(_DIALOG_RULE_RE.finditer(before_question))
+    start = rules[-1].end() if rules else 0
+    return re.sub(r"\s+", "", before_question[start:])[-_BODY_TAIL:]
+
+
 def _detect_permission(clean: str, norm: str) -> "PromptInfo | None":
     if not _is_live(norm, "permission"):
         return None
@@ -206,6 +237,7 @@ def _detect_permission(clean: str, norm: str) -> "PromptInfo | None":
         question=_normalize(q.group(0)),
         options=options,
         summary=_normalize(clean[max(0, q.start() - 250):q.start()])[-200:],
+        body=_dialog_body(clean[:q.start()]),
     )
 
 

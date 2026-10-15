@@ -233,7 +233,8 @@ box, a stray `Escape` aborts the child's in-flight turn.
 `~/.agentwire/prompt-router/{session}.{pane}.json`, presence-based:
 
 - Dialog detected → routed once, marker written (sha256 of normalized
-  kind+question+options — stable across pane-width re-wraps).
+  kind+question+options plus the dialog body tail — stable across pane-width
+  re-wraps and capture crops; see below).
 - Dialog gone on a later sweep → marker cleared (an identical future prompt
   re-notifies).
 - Still unanswered after 10 min → re-notified (`RENOTIFY_TTL`).
@@ -241,6 +242,27 @@ box, a stray `Escape` aborts the child's in-flight turn.
   prompt's lifecycle, ~6 min TTL).
 - The **idle-handler honors markers**: a pane with a routed prompt pending is
   never summary-prompted or auto-killed.
+
+### The body tail, and its known limit (#1049)
+
+Kind+question+labels is identical for every "Do you want to proceed?" confirm,
+so two different "Unverifiable command" prompts used to share a hash and the
+marker swallowed the second. The hash now also covers the **last 200
+non-whitespace characters** of the dialog body (command / file / diff, plus the
+reason line) — `PromptInfo.body`.
+
+Why a tail and not the whole body: `_capture` is visible-screen only, so a long
+command at a narrow width scrolls the dialog's top rule off the pane, and which
+prefix survives depends on the width. Hashing the full body whenever the rule
+is visible would make the hash flip as the pane resizes (re-notifying the
+parent and false-rejecting `--expect`). The end of the body sits right above
+the question, so every render keeps it.
+
+**Known limit:** two permission prompts whose last 200 non-whitespace
+characters (reason line included) are identical share a hash, so the second can
+be silently swallowed for up to one sweep (≤60s) — until the first clears.
+Realistic shapes differ near the end (the last step of a command, the file
+path), so this is accepted rather than traded for crop-dependence.
 
 Events log: `~/.agentwire/prompt-router-events.jsonl` (`prompt_routed`,
 `route_deferred`, `no_parent`, `no_parent_escalated`,
