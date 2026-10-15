@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "85b996015b04c3d66a4d181650733ab70e874d19a8c91052a4c8d07181b552e8", "generated_at": "2026-10-15T20:24:27Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "523928000630344a55e290e23ee98cb74bf19f8b26cac07a690d0583c2b973c0", "generated_at": "2026-10-15T20:35:38Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2038,7 +2038,9 @@ def check_protected_path(
     return False, ""
 
 
-_QUOTED_LITERAL_RE = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
+# Innermost literals only (no quote of either kind inside): an outer shell
+# quote wrapping ``print('…')`` must not swallow the literal that holds the prose.
+_QUOTED_LITERAL_RE = re.compile(r"'[^'\"\n]*'|\"[^'\"\n]*\"")
 
 
 _PROSE_STOPWORDS = frozenset(
@@ -2046,26 +2048,35 @@ _PROSE_STOPWORDS = frozenset(
     "it its has have not but or at as into when where which".split()
 )
 _SHELL_WORDS = frozenset(
-    "cd source exec eval command builtin export set unset alias".split()
+    "cd source exec eval command builtin export set unset alias "
+    "if then elif else fi for while until do done case esac select function "
+    "time coproc".split()
 )
+_SHELL_SYNTAX_CHARS = frozenset(";&|$`(){}<>\\!")
 
 
 def _reads_as_prose(words: List[str]) -> bool:
     """True when ``words`` (a literal minus the path) is English, not a command.
 
-    Fail closed: BOTH must hold — a stopword (``the``/``is``/``for``/``in`` …)
-    or sentence punctuation shows it is a sentence, AND the first word does not
-    resolve to a program (``shutil.which``) or shell builtin, so ``gzip <path>
-    now`` and ``tar xf a <path>`` stay visible however plain their operands.
+    Fail closed: ALL must hold — no flags/paths/operators/shell syntax
+    characters; NO word anywhere is a shell reserved word, builtin, or a program
+    on PATH (``shutil.which``) — a leading ``please``/``to``/``for f in a; do``
+    cannot hide the verb behind it; and a stopword (``the``/``is``/``in`` …) or
+    sentence punctuation shows it is a sentence. Over-blocks prose that happens
+    to contain a program name (``see the test``) — the safe direction.
+
+    Declared residual: ``which`` consults the HOOK's PATH, not the shell's, and
+    knows nothing of shell functions/aliases, so a program missing from the
+    hook's PATH is read as a plain word.
     """
     if len(words) < 2:
         return False
-    if any(t[0] in "-/~." or "/" in t or "=" in t or t in (">", ">>", "|")
-           for t in words):
-        return False
-    first = words[0].lower().rstrip(",:;")
-    if first in _SHELL_WORDS or shutil.which(first):
-        return False
+    for t in words:
+        if t[0] in "-/~." or "/" in t or "=" in t or _SHELL_SYNTAX_CHARS & set(t):
+            return False
+        w = t.lower().strip(",:;.!?")
+        if w in _SHELL_WORDS or shutil.which(w):
+            return False
     return any(
         t.lower().strip(",:;.!?") in _PROSE_STOPWORDS or t[-1] in ",:;!?"
         for t in words
@@ -2078,13 +2089,14 @@ def redact_prose_mentions(command: str, path: str) -> str:
     The interpreter net (#678) reads opaque program text, so it cannot tell
     ``s='hooks in <path> are empty'`` from a write. Contract: a literal is
     redacted ONLY when it reads as an English sentence around the path
-    (:func:`_reads_as_prose` — stopword/punctuation, first word not a
-    program, no flags/slashes/operators) AND no shell write pattern matches
+    (:func:`_reads_as_prose` — stopword/punctuation, no word a program or
+    shell keyword, no flags/slashes/operators) AND no shell write pattern matches
     it. Everything else stays visible: the path alone (``open('<path>','w')``),
     any command-shaped literal, anything ambiguous.
 
-    Declared residual: variable indirection
-    (``p='edit <path> by hand'; open(p.split()[1],'w')``) is not tracked.
+    Declared residuals: variable indirection
+    (``p='edit <path> by hand'; open(p.split()[1],'w')``) is not tracked, and
+    program detection uses the hook's PATH (see :func:`_reads_as_prose`).
     """
     path_re = _rx(_path_context_regex(path))
 

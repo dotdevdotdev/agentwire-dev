@@ -518,7 +518,7 @@ _SETTINGS = "~/.claude/settings.json"
 PROSE_MENTIONS = [
     f"cd /tmp && python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\n"
     "open('/tmp/x.md','w').write(s)\nEOF",
-    f"python3 -c \"print('see {_SETTINGS} for details')\"",
+    f"python3 -c \"print('details are in {_SETTINGS} today')\"",
     f"echo 'the notes mention {_SETTINGS} here' | python3 -c 'import sys; sys.stdin.read()'",
     f"perl -e 'print \"see {_SETTINGS} by hand\"'",
 ]
@@ -549,7 +549,16 @@ INTERPRETER_REAL_WRITES = [
     # a stopword makes it LOOK like prose; the first word being a program must still win
     f"python3 -c 'import os; os.system(\"gzip {_SETTINGS} in place\")'",
     f"python3 -c 'import os; os.system(\"patch the {_SETTINGS} for me\")'",
-    f"python3 -c 'import os; os.system(\"ln the {_SETTINGS}\")'",    # unknown tool, no sentence markers: not provably prose, so it stays visible
+    f"python3 -c 'import os; os.system(\"ln the {_SETTINGS}\")'",    # a leading non-program word / shell keyword must not hide the verb
+    f"python3 -c 'import os; os.system(\"for f in a; do gzip {_SETTINGS}; done\")'",
+    f"python3 -c 'import os; os.system(\"if true; then gzip {_SETTINGS}; fi\")'",
+    f"python3 -c 'import os; os.system(\"please gzip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"to gzip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"! gzip {_SETTINGS} now\")'",
+    f"python3 -c 'import os; os.system(\"{{ gzip {_SETTINGS}; }}\")'",
+    # shell syntax characters alone disqualify, even among unknown words
+    f"python3 -c 'import os; os.system(\"zzfoo; zzbar {_SETTINGS} in place\")'",
+    # unknown tool, no sentence markers: not provably prose, so it stays visible
     f"python3 -c 'import os; os.system(\"zzunknowntool {_SETTINGS} now\")'",
 ]
 
