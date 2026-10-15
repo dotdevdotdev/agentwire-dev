@@ -29,6 +29,18 @@ stt:
   url: http://localhost:8101
 ```
 
+**Off switch:** `tts.backend: none` / `stt.backend: none` turns server voice off
+(say plays nothing, status reports disabled, a managed Kokoro/Moonshine shim
+left by a previous portal is stopped on portal start). Same as `--no-tts` /
+`--no-stt`, but it survives a restart.
+
+**Bind host:** the shims (`tts serve`, `stt serve`, `kokoro serve`) bind
+`127.0.0.1` and have no authentication. To expose one on the LAN (e.g. a TTS
+box the portal reaches from another machine) opt in explicitly:
+`tts.host` (TTS and Kokoro) / `stt.host` (STT) in config, or `--host`. A
+non-loopback bind prints a warning, and `agentwire doctor` flags it, as well
+as a remote TTS that is still loopback-bound.
+
 ## Design doctrine: envelope, not vocabulary
 
 agentwire defines the **envelope**, never the model's vocabulary. The

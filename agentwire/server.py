@@ -35,7 +35,7 @@ from aiohttp import web
 
 from . import __version__, prompt_router, security
 from .cached_status import CachedStatusChecker
-from .config import Config, load_config
+from .config import Config, load_config, voice_enabled
 from .routes.artifacts import ArtifactsRoutesMixin, register_artifacts_routes
 from .routes.config import ConfigRoutesMixin, register_config_routes
 from .routes.council import CouncilRoutesMixin, register_council_routes
@@ -435,6 +435,25 @@ class AgentWireServer(
             raise
         except Exception as e:
             logger.warning("[STT] Managed shim stop error: %s", e)
+
+    async def stop_managed_tts(self) -> None:
+        """Stop the managed Kokoro shim when server TTS is disabled.
+
+        Mirrors ``stop_managed_stt`` (#679): ``tts.backend: none`` /
+        ``--no-tts`` must silence the ``:8102`` shim a previous portal left
+        running, not merely skip spawning a new one. Delegates to the CLI;
+        ``kokoro stop`` is a quiet no-op when nothing is running.
+        """
+        try:
+            success, _ = await self.run_agentwire_cmd(["kokoro", "stop"], json_output=False)
+            if success:
+                logger.info("[TTS] Stopped managed Kokoro shim (TTS disabled)")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[TTS] Managed shim stop error: %s", e)
+        finally:
+            self._voice_status_cache = None
 
     async def ensure_managed_tts(self) -> None:
         """Ensure the default-tier Kokoro TTS shim subprocess is running.
@@ -2842,6 +2861,9 @@ class AgentWireServer(
         Returns:
             True if audio was sent to clients, False if no clients connected.
         """
+        if not voice_enabled(self.config.tts.backend):
+            return False
+
         # Get or create session
         session = await self._get_or_create_session(session_name)
 
@@ -2987,6 +3009,36 @@ class AgentWireServer(
         await self.broadcast_dashboard("audio_done", {"session": session_name})
 
 
+def reconcile_managed_voice(server, config: Config) -> None:
+    """Bring the managed Kokoro/Moonshine shims in line with the voice config:
+    ensure them on the default tier, stop them when switched off."""
+    # Default-tier TTS: ensure the Kokoro shim subprocess is running (process
+    # isolation — the ~200 MB download + ONNX warm-up happens in that child,
+    # never on this event loop). speechSynthesis covers speech until the shim's
+    # /health is ok; on py3.14+ (no package) the spawn is gated off and it
+    # stays the browser path.
+    from .tts import kokoro_importable
+
+    if config.tts.backend == "default" and kokoro_importable():
+        asyncio.create_task(server.ensure_managed_tts())
+    elif not voice_enabled(config.tts.backend):
+        asyncio.create_task(server.stop_managed_tts())
+
+    # Default-tier STT: ensure the Moonshine shim subprocess is running
+    # (process isolation — the ~19s ONNX warm-up happens in that child, never
+    # on this event loop). Browser SpeechRecognition covers input until the
+    # shim's /health is ok; on py3.14+ (no package) the spawn is gated off and
+    # it stays the browser path.
+    from .stt import moonshine_importable
+
+    if config.stt.backend == "default" and moonshine_importable():
+        asyncio.create_task(server.ensure_managed_stt())
+    elif not voice_enabled(config.stt.backend):
+        # --no-stt / stt.backend: none — actually turn STT off: stop a shim
+        # left running by a previous portal, don't just skip the spawn (#679).
+        asyncio.create_task(server.stop_managed_stt())
+
+
 async def run_server(config: Config):
     """Run the AgentWire server."""
     # Resolve the auth token before the server is built — the security
@@ -3003,29 +3055,7 @@ async def run_server(config: Config):
     server = AgentWireServer(config)
     await server.init_backends()
 
-    # Default-tier TTS: ensure the Kokoro shim subprocess is running (process
-    # isolation — the ~200 MB download + ONNX warm-up happens in that child,
-    # never on this event loop). speechSynthesis covers speech until the shim's
-    # /health is ok; on py3.14+ (no package) the spawn is gated off and it
-    # stays the browser path.
-    from .tts import kokoro_importable
-
-    if config.tts.backend == "default" and kokoro_importable():
-        asyncio.create_task(server.ensure_managed_tts())
-
-    # Default-tier STT: ensure the Moonshine shim subprocess is running
-    # (process isolation — the ~19s ONNX warm-up happens in that child, never
-    # on this event loop). Browser SpeechRecognition covers input until the
-    # shim's /health is ok; on py3.14+ (no package) the spawn is gated off and
-    # it stays the browser path.
-    from .stt import moonshine_importable
-
-    if config.stt.backend == "default" and moonshine_importable():
-        asyncio.create_task(server.ensure_managed_stt())
-    elif config.stt.backend == "none":
-        # --no-stt / stt.backend: none — actually turn STT off: stop a shim
-        # left running by a previous portal, don't just skip the spawn (#679).
-        asyncio.create_task(server.stop_managed_stt())
+    reconcile_managed_voice(server, config)
 
     # Cleanup old uploads on startup
     await server.cleanup_old_uploads()

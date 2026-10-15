@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 
 from . import pane_manager
+from .config import voice_enabled
 from .core import (
     _get_portal_url,
     _output_json,
@@ -275,6 +276,12 @@ def cmd_say(args) -> int:
 
     config = load_config()
     tts_config = config.get("tts", {})
+    if not voice_enabled(tts_config.get("backend", "default")):
+        if json_mode:
+            _output_json({"success": True, "sink": None, "disabled": True, "error": None})
+        else:
+            print("TTS is disabled (tts.backend: none) — nothing spoken.")
+        return 0
     # Voice priority: CLI flag > .agentwire.yml > global config default
     voice = args.voice or get_voice_from_config() or tts_config.get("default_voice", "default")
     exaggeration = args.exaggeration if args.exaggeration is not None else tts_config.get("exaggeration", 0.5)

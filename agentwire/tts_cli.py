@@ -29,7 +29,7 @@ from .core import (
     load_config,
     tmux_session_exists,
 )
-from .security import resolve_shim_host
+from .security import resolve_shim_host, warn_if_exposed
 
 # === TTS Commands ===
 
@@ -76,7 +76,7 @@ def _start_tts_local(args, venv_override: str | None = None, attach: bool = True
     config = load_config()
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
-    host = resolve_shim_host(args.host, tts_config.get("host"), "TTS")
+    host = resolve_shim_host(args.host, tts_config.get("host"))
     backend = _get_tts_engine(args, tts_config)
 
     # Determine venv family
@@ -144,7 +144,7 @@ def _start_tts_remote(ssh_target: str, machine_id: str, args) -> int:
     config = load_config()
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
-    host = resolve_shim_host(args.host, tts_config.get("host"), "TTS")
+    host = resolve_shim_host(args.host, tts_config.get("host"))
     backend = _get_tts_engine(args, tts_config)
 
     # Build backend flag
@@ -263,7 +263,8 @@ def cmd_tts_serve(args) -> int:
     config = load_config()
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
-    host = resolve_shim_host(args.host, tts_config.get("host"), "TTS")
+    host = resolve_shim_host(args.host, tts_config.get("host"))
+    warn_if_exposed(host, "TTS")
     backend = _get_tts_engine(args, tts_config)
 
     # Determine venv family (explicit or auto-detect from backend)
@@ -539,7 +540,7 @@ def cmd_stt_start(args) -> int:
     """Start the STT server in tmux."""
     session_name = get_stt_session_name()
     port = args.port or 8101
-    host = resolve_shim_host(args.host, None, "STT")
+    host = resolve_shim_host(args.host, load_config().get("stt", {}).get("host"))
 
     if tmux_session_exists(session_name):
         live, status = _shim_session_state(session_name, port)
@@ -593,8 +594,9 @@ def cmd_stt_serve(args) -> int:
     import uvicorn
 
     port = args.port or 8101
-    host = resolve_shim_host(args.host, None, "STT")
     config = load_config()
+    host = resolve_shim_host(args.host, config.get("stt", {}).get("host"))
+    warn_if_exposed(host, "STT")
     stt_config = config.get("stt", {})
     model = args.model or stt_config.get("model", "base")
     backend = getattr(args, 'backend', None) or stt_config.get("engine", "auto")
@@ -668,7 +670,7 @@ def cmd_kokoro_start(args) -> int:
     relaunched so a wedged shim self-heals instead of masking forever (#734)."""
     session_name = get_kokoro_session_name()
     port = args.port or 8102
-    host = resolve_shim_host(args.host, None, "Kokoro")
+    host = resolve_shim_host(args.host, load_config().get("tts", {}).get("host"))
 
     if tmux_session_exists(session_name):
         live, status = _shim_session_state(session_name, port)
@@ -714,7 +716,8 @@ def cmd_kokoro_serve(args) -> int:
     import uvicorn
 
     port = args.port or 8102
-    host = resolve_shim_host(args.host, None, "Kokoro")
+    host = resolve_shim_host(args.host, load_config().get("tts", {}).get("host"))
+    warn_if_exposed(host, "Kokoro")
 
     os.environ["KOKORO_PORT"] = str(port)
     os.environ["KOKORO_HOST"] = host
@@ -821,7 +824,7 @@ def _restart_tts_local_for_venv(venv: str, backend: str) -> bool:
     config = load_config()
     tts_config = config.get("tts", {})
     port = tts_config.get("port", 8100)
-    host = resolve_shim_host(None, tts_config.get("host"), "TTS")
+    host = resolve_shim_host(None, tts_config.get("host"))
 
     # Stop existing server
     if tmux_session_exists(session_name):

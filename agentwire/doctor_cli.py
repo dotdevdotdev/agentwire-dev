@@ -1678,7 +1678,17 @@ def cmd_doctor(args) -> int:
     tts_config = load_config().get("tts", {})
     tts_backend = tts_config.get("backend", "default")
 
+    from .config import voice_enabled
+    from .security import shim_bind_findings
+
+    for finding in shim_bind_findings(load_config(), tts_remote=not ctx.is_local("tts")):
+        print(f"  [!!] {finding}")
+        issues_found += 1
+
     for service_name in ["portal", "tts"]:
+        if service_name == "tts" and not voice_enabled(tts_backend):
+            print("  [ok] Tts: disabled (tts.backend: none)")
+            continue
         if service_name == "tts" and tts_backend != "custom":
             print("  [ok] Tts: default tier (browser/OS voice, no local service needed)")
             continue

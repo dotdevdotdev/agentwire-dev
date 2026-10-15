@@ -342,6 +342,14 @@ sudo service ssh start
 systemctl --user start agentwire-tts.service
 ```
 
+> **LAN exposure.** The TTS/STT/Kokoro shims bind `127.0.0.1` by default and
+> have **no authentication**. The unit below passes `--host 0.0.0.0` so the
+> portal on another machine can reach it — that opens the port to every host
+> on the network. Do it only on a trusted LAN or behind a firewall. The same
+> opt-in via config: `tts.host` (TTS + Kokoro) and `stt.host` (STT).
+> `agentwire doctor` flags a non-loopback shim bind and a remote TTS that is
+> still loopback-bound.
+
 ```ini
 # ~/.config/systemd/user/agentwire-tts.service
 [Unit]

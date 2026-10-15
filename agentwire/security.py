@@ -157,20 +157,45 @@ def is_loopback_host(host: str) -> bool:
 SHIM_DEFAULT_HOST = "127.0.0.1"
 
 
-def resolve_shim_host(explicit: str | None, configured: str | None, kind: str) -> str:
-    """Pick a voice-shim bind host: ``--host`` > config > loopback (#1084).
+def resolve_shim_host(explicit: str | None, configured: str | None) -> str:
+    """Pick a voice-shim bind host: ``--host`` > config > loopback (#1084)."""
+    return explicit or configured or SHIM_DEFAULT_HOST
 
-    The shims (TTS/STT/Kokoro) carry no auth, so they default to loopback like
-    the portal (#498). A non-loopback host is honored but warned about loudly.
+
+def warn_if_exposed(host: str, kind: str) -> None:
+    """Warn at the actual bind (the ``serve`` path) when a shim leaves loopback.
+
+    The shims carry no auth, so LAN exposure must be a visible choice (#498).
+    Warned once, where the socket opens — start paths only forward the host.
     """
-    host = explicit or configured or SHIM_DEFAULT_HOST
     if not is_loopback_host(host):
         print(
             f"Warning: {kind} server binding {host!r} is reachable from the network "
             "and has no authentication. Use 127.0.0.1 unless you need LAN access.",
             file=sys.stderr,
         )
-    return host
+
+
+def shim_bind_findings(config: dict, tts_remote: bool = False) -> list[str]:
+    """Doctor findings for the voice shims' configured bind hosts.
+
+    Reads the raw config dict: ``tts.host`` (TTS + Kokoro) and ``stt.host``.
+    Flags a non-loopback bind (no auth), and a remote TTS (``tts_remote``, from
+    ``NetworkContext.is_local``) whose shim would be loopback-bound — the portal
+    can no longer reach it over the LAN unless ``tts.host`` opts in.
+    """
+    findings: list[str] = []
+    tts_host = resolve_shim_host(None, (config.get("tts") or {}).get("host"))
+    stt_host = resolve_shim_host(None, (config.get("stt") or {}).get("host"))
+    for kind, host in (("TTS/Kokoro (tts.host)", tts_host), ("STT (stt.host)", stt_host)):
+        if not is_loopback_host(host):
+            findings.append(f"{kind} binds {host!r}: reachable from the network, no authentication")
+    if tts_remote and is_loopback_host(tts_host):
+        findings.append(
+            "TTS runs on a remote machine but binds loopback — the portal cannot "
+            "reach it; set tts.host on that machine (LAN opt-in, no authentication)"
+        )
+    return findings
 
 
 def validate_startup_security(config) -> None:

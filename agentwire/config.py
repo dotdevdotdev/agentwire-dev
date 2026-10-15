@@ -168,6 +168,16 @@ class WorktreeConfig:
 
 _VOICE_BACKENDS = ("default", "custom", "none")
 
+
+def voice_enabled(backend: str | None) -> bool:
+    """False when a voice section is switched off (``backend: none`` / ``--no-tts``).
+
+    The ONE answer to "is server voice on?" — say, voice status, doctor and the
+    portal's speak path all ask this instead of comparing against ``"none"``
+    (or, worse, falling through a ``!= "custom"`` check as if it were default).
+    """
+    return backend != "none"
+
 _VOICE_BACKEND_MIGRATION_HINT = (
     "Use 'default' (browser speech in the portal + OS voice fallback, zero setup), "
     "'custom' with url: pointing at your shim, or 'none' to turn server voice off. "
