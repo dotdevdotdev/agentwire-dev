@@ -2020,7 +2020,17 @@ def redact_prose_mentions(command: str, path: str) -> str:
     def _blank(m: "re.Match[str]") -> str:
         lit = m.group(0)
         body = lit[1:-1]
-        if not path_re.search(body) or not re.search(r"\s", body.strip()):
+        if not path_re.search(body):
+            return lit
+        # Prose is plain words around the path: no flags, no other path-like
+        # operands. Anything command-shaped (``ln -sf /tmp/a <path>``,
+        # ``curl -o <path> url``) stays visible whether or not the write-verb
+        # list knows its tool — guard the operation, not the phrasing.
+        rest = path_re.sub(" ", body).split()
+        if len(rest) < 2 or any(
+            t[0] in "-/~." or "/" in t or "=" in t or t in (">", ">>", "|")
+            for t in rest
+        ):
             return lit
         if check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]:
             return lit

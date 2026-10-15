@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "9ab18c7ee59a0313d4ddd5dec3fa3ba4e610f05edd6237e0384667d5cabc8f27", "generated_at": "2026-10-15T15:37:48Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "ee66f3e29fdde21132d7cfc17e14dbab15fe593f5afe353b1f9ba5b5afda9703", "generated_at": "2026-10-15T20:14:52Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2054,7 +2054,17 @@ def redact_prose_mentions(command: str, path: str) -> str:
     def _blank(m: "re.Match[str]") -> str:
         lit = m.group(0)
         body = lit[1:-1]
-        if not path_re.search(body) or not re.search(r"\s", body.strip()):
+        if not path_re.search(body):
+            return lit
+        # Prose is plain words around the path: no flags, no other path-like
+        # operands. Anything command-shaped (``ln -sf /tmp/a <path>``,
+        # ``curl -o <path> url``) stays visible whether or not the write-verb
+        # list knows its tool — guard the operation, not the phrasing.
+        rest = path_re.sub(" ", body).split()
+        if len(rest) < 2 or any(
+            t[0] in "-/~." or "/" in t or "=" in t or t in (">", ">>", "|")
+            for t in rest
+        ):
             return lit
         if check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]:
             return lit

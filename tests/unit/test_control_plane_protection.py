@@ -531,6 +531,13 @@ INTERPRETER_REAL_WRITES = [
     f"perl -e 'open(F, \">\", \"{_SETTINGS}\")'",
     f"python3 - <<'EOF'\nimport os\nos.system(\"echo x > {_SETTINGS}\")\nEOF",
     f"python3 - <<'EOF'\nimport os\nos.system(\"cp /tmp/x {_SETTINGS}\")\nEOF",
+    # writers the shell ladder has no verb for — command-shaped literals stay visible
+    f"python3 -c 'import os; os.system(\"ln -sf /tmp/a {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"curl -o {_SETTINGS} http://x/y\")'",
+    f"python3 -c 'import os; os.system(\"wget -O {_SETTINGS} http://x/y\")'",
+    f"python3 -c 'import os; os.system(\"git checkout -- {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"tar -xf a.tgz -C {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"ed {_SETTINGS}\")'",
 ]
 
 
