@@ -376,6 +376,36 @@ class TestInfraParentsAreNotCohortParents:
         assert isolate["killed"] == []
         assert cohort.load("agentwire-portal") is not None
 
+    def test_sweep_reaps_children_after_the_parent_record_is_unlinked(self, isolate):
+        # `agentwire kill` unlinks the parent's metadata; the dead-parent
+        # backstop must not depend on it.
+        children = _fan_out(isolate, n=3)
+        isolate["live"].discard("memory-manager")
+        isolate["agents"].discard("memory-manager")
+        result = cohort.sweep()
+        assert sorted(e["child"] for e in result["reaped"]) == sorted(children)
+        assert cohort.load("memory-manager") is None
+
+    def test_a_large_legit_fan_out_is_still_swept(self, isolate):
+        children = _fan_out(isolate, n=30)
+        isolate["live"].discard("memory-manager")
+        cohort.sweep()
+        assert sorted(isolate["killed"]) == sorted(children)
+
+    def test_the_cap_counts_pending_children_not_history(self, isolate):
+        children = _fan_out(isolate, n=cohort.MAX_PLAUSIBLE_CHILDREN + 5)
+        data = cohort.load("memory-manager")
+        for entry in data["children"][1:]:
+            entry["state"] = cohort.REPORTED
+        cohort._save("memory-manager", data)
+        isolate["live"].discard("memory-manager")
+        cohort.sweep()
+        assert isolate["killed"] == [children[0]]
+
+    def test_refused_enroll_is_logged(self, isolate):
+        cohort.enroll("agentwire-portal", "x")
+        assert "enroll_refused" in cohort.EVENTS_FILE.read_text()
+
     def test_sweep_never_kills_an_implausibly_large_cohort(self, isolate):
         n = cohort.MAX_PLAUSIBLE_CHILDREN + 1
         children = _fan_out(isolate, n=n, ttl=-(cohort.STALE_GRACE + 60))

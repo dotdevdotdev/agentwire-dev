@@ -112,10 +112,11 @@ IDLE_KIND = "idle"
 
 _POLL_INTERVAL = 2.0
 
-# A real fan-out is a handful of children. A ledger past this is accumulation
-# from something that was never fanning out (#1087: 81 portal-created sessions
-# under `agentwire-portal`), so the sweep refuses to act on it.
-MAX_PLAUSIBLE_CHILDREN = 25
+# A real fan-out is a handful of children. More PENDING children than this is
+# accumulation from something that was never fanning out (#1087: 81
+# portal-created sessions under `agentwire-portal`), so the sweep refuses to
+# act on it.
+MAX_PLAUSIBLE_CHILDREN = 50
 
 
 # =============================================================================
@@ -217,12 +218,18 @@ def is_agent_session(session: str) -> bool:
 
 
 def suspect_reason(parent: str, data: dict) -> str | None:
-    """Why this ledger must not be swept, or None when it looks like a fan-out."""
-    if not is_agent_session(parent):
-        return f"parent {parent!r} is not an agent session"
-    count = len(data.get("children") or [])
+    """Why this ledger must not be swept, or None when it looks like a fan-out.
+
+    Agent-ness is read from the ledger's ``agent_parent`` marker, stamped at
+    enroll time — NOT from the parent's live metadata, which ``agentwire kill``
+    unlinks. Sweeping exists for exactly the dead-parent case, so it cannot
+    depend on a record that dies with the parent.
+    """
+    if not data.get("agent_parent"):
+        return f"parent {parent!r} was never recorded as an agent session"
+    count = sum(1 for c in data.get("children") or [] if c.get("state") == PENDING)
     if count > MAX_PLAUSIBLE_CHILDREN:
-        return f"{count} children is not a fan-out (max {MAX_PLAUSIBLE_CHILDREN})"
+        return f"{count} pending children is not a fan-out (max {MAX_PLAUSIBLE_CHILDREN})"
     return None
 
 
@@ -251,6 +258,8 @@ def enroll(parent: str, child: str, task: str | None = None,
     if not parent or not child or parent == child:
         return False
     if not is_agent_session(parent):
+        log_event("enroll_refused", parent=parent, child=child,
+                  reason="parent is not an agent session")
         return False
     try:
         with _locked(parent):
@@ -263,6 +272,7 @@ def enroll(parent: str, child: str, task: str | None = None,
                 "session": child, "state": PENDING, "report": None,
                 "topology": topology, "enrolled_at": _now(),
             })
+            data["agent_parent"] = True
             data["deadline"] = _now() + ttl
             if task and not data.get("task"):
                 data["task"] = task

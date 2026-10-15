@@ -936,7 +936,8 @@ def _render_cohort_section() -> int:
     print(f"  [!!] {len(suspects)} cohort ledger(s) the sweep will not act on:")
     for parent, reason in suspects:
         print(f"       - {parent}: {reason}")
-    print("       Inspect/remove: ~/.agentwire/cohorts/<parent>.json")
+    print("       The sweep leaves these (and their children) alone. If the children are "
+          "not a live fan-out, delete the ledger: rm ~/.agentwire/cohorts/<parent>.json")
     return 1
 
 
