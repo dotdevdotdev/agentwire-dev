@@ -13,7 +13,7 @@ Run via:
     agentwire stt status                    # Check status
 
 Or run directly:
-    WHISPER_MODEL=base uvicorn agentwire.stt.stt_server:app --host 0.0.0.0 --port 8101
+    WHISPER_MODEL=base uvicorn agentwire.stt.stt_server:app --host 127.0.0.1 --port 8101
 
 Backend selection and transcription logic live in ``engine.py`` (kept
 FastAPI-free for unit testing); this module is the HTTP wrapper.
@@ -32,7 +32,7 @@ from . import engine
 # Configuration via environment
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
-STT_HOST = os.environ.get("STT_HOST", "0.0.0.0")
+STT_HOST = os.environ.get("STT_HOST", "127.0.0.1")
 STT_PORT = int(os.environ.get("STT_PORT", "8101"))
 # moonshine | whisper | auto (moonshine → faster-whisper → openai-whisper)
 STT_BACKEND = os.environ.get("STT_BACKEND", "auto")

@@ -30,6 +30,8 @@ import ipaddress
 import logging
 import re
 import secrets
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -151,6 +153,100 @@ def is_loopback_host(host: str) -> bool:
     except ValueError:
         # Hostnames and anything unparseable: assume reachable from outside.
         return False
+
+
+SHIM_DEFAULT_HOST = "127.0.0.1"
+
+
+def resolve_shim_host(explicit: str | None, configured: str | None) -> str:
+    """Pick a voice-shim bind host: ``--host`` > config > loopback (#1084)."""
+    return explicit or configured or SHIM_DEFAULT_HOST
+
+
+def warn_if_exposed(host: str, kind: str) -> None:
+    """Warn at the actual bind (the ``serve`` path) when a shim leaves loopback.
+
+    The shims carry no auth, so LAN exposure must be a visible choice (#498).
+    Warned once, where the socket opens — start paths only forward the host.
+    """
+    if not is_loopback_host(host):
+        print(
+            f"Warning: {kind} server binding {host!r} is reachable from the network "
+            "and has no authentication. Use 127.0.0.1 unless you need LAN access.",
+            file=sys.stderr,
+        )
+
+
+def parse_lsof_listeners(output: str) -> list[tuple[int, str]]:
+    """Parse ``lsof -nP -iTCP -sTCP:LISTEN -Fn`` into ``(port, address)`` pairs.
+
+    ``n`` lines look like ``n127.0.0.1:8100``, ``n*:8101`` or ``n[::1]:8102``.
+    """
+    found: list[tuple[int, str]] = []
+    for line in output.splitlines():
+        if not line.startswith("n"):
+            continue
+        addr, _, port = line[1:].rpartition(":")
+        if port.isdigit():
+            found.append((int(port), addr.strip("[]")))
+    return found
+
+
+def listening_shim_binds(ports: tuple[int, ...]) -> list[tuple[int, str]]:
+    """Live check: which of ``ports`` are listening, and on what address.
+
+    Sees a shim started with ``--host`` / ``TTS_HOST`` / ``KOKORO_HOST`` that
+    config never mentions. Empty when ``lsof`` is unavailable or finds nothing.
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-sTCP:LISTEN", "-Fn", *[f"-iTCP:{p}" for p in ports]],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [(p, a) for p, a in parse_lsof_listeners(result.stdout) if p in ports]
+
+
+def shim_bind_findings(config: dict, listening: list[tuple[int, str]] = ()) -> list[str]:
+    """Doctor warnings for voice shims reachable from the network.
+
+    Two sources: the configured bind hosts (``tts.host`` for TTS + Kokoro,
+    ``stt.host`` for STT) and ``listening`` — live ``(port, address)`` pairs
+    that catch a flag/env bind config never sees.
+    """
+    findings: list[str] = []
+    tts_host = resolve_shim_host(None, (config.get("tts") or {}).get("host"))
+    stt_host = resolve_shim_host(None, (config.get("stt") or {}).get("host"))
+    for kind, host in (("TTS/Kokoro (tts.host)", tts_host), ("STT (stt.host)", stt_host)):
+        if not is_loopback_host(host):
+            findings.append(
+                f"{kind} configured to bind {host!r}: reachable from the network, no authentication"
+            )
+    for port, addr in listening:
+        if not is_loopback_host(addr) and addr != "":
+            findings.append(
+                f"a voice shim is listening on {addr}:{port}: reachable from the network, "
+                "no authentication"
+            )
+    return findings
+
+
+def remote_tts_loopback_note(config: dict, tts_remote: bool) -> str | None:
+    """Info note (never a failure) for a remote custom TTS.
+
+    The remote machine's own ``tts.host`` decides whether the portal can reach
+    it, and this machine cannot read that file — so say what to check instead
+    of asserting a fault.
+    """
+    tts = config.get("tts") or {}
+    if not tts_remote or tts.get("backend", "default") != "custom":
+        return None
+    return (
+        "TTS runs on a remote machine: its shims bind loopback unless tts.host is set "
+        "on THAT machine (can't be checked from here) — set it there if the portal "
+        "can't reach the TTS over the LAN"
+    )
 
 
 def validate_startup_security(config) -> None:

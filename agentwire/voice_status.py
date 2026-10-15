@@ -138,8 +138,16 @@ def resolve_tts_status(config: Any | None = None, *, probe: bool = True) -> Voic
     flagged as orphaned. ``custom`` tier POSTs to the configured shim, which is
     probed.
     """
+    from .config import voice_enabled
+
     cfg = _load_typed_config(config)
     tier = getattr(getattr(cfg, "tts", None), "backend", "default")
+
+    if not voice_enabled(tier):
+        return VoiceStatus(
+            "tts", "none", "server TTS disabled (nothing is spoken)", True,
+            "TTS disabled (tts.backend 'none' or portal --no-tts)",
+        )
 
     if tier == "custom":
         url = _tts_service_url() or getattr(cfg.tts, "url", None)

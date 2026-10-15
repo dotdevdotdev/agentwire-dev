@@ -205,7 +205,7 @@ class TestVoiceBackends:
             load_config(path)
 
     def test_old_tts_vocabulary_raises(self, tmp_path):
-        for old in ("chatterbox", "runpod", "none", "kokoro"):
+        for old in ("chatterbox", "runpod", "kokoro"):
             path = tmp_path / f"config-{old}.yaml"
             path.write_text(yaml.dump({"tts": {"backend": old}}))
             with pytest.raises(ValueError, match="is not valid"):

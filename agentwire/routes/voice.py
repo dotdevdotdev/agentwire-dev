@@ -19,6 +19,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from ..config import voice_enabled
 from ..security import read_multipart_field_limited
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,10 @@ class VoiceRoutesMixin:
             health = await self._probe_shim(_default_stt_url(stt_cfg), "/health")
             stt["server_transcribe"] = bool(health and health.get("status") == "ok")
 
-        tts: dict = {"backend": tts_cfg.backend, "url": tts_cfg.url, "available": True}
+        tts: dict = {
+            "backend": tts_cfg.backend, "url": tts_cfg.url,
+            "available": voice_enabled(tts_cfg.backend),
+        }
         if tts_cfg.backend == "default":
             # Portal-managed Kokoro shim subprocess. Probe its /health for the
             # warm-up state (mirrors the STT shim); the browser keeps
@@ -285,6 +289,11 @@ class VoiceRoutesMixin:
 
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
+
+            if not voice_enabled(self.config.tts.backend):
+                return web.json_response(
+                    {"success": False, "disabled": True, "error": "TTS is disabled (tts.backend: none)"}
+                )
 
             # Default tier: Kokoro shim on local speakers when ready, OS voice
             # while it warms up (process-isolated — see ensure_managed_tts)

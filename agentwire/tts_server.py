@@ -15,7 +15,7 @@ Run via:
     agentwire tts status                     # Check status
 
 Or run directly:
-    DEFAULT_BACKEND=chatterbox uvicorn agentwire.tts_server:app --host 0.0.0.0 --port 8100
+    DEFAULT_BACKEND=chatterbox uvicorn agentwire.tts_server:app --host 127.0.0.1 --port 8100
 
 Hot-swap backends via API:
     POST /engines/zonos-hybrid/load          # Switch to Zonos hybrid
@@ -499,4 +499,8 @@ async def capabilities():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8100)
+    from agentwire.security import resolve_shim_host, warn_if_exposed
+
+    host = resolve_shim_host(None, os.environ.get("TTS_HOST"))
+    warn_if_exposed(host, "TTS")
+    uvicorn.run(app, host=host, port=8100)
