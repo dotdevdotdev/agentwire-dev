@@ -1,8 +1,10 @@
-"""CLI for usage-limit recovery — ``agentwire limits ...``.
+"""CLI for the background watchdog — ``agentwire limits ...``.
 
 The watchdog is a stateless scheduled job running ``agentwire limits tick``
-every minute: sweep all tmux panes for the usage-limit dialog, park what's
-found, and nudge parked sessions whose reset time has passed. ``install``
+every minute. Usage-limit recovery is its first stage, but it also carries
+prompt routing, ALL ``agentwire msg`` delivery, context auto-management and
+session-teardown housekeeping — :data:`WATCHDOG_STAGES` is the authoritative
+list (and says what goes dark without each). ``install``
 picks the platform backend — a launchd LaunchAgent on macOS, a systemd
 --user timer+service on Linux — and the unit content is generated here
 (single source of truth — no template file to drift).
@@ -10,6 +12,7 @@ picks the platform backend — a launchd LaunchAgent on macOS, a systemd
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import subprocess
@@ -31,14 +34,135 @@ SYSTEMD_DIR = Path.home() / ".config" / "systemd" / "user"
 SERVICE_PATH = SYSTEMD_DIR / f"{SYSTEMD_UNIT}.service"
 TIMER_PATH = SYSTEMD_DIR / f"{SYSTEMD_UNIT}.timer"
 
+# Single source of truth for what one tick runs, IN ORDER (the ordering
+# invariants live in the ``cmd_limits_tick`` docstring). Each entry is
+# (key under ``watchdog.stages``, what it does, what is offline without it).
+# Docs, ``limits --help``, the plist/systemd comments, ``doctor`` and
+# ``msg send`` all render from this.
+WATCHDOG_STAGES: tuple[tuple[str, str, str], ...] = (
+    ("usage_limit", "usage-limit sweep (park + auto-resume)",
+     "usage-limit recovery"),
+    ("prompt_router", "prompt routing (child prompts -> parent)",
+     "prompt routing"),
+    ("inbox", "polite-message inbox drain (`agentwire msg`)",
+     "message delivery"),
+    ("session_context", "context auto-management",
+     "context auto-management"),
+    ("scheduler_zombie", "zombie scheduler-session reap",
+     "zombie scheduler-session reap"),
+    ("cohort", "fan-out cohort sweep (KILLS sessions)",
+     "fan-out cohort sweep"),
+    ("safety_notify", "unattended-block digest",
+     "unattended-block digest"),
+    ("role_prompts", "role-prompt GC",
+     "role-prompt GC"),
+)
+STAGE_NAMES = tuple(name for name, _, _ in WATCHDOG_STAGES)
+
+
+def stages_summary(prefix: str = "") -> str:
+    """One line per stage, numbered in tick order — for docs/comments/help."""
+    return "\n".join(
+        f"{prefix}{i}. {desc}" for i, (_, desc, _) in enumerate(WATCHDOG_STAGES, 1))
+
+
+def disabled_stages() -> list[str]:
+    """Stage names switched off via ``watchdog.stages.<name>: false``.
+
+    A config that can't be loaded means "everything on" — the watchdog must
+    never go dark because its own config was unreadable.
+    """
+    try:
+        from .config import get_config
+
+        stages = get_config().watchdog.stages
+    except Exception:  # noqa: BLE001 — fail open: unreadable config != disabled stages
+        return []
+    return [name for name in STAGE_NAMES if stages.get(name, True) is False]
+
+
+def invalid_stage_values() -> dict[str, object]:
+    """Configured ``watchdog.stages`` entries whose value isn't a real bool.
+
+    Ignored by the tick (the stage stays on) — doctor names them so a quoted
+    ``"false"`` or ``0`` is never mistaken for a working switch-off.
+    """
+    try:
+        from .config import get_config
+
+        return dict(get_config().watchdog.invalid)
+    except Exception:  # noqa: BLE001 — doctor-only aid, never fatal
+        return {}
+
+
+def unknown_stage_keys() -> list[str]:
+    """Configured ``watchdog.stages`` keys that name no stage (typos)."""
+    try:
+        from .config import get_config
+
+        wd = get_config().watchdog
+        return sorted((set(wd.stages) | set(wd.invalid)) - set(STAGE_NAMES))
+    except Exception:  # noqa: BLE001 — doctor-only aid, never fatal
+        return []
+
+
+def watchdog_loaded() -> "bool | None":
+    """Is the scheduler unit that fires ``limits tick`` currently loaded?
+
+    ``True``/``False`` when the platform backend can say; ``None`` when it
+    can't (unsupported platform, launchctl/systemctl missing) — callers must
+    not warn on ``None``.
+    """
+    try:
+        if sys.platform == "darwin":
+            if shutil.which("launchctl") is None:
+                return None
+            return subprocess.run(
+                ["launchctl", "list", LAUNCHD_LABEL],
+                capture_output=True, timeout=10,
+            ).returncode == 0
+        if sys.platform.startswith("linux"):
+            if shutil.which("systemctl") is None:
+                return None
+            return subprocess.run(
+                ["systemctl", "--user", "is-active", "--quiet", f"{SYSTEMD_UNIT}.timer"],
+                capture_output=True, timeout=10,
+            ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
+def offline_summary() -> str:
+    """What stops working when no watchdog is ticking, comma-joined."""
+    return ", ".join(offline for _, _, offline in WATCHDOG_STAGES)
+
+
+def drain_warning() -> "str | None":
+    """Why a message queued right now would never be delivered, else ``None``.
+
+    Message delivery is the ``inbox`` stage of the watchdog tick: no loaded
+    watchdog or a disabled stage means the queue only grows (#1088). ``None``
+    also covers "can't tell" — no warning on an unknown.
+    """
+    if "inbox" in disabled_stages():
+        return ("the watchdog's inbox stage is disabled (watchdog.stages.inbox: "
+                "false) — nothing will deliver this message")
+    if watchdog_loaded() is False:
+        return ("the watchdog is not loaded, so nothing will deliver this "
+                "message — run `agentwire limits install`")
+    return None
+
 
 def _plist_content(agentwire_bin: str) -> str:
     home = str(Path.home())
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Usage-limit watchdog — detects the Claude Code usage-limit dialog in any
-  tmux pane, parks the session (option 1: stop and wait), and nudges it
-  back to work after the limit resets. Deterministic plain code, no agent.
+  AgentWire watchdog — one deterministic tick (no agent) every {TICK_INTERVAL}s.
+  It is NOT only usage-limit recovery; unloading it silences all of:
+{stages_summary("    ")}
+  A stage can be switched off with `watchdog.stages.<name>: false` in the
+  agentwire config; `agentwire doctor` reports the state.
 
   Managed by `agentwire limits install` / `agentwire limits uninstall`.
   Logs: tail -f {LOG_PATH}
@@ -85,9 +209,10 @@ def _plist_content(agentwire_bin: str) -> str:
 
 def _systemd_service_content(agentwire_bin: str) -> str:
     home = str(Path.home())
-    return f"""# Usage-limit watchdog — detects the Claude Code usage-limit dialog in any
-# tmux pane, parks the session (option 1: stop and wait), and nudges it
-# back to work after the limit resets. Deterministic plain code, no agent.
+    return f"""# AgentWire watchdog — one deterministic tick (no agent) every {TICK_INTERVAL}s.
+# It is NOT only usage-limit recovery; disabling it silences all of:
+{stages_summary("# ")}
+# A stage can be switched off with `watchdog.stages.<name>: false`.
 #
 # Managed by `agentwire limits install` / `agentwire limits uninstall`.
 # Logs: journalctl --user -u {SYSTEMD_UNIT}
@@ -197,7 +322,9 @@ def cmd_limits_tick(args) -> int:
     blocked ten times and then giving up would report one block and sit on nine.
 
     Each stage runs inside :func:`_run_stage` so an exception in one subsystem
-    is logged and skipped rather than aborting the whole cycle (#490).
+    is logged and skipped rather than aborting the whole cycle (#490). A stage
+    switched off via ``watchdog.stages.<name>: false`` (#1088) is skipped the
+    same way; the rest keep their relative order.
     """
     from agentwire import (
         cohort,
@@ -209,23 +336,35 @@ def cmd_limits_tick(args) -> int:
     )
     from agentwire.scheduler import zombie as scheduler_zombie
 
-    result = _run_stage(
+    off = set(disabled_stages())
+
+    def stage(name, fn, default, disabled_default=None):
+        # A disabled stage is skipped outright (never half-run) and returns its
+        # empty default, so the ordering of the stages that DO run is unchanged.
+        if name in off:
+            return default if disabled_default is None else disabled_default
+        return _run_stage(name, fn, default)
+
+    result = stage(
         "usage_limit", usage_limit.tick,
-        {"skipped": None, "parked": [], "resumed": [], "waiting": []})
-    prompts = _run_stage(
+        {"skipped": None, "parked": [], "resumed": [], "waiting": []},
+        {"skipped": "usage_limit stage disabled", "parked": [], "resumed": [],
+         "waiting": []})
+    prompts = stage(
         "prompt_router", prompt_router.tick, {"routed": [], "deferred": []})
-    messages = _run_stage(
+    messages = stage(
         "inbox", inbox.tick, {"flushed": [], "deferred": []})
-    context = _run_stage(
+    context = stage(
         "session_context", session_context.tick, {"acted": [], "deferred": []})
-    zombies = _run_stage(
+    zombies = stage(
         "scheduler_zombie", scheduler_zombie.tick, {"killed": []})
-    cohorts = _run_stage(
+    cohorts = stage(
         "cohort", cohort.tick, {"reaped": [], "swept": []})
-    blocks = _run_stage(
+    blocks = stage(
         "safety_notify", safety_notify.tick, {"emailed": False, "pending": 0})
-    prompt_gc = _run_stage(
-        "role_prompts", role_prompts.tick, {"deleted": [], "skipped": "error"})
+    prompt_gc = stage(
+        "role_prompts", role_prompts.tick, {"deleted": [], "skipped": "error"},
+        {"deleted": [], "skipped": "disabled"})
     if getattr(args, "json", False):
         print(json.dumps({
             **result, "prompts": prompts, "messages": messages,
@@ -437,15 +576,18 @@ def register_limits_parser(subparsers) -> None:
     """Register the `limits` command group (usage-limit recovery)."""
     limits_parser = subparsers.add_parser(
         "limits",
-        help="Usage-limit recovery: detect the limit dialog, park, auto-resume",
+        help="The background watchdog: usage-limit recovery, prompt routing, msg delivery, housekeeping",
         description=(
-            "Deterministic recovery from Claude Code usage-limit dialogs: a "
-            "watchdog (launchd on macOS, systemd --user timer on Linux) ticks "
-            "every minute, parks sessions sitting on "
-            "the dialog (option 1: stop and wait), emails the owner, and "
-            "nudges the session back to work after the limit resets. "
+            "The background watchdog (launchd on macOS, systemd --user timer "
+            "on Linux) ticks every minute and runs, in order:\n"
+            f"{stages_summary('  ')}\n"
+            "Without it, `agentwire msg` messages queue forever and prompt "
+            "routing stops. Disable a single stage with "
+            "`watchdog.stages.<name>: false` in the agentwire config; "
+            "`agentwire doctor` reports the state. "
             "See docs/wiki/usage-limit-recovery.md."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     limits_subparsers = limits_parser.add_subparsers(dest="limits_command")
 

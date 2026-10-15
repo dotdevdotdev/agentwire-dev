@@ -18,6 +18,8 @@ def isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(inbox, "INBOX_ROOT", tmp_path / "inbox")
     monkeypatch.setattr(inbox, "EVENTS_FILE", tmp_path / "inbox-events.jsonl")
     monkeypatch.setattr(msg_cli, "_current_session", lambda: None)
+    # Host's real watchdog state must not leak into warning assertions (#1088).
+    monkeypatch.setattr("agentwire.limits_cli.drain_warning", lambda: None)
     # Positive-existence checks (#694) default to "unknown" (tmux unreachable)
     # so the host's real session list can't leak into these tests; gone-target
     # scenarios override with a controlled live set.

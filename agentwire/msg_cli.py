@@ -109,6 +109,11 @@ def cmd_msg_send(args) -> int:
         f"in ~{inbox.GONE_MAX_ATTEMPTS} min unless it appears"
         for t in missing
     ]
+    from .limits_cli import drain_warning
+
+    no_drainer = drain_warning()
+    if no_drainer:
+        warnings.append(no_drainer)
 
     if getattr(args, "json", False):
         print(json.dumps({

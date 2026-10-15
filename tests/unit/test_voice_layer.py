@@ -443,9 +443,12 @@ class TestBuddyInboxAckThrough:
 
 
 class TestSendTimeWarning:
-    def test_no_false_gone_warning_for_a_buddy(self, isolate, capsys):
+    def test_no_false_gone_warning_for_a_buddy(self, isolate, capsys, monkeypatch):
         """``msg send`` must not predict a dead-letter that cannot happen."""
         from agentwire import msg_cli
+
+        # Host watchdog state must not leak into the warnings assertion (#1088).
+        monkeypatch.setattr("agentwire.limits_cli.drain_warning", lambda: None)
 
         identity.register("buddy")
         args = SimpleNamespace(to="buddy", text="hi", kind="note", sender="w",
