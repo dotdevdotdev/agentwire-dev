@@ -20,8 +20,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .security import resolve_shim_host
-
 from .core import (
     _output_json,
     get_kokoro_session_name,
@@ -31,6 +29,7 @@ from .core import (
     load_config,
     tmux_session_exists,
 )
+from .security import resolve_shim_host
 
 # === TTS Commands ===
 

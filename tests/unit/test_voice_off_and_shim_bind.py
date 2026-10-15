@@ -27,14 +27,15 @@ def test_every_shim_start_path_binds_loopback_by_default(monkeypatch):
     monkeypatch.setattr(tts_cli, "tmux_session_exists", lambda *_: False)
     monkeypatch.setattr(tts_cli, "get_source_dir", lambda: None)
 
-    class Stop(Exception):
+    class StopError(Exception):
         pass
 
     def fake_uvicorn(*a, **kw):
         seen.append(kw.get("host"))
-        raise Stop
+        raise StopError
 
-    import sys, types
+    import sys
+    import types
 
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=fake_uvicorn))
     for mod in ("agentwire.tts.server", "agentwire.stt.stt_server", "agentwire.tts.kokoro_server"):
@@ -47,7 +48,7 @@ def test_every_shim_start_path_binds_loopback_by_default(monkeypatch):
         seen.clear()
         try:
             fn(ns)
-        except Stop:
+        except StopError:
             pass
         except Exception as e:  # noqa: BLE001 - surface in the assert below
             bad.append((fn.__name__, repr(e)))
