@@ -197,23 +197,30 @@ def _detect_plan(clean: str, norm: str) -> "PromptInfo | None":
 
 
 _DIALOG_RULE_RE = re.compile(r"^[ \t]*─{3,}[ \t]*$", re.M)
+# Enough to tell commands apart, small enough to survive a 24-row pane at 40
+# columns (~500 visible body characters there).
+_BODY_TAIL = 200
 
 
 def _dialog_body(before_question: str) -> str:
-    """The approved command/file/diff: everything after the dialog's top rule.
+    """The approved command/file/diff, as a crop- and wrap-invariant tail.
 
-    Identity, not display, so it must survive a redraw at any pane width: ALL
-    whitespace is dropped (a long token wrapped mid-word gains a newline that
-    a wider render doesn't have), and anything above the rule — spinner, timer,
-    prior output — is excluded, since it wobbles between sweeps. The same hash
-    feeds ``prompts answer --expect``, so a wobbling body would reject valid
-    answers. No rule on screen (scrolled off) -> empty, i.e. the kind+question
-    +labels identity; never a guess from unanchored text.
+    Identity, not display, so it must survive a redraw at any pane width AND
+    any capture height. ``_capture`` is visible-screen only, so a long command
+    at a narrow width pushes the dialog's top rule off the top, and which
+    prefix survives depends on the width. The one thing every render keeps is
+    the END of the body (it sits right above the question), so the identity is
+    the last ``_BODY_TAIL`` characters with ALL whitespace dropped (a token
+    wrapped mid-word gains a newline a wider render lacks). Text above the
+    rule — spinner, timer, prior output — is excluded when the rule is visible;
+    when it isn't, the dialog fills the screen and there is nothing above it.
+    The same hash feeds ``prompts answer --expect``, so a wobbling body would
+    reject valid answers. Two commands that differ only before their last
+    ``_BODY_TAIL`` characters still share a hash — the price of crop-invariance.
     """
     rules = list(_DIALOG_RULE_RE.finditer(before_question))
-    if not rules:
-        return ""
-    return re.sub(r"\s+", "", before_question[rules[-1].end():])
+    start = rules[-1].end() if rules else 0
+    return re.sub(r"\s+", "", before_question[start:])[-_BODY_TAIL:]
 
 
 def _detect_permission(clean: str, norm: str) -> "PromptInfo | None":

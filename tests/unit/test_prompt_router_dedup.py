@@ -106,3 +106,28 @@ def test_a_redraw_of_a_delivered_prompt_does_not_renotify(monkeypatch):
         prompt_router._sweep_pane(pane)
 
     assert len(calls) == 2 and calls[0] != calls[1], calls
+
+
+def _long_command(last_step: str) -> str:
+    steps = [f"echo step-{i}-of-the-migration-plan && sleep 1" for i in range(11)]
+    return " && \\\n   ".join(steps + [last_step])
+
+
+def test_hash_survives_cropping_and_width_and_still_tells_commands_apart():
+    """The rule scrolls off the top of a short pane (`_capture` has no -S)."""
+    a = _dialog(_long_command("psql -c 'select alpha'"))
+    b = _dialog(_long_command("psql -c 'select bravo'"))
+    want_a = detect_prompt(a).content_hash()
+    want_b = detect_prompt(b).content_hash()
+    assert want_a != want_b
+    bad = []
+    for height in (24, 30, 40):
+        for width in range(40, 201):
+            hashes = []
+            for screen in (a, b):
+                shown = _render_at_width(screen, width).split("\n")[-height:]
+                info = detect_prompt("\n".join(shown))
+                hashes.append(info.content_hash() if info else None)
+            if hashes != [want_a, want_b]:
+                bad.append((height, width))
+    assert not bad, bad
