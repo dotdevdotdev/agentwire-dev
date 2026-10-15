@@ -524,7 +524,7 @@ class ProjectsRoutesMixin:
         if not name or not project:
             return web.json_response({"success": False, "error": "name and project are required"}, status=400)
 
-        args = ["worktree", name, "-p", project, "--existing"]
+        args = ["worktree", name, "-p", project, "--existing", "--no-cohort"]
         if created_by:
             args += ["--created-by", created_by]
 

@@ -35,6 +35,9 @@ def isolate(tmp_path, monkeypatch):
         state["live"].discard(session)
         return True
 
+    agents = {"memory-manager", "orchestrator"}
+    state["agents"] = agents
+    monkeypatch.setattr(cohort, "is_agent_session", lambda s: s in agents)
     monkeypatch.setattr(cohort, "session_exists", exists)
     monkeypatch.setattr(cohort, "_kill", kill)
     monkeypatch.setattr(cohort.time, "sleep", lambda _: None)
@@ -348,6 +351,93 @@ class TestSweep:
         _fan_out(isolate, n=1)
         isolate["live"].discard("memory-manager")
         assert cohort.sweep()["reaped"]  # the healthy cohort still got swept
+
+
+class TestInfraParentsAreNotCohortParents:
+    """#1087 — the portal shells out to `agentwire new` from inside tmux, so it
+    resolved as the caller and adopted every session it created; the sweep then
+    killed durable main-topology ones."""
+
+    def test_enroll_refuses_a_parent_that_is_not_an_agent_session(self, isolate):
+        assert cohort.enroll("agentwire-portal", "work-tracker") is False
+        assert cohort.load("agentwire-portal") is None
+
+    def test_sweep_never_kills_children_of_a_non_agent_parent(self, isolate):
+        # A pre-existing ledger (the 81-child one) must be left alone, whether
+        # the parent is gone or the deadline long past.
+        isolate["live"].add("work-tracker")
+        cohort.ledger_path("agentwire-portal").parent.mkdir(parents=True)
+        cohort.ledger_path("agentwire-portal").write_text(json.dumps({
+            "parent": "agentwire-portal", "deadline": 1,
+            "children": [{"session": "work-tracker", "state": "pending",
+                          "topology": "main"}],
+        }))
+        cohort.sweep()
+        assert isolate["killed"] == []
+        assert cohort.load("agentwire-portal") is not None
+
+    def test_sweep_reaps_children_after_the_parent_record_is_unlinked(self, isolate):
+        # `agentwire kill` unlinks the parent's metadata; the dead-parent
+        # backstop must not depend on it.
+        children = _fan_out(isolate, n=3)
+        isolate["live"].discard("memory-manager")
+        isolate["agents"].discard("memory-manager")
+        result = cohort.sweep()
+        assert sorted(e["child"] for e in result["reaped"]) == sorted(children)
+        assert cohort.load("memory-manager") is None
+
+    def test_a_large_legit_fan_out_is_still_swept(self, isolate):
+        children = _fan_out(isolate, n=30)
+        isolate["live"].discard("memory-manager")
+        cohort.sweep()
+        assert sorted(isolate["killed"]) == sorted(children)
+
+    def test_the_cap_counts_pending_children_not_history(self, isolate):
+        children = _fan_out(isolate, n=cohort.MAX_PLAUSIBLE_CHILDREN + 5)
+        data = cohort.load("memory-manager")
+        for entry in data["children"][1:]:
+            entry["state"] = cohort.REPORTED
+        cohort._save("memory-manager", data)
+        isolate["live"].discard("memory-manager")
+        cohort.sweep()
+        assert isolate["killed"] == [children[0]]
+
+    def test_refused_enroll_is_logged(self, isolate):
+        cohort.enroll("agentwire-portal", "x")
+        assert "enroll_refused" in cohort.EVENTS_FILE.read_text()
+
+    def test_sweep_never_kills_an_implausibly_large_cohort(self, isolate):
+        n = cohort.MAX_PLAUSIBLE_CHILDREN + 1
+        children = _fan_out(isolate, n=n, ttl=-(cohort.STALE_GRACE + 60))
+        isolate["live"].discard("memory-manager")
+        cohort.sweep()
+        assert isolate["killed"] == []
+        assert len(cohort.load("memory-manager")["children"]) == len(children)
+
+    def test_doctor_names_the_suspect_ledgers(self, isolate, capsys):
+        from agentwire.doctor_cli import _render_cohort_section
+
+        _fan_out(isolate, n=1)
+        assert _render_cohort_section() == 0
+        cohort.ledger_path("agentwire-portal").write_text(json.dumps({
+            "parent": "agentwire-portal", "deadline": 1,
+            "children": [{"session": "x", "state": "pending"}],
+        }))
+        assert _render_cohort_section() == 1
+        assert "agentwire-portal" in capsys.readouterr().out
+
+    def test_portal_and_service_spawns_opt_out_explicitly(self):
+        import inspect
+
+        from agentwire import services
+        from agentwire.routes import sessions_admin
+
+        spawns = [seg[:160]
+                  for m in (services, sessions_admin)
+                  for seg in inspect.getsource(m).split('"new", "-s"')[1:]]
+        assert len(spawns) == 3
+        bad = [seg for seg in spawns if "--no-cohort" not in seg.split("\n\n")[0]]
+        assert not bad, bad
 
 
 class TestDrainHold:

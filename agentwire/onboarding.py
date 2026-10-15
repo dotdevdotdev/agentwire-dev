@@ -564,6 +564,7 @@ services:
             "-s", session_name,
             "--roles", "init",
             "--posture", "bypass",
+            "--no-cohort",
         ]
 
         # Run and attach

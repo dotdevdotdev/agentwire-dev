@@ -112,6 +112,12 @@ IDLE_KIND = "idle"
 
 _POLL_INTERVAL = 2.0
 
+# A real fan-out is a handful of children. More PENDING children than this is
+# accumulation from something that was never fanning out (#1087: 81
+# portal-created sessions under `agentwire-portal`), so the sweep refuses to
+# act on it.
+MAX_PLAUSIBLE_CHILDREN = 50
+
 
 # =============================================================================
 # Ledger I/O
@@ -199,6 +205,34 @@ def _locked(parent: str):
                 pass
 
 
+def is_agent_session(session: str) -> bool:
+    """Is *session* an agent session — one with a recorded conversation (#871)?
+
+    Infra sessions (the portal, services) live in tmux but run no agent, so
+    they never fan out or call ``wait --children``. A cohort parent must be an
+    agent session, or the ledger is a trap for whatever it adopts (#1087).
+    """
+    from .core import load_session_metadata
+
+    return bool(load_session_metadata(session).get("conversation_ids"))
+
+
+def suspect_reason(parent: str, data: dict) -> str | None:
+    """Why this ledger must not be swept, or None when it looks like a fan-out.
+
+    Agent-ness is read from the ledger's ``agent_parent`` marker, stamped at
+    enroll time — NOT from the parent's live metadata, which ``agentwire kill``
+    unlinks. Sweeping exists for exactly the dead-parent case, so it cannot
+    depend on a record that dies with the parent.
+    """
+    if not data.get("agent_parent"):
+        return f"parent {parent!r} was never recorded as an agent session"
+    count = sum(1 for c in data.get("children") or [] if c.get("state") == PENDING)
+    if count > MAX_PLAUSIBLE_CHILDREN:
+        return f"{count} pending children is not a fan-out (max {MAX_PLAUSIBLE_CHILDREN})"
+    return None
+
+
 def discard(parent: str) -> bool:
     """Delete the parent's ledger. True if one was there."""
     try:
@@ -223,6 +257,10 @@ def enroll(parent: str, child: str, task: str | None = None,
     """
     if not parent or not child or parent == child:
         return False
+    if not is_agent_session(parent):
+        log_event("enroll_refused", parent=parent, child=child,
+                  reason="parent is not an agent session")
+        return False
     try:
         with _locked(parent):
             data = load(parent) or {
@@ -234,6 +272,7 @@ def enroll(parent: str, child: str, task: str | None = None,
                 "session": child, "state": PENDING, "report": None,
                 "topology": topology, "enrolled_at": _now(),
             })
+            data["agent_parent"] = True
             data["deadline"] = _now() + ttl
             if task and not data.get("task"):
                 data["task"] = task
@@ -511,6 +550,10 @@ def sweep() -> dict:
             continue
         data = load(parent)
         if not data:
+            continue
+        reason = suspect_reason(parent, data)
+        if reason:
+            log_event("sweep_refused", parent=parent, reason=reason)
             continue
         outstanding = [c["session"] for c in data["children"]
                        if c.get("state") == PENDING and c.get("session")]

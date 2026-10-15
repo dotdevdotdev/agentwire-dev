@@ -39,6 +39,7 @@ def isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(cohort, "COHORT_ROOT", tmp_path / "cohorts")
     monkeypatch.setattr(cohort, "EVENTS_FILE", tmp_path / "cohort-events.jsonl")
     monkeypatch.setattr(cohort, "session_exists", lambda s: True)
+    monkeypatch.setattr(cohort, "is_agent_session", lambda s: True)
     return tmp_path
 
 
