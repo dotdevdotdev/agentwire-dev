@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2005,15 +2006,50 @@ def check_protected_path(
 _QUOTED_LITERAL_RE = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
 
 
+_PROSE_STOPWORDS = frozenset(
+    "the is are was were be been for in by see to of and with this that from on "
+    "it its has have not but or at as into when where which".split()
+)
+_SHELL_WORDS = frozenset(
+    "cd source exec eval command builtin export set unset alias".split()
+)
+
+
+def _reads_as_prose(words: List[str]) -> bool:
+    """True when ``words`` (a literal minus the path) is English, not a command.
+
+    Fail closed: BOTH must hold — a stopword (``the``/``is``/``for``/``in`` …)
+    or sentence punctuation shows it is a sentence, AND the first word does not
+    resolve to a program (``shutil.which``) or shell builtin, so ``gzip <path>
+    now`` and ``tar xf a <path>`` stay visible however plain their operands.
+    """
+    if len(words) < 2:
+        return False
+    if any(t[0] in "-/~." or "/" in t or "=" in t or t in (">", ">>", "|")
+           for t in words):
+        return False
+    first = words[0].lower().rstrip(",:;")
+    if first in _SHELL_WORDS or shutil.which(first):
+        return False
+    return any(
+        t.lower().strip(",:;.!?") in _PROSE_STOPWORDS or t[-1] in ",:;!?"
+        for t in words
+    )
+
+
 def redact_prose_mentions(command: str, path: str) -> str:
     """Blank quoted literals that merely TALK ABOUT ``path`` (#1086).
 
     The interpreter net (#678) reads opaque program text, so it cannot tell
-    ``s='hooks in <path> are empty'`` from a write — but a literal that is
-    multi-word prose around the path, and whose content no shell write/delete
-    pattern matches, names the path as TEXT. A literal that IS the path
-    (``open('<path>', 'w')``) or whose content is a shell write
-    (``os.system("echo x > <path>")``) is kept.
+    ``s='hooks in <path> are empty'`` from a write. Contract: a literal is
+    redacted ONLY when it reads as an English sentence around the path
+    (:func:`_reads_as_prose` — stopword/punctuation, first word not a
+    program, no flags/slashes/operators) AND no shell write pattern matches
+    it. Everything else stays visible: the path alone (``open('<path>','w')``),
+    any command-shaped literal, anything ambiguous.
+
+    Declared residual: variable indirection
+    (``p='edit <path> by hand'; open(p.split()[1],'w')``) is not tracked.
     """
     path_re = _rx(_path_context_regex(path))
 
@@ -2022,15 +2058,7 @@ def redact_prose_mentions(command: str, path: str) -> str:
         body = lit[1:-1]
         if not path_re.search(body):
             return lit
-        # Prose is plain words around the path: no flags, no other path-like
-        # operands. Anything command-shaped (``ln -sf /tmp/a <path>``,
-        # ``curl -o <path> url``) stays visible whether or not the write-verb
-        # list knows its tool — guard the operation, not the phrasing.
-        rest = path_re.sub(" ", body).split()
-        if len(rest) < 2 or any(
-            t[0] in "-/~." or "/" in t or "=" in t or t in (">", ">>", "|")
-            for t in rest
-        ):
+        if not _reads_as_prose(path_re.sub(" ", body).split()):
             return lit
         if check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]:
             return lit

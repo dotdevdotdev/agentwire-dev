@@ -519,8 +519,8 @@ PROSE_MENTIONS = [
     f"cd /tmp && python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\n"
     "open('/tmp/x.md','w').write(s)\nEOF",
     f"python3 -c \"print('see {_SETTINGS} for details')\"",
-    f"echo 'notes mention {_SETTINGS} here' | python3 -c 'import sys; sys.stdin.read()'",
-    f"perl -e 'print \"edit {_SETTINGS} by hand\"'",
+    f"echo 'the notes mention {_SETTINGS} here' | python3 -c 'import sys; sys.stdin.read()'",
+    f"perl -e 'print \"see {_SETTINGS} by hand\"'",
 ]
 
 INTERPRETER_REAL_WRITES = [
@@ -538,6 +538,19 @@ INTERPRETER_REAL_WRITES = [
     f"python3 -c 'import os; os.system(\"git checkout -- {_SETTINGS}\")'",
     f"python3 -c 'import os; os.system(\"tar -xf a.tgz -C {_SETTINGS}\")'",
     f"python3 -c 'import os; os.system(\"ed {_SETTINGS}\")'",
+    # flagless, slashless, operatorless: only the first-word-is-a-program check saves these
+    f"python3 -c 'import os; os.system(\"patch {_SETTINGS} diff\")'",
+    f"python3 -c 'import os; os.system(\"ln a {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"gzip {_SETTINGS} now\")'",
+    f"python3 -c 'import os; os.system(\"python3 x.py {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"git restore {_SETTINGS} now\")'",
+    f"python3 -c 'import os; os.system(\"tar xf a {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"touch {_SETTINGS} now\")'",
+    # a stopword makes it LOOK like prose; the first word being a program must still win
+    f"python3 -c 'import os; os.system(\"gzip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"patch the {_SETTINGS} for me\")'",
+    f"python3 -c 'import os; os.system(\"ln the {_SETTINGS}\")'",    # unknown tool, no sentence markers: not provably prose, so it stays visible
+    f"python3 -c 'import os; os.system(\"zzunknowntool {_SETTINGS} now\")'",
 ]
 
 
