@@ -144,10 +144,14 @@ class PromptInfo:
     question: str
     options: list[dict] = field(default_factory=list)  # {number,label,description}
     summary: str = ""  # one-line context (tool/command for permissions)
+    # The dialog's own body (the command / file / diff being approved), wrap-
+    # and whitespace-free. Part of the identity: two "Unverifiable command"
+    # confirms share kind+question+labels and differ ONLY here (#1049).
+    body: str = ""
 
     def content_hash(self) -> str:
         labels = " ".join(o.get("label", "") for o in self.options)
-        raw = _normalize(f"{self.kind} {self.question} {labels}")
+        raw = _normalize(f"{self.kind} {self.question} {labels}") + "\0" + self.body
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -192,6 +196,26 @@ def _detect_plan(clean: str, norm: str) -> "PromptInfo | None":
     )
 
 
+_DIALOG_RULE_RE = re.compile(r"^[ \t]*─{3,}[ \t]*$", re.M)
+
+
+def _dialog_body(before_question: str) -> str:
+    """The approved command/file/diff: everything after the dialog's top rule.
+
+    Identity, not display, so it must survive a redraw at any pane width: ALL
+    whitespace is dropped (a long token wrapped mid-word gains a newline that
+    a wider render doesn't have), and anything above the rule — spinner, timer,
+    prior output — is excluded, since it wobbles between sweeps. The same hash
+    feeds ``prompts answer --expect``, so a wobbling body would reject valid
+    answers. No rule on screen (scrolled off) -> empty, i.e. the kind+question
+    +labels identity; never a guess from unanchored text.
+    """
+    rules = list(_DIALOG_RULE_RE.finditer(before_question))
+    if not rules:
+        return ""
+    return re.sub(r"\s+", "", before_question[rules[-1].end():])
+
+
 def _detect_permission(clean: str, norm: str) -> "PromptInfo | None":
     if not _is_live(norm, "permission"):
         return None
@@ -206,6 +230,7 @@ def _detect_permission(clean: str, norm: str) -> "PromptInfo | None":
         question=_normalize(q.group(0)),
         options=options,
         summary=_normalize(clean[max(0, q.start() - 250):q.start()])[-200:],
+        body=_dialog_body(clean[:q.start()]),
     )
 
 
