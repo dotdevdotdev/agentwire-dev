@@ -8,9 +8,15 @@ import types
 
 import pytest
 
-from agentwire import channels_cli, server, tts_cli
+from agentwire import channels_cli, doctor_cli, server, tts_cli
 from agentwire.config import Config, STTConfig, TTSConfig, voice_enabled
-from agentwire.security import resolve_shim_host, shim_bind_findings, warn_if_exposed
+from agentwire.security import (
+    parse_lsof_listeners,
+    remote_tts_loopback_note,
+    resolve_shim_host,
+    shim_bind_findings,
+    warn_if_exposed,
+)
 from agentwire.voice_status import resolve_tts_status
 
 
@@ -90,14 +96,56 @@ def test_resolve_and_warn(capsys):
     assert "no authentication" in capsys.readouterr().err
 
 
-def test_doctor_findings_for_exposed_and_remote_loopback():
+def test_doctor_findings_from_config_and_live_listeners():
     assert shim_bind_findings({}) == []
-    assert len(shim_bind_findings({"tts": {"host": "0.0.0.0"}, "stt": {"host": "0.0.0.0"}})) == 2
-    remote = shim_bind_findings({}, tts_remote=True)
-    assert len(remote) == 1 and "loopback" in remote[0]
-    assert shim_bind_findings({"tts": {"host": "0.0.0.0"}}, tts_remote=True) == [
-        "TTS/Kokoro (tts.host) binds '0.0.0.0': reachable from the network, no authentication"
-    ]
+    both = shim_bind_findings({"tts": {"host": "0.0.0.0"}, "stt": {"host": "0.0.0.0"}})
+    assert len(both) == 2
+    # a flag/env bind that config never mentions is caught live
+    live = shim_bind_findings({}, [(8100, "*"), (8101, "127.0.0.1"), (8102, "::1")])
+    assert len(live) == 1 and ":8100" in live[0]
+
+
+def test_lsof_parser_reads_wildcard_loopback_and_ipv6():
+    out = "p1\nn127.0.0.1:8100\nn*:8101\nn[::1]:8102\nn[::]:8100\n"
+    assert parse_lsof_listeners(out) == [
+        (8100, "127.0.0.1"), (8101, "*"), (8102, "::1"), (8100, "::")]
+
+
+def test_remote_tts_note_is_info_and_gated():
+    custom = {"tts": {"backend": "custom"}}
+    assert remote_tts_loopback_note(custom, tts_remote=True)
+    assert remote_tts_loopback_note(custom, tts_remote=False) is None
+    assert remote_tts_loopback_note({"tts": {"backend": "none"}}, tts_remote=True) is None
+    assert remote_tts_loopback_note({}, tts_remote=True) is None
+    # info line, never counted as an issue
+    lines, issues = doctor_cli._voice_bind_report(custom, tts_remote=True, listening=[])
+    assert issues == 0 and lines and lines[0].startswith("  [..]")
+    lines, issues = doctor_cli._voice_bind_report(
+        {"tts": {"backend": "none"}}, tts_remote=True, listening=[])
+    assert (lines, issues) == ([], 0)
+
+
+def test_doctor_tts_tier_line_for_none_and_default():
+    assert "disabled" in doctor_cli._tts_tier_line("none")
+    assert "default tier" in doctor_cli._tts_tier_line("default")
+    assert doctor_cli._tts_tier_line("custom") is None
+
+
+def test_api_local_tts_with_none_is_a_clean_disabled_response():
+    srv = _bare_server("none")
+
+    class Req:
+        match_info = {"name": "s"}
+
+        async def json(self):
+            return {"text": "hello"}
+
+    async def boom(*a, **k):
+        raise AssertionError("TTS generation attempted while disabled")
+
+    srv._tts_generate = boom
+    resp = asyncio.run(srv.api_local_tts(Req()))
+    assert resp.status == 200 and b"disabled" in resp.body
 
 
 class _StopError(Exception):
@@ -160,3 +208,35 @@ def test_configured_host_reaches_stt_and_kokoro_serve_and_warns_once(monkeypatch
         got[name] = list(seen)
         assert capsys.readouterr().err.count("no authentication") == 1, name
     assert got == {"stt": ["10.1.1.1"], "kokoro": ["10.2.2.2"]}
+
+
+def test_start_paths_warn_visibly_once_when_exposed(monkeypatch, capsys):
+    """Start launches serve inside a detached tmux pane nobody reads, so the
+    start command itself must print the warning — exactly once."""
+    monkeypatch.setattr(tts_cli, "load_config", lambda: {})
+    monkeypatch.setattr(tts_cli, "tmux_session_exists", lambda *_: False)
+    monkeypatch.setattr(tts_cli, "_resolve_shim_python", lambda: ("py", "/tmp", None))
+    monkeypatch.setattr(tts_cli.subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
+    ns = argparse.Namespace(host="0.0.0.0", port=None, model=None, backend=None)
+    bad = {}
+    for name, fn in (("stt", tts_cli.cmd_stt_start), ("kokoro", tts_cli.cmd_kokoro_start)):
+        capsys.readouterr()
+        fn(ns)
+        n = capsys.readouterr().err.count("no authentication")
+        if n != 1:
+            bad[name] = n
+    assert not bad, bad
+
+
+def test_tts_start_local_warns_visibly_once_when_exposed(monkeypatch, capsys, tmp_path):
+    (tmp_path / ".venv-chatterbox" / "bin").mkdir(parents=True)
+    (tmp_path / ".venv-chatterbox" / "bin" / "activate").write_text("")
+    monkeypatch.setattr(tts_cli, "load_config", lambda: {})
+    monkeypatch.setattr(tts_cli, "tmux_session_exists", lambda *_: False)
+    monkeypatch.setattr(tts_cli, "get_source_dir", lambda: tmp_path)
+    monkeypatch.setattr(tts_cli.subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
+    ns = argparse.Namespace(host="0.0.0.0", port=None, backend=None, venv=None)
+    tts_cli._start_tts_local(ns, attach=False)
+    assert capsys.readouterr().err.count("no authentication") == 1

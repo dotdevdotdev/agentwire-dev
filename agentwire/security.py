@@ -30,6 +30,7 @@ import ipaddress
 import logging
 import re
 import secrets
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -176,26 +177,76 @@ def warn_if_exposed(host: str, kind: str) -> None:
         )
 
 
-def shim_bind_findings(config: dict, tts_remote: bool = False) -> list[str]:
-    """Doctor findings for the voice shims' configured bind hosts.
+def parse_lsof_listeners(output: str) -> list[tuple[int, str]]:
+    """Parse ``lsof -nP -iTCP -sTCP:LISTEN -Fn`` into ``(port, address)`` pairs.
 
-    Reads the raw config dict: ``tts.host`` (TTS + Kokoro) and ``stt.host``.
-    Flags a non-loopback bind (no auth), and a remote TTS (``tts_remote``, from
-    ``NetworkContext.is_local``) whose shim would be loopback-bound — the portal
-    can no longer reach it over the LAN unless ``tts.host`` opts in.
+    ``n`` lines look like ``n127.0.0.1:8100``, ``n*:8101`` or ``n[::1]:8102``.
+    """
+    found: list[tuple[int, str]] = []
+    for line in output.splitlines():
+        if not line.startswith("n"):
+            continue
+        addr, _, port = line[1:].rpartition(":")
+        if port.isdigit():
+            found.append((int(port), addr.strip("[]")))
+    return found
+
+
+def listening_shim_binds(ports: tuple[int, ...]) -> list[tuple[int, str]]:
+    """Live check: which of ``ports`` are listening, and on what address.
+
+    Sees a shim started with ``--host`` / ``TTS_HOST`` / ``KOKORO_HOST`` that
+    config never mentions. Empty when ``lsof`` is unavailable or finds nothing.
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-sTCP:LISTEN", "-Fn", *[f"-iTCP:{p}" for p in ports]],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [(p, a) for p, a in parse_lsof_listeners(result.stdout) if p in ports]
+
+
+def shim_bind_findings(config: dict, listening: list[tuple[int, str]] = ()) -> list[str]:
+    """Doctor warnings for voice shims reachable from the network.
+
+    Two sources: the configured bind hosts (``tts.host`` for TTS + Kokoro,
+    ``stt.host`` for STT) and ``listening`` — live ``(port, address)`` pairs
+    that catch a flag/env bind config never sees.
     """
     findings: list[str] = []
     tts_host = resolve_shim_host(None, (config.get("tts") or {}).get("host"))
     stt_host = resolve_shim_host(None, (config.get("stt") or {}).get("host"))
     for kind, host in (("TTS/Kokoro (tts.host)", tts_host), ("STT (stt.host)", stt_host)):
         if not is_loopback_host(host):
-            findings.append(f"{kind} binds {host!r}: reachable from the network, no authentication")
-    if tts_remote and is_loopback_host(tts_host):
-        findings.append(
-            "TTS runs on a remote machine but binds loopback — the portal cannot "
-            "reach it; set tts.host on that machine (LAN opt-in, no authentication)"
-        )
+            findings.append(
+                f"{kind} configured to bind {host!r}: reachable from the network, no authentication"
+            )
+    for port, addr in listening:
+        if not is_loopback_host(addr) and addr != "":
+            findings.append(
+                f"a voice shim is listening on {addr}:{port}: reachable from the network, "
+                "no authentication"
+            )
     return findings
+
+
+def remote_tts_loopback_note(config: dict, tts_remote: bool) -> str | None:
+    """Info note (never a failure) for a remote custom TTS.
+
+    The remote machine's own ``tts.host`` decides whether the portal can reach
+    it, and this machine cannot read that file — so say what to check instead
+    of asserting a fault.
+    """
+    tts = config.get("tts") or {}
+    if not tts_remote or tts.get("backend", "default") != "custom":
+        return None
+    return (
+        "TTS runs on a remote machine: its shims bind loopback unless tts.host is set "
+        "on THAT machine (can't be checked from here) — set it there if the portal "
+        "can't reach the TTS over the LAN"
+    )
 
 
 def validate_startup_security(config) -> None:

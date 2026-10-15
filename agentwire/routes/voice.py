@@ -290,6 +290,11 @@ class VoiceRoutesMixin:
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
 
+            if not voice_enabled(self.config.tts.backend):
+                return web.json_response(
+                    {"success": False, "disabled": True, "error": "TTS is disabled (tts.backend: none)"}
+                )
+
             # Default tier: Kokoro shim on local speakers when ready, OS voice
             # while it warms up (process-isolated — see ensure_managed_tts)
             if self.config.tts.backend == "default":

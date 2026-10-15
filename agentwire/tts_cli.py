@@ -104,6 +104,7 @@ def _start_tts_local(args, venv_override: str | None = None, attach: bool = True
         f"{venv_python} -m agentwire tts serve --host {host} --port {port} --backend {backend} --venv {venv}"
     )
 
+    warn_if_exposed(host, "TTS")
     print(f"Starting TTS server on {host}:{port} (backend: {backend}, venv: {venv})...")
     subprocess.run([
         "tmux", "new-session", "-d", "-s", session_name,
@@ -155,6 +156,7 @@ def _start_tts_remote(ssh_target: str, machine_id: str, args) -> int:
 
     # Start remotely in tmux
     remote_cmd = f"tmux new-session -d -s {session_name} && tmux send-keys -t {session_name} {shlex.quote(server_cmd)} Enter"
+    warn_if_exposed(host, "TTS")
     print(f"Starting TTS server on {machine_id}...")
 
     result = subprocess.run(
@@ -574,6 +576,7 @@ def cmd_stt_start(args) -> int:
     cmd = f"cd {run_dir} && WHISPER_MODEL={model} WHISPER_DEVICE=cpu STT_PORT={port} STT_HOST={host} STT_BACKEND={backend} MOONSHINE_MODEL={moonshine_model} {python_path} -m agentwire.stt.stt_server"
 
     # Create tmux session
+    warn_if_exposed(host, "STT")
     subprocess.run([
         "tmux", "new-session", "-d", "-s", session_name, "-c", run_dir
     ], check=True)
@@ -697,6 +700,7 @@ def cmd_kokoro_start(args) -> int:
 
     cmd = f"cd {run_dir} && KOKORO_PORT={port} KOKORO_HOST={host} {python_path} -m agentwire.tts.kokoro_server"
 
+    warn_if_exposed(host, "Kokoro")
     subprocess.run([
         "tmux", "new-session", "-d", "-s", session_name, "-c", run_dir
     ], check=True)

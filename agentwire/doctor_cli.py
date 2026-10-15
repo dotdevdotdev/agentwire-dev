@@ -36,6 +36,41 @@ from .core import (
 )
 
 
+def _tts_tier_line(backend: str) -> str | None:
+    """Doctor line for a TTS tier with no service to health-check (None = custom)."""
+    from .config import voice_enabled
+
+    if not voice_enabled(backend):
+        return "  [ok] Tts: disabled (tts.backend: none)"
+    if backend != "custom":
+        return "  [ok] Tts: default tier (browser/OS voice, no local service needed)"
+    return None
+
+
+def _voice_bind_report(raw_cfg: dict, tts_remote: bool, listening=None) -> tuple[list[str], int]:
+    """Doctor lines + issue count for voice-shim network exposure.
+
+    Warnings ([!!], counted) come from config and a live port check; the
+    remote-TTS reminder is info ([..], uncounted) because the remote machine's
+    ``tts.host`` is unreadable from here.
+    """
+    from .config import voice_enabled
+    from .security import listening_shim_binds, remote_tts_loopback_note, shim_bind_findings
+
+    if listening is None:
+        listening = listening_shim_binds((
+            raw_cfg.get("tts", {}).get("port", 8100),
+            raw_cfg.get("stt", {}).get("port", 8101),
+            8102,
+        ))
+    findings = shim_bind_findings(raw_cfg, listening)
+    lines = [f"  [!!] {f}" for f in findings]
+    note = remote_tts_loopback_note(raw_cfg, tts_remote)
+    if note and voice_enabled(raw_cfg.get("tts", {}).get("backend", "default")):
+        lines.append(f"  [..] {note}")
+    return lines, len(findings)
+
+
 def cmd_network_status(args) -> int:
     """Show complete network health at a glance."""
     from .network import NetworkContext
@@ -1678,19 +1713,16 @@ def cmd_doctor(args) -> int:
     tts_config = load_config().get("tts", {})
     tts_backend = tts_config.get("backend", "default")
 
-    from .config import voice_enabled
-    from .security import shim_bind_findings
-
-    for finding in shim_bind_findings(load_config(), tts_remote=not ctx.is_local("tts")):
-        print(f"  [!!] {finding}")
-        issues_found += 1
+    raw_cfg = load_config()
+    bind_lines, bind_issues = _voice_bind_report(raw_cfg, tts_remote=not ctx.is_local("tts"))
+    for line in bind_lines:
+        print(line)
+    issues_found += bind_issues
 
     for service_name in ["portal", "tts"]:
-        if service_name == "tts" and not voice_enabled(tts_backend):
-            print("  [ok] Tts: disabled (tts.backend: none)")
-            continue
-        if service_name == "tts" and tts_backend != "custom":
-            print("  [ok] Tts: default tier (browser/OS voice, no local service needed)")
+        tier_line = _tts_tier_line(tts_backend) if service_name == "tts" else None
+        if tier_line:
+            print(tier_line)
             continue
 
         service_config = getattr(ctx.config.services, service_name, None)

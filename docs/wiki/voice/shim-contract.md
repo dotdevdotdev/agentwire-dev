@@ -38,8 +38,10 @@ left by a previous portal is stopped on portal start). Same as `--no-tts` /
 `127.0.0.1` and have no authentication. To expose one on the LAN (e.g. a TTS
 box the portal reaches from another machine) opt in explicitly:
 `tts.host` (TTS and Kokoro) / `stt.host` (STT) in config, or `--host`. A
-non-loopback bind prints a warning, and `agentwire doctor` flags it, as well
-as a remote TTS that is still loopback-bound.
+non-loopback bind prints a warning at start, and `agentwire doctor` flags it —
+both from config and from a live `lsof` check, so a shim started with a flag or
+`TTS_HOST`/`KOKORO_HOST` is caught too. For a remote TTS, doctor can only remind
+you that `tts.host` must be set on that machine; it cannot read it from here.
 
 ## Design doctrine: envelope, not vocabulary
 
