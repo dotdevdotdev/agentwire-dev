@@ -17,7 +17,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import anyio
@@ -70,9 +69,9 @@ if _fastmcp_settings is not None:
 # dedicated limiter, not anyio's shared default (40), so server-internal
 # ``to_thread`` users can't be starved by tool calls and vice versa. 32 is far
 # above realistic concurrency (a handful of agents' calls) and bounds thread
-# growth; a long ``wait_children`` holds ONE slot, not the server.
+# growth (accepted limit: 32 concurrent long calls starve the 33rd until one
+# finishes); a long ``wait_children`` holds ONE slot, not the server.
 TOOL_THREAD_LIMIT = 32
-SLOW_TOOL_WARN_SECONDS = 10
 _tool_limiter: anyio.CapacityLimiter | None = None
 
 
@@ -87,17 +86,11 @@ def _threaded(fn):
         global _tool_limiter
         if _tool_limiter is None:
             _tool_limiter = anyio.CapacityLimiter(TOOL_THREAD_LIMIT)
-        started = time.monotonic()
-        try:
-            return await anyio.to_thread.run_sync(
-                functools.partial(fn, *args, **kwargs),
-                limiter=_tool_limiter,
-                abandon_on_cancel=True,
-            )
-        finally:
-            elapsed = time.monotonic() - started
-            if elapsed > SLOW_TOOL_WARN_SECONDS:
-                logger.warning(f"Slow MCP tool {fn.__name__}: {elapsed:.1f}s")
+        return await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs),
+            limiter=_tool_limiter,
+            abandon_on_cancel=True,
+        )
 
     return wrapper
 

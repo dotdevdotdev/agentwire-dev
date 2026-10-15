@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 
 SLOW_CMD_WARN_SECONDS = 10
+# Commands that block by design (wait_children, scheduler_run): a slow warning
+# for them is noise, not a diagnosis.
+_LONG_RUNNING_CMDS = {("wait", "--children"), ("scheduler", "run")}
 _KILL_GRACE_SECONDS = 2
 
 
@@ -48,9 +51,13 @@ def _kill_group(proc: subprocess.Popen) -> None:
     """Kill ``proc`` and every descendant, then drain its pipes with a bound.
 
     ``proc`` leads its own process group (``start_new_session``), so
-    ``killpg`` reaches grandchildren (ssh/git/tmux) that inherited the stdout
-    pipe. Killing only the direct child leaves them holding the pipe open, and
-    the follow-up ``communicate()`` then blocks until THEY exit (#1089).
+    ``killpg`` reaches grandchildren (ssh/git/tmux). Killing only the direct
+    child leaves them running, orphaned (#1089).
+
+    ``killpg`` on a group whose only member is the unreaped zombie leader
+    raises ``PermissionError`` on macOS (``ProcessLookupError`` on Linux);
+    both mean "nothing left to signal". Without catching it the error would
+    replace the ``TimeoutExpired`` the caller is waiting for.
     """
     posix = os.name == "posix"
     for sig in ((signal.SIGTERM, signal.SIGKILL) if posix else (None,)):
@@ -59,15 +66,15 @@ def _kill_group(proc: subprocess.Popen) -> None:
                 os.killpg(proc.pid, sig)
             else:
                 proc.kill()
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         try:
             proc.communicate(timeout=_KILL_GRACE_SECONDS)
             return
         except subprocess.TimeoutExpired:
             continue
-    # Still not drained (a descendant escaped the group): abandon the pipes
-    # rather than hang the caller.
+    # Still not drained (a descendant escaped the group via setsid and holds
+    # the pipe): abandon the pipes rather than hang the caller.
     for stream in (proc.stdout, proc.stderr):
         if stream:
             stream.close()
@@ -162,8 +169,9 @@ def run_agentwire_cmd(
         return {"success": False, "error": str(e)}
     finally:
         elapsed = time.monotonic() - started
-        if elapsed > SLOW_CMD_WARN_SECONDS:
-            logger.warning(f"Slow command ({elapsed:.1f}s, timeout={timeout}s): {' '.join(cmd)}")
+        if elapsed > SLOW_CMD_WARN_SECONDS and tuple(args[:2]) not in _LONG_RUNNING_CMDS:
+            # argv[:3] only: later words can carry message/email/prompt bodies.
+            logger.warning(f"Slow command ({elapsed:.1f}s, timeout={timeout}s): {' '.join(cmd[:3])}")
 
 
 def role_prompts_dir() -> Path:

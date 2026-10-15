@@ -87,7 +87,7 @@ def test_timeout_result_shape_unchanged():
 @pytest.mark.slow
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
 def test_timeout_kills_grandchild_holding_the_pipe(tmp_path):
-    """A grandchild inheriting stdout must not hang the caller past the timeout."""
+    """A grandchild in the process group is killed with the child on timeout."""
     pidfile = tmp_path / "grandchild.pid"
     script = tmp_path / "parent.py"
     script.write_text(textwrap.dedent(f"""
@@ -113,7 +113,7 @@ def test_timeout_kills_grandchild_holding_the_pipe(tmp_path):
     t.join(30)
     gc_pid = int(pidfile.read_text()) if pidfile.exists() else None
     try:
-        assert not t.is_alive(), "caller hung past the timeout (grandchild held the pipe)"
+        assert not t.is_alive(), "caller did not return after the timeout"
         assert outcome.get("timed_out")
         assert gc_pid is not None
         for _ in range(100):
@@ -128,5 +128,45 @@ def test_timeout_kills_grandchild_holding_the_pipe(tmp_path):
         if gc_pid:
             try:
                 os.kill(gc_pid, 9)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_setsid_escapee_holding_the_pipe_still_raises_timeout(tmp_path):
+    """A descendant that escaped the group keeps the pipe open: the caller must
+    still get ``TimeoutExpired`` in bounded time (macOS raises PermissionError
+    from ``killpg`` on the zombie-only group, which must not replace it)."""
+    pidfile = tmp_path / "escapee.pid"
+    script = tmp_path / "parent.py"
+    script.write_text(textwrap.dedent(f"""
+        import os, subprocess, sys
+        r, w = os.pipe()
+        gc = subprocess.Popen([sys.executable, "-c", "import os; os.read({{}}, 1)".format(r)],
+                              pass_fds=[r, w], start_new_session=True)
+        open({str(pidfile)!r}, "w").write(str(gc.pid))
+        os.read(r, 1)
+    """))
+
+    outcome = {}
+
+    def run():
+        try:
+            core._run_bounded([sys.executable, str(script)], timeout=3)
+        except BaseException as e:  # noqa: BLE001 - the type IS the assertion
+            outcome["exc"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(30)
+    pid = int(pidfile.read_text()) if pidfile.exists() else None
+    try:
+        assert not t.is_alive(), "caller hung past the timeout"
+        assert isinstance(outcome.get("exc"), subprocess.TimeoutExpired), outcome
+    finally:
+        if pid:
+            try:
+                os.kill(pid, 9)
             except ProcessLookupError:
                 pass
