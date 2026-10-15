@@ -579,6 +579,19 @@ class SessionContextConfig:
 
 
 @dataclass
+class WatchdogConfig:
+    """Per-stage switches for the background watchdog tick (#1088).
+
+    ``stages`` maps a stage name (see ``limits_cli.WATCHDOG_STAGES``) to
+    enabled. Absent means enabled; only an explicit ``false`` turns a stage
+    off, so a user can keep message delivery and prompt routing while
+    declining a stage they consider unsafe.
+    """
+
+    stages: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     """Root configuration for AgentWire."""
 
@@ -599,6 +612,7 @@ class Config:
     usage_limit: UsageLimitConfig = field(default_factory=UsageLimitConfig)
     prompt_router: PromptRouterConfig = field(default_factory=PromptRouterConfig)
     session_context: SessionContextConfig = field(default_factory=SessionContextConfig)
+    watchdog: WatchdogConfig = field(default_factory=WatchdogConfig)
     beta: BetaConfig = field(default_factory=BetaConfig)
     channels: dict = field(default_factory=dict)
 
@@ -945,6 +959,15 @@ def _dict_to_config(data: dict) -> Config:
         policies=policies,
     )
 
+    # Watchdog per-stage switches (#1088). Non-dict sections degrade to "all on".
+    watchdog_data = data.get("watchdog", {}) or {}
+    if not isinstance(watchdog_data, dict):
+        watchdog_data = {}
+    stages_raw = watchdog_data.get("stages", {}) or {}
+    if not isinstance(stages_raw, dict):
+        stages_raw = {}
+    watchdog = WatchdogConfig(stages={str(k): bool(v) for k, v in stages_raw.items()})
+
     # Session defaults
     session_data = data.get("session", {}) or {}
     session = SessionConfig(
@@ -975,6 +998,7 @@ def _dict_to_config(data: dict) -> Config:
         usage_limit=usage_limit,
         prompt_router=prompt_router,
         session_context=session_context,
+        watchdog=watchdog,
         beta=beta,
     )
 

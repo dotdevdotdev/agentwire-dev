@@ -1039,6 +1039,44 @@ def _render_scheduler_staleness_section() -> int:
     return 1
 
 
+def _render_watchdog_section() -> int:
+    """Doctor section: is the watchdog loaded, and which stages run (#1088).
+
+    The "usage-limit watchdog" is the message bus and prompt router too —
+    unloaded, `agentwire msg` queues forever with nothing to say so. Names
+    what is offline instead of the unit's label. Returns issues found.
+    """
+    from . import limits_cli
+
+    issues = 0
+    off = limits_cli.disabled_stages()
+    loaded = limits_cli.watchdog_loaded()
+    if loaded is None:
+        print("  [..] Cannot tell whether the watchdog is loaded on this platform")
+    elif loaded:
+        print("  [ok] Watchdog loaded (ticks every "
+              f"{limits_cli.TICK_INTERVAL}s)")
+    else:
+        issues += 1
+        print("  [!!] Watchdog is NOT loaded — offline: "
+              + limits_cli.offline_summary())
+        print("       Queued `agentwire msg` messages are not being delivered.")
+        print("       Fix: agentwire limits install")
+
+    if off:
+        offline = {n: o for n, _, o in limits_cli.WATCHDOG_STAGES}
+        print("  [..] Stages disabled in config (watchdog.stages): "
+              + ", ".join(f"{n} ({offline[n]})" for n in off))
+    else:
+        print("  [ok] All watchdog stages enabled: " + ", ".join(limits_cli.STAGE_NAMES))
+    unknown = limits_cli.unknown_stage_keys()
+    if unknown:
+        issues += 1
+        print("  [!!] Unknown watchdog.stages key(s) (no such stage): "
+              + ", ".join(unknown) + " — valid: " + ", ".join(limits_cli.STAGE_NAMES))
+    return issues
+
+
 def _render_role_prompt_store_section(
     *, auto_confirm: bool = False, dry_run: bool = False,
 ) -> tuple[int, int]:
@@ -1928,6 +1966,14 @@ def cmd_doctor(args) -> int:
         issues_found += _render_task_migration_section()
     except Exception as e:
         print(f"  [..] Could not check project task migration: {e}")
+
+    # 12a. Watchdog liveness + per-stage switches (#1088) — the unit that
+    # delivers messages and routes prompts, not merely usage-limit recovery.
+    print("\nChecking the watchdog (#1088)...")
+    try:
+        issues_found += _render_watchdog_section()
+    except Exception as e:
+        print(f"  [..] Could not check the watchdog: {e}")
 
     # 12b. Role-prompt store retention (#884) — one file per agent launch,
     # forever, with panes writing guaranteed orphans. Reports size and flags

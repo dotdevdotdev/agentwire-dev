@@ -128,6 +128,36 @@ Events: `~/.agentwire/usage-limit-events.jsonl` (`session_parked`,
 `notify_sent`, `session_resumed`, `unmatched_dialog`, `reset_parse_failed`,
 `park_orphaned`, …).
 
+## What the tick actually runs (#1088)
+
+The "usage-limit watchdog" is the machine's background tick, not only
+usage-limit recovery. **Unloading it stops `agentwire msg` delivery** (queued
+messages pile up silently) along with prompt routing and the housekeeping
+below. Stages, in tick order (ordering invariants: see `cmd_limits_tick`):
+
+| Stage key | What it does | Offline without it |
+|-----------|--------------|--------------------|
+| `usage_limit` | usage-limit sweep (park + auto-resume) | usage-limit recovery |
+| `prompt_router` | child prompts → parent | prompt routing |
+| `inbox` | polite-message inbox drain | **all `agentwire msg` delivery** |
+| `session_context` | context auto-management | context auto-management |
+| `scheduler_zombie` | zombie scheduler-session reap | zombie reap |
+| `cohort` | fan-out cohort sweep (**kills sessions**) | cohort sweep |
+| `safety_notify` | unattended-block digest | digest release |
+| `role_prompts` | role-prompt GC | GC |
+
+Switch a single stage off (absent = on; only an explicit `false` disables):
+
+```yaml
+watchdog:
+  stages:
+    cohort: false
+```
+
+`agentwire doctor` warns when the watchdog is not loaded (naming what is
+offline) and reports disabled stages; `agentwire msg send` warns at enqueue
+when nothing will drain the queue.
+
 Since #276 the tick is the general pane watchdog: after the usage-limit
 sweep it also runs the [prompt-routing sweep](sessions/prompt-routing.md)
 (`prompt_router.tick()`) — ordering guarantees a usage-limit dialog is parked
