@@ -81,12 +81,27 @@ def disabled_stages() -> list[str]:
     return [name for name in STAGE_NAMES if stages.get(name, True) is False]
 
 
+def invalid_stage_values() -> dict[str, object]:
+    """Configured ``watchdog.stages`` entries whose value isn't a real bool.
+
+    Ignored by the tick (the stage stays on) — doctor names them so a quoted
+    ``"false"`` or ``0`` is never mistaken for a working switch-off.
+    """
+    try:
+        from .config import get_config
+
+        return dict(get_config().watchdog.invalid)
+    except Exception:  # noqa: BLE001 — doctor-only aid, never fatal
+        return {}
+
+
 def unknown_stage_keys() -> list[str]:
     """Configured ``watchdog.stages`` keys that name no stage (typos)."""
     try:
         from .config import get_config
 
-        return sorted(set(get_config().watchdog.stages) - set(STAGE_NAMES))
+        wd = get_config().watchdog
+        return sorted((set(wd.stages) | set(wd.invalid)) - set(STAGE_NAMES))
     except Exception:  # noqa: BLE001 — doctor-only aid, never fatal
         return []
 

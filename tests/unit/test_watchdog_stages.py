@@ -109,3 +109,34 @@ def test_unit_files_and_help_list_every_stage():
         if desc not in text
     ]
     assert not missing, missing
+
+
+def test_only_real_bools_switch_a_stage_off(monkeypatch, capsys):
+    raw = {"cohort": None, "inbox": 0, "prompt_router": "false",
+           "session_context": "off", "role_prompts": False, "safety_notify": True}
+    cfg = _dict_to_config({"watchdog": {"stages": raw}})
+    monkeypatch.setattr("agentwire.config.get_config", lambda: cfg)
+    # Only the genuine `false` disables; None is absent, the rest are ignored.
+    assert limits_cli.disabled_stages() == ["role_prompts"]
+    assert limits_cli.invalid_stage_values() == {
+        "inbox": 0, "prompt_router": "false", "session_context": "off"}
+
+    monkeypatch.setattr(limits_cli, "watchdog_loaded", lambda: True)
+    doctor_cli._render_watchdog_section()
+    out = capsys.readouterr().out
+    assert all(k in out for k in ("inbox", "prompt_router", "session_context"))
+    assert "cohort" not in out.split("IGNORED")[1].split("\n")[0]
+
+
+def test_doctor_flags_disabled_usage_limit_with_parked_sessions(monkeypatch, capsys):
+    from agentwire import usage_limit
+
+    monkeypatch.setattr(limits_cli, "watchdog_loaded", lambda: True)
+    monkeypatch.setattr(limits_cli, "disabled_stages", lambda: ["usage_limit"])
+    monkeypatch.setattr(limits_cli, "invalid_stage_values", lambda: {})
+    monkeypatch.setattr(limits_cli, "unknown_stage_keys", lambda: [])
+    monkeypatch.setattr(usage_limit, "list_parked", lambda: [])
+    assert doctor_cli._render_watchdog_section() == 0
+    monkeypatch.setattr(usage_limit, "list_parked", lambda: [{"session": "proj-x"}])
+    assert doctor_cli._render_watchdog_section() == 1
+    assert "proj-x" in capsys.readouterr().out

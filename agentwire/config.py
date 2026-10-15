@@ -589,6 +589,10 @@ class WatchdogConfig:
     """
 
     stages: dict[str, bool] = field(default_factory=dict)
+    # Entries whose value is not a real bool (``None`` from an empty YAML value,
+    # ``0``, the string ``"false"`` ...). They are IGNORED — the stage stays on —
+    # and kept here so doctor can name them instead of guessing the intent.
+    invalid: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -966,7 +970,12 @@ def _dict_to_config(data: dict) -> Config:
     stages_raw = watchdog_data.get("stages", {}) or {}
     if not isinstance(stages_raw, dict):
         stages_raw = {}
-    watchdog = WatchdogConfig(stages={str(k): bool(v) for k, v in stages_raw.items()})
+    watchdog = WatchdogConfig(
+        stages={str(k): v for k, v in stages_raw.items() if isinstance(v, bool)},
+        # A bare `cohort:` (None) is "unset", not a vote either way.
+        invalid={str(k): v for k, v in stages_raw.items()
+                 if v is not None and not isinstance(v, bool)},
+    )
 
     # Session defaults
     session_data = data.get("session", {}) or {}

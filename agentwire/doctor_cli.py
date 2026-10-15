@@ -1069,6 +1069,23 @@ def _render_watchdog_section() -> int:
               + ", ".join(f"{n} ({offline[n]})" for n in off))
     else:
         print("  [ok] All watchdog stages enabled: " + ", ".join(limits_cli.STAGE_NAMES))
+    bad = limits_cli.invalid_stage_values()
+    if bad:
+        issues += 1
+        print("  [!!] watchdog.stages value(s) are not true/false and are IGNORED "
+              "(the stage stays ON): "
+              + ", ".join(f"{k}={v!r}" for k, v in bad.items()))
+    if "usage_limit" in off:
+        from . import usage_limit
+
+        parked = [p.get("session", "?") for p in usage_limit.list_parked()]
+        if parked:
+            issues += 1
+            print("  [!!] usage_limit stage is disabled but sessions are parked — "
+                  "nothing will resume them, and messages to them defer "
+                  "indefinitely (target_parked): " + ", ".join(parked))
+            print("       Fix: re-enable watchdog.stages.usage_limit, or "
+                  "`agentwire limits resume -s <session>`")
     unknown = limits_cli.unknown_stage_keys()
     if unknown:
         issues += 1
