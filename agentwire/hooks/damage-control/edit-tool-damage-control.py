@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "523928000630344a55e290e23ee98cb74bf19f8b26cac07a690d0583c2b973c0", "generated_at": "2026-10-15T20:35:38Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "9a6a09908f9b281dc59d2458b987919fe07893e724e0bd4bfce2e6e1574d6466", "generated_at": "2026-10-15T20:47:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2048,9 +2048,7 @@ _PROSE_STOPWORDS = frozenset(
     "it its has have not but or at as into when where which".split()
 )
 _SHELL_WORDS = frozenset(
-    "cd source exec eval command builtin export set unset alias "
-    "if then elif else fi for while until do done case esac select function "
-    "time coproc".split()
+    "cd source exec eval command builtin export set unset alias".split()
 )
 _SHELL_SYNTAX_CHARS = frozenset(";&|$`(){}<>\\!")
 
@@ -2083,35 +2081,76 @@ def _reads_as_prose(words: List[str]) -> bool:
     )
 
 
+_DATA_SINK_RE = re.compile(
+    r"\b(?:print|write|echo|log|info|debug|warn|warning|error)\s*\(?\s*$"
+)
+_ASSIGN_PREFIX_RE = re.compile(r"(?:^|[\n;])[ \t]*[A-Za-z_]\w*[ \t]*=[ \t]*$")
+
+
+def _is_standalone_data(command: str, start: int, end: int) -> bool:
+    """True when the literal at ``command[start:end]`` is syntactically alone.
+
+    Its left neighbour must be a plain assignment ``name =`` at the start of a
+    statement, or a data-only sink call (``print(`` / ``.write(`` / ``echo ``),
+    and its right neighbour a closing ``)`` / ``;`` / ``#`` / newline / end
+    (``|`` only after ``echo``). ``+``, ``%``, ``,``, ``[``, ``.join``, an
+    adjacent literal, a keyword argument, or any other call all fail — so the
+    path can never be assembled with a write verb sitting in a neighbouring
+    literal.
+    """
+    before = command[:start].rstrip(" \t")
+    after = command[end:].lstrip(" \t")
+    nxt = after[:1]
+    if _ASSIGN_PREFIX_RE.search(command[:start]):
+        return nxt in ("", ";", "#", "\n")
+    sink = _DATA_SINK_RE.search(before)
+    if not sink:
+        return False
+    if nxt == "|":
+        return sink.group(0).startswith("echo")
+    # a closing quote is the enclosing shell quote (``perl -e 'print "…"'``)
+    return nxt in ("", ")", ";", "#", "\n", "'", '"')
+
+
 def redact_prose_mentions(command: str, path: str) -> str:
     """Blank quoted literals that merely TALK ABOUT ``path`` (#1086).
 
     The interpreter net (#678) reads opaque program text, so it cannot tell
-    ``s='hooks in <path> are empty'`` from a write. Contract: a literal is
-    redacted ONLY when it reads as an English sentence around the path
-    (:func:`_reads_as_prose` — stopword/punctuation, no word a program or
-    shell keyword, no flags/slashes/operators) AND no shell write pattern matches
-    it. Everything else stays visible: the path alone (``open('<path>','w')``),
-    any command-shaped literal, anything ambiguous.
+    ``s='hooks in <path> are empty'`` from a write. Contract, fail closed — a
+    literal is redacted ONLY when:
+
+    1. STRUCTURE (:func:`_is_standalone_data`): it is a whole assignment value
+       or the sole argument of a data-only sink (print/write/echo/log), so it
+       cannot be joined to a neighbouring literal that holds the verb;
+    2. CONTENT (:func:`_reads_as_prose`): it reads as a sentence — stopword or
+       punctuation, no flags/slashes/operators/shell syntax, no word a program
+       on PATH or shell builtin; and
+    3. no shell write pattern matches it.
+
+    Everything else stays visible: the path alone (``open('<path>','w')``),
+    command-shaped literals, anything ambiguous.
 
     Declared residuals: variable indirection
     (``p='edit <path> by hand'; open(p.split()[1],'w')``) is not tracked, and
     program detection uses the hook's PATH (see :func:`_reads_as_prose`).
     """
     path_re = _rx(_path_context_regex(path))
-
-    def _blank(m: "re.Match[str]") -> str:
+    out: List[str] = []
+    last = 0
+    for m in _QUOTED_LITERAL_RE.finditer(command):
         lit = m.group(0)
         body = lit[1:-1]
-        if not path_re.search(body):
-            return lit
-        if not _reads_as_prose(path_re.sub(" ", body).split()):
-            return lit
-        if check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]:
-            return lit
-        return lit[0] + path_re.sub("<path-mention>", body) + lit[-1]
-
-    return _QUOTED_LITERAL_RE.sub(_blank, command)
+        if (
+            path_re.search(body)
+            and _is_standalone_data(command, m.start(), m.end())
+            and _reads_as_prose(path_re.sub(" ", body).split())
+            and not check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]
+        ):
+            out.append(command[last:m.start()])
+            out.append(lit[0] + path_re.sub("<path-mention>", body) + lit[-1])
+            last = m.end()
+    out.append(command[last:])
+    return "".join(out)
 
 
 def check_protected_command(

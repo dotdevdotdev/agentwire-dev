@@ -518,7 +518,7 @@ _SETTINGS = "~/.claude/settings.json"
 PROSE_MENTIONS = [
     f"cd /tmp && python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\n"
     "open('/tmp/x.md','w').write(s)\nEOF",
-    f"python3 -c \"print('details are in {_SETTINGS} today')\"",
+    f"python3 -c \"print('see {_SETTINGS} for details')\"",
     f"echo 'the notes mention {_SETTINGS} here' | python3 -c 'import sys; sys.stdin.read()'",
     f"perl -e 'print \"see {_SETTINGS} by hand\"'",
 ]
@@ -558,6 +558,18 @@ INTERPRETER_REAL_WRITES = [
     f"python3 -c 'import os; os.system(\"{{ gzip {_SETTINGS}; }}\")'",
     # shell syntax characters alone disqualify, even among unknown words
     f"python3 -c 'import os; os.system(\"zzfoo; zzbar {_SETTINGS} in place\")'",
+    # the verb sits in a NEIGHBOURING literal — the prose literal must not be redacted
+    f"python3 -c 'import os; os.system(\"echo hi > \" + \"{_SETTINGS} is here\")'",
+    f"python3 -c 'import os; os.system(\"cp /tmp/a \" + \"{_SETTINGS} is x\")'",
+    f"python3 -c 'import os; os.system(\"mv /tmp/a %s\" % \"{_SETTINGS} is x\")'",
+    f"python3 -c 'import subprocess; subprocess.run([\"cp\",\"/tmp/a\",\"{_SETTINGS} is x\"])'",
+    f"python3 -c 'import os; os.system(\"gz\" \"ip {_SETTINGS} in place\")'",
+    f"python3 -c 'import os; os.system(\"gzip \" + \"{_SETTINGS} is here\")'",
+    f"python3 -c 'import os; os.system(\" \".join([\"gzip\",\"{_SETTINGS} in place\"]))'",
+    f"python3 -c 'import os; os.system(\"{_SETTINGS} in place\")'",
+    # structurally standalone but command-shaped: the content screen must still keep it
+    f"python3 -c 'import os; c=\"gzip {_SETTINGS} in place\"; os.system(c)'",
+    f"python3 -c 'import os; c=\"ln a {_SETTINGS}\"; os.system(c)'",
     # unknown tool, no sentence markers: not provably prose, so it stays visible
     f"python3 -c 'import os; os.system(\"zzunknowntool {_SETTINGS} now\")'",
 ]
