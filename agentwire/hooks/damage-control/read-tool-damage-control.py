@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "9a6a09908f9b281dc59d2458b987919fe07893e724e0bd4bfce2e6e1574d6466", "generated_at": "2026-10-15T20:47:12Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "c104dbda4decff7d93c749e6b34a95f2c55235cf7681a71b0727d494577d3084", "generated_at": "2026-10-15T20:56:02Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2090,7 +2090,7 @@ def _reads_as_prose(words: List[str]) -> bool:
 _DATA_SINK_RE = re.compile(
     r"\b(?:print|write|echo|log|info|debug|warn|warning|error)\s*\(?\s*$"
 )
-_ASSIGN_PREFIX_RE = re.compile(r"(?:^|[\n;])[ \t]*[A-Za-z_]\w*[ \t]*=[ \t]*$")
+_ASSIGN_PREFIX_RE = re.compile(r"(?:^|[\n;])[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*$")
 
 
 def _is_standalone_data(command: str, start: int, end: int) -> bool:
@@ -2098,8 +2098,8 @@ def _is_standalone_data(command: str, start: int, end: int) -> bool:
 
     Its left neighbour must be a plain assignment ``name =`` at the start of a
     statement, or a data-only sink call (``print(`` / ``.write(`` / ``echo ``),
-    and its right neighbour a closing ``)`` / ``;`` / ``#`` / newline / end
-    (``|`` only after ``echo``). ``+``, ``%``, ``,``, ``[``, ``.join``, an
+    and its right neighbour a closing ``)`` / ``;`` / ``#`` / newline / end.
+    A pipe is NOT allowed: it feeds the literal to code as stdin. ``+``, ``%``, ``,``, ``[``, ``.join``, an
     adjacent literal, a keyword argument, or any other call all fail — so the
     path can never be assembled with a write verb sitting in a neighbouring
     literal.
@@ -2107,15 +2107,29 @@ def _is_standalone_data(command: str, start: int, end: int) -> bool:
     before = command[:start].rstrip(" \t")
     after = command[end:].lstrip(" \t")
     nxt = after[:1]
-    if _ASSIGN_PREFIX_RE.search(command[:start]):
-        return nxt in ("", ";", "#", "\n")
-    sink = _DATA_SINK_RE.search(before)
-    if not sink:
+    assign = _ASSIGN_PREFIX_RE.search(command[:start])
+    if assign:
+        return nxt in ("", ";", "#", "\n") and _only_sunk(command, assign.group(1))
+    if not _DATA_SINK_RE.search(before):
         return False
-    if nxt == "|":
-        return sink.group(0).startswith("echo")
     # a closing quote is the enclosing shell quote (``perl -e 'print "…"'``)
     return nxt in ("", ")", ";", "#", "\n", "'", '"')
+
+
+def _only_sunk(command: str, name: str) -> bool:
+    """True when every use of ``name`` is the assignment or ``sink(name)``.
+
+    ``s='<prose>'`` is data only while nothing can feed ``s`` to code:
+    ``'echo hi > ' + s``, ``s.split()``, ``open(s…)``, ``os.system(s)``,
+    ``f"{s}"`` all name it somewhere other than as the sole argument of a data
+    sink, so the occurrence count exceeds the assignment plus the sunk uses.
+    """
+    word = r"\b" + re.escape(name) + r"\b"
+    sunk = re.compile(
+        r"\b(?:print|write|echo|log|info|debug|warn|warning|error)\s*\(\s*"
+        + word + r"\s*\)"
+    )
+    return len(re.findall(word, command)) == 1 + len(sunk.findall(command))
 
 
 def redact_prose_mentions(command: str, path: str) -> str:
@@ -2136,9 +2150,12 @@ def redact_prose_mentions(command: str, path: str) -> str:
     Everything else stays visible: the path alone (``open('<path>','w')``),
     command-shaped literals, anything ambiguous.
 
-    Declared residuals: variable indirection
-    (``p='edit <path> by hand'; open(p.split()[1],'w')``) is not tracked, and
-    program detection uses the hook's PATH (see :func:`_reads_as_prose`).
+    An assigned literal additionally requires every other use of the variable
+    to be ``sink(name)`` (:func:`_only_sunk`), so indirection through the
+    variable keeps it visible.
+
+    Declared residual: program detection uses the hook's PATH (see
+    :func:`_reads_as_prose`).
     """
     path_re = _rx(_path_context_regex(path))
     out: List[str] = []

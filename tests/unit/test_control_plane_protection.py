@@ -519,7 +519,6 @@ PROSE_MENTIONS = [
     f"cd /tmp && python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\n"
     "open('/tmp/x.md','w').write(s)\nEOF",
     f"python3 -c \"print('see {_SETTINGS} for details')\"",
-    f"echo 'the notes mention {_SETTINGS} here' | python3 -c 'import sys; sys.stdin.read()'",
     f"perl -e 'print \"see {_SETTINGS} by hand\"'",
 ]
 
@@ -570,6 +569,13 @@ INTERPRETER_REAL_WRITES = [
     # structurally standalone but command-shaped: the content screen must still keep it
     f"python3 -c 'import os; c=\"gzip {_SETTINGS} in place\"; os.system(c)'",
     f"python3 -c 'import os; c=\"ln a {_SETTINGS}\"; os.system(c)'",
+    # indirection through the assigned variable, and prose piped to code as stdin
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; os.system(\"echo hi > \" + s)'",
+    f"python3 - <<'EOF'\nimport os\ns='the {_SETTINGS} is'\nos.system('echo hi > ' + s)\nEOF",
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; open(s.split()[1],\"w\")'",
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; print(s); open(s.split()[1],\"w\")'",
+    f"python3 -c 'import os; s=\"the {_SETTINGS} is\"; exec(\"open(s.split()[1],0)\")'",
+    f"echo 'the {_SETTINGS} is' | python3 -c 'import sys,os; os.system(\"echo hi > \"+sys.stdin.read().split()[1])'",
     # unknown tool, no sentence markers: not provably prose, so it stays visible
     f"python3 -c 'import os; os.system(\"zzunknowntool {_SETTINGS} now\")'",
 ]
