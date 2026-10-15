@@ -2002,6 +2002,33 @@ def check_protected_path(
     return False, ""
 
 
+_QUOTED_LITERAL_RE = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
+
+
+def redact_prose_mentions(command: str, path: str) -> str:
+    """Blank quoted literals that merely TALK ABOUT ``path`` (#1086).
+
+    The interpreter net (#678) reads opaque program text, so it cannot tell
+    ``s='hooks in <path> are empty'`` from a write — but a literal that is
+    multi-word prose around the path, and whose content no shell write/delete
+    pattern matches, names the path as TEXT. A literal that IS the path
+    (``open('<path>', 'w')``) or whose content is a shell write
+    (``os.system("echo x > <path>")``) is kept.
+    """
+    path_re = _rx(_path_context_regex(path))
+
+    def _blank(m: "re.Match[str]") -> str:
+        lit = m.group(0)
+        body = lit[1:-1]
+        if not path_re.search(body) or not re.search(r"\s", body.strip()):
+            return lit
+        if check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]:
+            return lit
+        return lit[0] + path_re.sub("<path-mention>", body) + lit[-1]
+
+    return _QUOTED_LITERAL_RE.sub(_blank, command)
+
+
 def check_protected_command(
     command: str,
     allowed_paths: List[Dict[str, Any]],
@@ -2024,9 +2051,10 @@ def check_protected_command(
         # text (#678) — a heredoc body is exactly what masking strips, so they
         # keep reading the raw haystacks. Only the shell-level write/delete
         # patterns move to the masked ladder haystacks.
+        interp_hays = [redact_prose_mentions(h, path) for h in raw_haystacks]
         for hays, patterns in (
             (path_ladder_haystacks(command, path), READ_ONLY_BLOCKED),
-            (raw_haystacks, INTERPRETER_WRITE_PATTERNS),
+            (interp_hays, INTERPRETER_WRITE_PATTERNS),
         ):
             for hay in hays:
                 matched, reason = check_path_patterns(

@@ -506,3 +506,45 @@ def test_host_side_edit_is_honored_by_loader(tmp_path):
     assert load_safety_config(global_config_path=g, cwd=str(tmp_path))["enabled"] is True
     _write(g, "enabled: false\n")  # owner flips the kill switch on the host
     assert load_safety_config(global_config_path=g, cwd=str(tmp_path))["enabled"] is False
+
+
+# --------------------------------------------------------------------------
+# #1086 — a MENTION inside an interpreter program's prose literal is data;
+# a real write through the same interpreter is still refused.
+# --------------------------------------------------------------------------
+
+_SETTINGS = "~/.claude/settings.json"
+
+PROSE_MENTIONS = [
+    f"cd /tmp && python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\n"
+    "open('/tmp/x.md','w').write(s)\nEOF",
+    f"python3 -c \"print('see {_SETTINGS} for details')\"",
+    f"echo 'notes mention {_SETTINGS} here' | python3 -c 'import sys; sys.stdin.read()'",
+    f"perl -e 'print \"edit {_SETTINGS} by hand\"'",
+]
+
+INTERPRETER_REAL_WRITES = [
+    f"python3 - <<'EOF'\nopen('{_SETTINGS}','w').write('x')\nEOF",
+    f"python3 - <<'EOF'\ns='hooks in {_SETTINGS} are empty'\nopen('{_SETTINGS}','w').write(s)\nEOF",
+    f"python3 -c 'import os; os.system(\"echo x > {_SETTINGS}\")'",
+    f"python3 -c 'import os; os.system(\"sed -i s/a/b/ {_SETTINGS}\")'",
+    f"perl -e 'open(F, \">\", \"{_SETTINGS}\")'",
+    f"python3 - <<'EOF'\nimport os\nos.system(\"echo x > {_SETTINGS}\")\nEOF",
+    f"python3 - <<'EOF'\nimport os\nos.system(\"cp /tmp/x {_SETTINGS}\")\nEOF",
+]
+
+
+def test_prose_mention_in_interpreter_literal_not_blocked(cfg):
+    wrongly_blocked = [
+        c for c in PROSE_MENTIONS
+        if check_command(c, cfg).get("protected") is True
+    ]
+    assert not wrongly_blocked, wrongly_blocked
+
+
+def test_real_interpreter_write_still_blocked_beside_prose(cfg):
+    leaked = [
+        c for c in INTERPRETER_REAL_WRITES
+        if check_command(c, cfg).get("protected") is not True
+    ]
+    assert not leaked, leaked
