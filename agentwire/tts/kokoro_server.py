@@ -21,7 +21,7 @@ Run via:
     agentwire kokoro status                  # Check status
 
 Or run directly:
-    KOKORO_PORT=8102 uvicorn agentwire.tts.kokoro_server:app --host 0.0.0.0 --port 8102
+    KOKORO_PORT=8102 uvicorn agentwire.tts.kokoro_server:app --host 127.0.0.1 --port 8102
 """
 
 import io
@@ -36,7 +36,7 @@ from .engines.kokoro import PRESET_VOICES, SUPPORTED_LANGUAGES
 from .local import LocalKokoro
 
 # Configuration via environment (mirrors stt_server's STT_HOST/STT_PORT).
-KOKORO_HOST = os.environ.get("KOKORO_HOST", "0.0.0.0")
+KOKORO_HOST = os.environ.get("KOKORO_HOST", "127.0.0.1")
 KOKORO_PORT = int(os.environ.get("KOKORO_PORT", "8102"))
 
 # Single engine owned by this process. Constructed at import (cheap, no I/O);

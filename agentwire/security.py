@@ -27,6 +27,7 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import sys
 import logging
 import re
 import secrets
@@ -151,6 +152,25 @@ def is_loopback_host(host: str) -> bool:
     except ValueError:
         # Hostnames and anything unparseable: assume reachable from outside.
         return False
+
+
+SHIM_DEFAULT_HOST = "127.0.0.1"
+
+
+def resolve_shim_host(explicit: str | None, configured: str | None, kind: str) -> str:
+    """Pick a voice-shim bind host: ``--host`` > config > loopback (#1084).
+
+    The shims (TTS/STT/Kokoro) carry no auth, so they default to loopback like
+    the portal (#498). A non-loopback host is honored but warned about loudly.
+    """
+    host = explicit or configured or SHIM_DEFAULT_HOST
+    if not is_loopback_host(host):
+        print(
+            f"Warning: {kind} server binding {host!r} is reachable from the network "
+            "and has no authentication. Use 127.0.0.1 unless you need LAN access.",
+            file=sys.stderr,
+        )
+    return host
 
 
 def validate_startup_security(config) -> None:

@@ -166,11 +166,11 @@ class WorktreeConfig:
             self.default_project = str(_expand_path(self.default_project))
 
 
-_VOICE_BACKENDS = ("default", "custom")
+_VOICE_BACKENDS = ("default", "custom", "none")
 
 _VOICE_BACKEND_MIGRATION_HINT = (
-    "Use 'default' (browser speech in the portal + OS voice fallback, zero setup) "
-    "or 'custom' with url: pointing at your shim. "
+    "Use 'default' (browser speech in the portal + OS voice fallback, zero setup), "
+    "'custom' with url: pointing at your shim, or 'none' to turn server voice off. "
     "See docs/wiki/voice/shim-contract.md."
 )
 
@@ -207,7 +207,7 @@ class TTSConfig:
     any HTTP shim implementing the contract (docs/wiki/voice/shim-contract.md).
     """
 
-    backend: str = "default"  # default | custom
+    backend: str = "default"  # default | custom | none
     url: str | None = None  # shim URL (required for custom; optional override for default :8102)
     default_voice: str = "default"
     voices_dir: Path = field(default_factory=lambda: Path.home() / ".agentwire" / "voices")
@@ -242,7 +242,7 @@ class STTConfig:
     the contract (docs/wiki/voice/shim-contract.md).
     """
 
-    backend: str = "default"  # TIER: default | cloud | custom (portal/host selector)
+    backend: str = "default"  # TIER: default | cloud | custom | none (portal/host selector)
     # ENGINE: auto | moonshine | whisper — which model the self-hosted STT
     # shim loads (engine.py). Orthogonal to `backend`: the tier picks *where*
     # transcription happens, the engine picks *which model* the custom shim runs.
@@ -269,7 +269,7 @@ class STTConfig:
 
     def __post_init__(self):
         _validate_voice_backend(
-            "stt", self.backend, self.url, allowed=("default", "cloud", "custom")
+            "stt", self.backend, self.url, allowed=("default", "cloud", "custom", "none")
         )
         allowed_engines = ("auto", "moonshine", "whisper")
         if self.engine not in allowed_engines:

@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from .security import resolve_shim_host
+
 from .core import (
     _output_json,
     get_kokoro_session_name,
@@ -75,7 +77,7 @@ def _start_tts_local(args, venv_override: str | None = None, attach: bool = True
     config = load_config()
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
-    host = args.host or tts_config.get("host", "0.0.0.0")
+    host = resolve_shim_host(args.host, tts_config.get("host"), "TTS")
     backend = _get_tts_engine(args, tts_config)
 
     # Determine venv family
@@ -143,7 +145,7 @@ def _start_tts_remote(ssh_target: str, machine_id: str, args) -> int:
     config = load_config()
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
-    host = args.host or tts_config.get("host", "0.0.0.0")
+    host = resolve_shim_host(args.host, tts_config.get("host"), "TTS")
     backend = _get_tts_engine(args, tts_config)
 
     # Build backend flag
@@ -262,7 +264,7 @@ def cmd_tts_serve(args) -> int:
     config = load_config()
     tts_config = config.get("tts", {})
     port = args.port or tts_config.get("port", 8100)
-    host = args.host or tts_config.get("host", "0.0.0.0")
+    host = resolve_shim_host(args.host, tts_config.get("host"), "TTS")
     backend = _get_tts_engine(args, tts_config)
 
     # Determine venv family (explicit or auto-detect from backend)
@@ -538,7 +540,7 @@ def cmd_stt_start(args) -> int:
     """Start the STT server in tmux."""
     session_name = get_stt_session_name()
     port = args.port or 8101
-    host = args.host or "0.0.0.0"
+    host = resolve_shim_host(args.host, None, "STT")
 
     if tmux_session_exists(session_name):
         live, status = _shim_session_state(session_name, port)
@@ -592,7 +594,7 @@ def cmd_stt_serve(args) -> int:
     import uvicorn
 
     port = args.port or 8101
-    host = args.host or "0.0.0.0"
+    host = resolve_shim_host(args.host, None, "STT")
     config = load_config()
     stt_config = config.get("stt", {})
     model = args.model or stt_config.get("model", "base")
@@ -667,7 +669,7 @@ def cmd_kokoro_start(args) -> int:
     relaunched so a wedged shim self-heals instead of masking forever (#734)."""
     session_name = get_kokoro_session_name()
     port = args.port or 8102
-    host = args.host or "0.0.0.0"
+    host = resolve_shim_host(args.host, None, "Kokoro")
 
     if tmux_session_exists(session_name):
         live, status = _shim_session_state(session_name, port)
@@ -713,7 +715,7 @@ def cmd_kokoro_serve(args) -> int:
     import uvicorn
 
     port = args.port or 8102
-    host = args.host or "0.0.0.0"
+    host = resolve_shim_host(args.host, None, "Kokoro")
 
     os.environ["KOKORO_PORT"] = str(port)
     os.environ["KOKORO_HOST"] = host
@@ -820,7 +822,7 @@ def _restart_tts_local_for_venv(venv: str, backend: str) -> bool:
     config = load_config()
     tts_config = config.get("tts", {})
     port = tts_config.get("port", 8100)
-    host = tts_config.get("host", "0.0.0.0")
+    host = resolve_shim_host(None, tts_config.get("host"), "TTS")
 
     # Stop existing server
     if tmux_session_exists(session_name):
@@ -1012,7 +1014,7 @@ def register_tts_parser(subparsers) -> None:
     # tts start
     tts_start = tts_subparsers.add_parser("start", help="Start TTS server in tmux")
     tts_start.add_argument("--port", type=int, help="Server port (default: 8100)")
-    tts_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    tts_start.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     tts_start.add_argument("--backend", type=str,
                            choices=_TTS_BACKEND_CHOICES,
                            help="TTS backend (default: chatterbox)")
@@ -1021,7 +1023,7 @@ def register_tts_parser(subparsers) -> None:
     # tts serve (run in foreground)
     tts_serve = tts_subparsers.add_parser("serve", help="Run TTS server in foreground")
     tts_serve.add_argument("--port", type=int, help="Server port (default: 8100)")
-    tts_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    tts_serve.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     tts_serve.add_argument("--backend", type=str,
                            choices=_TTS_BACKEND_CHOICES,
                            help="TTS backend (default: chatterbox)")
@@ -1037,7 +1039,7 @@ def register_tts_parser(subparsers) -> None:
     # tts restart
     tts_restart = tts_subparsers.add_parser("restart", help="Restart TTS server (with optional venv switch)")
     tts_restart.add_argument("--port", type=int, help="Server port (default: 8100)")
-    tts_restart.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    tts_restart.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     tts_restart.add_argument("--backend", type=str,
                              choices=_TTS_BACKEND_CHOICES,
                              help="TTS backend")
@@ -1072,7 +1074,7 @@ def register_tts_parser(subparsers) -> None:
     # stt start
     stt_start = stt_subparsers.add_parser("start", help="Start STT server in tmux")
     stt_start.add_argument("--port", type=int, help="Server port (default: 8101)")
-    stt_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    stt_start.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     stt_start.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
     stt_start.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper")
     stt_start.set_defaults(func=cmd_stt_start)
@@ -1080,7 +1082,7 @@ def register_tts_parser(subparsers) -> None:
     # stt serve
     stt_serve = stt_subparsers.add_parser("serve", help="Run STT server in foreground")
     stt_serve.add_argument("--port", type=int, help="Server port (default: 8101)")
-    stt_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    stt_serve.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     stt_serve.add_argument("--model", type=str, help="Whisper model (tiny/base/small/medium/large-v3)")
     stt_serve.add_argument("--backend", type=str, help="STT backend: auto (default), moonshine, whisper")
     stt_serve.set_defaults(func=cmd_stt_serve)
@@ -1103,13 +1105,13 @@ def register_tts_parser(subparsers) -> None:
     # kokoro start
     kokoro_start = kokoro_subparsers.add_parser("start", help="Start Kokoro shim in tmux")
     kokoro_start.add_argument("--port", type=int, help="Server port (default: 8102)")
-    kokoro_start.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    kokoro_start.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     kokoro_start.set_defaults(func=cmd_kokoro_start)
 
     # kokoro serve
     kokoro_serve = kokoro_subparsers.add_parser("serve", help="Run Kokoro shim in foreground")
     kokoro_serve.add_argument("--port", type=int, help="Server port (default: 8102)")
-    kokoro_serve.add_argument("--host", type=str, help="Server host (default: 0.0.0.0)")
+    kokoro_serve.add_argument("--host", type=str, help="Server host (default: 127.0.0.1)")
     kokoro_serve.set_defaults(func=cmd_kokoro_serve)
 
     # kokoro stop
