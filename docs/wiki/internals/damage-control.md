@@ -178,6 +178,31 @@ in `safety/_core.py`; applied only to the protected tier, never to user
 - **Split path strings:** adjacent / `+` / `.`-joined quoted literals are folded
   (`fold_string_concat`) before the interpreter net reads them.
 
+**Derived commands: heredocs, stdin and wrappers (#1098, #1099).** Text a
+runner will execute is re-scanned as a command in its own right
+(`_derived_commands`, depth- and fan-out-capped), so the verb decides exactly as
+it would unwrapped:
+
+- **Unquoted heredoc bodies** expand `$(…)` and backticks, so each substitution
+  is a command (`cat <<EOF` … `$(touch <path>)` … `EOF`, also inside
+  `git commit -m "$(cat <<EOF …)"`). A quoted delimiter (`<<'EOF'`, `<<"EOF"`) is
+  data, as is an escaped `\$(` or arithmetic `$((…))`; a substitution that only
+  reads is allowed.
+- **Stdin handed to a runner** — a heredoc body, a here-string or piped
+  `echo`/`printf` text — is a command when the runner executes its stdin:
+  `ssh host` with no remote command (or a shell), `at`, `batch`, `crontab -`,
+  `. /dev/stdin` / `source /dev/stdin`, a bare `parallel`. With a real remote
+  program (`ssh host cat`) stdin is data and is left alone.
+- **`parallel` is xargs-shaped:** its command is re-scanned with the path
+  substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
+- **Prefix wrappers** (`caffeinate`, `ionice`, `nice`, `taskset`, `chrt`,
+  `sshpass`, … — `_PREFIX_WRAPPERS`) run the command that follows them: a quoted
+  arg behind one is code when an arg-runner (`ssh`, `watch`, …) follows and
+  prose otherwise (`caffeinate git commit -m '…<path>'` stays allowed).
+- **A computed verb** (`bash -c "$(cat x) <path>"`, `$v <path>` handed to a
+  shell) is refused when the path is named: nothing static says it does not
+  write.
+
 Declared residuals (not statically knowable): paths assembled at runtime
 (`join`, `chr`, `format`, decoding), a `patch` / `git apply` whose target is
 named only inside the diff, a basename-only operand whose directory is set

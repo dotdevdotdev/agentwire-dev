@@ -112,8 +112,22 @@ NO_DELETE_BLOCKED = DELETE_PATTERNS
 # ``check_protected_command`` — never to user readOnlyPaths rules — so a
 # legitimate read via ``cat``/``grep`` stays allowed.
 _INTERPRETERS = r'(?:python[\d.]*|perl|ruby|node|deno|bun|php)'
-_SHELLS = r'(?:sh|bash|zsh|dash|ksh)'
+_SHELLS = r'(?:sh|bash|zsh|dash|ksh|ash|fish|csh|tcsh)'
 _SEG = r'[^\n|;&]*'  # stay inside one simple command
+
+# Prefix wrappers: they run the command that FOLLOWS them (``caffeinate ssh host
+# '…'``), so a quoted argument is code when an arg-runner (``_ARG_RUNNERS``)
+# sits behind one, and prose when none does (``caffeinate git commit -m '…'``).
+# The prose blanking used to key on the segment's first word alone (#1099).
+_PREFIX_WRAPPERS = frozenset({
+    "sudo", "doas", "env", "nohup", "timeout", "gtimeout", "exec", "time", "nice",
+    "setsid", "stdbuf", "flock", "chroot", "runuser", "command", "builtin",
+    "caffeinate", "ionice", "chrt", "taskset", "numactl", "cpulimit", "systemd-run",
+    "sandbox-exec", "unshare", "nsenter", "firejail", "bwrap", "proxychains",
+    "proxychains4", "torsocks", "tsocks", "unbuffer", "chronic", "xvfb-run",
+    "fakeroot", "rlwrap", "sshpass", "setpriv", "runcon", "sg", "arch", "lockf",
+    "daemon", "entr", "watchexec", "trickle", "strace", "ltrace", "dtruss",
+})
 # A write whose TARGET is a variable (``> "$f"``, ``rm "$f"``): the path is
 # supplied by something else in the command (a loop's list, a positional arg).
 _VAR_WRITE = (
@@ -143,6 +157,10 @@ INTERPRETER_WRITE_PATTERNS = [
     (r'\b' + _SHELLS + r'\b' + _SEG + r'(?:\s+-s\b|\s+-\s|\s+-$|<<)(?s:.*){path}',
      "shell program"),
     (r'{path}(?s:.*)\|\s*(?:env\s+)?' + _SHELLS + r'\b', "pipe into shell"),
+    # The VERB is supplied by a substitution/variable (``bash -c "$(cat x) <path>"``,
+    # ``eval "$v <path>"``): nothing static says whether it writes (#1099).
+    (r'\b(?:' + _SHELLS + r'\b' + _SEG + r'\s-\S*c|eval)\s+["\']?\s*(?:\$\(|`|\$\w|\$\{)(?s:.*){path}',
+     "shell payload with a computed command"),
     (r'<<(?s:.*)\|\s*(?:env\s+)?' + _SHELLS + r'\b(?s:.*){path}', "heredoc piped into shell"),
     # ``bash -c '… > "$1"' _ <path>`` / ``F=<path>; sh -c "… > $F"``: the shell
     # script writes through a variable and the path is supplied elsewhere.
@@ -1156,7 +1174,7 @@ _INDIRECT_RUNNERS = {
     "env", "xargs", "sudo", "doas", "su", "ssh", "nohup", "setsid",
     "timeout", "nice", "ionice", "stdbuf", "script", "watch", "parallel",
     "command", "exec", "time", "find", "make", "nix-shell", "docker", "podman",
-}
+} | _PREFIX_WRAPPERS
 
 # git's directory-redirecting global options. `-C` and `--git-dir` /
 # `--work-tree` all accept BOTH `--opt=<path>` and `--opt <path>` against the
@@ -2252,9 +2270,7 @@ _ASSIGN_WORD = _rx(r"^\w+=")
 # Commands whose quoted arguments are themselves run as commands (#1097): a
 # wrapped command is the command, so these args are never prose.
 _ARG_RUNNERS = frozenset({
-    "ssh", "eval", "watch", "xargs", "sudo", "doas", "su", "env", "nohup",
-    "timeout", "exec", "time", "nice", "setsid", "stdbuf", "flock", "chroot",
-    "runuser", "command", "builtin", "busybox", "docker", "kubectl", "podman",
+    "ssh", "eval", "watch", "xargs", "su", "busybox", "docker", "kubectl", "podman",
     "find", "parallel", "tmux", "screen", "script", "at", "osascript", "pkexec",
 })
 
@@ -2293,7 +2309,11 @@ def _blank_prose_args(hay: str, path: str) -> str:
         # the command word runs its arguments (ssh host '…', eval '…', watch '…')
         words = _SEGMENT_SPLIT.split(prefix)[-1].split()
         words = [w for w in words if not _ASSIGN_WORD.match(w)]
-        if words and os.path.basename(words[0]) in _ARG_RUNNERS:
+        names = [os.path.basename(w) for w in words]
+        if names and (
+            names[0] in _ARG_RUNNERS
+            or (names[0] in _PREFIX_WRAPPERS and any(n in _ARG_RUNNERS for n in names[1:]))
+        ):
             return True
         # the text is piped into something that runs it (``… | xargs sh -c``)
         return bool(runs_data.search(hay[end:]))
@@ -2311,13 +2331,19 @@ def _blank_prose_args(hay: str, path: str) -> str:
     return _rx(r''''[^'\n]*'|"[^"\n]*"''').sub(_blank, hay)
 
 
-def _xargs_rescans(command: str, path: str) -> List[str]:
-    """Synthesize the command ``xargs`` runs when its input mentions ``path``.
+def _quote_word(word: str) -> str:
+    """Re-quote a parsed word that would not survive being joined back by spaces."""
+    return shlex.quote(word) if re.search(r"[\s'\"`$()\\]", word) else word
 
-    Stance (#1095): ``xargs`` is a WRAPPER, not a verb — it runs its command
-    with stdin as operands. When the command mentions a protected path anywhere,
-    the xargs tail is re-scanned as a command in its own right with that path
-    appended (or substituted for the ``-I`` replacement string), so
+
+def _xargs_rescans(command: str, path: str) -> List[str]:
+    """Synthesize the command ``xargs`` / ``parallel`` runs when its input mentions ``path``.
+
+    Stance (#1095, #1099): ``xargs`` and GNU ``parallel`` are WRAPPERS, not
+    verbs — they run their command with stdin (or ``:::`` words) as operands.
+    When the command mentions a protected path anywhere, the wrapper's tail is
+    re-scanned as a command in its own right with that path appended (or
+    substituted for the ``-I`` / ``{}`` replacement string), so
     ``… | xargs rm`` is judged as ``rm <path>`` and ``… | xargs echo`` as
     ``echo <path>`` — the verb decides, exactly as it would unwrapped.
     """
@@ -2326,13 +2352,20 @@ def _xargs_rescans(command: str, path: str) -> List[str]:
         return []
     token = mention.group(0).strip("\"'\t \n;|&<>()=:")
     out: List[str] = []
-    for m in _rx(r'\bxargs\b([^\n|;&<]*)').finditer(command):
-        try:
-            words = shlex.split(m.group(1))
-        except ValueError:
-            words = m.group(1).split()
+    for m in _rx(r'\b(xargs|parallel)\b([^\n|;&<]*)').finditer(command):
+        words = _words(m.group(2))
+        if m.group(1) == "parallel":
+            rest, repl = _parallel_command(words)
+            replace = lambda w: _PARALLEL_REPLACEMENT.sub(lambda _m: token, w)  # noqa: E731
+            hit = any(_PARALLEL_REPLACEMENT.search(w) for w in rest)
+            if repl and any(repl in w for w in rest):
+                replace = lambda w: w.replace(repl, token)  # noqa: E731
+                hit = True
+            out.append(" ".join(_quote_word(replace(w)) for w in rest) if hit
+                       else " ".join([_quote_word(w) for w in rest] + [token]))
+            continue
         repl = None
-        rest: List[str] = []
+        rest = []
         i = 0
         while i < len(words):
             w = words[i]
@@ -2349,9 +2382,9 @@ def _xargs_rescans(command: str, path: str) -> List[str]:
                 i += 1
             i += 1
         if repl and any(repl in w for w in rest):
-            out.append(" ".join(w.replace(repl, token) for w in rest))
+            out.append(" ".join(_quote_word(w.replace(repl, token)) for w in rest))
         else:
-            out.append(" ".join(rest + [token]))
+            out.append(" ".join([_quote_word(w) for w in rest] + [token]))
     return out
 
 
@@ -2385,13 +2418,13 @@ _RESCAN_DEPTH = 4
 _RESCAN_FANOUT = 24
 
 
-def _heredoc_bodies(command: str) -> List[Tuple[str, bool]]:
-    """``(body, delimiter_quoted)`` for every heredoc in ``command`` (#1098).
+def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
+    """``(body, delimiter_quoted, opening_line)`` for every heredoc in ``command`` (#1098).
 
     A quoted delimiter (``<<'EOF'`` / ``<<"EOF"`` / ``<<\\EOF``) makes the body
     literal; an unquoted one expands ``$(...)`` and backticks inside it.
     """
-    out: List[Tuple[str, bool]] = []
+    out: List[Tuple[str, bool, str]] = []
     pos = 0
     while True:
         m = _HEREDOC_OPEN_RE.search(command, pos)
@@ -2410,7 +2443,8 @@ def _heredoc_bodies(command: str) -> List[Tuple[str, bool]]:
                 consumed = i + 1
                 break
             body.append(line)
-        out.append(("\n".join(body), quoted))
+        line = command[command.rfind("\n", 0, m.start()) + 1 : nl]
+        out.append(("\n".join(body), quoted, line))
         pos = nl + 1 + sum(len(x) + 1 for x in lines[:consumed])
 
 
@@ -2457,15 +2491,179 @@ def _heredoc_substitution_commands(command: str) -> List[str]:
     if "<<" not in command:
         return []
     out: List[str] = []
-    for body, quoted in _heredoc_bodies(command):
+    for body, quoted, _line in _heredoc_bodies(command):
         if not quoted:
             out.extend(_command_substitutions(body))
     return out
 
 
+_STDIN_PROGRAM_FILES = frozenset({"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0", "-"})
+# ssh options that take a separate value (so the value is not mistaken for the host)
+_SSH_VALUE_OPTS = frozenset(
+    "-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split()
+)
+# GNU parallel options that take a separate value
+_PARALLEL_VALUE_OPTS = frozenset(
+    "-j --jobs -a --arg-file -S --sshlogin -n --max-args -N -L --max-lines -d "
+    "--delimiter --colsep -C -I -J --results --joblog -E --timeout --retries "
+    "--delay --halt --load --memfree --nice --tmpdir --workdir --sshloginfile "
+    "--slf --trc --return --transfer-file --basefile --env -s".split()
+)
+_PARALLEL_REPLACEMENT = _rx(r"\{(?:\.|/|//|/\.|#)?\}")
+
+
+_REDIRECT_RE = _rx(r"\d*(?:<<<|<<-?|<>|>>|>\||>&|&>|<|>)[ \t]*(?:'[^']*'|\"[^\"]*\"|[^\s|;&]+)")
+_WORD_OPERATORS = frozenset({"|", "||", "&", "&&", ";"})
+
+
+def _words(text: str) -> List[str]:
+    try:
+        return shlex.split(text, comments=True)
+    except ValueError:
+        return text.split()
+
+
+def _command_words(line: str) -> List[str]:
+    """Words of a command line with redirections removed (``ssh host <<EOF`` -> ``ssh host``)."""
+    return _words(_REDIRECT_RE.sub(" ", line))
+
+
+def _ssh_remote_command(args: List[str]) -> List[str]:
+    """The remote command words of an ``ssh`` invocation (empty = interactive shell)."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        i += 2 if args[i] in _SSH_VALUE_OPTS else 1
+    return args[i + 1 :]  # args[i] is the host
+
+
+def _parallel_command(args: List[str]) -> Tuple[List[str], Optional[str]]:
+    """``(command_words, replacement_string)`` of a GNU ``parallel`` invocation."""
+    i, repl = 0, None
+    while i < len(args):
+        w = args[i]
+        if w in (":::", "::::", ":::+", "::::+"):
+            return [], repl
+        if w == "-I" and i + 1 < len(args):
+            repl = args[i + 1]
+        if w.startswith("-") and w != "-":
+            i += 2 if w in _PARALLEL_VALUE_OPTS else 1
+            continue
+        cmd: List[str] = []
+        while i < len(args) and args[i] not in (":::", "::::", ":::+", "::::+"):
+            cmd.append(args[i])
+            i += 1
+        return cmd, repl
+    return [], repl
+
+
+def _stdin_is_program(words: List[str]) -> bool:
+    """True when this simple command runs what it reads on stdin as commands (#1099).
+
+    ``ssh host`` (no remote command, or a shell) executes its stdin remotely,
+    ``at``/``batch`` queue it, ``. /dev/stdin`` sources it, a bare ``parallel``
+    runs each line. With a non-shell remote command or a real program, stdin is
+    data (``ssh host cat``) and the text is not a command.
+    """
+    for i, w in enumerate(words):
+        name, rest = os.path.basename(w), words[i + 1 :]
+        for j, r in enumerate(rest):
+            if r in _WORD_OPERATORS:
+                rest = rest[:j]
+                break
+        if name in ("at", "batch"):
+            return True
+        if name in ("source", "."):
+            if rest and rest[0] in _STDIN_PROGRAM_FILES:
+                return True
+        elif name == "crontab":
+            if "-" in rest:
+                return True
+        elif name in ("ssh", "slogin"):
+            remote = _ssh_remote_command(rest)
+            if not remote or re.fullmatch(_SHELLS, os.path.basename(remote[0])):
+                return True
+        elif name == "parallel":
+            if not _parallel_command(rest)[0]:
+                return True
+    return False
+
+
+def _pipe_stages(command: str) -> List[Tuple[str, str]]:
+    """``(operator_before, stage_text)`` pairs, split outside quotes on ``| ; & newline``."""
+    stages: List[Tuple[str, str]] = []
+    buf: List[str] = []
+    op, quote, i, n = "", "", 0, len(command)
+    while i < n:
+        c = command[i]
+        if quote:
+            buf.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n:
+                buf.append(command[i + 1])
+                i += 1
+            elif c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c
+            buf.append(c)
+        elif c == "#" and (not buf or buf[-1][-1:].isspace()):
+            while i + 1 < n and command[i + 1] != "\n":  # a comment runs to end of line
+                i += 1
+        elif c == "\\" and i + 1 < n:
+            buf.append(c + command[i + 1])
+            i += 1
+        elif c in "|;&\n":
+            nxt = command[i + 1] if i + 1 < n else ""
+            prev = buf[-1][-1:] if buf else ""
+            if (c in "|&" and prev in (">", "<")) or (c == "&" and nxt == ">"):
+                buf.append(c)  # ``>|`` / ``>&`` / ``&>`` are redirects, not separators
+            else:
+                this = c + nxt if nxt == c and c in "|&" else c
+                stages.append((op, "".join(buf)))
+                buf, op = [], this
+                i += len(this) - 1
+        else:
+            buf.append(c)
+        i += 1
+    stages.append((op, "".join(buf)))
+    return stages
+
+
+_HERE_STRING_RE = _rx(r"<<<[ \t]*('[^']*'|\"[^\"]*\"|\S+)")
+
+
+def _stdin_program_commands(command: str) -> List[str]:
+    """Text that a stdin-reading runner will execute as commands (#1099).
+
+    The wrapped command is the command: the heredoc body, here-string or piped
+    ``echo``/``printf`` text handed to ``ssh host``, ``at``, ``. /dev/stdin`` …
+    is re-scanned as a command in its own right, so the verb decides exactly as
+    it would unwrapped. Text produced by anything else (``cat file |``) is not
+    statically visible — a declared residual.
+    """
+    out: List[str] = []
+    if "<<" in command:
+        for body, _quoted, line in _heredoc_bodies(command):
+            if _stdin_is_program(_command_words(line)):
+                out.append(body)
+        for m in _HERE_STRING_RE.finditer(command):
+            line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
+            if _stdin_is_program(_command_words(line)):
+                out.append(" ".join(_words(m.group(1))))
+    if "|" in command:
+        stages = _pipe_stages(_strip_heredoc_bodies(command))
+        for (_, producer), (op, consumer) in zip(stages, stages[1:]):
+            if op != "|" or not _stdin_is_program(_command_words(consumer)):
+                continue
+            words = _words(producer)
+            if words and os.path.basename(words[0]) in ("echo", "printf"):
+                out.append(" ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w)))
+    return out
+
+
 def _derived_commands(command: str) -> List[str]:
     """Commands hidden inside ``command`` that must be judged as commands themselves."""
-    return _heredoc_substitution_commands(command)[:_RESCAN_FANOUT]
+    derived = _heredoc_substitution_commands(command) + _stdin_program_commands(command)
+    return derived[:_RESCAN_FANOUT]
 
 
 def check_protected_command(
@@ -2519,6 +2717,7 @@ def _check_protected_command(
         for synth in _xargs_rescans(command, path):
             ladder += path_ladder_haystacks(synth, path)
             writer_hays += path_ladder_haystacks(synth, path)
+            interp_hays.append(redact_prose_mentions(synth, path))
         for hays, patterns in (
             (ladder, READ_ONLY_BLOCKED),
             (writer_hays, PROTECTED_WRITER_PATTERNS),
