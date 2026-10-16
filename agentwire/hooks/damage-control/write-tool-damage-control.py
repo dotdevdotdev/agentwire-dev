@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "c104dbda4decff7d93c749e6b34a95f2c55235cf7681a71b0727d494577d3084", "generated_at": "2026-10-15T20:56:02Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "fc0a0a80e3e044e93ef43e1e9b2777e67b69be87c408261df0ecea2e335bc99b", "generated_at": "2026-10-16T01:42:49Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -146,6 +146,17 @@ NO_DELETE_BLOCKED = DELETE_PATTERNS
 # ``check_protected_command`` — never to user readOnlyPaths rules — so a
 # legitimate read via ``cat``/``grep`` stays allowed.
 _INTERPRETERS = r'(?:python[\d.]*|perl|ruby|node|deno|bun|php)'
+_SHELLS = r'(?:sh|bash|zsh|dash|ksh)'
+_SEG = r'[^\n|;&]*'  # stay inside one simple command
+# A write whose TARGET is a variable (``> "$f"``, ``rm "$f"``): the path is
+# supplied by something else in the command (a loop's list, a positional arg).
+_VAR_WRITE = (
+    r'(?:(?<![0-9&])>>?\s*["\']?\$'
+    r'|\b(?:rm|mv|cp|ln|tee|dd|touch|truncate|install|gzip|gunzip|patch|chmod'
+    r'|chown|shred|unlink|sponge)\b[^\n;|&]*\$'
+    r'|\bsed\s+-[A-Za-z]*i[^\n;|&]*\$'
+    r'|\b' + _INTERPRETERS + r'\b[^\n]*\s-\S*[ceE]\b[^\n]*\$)'
+)
 INTERPRETER_WRITE_PATTERNS = [
     # interpreter ... -c/-e/... or stdin/heredoc marker, path anywhere after
     (r'\b' + _INTERPRETERS +
@@ -153,7 +164,91 @@ INTERPRETER_WRITE_PATTERNS = [
      "interpreter program"),
     # path anywhere before a pipe into an interpreter
     (r'{path}(?s:.*)\|\s*' + _INTERPRETERS + r'\b', "pipe into interpreter"),
+    # The path set in the ENVIRONMENT of an inline interpreter
+    # (``X=<path> python3 -c '...os.environ["X"]...'``, ``env X=<path> perl -e``):
+    # the path sits BEFORE the interpreter, so the first pattern never sees it.
+    (r'\b\w+=["\']?{path}(?s:.*)\b' + _INTERPRETERS +
+     r'\b' + _SEG + r'(?:\s-\S*[ceE]\b|\s+-\s|\s+-$|<<)',
+     "path assigned before an interpreter"),
+    # Shells are interpreters too (#1095): a program on stdin / a heredoc
+    # (``sh <<EOF`` … path … ``EOF``), or the path piped INTO one
+    # (``printf 'rm %s' <path> | sh`` — the verb and the path are different
+    # arguments, so no single token names the write).
+    (r'\b' + _SHELLS + r'\b' + _SEG + r'(?:\s+-s\b|\s+-\s|\s+-$|<<)(?s:.*){path}',
+     "shell program"),
+    (r'{path}(?s:.*)\|\s*(?:env\s+)?' + _SHELLS + r'\b', "pipe into shell"),
+    (r'<<(?s:.*)\|\s*(?:env\s+)?' + _SHELLS + r'\b(?s:.*){path}', "heredoc piped into shell"),
+    # ``bash -c '… > "$1"' _ <path>`` / ``F=<path>; sh -c "… > $F"``: the shell
+    # script writes through a variable and the path is supplied elsewhere.
+    (r'\A(?=(?s:.*){path})(?=(?s:.*)\b' + _SHELLS + r'\b' + _SEG +
+     r'\s-\S*c\b)(?=(?s:.*)' + _VAR_WRITE + r')',
+     "shell -c writing through a variable"),
+    # Loops feed a list into a body that writes through the loop variable
+    # (``echo <path> | while read f; do : > "$f"; done``, ``for f in <path>;
+    # do rm "$f"; done``). The path and the verb never share an operand.
+    (r'\A(?=(?s:.*){path})(?=(?s:.*)\b(?:while\b[^\n]*\bread|for\s+\w+\s+in)\b)'
+     r'(?=(?s:.*)' + _VAR_WRITE + r')',
+     "loop writing through its variable"),
 ]
+
+# Writers with NO write flag — the path is just an operand — that the generic
+# ladder (``>``, tee, cp, mv, rm, sed -i …) never named (#1095). Applied only by
+# ``check_protected_command``; each is judged by the OPERATION on the operand,
+# not its spelling, and has a read-shaped sibling it must leave alone.
+_COMPRESSORS = (
+    r'(?:gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|pigz'
+    r'|compress|uncompress)'
+)
+_TAR = r'\b(?:bsd|gnu)?tar'
+_TAR_EXTRACT = (
+    r'(?:' + _TAR + r'\s+(?-i:x)|' + _TAR + r'\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*x)|\s--(?:extract|get)\b)))'
+)
+_TAR_CREATE = (
+    r'(?:' + _TAR + r'\s+(?-i:[A-Za-z]*[cru])|' + _TAR + r'\b(?=' + _SEG +
+    r'(?:\s-(?-i:[A-Za-z]*[cru])|\s--(?:create|append|update)\b)))'
+)
+PROTECTED_WRITER_PATTERNS = [
+    # ln/link replace the TARGET (last operand); using the path as the source
+    # (``ln -s <path> /tmp/l``) is a read.
+    (r'\b(?:ln|link)\b' + _SEG + r'\s["\']?{path}[^\s|;&]*\s*(?:$|[;&|#]|\d*[<>])', "write"),
+    # downloaders: output file flags (incl. log/header/cookie-jar sinks)
+    (r'\bcurl\b' + _SEG + r'(?:\s-(?-i:[A-Za-z0-9]*[oDc])\s*|\s--(?:output|dump-header'
+     r'|cookie-jar|trace|trace-ascii|stderr|etag-save)[\s=])["\']?{path}', "write"),
+    (r'\bwget\b' + _SEG + r'(?:\s-(?-i:[A-Za-z0-9]*[Ooa])\s*|\s--(?:output-document'
+     r'|output-file|append-output)[\s=])["\']?{path}', "write"),
+    # tar: extracting anything while naming the path, or the archive file itself
+    (_TAR_EXTRACT + _SEG + r'{path}', "write"),
+    (_TAR_CREATE + _SEG + r'(?:\s-(?-i:[A-Za-z]*f)\s*|\s--file[\s=])["\']?{path}', "write"),
+    (_TAR + r'\s+(?-i:[A-Za-z]*[cru][A-Za-z]*)\s+["\']?{path}', "write"),
+    # compressors replace the file in place unless told to write to stdout/test/list
+    (r'\b' + _COMPRESSORS + r'\b(?!' + _SEG +
+     r'\s(?:-(?-i:[A-Za-z0-9]*[ctl])\b|--stdout|--to-stdout|--test|--list))' + _SEG +
+     r'{path}', "write"),
+    (r'\bpatch\b' + _SEG + r'{path}', "write"),
+    (r'\b(?:touch|sponge)\b' + _SEG + r'{path}', "write"),
+    # git restore/checkout rewrite the working-tree file (``restore --staged``
+    # alone only touches the index)
+    (r'\bgit\b' + _SEG + r'\bcheckout\b' + _SEG + r'{path}', "write"),
+    (r'\bgit\b' + _SEG + r'\brestore\b(?!' + _SEG + r'\s--staged\b(?!' + _SEG +
+     r'(?:\s--worktree|\s-W\b)))' + _SEG + r'{path}', "write"),
+]
+
+# Extraction INTO a directory that holds control-plane files names no protected
+# path at all (``tar xf a.tar -C ~/.agentwire``), so these are keyed on the
+# directory instead; ``{dir}`` is filled per ancestor of a protected path.
+_DIR_END = r'(?:/+(?:\.|[^/\s"\';&|)]+/\.\.)?)*["\']?(?=\s|$|[;&|)])'
+PROTECTED_DIR_EXTRACT_PATTERNS = [
+    _TAR_EXTRACT + _SEG + r'(?:\s-(?-i:C)\s*|\s--(?:directory|one-top-level)[=\s])["\']?{dir}' + _DIR_END,
+    r'\bwget\b' + _SEG + r'(?:\s-(?-i:P)\s*|\s--directory-prefix[=\s])["\']?{dir}' + _DIR_END,
+    r'\bcurl\b' + _SEG + r'\s--output-dir[=\s]["\']?{dir}' + _DIR_END,
+    r'\bunzip\b' + _SEG + r'\s-d\s*["\']?{dir}' + _DIR_END,
+    r'\b(?:cp|mv|install|ln)\b' + _SEG +
+    r'(?:\s-(?-i:[A-Za-z]*t)\s*|\s--target-directory[=\s])["\']?{dir}' + _DIR_END,
+]
+
+_CONCAT_RE = _rx(
+    r'''(?P<q>['"])(?P<a>[^'"\n]*)(?P=q)\s*(?:[+.]\s*)?(?P<q2>['"])(?P<b>[^'"\n]*)(?P=q2)'''
+)
 
 
 # ============================================================================
@@ -2169,6 +2264,156 @@ def redact_prose_mentions(command: str, path: str) -> str:
     return "".join(out)
 
 
+def fold_string_concat(command: str) -> str:
+    """Join adjacent/``+``/``.``-concatenated quoted literals into one (#1095).
+
+    ``open("…/damage"+"control.yml","w")`` never contains the protected path as
+    a single token, so the interpreter net (#678) could not match it. Folding
+    ``"a"+"b"`` / ``'a' 'b'`` / ``"a"."b"`` makes the net see what the program
+    would build. Declared residual: strings assembled at RUNTIME (``join``,
+    ``chr``, ``format``, decoding) are not statically recoverable.
+    """
+    for _ in range(64):
+        folded = _CONCAT_RE.sub(lambda m: m.group("q") + m.group("a") + m.group("b") + m.group("q"), command, count=1)
+        if folded == command:
+            break
+        command = folded
+    return command
+
+
+_SEGMENT_SPLIT = _rx(r"[;&|\n(]")
+_ASSIGN_WORD = _rx(r"^\w+=")
+# Commands whose quoted arguments are themselves run as commands (#1097): a
+# wrapped command is the command, so these args are never prose.
+_ARG_RUNNERS = frozenset({
+    "ssh", "eval", "watch", "xargs", "sudo", "doas", "su", "env", "nohup",
+    "timeout", "exec", "time", "nice", "setsid", "stdbuf", "flock", "chroot",
+    "runuser", "command", "builtin", "busybox", "docker", "kubectl", "podman",
+    "find", "parallel", "tmux", "screen", "script", "at", "osascript", "pkexec",
+})
+
+
+def _blank_prose_args(hay: str, path: str) -> str:
+    """Blank quoted args that mention ``path`` among other words (#1097).
+
+    ``git commit -m 'touch <path>'`` / ``gh … --body "gzip <path>"`` are TEXT:
+    the operand-writer patterns scan a whole simple command, so a verb inside a
+    message would pair with the path. An arg that is only the path (optionally
+    quoted — ``ln -sf x "<path>"``) stays visible, and so does the program
+    text of a ``-c`` wrapper (``sh -c "touch <path>"``), which IS a command.
+    Runs on the RAW command: the ladder haystacks are already unquoted, so a
+    message and a bare operand look the same there.
+    """
+    path_re = _rx(_path_context_regex(path))
+
+    wrapper_payload = _rx(r"\s-\S*c\s+$")
+    runs_data = _rx(
+        r"^[^|;&\n]*\|\s*(?:(?:env|sudo)\s+)*(?:"
+        r"(?:xargs\b[^|;&\n]*\b)?(?:sh|bash|zsh|dash|ksh)\b|eval\b|source\b)"
+    )
+
+    def _executes(start: int, end: int) -> bool:
+        """True when the quoted span at ``start:end`` is code, not text."""
+        prefix, quote, body = hay[:start], hay[start], hay[start + 1 : end - 1]
+        if wrapper_payload.search(prefix):
+            return True
+        # substitution executes inside double quotes; single-quoted it is data
+        if quote == '"' and ("$(" in body or "`" in body):
+            return True
+        # an unclosed process substitution: ``bash <(echo '…')``
+        opener = max(prefix.rfind("<("), prefix.rfind(">("))
+        if opener != -1 and ")" not in prefix[opener:]:
+            return True
+        # the command word runs its arguments (ssh host '…', eval '…', watch '…')
+        words = _SEGMENT_SPLIT.split(prefix)[-1].split()
+        words = [w for w in words if not _ASSIGN_WORD.match(w)]
+        if words and os.path.basename(words[0]) in _ARG_RUNNERS:
+            return True
+        # the text is piped into something that runs it (``… | xargs sh -c``)
+        return bool(runs_data.search(hay[end:]))
+
+    def _blank(m: "re.Match[str]") -> str:
+        body = m.group(0)[1:-1]
+        if (
+            path_re.search(body)
+            and path_re.sub(" ", body).strip()
+            and not _executes(m.start(), m.end())
+        ):
+            return m.group(0)[0] * 2
+        return m.group(0)
+
+    return _rx(r''''[^'\n]*'|"[^"\n]*"''').sub(_blank, hay)
+
+
+def _xargs_rescans(command: str, path: str) -> List[str]:
+    """Synthesize the command ``xargs`` runs when its input mentions ``path``.
+
+    Stance (#1095): ``xargs`` is a WRAPPER, not a verb — it runs its command
+    with stdin as operands. When the command mentions a protected path anywhere,
+    the xargs tail is re-scanned as a command in its own right with that path
+    appended (or substituted for the ``-I`` replacement string), so
+    ``… | xargs rm`` is judged as ``rm <path>`` and ``… | xargs echo`` as
+    ``echo <path>`` — the verb decides, exactly as it would unwrapped.
+    """
+    mention = _rx(_path_context_regex(path)).search(command)
+    if not mention:
+        return []
+    token = mention.group(0).strip("\"'\t \n;|&<>()=:")
+    out: List[str] = []
+    for m in _rx(r'\bxargs\b([^\n|;&<]*)').finditer(command):
+        try:
+            words = shlex.split(m.group(1))
+        except ValueError:
+            words = m.group(1).split()
+        repl = None
+        rest: List[str] = []
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if rest or not w.startswith("-"):
+                rest.append(w)
+            elif w in ("-I", "-J"):
+                repl = words[i + 1] if i + 1 < len(words) else None
+                i += 1
+            elif w.startswith(("-I", "-J")):
+                repl = w[2:]
+            elif w == "--replace" or w.startswith("--replace="):
+                repl = w.partition("=")[2] or "{}"
+            elif w in ("-L", "-n", "-P", "-s", "-d", "-E", "-a"):
+                i += 1
+            i += 1
+        if repl and any(repl in w for w in rest):
+            out.append(" ".join(w.replace(repl, token) for w in rest))
+        else:
+            out.append(" ".join(rest + [token]))
+    return out
+
+
+def _protected_ancestor_dirs() -> List[str]:
+    """Directories (``~``-form) holding control-plane files, up to but excluding ``~``."""
+    dirs: List[str] = []
+    for pat in PROTECTED_CONTROL_PLANE_PATHS:
+        head = re.split(r"[*?\[]", pat, maxsplit=1)[0]
+        if not head.startswith("~/"):
+            continue
+        d = os.path.dirname(head.rstrip("/")) if not head.endswith("/") else head.rstrip("/")
+        while d.startswith("~/") and d not in dirs:
+            dirs.append(d)
+            d = os.path.dirname(d)
+    return dirs
+
+
+def _extracts_into_protected_dir(command: str) -> Optional[str]:
+    """The protected directory a command extracts/downloads INTO, if any."""
+    for d in _protected_ancestor_dirs():
+        expanded = os.path.expanduser(d)
+        dir_re = r"(?:" + re.escape(expanded) + r"|" + re.escape(d) + r")"
+        for tmpl in PROTECTED_DIR_EXTRACT_PATTERNS:
+            if _rx(tmpl.replace("{dir}", dir_re)).search(command):
+                return d
+    return None
+
+
 def check_protected_command(
     command: str,
     allowed_paths: List[Dict[str, Any]],
@@ -2184,16 +2429,32 @@ def check_protected_command(
     destructive verb is no longer refused as a control-plane write (#922),
     while every spelling that pairs a real verb with a protected path still is.
     """
+    # ``$HOME`` / ``${HOME}`` / ``~`` name the same file as its absolute form;
+    # the ladder patterns carry the ``~`` and expanded spellings of each path.
+    command = canonicalize_command(command)
     subcommands, _ambiguous = normalize_subcommands(command)
     raw_haystacks = [command] + [s for s in subcommands if s and s != command]
+    raw_haystacks += [f for f in map(fold_string_concat, raw_haystacks) if f not in raw_haystacks]
+    for masked in masked_subcommands(command):
+        into = _extracts_into_protected_dir(masked)
+        if into and not is_path_allowed_for_op(
+            os.path.expanduser(into) + "/x", allowed_paths, "write"
+        ):
+            return True, _protected_reason(into)
     for path in _protected_path_patterns():
         # The interpreter patterns are the fail-closed net for OPAQUE program
         # text (#678) — a heredoc body is exactly what masking strips, so they
         # keep reading the raw haystacks. Only the shell-level write/delete
         # patterns move to the masked ladder haystacks.
         interp_hays = [redact_prose_mentions(h, path) for h in raw_haystacks]
+        ladder = path_ladder_haystacks(command, path)
+        writer_hays = path_ladder_haystacks(_blank_prose_args(command, path), path)
+        for synth in _xargs_rescans(command, path):
+            ladder += path_ladder_haystacks(synth, path)
+            writer_hays += path_ladder_haystacks(synth, path)
         for hays, patterns in (
-            (path_ladder_haystacks(command, path), READ_ONLY_BLOCKED),
+            (ladder, READ_ONLY_BLOCKED),
+            (writer_hays, PROTECTED_WRITER_PATTERNS),
             (interp_hays, INTERPRETER_WRITE_PATTERNS),
         ):
             for hay in hays:

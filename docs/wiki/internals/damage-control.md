@@ -130,6 +130,65 @@ agent can't add to it without editing a protected file, which is itself blocked)
 The mechanism is `check_protected_command` / `check_protected_path` in
 `safety/_core.py`, which run **before** `detect_escape_hatch` and the kill switch.
 
+#### Flagless and indirect writers (#1095)
+
+The generic ladder names writers that carry a write *token* (`>`, `tee`, `cp`,
+`rm`, `sed -i`). A writer whose only link to the file is an operand, or whose
+path arrives indirectly, is classified by the **operation on the operand**,
+whatever the spelling (`PROTECTED_WRITER_PATTERNS`, `INTERPRETER_WRITE_PATTERNS`
+in `safety/_core.py`; applied only to the protected tier, never to user
+`readOnlyPaths`):
+
+- **Operand writers:** `ln`/`link` (path as the *target*; as the source it is a
+  read), `curl -o/-D/-c/--output…`, `wget -O/-o/-a…`, `tar` extract naming the
+  path or create with it as the archive, `gzip`/`gunzip`/`bzip2`/`xz`/`zstd`…
+  (unless `-c`/`-t`/`-l`), `patch`, `touch`, `sponge`, `git restore` (not
+  `--staged` alone) and `git checkout`. `$HOME`/`${HOME}`/`~`/absolute are one
+  file (`check_protected_command` canonicalizes first).
+- **Extraction into a directory** that holds control-plane files names no
+  protected path (`tar xf a.tar -C ~/.agentwire`): keyed on the ancestor
+  directories (`PROTECTED_DIR_EXTRACT_PATTERNS` — `tar -C`, `wget -P`,
+  `curl --output-dir`, `unzip -d`, `cp/mv/install/ln -t`). A human `allowedPaths`
+  entry covering the directory re-permits it.
+- **`xargs` is a wrapper, not a verb:** its command is re-scanned with the
+  mentioned path appended (or substituted for `-I`), so `… | xargs rm` is judged
+  as `rm <path>` and `… | xargs cat` as `cat <path>` (`_xargs_rescans`).
+- **`| sh`, `sh <<EOF`, `while read`/`for` loops, `sh -c` with a variable
+  target** have a payload that is data, not a command we can re-scan. Stance:
+  fail closed when a shell is fed (pipe/heredoc/stdin) in a command that
+  mentions a protected path, or when a loop / `sh -c` body writes *through a
+  variable* (`> "$f"`, `rm "$f"`) in a command that mentions one. A loop whose
+  body only reads, or writes to a literal other file, is allowed.
+  Newly blocked as a consequence of failing closed: `cat <path> | sh -c 'wc -l'`
+  and `X=<path> python3 -c 'print(1)'` (a protected path piped into a shell, or
+  assigned before an inline interpreter, is refused whatever the program does).
+  A loop that hands a variable to an inline interpreter
+  (`… | while read f; do python3 -c '…argv[1]…' "$f"; done`) and a heredoc piped
+  into a shell (`cat <<EOF | sh`) are in the same class.
+- **Text is not a command:** a quoted arg that mentions the path among other
+  words (`git commit -m 'touch <path>'`, `gh … --body "gzip <path>"`) is blanked
+  before the operand-writer patterns run; a bare quoted path and `-c` program
+  text are kept (`_blank_prose_args`). Wrapper payloads are NOT prose: an arg
+  to `ssh`/`eval`/`watch`/`xargs`/`sudo`-style runners, a double-quoted `$(…)` or
+  backtick, a `<(…)` process substitution, or text piped into `xargs sh`/`sh`
+  stays visible.
+- **Env-prefix indirection** (`X=<path> python3 -c '…os.environ["X"]…'`,
+  `env X=<path> perl -e`) is the inline-interpreter net with the path *before*
+  the interpreter.
+- **Split path strings:** adjacent / `+` / `.`-joined quoted literals are folded
+  (`fold_string_concat`) before the interpreter net reads them.
+
+Declared residuals (not statically knowable): paths assembled at runtime
+(`join`, `chr`, `format`, decoding), a `patch` / `git apply` whose target is
+named only inside the diff, a basename-only operand whose directory is set
+elsewhere — `cd ~/.agentwire && ln|curl|touch|gzip|git checkout damagecontrol.yml`,
+`git -C ~/.agentwire checkout -- damagecontrol.yml`, `git --work-tree` — and the
+TOCTOU window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
+`--one-top-level=` and `bsdtar` are normalized; other path normalization
+(`/./`, `/../` mid-path, globs and brace spellings) is not. Pins:
+`tests/unit/test_control_plane_writers.py` (must-block per verb *and* must-allow
+siblings).
+
 The same escape-hatch-/kill-switch-exempt tier also covers specific COMMANDS,
 not just paths — `PROTECTED_COMMAND_PATTERNS` (`check_protected_bash_command`,
 also checked before `detect_escape_hatch`) for operations that are dangerous
