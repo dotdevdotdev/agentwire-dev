@@ -171,7 +171,11 @@ in `safety/_core.py`; applied only to the protected tier, never to user
   text are kept (`_blank_prose_args`). Wrapper payloads are NOT prose: an arg
   to `ssh`/`eval`/`watch`/`xargs`/`sudo`-style runners, a double-quoted `$(…)` or
   backtick, a `<(…)` process substitution, or text piped into `xargs sh`/`sh`
-  stays visible.
+  stays visible. The cost (#1100): ANY substitution in a double-quoted argument
+  that also names a protected path is refused, even a harmless one
+  (`git commit -m "touch <path> $(date)"`) — it executes, so it cannot be told
+  from a payload. The block message says so; rephrase with single quotes
+  (`$(` is data there) or move the substitution out of the string.
 - **Env-prefix indirection** (`X=<path> python3 -c '…os.environ["X"]…'`,
   `env X=<path> perl -e`) is the inline-interpreter net with the path *before*
   the interpreter.

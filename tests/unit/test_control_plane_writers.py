@@ -366,3 +366,35 @@ def test_escape_hatch_and_kill_switch_cannot_reopen_these_writers(cfg):
         or not _blocked_by_control_plane(c, off)
     ]
     assert not reopened, reopened
+
+
+def test_refused_substitution_in_quoted_arg_says_why(cfg):
+    """#1100: the fail-closed refusal names its cause; unrelated blocks stay terse."""
+    p = SPELLINGS[0]
+    explained = [
+        f'git commit -m "touch {p} $(date)"',
+        f'gh pr create --body "gzip {p} $(git log -1)"',
+        f'git commit -m "touch {p} `date`"',
+    ]
+    plain = [
+        f"touch {p}",
+        f'echo "$(date)"; touch {p}',
+        f"git commit -m 'touch {p}' && cp /tmp/x {p}",
+    ]
+    allowed = [
+        f"git commit -m 'touch {p} $(date)'",
+        f'git commit -m "touch {p}"',
+    ]
+    bad = []
+    for c in explained:
+        r = check_command(c, cfg)
+        if not (r["decision"] == "block" and "double-quoted argument" in r["reason"]):
+            bad.append(("no hint", c))
+    for c in plain:
+        r = check_command(c, cfg)
+        if not (r["decision"] == "block" and "double-quoted argument" not in r["reason"]):
+            bad.append(("wrong hint", c))
+    for c in allowed:
+        if check_command(c, cfg)["decision"] == "block":
+            bad.append(("blocked", c))
+    assert not bad, bad

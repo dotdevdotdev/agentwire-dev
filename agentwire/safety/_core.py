@@ -2734,8 +2734,31 @@ def _check_protected_command(
                     op = _infer_operation_from_reason(reason)
                     if is_command_path_allowed(command, allowed_paths, op):
                         break
-                    return True, _protected_reason(path)
+                    reason = _protected_reason(path)
+                    if _refused_for_quoted_substitution(command, allowed_paths, depth):
+                        reason += _SUBSTITUTION_HINT
+                    return True, reason
     return False, ""
+
+
+_DQ_SUBSTITUTION_SPAN = _rx(r'"[^"\n]*(?:\$\(|`)[^"\n]*"')
+_SUBSTITUTION_HINT = (
+    " — a command substitution inside a double-quoted argument that names a "
+    "protected path is refused because it executes; put the text in single "
+    "quotes or move the substitution out of the string"
+)
+
+
+def _refused_for_quoted_substitution(
+    command: str, allowed_paths: List[Dict[str, Any]], depth: int
+) -> bool:
+    """True when the block is caused by a substitution inside a double-quoted arg (#1100).
+
+    Judged by the counterfactual: the command is refused as written and allowed
+    once those substitutions are taken out of their strings.
+    """
+    stripped = _DQ_SUBSTITUTION_SPAN.sub('""', command)
+    return stripped != command and not _check_protected_command(stripped, allowed_paths, depth + 1)[0]
 
 
 # ============================================================================
