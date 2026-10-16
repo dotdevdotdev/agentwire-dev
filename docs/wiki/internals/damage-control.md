@@ -207,14 +207,47 @@ it would unwrapped:
   shell) is refused when the path is named: nothing static says it does not
   write.
 
+**Spellings of the same file (#1101).** Each is rewritten to the plain form and
+re-scanned as a command, so the verb still decides (reads stay allowed):
+
+- **More writers:** `mv` with the path as the *source* (it removes the file),
+  `rename`/`mmv`/`chflags`/`setfacl`/`chattr`, `yq`/`tomlq`/`xq` with `-i` /
+  `--inplace`, `ed`/`ex` (always scripted), `vi`/`vim`/`nvim`/`view` driven
+  non-interactively (`-es`, `-s`, `-c`, `+cmd`, `--headless`) and `emacs
+  --batch`. A bare `vim <path>` needs a terminal and is left alone.
+- **Redirect operators** `>|`, `>&`, `&>`, `&>>`, `<>` are the same write as `>`
+  (the subcommand splitter otherwise reads `>|` as a pipe).
+- **Brace expansion** (`damagecontrol.y{m,x}l`) is exact — every expansion is
+  scanned (a group count past the cap is not expanded: residual).
+- **Globs and partial expansions** (`damage*.yml`, `damagecontrol.y?l`,
+  `damage$x`): the word is matched with shell-glob semantics against the
+  concrete protected paths and the real directory listing, and each hit is
+  substituted back — `rm ~/.agentwire/*` is refused, `ls ~/.agentwire/damage*`
+  is not. A bare relative glob needs a 3+ character literal run (`rm *` names
+  nothing). **Stance:** a word whose literal part can still resolve to a
+  protected file is judged as that file; a path component that is *only* an
+  expansion (`~/.agentwire/$f`, `$d/damagecontrol.yml`) is not blocked — it would
+  stand for every file in a directory agents write to constantly.
+- **Mid-path `//`, `/./`, `/../`** are collapsed (`touch ~/.agentwire/x/../damagecontrol.yml`).
+- **A directory set by a literal `cd <dir> &&` / `pushd`, `git -C <dir>` or
+  `git --work-tree <dir>`** is applied to later words (until the next `cd`):
+  `cd ~/.agentwire && touch damagecontrol.yml` is judged as the absolute path.
+- `xargs -I{}` / `parallel` substitute into an interpreter literal
+  (`… | xargs -I{} python3 -c 'open("{}","w")'`); because the interpreter net is
+  fail-closed for any inline program naming the path, an inline *read* of it is
+  refused the same way it is unwrapped.
+
 Declared residuals (not statically knowable): paths assembled at runtime
-(`join`, `chr`, `format`, decoding), a `patch` / `git apply` whose target is
-named only inside the diff, a basename-only operand whose directory is set
-elsewhere — `cd ~/.agentwire && ln|curl|touch|gzip|git checkout damagecontrol.yml`,
-`git -C ~/.agentwire checkout -- damagecontrol.yml`, `git --work-tree` — and the
-TOCTOU window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
-`--one-top-level=` and `bsdtar` are normalized; other path normalization
-(`/./`, `/../` mid-path, globs and brace spellings) is not. Pins:
+(`join`, `chr`, `format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a
+component that is only `$var`), stdin text produced by anything but
+`echo`/`printf`/a heredoc (`cat file | ssh host`, `bash -c "$(cat x)"` names no
+path until it runs), a `patch` / `git apply` whose target is named only inside
+the diff, a cwd known only from the session or set by `cd $dir` / `cd -` / a
+subshell the command cannot see, `make -C`/`env -C`-style directory options,
+writes through a symlink or hardlink alias, a brace expansion past the cap, a
+derived-command budget exhausted by a pathological command, and the TOCTOU
+window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
+`--one-top-level=` and `bsdtar` are normalized. Pins:
 `tests/unit/test_control_plane_writers.py` (must-block per verb *and* must-allow
 siblings).
 

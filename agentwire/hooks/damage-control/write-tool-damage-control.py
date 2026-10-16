@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "afc9b26732a68b94c4944225e0ce75386a1956fa2163e22e6d72e90a9954b5f1", "generated_at": "2026-10-16T11:46:07Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "39816430c2b6d8e6bc4dc9b8c113ad78b6c17aa6934c99fe338263debb7f7f04", "generated_at": "2026-10-16T11:53:46Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -44,8 +44,11 @@ fail loudly if drift happens.
 
 import fnmatch
 import functools
+import glob
+import itertools
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -225,6 +228,11 @@ _TAR_CREATE = (
     r'(?:' + _TAR + r'\s+(?-i:[A-Za-z]*[cru])|' + _TAR + r'\b(?=' + _SEG +
     r'(?:\s-(?-i:[A-Za-z]*[cru])|\s--(?:create|append|update)\b)))'
 )
+# The command word of a simple command, past env assignments and prefix wrappers.
+_CMD_HEAD = (
+    r'^\s*(?:(?:\w+=\S*|' + '|'.join(sorted(map(re.escape, _PREFIX_WRAPPERS))) +
+    r')\s+(?:-\S+\s+|\d+[smhd]?\s+)*)*(?:\S*/)?'
+)
 PROTECTED_WRITER_PATTERNS = [
     # ln/link replace the TARGET (last operand); using the path as the source
     # (``ln -s <path> /tmp/l``) is a read.
@@ -244,6 +252,18 @@ PROTECTED_WRITER_PATTERNS = [
      r'{path}', "write"),
     (r'\bpatch\b' + _SEG + r'{path}', "write"),
     (r'\b(?:touch|sponge)\b' + _SEG + r'{path}', "write"),
+    # mv removes its SOURCE (the generic ladder only names the destination);
+    # rename/attribute changers take the file as a plain operand (#1101)
+    (r'\b(?:mv|rename|mmv|chflags|setfacl|chattr)\b' + _SEG + r'{path}', "write"),
+    # in-place structured editors
+    (r'\b(?:yq|tomlq|xq)\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i)\b|\s--inplace\b))' + _SEG + r'{path}', "write"),
+    # scripted editors: ed/ex always take their script on stdin; the vi family
+    # only when driven non-interactively (-es/-s/-c/+cmd/--headless), and emacs
+    # --batch. A bare ``vim <path>`` needs a terminal and is left alone.
+    (_CMD_HEAD + r'(?:ed|ex)\b' + _SEG + r'{path}', "write"),
+    (_CMD_HEAD + r'(?:vi|vim|nvim|gvim|view)\b(?=' + _SEG +
+     r'(?:\s-(?-i:[A-Za-z]*[esES][A-Za-z]*)\b|\s-c\b|\s\+\S|\s--(?:cmd|headless)\b))' + _SEG + r'{path}', "write"),
+    (_CMD_HEAD + r'emacs\b(?=' + _SEG + r'\s--?(?:batch|script)\b)' + _SEG + r'{path}', "write"),
     # git restore/checkout rewrite the working-tree file (``restore --staged``
     # alone only touches the index)
     (r'\bgit\b' + _SEG + r'\bcheckout\b' + _SEG + r'{path}', "write"),
@@ -2448,8 +2468,9 @@ def _extracts_into_protected_dir(command: str) -> Optional[str]:
 
 
 _HEREDOC_OPEN_RE = _rx(r"(?<!<)<<(?!<)-?[ \t]*(?:(['\"])(\w+)\1|\\(\w+)|(\w+))")
-_RESCAN_DEPTH = 4
-_RESCAN_FANOUT = 24
+_RESCAN_DEPTH = 3
+_RESCAN_FANOUT = 32
+_RESCAN_BUDGET = 200  # derived commands scanned per top-level check
 
 
 def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
@@ -2694,10 +2715,223 @@ def _stdin_program_commands(command: str) -> List[str]:
     return out
 
 
+_REDIRECT_SPELLINGS = (
+    (_rx(r"&>>"), ">>"),
+    (_rx(r"&>"), ">"),
+    (_rx(r"(\d*)>\|"), r"\1>"),
+    (_rx(r"(\d*)>&(?![\d\-])"), r"\1>"),
+    (_rx(r"<>"), ">"),
+)
+
+
+def _redirect_variant(command: str) -> List[str]:
+    """``>|``, ``>&``, ``&>``, ``<>`` spelled as a plain ``>`` (#1101).
+
+    The masked ladder splits subcommands on ``|`` and ``&``, so ``echo x >| f``
+    reads as ``echo x >`` and a lone ``f`` and the write target is lost. They
+    are the same write as ``>``; the plain spelling is scanned as well.
+    """
+    out = command
+    for rx, repl in _REDIRECT_SPELLINGS:
+        out = rx.sub(repl, out)
+    return [out] if out != command else []
+
+
+_PATH_ODDITY = _rx(r"[^\s'\"`;|&<>()]*(?://|/\./|/\.\./|/\.(?=[\s'\"`;|&<>()]|$)|/\.\.(?=[\s'\"`;|&<>()]|$))[^\s'\"`;|&<>()]*")
+
+
+def _normalized_path_variant(command: str) -> List[str]:
+    """The command with ``//``, ``/./`` and ``/../`` collapsed inside path words (#1101)."""
+    def _norm(m: "re.Match[str]") -> str:
+        tok = re.sub(r"/{2,}", "/", m.group(0))
+        return posixpath.normpath(tok) if tok not in ("/", "") else tok
+
+    out = _PATH_ODDITY.sub(_norm, command)
+    return [out] if out != command else []
+
+
+def _brace_variants_of(command: str) -> List[str]:
+    """Every brace expansion of the command (``damagecontrol.y{m,x}l``) (#1101).
+
+    A group count that outgrows the cap is not expanded — declared residual.
+    """
+    if "{" not in command:
+        return []
+    return brace_variants(command) or []
+
+
+_GLOB_TOKEN = _rx(r"(?<![\w$'\"])[^\s'\"`;|&<>()]*(?:[*?\[]|\$(?:\w|\{))[^\s'\"`;|&<>()]*")
+_EXPANSION = _rx(r"\$(?:\w+|\{[^}]*\})")
+_GLOB_PATH_CAP = 32
+
+
+@functools.lru_cache(maxsize=8)
+def _protected_glob_candidates(home: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """``(concrete_paths, project_scoped_basenames)`` a glob token may stand for."""
+    concrete: List[str] = []
+    project: List[str] = []
+    for pat in PROTECTED_CONTROL_PLANE_PATHS:
+        if pat.startswith("*"):
+            project.append(pat[1:])
+        else:
+            concrete.append(os.path.expanduser(pat).replace("*", "x"))
+    return tuple(concrete), tuple(project)
+
+
+def _token_regex(tok: str) -> Optional["re.Pattern[str]"]:
+    """Shell-glob semantics for one path word; ``$x`` stands for any run of non-``/``.
+
+    None when a path component is nothing but an unresolvable expansion
+    (``$d/…``, ``~/.agentwire/$f``): that is the declared runtime-built
+    residual, because it would stand for every file in the directory.
+    """
+    for comp in tok.split("/"):
+        if _EXPANSION.search(comp) and not _EXPANSION.sub("", comp):
+            return None
+    out: List[str] = []
+    i = 0
+    while i < len(tok):
+        c = tok[i]
+        m = _EXPANSION.match(tok, i)
+        if m:
+            out.append("[^/]*")
+            i = m.end()
+            continue
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[" and tok.find("]", i + 2) != -1:
+            j = tok.find("]", i + 2)
+            body = tok[i + 1 : j]
+            out.append("[" + ("^" + body[1:] if body[:1] in "!^" else body).replace("\\", "\\\\") + "]")
+            i = j
+        else:
+            out.append(re.escape(c))
+        i += 1
+    try:
+        return _rx("".join(out))
+    except re.error:
+        return None
+
+
+def _glob_variants(command: str) -> List[str]:
+    """Commands with each unquoted glob / partial-expansion word replaced by a protected path it can name (#1101).
+
+    Stance: the shell expands ``damage*.yml`` or ``damage$x.yml`` to whatever
+    exists, so the word is matched (shell-glob semantics) against the concrete
+    protected paths — and against the real directory listing — and each hit is
+    substituted back, so the VERB decides (``rm ~/.agentwire/*`` is refused,
+    ``ls ~/.agentwire/damage*`` is not). A bare relative glob needs a literal
+    run of 3+ characters (``rm *`` names nothing in particular). A component
+    that is only an expansion (``~/.agentwire/$f``) stays a declared residual.
+    """
+    if not _GLOB_TOKEN.search(command):
+        return []
+    concrete, project = _protected_glob_candidates(os.path.expanduser("~"))
+    out: List[str] = []
+    for m in _GLOB_TOKEN.finditer(command):
+        tok = m.group(0)
+        rx = _token_regex(tok)
+        if rx is None:
+            continue
+        hits: List[str] = []
+        if tok.startswith("/"):
+            hits += [c for c in concrete if rx.fullmatch(c)]
+            if "/" in tok[1:] and not re.search(r"[*?\[$]", tok.split("/")[1]):
+                hits += [
+                    f for f in itertools.islice(glob.iglob(_EXPANSION.sub("*", tok)), _GLOB_PATH_CAP)
+                    if is_protected_control_plane(f) and f not in hits
+                ]
+        elif re.search(r"[A-Za-z0-9_.\-]{3,}", _EXPANSION.sub("", re.sub(r"[*?\[\]]", " ", tok))):
+            hits += [p for p in project if rx.fullmatch(p) or rx.fullmatch("x" + p)]
+        for hit in hits:
+            out.append(command.replace(tok, hit))
+    return out
+
+
+_CD_RE = _rx(
+    r"(?:^|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+)
+_REL_WORD = _rx(r"(?<![^\s;&|(<>])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
+
+
+def _absolutize(text: str, cwd: str) -> str:
+    """Rewrite relative words in ``text`` that name a protected file under ``cwd``."""
+    def _sub(m: "re.Match[str]") -> str:
+        cand = posixpath.normpath(posixpath.join(cwd, m.group(1)))
+        return cand if is_protected_control_plane(cand) else m.group(0)
+
+    return _REL_WORD.sub(_sub, text)
+
+
+def _cwd_variants(command: str) -> List[str]:
+    """Relative operands resolved against a literal ``cd <dir> &&`` / ``git -C <dir>`` (#1101).
+
+    ``cd ~/.agentwire && touch damagecontrol.yml`` names the file only relative
+    to a directory set earlier in the same command. The literal directory is
+    applied to later words (until the next ``cd``); each word that then names a
+    protected file is rewritten to its absolute path and the result re-scanned.
+    An unresolvable directory (``cd $d``, a ``$(…)``, a bare ``cd -``) is the
+    declared residual, as is a cwd known only from the session.
+    """
+    out: List[str] = []
+    if re.search(r"\b(?:cd|pushd)\b", command):
+        cwd: Optional[str] = None
+        matches = list(_CD_RE.finditer(command))
+        for k, m in enumerate(matches):
+            d = m.group("d").strip("'\"")
+            if d == "~":
+                d = os.path.expanduser("~")
+            if d.startswith("/"):
+                cwd = posixpath.normpath(d)
+            elif cwd:
+                cwd = posixpath.normpath(posixpath.join(cwd, d))
+            else:
+                continue
+            end = matches[k + 1].start() if k + 1 < len(matches) else len(command)
+            rest = command[m.end() : end]
+            new = _absolutize(rest, cwd)
+            if new != rest:
+                out.append(new)
+    if re.search(r"\bgit\b[^\n]*(?:\s-C\b|--work-tree)", command):
+        for seg in re.split(r"[;&|\n]", command):
+            words = _words(seg)
+            dirs, rest, i = [], [], 0
+            while i < len(words):
+                w = words[i]
+                if w == "-C" and i + 1 < len(words):
+                    dirs.append(words[i + 1])
+                    i += 2
+                    continue
+                if w.startswith("--work-tree="):
+                    dirs.append(w.partition("=")[2])
+                elif w == "--work-tree" and i + 1 < len(words):
+                    dirs.append(words[i + 1])
+                    i += 1
+                else:
+                    rest.append(w)
+                i += 1
+            cwd = None
+            for d in dirs:
+                cwd = posixpath.normpath(d if d.startswith("/") else posixpath.join(cwd, d)) if (d.startswith("/") or cwd) else None
+            if cwd and dirs:
+                out.append(_absolutize(" ".join(_quote_word(w) for w in rest), cwd))
+    return out
+
+
 def _derived_commands(command: str) -> List[str]:
     """Commands hidden inside ``command`` that must be judged as commands themselves."""
-    derived = _heredoc_substitution_commands(command) + _stdin_program_commands(command)
-    return derived[:_RESCAN_FANOUT]
+    derived = (
+        _heredoc_substitution_commands(command)
+        + _stdin_program_commands(command)
+        + _redirect_variant(command)
+        + _normalized_path_variant(command)
+        + _brace_variants_of(command)
+        + _glob_variants(command)
+        + _cwd_variants(command)
+    )
+    return list(dict.fromkeys(derived))[:_RESCAN_FANOUT]
 
 
 def check_protected_command(
@@ -2717,18 +2951,22 @@ def check_protected_command(
     """
     # ``$HOME`` / ``${HOME}`` / ``~`` name the same file as its absolute form;
     # the ladder patterns carry the ``~`` and expanded spellings of each path.
-    return _check_protected_command(command, allowed_paths, 0)
+    return _check_protected_command(command, allowed_paths, 0, [_RESCAN_BUDGET])
 
 
 def _check_protected_command(
     command: str,
     allowed_paths: List[Dict[str, Any]],
     depth: int,
+    budget: List[int],
 ) -> Tuple[bool, str]:
     command = canonicalize_command(command)
     if depth < _RESCAN_DEPTH:
         for derived in _derived_commands(command):
-            blocked, reason = _check_protected_command(derived, allowed_paths, depth + 1)
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            blocked, reason = _check_protected_command(derived, allowed_paths, depth + 1, budget)
             if blocked:
                 return blocked, reason
     subcommands, _ambiguous = normalize_subcommands(command)
@@ -2769,7 +3007,7 @@ def _check_protected_command(
                     if is_command_path_allowed(command, allowed_paths, op):
                         break
                     reason = _protected_reason(path)
-                    if _refused_for_quoted_substitution(command, allowed_paths, depth):
+                    if _refused_for_quoted_substitution(command, allowed_paths, depth, budget):
                         reason += _SUBSTITUTION_HINT
                     return True, reason
     return False, ""
@@ -2784,7 +3022,7 @@ _SUBSTITUTION_HINT = (
 
 
 def _refused_for_quoted_substitution(
-    command: str, allowed_paths: List[Dict[str, Any]], depth: int
+    command: str, allowed_paths: List[Dict[str, Any]], depth: int, budget: List[int]
 ) -> bool:
     """True when the block is caused by a substitution inside a double-quoted arg (#1100).
 
@@ -2792,7 +3030,7 @@ def _refused_for_quoted_substitution(
     once those substitutions are taken out of their strings.
     """
     stripped = _DQ_SUBSTITUTION_SPAN.sub('""', command)
-    return stripped != command and not _check_protected_command(stripped, allowed_paths, depth + 1)[0]
+    return stripped != command and not _check_protected_command(stripped, allowed_paths, depth + 1, budget)[0]
 
 
 # ============================================================================
