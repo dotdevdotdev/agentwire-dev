@@ -95,6 +95,21 @@ NOT_A_HEREDOC = [
     "true | cat <(echo <<EOF)",
     "echo 2>(cat <<EOF)",
     "cat <(echo ')' <<EOF)",
+    # a marker directly in an array literal is never a heredoc, closed or not:
+    # bash 3.2 recovers from the syntax error and runs the next line
+    "x=(a <<EOF",
+    "x=(a <<'EOF'",
+    "x=(a <<-EOF",
+    "x+=(a <<EOF",
+    "n+=(a <<EOF",
+    "declare -a n=(a <<EOF",
+    "local n=(a <<EOF",
+    "export n=(a <<EOF",
+    "x=([1]=<<EOF",
+    "x=(a\nb <<EOF",
+    "x=(a 'q' <<EOF",
+    'x=(a "q" <<EOF',
+    "x=(a <<EOF\n)",
 ]
 
 # Contexts where the marker IS a redirection: the body is data, the tail after
@@ -124,6 +139,7 @@ REAL_HEREDOC = [
     "cat <(echo a) <<'EOF'",
     "cat <<'EOF' <(echo a)",
     "x=(a b); cat <<'EOF'",
+    "x=(a $(cat <<'EOF'",
     "( cat <<'EOF'",
     "{ cat <<'EOF'",
     "x=$(cat <<'EOF'",
@@ -157,7 +173,8 @@ def test_non_redirection_markers_open_no_heredoc():
 
 def test_real_markers_still_open_a_heredoc():
     """Control for the test above: a scanner that never fires would pass it."""
-    closers = {"( cat <<'EOF'": "\nbody\nEOF\n)", "{ cat <<'EOF'": "\nbody\nEOF\n}", "x=$(cat <<'EOF'": "\nbody\nEOF\n)"}
+    closers = {"( cat <<'EOF'": "\nbody\nEOF\n)", "{ cat <<'EOF'": "\nbody\nEOF\n}", "x=$(cat <<'EOF'": "\nbody\nEOF\n)",
+               "x=(a $(cat <<'EOF'": "\nbody\nEOF\n))"}
     bad = [c for c in REAL_HEREDOC if len(_heredocs(c + closers.get(c, "\nbody\nEOF"))) != 1]
     assert not bad, bad
 
@@ -261,3 +278,11 @@ def test_unbalanced_parens_in_a_substitution_heredoc_are_not_hidden():
     stray = "x=$(cat <<'EOF'\nfix the thing)\nEOF\n)"
     opened = "x=$(cat <<'EOF'\nfix (the thing\nEOF\n)"
     assert [len(_heredocs(c)) for c in (balanced, stray, opened)] == [1, 0, 0]
+
+
+def test_unclosed_array_literal_holds_no_heredoc():
+    """An unclosed ``name=(`` is a syntax error bash 3.2 recovers from, so even a
+    heredoc nested in a ``$(…)`` inside it is not trusted; a closed one is read."""
+    unclosed = "x=(a $(cat <<'EOF'\nbody\nEOF\n)\nrm -rf /\n"
+    closed = "x=(a $(cat <<'EOF'\nbody\nEOF\n))\nls\n"
+    assert [len(_heredocs(c)) for c in (unclosed, closed)] == [0, 1]

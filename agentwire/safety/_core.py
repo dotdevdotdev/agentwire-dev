@@ -2542,6 +2542,7 @@ class _HeredocScanner:
         self.found: List[_Heredoc] = []
         self.pending: List[Tuple[int, "re.Match[str]", bool]] = []
         self.absent: set = set()
+        self.closed = False  # whether the last ``_commands`` walk ended on its closer
 
     def run(self) -> Tuple[_Heredoc, ...]:
         self._commands(0, "", 0)
@@ -2626,10 +2627,16 @@ class _HeredocScanner:
         return n
 
     # -- the walk --------------------------------------------------------
-    def _commands(self, i: int, closer: str, depth: int) -> int:
-        """Walk command text from ``i`` to ``closer`` (``""`` = end); returns the index past it."""
+    def _commands(self, i: int, closer: str, depth: int, array: bool = False) -> int:
+        """Walk command text from ``i`` to ``closer`` (``""`` = end); returns the index past it.
+
+        ``array`` marks a ``name=( … )`` literal: bash cannot hold a heredoc there
+        (a syntax error that bash 3.2 recovers from, running the next line), so a
+        marker whose innermost scope is one is never a heredoc.
+        """
         s, n = self.s, self.n
         if depth > _WALK_DEPTH:
+            self.closed = False
             return n
         word_start, word, first, paren = True, [], None, 0
         opened = len(self.pending)
@@ -2676,6 +2683,7 @@ class _HeredocScanner:
             if c == "`":
                 if closer == "`":
                     del self.pending[opened:]
+                    self.closed = True
                     return i + 1
                 i = self._commands(i + 1, "`", depth + 1)
                 word_start = False
@@ -2705,8 +2713,8 @@ class _HeredocScanner:
                     word_start = False
                     continue
                 m = _HEREDOC_OPEN_RE.match(s, i)
-                if m and (first == "let" or s.startswith("\\\n", m.end())):
-                    m = None  # a ``let`` argument / a delimiter split by a continuation
+                if m and (array or first == "let" or s.startswith("\\\n", m.end())):
+                    m = None  # an array literal / a ``let`` argument / a delimiter split by a continuation
                 if m:
                     self.pending.append((i, m, closer != ""))
                     i = m.end()
@@ -2721,13 +2729,19 @@ class _HeredocScanner:
             if c == ")":
                 if closer == ")" and paren == 0:
                     del self.pending[opened:]
+                    self.closed = True
                     return i + 1
                 paren = max(0, paren - 1)
             elif c == "(":
                 if s[i - 1 : i] in _REPARSED_OPENERS:
                     # ``<(…)`` / ``>(…)`` / ``name=(…)`` re-parse their body as
                     # separate text: a marker inside closes with it
-                    i = self._commands(i + 1, ")", depth + 1)
+                    kept, literal = len(self.found), s[i - 1] == "="
+                    i = self._commands(i + 1, ")", depth + 1, literal)
+                    if literal and not self.closed:
+                        # an unclosed array literal is a syntax error that bash 3.2
+                        # recovers from, so nothing read inside it can be trusted
+                        del self.found[kept:]
                     word_start = False
                     continue
                 paren += 1
@@ -2745,6 +2759,7 @@ class _HeredocScanner:
             word.append(c)
             word_start = c in _WORD_BREAK
             i += 1
+        self.closed = False
         return n
 
     def _read_bodies(self, nl: int) -> int:

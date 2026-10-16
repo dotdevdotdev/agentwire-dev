@@ -239,7 +239,15 @@ it would unwrapped:
   `[[ … ]]`, a `let` segment, `<<<`, and a delimiter split by a continuation.
   `<(…)`, `>(…)` and `name=(…)` / `name+=(…)` re-parse their body as separate
   text, so a marker inside closes with the `)` and the next line runs (one
-  list, `_REPARSED_OPENERS`: the character before the `(`). A heredoc opened
+  list, `_REPARSED_OPENERS`: the character before the `(`). A marker whose
+  innermost scope is a `name=(` / `name+=(` literal (including `declare`/
+  `local`/`export`/`readonly`/`typeset` forms) is never a heredoc, closed or
+  not: bash cannot hold a heredoc there, and a *recovering* bash (macOS
+  `/bin/bash` 3.2 keeps executing after that syntax error; zsh and newer
+  `bash -c` abort) runs the next line. A literal that never closes is the same
+  error, so every heredoc found anywhere inside it (including one nested in a
+  `$(…)`) is discarded; a closed literal's nested `$(…)` heredoc, and a
+  multi-line `<(…)`, are still read. A heredoc opened
   inside `$(…)` / backticks whose body has unbalanced parentheses is not hidden
   (older bash matches the span by counting parentheses, blind to heredocs). A
   marker after a comment, after `\`, or in those contexts opens nothing, so the
