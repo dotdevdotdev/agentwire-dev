@@ -224,6 +224,31 @@ it would unwrapped:
   (`(cat <<'EOF' … EOF` newline `) | sh`); operators split into words with or
   without spaces (`<<'EOF'|sh`). A `crontab -` body is judged after its five schedule fields (or
   `@reboot`), and leading whitespace before a `cd` does not hide it.
+- **A marker is live only when bash reads it as a redirection (#1106).** One
+  tokenizer (`_HeredocScanner`, behind `_heredocs`) decides liveness, finds the
+  terminator and reads the body; `_hide_heredoc_bodies`, the inert view
+  (`_neutralize_literal_heredocs`) and the older command masker
+  (`_strip_heredoc_bodies`) all consume its result, so there is no second
+  scanner to disagree with. It walks quotes, `$'…'`, backslash, `#` comments
+  (only at the start of a word: `echo a#<<b`, `$#` and `${#v}` are not
+  comments), `${…}`, `$(…)` and backticks (recursively), and treats `<<` as no
+  heredoc inside `$((…))`, `((…))`, `[[ … ]]`, a `let` segment and `<<<`. A
+  marker after a comment, after `\`, or in those contexts opens nothing, so the
+  lines after it stay visible to every rule (before, `echo a # <<'EOF'` hid the
+  whole rest of the command). `\\<<'EOF'` (escaped backslash) IS a marker.
+  Failure direction: every uncertainty resolves to "not a heredoc". A heredoc
+  with no terminator line is dropped, though bash would swallow the rest as its
+  body; so is one whose `$(…)`/backtick span closes before the newline (bash
+  runs the next line). A partly quoted delimiter is one word, so `<<'EO'F` ends
+  at `EOF` like `<<'E'OF`, and its literal body is data like any quoted
+  heredoc. Declared residuals, all scanned rather than hidden (a rephrase, not a
+  bypass): `<<$"EOF"` / `<<-$"EOF"` (locale-quoted delimiter) is not
+  recognised, so its body is read as commands; a `case … esac` pattern `)`
+  inside `$(…)` can end that span early; `<<` inside a nested `$(…)` within
+  `$((…))` is not walked. `tests/unit/test_heredoc_marker_liveness.py` pins both
+  halves (non-heredoc contexts × dangerous tails must block; real heredocs'
+  prose bodies must keep their decision) and each guard has a mutation that
+  turns it red.
 - **`parallel` is xargs-shaped:** its command is re-scanned with the path
   substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
   A quoted command string is scanned whole, separators included
@@ -291,13 +316,9 @@ other interpreters outside the list), a `cd` written inside interpreter source
 `sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
 path in the body), `cd <dir> && rsync -a <file> host:x` (the absolute spelling
 is refused too — rsync's source is not distinguished from its destination), a
-partially-quoted or backslashed delimiter (`<<E\OF`, `<<'E'OF`) whose literal
-body holds a `$(…)` that names the path literally (the older heredoc masker
-only recognizes whole-word quoting; fail-closed), a write to the path after a
-partially-quoted delimiter such as `<<'EO'F` (that older masker mis-parses it;
-the same plain write also passes without the heredoc — tracked in #1106),
 a crontab line with a trailing `# …` comment that mentions the path (blocks),
-`<<$"EOF"` with a prose body (blocks), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
+`<<$"EOF"` (not recognised as a heredoc, so a body line that is itself
+`cd <dir> && touch <file>` blocks; #1106), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
 resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
 subshell the command cannot see, `make -C`/`env -C`-style directory options,
 writes through a symlink or hardlink alias, a brace expansion past the cap, a
@@ -1047,9 +1068,10 @@ neutralizes exactly the spans the shell treats as literal — the body of a
 `$(` inside single quotes or backslash-escaped — **for the ambiguity analysis
 only**. Rule matching still reads the raw command, so a protected path in a
 heredoc body keeps blocking. What stays unverifiable on purpose: an unquoted
-heredoc (its body expands `$(…)`), an unterminated heredoc, a marker inside a
-string (`echo "<<'EOF'"` opens no heredoc, and hiding what follows would hide a
-real `eval`), and a heredoc that **feeds a shell** (`bash <<'EOF'`, `ssh host
+heredoc (its body expands `$(…)`), an unterminated heredoc, a marker that is
+not a redirection (inside a string, a comment, after `\`, in arithmetic — it
+opens no heredoc, and hiding what follows would hide a real `eval`; see the
+marker-liveness bullet above), and a heredoc that **feeds a shell** (`bash <<'EOF'`, `ssh host
 <<'EOF'` — the body is the program). A *real* backtick or `$(` is unchanged. The
 `git commit -m "$(cat <<'EOF' … EOF)"` idiom keeps its operand-position
 substitution ask, which bypass/auto demote — it is just no longer misread as
