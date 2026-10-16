@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "348dcf7d541b7b85b3c3e57c6997de8693c2493cc48d51ce808f6b17476ba256", "generated_at": "2026-10-16T13:20:36Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "1e1fe9861d77c77c59d695e8cce89dec2e44ea7d9b1d9cac75fb8c5003ef1424", "generated_at": "2026-10-16T20:22:58Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2537,60 +2537,352 @@ def _feeding_segment(command: str, start: int, word_end: int, line_end: int) -> 
 class _Heredoc:
     """One heredoc: where its body sits and whether the shell expands it."""
 
-    __slots__ = ("start", "body_start", "body_end", "body", "quoted", "line")
+    __slots__ = ("start", "body_start", "body_end", "end", "body", "quoted", "line")
 
-    def __init__(self, start: int, body_start: int, body_end: int, body: str, quoted: bool, line: str):
-        self.start, self.body_start, self.body_end = start, body_start, body_end
+    def __init__(
+        self, start: int, body_start: int, body_end: int, end: int, body: str, quoted: bool, line: str
+    ):
+        self.start, self.body_start, self.body_end, self.end = start, body_start, body_end, end
         self.body, self.quoted, self.line = body, quoted, line
 
 
-def _heredocs(command: str) -> List[_Heredoc]:
-    """Every heredoc in ``command``, parsed the way bash reads them.
+_WORD_BREAK = frozenset(" \t\n;&|()<>")
+_SEGMENT_END = frozenset("\n;&|()")
+_SPECIAL_PARAMS = frozenset("#?!$@*-")
+_WALK_DEPTH = 40
+# The character before a ``(`` that makes it a scope whose body bash parses on its
+# own (process substitution, array assignment) — the one place that list lives.
+_REPARSED_OPENERS = frozenset("<>=")
+# Words after which a new command starts (``for ((…))``, ``if ((…))``, ``! ((…))``).
+_COMMAND_PREFIX_WORDS = frozenset(
+    "for while until if then elif else do time ! coproc { } select case in".split()
+)
+_IDENT = _rx(r"[A-Za-z_][A-Za-z0-9_]*")
 
-    Several markers on one line read their bodies in order (``cat <<A <<B``).
-    The terminator is the delimiter ALONE on its line: ``<<`` takes no leading
-    or trailing whitespace (`` EOF`` and ``EOF `` are body text), ``<<-`` strips
-    leading TABS only. The delimiter is a full shell word (see above).
+
+class _HeredocScanner:
+    """Bash-shaped tokenizer: finds every REAL heredoc and reads its body (#1106).
+
+    The one place that decides whether a ``<<`` is a redirection operator. It
+    walks the command the way the shell reads it — quotes, ``$'…'``, backslash,
+    ``#`` comments (only at the start of a word), ``${…}``, ``$(…)``, backticks,
+    ``$((…))`` / ``((…))`` / ``[[ … ]]`` / ``let`` arguments (where ``<<`` is a
+    shift or a string compare), and ``<<<`` here-strings — and a marker found in
+    any of those is not a heredoc. Bodies are skipped as the shell skips them
+    (read at the next newline), so an apostrophe in prose cannot desync it.
+
+    Every uncertainty resolves toward "not a heredoc": an unparseable delimiter,
+    an unterminated body, a construct this walk does not model. Hiding a line
+    from the rules is the dangerous direction; scanning one that was really data
+    costs a rephrase.
     """
-    out: List[_Heredoc] = []
-    pos = 0
-    n = len(command)
-    while True:
-        m = _HEREDOC_OPEN_RE.search(command, pos)
-        if not m:
-            return out
-        nl = command.find("\n", m.end())
-        if nl == -1:
-            return out
-        markers = [m] + [
-            x for x in _HEREDOC_OPEN_RE.finditer(command, m.end(), nl)
-        ]
+
+    def __init__(self, command: str):
+        self.s = command
+        self.n = len(command)
+        self.found: List[_Heredoc] = []
+        self.pending: List[Tuple[int, "re.Match[str]", bool]] = []
+        self.absent: set = set()
+        self.closed = False  # whether the last ``_commands`` walk ended on its closer
+        # The current line holds a construct bash rejects with a syntax error (a
+        # ``<<`` in an array literal, a literal that never closes). A recovering
+        # bash (3.2) runs the NEXT line, so no marker on this line may hide it:
+        # the newline discards the line's pending markers instead of reading them.
+        self.poisoned = False
+
+    def run(self) -> Tuple[_Heredoc, ...]:
+        self._commands(0, "", 0)
+        return tuple(self.found)
+
+    # -- helpers ---------------------------------------------------------
+    def _skip_single(self, i: int) -> int:
+        j = self.s.find("'", i + 1)
+        return self.n if j == -1 else j + 1
+
+    def _skip_ansi_c(self, i: int) -> int:
+        """``$'…'`` starting at the ``$``: backslash escapes the next char."""
+        j = i + 2
+        while j < self.n and self.s[j] != "'":
+            j += 2 if self.s[j] == "\\" else 1
+        return min(j + 1, self.n)
+
+    def _skip_braces(self, i: int) -> int:
+        """``${…}`` starting at the ``$``: to the matching ``}``."""
+        depth, j = 0, i + 1
+        while j < self.n:
+            c = self.s[j]
+            if c == "\\":
+                j += 2
+                continue
+            if c == "'":
+                j = self._skip_single(j)
+                continue
+            depth += (c == "{") - (c == "}")
+            j += 1
+            if depth == 0:
+                return j
+        return self.n
+
+    def _skip_square(self, i: int) -> int:
+        """Legacy ``$[…]`` arithmetic / a ``name[…]`` subscript: ``i`` is at the ``[``."""
+        depth, j = 0, i
+        while j < self.n:
+            c = self.s[j]
+            if c == "\\":
+                j += 2
+                continue
+            depth += (c == "[") - (c == "]")
+            j += 1
+            if depth <= 0:
+                return j
+        return self.n
+
+    def _skip_arith(self, i: int) -> int:
+        """Arithmetic body: ``i`` is just past the opening ``((``; to the matching ``))``."""
+        depth, j = 2, i
+        while j < self.n:
+            c = self.s[j]
+            if c == "\\":
+                j += 2
+                continue
+            depth += (c == "(") - (c == ")")
+            j += 1
+            if depth <= 0:
+                return j
+        return self.n
+
+    def _double_quoted(self, i: int, depth: int) -> int:
+        """``i`` is just past the opening ``"``; returns the index past the closing one."""
+        s, n = self.s, self.n
+        while i < n:
+            c = s[i]
+            if c == "\\":
+                i += 2
+            elif c == '"':
+                return i + 1
+            elif c == "$" and s.startswith("((", i + 1):
+                i = self._skip_arith(i + 3)
+            elif c == "$" and s.startswith("(", i + 1):
+                i = self._commands(i + 2, ")", depth + 1)
+            elif c == "$" and s.startswith("{", i + 1):
+                i = self._skip_braces(i)
+            elif c == "`":
+                i = self._commands(i + 1, "`", depth + 1)
+            else:
+                i += 1
+        return n
+
+    # -- the walk --------------------------------------------------------
+    def _commands(self, i: int, closer: str, depth: int, array: bool = False) -> int:
+        """Walk command text from ``i`` to ``closer`` (``""`` = end); returns the index past it.
+
+        ``array`` marks a ``name=( … )`` literal: bash cannot hold a heredoc there
+        (a syntax error that bash 3.2 recovers from, running the next line), so a
+        marker whose innermost scope is one is never a heredoc.
+        """
+        s, n = self.s, self.n
+        if depth > _WALK_DEPTH:
+            self.closed = False
+            return n
+        word_start, word, first, paren = True, [], None, 0
+        opened = len(self.pending)
+        while i < n:
+            c = s[i]
+            if c == "\\":
+                # backslash-newline is a continuation: the lines join, so the
+                # next character keeps the word-start state it would have had
+                if s.startswith("\n", i + 1):
+                    i += 2
+                    continue
+                i += 2
+                word_start = False
+                continue
+            if c == "'":
+                i = self._skip_single(i)
+                word_start = False
+                continue
+            if c == '"':
+                i = self._double_quoted(i + 1, depth)
+                word_start = False
+                continue
+            if c == "$":
+                nxt = s[i + 1 : i + 2]
+                if s.startswith("((", i + 1):
+                    i = self._skip_arith(i + 3)
+                elif nxt == "(":
+                    i = self._commands(i + 2, ")", depth + 1)
+                elif nxt == "{":
+                    i = self._skip_braces(i)
+                elif nxt == "[":
+                    i = self._skip_square(i + 1)
+                elif nxt == "'":
+                    i = self._skip_ansi_c(i)
+                elif nxt == '"':
+                    i += 1
+                    continue
+                elif nxt in _SPECIAL_PARAMS:
+                    i += 2
+                else:
+                    i += 1
+                word_start = False
+                continue
+            if c == "`":
+                if closer == "`":
+                    del self.pending[opened:]
+                    self.closed = True
+                    return i + 1
+                i = self._commands(i + 1, "`", depth + 1)
+                word_start = False
+                continue
+            if c == "#" and word_start:
+                j = s.find("\n", i)
+                i = n if j == -1 else j
+                continue
+            if c == "(" and s.startswith("((", i) and first is None and word_start:
+                i = self._skip_arith(i + 2)
+                word_start = False
+                continue
+            if c == "[" and _IDENT.fullmatch("".join(word)):
+                i = self._skip_square(i)  # ``a[1<<2]=x``: the subscript is arithmetic
+                word.append("[]")
+                word_start = False
+                continue
+            if c == "[" and s.startswith("[[", i) and first is None and word_start:
+                j = s.find("]]", i + 2)
+                i = n if j == -1 else j + 2
+                word_start = False
+                first = "[["
+                continue
+            if c == "<" and s.startswith("<<", i) and array:
+                self.poisoned = True
+                i += 3 if s.startswith("<<<", i) else 2
+                word_start = False
+                continue
+            if c == "<" and s.startswith("<<", i):
+                if s.startswith("<<<", i):
+                    i += 3
+                    word_start = False
+                    continue
+                m = _HEREDOC_OPEN_RE.match(s, i)
+                if m and (first == "let" or s.startswith("\\\n", m.end())):
+                    m = None  # a ``let`` argument / a delimiter split by a continuation
+                if m:
+                    self.pending.append((i, m, closer != ""))
+                    i = m.end()
+                else:
+                    i += 2
+                word_start = False
+                continue
+            if c == "\n":
+                if array or self.poisoned:
+                    self.pending.clear()  # no body is read on a line bash rejects
+                    self.poisoned = self.poisoned and array
+                    i += 1
+                    word_start, word, first, paren = True, [], None, 0
+                    continue
+                i = self._read_bodies(i)
+                word_start, word, first, paren = True, [], None, 0
+                continue
+            if c == ")":
+                if closer == ")" and paren == 0:
+                    del self.pending[opened:]
+                    self.closed = True
+                    return i + 1
+                paren = max(0, paren - 1)
+            elif c == "(":
+                if s[i - 1 : i] in _REPARSED_OPENERS:
+                    # ``<(…)`` / ``>(…)`` / ``name=(…)`` re-parse their body as
+                    # separate text: a marker inside closes with it
+                    kept, literal = len(self.found), s[i - 1] == "="
+                    i = self._commands(i + 1, ")", depth + 1, literal)
+                    if literal and not self.closed:
+                        self.poisoned = True  # an unclosed literal is a syntax error too
+                    if literal and self.poisoned:
+                        del self.found[kept:]
+                    word_start = False
+                    continue
+                paren += 1
+            if c in _SEGMENT_END:
+                word_start, word, first = True, [], None
+                i += 1
+                continue
+            if c in " \t":
+                text = "".join(word)
+                if text and first is None and text not in _COMMAND_PREFIX_WORDS:
+                    first = text
+                word, word_start = [], True
+                i += 1
+                continue
+            word.append(c)
+            word_start = c in _WORD_BREAK
+            i += 1
+        self.closed = False
+        return n
+
+    def _read_bodies(self, nl: int) -> int:
+        """At the newline ending a line: read the bodies of the heredocs opened on it.
+
+        A heredoc inside ``$(…)`` / backticks whose body has unbalanced parentheses
+        is not hidden (see below). A marker whose ``$(…)`` / backtick span closes before the newline has no
+        body there (bash runs the next line), so it is discarded at the closer.
+
+        Returns where the walk resumes. A heredoc with no terminator line is
+        dropped (and so is every later marker of that line) — bash would swallow
+        the rest of the command as its body; we keep scanning it instead.
+        """
+        s, n = self.s, self.n
         cursor = nl + 1
-        for mk in markers:
+        pending, self.pending = self.pending, []
+        for start, mk, in_sub in pending:
             delim, literal = _heredoc_delimiter(mk.group("word"))
-            body_end = term_end = n
+            body_end = term_end = None
             idx = cursor
-            while idx <= n:
-                eol = command.find("\n", idx)
+            key = (delim, bool(mk.group("dash")))
+            # a delimiter that found no terminator from an earlier cursor cannot
+            # find one from a later one: stacked unterminated markers stay linear
+            while idx <= n and key not in self.absent:
+                eol = s.find("\n", idx)
                 stop = n if eol == -1 else eol
-                line = command[idx:stop]
+                line = s[idx:stop]
                 if (line.lstrip("\t") if mk.group("dash") else line) == delim:
                     body_end, term_end = idx, stop
                     break
                 if eol == -1:
                     break
                 idx = eol + 1
-            feed = _feeding_segment(command, mk.start(), mk.end(), nl)
-            closer = _CLOSER.match(command[min(term_end + 1, n):])
-            opening = command[command.rfind("\n", 0, mk.start()) + 1 : mk.start()]
+            if body_end is None:
+                self.absent.add(key)
+                break
+            if in_sub and s.count("(", cursor, body_end) != s.count(")", cursor, body_end):
+                # older bash matches a ``$(…)`` by counting parentheses and is blind
+                # to heredocs: an unbalanced body can close the span early
+                continue
+            nl_before = s.rfind("\n", 0, start) + 1
+            feed = _feeding_segment(s, start, mk.end(), nl)
+            after = min(term_end + 1, n)
+            closer = _CLOSER.match(s, after)
+            opening = s[nl_before:start]
             if closer and "$(" not in opening and "`" not in opening:
-                feed += " " + _until_break(closer.group(0).lstrip(" \t;"))  # ``(cat <<'EOF' … EOF`` newline ``) | sh``
-            out.append(_Heredoc(
-                mk.start(), cursor, body_end,
-                command[cursor:body_end].rstrip("\n"), literal, feed,
+                feed += " " + _until_break(closer.group(0).lstrip(" \t;"))
+            self.found.append(_Heredoc(
+                start, cursor, body_end, after, s[cursor:body_end].rstrip("\n"), literal, feed,
             ))
-            cursor = min(term_end + 1, n)
-        pos = max(cursor - 1, nl + 1)
+            cursor = after
+        return cursor
+
+
+@functools.lru_cache(maxsize=64)
+def _heredocs(command: str) -> Tuple[_Heredoc, ...]:
+    """Every real heredoc in ``command``, parsed the way bash reads them (#1106).
+
+    Several markers on one line read their bodies in order (``cat <<A <<B``).
+    The terminator is the delimiter ALONE on its line: ``<<`` takes no leading
+    or trailing whitespace (`` EOF`` and ``EOF `` are body text), ``<<-`` strips
+    leading TABS only. The delimiter is a full shell word (see above). A marker
+    that bash would not read as a redirection (see ``_HeredocScanner``) opens no
+    heredoc, so the lines after it stay visible to every rule.
+    """
+    return _HeredocScanner(command).run() if "<<" in command else ()
 
 
 def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
@@ -2612,10 +2904,7 @@ def _hide_heredoc_bodies(command: str, keep_programs: bool) -> str:
     """
     out, pos = [], 0
     for h in _heredocs(command):
-        if keep_programs and (
-            not _heredoc_marker_is_live(command[: h.start])
-            or _stdin_is_program(_command_words(h.line))
-        ):
+        if keep_programs and _stdin_is_program(_command_words(h.line)):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")
@@ -3433,25 +3722,9 @@ _SHELL_OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
 # inside a quoted string (not a real heredoc), and a heredoc that FEEDS A SHELL
 # (``bash <<'EOF'`` — the body is the program, a payload like ``sh -c``).
 
-_QUOTED_HEREDOC_RE = re.compile(
-    r"(?<!<)<<-?[ \t]*(?:'([A-Za-z_]\w*)'|\"([A-Za-z_]\w*)\"|\\([A-Za-z_]\w*))"
-)
 _HEREDOC_BODY = "heredoc-body"
 _LITERAL_CHAR = "\x01"
 _HEREDOC_SHELL_CONSUMERS = {"ssh", "eval", "source", "."}
-
-
-def _heredoc_marker_is_live(prefix: str) -> bool:
-    """True when a ``<<'X'`` marker is a real heredoc, not text inside a string.
-
-    ``echo "<<'EOF'"`` opens no heredoc, and hiding the lines after it would
-    hide real commands. A marker on a line with an odd number of quotes is only
-    live inside a ``$(`` / backtick span (the ``-m "$(cat <<'EOF'`` idiom).
-    """
-    line = prefix.rsplit("\n", 1)[-1]
-    if "$(" in line or "`" in line:
-        return True
-    return line.count("'") % 2 == 0 and line.count('"') % 2 == 0
 
 
 def _heredoc_feeds_shell(prefix: str) -> bool:
@@ -3467,32 +3740,12 @@ def _neutralize_literal_heredocs(command: str) -> str:
     """Replace each literal heredoc body with one inert line (see INERT VIEW)."""
     out: List[str] = []
     pos = 0
-    while True:
-        m = _QUOTED_HEREDOC_RE.search(command, pos)
-        if not m:
-            break
-        delim = m.group(1) or m.group(2) or m.group(3)
-        nl = command.find("\n", m.end())
-        if nl == -1:
-            break
-        body_start, term, idx = nl + 1, None, nl + 1
-        while idx <= len(command):
-            eol = command.find("\n", idx)
-            if command[idx: eol if eol != -1 else len(command)].strip() == delim:
-                term = idx
-                break
-            if eol == -1:
-                break
-            idx = eol + 1
-        if term is None:
-            break  # unterminated: leave it, the fallback fails closed
-        prefix = command[:m.start()]
-        if not _heredoc_marker_is_live(prefix) or _heredoc_feeds_shell(prefix):
-            out.append(command[pos:term])
-        else:
-            out.append(command[pos:body_start])
-            out.append(_HEREDOC_BODY + "\n")
-        pos = term
+    for h in _heredocs(command):
+        if not h.quoted or _heredoc_feeds_shell(command[: h.start]):
+            continue
+        out.append(command[pos : h.body_start])
+        out.append(_HEREDOC_BODY + "\n")
+        pos = h.body_end
     out.append(command[pos:])
     return "".join(out)
 
@@ -3710,7 +3963,6 @@ def normalize_subcommands(command: str) -> Tuple[List[str], Optional[str]]:
 # ``sh -c "…"`` payloads are recursively re-scanned as commands.
 
 _MASK = "\x00"
-_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w+)\1")
 # ``su -c`` runs its argument through a login shell, so it belongs here
 # for the same reason: the value is a command, not content.
 _SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "su"}
@@ -4369,20 +4621,13 @@ def global_option_normalized_haystacks(command: str) -> List[str]:
 
 def _strip_heredoc_bodies(command: str) -> str:
     """Remove heredoc body lines (``<<EOF … EOF``) — they are content."""
-    m = _HEREDOC_RE.search(command)
-    if not m:
-        return command
-    delim = m.group(2)
-    nl = command.find("\n", m.end())
-    if nl == -1:
-        return command
-    lines = command[nl + 1:].split("\n")
-    for i, line in enumerate(lines):
-        if line.strip() == delim:
-            rest = "\n".join(lines[i + 1:])
-            return command[:nl + 1] + _strip_heredoc_bodies(rest)
-    # Unterminated heredoc: everything after the marker is body.
-    return command[:nl + 1]
+    out: List[str] = []
+    pos = 0
+    for h in _heredocs(command):
+        out.append(command[pos : h.body_start])
+        pos = h.end
+    out.append(command[pos:])
+    return "".join(out)
 
 
 def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
