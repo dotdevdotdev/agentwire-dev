@@ -628,3 +628,102 @@ def test_round1_review_shapes(cfg):
     ]
     assert not leaked, leaked
     assert not wrongly_blocked, wrongly_blocked
+
+
+# Review of PR #1102 (round 2).
+ROUND2_BLOCK = {
+    # unquoted-delimiter counterparts of the quoted-body controls below: the
+    # shell expands them, so the substitution (or the cd chain after the
+    # heredoc) is a real command
+    "unquoted heredoc counterpart": [
+        "cat <<EOF\n$(cd ~/.agentwire && touch damagecontrol.yml)\nEOF",
+        "git commit -F - <<EOF\nnote $(git -C ~/.agentwire checkout damagecontrol.yml)\nEOF",
+        "cd ~/.agentwire && cat <<EOF >/dev/null\nx\nEOF\ntouch damagecontrol.yml",
+        "ssh host <<'EOF'\ncd ~/.agentwire && touch damagecontrol.yml\nEOF",
+    ],
+    "cd-relative folds": [
+        "cd ~/.agentwire && touch 'damage''control.yml'",
+        "cd ~/.agentwire && touch \"damage\"control.yml",
+        "cd ~/.agentwire && touch damage\\control.yml",
+        "cd ~/.agentwire && touch dama$'g'econtrol.yml",
+        "cd ~/.agentwire && touch $'damagecontrol.yml'",
+        "cd ~/.agentwire && touch $PWD/damagecontrol.yml",
+        "cd ~/.agentwire && touch \"$PWD/damagecontrol.yml\"",
+        "cd ~/.agentwire && touch ${PWD}/damagecontrol.yml",
+        "cd ~/.agentwire && touch damagecontrol.y?l",
+        "cd ~/.agentwire && touch d*ntrol.yml",
+        "cd ~/.agentwire && touch damagecontrol.[y]ml",
+        "cd ~/.agentwire && touch './'damagecontrol.yml",
+        "cd ~/.agentwire && sed -i s/a/b/ 'damage''control.yml'",
+        "cd ~/.agentwire && gzip dama\\gecontrol.yml",
+        "cd ~/.agentwire && ln -sf /tmp/x $PWD/damagecontrol.yml",
+        "cd ~/.agentwire && git checkout -- \"$PWD/damagecontrol.yml\"",
+        "cd ~/.agentwire && mv d*ntrol.yml /tmp",
+        "cd ~/.agentwire && echo x > 'damage''control.yml'",
+        "cd ~/.agentwire && tee 'damage''control.yml' < /dev/null",
+        "cd ~/.agentwire && curl -o \"damage\"control.yml http://e",
+        "cd ~/.agentwire && rm *.yml",
+    ],
+    "sudo shells and su": [
+        "echo 'touch @P' | sudo -s",
+        "echo 'touch @P' | sudo -i",
+        "echo 'touch @P' | sudo -Hi",
+        "echo 'touch @P' | sudo -u root -s",
+        "echo 'touch @P' | sudo su",
+        "echo 'touch @P' | ssh host sudo -s",
+        "echo 'touch @P' | ssh host sudo -i",
+        "echo 'touch @P' | ssh host sudo su",
+        "sudo -s <<EOF\ntouch @P\nEOF",
+        "sudo -i <<< 'touch @P'",
+        "ssh host sudo -i <<EOF\ntouch @P\nEOF",
+    ],
+    "gsed": ["gsed -i s/a/b/ @P"],
+}
+ROUND2_ALLOW = [
+    # quoted-delimiter heredoc bodies are data (commit/PR text about this feature)
+    "git commit -F - <<'EOF'\ncd ~/.agentwire && touch damagecontrol.yml is now blocked\nEOF",
+    "git commit -F - <<'EOF'\ngit -C ~/.agentwire checkout damagecontrol.yml\nEOF",
+    "cat <<'EOF' > /tmp/note.md\ncd ~/.agentwire && rm \"damagecontrol.yml\"\nEOF",
+    "cat <<\"EOF\" > /tmp/note.md\ncd ~/.agentwire && touch damagecontrol.yml\nEOF",
+    "cat <<'EOF'\ntouch ~/.agentwire/damage*.yml and ~/.agentwire/./damagecontrol.yml\necho x >| @P\nEOF",
+    # cd-relative controls: reads, other files, other directories, prose
+    "cd ~/.agentwire && cat 'damage''control.yml'",
+    "cd ~/.agentwire && cat $PWD/damagecontrol.yml",
+    "cd ~/.agentwire && cat damagecontrol.y?l",
+    "cd ~/.agentwire && cat d*ntrol.yml",
+    "cd ~/.agentwire && touch other.yml",
+    "cd ~/.agentwire && touch $PWD/other.yml",
+    "cd ~/.agentwire && touch 'other''.yml'",
+    "cd ~/.agentwire && touch my-damagecontrol.yml",
+    "cd ~/.agentwire && rm *.log",
+    "cd /tmp && touch 'damage''control.yml'",
+    "cd /tmp && touch $PWD/damagecontrol.yml",
+    "cd /tmp && touch d*ntrol.yml",
+    "cd ~/.agentwire && git commit -m \"touch damagecontrol.yml\"",
+    # stdin readers: sudo's own options only, real programs, other payloads
+    "echo 'touch @P' | sudo ls -i",
+    "echo 'touch @P' | sudo -u root ls -si",
+    "echo 'touch @P' | sudo cat",
+    "echo 'touch @P' | lua -e 'print(1)'",
+    "echo 'touch /tmp/x' | sudo -s",
+    "sudo -s <<EOF\nls /tmp\nEOF",
+]
+
+
+def test_round2_review_shapes(cfg):
+    leaked = {}
+    for item, shapes in ROUND2_BLOCK.items():
+        for template in shapes:
+            for sp in (SPELLINGS if "@P" in template else [None]):
+                c = template.replace("@P", sp) if sp else template
+                if not _blocked_by_control_plane(c, cfg):
+                    leaked.setdefault(item, []).append(c)
+    wrongly_blocked = [
+        c
+        for template in ROUND2_ALLOW
+        for sp in (SPELLINGS if "@P" in template else [None])
+        for c in [template.replace("@P", sp) if sp else template]
+        if _blocked_by_control_plane(c, cfg)
+    ]
+    assert not leaked, leaked
+    assert not wrongly_blocked, wrongly_blocked

@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "f04706c7f993efcd9e38ccf384612830a52fd9ff845102dc2162cbb321b3917d", "generated_at": "2026-10-16T12:11:56Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e03947d7d81029a990c92dea930cf6be727d193c7e2d77deecbd20345296fa29", "generated_at": "2026-10-16T12:28:48Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -42,6 +42,7 @@ file drift from what's inlined. ``tests/unit/test_damage_control_sync.py`` will
 fail loudly if drift happens.
 """
 
+import codecs
 import fnmatch
 import functools
 import glob
@@ -257,7 +258,7 @@ PROTECTED_WRITER_PATTERNS = [
     (r'\b(?:mv|rename|mmv|chflags|setfacl|chattr)\b' + _SEG + r'{path}', "write"),
     # in-place structured editors
     (r'\b(?:yq|tomlq|xq)\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i[A-Za-z]*)\b|\s--in-?place\b))' + _SEG + r'{path}', "write"),
-    (r'\bsed\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i[A-Za-z]*)\b|\s--in-?place\b))' + _SEG + r'{path}', "write"),
+    (r'\bg?sed\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i[A-Za-z]*)\b|\s--in-?place\b))' + _SEG + r'{path}', "write"),
     (r'\bdasel\b(?=' + _SEG + r'\s(?:put|delete)\b)' + _SEG + r'{path}', "write"),
     # scp/sftp write their LAST operand; as a source the file is only read
     (r'\bscp\b' + _SEG + r'\s["\']?{path}[^\s|;&]*\s*(?:$|[;&|#]|\d*[<>])', "write"),
@@ -2622,8 +2623,7 @@ def _parallel_command(args: List[str]) -> Tuple[List[str], Optional[str]]:
 # Programs that read a script from stdin: shells and the common interpreters.
 _STDIN_READERS = frozenset({
     "sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "csh", "tcsh",
-    "perl", "python", "python2", "python3", "node", "ruby", "php", "lua",
-    "tclsh", "deno", "bun", "Rscript",
+    "perl", "python", "python2", "python3", "node", "ruby", "php", "deno", "bun",
 })
 _CONTAINER_RUNNERS = frozenset({"docker", "podman", "kubectl", "nerdctl", "lxc", "incus"})
 
@@ -2643,8 +2643,14 @@ def _stage_reads_program(stage: List[str]) -> bool:
     head = os.path.basename(words[0])
     if head in _STDIN_READERS:
         return True
+    if head in ("sudo", "doas"):
+        i = 1  # sudo's own options only: ``sudo ls -i`` is ls's flag, not a login shell
+        while i < len(words) and words[i].startswith("-"):
+            if re.fullmatch(r"-(?!-)[A-Za-z]*[si][A-Za-z]*|--(?:shell|login)", words[i]):
+                return True  # ``sudo -s`` / ``sudo -i`` ARE shells
+            i += 2 if words[i] in ("-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U") else 1
     if head in _PREFIX_WRAPPERS or head in ("busybox", "builtin", "pkexec"):
-        return any(os.path.basename(w) in _STDIN_READERS for w in words[1:5])
+        return any(os.path.basename(w) in _STDIN_READERS | {"su"} for w in words[1:5])
     if head == "su":  # no -c: su starts a login shell that reads its stdin
         return "-c" not in words and "--command" not in words
     if head in _CONTAINER_RUNNERS:
@@ -2883,32 +2889,43 @@ def _glob_variants(command: str) -> List[str]:
     """
     if not _GLOB_TOKEN.search(command):
         return []
-    concrete, project = _protected_glob_candidates(os.path.expanduser("~"))
+    _, project = _protected_glob_candidates(os.path.expanduser("~"))
     out: List[str] = []
     for m in _GLOB_TOKEN.finditer(command):
         tok = m.group(0)
-        rx = _token_regex(tok)
-        if rx is None:
-            continue
-        hits: List[str] = []
         if tok.startswith("/"):
-            hits += [c for c in concrete if rx.fullmatch(c)]
-            if "/" in tok[1:] and not re.search(r"[*?\[$]", tok.split("/")[1]):
-                hits += [
-                    f for f in itertools.islice(glob.iglob(_EXPANSION.sub("*", tok)), _GLOB_PATH_CAP)
-                    if is_protected_control_plane(f) and f not in hits
-                ]
-        elif re.search(r"[A-Za-z0-9_.\-]{3,}", _EXPANSION.sub("", re.sub(r"[*?\[\]]", " ", tok))):
-            hits += [p for p in project if rx.fullmatch(p) or rx.fullmatch("x" + p)]
+            hits = _glob_hits(tok)
+        else:
+            rx = _token_regex(tok)
+            hits = []
+            if rx is not None and re.search(
+                r"[A-Za-z0-9_.\-]{3,}", _EXPANSION.sub("", re.sub(r"[*?\[\]]", " ", tok))
+            ):
+                hits = [p for p in project if rx.fullmatch(p) or rx.fullmatch("x" + p)]
         for hit in hits:
             out.append(command.replace(tok, hit))
     return out
 
 
+def _glob_hits(tok: str) -> List[str]:
+    """Protected paths an ABSOLUTE glob / partial-expansion word can name (#1101)."""
+    rx = _token_regex(tok)
+    if rx is None:
+        return []
+    concrete, _ = _protected_glob_candidates(os.path.expanduser("~"))
+    hits = [c for c in concrete if rx.fullmatch(c)]
+    if "/" in tok[1:] and not re.search(r"[*?\[$]", tok.split("/")[1]):
+        hits += [
+            f for f in itertools.islice(glob.iglob(_EXPANSION.sub("*", tok)), _GLOB_PATH_CAP)
+            if is_protected_control_plane(f) and f not in hits
+        ]
+    return hits
+
+
 _CD_RE = _rx(
     r"(?:^|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
 )
-_REL_WORD = _rx(r"(?<![^\s;&|(<>'\"])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
+_REL_WORD = _rx(r"(?<![^\s;&|(<>'\"=])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
 
 
 def _join_dir(cwd: Optional[str], d: str) -> Optional[str]:
@@ -2920,13 +2937,60 @@ def _join_dir(cwd: Optional[str], d: str) -> Optional[str]:
     return posixpath.normpath(posixpath.join(cwd, d)) if cwd else None
 
 
-def _absolutize(text: str, cwd: str) -> str:
-    """Rewrite relative words in ``text`` that name a protected file under ``cwd``."""
-    def _sub(m: "re.Match[str]") -> str:
+_ANSI_C = _rx(r"\$'((?:[^'\\]|\\.)*)'")
+_PLAIN_WORD = _rx(r"[A-Za-z0-9_.][^\s;&|()<>'\"]*")
+_PUNCT_WORD = _rx(r"[;&|<>()]+")
+
+
+def _ansi_c_fold(text: str) -> str:
+    """``$'dama\\x67e'`` -> the quoted string bash would produce."""
+    def _dec(m: "re.Match[str]") -> str:
+        try:
+            return shlex.quote(codecs.decode(m.group(1), "unicode_escape"))
+        except (UnicodeDecodeError, ValueError):
+            return m.group(0)
+
+    return _ANSI_C.sub(_dec, text)
+
+
+def _resolve_word(word: str, cwd: str) -> str:
+    """``word`` (already unquoted) made absolute when it names a protected file under ``cwd``."""
+    if word.startswith("-"):
+        return word
+    if _PLAIN_WORD.fullmatch(word):
+        joined = posixpath.normpath(posixpath.join(cwd, word))
+        if re.search(r"[*?\[]", word):
+            hits = _glob_hits(joined)
+            return hits[0] if hits else word
+        return joined if is_protected_control_plane(joined) else word
+
+    def _sub(m: "re.Match[str]") -> str:  # a word with quotes inside (python -c "open('x')")
         cand = posixpath.normpath(posixpath.join(cwd, m.group(1)))
         return cand if is_protected_control_plane(cand) else m.group(0)
 
-    return _REL_WORD.sub(_sub, text)
+    return _REL_WORD.sub(_sub, word)
+
+
+def _absolutize(text: str, cwd: str) -> str:
+    """Rewrite words in ``text`` that name a protected file under ``cwd``.
+
+    The text is first folded through what the shell does to a word before the
+    program sees it — ANSI-C ``$'…'``, ``$PWD``, adjacent quotes, backslashes —
+    so the relative spelling reaches the same check the absolute one does.
+    """
+    folded = _ansi_c_fold(text).replace("${PWD}", cwd).replace("$PWD", cwd)
+    try:
+        lex = shlex.shlex(folded, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        words = list(lex)
+    except ValueError:
+        return _REL_WORD.sub(
+            lambda m: _resolve_word(m.group(1), cwd), folded
+        )
+    resolved = [w if _PUNCT_WORD.fullmatch(w) else _resolve_word(w, cwd) for w in words]
+    if resolved == words and folded == text:
+        return text
+    return " ".join(w if _PUNCT_WORD.fullmatch(w) else _quote_word(w) for w in resolved)
 
 
 def _cwd_variants(command: str) -> List[str]:
@@ -2980,14 +3044,21 @@ def _cwd_variants(command: str) -> List[str]:
 
 def _derived_commands(command: str) -> List[str]:
     """Commands hidden inside ``command`` that must be judged as commands themselves."""
+    # A quoted-delimiter heredoc body is DATA (a commit message about ``cd <dir>
+    # && touch <file>`` must not be read as that command): the rewriting
+    # generators see the command without it. Bodies that feed a shell or runner
+    # stay (``_neutralize_literal_heredocs`` keeps them), and the stdin-program
+    # pass reads the full text, so a quoted body handed to ``ssh host`` is still
+    # judged as the program it is.
+    visible = _neutralize_literal_heredocs(command) if "<<" in command else command
     derived = (
         _heredoc_substitution_commands(command)
         + _stdin_program_commands(command)
-        + _redirect_variant(command)
-        + _normalized_path_variant(command)
-        + _brace_variants_of(command)
-        + _glob_variants(command)
-        + _cwd_variants(command)
+        + _redirect_variant(visible)
+        + _normalized_path_variant(visible)
+        + _brace_variants_of(visible)
+        + _glob_variants(visible)
+        + _cwd_variants(visible)
     )
     return list(dict.fromkeys(derived))[:_RESCAN_FANOUT]
 

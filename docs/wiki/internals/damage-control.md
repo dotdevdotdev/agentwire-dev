@@ -198,11 +198,21 @@ it would unwrapped:
   reader, `at`, `batch`, `crontab -`, `. /dev/stdin` / `source /dev/stdin`, a
   bare `parallel` (or `parallel bash -c` / `--pipe sh`), and a shell or
   interpreter directly (`sudo sh`, `exec bash`, `busybox sh`, `su -`,
-  `docker exec -i c sh`). One predicate (`_stage_reads_program`) decides, so the
-  same payload is refused or allowed however it is fed (pipe, heredoc,
-  here-string): shells and `perl`/`python3`/`node`/`ruby`/… behind
-  `sudo`/`exec`/`nohup`/`busybox`/`env`/`command`/`--`/`-s`. With a real remote
-  program (`ssh host cat`, `sudo tee`) stdin is data and is left alone.
+  `docker exec -i c sh`, `sudo -s` / `sudo -i` / `sudo su`). One predicate
+  (`_stage_reads_program`) decides, so the same payload is refused or allowed
+  however it is fed (pipe, heredoc, here-string): shells and the interpreters of
+  the inline-interpreter net (`perl`, `python3`, `node`, `ruby`, `php`, `deno`,
+  `bun`) behind `sudo`/`exec`/`nohup`/`busybox`/`env`/`command`/`--`/`-s`;
+  `sudo -s`/`-i` count only as sudo's *own* options (`sudo ls -i` does not).
+  With a real remote program (`ssh host cat`, `sudo tee`) stdin is data and is
+  left alone. Other interpreters (`lua`, `tclsh`, …) are not in the list, the
+  same stance the unwrapped inline-interpreter net takes.
+- **Quoted-delimiter heredoc bodies are data for the rewriting passes** (cd /
+  `git -C` resolution, glob, brace, redirect and path normalization): a commit
+  body that *describes* `cd <dir> && touch <file>` is not that command
+  (`_neutralize_literal_heredocs`). Bodies that feed a shell or runner
+  (`ssh host <<'EOF'`, `sudo sh <<'EOF'`) are still judged as the program they
+  are, and unquoted bodies stay scanned for substitutions (#1098).
 - **`parallel` is xargs-shaped:** its command is re-scanned with the path
   substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
   A quoted command string is scanned whole, separators included
@@ -219,7 +229,7 @@ it would unwrapped:
 re-scanned as a command, so the verb still decides (reads stay allowed):
 
 - **More writers:** `mv` with the path as the *source* (it removes the file),
-  `rename`/`mmv`/`chflags`/`setfacl`/`chattr`, `yq`/`tomlq`/`xq` and `sed` with
+  `rename`/`mmv`/`chflags`/`setfacl`/`chattr`, `yq`/`tomlq`/`xq` and `sed`/`gsed` with
   `i` anywhere in a flag cluster (`-i`, `-iy`, `-yi`, `-ni`) or `--inplace` /
   `--in-place`, `dasel put|delete`, `scp` with the path as the destination,
   `ed`/`ex` (always scripted), `vi`/`vim`/`nvim`/`view` driven
@@ -243,6 +253,11 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   `git --work-tree <dir>`** is applied to later words (until the next `cd`):
   `cd ~/.agentwire && touch damagecontrol.yml` is judged as the absolute path,
   quoted operands included (`touch "damagecontrol.yml"`, `open('damagecontrol.yml')`).
+  The text after the `cd` is folded the way the shell folds it before the
+  program sees it — adjacent quotes (`'damage''control.yml'`), backslashes,
+  ANSI-C `$'…'`, `$PWD` / `${PWD}` as the known directory, `./` — and relative
+  globs (`damagecontrol.y?l`, `d*ntrol.yml`) are matched against the protected
+  files in that directory (`rm *.yml` there is refused, `cat d*ntrol.yml` is not).
   `~` and `$HOME` are directories for `git -C` / `--work-tree` as well
   (`git -C ~ checkout .agentwire/damagecontrol.yml`).
 - `xargs -I{}` / `parallel` substitute into an interpreter literal
@@ -254,8 +269,12 @@ Declared residuals (not statically knowable): paths assembled at runtime
 (`join`, `chr`, `format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a
 component that is only `$var`), stdin text produced by anything but
 `echo`/`printf`/a heredoc (`cat file | ssh host`, `bash -c "$(cat x)"` names no
-path until it runs), a `patch` / `git apply` whose target is named only inside
-the diff, a cwd known only from the session or set by `cd $dir` / `cd -` / a
+path until it runs), text that a stdin reader receives through a stage the
+scanner does not model (`… | tee x | ssh host`, `… | mosh host`,
+`… | ssh host xargs -0 sh`), interpreter source piped to a remote interpreter
+(`echo "open('<path>','w')" | ssh host python3` — the text is re-scanned as
+shell, not as python), a `patch` / `git apply` (including `git -C <dir> apply`)
+whose target is named only inside the diff, `sftp get`, a cwd known only from the session or set by `cd $dir` / `cd -` / a
 subshell the command cannot see, `make -C`/`env -C`-style directory options,
 writes through a symlink or hardlink alias, a brace expansion past the cap, a
 derived-command budget exhausted by a pathological command, and the TOCTOU
