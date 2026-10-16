@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "e03947d7d81029a990c92dea930cf6be727d193c7e2d77deecbd20345296fa29", "generated_at": "2026-10-16T12:28:48Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "eba07c6cc31162771329ff243038d75315a18d4cb1f4e61b1203abe9810933fa", "generated_at": "2026-10-16T12:48:54Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2483,40 +2483,90 @@ def _extracts_into_protected_dir(command: str) -> Optional[str]:
     return None
 
 
-_HEREDOC_OPEN_RE = _rx(r"(?<!<)<<(?!<)-?[ \t]*(?:(['\"])(\w+)\1|\\(\w+)|(\w+))")
+_HEREDOC_OPEN_RE = _rx(
+    r"(?<!<)<<(?!<)(?P<dash>-?)[ \t]*(?:(?P<q>['\"])(?P<d1>\w+)(?P=q)|\\(?P<d2>\w+)|(?P<d3>\w+))"
+)
 _RESCAN_DEPTH = 3
 _RESCAN_FANOUT = 32
 _RESCAN_BUDGET = 200  # derived commands scanned per top-level check
 
 
-def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
-    """``(body, delimiter_quoted, opening_line)`` for every heredoc in ``command`` (#1098).
+class _Heredoc:
+    """One heredoc: where its body sits and whether the shell expands it."""
 
-    A quoted delimiter (``<<'EOF'`` / ``<<"EOF"`` / ``<<\\EOF``) makes the body
-    literal; an unquoted one expands ``$(...)`` and backticks inside it.
+    __slots__ = ("start", "body_start", "body_end", "body", "quoted", "line")
+
+    def __init__(self, start: int, body_start: int, body_end: int, body: str, quoted: bool, line: str):
+        self.start, self.body_start, self.body_end = start, body_start, body_end
+        self.body, self.quoted, self.line = body, quoted, line
+
+
+def _heredocs(command: str) -> List[_Heredoc]:
+    """Every heredoc in ``command``, terminated the way bash terminates it.
+
+    The terminator is the delimiter ALONE on its line: ``<<`` takes no leading
+    or trailing whitespace (`` EOF`` and ``EOF `` are body text), ``<<-`` strips
+    leading TABS only. A quoted (``'EOF'``, ``"EOF"``) or backslash-quoted
+    (``\\EOF``) delimiter makes the body literal.
     """
-    out: List[Tuple[str, bool, str]] = []
+    out: List[_Heredoc] = []
     pos = 0
     while True:
         m = _HEREDOC_OPEN_RE.search(command, pos)
         if not m:
             return out
-        delim = m.group(2) or m.group(3) or m.group(4)
-        quoted = m.group(4) is None
+        delim = m.group("d1") or m.group("d2") or m.group("d3")
         nl = command.find("\n", m.end())
         if nl == -1:
             return out
-        lines = command[nl + 1 :].split("\n")
-        body: List[str] = []
-        consumed = len(lines)
-        for i, line in enumerate(lines):
-            if line.strip() == delim:
-                consumed = i + 1
+        body_start, idx, end = nl + 1, nl + 1, len(command)
+        body_end = term_end = end
+        while idx <= end:
+            eol = command.find("\n", idx)
+            stop = end if eol == -1 else eol
+            line = command[idx:stop]
+            if (line.lstrip("\t") if m.group("dash") else line) == delim:
+                body_end, term_end = idx, stop
                 break
-            body.append(line)
-        line = command[command.rfind("\n", 0, m.start()) + 1 : nl]
-        out.append(("\n".join(body), quoted, line))
-        pos = nl + 1 + sum(len(x) + 1 for x in lines[:consumed])
+            if eol == -1:
+                break
+            idx = eol + 1
+        opening = command[command.rfind("\n", 0, m.start()) + 1 : nl]
+        out.append(_Heredoc(
+            m.start(), body_start, body_end,
+            command[body_start:body_end].rstrip("\n"), m.group("d3") is None, opening,
+        ))
+        pos = max(term_end, nl + 1)
+
+
+def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
+    """``(body, delimiter_quoted, opening_line)`` for every heredoc in ``command`` (#1098).
+
+    A quoted delimiter makes the body literal; an unquoted one expands
+    ``$(...)`` and backticks inside it.
+    """
+    return [(h.body, h.quoted, h.line) for h in _heredocs(command)]
+
+
+def _hide_heredoc_bodies(command: str, literal_only: bool) -> str:
+    """``command`` with heredoc bodies replaced by one inert line.
+
+    ``literal_only`` keeps expanding (unquoted) bodies and bodies handed to a
+    shell or runner, which the shell or the program will execute.
+    """
+    out, pos = [], 0
+    for h in _heredocs(command):
+        if literal_only and (
+            not h.quoted
+            or not _heredoc_marker_is_live(command[: h.start])
+            or _stdin_is_program(_command_words(h.line))
+        ):
+            continue
+        out.append(command[pos : h.body_start])
+        out.append(_HEREDOC_BODY + "\n")
+        pos = h.body_end
+    out.append(command[pos:])
+    return "".join(out)
 
 
 def _command_substitutions(text: str) -> List[str]:
@@ -2754,6 +2804,16 @@ def _pipe_stages(command: str) -> List[Tuple[str, str]]:
 _HERE_STRING_RE = _rx(r"<<<[ \t]*('[^']*'|\"[^\"]*\"|\S+)")
 
 
+_CRON_FIELDS = _rx(r"^[ \t]*(?:@\w+|(?:\S+[ \t]+){5})")
+
+
+def _program_text(text: str, consumer_words: List[str]) -> str:
+    """The commands in ``text`` as its consumer will run them (a crontab line is ``<5 fields> command``)."""
+    if any(os.path.basename(w) == "crontab" for w in consumer_words):
+        return "\n".join(_CRON_FIELDS.sub("", ln) for ln in text.split("\n"))
+    return text
+
+
 def _stdin_program_commands(command: str) -> List[str]:
     """Text that a stdin-reading runner will execute as commands (#1099).
 
@@ -2766,20 +2826,24 @@ def _stdin_program_commands(command: str) -> List[str]:
     out: List[str] = []
     if "<<" in command:
         for body, _quoted, line in _heredoc_bodies(command):
-            if _stdin_is_program(_command_words(line)):
-                out.append(body)
+            words = _command_words(line)
+            if _stdin_is_program(words):
+                out.append(_program_text(body, words))
         for m in _HERE_STRING_RE.finditer(command):
             line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
-            if _stdin_is_program(_command_words(line)):
-                out.append(" ".join(_words(m.group(1))))
+            words = _command_words(line)
+            if _stdin_is_program(words):
+                out.append(_program_text(" ".join(_words(m.group(1))), words))
     if "|" in command:
-        stages = _pipe_stages(_strip_heredoc_bodies(command))
+        stages = _pipe_stages(_hide_heredoc_bodies(command, literal_only=False))
         for (_, producer), (op, consumer) in zip(stages, stages[1:]):
-            if op != "|" or not _stdin_is_program(_command_words(consumer)):
+            consumer_words = _command_words(consumer)
+            if op != "|" or not _stdin_is_program(consumer_words):
                 continue
             words = _words(producer)
             if words and os.path.basename(words[0]) in ("echo", "printf"):
-                out.append(" ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w)))
+                text = " ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w))
+                out.append(_program_text(text, consumer_words))
     return out
 
 
@@ -2930,7 +2994,7 @@ def _glob_hits(tok: str) -> List[str]:
 
 
 _CD_RE = _rx(
-    r"(?:^|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+    r"(?:^\s*|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
 )
 _REL_WORD = _rx(r"(?<![^\s;&|(<>'\"=])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
 
@@ -2945,6 +3009,7 @@ def _join_dir(cwd: Optional[str], d: str) -> Optional[str]:
 
 
 _ANSI_C = _rx(r"\$'((?:[^'\\]|\\.)*)'")
+_OPT_VALUE = _rx(r"((?:-{1,2})?[A-Za-z][\w-]*=)(.+)")
 _PLAIN_WORD = _rx(r"[A-Za-z0-9_.][^\s;&|()<>'\"]*")
 _PUNCT_WORD = _rx(r"[;&|<>()]+")
 
@@ -2962,6 +3027,9 @@ def _ansi_c_fold(text: str) -> str:
 
 def _resolve_word(word: str, cwd: str) -> str:
     """``word`` (already unquoted) made absolute when it names a protected file under ``cwd``."""
+    opt = _OPT_VALUE.fullmatch(word)
+    if opt:  # of=<file>, --output=<file>, --output-document=<file>, -o=<file>
+        return opt.group(1) + _resolve_word(opt.group(2), cwd)
     if word.startswith("-"):
         return word
     if _PLAIN_WORD.fullmatch(word):
@@ -3057,7 +3125,7 @@ def _derived_commands(command: str) -> List[str]:
     # stay (``_neutralize_literal_heredocs`` keeps them), and the stdin-program
     # pass reads the full text, so a quoted body handed to ``ssh host`` is still
     # judged as the program it is.
-    visible = _neutralize_literal_heredocs(command) if "<<" in command else command
+    visible = _hide_heredoc_bodies(command, literal_only=True) if "<<" in command else command
     derived = (
         _heredoc_substitution_commands(command)
         + _stdin_program_commands(command)

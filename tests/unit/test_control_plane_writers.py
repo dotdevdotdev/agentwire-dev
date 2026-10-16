@@ -710,6 +710,81 @@ ROUND2_ALLOW = [
 ]
 
 
+_CDT = "cd ~/.agentwire && touch damagecontrol.yml"
+# Review of PR #1102 (round 3).
+ROUND3_BLOCK = {
+    "leading whitespace before the first cd": [
+        " " + _CDT,
+        "\t" + _CDT,
+        "  cd ~/.agentwire && git checkout -- damagecontrol.yml",
+    ],
+    "tab-indented <<- body handed to a program": [
+        f"at now <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"crontab - <<-'EOF'\n\t* * * * * {_CDT}\n\tEOF",
+        f"crontab - <<'EOF'\n@reboot {_CDT}\nEOF",
+        f"echo '5 4 * * * {_CDT}' | crontab -",
+        f"parallel <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"sudo -s <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"sudo -i <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"perl <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"ruby <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"php <<-'EOF'\n\t{_CDT}\n\tEOF",
+        f"at now <<'EOF'\n{_CDT}\nEOF",
+    ],
+    "value after = in a cd-relative option": [
+        "cd ~/.agentwire && dd if=/tmp/x of=damagecontrol.yml",
+        "cd ~/.agentwire && dd if=/tmp/x of=\"damage\"\"control.yml\"",
+        "cd ~/.agentwire && curl --output=damagecontrol.yml http://e",
+        "cd ~/.agentwire && wget --output-document=damagecontrol.yml http://e",
+    ],
+    "terminator is the delimiter alone": [
+        f"cat <<'EOF' > /tmp/n.md\nx\nEOF\n{_CDT}",
+        f"cat <<EOF > /tmp/n.md\n EOF\n$({_CDT})\nEOF",
+        f"cat <<EOF > /tmp/n.md\nEOF \n$({_CDT})\nEOF",
+        f"cat <<-EOF > /tmp/n.md\n  EOF\n$({_CDT})\n\tEOF",
+    ],
+}
+ROUND3_ALLOW = [
+    " cd ~/.agentwire && cat damagecontrol.yml",
+    "\tcd /tmp && touch damagecontrol.yml",
+    f"at now <<-'EOF'\n\tcd /tmp && touch damagecontrol.yml\n\tEOF",
+    "at now <<-'EOF'\n\tcd ~/.agentwire && cat damagecontrol.yml\n\tEOF",
+    "crontab - <<-'EOF'\n\t* * * * * cd /tmp && touch damagecontrol.yml\n\tEOF",
+    f"cat <<-'EOF' > /tmp/n.md\n\t{_CDT}\n\tEOF",
+    "cd ~/.agentwire && dd if=damagecontrol.yml of=/tmp/x",
+    "cd ~/.agentwire && dd if=/tmp/x of=other.yml",
+    "cd /tmp && dd if=/tmp/x of=damagecontrol.yml",
+    "cd ~/.agentwire && curl --output=other.yml http://e",
+    "cd ~/.agentwire && wget --output-document=/tmp/damagecontrol.yml http://e",
+    # backslash-quoted delimiter is literal exactly like <<'EOF'
+    f"cat <<\\EOF > /tmp/n.md\necho 'touch @P' | sudo -s\n{_CDT}\nEOF",
+    "git commit -F - <<\\EOF\necho 'touch @P' | sudo -s\nEOF",
+    # a lookalike line is body text, so the quoted body runs on to the real terminator
+    f"cat <<'EOF' > /tmp/n.md\n EOF\n{_CDT}\nEOF",
+    f"cat <<'EOF' > /tmp/n.md\nEOF \n{_CDT}\nEOF",
+    f"cat <<-'EOF' > /tmp/n.md\n  EOF\n{_CDT}\n\tEOF",
+]
+
+
+def test_round3_review_shapes(cfg):
+    leaked = {}
+    for item, shapes in ROUND3_BLOCK.items():
+        for template in shapes:
+            for sp in (SPELLINGS if "@P" in template else [None]):
+                c = template.replace("@P", sp) if sp else template
+                if not _blocked_by_control_plane(c, cfg):
+                    leaked.setdefault(item, []).append(c)
+    wrongly_blocked = [
+        c
+        for template in ROUND3_ALLOW
+        for sp in (SPELLINGS if "@P" in template else [None])
+        for c in [template.replace("@P", sp) if sp else template]
+        if _blocked_by_control_plane(c, cfg)
+    ]
+    assert not leaked, leaked
+    assert not wrongly_blocked, wrongly_blocked
+
+
 def test_round2_review_shapes(cfg):
     leaked = {}
     for item, shapes in ROUND2_BLOCK.items():

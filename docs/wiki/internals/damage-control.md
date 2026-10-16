@@ -212,7 +212,11 @@ it would unwrapped:
   body that *describes* `cd <dir> && touch <file>` is not that command
   (`_neutralize_literal_heredocs`). Bodies that feed a shell or runner
   (`ssh host <<'EOF'`, `sudo sh <<'EOF'`) are still judged as the program they
-  are, and unquoted bodies stay scanned for substitutions (#1098).
+  are, and unquoted bodies stay scanned for substitutions (#1098). Heredocs end
+  where bash ends them: the delimiter ALONE on its line (` EOF` and `EOF ` are
+  body text), with `<<-` stripping leading tabs only; `<<\EOF` is literal like
+  `<<'EOF'`. A `crontab -` body is judged after its five schedule fields (or
+  `@reboot`), and leading whitespace before a `cd` does not hide it.
 - **`parallel` is xargs-shaped:** its command is re-scanned with the path
   substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
   A quoted command string is scanned whole, separators included
@@ -274,7 +278,12 @@ scanner does not model (`… | tee x | ssh host`, `… | mosh host`,
 `… | ssh host xargs -0 sh`), interpreter source piped to a remote interpreter
 (`echo "open('<path>','w')" | ssh host python3` — the text is re-scanned as
 shell, not as python), a `patch` / `git apply` (including `git -C <dir> apply`)
-whose target is named only inside the diff, `sftp get`, a cwd known only from the session or set by `cd $dir` / `cd -` / a
+whose target is named only inside the diff, `sftp get`, `ssh host lua` (and
+other interpreters outside the list), a `cd` written inside interpreter source
+(`perl -e 'system("cd <dir> && touch <file>")'`), a body piped into a
+`sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
+path in the body), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
+resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
 subshell the command cannot see, `make -C`/`env -C`-style directory options,
 writes through a symlink or hardlink alias, a brace expansion past the cap, a
 derived-command budget exhausted by a pathological command, and the TOCTOU
