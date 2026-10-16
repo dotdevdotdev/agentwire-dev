@@ -168,7 +168,10 @@ in `safety/_core.py`; applied only to the protected tier, never to user
 - **Text is not a command:** a quoted arg that mentions the path among other
   words (`git commit -m 'touch <path>'`, `gh … --body "gzip <path>"`) is blanked
   before the operand-writer patterns run; a bare quoted path and `-c` program
-  text are kept (`_blank_prose_args`).
+  text are kept (`_blank_prose_args`). Wrapper payloads are NOT prose: an arg
+  to `ssh`/`eval`/`watch`/`xargs`/`sudo`-style runners, a double-quoted `$(…)` or
+  backtick, a `<(…)` process substitution, or text piped into `xargs sh`/`sh`
+  stays visible.
 - **Env-prefix indirection** (`X=<path> python3 -c '…os.environ["X"]…'`,
   `env X=<path> perl -e`) is the inline-interpreter net with the path *before*
   the interpreter.

@@ -2247,6 +2247,18 @@ def fold_string_concat(command: str) -> str:
     return command
 
 
+_SEGMENT_SPLIT = _rx(r"[;&|\n(]")
+_ASSIGN_WORD = _rx(r"^\w+=")
+# Commands whose quoted arguments are themselves run as commands (#1097): a
+# wrapped command is the command, so these args are never prose.
+_ARG_RUNNERS = frozenset({
+    "ssh", "eval", "watch", "xargs", "sudo", "doas", "su", "env", "nohup",
+    "timeout", "exec", "time", "nice", "setsid", "stdbuf", "flock", "chroot",
+    "runuser", "command", "builtin", "busybox", "docker", "kubectl", "podman",
+    "find", "parallel", "tmux", "screen", "script", "at", "osascript", "pkexec",
+})
+
+
 def _blank_prose_args(hay: str, path: str) -> str:
     """Blank quoted args that mention ``path`` among other words (#1097).
 
@@ -2261,13 +2273,37 @@ def _blank_prose_args(hay: str, path: str) -> str:
     path_re = _rx(_path_context_regex(path))
 
     wrapper_payload = _rx(r"\s-\S*c\s+$")
+    runs_data = _rx(
+        r"^[^|;&\n]*\|\s*(?:(?:env|sudo)\s+)*(?:"
+        r"(?:xargs\b[^|;&\n]*\b)?(?:sh|bash|zsh|dash|ksh)\b|eval\b|source\b)"
+    )
+
+    def _executes(start: int, end: int) -> bool:
+        """True when the quoted span at ``start:end`` is code, not text."""
+        prefix, quote, body = hay[:start], hay[start], hay[start + 1 : end - 1]
+        if wrapper_payload.search(prefix):
+            return True
+        # substitution executes inside double quotes; single-quoted it is data
+        if quote == '"' and ("$(" in body or "`" in body):
+            return True
+        # an unclosed process substitution: ``bash <(echo '…')``
+        opener = max(prefix.rfind("<("), prefix.rfind(">("))
+        if opener != -1 and ")" not in prefix[opener:]:
+            return True
+        # the command word runs its arguments (ssh host '…', eval '…', watch '…')
+        words = _SEGMENT_SPLIT.split(prefix)[-1].split()
+        words = [w for w in words if not _ASSIGN_WORD.match(w)]
+        if words and os.path.basename(words[0]) in _ARG_RUNNERS:
+            return True
+        # the text is piped into something that runs it (``… | xargs sh -c``)
+        return bool(runs_data.search(hay[end:]))
 
     def _blank(m: "re.Match[str]") -> str:
         body = m.group(0)[1:-1]
         if (
             path_re.search(body)
             and path_re.sub(" ", body).strip()
-            and not wrapper_payload.search(hay[: m.start()])
+            and not _executes(m.start(), m.end())
         ):
             return m.group(0)[0] * 2
         return m.group(0)
