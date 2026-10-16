@@ -171,21 +171,139 @@ in `safety/_core.py`; applied only to the protected tier, never to user
   text are kept (`_blank_prose_args`). Wrapper payloads are NOT prose: an arg
   to `ssh`/`eval`/`watch`/`xargs`/`sudo`-style runners, a double-quoted `$(…)` or
   backtick, a `<(…)` process substitution, or text piped into `xargs sh`/`sh`
-  stays visible.
+  stays visible. The cost (#1100): ANY substitution in a double-quoted argument
+  that also names a protected path is refused, even a harmless one
+  (`git commit -m "touch <path> $(date)"`) — it executes, so it cannot be told
+  from a payload. The block message says so; rephrase with single quotes
+  (`$(` is data there) or move the substitution out of the string.
 - **Env-prefix indirection** (`X=<path> python3 -c '…os.environ["X"]…'`,
   `env X=<path> perl -e`) is the inline-interpreter net with the path *before*
   the interpreter.
 - **Split path strings:** adjacent / `+` / `.`-joined quoted literals are folded
   (`fold_string_concat`) before the interpreter net reads them.
 
+**Derived commands: heredocs, stdin and wrappers (#1098, #1099).** Text a
+runner will execute is re-scanned as a command in its own right
+(`_derived_commands`, depth- and fan-out-capped), so the verb decides exactly as
+it would unwrapped:
+
+- **Unquoted heredoc bodies** expand `$(…)` and backticks, so each substitution
+  is a command (`cat <<EOF` … `$(touch <path>)` … `EOF`, also inside
+  `git commit -m "$(cat <<EOF …)"`). A quoted delimiter (`<<'EOF'`, `<<"EOF"`) is
+  data, as is an escaped `\$(` or arithmetic `$((…))`; a substitution that only
+  reads is allowed.
+- **Stdin handed to a runner** — a heredoc body, a here-string or piped
+  `echo`/`printf` text — is a command when the runner executes its stdin:
+  `ssh host` with no remote command or a remote command that is itself a stdin
+  reader, `at`, `batch`, `crontab -`, `. /dev/stdin` / `source /dev/stdin`, a
+  bare `parallel` (or `parallel bash -c` / `--pipe sh`), and a shell or
+  interpreter directly (`sudo sh`, `exec bash`, `busybox sh`, `su -`,
+  `docker exec -i c sh`, `sudo -s` / `sudo -i` / `sudo su`). One predicate
+  (`_stage_reads_program`) decides, so the same payload is refused or allowed
+  however it is fed (pipe, heredoc, here-string): shells and the interpreters of
+  the inline-interpreter net (`perl`, `python3`, `node`, `ruby`, `php`, `deno`,
+  `bun`) behind `sudo`/`exec`/`nohup`/`busybox`/`env`/`command`/`--`/`-s`;
+  `sudo -s`/`-i` count only as sudo's *own* options (`sudo ls -i` does not).
+  With a real remote program (`ssh host cat`, `sudo tee`) stdin is data and is
+  left alone. Other interpreters (`lua`, `tclsh`, …) are not in the list, the
+  same stance the unwrapped inline-interpreter net takes.
+- **Heredoc bodies are data for the rewriting passes** (cd / `git -C`
+  resolution, glob, brace, redirect and path normalization), quoted delimiter or
+  not: a commit body that *describes* `cd <dir> && touch <file>` is not that
+  command (`_hide_heredoc_bodies`). In an unquoted body only `$(…)` and
+  backticks are code, and those are scanned on the full command (#1098). Bodies
+  that feed a shell or runner (`ssh host <<'EOF'`, `sudo sh <<EOF`) are the
+  program and stay visible. `|&` is a pipe like `|`. Heredocs end
+  where bash ends them: the delimiter ALONE on its line (` EOF` and `EOF ` are
+  body text), with `<<-` stripping leading tabs only. The delimiter is a full
+  shell word: adjacent parts concatenate (`<<'E'OF`, `<<E"O"F`, `<<$'EOF'` all
+  end at `EOF`) and any quote or backslash makes the body literal (`<<\EOF`
+  like `<<'EOF'`). Several markers on one line read their bodies in order, and
+  each is judged by the simple command it is attached to (`cat <<'A'; sh <<'B'`:
+  only B is a program), including a group closed on a later line
+  (`(cat <<'EOF' … EOF` newline `) | sh`); operators split into words with or
+  without spaces (`<<'EOF'|sh`). A `crontab -` body is judged after its five schedule fields (or
+  `@reboot`), and leading whitespace before a `cd` does not hide it.
+- **`parallel` is xargs-shaped:** its command is re-scanned with the path
+  substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
+  A quoted command string is scanned whole, separators included
+  (`parallel 'echo x; rm {}'`), because parallel hands it to a shell.
+- **Prefix wrappers** (`caffeinate`, `ionice`, `nice`, `taskset`, `chrt`,
+  `sshpass`, … — `_PREFIX_WRAPPERS`) run the command that follows them: a quoted
+  arg behind one is code when an arg-runner (`ssh`, `watch`, …) follows and
+  prose otherwise (`caffeinate git commit -m '…<path>'` stays allowed).
+- **A computed verb** (`bash -c "$(cat x) <path>"`, `$v <path>` handed to a
+  shell) is refused when the path is named: nothing static says it does not
+  write.
+
+**Spellings of the same file (#1101).** Each is rewritten to the plain form and
+re-scanned as a command, so the verb still decides (reads stay allowed):
+
+- **More writers:** `mv` with the path as the *source* (it removes the file),
+  `rename`/`mmv`/`chflags`/`setfacl`/`chattr`, `yq`/`tomlq`/`xq` and `sed`/`gsed` with
+  `i` anywhere in a flag cluster (`-i`, `-iy`, `-yi`, `-ni`) or `--inplace` /
+  `--in-place`, `dasel put|delete`, `scp` with the path as the destination,
+  `ed`/`ex` (always scripted), `vi`/`vim`/`nvim`/`view` driven
+  non-interactively (`-es`, `-s`, `-c`, `+cmd`, `--headless`) and `emacs
+  --batch`. A bare `vim <path>` needs a terminal and is left alone.
+- **Redirect operators** `>|`, `>&`, `&>`, `&>>`, `<>` are the same write as `>`
+  (the subcommand splitter otherwise reads `>|` as a pipe).
+- **Brace expansion** (`damagecontrol.y{m,x}l`) is exact — every expansion is
+  scanned (a group count past the cap is not expanded: residual).
+- **Globs and partial expansions** (`damage*.yml`, `damagecontrol.y?l`,
+  `damage$x`): the word is matched with shell-glob semantics against the
+  concrete protected paths and the real directory listing, and each hit is
+  substituted back — `rm ~/.agentwire/*` is refused, `ls ~/.agentwire/damage*`
+  is not. A bare relative glob needs a 3+ character literal run (`rm *` names
+  nothing). **Stance:** a word whose literal part can still resolve to a
+  protected file is judged as that file; a path component that is *only* an
+  expansion (`~/.agentwire/$f`, `$d/damagecontrol.yml`) is not blocked — it would
+  stand for every file in a directory agents write to constantly.
+- **Mid-path `//`, `/./`, `/../`** are collapsed (`touch ~/.agentwire/x/../damagecontrol.yml`).
+- **A directory set by a literal `cd <dir> &&` / `pushd`, `git -C <dir>` or
+  `git --work-tree <dir>`** is applied to later words (until the next `cd`):
+  `cd ~/.agentwire && touch damagecontrol.yml` is judged as the absolute path,
+  quoted operands included (`touch "damagecontrol.yml"`, `open('damagecontrol.yml')`).
+  The text after the `cd` is folded the way the shell folds it before the
+  program sees it — adjacent quotes (`'damage''control.yml'`), backslashes,
+  ANSI-C `$'…'`, `$PWD` / `${PWD}` as the known directory, `./` — and relative
+  globs (`damagecontrol.y?l`, `d*ntrol.yml`) are matched against the protected
+  files in that directory (`rm *.yml` there is refused, `cat d*ntrol.yml` is not).
+  `~` and `$HOME` are directories for `git -C` / `--work-tree` as well
+  (`git -C ~ checkout .agentwire/damagecontrol.yml`).
+- `xargs -I{}` / `parallel` substitute into an interpreter literal
+  (`… | xargs -I{} python3 -c 'open("{}","w")'`); because the interpreter net is
+  fail-closed for any inline program naming the path, an inline *read* of it is
+  refused the same way it is unwrapped.
+
 Declared residuals (not statically knowable): paths assembled at runtime
-(`join`, `chr`, `format`, decoding), a `patch` / `git apply` whose target is
-named only inside the diff, a basename-only operand whose directory is set
-elsewhere — `cd ~/.agentwire && ln|curl|touch|gzip|git checkout damagecontrol.yml`,
-`git -C ~/.agentwire checkout -- damagecontrol.yml`, `git --work-tree` — and the
-TOCTOU window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
-`--one-top-level=` and `bsdtar` are normalized; other path normalization
-(`/./`, `/../` mid-path, globs and brace spellings) is not. Pins:
+(`join`, `chr`, `format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a
+component that is only `$var`), stdin text produced by anything but
+`echo`/`printf`/a heredoc (`cat file | ssh host`, `bash -c "$(cat x)"` names no
+path until it runs), text that a stdin reader receives through a stage the
+scanner does not model (`… | tee x | ssh host`, `… | mosh host`,
+`… | ssh host xargs -0 sh`), interpreter source piped to a remote interpreter
+(`echo "open('<path>','w')" | ssh host python3` — the text is re-scanned as
+shell, not as python), a `patch` / `git apply` (including `git -C <dir> apply`)
+whose target is named only inside the diff, `sftp get`, `ssh host lua` (and
+other interpreters outside the list), a `cd` written inside interpreter source
+(`perl -e 'system("cd <dir> && touch <file>")'`), a body piped into a
+`sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
+path in the body), `cd <dir> && rsync -a <file> host:x` (the absolute spelling
+is refused too — rsync's source is not distinguished from its destination), a
+partially-quoted or backslashed delimiter (`<<E\OF`, `<<'E'OF`) whose literal
+body holds a `$(…)` that names the path literally (the older heredoc masker
+only recognizes whole-word quoting; fail-closed), a write to the path after a
+partially-quoted delimiter such as `<<'EO'F` (that older masker mis-parses it;
+the same plain write also passes without the heredoc — tracked in #1106),
+a crontab line with a trailing `# …` comment that mentions the path (blocks),
+`<<$"EOF"` with a prose body (blocks), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
+resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
+subshell the command cannot see, `make -C`/`env -C`-style directory options,
+writes through a symlink or hardlink alias, a brace expansion past the cap, a
+derived-command budget exhausted by a pathological command, and the TOCTOU
+window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
+`--one-top-level=` and `bsdtar` are normalized. Pins:
 `tests/unit/test_control_plane_writers.py` (must-block per verb *and* must-allow
 siblings).
 
