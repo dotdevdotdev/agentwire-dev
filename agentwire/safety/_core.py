@@ -2509,6 +2509,9 @@ _WORD_BREAK = frozenset(" \t\n;&|()<>")
 _SEGMENT_END = frozenset("\n;&|()")
 _SPECIAL_PARAMS = frozenset("#?!$@*-")
 _WALK_DEPTH = 40
+# The character before a ``(`` that makes it a scope whose body bash parses on its
+# own (process substitution, array assignment) — the one place that list lives.
+_REPARSED_OPENERS = frozenset("<>=")
 # Words after which a new command starts (``for ((…))``, ``if ((…))``, ``! ((…))``).
 _COMMAND_PREFIX_WORDS = frozenset(
     "for while until if then elif else do time ! coproc { } select case in".split()
@@ -2537,7 +2540,7 @@ class _HeredocScanner:
         self.s = command
         self.n = len(command)
         self.found: List[_Heredoc] = []
-        self.pending: List[Tuple[int, "re.Match[str]"]] = []
+        self.pending: List[Tuple[int, "re.Match[str]", bool]] = []
         self.absent: set = set()
 
     def run(self) -> Tuple[_Heredoc, ...]:
@@ -2705,7 +2708,7 @@ class _HeredocScanner:
                 if m and (first == "let" or s.startswith("\\\n", m.end())):
                     m = None  # a ``let`` argument / a delimiter split by a continuation
                 if m:
-                    self.pending.append((i, m))
+                    self.pending.append((i, m, closer != ""))
                     i = m.end()
                 else:
                     i += 2
@@ -2721,6 +2724,12 @@ class _HeredocScanner:
                     return i + 1
                 paren = max(0, paren - 1)
             elif c == "(":
+                if s[i - 1 : i] in _REPARSED_OPENERS:
+                    # ``<(…)`` / ``>(…)`` / ``name=(…)`` re-parse their body as
+                    # separate text: a marker inside closes with it
+                    i = self._commands(i + 1, ")", depth + 1)
+                    word_start = False
+                    continue
                 paren += 1
             if c in _SEGMENT_END:
                 word_start, word, first = True, [], None
@@ -2741,7 +2750,8 @@ class _HeredocScanner:
     def _read_bodies(self, nl: int) -> int:
         """At the newline ending a line: read the bodies of the heredocs opened on it.
 
-        A marker whose ``$(…)`` / backtick span closes before the newline has no
+        A heredoc inside ``$(…)`` / backticks whose body has unbalanced parentheses
+        is not hidden (see below). A marker whose ``$(…)`` / backtick span closes before the newline has no
         body there (bash runs the next line), so it is discarded at the closer.
 
         Returns where the walk resumes. A heredoc with no terminator line is
@@ -2751,7 +2761,7 @@ class _HeredocScanner:
         s, n = self.s, self.n
         cursor = nl + 1
         pending, self.pending = self.pending, []
-        for start, mk in pending:
+        for start, mk, in_sub in pending:
             delim, literal = _heredoc_delimiter(mk.group("word"))
             body_end = term_end = None
             idx = cursor
@@ -2771,6 +2781,10 @@ class _HeredocScanner:
             if body_end is None:
                 self.absent.add(key)
                 break
+            if in_sub and s.count("(", cursor, body_end) != s.count(")", cursor, body_end):
+                # older bash matches a ``$(…)`` by counting parentheses and is blind
+                # to heredocs: an unbalanced body can close the span early
+                continue
             nl_before = s.rfind("\n", 0, start) + 1
             feed = _feeding_segment(s, start, mk.end(), nl)
             after = min(term_end + 1, n)

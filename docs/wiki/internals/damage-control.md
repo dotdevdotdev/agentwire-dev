@@ -236,7 +236,12 @@ it would unwrapped:
   inside `$((…))`, legacy `$[…]`, `name[…]=` subscripts, `((…))` (in any
   command position: after `;`/`&&`/`|`, `for`/`while`/`until`/`if`/`then`/
   `elif`/`else`/`do`/`time`/`!`/`{`, and as the `for ((…;…;…))` header),
-  `[[ … ]]`, a `let` segment, `<<<`, and a delimiter split by a continuation. A
+  `[[ … ]]`, a `let` segment, `<<<`, and a delimiter split by a continuation.
+  `<(…)`, `>(…)` and `name=(…)` / `name+=(…)` re-parse their body as separate
+  text, so a marker inside closes with the `)` and the next line runs (one
+  list, `_REPARSED_OPENERS`: the character before the `(`). A heredoc opened
+  inside `$(…)` / backticks whose body has unbalanced parentheses is not hidden
+  (older bash matches the span by counting parentheses, blind to heredocs). A
   marker after a comment, after `\`, or in those contexts opens nothing, so the
   lines after it stay visible to every rule (before, `echo a # <<'EOF'` hid the
   whole rest of the command). `\\<<'EOF'` (escaped backslash) IS a marker.

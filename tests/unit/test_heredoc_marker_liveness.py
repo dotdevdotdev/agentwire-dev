@@ -81,6 +81,20 @@ NOT_A_HEREDOC = [
     "echo a \\\n\\\n# <<EOF",
     "echo $(echo a \\\n# <<EOF\n)",
     "cat <<EO\\\nF",
+    # <( ) / >( ) / name=( ) re-parse their body: the marker closes with the ")"
+    "cat <(echo <<EOF)",
+    "cat >(cat <<'EOF')",
+    "x=(a <<EOF)",
+    "a=([1]=<<EOF)",
+    "x=(a <<EOF))",
+    "x+=(a <<EOF)",
+    "declare -a x=(a <<EOF)",
+    "FOO=1 x=(a <<EOF)",
+    "cat <(cat <(echo <<EOF))",
+    "echo $(cat <(echo <<EOF))",
+    "true | cat <(echo <<EOF)",
+    "echo 2>(cat <<EOF)",
+    "cat <(echo ')' <<EOF)",
 ]
 
 # Contexts where the marker IS a redirection: the body is data, the tail after
@@ -107,6 +121,9 @@ REAL_HEREDOC = [
     "echo $[1+2]; cat <<'EOF'",
     "a[1]=x; cat <<'EOF'",
     "if ((1)); then cat <<'EOF'",
+    "cat <(echo a) <<'EOF'",
+    "cat <<'EOF' <(echo a)",
+    "x=(a b); cat <<'EOF'",
     "( cat <<'EOF'",
     "{ cat <<'EOF'",
     "x=$(cat <<'EOF'",
@@ -206,6 +223,8 @@ CONTROLS = [
     "for ((i=0;i<1;i++)); do cat <<'EOF'\n{B}\nEOF\ndone",
     "echo $[1+2]; cat <<'EOF'\n{B}\nEOF",
     "cat \\\n<<'EOF'\n{B}\nEOF",
+    "cat <(echo a) <<'EOF'\n{B}\nEOF",
+    "x=(a b); cat <<'EOF'\n{B}\nEOF",
 ]
 
 
@@ -233,3 +252,12 @@ def test_prose_in_a_real_heredoc_body_stays_hidden(cfg):
     ]
     assert not bad, bad
     assert _decision(CONTROLS[0].replace("{B}", PROSE), cfg) == "allow"
+
+
+def test_unbalanced_parens_in_a_substitution_heredoc_are_not_hidden():
+    """Older bash matches ``$(…)`` by counting parentheses, blind to heredocs, so a
+    body with a stray ``)`` can end the span early; such a body is scanned."""
+    balanced = "x=$(cat <<'EOF'\nfix (the thing)\nEOF\n)"
+    stray = "x=$(cat <<'EOF'\nfix the thing)\nEOF\n)"
+    opened = "x=$(cat <<'EOF'\nfix (the thing\nEOF\n)"
+    assert [len(_heredocs(c)) for c in (balanced, stray, opened)] == [1, 0, 0]
