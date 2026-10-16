@@ -57,6 +57,30 @@ NOT_A_HEREDOC = [
     "echo $'a\\'<<EOF'",
     "cat <<-$\"EOF\"",
     "cat <<",
+    # (( )) after any command-position word, not only as a segment's first word
+    "for ((i=1<<EOF;i<5;i++)); do break; done",
+    "while ((1<<EOF)); do break; done",
+    "until ((1<<EOF)); do break; done",
+    "if ((1<<EOF)); then :; fi",
+    "if true; then ((1<<EOF)); fi",
+    "if false; then :; else ((1<<EOF)); fi",
+    "time ((1<<EOF))",
+    "! ((1<<EOF))",
+    "true && ((1<<EOF))",
+    "{ ((1<<EOF)); }",
+    # legacy $[ ] arithmetic and array subscripts
+    "echo $[1<<EOF ]",
+    "x=$[1<<EOF ]",
+    'echo "$[1<<EOF ]"',
+    "echo $(echo $[1<<EOF ])",
+    "[[ $[1<<EOF ] ]]",
+    "a[1<<EOF ]=x",
+    "echo ${a[1<<EOF ]}",
+    # a backslash-newline joins lines: the word after it starts fresh
+    "echo a \\\n# <<EOF",
+    "echo a \\\n\\\n# <<EOF",
+    "echo $(echo a \\\n# <<EOF\n)",
+    "cat <<EO\\\nF",
 ]
 
 # Contexts where the marker IS a redirection: the body is data, the tail after
@@ -79,6 +103,10 @@ REAL_HEREDOC = [
     "cat <<'EOF' # trailing comment",
     "cat 2<<'EOF'",
     "echo $(( 1 + 2 )); cat <<'EOF'",
+    "cat \\\n<<'EOF'",
+    "echo $[1+2]; cat <<'EOF'",
+    "a[1]=x; cat <<'EOF'",
+    "if ((1)); then cat <<'EOF'",
     "( cat <<'EOF'",
     "{ cat <<'EOF'",
     "x=$(cat <<'EOF'",
@@ -122,7 +150,7 @@ def test_dangerous_line_after_a_non_heredoc_marker_is_blocked(cfg):
         (ctx, tail)
         for ctx in NOT_A_HEREDOC
         for tail in TAILS
-        if _decision(f"{ctx}\n{tail}", cfg) != "block"
+        if _decision(f"{ctx}\n{tail}\nEOF", cfg) != "block"
     ]
     assert not bad, bad
 
@@ -136,6 +164,13 @@ def test_dangerous_line_after_a_real_heredoc_is_blocked(cfg):
         if _decision(f"{ctx}\nbody\nEOF\n{tail}", cfg) != "block"
         and "$(" not in ctx
     ]
+    assert not bad, bad
+
+
+def test_delimiter_split_by_a_continuation_hides_nothing(cfg):
+    """Bash joins ``EO\\<nl>F`` into ``EOF``; a body ending at the first ``EOF`` would
+    leave the tail visible, but hiding to a later ``EO`` line must not happen."""
+    bad = [t for t in TAILS if _decision(f"cat <<EO\\\nF\nx\nEOF\n{t}\nEO", cfg) != "block"]
     assert not bad, bad
 
 
@@ -168,6 +203,9 @@ CONTROLS = [
     "cat <<'EOF' > /tmp/x.txt\n{B}\nEOF",
     "cat 2<<'EOF'\n{B}\nEOF",
     "cat <<'EOF' | wc -l\n{B}\nEOF",
+    "for ((i=0;i<1;i++)); do cat <<'EOF'\n{B}\nEOF\ndone",
+    "echo $[1+2]; cat <<'EOF'\n{B}\nEOF",
+    "cat \\\n<<'EOF'\n{B}\nEOF",
 ]
 
 

@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "f345dfb5a3ca2b6c3fd1f9b132246d38e0446ea301df9d63445120e4381666c8", "generated_at": "2026-10-16T18:41:13Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "b1dd8cffe44f0a4be798402804feb9777012b67371d68abf69c8de36bf3f9090", "generated_at": "2026-10-16T19:00:35Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2550,6 +2550,11 @@ _WORD_BREAK = frozenset(" \t\n;&|()<>")
 _SEGMENT_END = frozenset("\n;&|()")
 _SPECIAL_PARAMS = frozenset("#?!$@*-")
 _WALK_DEPTH = 40
+# Words after which a new command starts (``for ((…))``, ``if ((…))``, ``! ((…))``).
+_COMMAND_PREFIX_WORDS = frozenset(
+    "for while until if then elif else do time ! coproc { } select case in".split()
+)
+_IDENT = _rx(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class _HeredocScanner:
@@ -2574,6 +2579,7 @@ class _HeredocScanner:
         self.n = len(command)
         self.found: List[_Heredoc] = []
         self.pending: List[Tuple[int, "re.Match[str]"]] = []
+        self.absent: set = set()
 
     def run(self) -> Tuple[_Heredoc, ...]:
         self._commands(0, "", 0)
@@ -2605,6 +2611,20 @@ class _HeredocScanner:
             depth += (c == "{") - (c == "}")
             j += 1
             if depth == 0:
+                return j
+        return self.n
+
+    def _skip_square(self, i: int) -> int:
+        """Legacy ``$[…]`` arithmetic / a ``name[…]`` subscript: ``i`` is at the ``[``."""
+        depth, j = 0, i
+        while j < self.n:
+            c = self.s[j]
+            if c == "\\":
+                j += 2
+                continue
+            depth += (c == "[") - (c == "]")
+            j += 1
+            if depth <= 0:
                 return j
         return self.n
 
@@ -2654,6 +2674,11 @@ class _HeredocScanner:
         while i < n:
             c = s[i]
             if c == "\\":
+                # backslash-newline is a continuation: the lines join, so the
+                # next character keeps the word-start state it would have had
+                if s.startswith("\n", i + 1):
+                    i += 2
+                    continue
                 i += 2
                 word_start = False
                 continue
@@ -2673,6 +2698,8 @@ class _HeredocScanner:
                     i = self._commands(i + 2, ")", depth + 1)
                 elif nxt == "{":
                     i = self._skip_braces(i)
+                elif nxt == "[":
+                    i = self._skip_square(i + 1)
                 elif nxt == "'":
                     i = self._skip_ansi_c(i)
                 elif nxt == '"':
@@ -2698,7 +2725,11 @@ class _HeredocScanner:
             if c == "(" and s.startswith("((", i) and first is None and word_start:
                 i = self._skip_arith(i + 2)
                 word_start = False
-                first = "(("
+                continue
+            if c == "[" and _IDENT.fullmatch("".join(word)):
+                i = self._skip_square(i)  # ``a[1<<2]=x``: the subscript is arithmetic
+                word.append("[]")
+                word_start = False
                 continue
             if c == "[" and s.startswith("[[", i) and first is None and word_start:
                 j = s.find("]]", i + 2)
@@ -2712,7 +2743,9 @@ class _HeredocScanner:
                     word_start = False
                     continue
                 m = _HEREDOC_OPEN_RE.match(s, i)
-                if m and first != "let":
+                if m and (first == "let" or s.startswith("\\\n", m.end())):
+                    m = None  # a ``let`` argument / a delimiter split by a continuation
+                if m:
                     self.pending.append((i, m))
                     i = m.end()
                 else:
@@ -2735,13 +2768,13 @@ class _HeredocScanner:
                 i += 1
                 continue
             if c in " \t":
-                if word and first is None:
-                    first = "".join(word)
+                text = "".join(word)
+                if text and first is None and text not in _COMMAND_PREFIX_WORDS:
+                    first = text
                 word, word_start = [], True
                 i += 1
                 continue
-            if first is None:
-                word.append(c)
+            word.append(c)
             word_start = c in _WORD_BREAK
             i += 1
         return n
@@ -2763,7 +2796,10 @@ class _HeredocScanner:
             delim, literal = _heredoc_delimiter(mk.group("word"))
             body_end = term_end = None
             idx = cursor
-            while idx <= n:
+            key = (delim, bool(mk.group("dash")))
+            # a delimiter that found no terminator from an earlier cursor cannot
+            # find one from a later one: stacked unterminated markers stay linear
+            while idx <= n and key not in self.absent:
                 eol = s.find("\n", idx)
                 stop = n if eol == -1 else eol
                 line = s[idx:stop]
@@ -2774,11 +2810,12 @@ class _HeredocScanner:
                     break
                 idx = eol + 1
             if body_end is None:
+                self.absent.add(key)
                 break
             nl_before = s.rfind("\n", 0, start) + 1
             feed = _feeding_segment(s, start, mk.end(), nl)
             after = min(term_end + 1, n)
-            closer = _CLOSER.match(s[after:])
+            closer = _CLOSER.match(s, after)
             opening = s[nl_before:start]
             if closer and "$(" not in opening and "`" not in opening:
                 feed += " " + _until_break(closer.group(0).lstrip(" \t;"))

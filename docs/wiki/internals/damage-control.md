@@ -231,21 +231,31 @@ it would unwrapped:
   (`_strip_heredoc_bodies`) all consume its result, so there is no second
   scanner to disagree with. It walks quotes, `$'…'`, backslash, `#` comments
   (only at the start of a word: `echo a#<<b`, `$#` and `${#v}` are not
-  comments), `${…}`, `$(…)` and backticks (recursively), and treats `<<` as no
-  heredoc inside `$((…))`, `((…))`, `[[ … ]]`, a `let` segment and `<<<`. A
+  comments; a backslash-newline joins lines, so a `#` after one is a comment),
+  `${…}`, `$(…)` and backticks (recursively), and treats `<<` as no heredoc
+  inside `$((…))`, legacy `$[…]`, `name[…]=` subscripts, `((…))` (in any
+  command position: after `;`/`&&`/`|`, `for`/`while`/`until`/`if`/`then`/
+  `elif`/`else`/`do`/`time`/`!`/`{`, and as the `for ((…;…;…))` header),
+  `[[ … ]]`, a `let` segment, `<<<`, and a delimiter split by a continuation. A
   marker after a comment, after `\`, or in those contexts opens nothing, so the
   lines after it stay visible to every rule (before, `echo a # <<'EOF'` hid the
   whole rest of the command). `\\<<'EOF'` (escaped backslash) IS a marker.
   Failure direction: every uncertainty resolves to "not a heredoc". A heredoc
-  with no terminator line is dropped, though bash would swallow the rest as its
-  body; so is one whose `$(…)`/backtick span closes before the newline (bash
+  with no terminator line (or only a wrong one) is dropped, though bash would
+  swallow the rest as its body: a deliberate fail-closed choice, since a command
+  that opens a heredoc it never closes is broken, and hiding to the end would
+  make any liveness-model gap hide the whole remainder (a deliberate trigger can
+  always append a terminator, so this guards the accidental case and the
+  explicit `echo 1<<2` shift canaries). Cost: a prose body with a mistyped
+  terminator is scanned as commands (a rephrase). So is one whose `$(…)`/backtick span closes before the newline (bash
   runs the next line). A partly quoted delimiter is one word, so `<<'EO'F` ends
   at `EOF` like `<<'E'OF`, and its literal body is data like any quoted
   heredoc. Declared residuals, all scanned rather than hidden (a rephrase, not a
   bypass): `<<$"EOF"` / `<<-$"EOF"` (locale-quoted delimiter) is not
   recognised, so its body is read as commands; a `case … esac` pattern `)`
   inside `$(…)` can end that span early; `<<` inside a nested `$(…)` within
-  `$((…))` is not walked. `tests/unit/test_heredoc_marker_liveness.py` pins both
+  `$((…))` is not walked; `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
+  data-fed program) is allowed, as it already was for the other quote spellings. `tests/unit/test_heredoc_marker_liveness.py` pins both
   halves (non-heredoc contexts × dangerous tails must block; real heredocs'
   prose bodies must keep their decision) and each guard has a mutation that
   turns it red.
