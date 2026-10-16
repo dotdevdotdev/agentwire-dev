@@ -747,7 +747,7 @@ ROUND3_BLOCK = {
 ROUND3_ALLOW = [
     " cd ~/.agentwire && cat damagecontrol.yml",
     "\tcd /tmp && touch damagecontrol.yml",
-    f"at now <<-'EOF'\n\tcd /tmp && touch damagecontrol.yml\n\tEOF",
+    "at now <<-'EOF'\n\tcd /tmp && touch damagecontrol.yml\n\tEOF",
     "at now <<-'EOF'\n\tcd ~/.agentwire && cat damagecontrol.yml\n\tEOF",
     "crontab - <<-'EOF'\n\t* * * * * cd /tmp && touch damagecontrol.yml\n\tEOF",
     f"cat <<-'EOF' > /tmp/n.md\n\t{_CDT}\n\tEOF",
@@ -770,7 +770,7 @@ ROUND3_ALLOW = [
 ROUND4_BLOCK = {
     "partially-quoted delimiter is a full shell word": [
         f"cat <<'E'OF\nprose\nEOF\n{_CDT}",
-        f"cat <<\"E\"OF\nprose\nEOF\ngit -C ~/.agentwire checkout damagecontrol.yml",
+        "cat <<\"E\"OF\nprose\nEOF\ngit -C ~/.agentwire checkout damagecontrol.yml",
         "cat <<'E'OF\nprose\nEOF\necho x >| @P",
         f"ssh host <<'E'OF\n{_CDT}\nEOF",
         f"cat <<'EO'F\nprose\nEOF\n{_CDT}",
@@ -799,7 +799,7 @@ ROUND4_ALLOW = [
     f"cat <<\"E\"OF > /tmp/n.md\n{_CDT}\nEOF",
     f"cat <<E\\OF > /tmp/n.md\n{_CDT}\nEOF",
     f"cat <<E'O'F > /tmp/n.md\n{_CDT}\nEOF",
-    f"cat <<'EO'F > /tmp/n.md\ngit -C ~/.agentwire checkout damagecontrol.yml\nEOF",
+    "cat <<'EO'F > /tmp/n.md\ngit -C ~/.agentwire checkout damagecontrol.yml\nEOF",
     # a quoted body piped to a program that only reads
     f"cat <<'EOF'|cat\n{_CDT}\nEOF",
     f"(cat <<'EOF'\n{_CDT}\nEOF\n) | cat",
@@ -838,7 +838,7 @@ ROUND5_BLOCK = {
         f"{{ cat <<'EOF'; }} | sh\n{_CDT}\nEOF",
         f"{{ cat <<'EOF'\n{_CDT}\nEOF\n; }} | sh",
         f"ssh host <<'a;b'\n{_CDT}\na;b",
-        f"ssh host <<'a&b'\ngit -C ~/.agentwire checkout damagecontrol.yml\na&b",
+        "ssh host <<'a&b'\ngit -C ~/.agentwire checkout damagecontrol.yml\na&b",
     ],
 }
 ROUND5_ALLOW = [
