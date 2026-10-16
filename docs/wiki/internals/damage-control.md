@@ -159,6 +159,16 @@ in `safety/_core.py`; applied only to the protected tier, never to user
   mentions a protected path, or when a loop / `sh -c` body writes *through a
   variable* (`> "$f"`, `rm "$f"`) in a command that mentions one. A loop whose
   body only reads, or writes to a literal other file, is allowed.
+  Newly blocked as a consequence of failing closed: `cat <path> | sh -c 'wc -l'`
+  and `X=<path> python3 -c 'print(1)'` (a protected path piped into a shell, or
+  assigned before an inline interpreter, is refused whatever the program does).
+  A loop that hands a variable to an inline interpreter
+  (`… | while read f; do python3 -c '…argv[1]…' "$f"; done`) and a heredoc piped
+  into a shell (`cat <<EOF | sh`) are in the same class.
+- **Text is not a command:** a quoted arg that mentions the path among other
+  words (`git commit -m 'touch <path>'`, `gh … --body "gzip <path>"`) is blanked
+  before the operand-writer patterns run; a bare quoted path and `-c` program
+  text are kept (`_blank_prose_args`).
 - **Env-prefix indirection** (`X=<path> python3 -c '…os.environ["X"]…'`,
   `env X=<path> perl -e`) is the inline-interpreter net with the path *before*
   the interpreter.
@@ -167,8 +177,12 @@ in `safety/_core.py`; applied only to the protected tier, never to user
 
 Declared residuals (not statically knowable): paths assembled at runtime
 (`join`, `chr`, `format`, decoding), a `patch` / `git apply` whose target is
-named only inside the diff, basename-only operands relying on cwd
-(`cd ~/.agentwire && gzip damagecontrol.yml`), and the TOCTOU window. Pins:
+named only inside the diff, a basename-only operand whose directory is set
+elsewhere — `cd ~/.agentwire && ln|curl|touch|gzip|git checkout damagecontrol.yml`,
+`git -C ~/.agentwire checkout -- damagecontrol.yml`, `git --work-tree` — and the
+TOCTOU window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
+`--one-top-level=` and `bsdtar` are normalized; other path normalization
+(`/./`, `/../` mid-path, globs and brace spellings) is not. Pins:
 `tests/unit/test_control_plane_writers.py` (must-block per verb *and* must-allow
 siblings).
 

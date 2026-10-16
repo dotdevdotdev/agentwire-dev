@@ -125,6 +125,24 @@ MUST_BLOCK = [
     "X=@P python3 -c 'import os;open(os.environ[\"X\"],\"w\").write(\"a\")'",
     "env X=@P python3 -c 'import os;open(os.environ[\"X\"],\"w\").write(\"a\")'",
     "A=1 X=@P perl -e 'open(F,\">\",$ENV{X})'",
+    # review of #1097: redirects after the target, shell fed by a heredoc pipe,
+    # the path exported/assigned before an interpreter, a loop handing it to one
+    "ln -sf /tmp/x @P 2>/dev/null",
+    "ln -sf /tmp/x @P >/dev/null 2>&1",
+    "cat <<EOF | sh\nrm @P\nEOF",
+    "export X=@P && python3 -c 'import os;open(os.environ[\"X\"],\"w\")'",
+    "X=@P; export X; python3 -c 'import os;open(os.environ[\"X\"],\"w\")'",
+    "echo @P | while read f; do python3 -c 'import sys;open(sys.argv[1],\"w\")' \"$f\"; done",
+    # a quoted operand that is only the path is still the path; wrapper payloads too
+    "ln -sf /tmp/x \"@P\"",
+    "touch '@P'",
+    "sh -c \"touch @P\"",
+    # directory spellings that normalize to a protected directory
+    "tar xf a.tar -C ~/.agentwire/.",
+    "tar xf a.tar -C ~/.agentwire//",
+    "tar xf a.tar -C ~/.agentwire/sub/..",
+    "tar xf a.tar --one-top-level=~/.agentwire",
+    "bsdtar -xf a.tar -C ~/.agentwire",
     # the path assembled from adjacent / concatenated literals
     "python3 -c 'open(\"~/.agentwire/damage\"+\"control.yml\",\"w\")'",
     "python3 -c \"open('$HOME/.agentwire/damage' 'control.yml','w')\"",
@@ -208,6 +226,12 @@ MUST_ALLOW = [
     "echo hi | sh",
     "ls | while read f; do echo $f; done",
     "for f in a b; do rm \"$f\"; done",
+    # text that merely CONTAINS a verb and the path (commit / issue / PR bodies)
+    "git commit -m 'touch @P'",
+    "gh issue create --body 'curl -o @P http://e'",
+    "gh pr create --body \"gzip @P and touch @P\"",
+    "echo 'touch @P' | tee /tmp/x",
+    "git commit -m \"ln -sf /tmp/x @P\"",
     # string folding must not turn unrelated literals into a hit
     "python3 -c 'print(\"hello \" + \"world\")'",
     "python3 -c 'open(\"/tmp/a\"+\"b\",\"w\")'",

@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "0f60080568d79a43ca1493744238c4effcaa5f1c09f282796f2d0e910b5bd365", "generated_at": "2026-10-16T01:15:20Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "c0e59c5842015849789e6fc6e46a5b675bc498955c957a23586f4648574f9aaa", "generated_at": "2026-10-16T01:29:50Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -161,7 +161,8 @@ _VAR_WRITE = (
     r'(?:(?<![0-9&])>>?\s*["\']?\$'
     r'|\b(?:rm|mv|cp|ln|tee|dd|touch|truncate|install|gzip|gunzip|patch|chmod'
     r'|chown|shred|unlink|sponge)\b[^\n;|&]*\$'
-    r'|\bsed\s+-[A-Za-z]*i[^\n;|&]*\$)'
+    r'|\bsed\s+-[A-Za-z]*i[^\n;|&]*\$'
+    r'|\b' + _INTERPRETERS + r'\b[^\n]*\s-\S*[ceE]\b[^\n]*\$)'
 )
 INTERPRETER_WRITE_PATTERNS = [
     # interpreter ... -c/-e/... or stdin/heredoc marker, path anywhere after
@@ -173,9 +174,9 @@ INTERPRETER_WRITE_PATTERNS = [
     # The path set in the ENVIRONMENT of an inline interpreter
     # (``X=<path> python3 -c '...os.environ["X"]...'``, ``env X=<path> perl -e``):
     # the path sits BEFORE the interpreter, so the first pattern never sees it.
-    (r'{path}\S*(?:\s+(?:\w+=\S*|env))*\s+' + _INTERPRETERS +
+    (r'\b\w+=["\']?{path}(?s:.*)\b' + _INTERPRETERS +
      r'\b' + _SEG + r'(?:\s-\S*[ceE]\b|\s+-\s|\s+-$|<<)',
-     "path in interpreter environment"),
+     "path assigned before an interpreter"),
     # Shells are interpreters too (#1095): a program on stdin / a heredoc
     # (``sh <<EOF`` … path … ``EOF``), or the path piped INTO one
     # (``printf 'rm %s' <path> | sh`` — the verb and the path are different
@@ -183,6 +184,7 @@ INTERPRETER_WRITE_PATTERNS = [
     (r'\b' + _SHELLS + r'\b' + _SEG + r'(?:\s+-s\b|\s+-\s|\s+-$|<<)(?s:.*){path}',
      "shell program"),
     (r'{path}(?s:.*)\|\s*(?:env\s+)?' + _SHELLS + r'\b', "pipe into shell"),
+    (r'<<(?s:.*)\|\s*(?:env\s+)?' + _SHELLS + r'\b(?s:.*){path}', "heredoc piped into shell"),
     # ``bash -c '… > "$1"' _ <path>`` / ``F=<path>; sh -c "… > $F"``: the shell
     # script writes through a variable and the path is supplied elsewhere.
     (r'\A(?=(?s:.*){path})(?=(?s:.*)\b' + _SHELLS + r'\b' + _SEG +
@@ -204,17 +206,18 @@ _COMPRESSORS = (
     r'(?:gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|pigz'
     r'|compress|uncompress)'
 )
+_TAR = r'\b(?:bsd|gnu)?tar'
 _TAR_EXTRACT = (
-    r'(?:\btar\s+(?-i:x)|\btar\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*x)|\s--(?:extract|get)\b)))'
+    r'(?:' + _TAR + r'\s+(?-i:x)|' + _TAR + r'\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*x)|\s--(?:extract|get)\b)))'
 )
 _TAR_CREATE = (
-    r'(?:\btar\s+(?-i:[A-Za-z]*[cru])|\btar\b(?=' + _SEG +
+    r'(?:' + _TAR + r'\s+(?-i:[A-Za-z]*[cru])|' + _TAR + r'\b(?=' + _SEG +
     r'(?:\s-(?-i:[A-Za-z]*[cru])|\s--(?:create|append|update)\b)))'
 )
 PROTECTED_WRITER_PATTERNS = [
     # ln/link replace the TARGET (last operand); using the path as the source
     # (``ln -s <path> /tmp/l``) is a read.
-    (r'\b(?:ln|link)\b' + _SEG + r'\s["\']?{path}[^\s|;&]*\s*(?:$|[;&|#])', "write"),
+    (r'\b(?:ln|link)\b' + _SEG + r'\s["\']?{path}[^\s|;&]*\s*(?:$|[;&|#]|\d*[<>])', "write"),
     # downloaders: output file flags (incl. log/header/cookie-jar sinks)
     (r'\bcurl\b' + _SEG + r'(?:\s-(?-i:[A-Za-z0-9]*[oDc])\s*|\s--(?:output|dump-header'
      r'|cookie-jar|trace|trace-ascii|stderr|etag-save)[\s=])["\']?{path}', "write"),
@@ -223,7 +226,7 @@ PROTECTED_WRITER_PATTERNS = [
     # tar: extracting anything while naming the path, or the archive file itself
     (_TAR_EXTRACT + _SEG + r'{path}', "write"),
     (_TAR_CREATE + _SEG + r'(?:\s-(?-i:[A-Za-z]*f)\s*|\s--file[\s=])["\']?{path}', "write"),
-    (r'\btar\s+(?-i:[A-Za-z]*[cru][A-Za-z]*)\s+["\']?{path}', "write"),
+    (_TAR + r'\s+(?-i:[A-Za-z]*[cru][A-Za-z]*)\s+["\']?{path}', "write"),
     # compressors replace the file in place unless told to write to stdout/test/list
     (r'\b' + _COMPRESSORS + r'\b(?!' + _SEG +
      r'\s(?:-(?-i:[A-Za-z0-9]*[ctl])\b|--stdout|--to-stdout|--test|--list))' + _SEG +
@@ -240,9 +243,9 @@ PROTECTED_WRITER_PATTERNS = [
 # Extraction INTO a directory that holds control-plane files names no protected
 # path at all (``tar xf a.tar -C ~/.agentwire``), so these are keyed on the
 # directory instead; ``{dir}`` is filled per ancestor of a protected path.
-_DIR_END = r'/?["\']?(?=\s|$|[;&|)])'
+_DIR_END = r'(?:/+(?:\.|[^/\s"\';&|)]+/\.\.)?)*["\']?(?=\s|$|[;&|)])'
 PROTECTED_DIR_EXTRACT_PATTERNS = [
-    _TAR_EXTRACT + _SEG + r'(?:\s-(?-i:C)\s*|\s--directory[=\s])["\']?{dir}' + _DIR_END,
+    _TAR_EXTRACT + _SEG + r'(?:\s-(?-i:C)\s*|\s--(?:directory|one-top-level)[=\s])["\']?{dir}' + _DIR_END,
     r'\bwget\b' + _SEG + r'(?:\s-(?-i:P)\s*|\s--directory-prefix[=\s])["\']?{dir}' + _DIR_END,
     r'\bcurl\b' + _SEG + r'\s--output-dir[=\s]["\']?{dir}' + _DIR_END,
     r'\bunzip\b' + _SEG + r'\s-d\s*["\']?{dir}' + _DIR_END,
@@ -2285,6 +2288,34 @@ def fold_string_concat(command: str) -> str:
     return command
 
 
+def _blank_prose_args(hay: str, path: str) -> str:
+    """Blank quoted args that mention ``path`` among other words (#1097).
+
+    ``git commit -m 'touch <path>'`` / ``gh … --body "gzip <path>"`` are TEXT:
+    the operand-writer patterns scan a whole simple command, so a verb inside a
+    message would pair with the path. An arg that is only the path (optionally
+    quoted — ``ln -sf x "<path>"``) stays visible, and so does the program
+    text of a ``-c`` wrapper (``sh -c "touch <path>"``), which IS a command.
+    Runs on the RAW command: the ladder haystacks are already unquoted, so a
+    message and a bare operand look the same there.
+    """
+    path_re = _rx(_path_context_regex(path))
+
+    wrapper_payload = _rx(r"\s-\S*c\s+$")
+
+    def _blank(m: "re.Match[str]") -> str:
+        body = m.group(0)[1:-1]
+        if (
+            path_re.search(body)
+            and path_re.sub(" ", body).strip()
+            and not wrapper_payload.search(hay[: m.start()])
+        ):
+            return m.group(0)[0] * 2
+        return m.group(0)
+
+    return _rx(r''''[^'\n]*'|"[^"\n]*"''').sub(_blank, hay)
+
+
 def _xargs_rescans(command: str, path: str) -> List[str]:
     """Synthesize the command ``xargs`` runs when its input mentions ``path``.
 
@@ -2388,10 +2419,13 @@ def check_protected_command(
         # patterns move to the masked ladder haystacks.
         interp_hays = [redact_prose_mentions(h, path) for h in raw_haystacks]
         ladder = path_ladder_haystacks(command, path)
+        writer_hays = path_ladder_haystacks(_blank_prose_args(command, path), path)
         for synth in _xargs_rescans(command, path):
             ladder += path_ladder_haystacks(synth, path)
+            writer_hays += path_ladder_haystacks(synth, path)
         for hays, patterns in (
-            (ladder, READ_ONLY_BLOCKED + PROTECTED_WRITER_PATTERNS),
+            (ladder, READ_ONLY_BLOCKED),
+            (writer_hays, PROTECTED_WRITER_PATTERNS),
             (interp_hays, INTERPRETER_WRITE_PATTERNS),
         ):
             for hay in hays:
