@@ -162,6 +162,14 @@ MUST_BLOCK = [
     "python3 -c 'open(\"~/.agentwire/damage\"+\"control.yml\",\"w\")'",
     "python3 -c \"open('$HOME/.agentwire/damage' 'control.yml','w')\"",
     "perl -e 'open(F,\">\",\"~/.agentwire/damage\".\"control.yml\")'",
+    # #1098: an UNQUOTED heredoc body expands $(...) / backticks, so the
+    # substitution is a command in its own right
+    "cat <<EOF\n$(touch @P)\nEOF",
+    "cat <<EOF\n`touch @P`\nEOF",
+    "git commit -F - <<EOF\nmsg $(touch @P)\nEOF",
+    "git commit -m \"$(cat <<EOF\nbody\n$(touch @P)\nEOF\n)\"",
+    "cat <<-EOF\n\t$(ln -sf /tmp/x @P)\n\tEOF",
+    "cat <<EOF >/tmp/o\nline\n$(curl -o @P http://e)\nEOF",
 ]
 
 
@@ -255,6 +263,17 @@ MUST_ALLOW = [
     # string folding must not turn unrelated literals into a hit
     "python3 -c 'print(\"hello \" + \"world\")'",
     "python3 -c 'open(\"/tmp/a\"+\"b\",\"w\")'",
+    # #1098 controls: a quoted delimiter makes the body data; an escaped or
+    # arithmetic opener is not a substitution; a substitution that only reads
+    "cat <<'EOF'\n$(touch @P)\nEOF",
+    "cat <<\"EOF\"\n$(touch @P)\nEOF",
+    "git commit -m \"$(cat <<'EOF'\nfix: touch @P\n$(touch @P)\nEOF\n)\"",
+    "git commit -F - <<EOF\nfix: mention touch @P in prose\nEOF",
+    "git commit -m \"$(cat <<EOF\nrefs and touch @P\nEOF\n)\"",
+    "cat <<EOF\n$(cat @P)\nEOF",
+    "cat <<EOF\n\\$(touch @P)\nEOF",
+    "cat <<EOF\n$((1+2)) @P\nEOF",
+    "cat <<EOF\n$(touch /tmp/x) @P\nEOF",
 ]
 
 

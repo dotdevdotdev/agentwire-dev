@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "fc0a0a80e3e044e93ef43e1e9b2777e67b69be87c408261df0ecea2e335bc99b", "generated_at": "2026-10-16T01:42:49Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "3f4f43ce122cd063705d3a77a0511e34c7dc774879bf3938c71da43b1bb2283c", "generated_at": "2026-10-16T11:38:15Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2419,6 +2419,94 @@ def _extracts_into_protected_dir(command: str) -> Optional[str]:
     return None
 
 
+_HEREDOC_OPEN_RE = _rx(r"(?<!<)<<(?!<)-?[ \t]*(?:(['\"])(\w+)\1|\\(\w+)|(\w+))")
+_RESCAN_DEPTH = 4
+_RESCAN_FANOUT = 24
+
+
+def _heredoc_bodies(command: str) -> List[Tuple[str, bool]]:
+    """``(body, delimiter_quoted)`` for every heredoc in ``command`` (#1098).
+
+    A quoted delimiter (``<<'EOF'`` / ``<<"EOF"`` / ``<<\\EOF``) makes the body
+    literal; an unquoted one expands ``$(...)`` and backticks inside it.
+    """
+    out: List[Tuple[str, bool]] = []
+    pos = 0
+    while True:
+        m = _HEREDOC_OPEN_RE.search(command, pos)
+        if not m:
+            return out
+        delim = m.group(2) or m.group(3) or m.group(4)
+        quoted = m.group(4) is None
+        nl = command.find("\n", m.end())
+        if nl == -1:
+            return out
+        lines = command[nl + 1 :].split("\n")
+        body: List[str] = []
+        consumed = len(lines)
+        for i, line in enumerate(lines):
+            if line.strip() == delim:
+                consumed = i + 1
+                break
+            body.append(line)
+        out.append(("\n".join(body), quoted))
+        pos = nl + 1 + sum(len(x) + 1 for x in lines[:consumed])
+
+
+def _command_substitutions(text: str) -> List[str]:
+    """Bodies of the ``$(...)`` / backtick substitutions the shell would run in ``text``.
+
+    A backslash-escaped opener is literal; ``$((`` is arithmetic. Parentheses
+    are balanced so a nested ``$(a $(b))`` comes back whole (the rescan finds
+    the inner one itself).
+    """
+    out: List[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+        elif c == "$" and text.startswith("(", i + 1) and not text.startswith("((", i + 1):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                depth += (text[j] == "(") - (text[j] == ")")
+                j += 1
+            out.append(text[i + 2 : j - 1 if depth == 0 else j])
+            i = j
+        elif c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i + 1 : j])
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+def _heredoc_substitution_commands(command: str) -> List[str]:
+    """Commands an UNQUOTED heredoc body runs through ``$(...)`` / backticks (#1098).
+
+    The masked ladder strips heredoc bodies as content, which is right for prose
+    and wrong for a body the shell EXPANDS: ``cat <<EOF`` / ``$(touch <path>)``
+    runs the touch. Each substitution is returned as a command in its own right
+    (the verb decides, as in a double-quoted string); a quoted-delimiter body is
+    data and contributes nothing.
+    """
+    if "<<" not in command:
+        return []
+    out: List[str] = []
+    for body, quoted in _heredoc_bodies(command):
+        if not quoted:
+            out.extend(_command_substitutions(body))
+    return out
+
+
+def _derived_commands(command: str) -> List[str]:
+    """Commands hidden inside ``command`` that must be judged as commands themselves."""
+    return _heredoc_substitution_commands(command)[:_RESCAN_FANOUT]
+
+
 def check_protected_command(
     command: str,
     allowed_paths: List[Dict[str, Any]],
@@ -2436,7 +2524,20 @@ def check_protected_command(
     """
     # ``$HOME`` / ``${HOME}`` / ``~`` name the same file as its absolute form;
     # the ladder patterns carry the ``~`` and expanded spellings of each path.
+    return _check_protected_command(command, allowed_paths, 0)
+
+
+def _check_protected_command(
+    command: str,
+    allowed_paths: List[Dict[str, Any]],
+    depth: int,
+) -> Tuple[bool, str]:
     command = canonicalize_command(command)
+    if depth < _RESCAN_DEPTH:
+        for derived in _derived_commands(command):
+            blocked, reason = _check_protected_command(derived, allowed_paths, depth + 1)
+            if blocked:
+                return blocked, reason
     subcommands, _ambiguous = normalize_subcommands(command)
     raw_haystacks = [command] + [s for s in subcommands if s and s != command]
     raw_haystacks += [f for f in map(fold_string_concat, raw_haystacks) if f not in raw_haystacks]
