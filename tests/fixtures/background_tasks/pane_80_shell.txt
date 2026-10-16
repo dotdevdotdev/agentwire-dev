@@ -1,0 +1,15 @@
+ ▐▛███▛█   v2.1.302
+▝▜██████▀  Haiku 5.5
+ ▝▝   ▝▝   Claude Pro
+           /…/scratchpad/exp
+❯ Run 'sleep 100' with the Bash tool using run_in_background true, then end
+  your turn immediately with just the words: waiting.
+  Ran 1 shell command
+⏺ waiting.
+✻ Worked for 3s · done 7:37 PM · 1 shell still running
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  haiku  …/scratchpad/exp  main
+  [██████████████████████████████████████████████████████████████████░░░░] 95%
+  ⏵⏵ bypass permissions on · 1 shell

@@ -240,7 +240,7 @@ collision detector simple and the no-clobber guarantee absolute.
 | kind | meaning |
 |---|---|
 | `note` | default — informational |
-| `done` | a worker finished — also what idle report-backs ride: `agentwire notify-parent --queued` (used by `idle-handler.sh`, #667) enqueues here instead of direct-pasting |
+| `done` | a worker finished — also what idle report-backs ride: `agentwire notify-parent --queued` (used by `idle-handler.sh`, #667) enqueues here instead of direct-pasting. An idle with a background task still running is deferred, not sent (#1103); past a 30-minute bound a qualified `idle` notice ("N background task(s) still running; not necessarily finished") goes out once |
 | `request` | asking for something |
 | `escalation` | needs attention — **the only kind a consumer may act on out of turn** |
 | `ingest` | **passive** — awareness only; never auto-delivered (see below) |

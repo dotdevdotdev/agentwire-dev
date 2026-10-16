@@ -8,6 +8,7 @@ from agentwire.config import _dict_to_config
 
 
 def _stub_all_stages(monkeypatch):
+    import agentwire.background_tasks as bt
     import agentwire.cohort as cohort
     import agentwire.inbox as inbox_mod
     import agentwire.prompt_router as pr
@@ -31,6 +32,7 @@ def _stub_all_stages(monkeypatch):
     monkeypatch.setattr(sc, "tick", make("session_context", {"acted": [], "deferred": []}))
     monkeypatch.setattr(zombie, "tick", make("scheduler_zombie", {"killed": []}))
     monkeypatch.setattr(cohort, "tick", make("cohort", {"reaped": [], "swept": []}))
+    monkeypatch.setattr(bt, "tick", make("idle_deferred", {"qualified": [], "cleared": []}))
     monkeypatch.setattr(sn, "tick", make("safety_notify", {"emailed": False, "pending": 0}))
     monkeypatch.setattr(rp, "tick", make("role_prompts", {"deleted": []}))
     return order

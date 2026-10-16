@@ -1,0 +1,9 @@
+⏺ waiting.
+✻ Worked for 3s · done 7:37 PM
+  · 1 shell still running
+──────────────────────────────
+❯ 
+──────────────────────────────
+  haiku  …/scratchpad/exp  …
+  [████████████████████████…
+  ⏵⏵ bypass permissions on ·

@@ -401,6 +401,38 @@ parent: agentwire  # Must be set for cross-session notifications
 
 There is no cooldown/rate-limit mechanism in the current `idle-handler.sh` — every genuine idle event fires a notification. If notifications fire more often than expected, look for the agent re-entering an idle state repeatedly (e.g. a flapping tool call) rather than a rate-limiter to reset.
 
+### Idle Notice Missing While a Background Task Runs (#1103)
+
+A turn that ends with a background shell or monitor still running is *paused*,
+not done: the harness re-wakes the session when the task reports. The idle hook
+asks `agentwire idle-gate` first and **swallows** that idle (`idle-gate:
+action=defer` in `/tmp/claude-hook-debug.log`); the idle that follows the last
+task's report carries zero pending and sends the ordinary notice. This holds for
+every consumer of idle in the hook: the parent notice, the worker-pane
+summary/reap, and the scheduled-task summary/`/exit` pass. Because the cohort
+ledger's `resolved_idle` placeholder is the same `kind=idle` message, a child
+with a pending task no longer reads as "went idle without reporting" either.
+
+**Signals** (`agentwire/background_tasks.py`, measured on a real session): the
+pane's turn-end line `✻ Worked for 3s · done 7:37 PM · 1 shell still running`
+(wrap-tolerant: at 30 columns it breaks across rows, while the footer
+`⏵⏵ … · 1 shell` truncates) is authoritative; the transcript is the fallback
+when the pane is unreadable — a start is a `user` row with
+`toolUseResult.backgroundTaskId` (Bash) / `taskId` (Monitor), an end is a
+`queue-operation` `<task-notification>` that carries a `<status>`. A Monitor's
+per-event notifications have no `<status>` and are not terminal. A transcript
+that lists a task the pane no longer shows is stale (a task from before an
+`/exit` + `--resume`) and counts as zero.
+
+**Bounded, so a stuck task cannot suppress forever.** After 30 minutes of
+deferral one *qualified* notice is sent — `is idle, but N background task(s)
+still running (waited 30m; not necessarily finished)` — by the hook on the next
+idle, or by the watchdog `idle_deferred` stage if none comes; deferral then
+resumes until the count reaches zero. State: `~/.agentwire/idle-deferred/`,
+events: `~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held
+notices. **Fails open:** nothing readable, or any gate error → the hook behaves
+exactly as before.
+
 ### Wrong Target Session
 
 **For workers (panes 1+):** Notifications go to pane 0 automatically.

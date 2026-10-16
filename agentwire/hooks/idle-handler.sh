@@ -62,6 +62,25 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
     fi
   fi
 
+  # Background-task gate (#1103): a turn that ended with a background shell or
+  # monitor still running is paused, not done — the harness re-wakes the
+  # session when the task reports, and THAT idle (zero pending) is the real
+  # one. Defer covers every path below (parent notice, worker-pane reap,
+  # scheduled-task summary/exit). Bounded: past the bound the gate answers
+  # `qualify` once, and the notice says tasks are still running. Fails OPEN —
+  # an unreadable pane/transcript or a gate error behaves as before this gate.
+  idle_text="is idle and done working"
+  if [[ -n "$tmux_session" && -n "$pane_index" ]]; then
+    gate_json=$($AGENTWIRE idle-gate --json --conversation-id "$session_id" --cwd "$cwd" 2>>"$DEBUG_LOG") || gate_json=""
+    gate_action=$(echo "$gate_json" | jq -r '.action // "proceed"' 2>/dev/null || echo proceed)
+    log "idle-gate: action=$gate_action ${gate_json:-<no output>}"
+    if [[ "$gate_action" == "defer" ]]; then
+      exit 0
+    elif [[ "$gate_action" == "qualify" ]]; then
+      idle_text=$(echo "$gate_json" | jq -r '.text // "is idle and done working"')
+    fi
+  fi
+
   # Try to get config from .agentwire.yml
   session_name=""
   is_chatbot=false
@@ -407,7 +426,7 @@ complete | incomplete | error
         # undeliverable one dead-letters + emails the owner instead of
         # vanishing. Failures are logged, never discarded.
         (
-          out=$($AGENTWIRE notify-parent --on-idle --queued -q "is idle and done working" 2>&1) \
+          out=$($AGENTWIRE notify-parent --on-idle --queued -q "$idle_text" 2>&1) \
             || log "notify-parent --queued failed: $out"
         ) &
       fi
