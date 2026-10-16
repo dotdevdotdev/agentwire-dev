@@ -12,10 +12,12 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +38,67 @@ from .worktree import git_common_dir, git_root, main_worktree, parse_session_nam
 CONFIG_DIR = Path.home() / ".agentwire"
 
 logger = logging.getLogger(__name__)
+
+
+SLOW_CMD_WARN_SECONDS = 10
+# Commands that block by design (wait_children, scheduler_run): a slow warning
+# for them is noise, not a diagnosis.
+_LONG_RUNNING_CMDS = {("wait", "--children"), ("scheduler", "run")}
+_KILL_GRACE_SECONDS = 2
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Kill ``proc`` and every descendant, then drain its pipes with a bound.
+
+    ``proc`` leads its own process group (``start_new_session``), so
+    ``killpg`` reaches grandchildren (ssh/git/tmux). Killing only the direct
+    child leaves them running, orphaned (#1089).
+
+    ``killpg`` on a group whose only member is the unreaped zombie leader
+    raises ``PermissionError`` on macOS (``ProcessLookupError`` on Linux);
+    both mean "nothing left to signal". Without catching it the error would
+    replace the ``TimeoutExpired`` the caller is waiting for.
+    """
+    posix = os.name == "posix"
+    for sig in ((signal.SIGTERM, signal.SIGKILL) if posix else (None,)):
+        try:
+            if posix:
+                os.killpg(proc.pid, sig)
+            else:
+                proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.communicate(timeout=_KILL_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    # Still not drained (a descendant escaped the group via setsid and holds
+    # the pipe): abandon the pipes rather than hang the caller.
+    for stream in (proc.stdout, proc.stderr):
+        if stream:
+            stream.close()
+
+
+def _run_bounded(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """``subprocess.run`` that cannot outlive ``timeout`` via a grandchild.
+
+    Raises ``subprocess.TimeoutExpired`` after the whole process group is gone.
+    """
+    with subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def run_agentwire_cmd(
@@ -66,13 +129,9 @@ def run_agentwire_cmd(
 
     logger.debug(f"Running: {' '.join(cmd)}")
 
+    started = time.monotonic()
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = _run_bounded(cmd, timeout)
 
         # Try to parse JSON output
         if json_output and result.stdout.strip():
@@ -108,6 +167,11 @@ def run_agentwire_cmd(
         return {"success": False, "error": "agentwire command not found"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        elapsed = time.monotonic() - started
+        if elapsed > SLOW_CMD_WARN_SECONDS and tuple(args[:2]) not in _LONG_RUNNING_CMDS:
+            # argv[:3] only: later words can carry message/email/prompt bodies.
+            logger.warning(f"Slow command ({elapsed:.1f}s, timeout={timeout}s): {' '.join(cmd[:3])}")
 
 
 def role_prompts_dir() -> Path:

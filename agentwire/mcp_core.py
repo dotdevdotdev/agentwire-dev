@@ -11,12 +11,15 @@ live here now sits in :mod:`agentwire.core`, because a non-MCP consumer of it
 the whole FastMCP construction into ordinary CLI startup (#1018).
 """
 
+import functools
+import inspect
 import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import anyio
 import mcp.server.fastmcp.server as _fastmcp_server
 from mcp.server.fastmcp import FastMCP
 
@@ -60,8 +63,53 @@ _fastmcp_settings = getattr(_fastmcp_server, "Settings", None)
 if _fastmcp_settings is not None:
     _fastmcp_settings.model_rebuild()
 
+# Sync tool bodies run in worker threads, never on the event loop (#1089).
+# FastMCP calls a plain ``def`` tool inline inside an async method, so one
+# blocking ``run_agentwire_cmd`` (30-330s) froze every other tool call. A
+# dedicated limiter, not anyio's shared default (40), so server-internal
+# ``to_thread`` users can't be starved by tool calls and vice versa. 32 is far
+# above realistic concurrency (a handful of agents' calls) and bounds thread
+# growth (accepted limit: 32 concurrent long calls starve the 33rd until one
+# finishes); a long ``wait_children`` holds ONE slot, not the server.
+TOOL_THREAD_LIMIT = 32
+_tool_limiter: anyio.CapacityLimiter | None = None
+
+
+def _threaded(fn):
+    """Wrap a sync tool so it runs via ``anyio.to_thread`` — signature, docs
+    and annotations are preserved (``functools.wraps``) so the generated tool
+    schema is identical. On client cancellation the request is abandoned
+    immediately; the worker thread finishes on its own, bounded by the
+    subprocess timeout (``run_agentwire_cmd`` group-kills past it)."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        global _tool_limiter
+        if _tool_limiter is None:
+            _tool_limiter = anyio.CapacityLimiter(TOOL_THREAD_LIMIT)
+        return await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs),
+            limiter=_tool_limiter,
+            abandon_on_cancel=True,
+        )
+
+    return wrapper
+
+
+class _ThreadedFastMCP(FastMCP):
+    """FastMCP whose sync tools never block the event loop.
+
+    ``add_tool`` is the single registration seam every ``@mcp.tool()`` goes
+    through; async tools are registered untouched.
+    """
+
+    def add_tool(self, fn, *args, **kwargs):
+        if not inspect.iscoroutinefunction(fn):
+            fn = _threaded(fn)
+        super().add_tool(fn, *args, **kwargs)
+
+
 # Initialize FastMCP server
-mcp = FastMCP(
+mcp = _ThreadedFastMCP(
     name="agentwire",
     instructions="AgentWire MCP server for terminal session management, remote machines, and voice interface for AI agents.",
 )
