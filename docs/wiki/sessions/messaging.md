@@ -132,7 +132,49 @@ lands in a durable inbox and is injected only at a safe boundary.
    its own" test has a measured cliff** — the box windows or chips long before
    you'd expect, so a coalesced drain of four or more messages wedges every one
    of them with no dead-letter and no email:
-   [The #689 heal cliff](heal-line-count-cliff.md) (#930). As a last-resort
+   [The #689 heal cliff](heal-line-count-cliff.md) (#930).
+
+   **The heal is window-aware (#1105).** The same test had a second blind spot:
+   the box *scrolls*, so a ~400-char paste on a 30-column pane renders only its
+   **tail**, and "the whole render is in the box" is false for exactly the
+   long messages most likely to hit a swallowed Enter. The drain read its own
+   landed paste as a human draft — `box_not_empty`, penalized every tick, the
+   text never submitted (reproduced in a real 30-column Claude pane: attempts
+   0→1→2, text sitting in the box). `inbox._stuck_in_box` now also accepts a
+   box that is a **suffix** of the oldest-first batch the drain would have
+   pasted (≥ `MIN_BOX_FRAGMENT` chars; the longest matching prefix wins, so a
+   window of message 2 never unlinks message 1's later neighbour). A short
+   foreign draft, or text that merely occurs inside our message but is not its
+   tail, still reads as a human's and is never given an Enter — the clobber
+   protection is unchanged.
+
+   **Dedup survives Claude's echo elision (#1105).** Claude Code echoes a long
+   submitted prompt into the transcript with its middle elided (head rows, a
+   truncated fragment, then the tail), so the full text of a long message is
+   never on scrollback even though it was delivered — and an unmatched
+   delivered message gets re-pasted. `message_on_scrollback` therefore also
+   accepts the trailing `⟨#id⟩` token (unique per message / `send` attempt)
+   **outside the box**. A token only in the box still reads as not delivered.
+
+   **Failed deliveries say where the text is (#1105).** `safe_deliver` no
+   longer returns `delivery_unverified` for everything. After a failed
+   `send_verified` it re-reads the box: `pasted_unsubmitted` (our text is in the
+   box, Enter never took — **no-penalty**; the next drain submits it Enter-only,
+   never re-pastes), `box_not_empty` (a foreign draft owns the box; nothing was
+   pasted — this is also what `flush --force` reports instead of pasting over a
+   draft), or `delivery_unverified` (neither provable). `flush --force` still
+   bypasses only the *pre-paste* empty-box gate; its paste goes through the same
+   submit loop, and if Enter never takes it says `pasted_unsubmitted` and leaves
+   the heal to the next drain (≤60 s) rather than backspacing text that may by
+   then include a human's keystrokes.
+
+   **Every deferral is visible.** Each pending message carries its last
+   deferral `reason`, `reason_ts` and a short `detail` (what the box held),
+   stamped on penalized *and* no-penalty deferrals, and `msg inbox` prints it
+   (`last deferral: box_not_empty at 2026-10-16 19:41:02 — box holds: '…'`);
+   `--json` has the fields. Events also log `detail`.
+
+   As a last-resort
    backstop, the watchdog pane-sweep flushes a bare Enter on any pane —
    including a mid-generation one, where Enter merely queues the draft (#698;
    the old spinner gate left a stuck box on a busy orchestrator unrescued) —

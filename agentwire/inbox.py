@@ -121,7 +121,10 @@ GONE_MAX_ATTEMPTS = 5
 # reports load-bearing messages pending past STALE_PENDING_MS (see
 # stale_pending), which is the unprompted surface.
 _NO_PENALTY_REASONS = frozenset(
-    {"target_busy", "queued_placeholder", "box_static", "stuck_in_box", "target_parked"}
+    {
+        "target_busy", "queued_placeholder", "box_static", "stuck_in_box",
+        "pasted_unsubmitted", "target_parked",
+    }
 )
 
 # Consecutive sweeps the box must show byte-identical content before the defer
@@ -188,6 +191,8 @@ class Message:
     attempts: int = 0
     gone_attempts: int = 0  # ticks the drain observed the target session gone
     reason: str = ""  # last defer reason (why delivery kept failing)
+    reason_ts: int = 0  # epoch ms of the last deferral (0 = never deferred)
+    detail: str = ""  # short pane evidence behind the last deferral (#1105)
     dead_ts: int = 0  # epoch ms when dead-lettered (0 = still live)
     ref: str = ""  # optional machine-readable pointer (e.g. a report path) — for ingest
     path: Path | None = None
@@ -203,6 +208,8 @@ class Message:
             "attempts": self.attempts,
             "gone_attempts": self.gone_attempts,
             "reason": self.reason,
+            "reason_ts": self.reason_ts,
+            "detail": self.detail,
             "dead_ts": self.dead_ts,
             "ref": self.ref,
         }
@@ -335,6 +342,8 @@ def _read_message(path: Path) -> "Message | None":
             attempts=int(data.get("attempts", 0)),
             gone_attempts=int(data.get("gone_attempts", 0)),
             reason=str(data.get("reason", "")),
+            reason_ts=int(data.get("reason_ts", 0)),
+            detail=str(data.get("detail", "")),
             dead_ts=int(data.get("dead_ts", 0)),
             ref=str(data.get("ref", "")),
             path=path,
@@ -865,11 +874,13 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
         _log_event("dead_letter_escalate_failed", to=batch[0].to, count=len(batch), error=str(exc))
 
 
-def _bump_attempts(messages: list[Message], reason: str = "") -> int:
+def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") -> int:
     """Increment attempts on each pending message; dead-letter over the cap.
 
     ``reason`` is the defer reason that caused this pass; it's stamped onto the
-    message so a dead-lettered one carries *why* it never got delivered.
+    message (with a timestamp and the optional pane-evidence ``detail``, #1105)
+    so a pending message shows why it is waiting and a dead-lettered one
+    carries *why* it never got delivered.
     Returns the number dead-lettered this pass.
 
     ``target_gone`` additionally bumps the per-message ``gone_attempts``
@@ -893,7 +904,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
             # or the park clears. Surfaced by `agentwire msg inbox` on request,
             # and by `agentwire doctor` once it's been waiting past
             # STALE_PENDING_MS (#879).
-            msg.reason = reason
+            msg.reason, msg.reason_ts, msg.detail = reason, _now_ms(), detail
             try:
                 _write_message(msg.path, msg)
             except OSError:
@@ -901,7 +912,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
             continue
 
         msg.attempts += 1
-        msg.reason = reason
+        msg.reason, msg.reason_ts, msg.detail = reason, _now_ms(), detail
         if reason == "target_gone":
             msg.gone_attempts += 1
         if msg.attempts >= MAX_ATTEMPTS or msg.gone_attempts >= GONE_MAX_ATTEMPTS:
@@ -991,6 +1002,43 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
 # decision (#930 leaves it open).
 PASTE_MAX_LINES = 3
 PASTE_MAX_CHARS = 380
+
+
+# Longest pane excerpt stored with a deferral (``Message.detail``): enough to
+# recognise what the box held, short enough to keep the message file readable.
+_DETAIL_CHARS = 80
+
+
+def _stuck_in_box(messages: list[Message], box_content: str) -> list[Message]:
+    """The pending messages whose paste is the thing sitting in the input box.
+
+    The #689 swallowed-Enter test, made window-aware (#1105). Claude Code's box
+    has a bounded height and scrolls: a ~400-char paste on a 30-column pane
+    renders only its TAIL, so "the whole render appears in the box" is false
+    for exactly the long messages most likely to hit a swallowed Enter — the
+    drain then read its own landed paste as a human draft (``box_not_empty``,
+    penalized every tick, the text never submitted).
+
+    Two evidence levels, strongest first: a message's whole render is in the
+    box (the original test), else the box is a tail window of the pasted
+    batch. The batch is the oldest-first prefix the drain would have pasted;
+    the longest prefix the window fits wins. A window must be a SUFFIX of the
+    prefix render (the cursor sits at the end of what was pasted), at least
+    ``MIN_BOX_FRAGMENT`` long — so a short foreign draft, or text that merely
+    appears somewhere inside our message, still reads as a human's.
+    """
+    from .session_ready import MIN_BOX_FRAGMENT
+
+    nb = "".join(box_content.split())
+    whole = [m for m in messages if "".join(m.render().split()) in nb]
+    if whole or len(nb) < MIN_BOX_FRAGMENT:
+        return whole
+    for k in range(min(PASTE_MAX_LINES, len(messages)), 0, -1):
+        batch = messages[:k]
+        nm = "".join("\n".join(m.render() for m in batch).split())
+        if len(nb) < len(nm) and nm.endswith(nb):
+            return batch
+    return []
 
 
 def _paste_batch(messages: list[Message]) -> list[Message]:
@@ -1144,8 +1192,12 @@ def flush_session(session: str, force: bool = False) -> dict:
 
             if box_content is None:
                 # Target is busy (input box not located). Defer.
-                dead = _bump_attempts(messages, "target_busy")
-                _log_event("deferred", to=session, count=len(messages), reason="target_busy")
+                detail = "no parseable input box on the pane"
+                dead = _bump_attempts(messages, "target_busy", detail)
+                _log_event(
+                    "deferred", to=session, count=len(messages),
+                    reason="target_busy", detail=detail,
+                )
                 return {
                     "session": session, "delivered": pre_consumed, "deferred": True,
                     "reason": "target_busy", "dead": dead,
@@ -1158,14 +1210,13 @@ def flush_session(session: str, force: bool = False) -> dict:
                 # only once submission is confirmed; otherwise stay pending
                 # without penalty (the target isn't refusing, our own delivery
                 # is wedged).
-                stuck = [
-                    m for m in messages
-                    if "".join(m.render().split()) in "".join(box_content.split())
-                ]
+                stuck = _stuck_in_box(messages, box_content)
                 if stuck:
                     from .session_ready import finish_submit
 
-                    if finish_submit(session, stuck[0].render()):
+                    if finish_submit(
+                        session, "\n".join(m.render() for m in stuck)
+                    ):
                         for m in stuck:
                             if m.path is not None:
                                 m.path.unlink(missing_ok=True)
@@ -1207,8 +1258,12 @@ def flush_session(session: str, force: bool = False) -> dict:
                     reason = "box_static"
                 else:
                     reason = "box_not_empty"
-                dead = _bump_attempts(messages, reason)
-                _log_event("deferred", to=session, count=len(messages), reason=reason)
+                detail = f"box holds: {box_content[:_DETAIL_CHARS]!r}"
+                dead = _bump_attempts(messages, reason, detail)
+                _log_event(
+                    "deferred", to=session, count=len(messages), reason=reason,
+                    detail=detail,
+                )
                 return {
                     "session": session, "delivered": pre_consumed, "deferred": True,
                     "reason": reason, "dead": dead,

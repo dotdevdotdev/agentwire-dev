@@ -545,6 +545,9 @@ def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[boo
       target_parked     usage-limit parked — paste would corrupt the resume
       target_not_agent  pane runs a shell/editor — pasted text could EXECUTE
       target_dialog     pane shows its own live menu — Enter would answer it
+    and, after a paste attempt that did not confirm, the honest outcome from
+    ``_undelivered_reason`` (pasted_unsubmitted / box_not_empty /
+    delivery_unverified).
 
     Delivery itself is session_ready.send_verified, keyed on the FULL
     whitespace-normalized message (#667) — never a fixed-length prefix, which
@@ -563,7 +566,40 @@ def safe_deliver(target_session: str, target_pane: int, text: str) -> "tuple[boo
     from .session_ready import send_verified
 
     ok = send_verified(target_session, text, pane_index=target_pane)
-    return (ok, "delivered" if ok else "delivery_unverified")
+    if ok:
+        return True, "delivered"
+    return False, _undelivered_reason(target_session, target_pane, text)
+
+
+def _undelivered_reason(target_session: str, target_pane: int, text: str) -> str:
+    """Why ``send_verified`` came back False — said honestly (#1105).
+
+    ``delivery_unverified`` used to cover three different worlds, and the
+    caller treated them identically (penalize, re-queue): the paste never
+    rendered, the paste is SITTING IN THE BOX unsubmitted, and a draft that
+    isn't ours owns the box so nothing was pasted. The middle one is the
+    dangerous one — a queued retry that doesn't know the text landed is one
+    bad guess from pasting on top of it. So the box is re-read after the
+    failure:
+
+      pasted_unsubmitted  our text is in the box; Enter never took. The next
+                          drain submits it Enter-only (never a re-paste).
+      box_not_empty       a foreign draft owns the box; we pasted nothing.
+      delivery_unverified neither is provable — the old catch-all.
+    """
+    from . import session_ready
+
+    try:
+        cap = session_ready.scrollback(target_session, target_pane)
+        box = session_ready.input_box(cap)
+        if box is not None and box.strip():
+            if session_ready.box_shows_message(box, text, allow_chip=False):
+                return "pasted_unsubmitted"
+            if not prompt_is_empty(target_session, target_pane):
+                return "box_not_empty"
+    except Exception:
+        pass
+    return "delivery_unverified"
 
 
 def detect_prompt(visible: str) -> "PromptInfo | None":

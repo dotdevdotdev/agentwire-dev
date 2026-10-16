@@ -1278,3 +1278,58 @@ class TestLiveMenuAbort:
         assert not session_ready.send_verified("s", "report text", retries=2)
         assert actions["pastes"] == 0
         assert actions["enters"] == 0
+
+
+class TestElidedEchoDedup:
+    """#1105 — Claude elides the middle of a long submitted prompt in the
+    transcript echo, so the full text is never on scrollback; the trailing
+    ⟨#id⟩ token (unique per message) is what proves the submit."""
+
+    RULE = "─" * 30
+    RENDERED = "[MSG from w · request] " + "lorem ipsum " * 40 + " ⟨#cc3b38⟩"
+
+    def _cap(self, echo: str, box: str = "") -> str:
+        return f"{echo}\n\n{self.RULE}\n❯ {box}\n{self.RULE}\n  status"
+
+    def test_elided_echo_with_token_counts_as_delivered(self):
+        echo = "❯ [MSG from w · request] lorem\n  ipsum lorem  ⟨#cc3b38⟩\n⏺ OK"
+        assert session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_other_messages_token_does_not_count(self):
+        echo = "❯ [MSG from w · request] lorem\n  ipsum lorem  ⟨#aaaaaa⟩\n⏺ OK"
+        assert not session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_token_only_in_the_box_does_not_count(self):
+        # The unsubmitted paste sits in the box: that is NOT delivered (#689).
+        assert not session_ready.message_on_scrollback(
+            self._cap("⏺ idle", box="lorem ipsum  ⟨#cc3b38⟩"), self.RENDERED)
+
+    def test_message_without_a_token_still_needs_full_text(self):
+        assert not session_ready.message_on_scrollback(
+            self._cap("❯ hello there"), "hello there friend")
+
+
+class TestUndeliveredReason:
+    """#1105 — a failed delivery says WHERE the text is, not just 'unverified'."""
+
+    RULE = "─" * 30
+    MSG = "[MSG from w · request] " + "lorem ipsum " * 40 + " ⟨#cc3b38⟩"
+
+    def _run(self, monkeypatch, box_text, empty):
+        from agentwire import prompt_router
+
+        cap = f"scroll\n{self.RULE}\n❯ {box_text}\n{self.RULE}\n  status"
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: cap)
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: empty)
+        return prompt_router._undelivered_reason("s", 0, self.MSG)
+
+    def test_our_text_in_the_box_is_pasted_unsubmitted(self, monkeypatch):
+        assert self._run(monkeypatch, self.MSG[-200:], empty=False) == "pasted_unsubmitted"
+
+    def test_foreign_draft_is_box_not_empty(self, monkeypatch):
+        assert self._run(monkeypatch, "my own half typed draft", empty=False) == "box_not_empty"
+
+    def test_empty_box_stays_unverified(self, monkeypatch):
+        assert self._run(monkeypatch, "", empty=True) == "delivery_unverified"

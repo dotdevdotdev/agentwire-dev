@@ -9,6 +9,7 @@ that injects a first prompt into a new session — council,
 through here.
 """
 
+import re
 import time
 import uuid
 
@@ -442,7 +443,28 @@ def message_on_scrollback(capture: str, rendered: str) -> bool:
     outside = strip_input_box(capture)
     if outside is None:
         return False
-    return needle in "".join(outside.split())
+    flat = "".join(outside.split())
+    if needle in flat:
+        return True
+    # Claude Code ELIDES the middle of a long submitted prompt when it echoes
+    # it into the transcript (measured on a 30-column pane: head rows, a
+    # truncated fragment, then the tail with the id token), so the full text
+    # of a long message is never on scrollback even though it was delivered —
+    # and an unmatched delivered message is re-pasted. The trailing ⟨#id⟩ token
+    # survives the elision and is unique per message/attempt, so on its own
+    # it proves THIS message's submit, outside the box, without the
+    # same-sender header collision a short prefix would have (#621).
+    token = _delivery_token(rendered)
+    return bool(token) and token in flat
+
+
+_DELIVERY_TOKEN = re.compile(r"⟨#[0-9A-Za-z-]+⟩\s*$")
+
+
+def _delivery_token(rendered: str) -> str:
+    """The whitespace-free trailing ``⟨#id⟩`` of *rendered*, or '' (#1105)."""
+    m = _DELIVERY_TOKEN.search(rendered)
+    return "".join(m.group().split()) if m else ""
 
 
 def new_delivery_marker() -> str:

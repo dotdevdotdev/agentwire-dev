@@ -1365,3 +1365,106 @@ class TestBroadcastServiceExclusion:
         monkeypatch.setattr(inbox, "_live_agent_sessions", lambda: ["a"])
         written = inbox.enqueue("agentwire-notifications", "direct", sender="orch")
         assert [m.to for m in written] == ["agentwire-notifications"]
+
+
+class TestWindowedStuckHeal:
+    """#1105 — a swallowed Enter on a message taller than the input box.
+
+    Claude Code's box scrolls, so a ~400-char paste on a 30-column pane renders
+    only its TAIL. The #689 heal used to demand the WHOLE render in the box, so
+    the drain read its own landed paste as a human draft: ``box_not_empty``,
+    penalized every tick, the text never submitted.
+    """
+
+    LONG = "word " * 90  # ~450 chars: far taller than a narrow pane's box
+
+    def _tail(self, render: str, n: int = 150) -> str:
+        return render[-n:]
+
+    def _patch(self, monkeypatch, box_content, finish_ok=True):
+        return TestStuckInBox()._patch(monkeypatch, box_content, finish_ok)
+
+    def test_windowed_tail_is_healed_enter_only(self, isolate, monkeypatch):
+        m = inbox.enqueue("s", self.LONG, kind="request", sender="w")[0]
+        finishes, pasted = self._patch(monkeypatch, self._tail(m.render()))
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and not res["deferred"]
+        assert finishes == [m.render()]
+        assert pasted == []  # never re-pasted on top of the landed text
+        assert inbox.list_messages("s") == []
+
+    def test_foreign_long_draft_is_not_healed(self, isolate, monkeypatch):
+        # Clobber protection: a long human draft that is not a tail of our
+        # paste must never get an Enter pressed into it.
+        inbox.enqueue("s", self.LONG, kind="request", sender="w")
+        finishes, pasted = self._patch(
+            monkeypatch, "I was in the middle of writing a long thought " * 4)
+        res = inbox.flush_session("s")
+        assert res["deferred"] and res["reason"] in {"box_not_empty", "box_static"}
+        assert finishes == [] and pasted == []
+        assert len(inbox.list_messages("s")) == 1
+
+    def test_text_inside_our_message_but_not_its_tail_is_not_healed(
+        self, isolate, monkeypatch
+    ):
+        m = inbox.enqueue("s", self.LONG, kind="request", sender="w")[0]
+        head = m.render()[:150]  # a fragment of ours, but not what a paste leaves
+        finishes, pasted = self._patch(monkeypatch, head)
+        inbox.flush_session("s")
+        assert finishes == [] and pasted == []
+
+    def test_window_of_second_message_does_not_unlink_the_first(
+        self, isolate, monkeypatch
+    ):
+        a = inbox.enqueue("s", "alpha " * 5, kind="done", sender="w")[0]
+        b = inbox.enqueue("s", self.LONG, kind="done", sender="w")[0]
+        batch = "\n".join([a.render(), b.render()])
+        finishes, pasted = self._patch(monkeypatch, self._tail(batch))
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 2  # both were in the one landed paste
+        assert finishes == [batch] and pasted == []
+
+    def test_window_of_first_message_leaves_the_second_pending(
+        self, isolate, monkeypatch
+    ):
+        a = inbox.enqueue("s", self.LONG, kind="done", sender="w")[0]
+        inbox.enqueue("s", "beta", kind="done", sender="w")
+        finishes, pasted = self._patch(monkeypatch, self._tail(a.render()))
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1
+        assert [m.text for m in inbox.list_messages("s")] == ["beta"]
+        assert pasted == []
+
+
+class TestDeferralVisibility:
+    """#1105 — `msg inbox` shows why each pending message is waiting."""
+
+    def test_reason_time_and_evidence_are_stamped(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=False, box="half typed thing")
+        inbox.flush_session("s")
+        (m,) = inbox.list_messages("s")
+        assert m.reason == "box_not_empty"
+        assert m.reason_ts > 0
+        assert "half typed thing" in m.detail
+
+    def test_no_penalty_deferral_is_stamped_too(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=True,
+                        deliver=(False, "pasted_unsubmitted"))
+        res = inbox.flush_session("s")
+        (m,) = inbox.list_messages("s")
+        assert res["reason"] == "pasted_unsubmitted"
+        assert m.attempts == 0 and m.reason == "pasted_unsubmitted"
+        assert m.reason_ts > 0
+        assert inbox.list_dead("s") == []
+
+    def test_inbox_line_names_reason_time_and_evidence(self, isolate, monkeypatch):
+        from agentwire import msg_cli
+
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=False, box="half typed thing")
+        inbox.flush_session("s")
+        (m,) = inbox.list_messages("s")
+        line = msg_cli._deferral_line(m)
+        assert line.startswith("box_not_empty at ") and "half typed thing" in line

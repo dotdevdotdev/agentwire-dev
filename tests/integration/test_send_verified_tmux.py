@@ -466,3 +466,44 @@ def test_clear_input_box_empties_a_tall_draft(emulator_factory, monkeypatch):
     assert session_ready.clear_input_box(session)
     cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
     assert session_ready.input_box(cap) == ""
+
+
+def test_drain_heals_windowed_unsubmitted_paste_on_narrow_pane(
+    emulator_factory, monkeypatch, tmp_path
+):
+    # #1105: a ~400-char message on a 30-column pane whose box scrolls (only
+    # the TAIL renders). The paste landed and Enter was swallowed. The drain
+    # used to read that as a human draft (box_not_empty, penalized each tick,
+    # never submitted); it must finish it Enter-only — one copy, no re-paste.
+    from agentwire import inbox, prompt_router
+
+    session, socket, _ = emulator_factory(box_rows=8, width=30, height=40)
+    _patch_pane_manager(monkeypatch, socket)
+
+    def capture(target, escapes=False):
+        return _tmux("-S", socket, "capture-pane", "-t", target, "-p").stdout
+
+    monkeypatch.setattr(prompt_router, "_capture", capture)
+    monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
+    monkeypatch.setattr(prompt_router, "_is_parked", lambda s: False)
+    monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+    monkeypatch.setattr(inbox, "INBOX_ROOT", tmp_path / "inbox")
+    monkeypatch.setattr(inbox, "EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(inbox, "live_sessions", lambda: {session})
+
+    (m,) = inbox.enqueue(session, "lorem ipsum dolor sit amet " * 15,
+                         kind="request", sender="orchestrator")
+    session_ready.paste_no_enter(session, m.render())  # landed, Enter swallowed
+    deadline = time.time() + 5
+    while time.time() < deadline and not capture(f"{session}.0").count("❯ "):
+        time.sleep(0.1)
+    box = session_ready.input_box(capture(f"{session}.0"))
+    assert box and len("".join(box.split())) < len("".join(m.render().split())), (
+        "setup: the box should show only a tail window of the paste"
+    )
+
+    res = inbox.flush_session(session)
+
+    assert res["delivered"] == 1 and not res["deferred"], res
+    assert inbox.list_messages(session) == []
+    assert session_ready.input_box(capture(f"{session}.0")) == ""
