@@ -519,3 +519,112 @@ def test_refused_substitution_in_quoted_arg_says_why(cfg):
         if check_command(c, cfg)["decision"] == "block":
             bad.append(("blocked", c))
     assert not bad, bad
+
+
+# Review of PR #1102 (round 1): shapes that still passed, one group per defect,
+# each with the siblings that must keep working.
+ROUND1_BLOCK = {
+    "quoted cd-relative operand": [
+        "cd ~/.agentwire && git checkout -- \"damagecontrol.yml\"",
+        "cd ~/.agentwire && sed -i 's/a/b/' 'damagecontrol.yml'",
+        "cd ~/.agentwire && echo x > \"damagecontrol.yml\"",
+        "cd ~/.agentwire && ln -sf /tmp/x \"damagecontrol.yml\"",
+        "cd ~/.agentwire && mv \"damagecontrol.yml\" /tmp",
+        "cd ~/.agentwire && python3 -c \"open('damagecontrol.yml','w')\"",
+    ],
+    "git -C with a tilde": [
+        "git -C ~ checkout .agentwire/damagecontrol.yml",
+        "git -C ~ -C .agentwire checkout -- damagecontrol.yml",
+        "git -C $HOME checkout .agentwire/damagecontrol.yml",
+        "git --work-tree=~ checkout .agentwire/damagecontrol.yml",
+    ],
+    "in-place editor spellings": [
+        "yq -iy '.a=1' @P",
+        "yq -yi '.a=1' @P",
+        "yq --in-place '.a=1' @P",
+        "sed --in-place s/a/b/ @P",
+        "sed -ni p @P",
+        "scp host:x @P",
+        "dasel put string -f @P .a b",
+    ],
+    "stdin to a shell behind a wrapper": [
+        "echo 'touch @P' | ssh host sudo sh",
+        "echo 'touch @P' | ssh host 'sh -s'",
+        "echo 'touch @P' | ssh host exec bash",
+        "echo 'touch @P' | ssh host busybox sh",
+        "echo 'touch @P' | ssh host nohup sh",
+        "echo 'touch @P' | ssh host -- sh",
+        "echo 'touch @P' | ssh host perl",
+        "echo 'touch @P' | ssh host python3",
+        "ssh host -- <<EOF\ntouch @P\nEOF",
+        "ssh host 'bash -s' <<EOF\ntouch @P\nEOF",
+        "ssh host sudo bash <<EOF\ntouch @P\nEOF",
+        "echo 'touch @P' | sudo sh",
+        "echo 'touch @P' | exec sh",
+        "echo 'touch @P' | command sh",
+        "echo 'touch @P' | busybox sh",
+        "echo 'touch @P' | su -",
+        "echo 'touch @P' | docker exec -i c sh",
+    ],
+    "parallel compound commands": [
+        "echo @P | parallel 'echo x; rm {}'",
+        "echo @P | parallel 'echo x && rm {}'",
+        "echo @P | parallel 'echo x | rm {}'",
+        "parallel 'echo x; rm {}' ::: @P",
+        "echo 'touch @P' | parallel bash -c",
+        "echo 'touch @P' | parallel --pipe sh",
+        "echo @P | parallel -a - rm",
+        "echo 'touch @P' | parallel -a - bash -c",
+    ],
+}
+ROUND1_ALLOW = [
+    "cd ~/.agentwire && cat \"damagecontrol.yml\"",
+    "cd /tmp && touch \"damagecontrol.yml\"",
+    "cd ~/.agentwire && touch \"other.yml\"",
+    "cd ~/.agentwire && python3 -c \"open('other.yml','w')\"",
+    "git -C ~ log -- .agentwire/damagecontrol.yml",
+    "git -C ~ checkout other.txt",
+    "git -C ~ -C .agentwire checkout -- other.yml",
+    "yq -I2 '.a' @P",
+    "yq --indent 2 .a @P",
+    "yq -y '.a' @P",
+    "sed -n p @P",
+    "sed 's/a/b/' @P",
+    "sed -n 's/a/b/p' @P",
+    "sed --in-place s/a/b/ /tmp/f",
+    "scp @P host:/tmp/",
+    "scp host:x /tmp/y",
+    "dasel select -f @P .a",
+    "echo 'touch @P' | ssh host cat",
+    "echo 'touch @P' | ssh host sudo cat",
+    "echo 'touch @P' | ssh host 'tee /tmp/x'",
+    "echo 'touch @P' | ssh host -- ls",
+    "echo 'touch @P' | ssh host grep sh",
+    "echo 'touch @P' | sudo tee /tmp/x",
+    "echo 'touch @P' | docker exec -i c cat",
+    "echo 'touch /tmp/x' | sudo sh",
+    "echo @P | parallel 'echo x; cat {}'",
+    "echo @P | parallel 'echo x && ls {}'",
+    "echo 'touch @P' | parallel cat",
+    "echo 'touch /tmp/x' | parallel bash -c",
+    "ssh host -- <<EOF\nls /tmp\nEOF",
+]
+
+
+def test_round1_review_shapes(cfg):
+    leaked = {}
+    for item, shapes in ROUND1_BLOCK.items():
+        for template in shapes:
+            for sp in (SPELLINGS if "@P" in template else [None]):
+                c = template.replace("@P", sp) if sp else template
+                if not _blocked_by_control_plane(c, cfg):
+                    leaked.setdefault(item, []).append(c)
+    wrongly_blocked = [
+        c
+        for template in ROUND1_ALLOW
+        for sp in (SPELLINGS if "@P" in template else [None])
+        for c in [template.replace("@P", sp) if sp else template]
+        if _blocked_by_control_plane(c, cfg)
+    ]
+    assert not leaked, leaked
+    assert not wrongly_blocked, wrongly_blocked

@@ -194,11 +194,19 @@ it would unwrapped:
   reads is allowed.
 - **Stdin handed to a runner** — a heredoc body, a here-string or piped
   `echo`/`printf` text — is a command when the runner executes its stdin:
-  `ssh host` with no remote command (or a shell), `at`, `batch`, `crontab -`,
-  `. /dev/stdin` / `source /dev/stdin`, a bare `parallel`. With a real remote
-  program (`ssh host cat`) stdin is data and is left alone.
+  `ssh host` with no remote command or a remote command that is itself a stdin
+  reader, `at`, `batch`, `crontab -`, `. /dev/stdin` / `source /dev/stdin`, a
+  bare `parallel` (or `parallel bash -c` / `--pipe sh`), and a shell or
+  interpreter directly (`sudo sh`, `exec bash`, `busybox sh`, `su -`,
+  `docker exec -i c sh`). One predicate (`_stage_reads_program`) decides, so the
+  same payload is refused or allowed however it is fed (pipe, heredoc,
+  here-string): shells and `perl`/`python3`/`node`/`ruby`/… behind
+  `sudo`/`exec`/`nohup`/`busybox`/`env`/`command`/`--`/`-s`. With a real remote
+  program (`ssh host cat`, `sudo tee`) stdin is data and is left alone.
 - **`parallel` is xargs-shaped:** its command is re-scanned with the path
   substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
+  A quoted command string is scanned whole, separators included
+  (`parallel 'echo x; rm {}'`), because parallel hands it to a shell.
 - **Prefix wrappers** (`caffeinate`, `ionice`, `nice`, `taskset`, `chrt`,
   `sshpass`, … — `_PREFIX_WRAPPERS`) run the command that follows them: a quoted
   arg behind one is code when an arg-runner (`ssh`, `watch`, …) follows and
@@ -211,8 +219,10 @@ it would unwrapped:
 re-scanned as a command, so the verb still decides (reads stay allowed):
 
 - **More writers:** `mv` with the path as the *source* (it removes the file),
-  `rename`/`mmv`/`chflags`/`setfacl`/`chattr`, `yq`/`tomlq`/`xq` with `-i` /
-  `--inplace`, `ed`/`ex` (always scripted), `vi`/`vim`/`nvim`/`view` driven
+  `rename`/`mmv`/`chflags`/`setfacl`/`chattr`, `yq`/`tomlq`/`xq` and `sed` with
+  `i` anywhere in a flag cluster (`-i`, `-iy`, `-yi`, `-ni`) or `--inplace` /
+  `--in-place`, `dasel put|delete`, `scp` with the path as the destination,
+  `ed`/`ex` (always scripted), `vi`/`vim`/`nvim`/`view` driven
   non-interactively (`-es`, `-s`, `-c`, `+cmd`, `--headless`) and `emacs
   --batch`. A bare `vim <path>` needs a terminal and is left alone.
 - **Redirect operators** `>|`, `>&`, `&>`, `&>>`, `<>` are the same write as `>`
@@ -231,7 +241,10 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
 - **Mid-path `//`, `/./`, `/../`** are collapsed (`touch ~/.agentwire/x/../damagecontrol.yml`).
 - **A directory set by a literal `cd <dir> &&` / `pushd`, `git -C <dir>` or
   `git --work-tree <dir>`** is applied to later words (until the next `cd`):
-  `cd ~/.agentwire && touch damagecontrol.yml` is judged as the absolute path.
+  `cd ~/.agentwire && touch damagecontrol.yml` is judged as the absolute path,
+  quoted operands included (`touch "damagecontrol.yml"`, `open('damagecontrol.yml')`).
+  `~` and `$HOME` are directories for `git -C` / `--work-tree` as well
+  (`git -C ~ checkout .agentwire/damagecontrol.yml`).
 - `xargs -I{}` / `parallel` substitute into an interpreter literal
   (`… | xargs -I{} python3 -c 'open("{}","w")'`); because the interpreter net is
   fail-closed for any inline program naming the path, an inline *read* of it is

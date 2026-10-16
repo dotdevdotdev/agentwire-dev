@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "39816430c2b6d8e6bc4dc9b8c113ad78b6c17aa6934c99fe338263debb7f7f04", "generated_at": "2026-10-16T11:53:46Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "f04706c7f993efcd9e38ccf384612830a52fd9ff845102dc2162cbb321b3917d", "generated_at": "2026-10-16T12:11:56Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -263,7 +263,11 @@ PROTECTED_WRITER_PATTERNS = [
     # rename/attribute changers take the file as a plain operand (#1101)
     (r'\b(?:mv|rename|mmv|chflags|setfacl|chattr)\b' + _SEG + r'{path}', "write"),
     # in-place structured editors
-    (r'\b(?:yq|tomlq|xq)\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i)\b|\s--inplace\b))' + _SEG + r'{path}', "write"),
+    (r'\b(?:yq|tomlq|xq)\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i[A-Za-z]*)\b|\s--in-?place\b))' + _SEG + r'{path}', "write"),
+    (r'\bsed\b(?=' + _SEG + r'(?:\s-(?-i:[A-Za-z]*i[A-Za-z]*)\b|\s--in-?place\b))' + _SEG + r'{path}', "write"),
+    (r'\bdasel\b(?=' + _SEG + r'\s(?:put|delete)\b)' + _SEG + r'{path}', "write"),
+    # scp/sftp write their LAST operand; as a source the file is only read
+    (r'\bscp\b' + _SEG + r'\s["\']?{path}[^\s|;&]*\s*(?:$|[;&|#]|\d*[<>])', "write"),
     # scripted editors: ed/ex always take their script on stdin; the vi family
     # only when driven non-interactively (-es/-s/-c/+cmd/--headless), and emacs
     # --batch. A bare ``vim <path>`` needs a terminal and is left alone.
@@ -2413,7 +2417,9 @@ def _xargs_rescans(command: str, path: str) -> List[str]:
         return []
     token = mention.group(0).strip("\"'\t \n;|&<>()=:")
     out: List[str] = []
-    for m in _rx(r'\b(xargs|parallel)\b([^\n|;&<]*)').finditer(command):
+    # quote-aware: a separator INSIDE the quoted command string belongs to it
+    # (``parallel 'echo x; rm {}'`` runs the whole string through a shell)
+    for m in _rx(r'''\b(xargs|parallel)\b((?:'[^']*'|"[^"]*"|[^\n|;&<'"])*)''').finditer(command):
         words = _words(m.group(2))
         if m.group(1) == "parallel":
             rest, repl = _parallel_command(words)
@@ -2422,8 +2428,10 @@ def _xargs_rescans(command: str, path: str) -> List[str]:
             if repl and any(repl in w for w in rest):
                 replace = lambda w: w.replace(repl, token)  # noqa: E731
                 hit = True
-            out.append(" ".join(_quote_word(replace(w)) for w in rest) if hit
-                       else " ".join([_quote_word(w) for w in rest] + [token]))
+            rest = [replace(w) for w in rest] if hit else rest + [token]
+            # parallel hands the command to a shell: its first word may be a whole
+            # command LINE (``'echo x; rm {}'``), the rest are quoted arguments
+            out.append(" ".join(rest[:1] + [_quote_word(w) for w in rest[1:]]))
             continue
         repl = None
         rest = []
@@ -2593,8 +2601,8 @@ def _command_words(line: str) -> List[str]:
 def _ssh_remote_command(args: List[str]) -> List[str]:
     """The remote command words of an ``ssh`` invocation (empty = interactive shell)."""
     i = 0
-    while i < len(args) and args[i].startswith("-") and args[i] != "--":
-        i += 2 if args[i] in _SSH_VALUE_OPTS else 1
+    while i < len(args) and args[i].startswith("-"):
+        i += 1 if args[i] == "--" else 2 if args[i] in _SSH_VALUE_OPTS else 1
     return args[i + 1 :]  # args[i] is the host
 
 
@@ -2618,14 +2626,58 @@ def _parallel_command(args: List[str]) -> Tuple[List[str], Optional[str]]:
     return [], repl
 
 
+# Programs that read a script from stdin: shells and the common interpreters.
+_STDIN_READERS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "csh", "tcsh",
+    "perl", "python", "python2", "python3", "node", "ruby", "php", "lua",
+    "tclsh", "deno", "bun", "Rscript",
+})
+_CONTAINER_RUNNERS = frozenset({"docker", "podman", "kubectl", "nerdctl", "lxc", "incus"})
+
+
+def _stage_reads_program(stage: List[str]) -> bool:
+    """True when one simple command (``sudo sh``, ``exec bash``, ``busybox sh -s``) executes its stdin.
+
+    The ONE predicate for "this command's stdin is a program", shared by the
+    pipe, heredoc and here-string feeds and by the ssh remote command: the
+    same payload is refused or allowed however it arrives (#1099 review).
+    """
+    words = [w for w in stage if not _ASSIGN_WORD.match(w)]
+    while words and words[0] == "--":
+        words = words[1:]
+    if not words:
+        return False
+    head = os.path.basename(words[0])
+    if head in _STDIN_READERS:
+        return True
+    if head in _PREFIX_WRAPPERS or head in ("busybox", "builtin", "pkexec"):
+        return any(os.path.basename(w) in _STDIN_READERS for w in words[1:5])
+    if head == "su":  # no -c: su starts a login shell that reads its stdin
+        return "-c" not in words and "--command" not in words
+    if head in _CONTAINER_RUNNERS:
+        return any(os.path.basename(w) in _STDIN_READERS for w in words[1:])
+    return False
+
+
 def _stdin_is_program(words: List[str]) -> bool:
     """True when this simple command runs what it reads on stdin as commands (#1099).
 
-    ``ssh host`` (no remote command, or a shell) executes its stdin remotely,
-    ``at``/``batch`` queue it, ``. /dev/stdin`` sources it, a bare ``parallel``
-    runs each line. With a non-shell remote command or a real program, stdin is
-    data (``ssh host cat``) and the text is not a command.
+    ``ssh host`` (no remote command, or a remote command that itself reads a
+    program: a shell/interpreter behind ``sudo``/``exec``/``--``/``-s``)
+    executes its stdin remotely, ``at``/``batch`` queue it, ``. /dev/stdin``
+    sources it, a bare ``parallel`` (or one running a shell) runs each line,
+    and ``sudo sh`` / ``su -`` / ``docker exec -i c sh`` read it directly.
+    With a real remote program (``ssh host cat``) stdin is data and the text is
+    not a command.
     """
+    stage: List[str] = []
+    for w in words + ["|"]:
+        if w in _WORD_OPERATORS:
+            if _stage_reads_program(stage):
+                return True
+            stage = []
+        else:
+            stage.append(w)
     for i, w in enumerate(words):
         name, rest = os.path.basename(w), words[i + 1 :]
         for j, r in enumerate(rest):
@@ -2641,11 +2693,14 @@ def _stdin_is_program(words: List[str]) -> bool:
             if "-" in rest:
                 return True
         elif name in ("ssh", "slogin"):
-            remote = _ssh_remote_command(rest)
-            if not remote or re.fullmatch(_SHELLS, os.path.basename(remote[0])):
+            remote = _words(" ".join(_ssh_remote_command(rest)))
+            while remote and remote[0] == "--":
+                remote = remote[1:]
+            if not remote or _stage_reads_program(remote):
                 return True
         elif name == "parallel":
-            if not _parallel_command(rest)[0]:
+            cmd = _parallel_command(rest)[0]
+            if not cmd or _stage_reads_program(cmd):
                 return True
     return False
 
@@ -2860,7 +2915,16 @@ def _glob_variants(command: str) -> List[str]:
 _CD_RE = _rx(
     r"(?:^|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
 )
-_REL_WORD = _rx(r"(?<![^\s;&|(<>])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
+_REL_WORD = _rx(r"(?<![^\s;&|(<>'\"])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
+
+
+def _join_dir(cwd: Optional[str], d: str) -> Optional[str]:
+    """``d`` resolved against ``cwd`` (``~`` is the home dir); None when it depends on an unknown cwd."""
+    if d == "~" or d.startswith("~/"):
+        d = os.path.expanduser("~") + d[1:]
+    if d.startswith("/"):
+        return posixpath.normpath(d)
+    return posixpath.normpath(posixpath.join(cwd, d)) if cwd else None
 
 
 def _absolutize(text: str, cwd: str) -> str:
@@ -2887,14 +2951,8 @@ def _cwd_variants(command: str) -> List[str]:
         cwd: Optional[str] = None
         matches = list(_CD_RE.finditer(command))
         for k, m in enumerate(matches):
-            d = m.group("d").strip("'\"")
-            if d == "~":
-                d = os.path.expanduser("~")
-            if d.startswith("/"):
-                cwd = posixpath.normpath(d)
-            elif cwd:
-                cwd = posixpath.normpath(posixpath.join(cwd, d))
-            else:
+            cwd = _join_dir(cwd, m.group("d").strip("'\""))
+            if not cwd:
                 continue
             end = matches[k + 1].start() if k + 1 < len(matches) else len(command)
             rest = command[m.end() : end]
@@ -2921,7 +2979,7 @@ def _cwd_variants(command: str) -> List[str]:
                 i += 1
             cwd = None
             for d in dirs:
-                cwd = posixpath.normpath(d if d.startswith("/") else posixpath.join(cwd, d)) if (d.startswith("/") or cwd) else None
+                cwd = _join_dir(cwd, d)
             if cwd and dirs:
                 out.append(_absolutize(" ".join(_quote_word(w) for w in rest), cwd))
     return out
